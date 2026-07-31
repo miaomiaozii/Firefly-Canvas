@@ -37,3 +37,6 @@ python/Scripts/
 .DS_Store
 Thumbs.db
 
+
+# 运行时数据（拆分后 app/data）
+app/data/
