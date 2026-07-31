@@ -21,8 +21,13 @@ from pydantic import BaseModel, Field
 from app.core import *
 from app.core import _xlsx_cell_text, _xlsx_join_text, _xlsx_shared_strings, _xlsx_sheet_paths, _xml_local_name
 _from_main_names = ['attachment_embedded_image_data_urls', 'attachment_text_blocks', 'build_chat_text_reply', 'codex_chat_text', 'decide_chat_agent_action', 'gemini_cli_chat_text', 'generate_ai_image', 'get_api_provider', 'image_size_from_reference', 'load_api_providers', 'load_conversation', 'new_conversation', 'now_ms', 'output_file_from_url', 'pick_chat_image_provider', 'reference_to_data_url', 'resolve_chat_provider', 'save_ai_image_to_output', 'save_conversation', 'upstream_message_from_record']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class ChatRequest(BaseModel):

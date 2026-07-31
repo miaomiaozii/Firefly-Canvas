@@ -21,8 +21,13 @@ from pydantic import BaseModel, Field
 from app.core import *
 from app.core import _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path, _local_upload_safe_file_stem, _local_upload_safe_folder_name, _sniff_image_ext_bytes
 _from_main_names = ['LOCAL_UPLOAD_DIR', '_local_upload_abs', '_local_upload_caption_path', '_local_upload_classification_path', '_local_upload_item', '_local_upload_safe_folder', '_local_upload_safe_path', '_local_upload_tree_and_items', '_write_local_upload_classification', 'caption_image_with_provider', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'normalize_asset_classification']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class LocalAssetCaptionRequest(BaseModel):

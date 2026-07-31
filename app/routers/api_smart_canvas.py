@@ -20,8 +20,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 from app.core import *
 _from_main_names = ['OUTPUT_DIR', 'output_file_from_url', 'smart_group_export_folder']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class SmartCanvasGroupExportItem(BaseModel):

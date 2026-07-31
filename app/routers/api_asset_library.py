@@ -21,8 +21,13 @@ from pydantic import BaseModel, Field
 from app.core import *
 from app.core import _volc_hmac
 _from_main_names = ['ASSET_LIBRARY_DIR', 'api_headers', 'check_apimart_avatar_task', 'check_volcengine_avatar_task', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'find_asset_category_in_library', 'find_asset_category_with_library', 'find_asset_library', 'get_api_provider', 'load_asset_library', 'local_asset_public_url', 'make_asset_library_item', 'normalize_asset_library', 'now_ms', 'output_file_from_url', 'remove_asset_library_file', 'save_asset_library', 'submit_apimart_avatar_asset', 'submit_volcengine_avatar_asset', 'unique_asset_category_dir', 'upload_audio_for_apimart', 'upload_image_for_apimart', 'upload_media_for_apimart', 'upload_video_for_apimart', 'video_api_root', 'volcengine_access_key_value', 'volcengine_ark_asset_call', 'volcengine_ensure_asset_group', 'volcengine_public_asset_url', 'volcengine_secret_key_value']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class AssetLibraryCategoryRequest(BaseModel):

@@ -20,8 +20,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 from app.core import *
 _from_main_names = ['DATA_DIR', 'SHARED_FOLDERS_FILE', 'classify_asset_image_best_effort', 'find_asset_category_in_library', 'load_asset_library', 'make_asset_library_item', 'now_ms', 'output_file_from_url', 'save_asset_library', 'shared_folder_by_id', 'shared_folders_load', 'shared_folders_save']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class SharedFolderRegister(BaseModel):

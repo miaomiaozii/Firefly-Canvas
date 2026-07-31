@@ -20,8 +20,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 from app.core import *
 _from_main_names = ['jimeng_cli_executable', 'jimeng_cli_version', 'jimeng_command', 'jimeng_login_reader', 'jimeng_query_result', 'jimeng_store_outputs', 'jimeng_use_wsl', 'run_jimeng_cli']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class JimengHelpRequest(BaseModel):

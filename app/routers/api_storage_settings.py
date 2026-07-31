@@ -21,8 +21,13 @@ from pydantic import BaseModel, Field
 from app.core import *
 from app.core import _storage_abs_path
 _from_main_names = ['DATA_DIR', 'DEFAULT_STORAGE_DIRS', 'LOCAL_UPLOAD_DIR', 'OUTPUT_INPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'STORAGE_SETTINGS_FILE', 'apply_storage_settings', 'load_storage_settings', 'save_storage_settings']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 def _storage_abs_path(value, fallback):

@@ -75,7 +75,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
             try:
                 self._services._bind_main(sys.modules["main"])
             except KeyError:
-                pass
+                self._services._main_bound_module = None
 
     def test_openai_compatible_banana_edit_sends_supported_aspect_ratio(self):
         provider = {

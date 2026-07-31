@@ -21,8 +21,13 @@ from pydantic import BaseModel, Field
 from app.core import *
 from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _sniff_image_ext, _sniff_image_ext_bytes
 _from_main_names = ['ASSET_LIBRARY_DIR', 'LOCAL_UPLOAD_DIR', 'PROJECT_CONVERSATION_MAX_PENDING', 'PROJECT_CONVERSATION_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_PER_PROJECT', '_agent_mark_recovered_uncertain', '_agent_submit_task', 'conversation_pending_task_keys', 'forget_project_conversation_durable', 'load_asset_library', 'load_project_conversation_durable', 'merge_project_conversation_result', 'now_ms', 'persist_project_conversation_uncertain', 'project_conversation_adapter', 'project_conversation_durable_path', 'project_store_call', 'run_project_conversation_task', 'save_asset_library', 'save_project_conversation_durable', 'schedule_project_conversation_task', 'unique_asset_category_dir']
+import app.services as _svc
 for _nm in _from_main_names:
-    globals()[_nm] = getattr(_app_main, _nm)
+    _v = getattr(_app_main, _nm, None)
+    if _v is None:
+        _v = getattr(_svc, _nm, None)
+    globals()[_nm] = _v
+
 router = APIRouter()
 
 class ProjectConversationTaskRunner:
