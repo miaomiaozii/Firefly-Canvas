@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title data-i18n="globalSettings.title">萤火画布 · 全局设置</title>
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/global-preferences.js?v=2026.07.27.210000"></script>
+  <link rel="stylesheet" href="/static/css/global-settings.css?v=2026.07.29.145000">
+</head>
+<body>
+  <main class="settings-shell">
+    <header class="settings-header">
+      <button id="backButton" class="quiet-button" type="button" data-i18n="globalSettings.back">← 返回</button>
+      <div>
+        <p class="eyebrow">FIREFLY CANVAS</p>
+        <h1 data-i18n="globalSettings.heading">全局设置</h1>
+        <p class="subtitle" data-i18n="globalSettings.subtitle">跨项目共享的在线服务、项目库与应用偏好。</p>
+      </div>
+      <button id="refreshAll" class="quiet-button" type="button" data-i18n="globalSettings.refresh">刷新状态</button>
+    </header>
+
+    <p id="pageStatus" class="page-status" role="status" aria-live="polite" data-i18n="globalSettings.loading">正在读取设置…</p>
+
+    <section class="settings-section" aria-labelledby="preferencesTitle">
+      <div class="section-heading">
+        <div><p class="section-index">01</p><h2 id="preferencesTitle" data-i18n="globalSettings.preferences">外观、语言与保存</h2></div>
+        <button id="savePreferences" class="primary-button" type="button" data-i18n="globalSettings.savePreferences">保存偏好</button>
+      </div>
+      <div class="preference-grid">
+        <label><span data-i18n="globalSettings.theme">主题</span><select id="themeSelect"><option value="dark" data-i18n="globalSettings.dark">深色</option><option value="light" data-i18n="globalSettings.light">浅色</option></select></label>
+        <label><span data-i18n="globalSettings.language">语言</span><select id="languageSelect"><option value="zh" data-i18n="globalSettings.chinese">简体中文</option><option value="en" data-i18n="globalSettings.english">English</option></select></label>
+        <label><span data-i18n="globalSettings.autosaveInterval">自动保存间隔（分钟）</span><input id="autosaveIntervalMinutes" type="number" min="1" max="240" step="1" value="20" inputmode="numeric"></label>
+      </div>
+    </section>
+
+    <section class="settings-section" aria-labelledby="providersTitle">
+      <div class="section-heading">
+        <div><p class="section-index">02</p><h2 id="providersTitle" data-i18n="globalSettings.providers">在线服务商与模型</h2></div>
+        <div class="heading-actions">
+          <button id="addProvider" class="quiet-button" type="button" data-i18n="globalSettings.addProvider">添加服务商</button>
+          <button id="saveProviders" class="primary-button" type="button" data-i18n="globalSettings.saveProviders">保存服务商</button>
+        </div>
+      </div>
+      <p class="section-note" data-i18n="globalSettings.keyNote">Key 写入本机全局 API/.env；页面只显示脱敏尾号，留空不会覆盖已有 Key。</p>
+      <div id="providerList" class="provider-list"></div>
+    </section>
+
+    <section class="settings-section" aria-labelledby="cliTitle">
+      <div class="section-heading">
+        <div><p class="section-index">03</p><h2 id="cliTitle" data-i18n="globalSettings.cli">CLI 状态</h2></div>
+      </div>
+      <div id="cliGrid" class="status-grid" aria-live="polite"></div>
+    </section>
+
+    <section class="settings-section" aria-labelledby="libraryTitle">
+      <div class="section-heading">
+        <div><p class="section-index">04</p><h2 id="libraryTitle" data-i18n="globalSettings.library">项目库</h2></div>
+      </div>
+      <p id="librarySummary" class="section-note"></p>
+      <form id="libraryForm" class="library-form">
+        <label><span data-i18n="globalSettings.libraryPath">新的项目库绝对路径</span><input id="libraryPath" name="path" autocomplete="off" required></label>
+        <label class="confirmation"><input id="moveExisting" type="checkbox"><span data-i18n="globalSettings.moveExisting">显式移动当前项目；复制并完整校验成功后才切换</span></label>
+        <button class="danger-button" type="submit" data-i18n="globalSettings.switchLibrary">校验并切换项目库</button>
+      </form>
+      <p class="safety-note" data-i18n="globalSettings.safety">为保护作品，切换成功后原项目库会保留为安全副本；确认新库无误后再由你自行清理。</p>
+    </section>
+
+    <section class="settings-section" aria-labelledby="psTitle">
+      <div class="section-heading">
+        <div><p class="section-index">05</p><h2 id="psTitle" data-i18n="globalSettings.photoshop">Photoshop 连接状态</h2></div>
+      </div>
+      <div id="photoshopStatus" class="connection-card"></div>
+    </section>
+  </main>
+  <script src="/static/js/global-settings.js?v=2026.07.29.145000"></script>
+</body>
+</html>

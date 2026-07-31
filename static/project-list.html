@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title data-i18n="projectList.title">萤火画布 · 项目</title>
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/i18n.js"></script>
+  <script src="/static/js/global-preferences.js"></script>
+  <link rel="stylesheet" href="/static/css/theme.css">
+  <link rel="stylesheet" href="/static/css/project-list.css">
+</head>
+<body>
+  <main class="project-shell">
+    <header class="project-header">
+      <div>
+        <p class="eyebrow">FIREFLY CANVAS</p>
+        <h1 data-i18n="projectList.heading">你的项目</h1>
+        <p class="subtitle" data-i18n="projectList.subtitle">一个项目，一张画布，所有创作内容都随项目保存。</p>
+      </div>
+      <div class="header-actions">
+        <a class="button secondary" href="/static/global-settings.html" data-i18n="projectList.settings">全局设置</a>
+        <button id="showTrash" class="button secondary" type="button" aria-controls="trashPanel" aria-expanded="false" data-i18n="projectList.trash">项目回收站</button>
+        <button id="importProject" class="button secondary" type="button" data-i18n="projectList.import">导入 .fly</button>
+        <input id="importFile" type="file" accept=".fly,application/zip" hidden>
+        <button id="showCreate" class="button primary" type="button" data-i18n="projectList.create">新建项目</button>
+      </div>
+    </header>
+
+    <p id="importHint" class="import-hint" hidden></p>
+    <section id="status" class="status" role="status" aria-live="polite" data-i18n="projectList.loading">正在读取项目库…</section>
+    <section id="emptyState" class="empty-state" hidden>
+      <div class="firefly-mark" aria-hidden="true">✦</div>
+      <h2 data-i18n="projectList.emptyTitle">从第一张画布开始</h2>
+      <p data-i18n="projectList.emptyBody">项目库现在是空的。新建项目后会直接打开它唯一的核心画布。</p>
+      <button id="emptyCreate" class="button primary" type="button" data-i18n="projectList.create">新建项目</button>
+    </section>
+    <section id="projectGrid" class="project-grid" aria-label="项目列表" data-i18n-title="projectList.region"></section>
+    <section id="trashPanel" class="trash-panel" hidden aria-labelledby="trashTitle">
+      <div class="trash-head">
+        <div><p class="eyebrow">PROJECT TRASH</p><h2 id="trashTitle" data-i18n="projectList.trash">项目回收站</h2></div>
+        <button id="closeTrash" class="button secondary" type="button" data-i18n="projectList.closeTrash">关闭回收站</button>
+      </div>
+      <p class="trash-note" data-i18n="projectList.trashNote">删除会移动整个项目；恢复会原样放回，永久删除才释放磁盘空间。</p>
+      <div id="trashGrid" class="project-grid"></div>
+    </section>
+  </main>
+
+  <dialog id="createDialog" class="create-dialog">
+    <form id="createForm" method="dialog">
+      <p class="eyebrow">NEW PROJECT</p>
+      <h2 data-i18n="projectList.newHeading">新建项目</h2>
+      <label for="projectName" data-i18n="projectList.projectName">项目名称</label>
+      <input id="projectName" name="name" maxlength="60" autocomplete="off" placeholder="例如：夏日产品主视觉" data-i18n-placeholder="projectList.namePlaceholder" required>
+      <p id="createError" class="form-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="cancelCreate" class="button secondary" type="button" data-i18n="projectList.cancel">取消</button>
+        <button class="button primary" type="submit" data-i18n="projectList.createOpen">创建并打开</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/static/js/project-list.js"></script>
+</body>
+</html>

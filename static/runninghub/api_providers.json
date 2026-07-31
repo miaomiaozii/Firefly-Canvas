@@ -1,0 +1,38 @@
+[
+  {
+    "id": "runninghub",
+    "name": "RunningHub",
+    "base_url": "https://www.runninghub.cn",
+    "protocol": "runninghub",
+    "image_generation_endpoint": "",
+    "image_edit_endpoint": "",
+    "enabled": true,
+    "primary": false,
+    "image_models": [],
+    "chat_models": [],
+    "video_models": [],
+    "model_protocols": {},
+    "ms_loras": [],
+    "ms_defaults_version": 0,
+    "rh_apps": [
+      {
+        "id": "2058517022748798977",
+        "appId": "2058517022748798977",
+        "title": "2511-风格迁移",
+        "note": "",
+        "thumbnail": "",
+        "enabled": true
+      },
+      {
+        "id": "1997622492837646338",
+        "appId": "1997622492837646338",
+        "title": "2511-光线迁移",
+        "note": "",
+        "thumbnail": "",
+        "enabled": true
+      }
+    ],
+    "volcengine_project_name": "",
+    "volcengine_region": ""
+  }
+]

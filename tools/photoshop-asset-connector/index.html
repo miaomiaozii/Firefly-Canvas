@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>萤火画布 PS 连接器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="panel">
+    <header class="header">
+      <div>
+        <p class="eyebrow">FIREFLY CANVAS</p>
+        <h1>PS 连接器</h1>
+      </div>
+      <span id="connectionDot" class="dot" aria-label="未连接"></span>
+    </header>
+
+    <section class="card" aria-labelledby="connectionTitle">
+      <h2 id="connectionTitle">本机连接</h2>
+      <label>服务地址<input id="host" value="127.0.0.1:3000" autocomplete="off"></label>
+      <button id="connect" class="primary" type="button">连接</button>
+      <p id="connectionStatus" class="status" role="status">尚未连接；仅允许 127.0.0.1。</p>
+    </section>
+
+    <section class="card" aria-labelledby="sourceTitle">
+      <h2 id="sourceTitle">画布来源</h2>
+      <label>项目 ID<input id="projectId" placeholder="project-id" autocomplete="off"></label>
+      <label>来源节点 ID<input id="sourceNodeId" placeholder="source-node-id" autocomplete="off"></label>
+      <label>来源媒体 ID<input id="sourceMediaId" placeholder="project-media-id" autocomplete="off"></label>
+      <button id="send" class="primary" type="button" disabled>发送到 Photoshop</button>
+      <p id="requestStatus" class="status" role="status">从画布图片节点点“发送到 PS”会自动填充；这里也可手动创建回退请求。</p>
+    </section>
+
+    <section class="card" aria-labelledby="returnTitle">
+      <h2 id="returnTitle">返回当前项目</h2>
+      <label>返回范围
+        <select id="returnScope">
+          <option value="composite">当前合成图</option>
+          <option value="layer">当前图层</option>
+          <option value="selection">当前选区</option>
+        </select>
+      </label>
+      <label>显示名称<input id="returnName" value="photoshop-edit.png" autocomplete="off"></label>
+      <button id="return" class="primary" type="button" disabled>从 Photoshop 返回</button>
+      <p id="returnStatus" class="status" role="status">先发送来源图，再返回当前图层、选区或合成图。</p>
+    </section>
+
+    <footer><span id="roundTripState">无活动往返</span><button id="refresh" type="button">刷新状态</button></footer>
+  </main>
+  <script src="js/state.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/ps.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
