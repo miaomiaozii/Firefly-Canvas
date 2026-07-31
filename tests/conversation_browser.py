@@ -561,12 +561,21 @@ def load_production_app(root: Path, store: ProjectStore):
     spec = importlib.util.spec_from_file_location(module_name, ROOT / "main.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot create an isolated production app module")
+    previous_main_module = os.environ.get("FIREFLY_MAIN_MODULE")
+    os.environ["FIREFLY_MAIN_MODULE"] = module_name
+    for _name in list(sys.modules):
+        if _name.startswith("app.") or _name in ("app", "main"):
+            sys.modules.pop(_name, None)
     production_main = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = production_main
     try:
         spec.loader.exec_module(production_main)
     finally:
         sys.modules.pop(module_name, None)
+        if previous_main_module is None:
+            os.environ.pop("FIREFLY_MAIN_MODULE", None)
+        else:
+            os.environ["FIREFLY_MAIN_MODULE"] = previous_main_module
     previous_store = production_main.FIREFLY_PROJECT_STORE
     production_main.FIREFLY_PROJECT_STORE = store
     if previous_store is not None and previous_store is not store:

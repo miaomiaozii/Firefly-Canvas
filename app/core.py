@@ -4,7 +4,7 @@ import sys as _sys
 import os as _os
 
 def _app_main():
-    _m = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main')
+    _m = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules.get('__main__')
     if _m is None:
         import main as _m
     return _m

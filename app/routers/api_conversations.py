@@ -2,7 +2,7 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
-_app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', 'main'), None) or _sys.modules['main']
+_app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import asyncio
 import os
 import json
