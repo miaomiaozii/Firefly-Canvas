@@ -11,7 +11,25 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 SPEC = importlib.util.spec_from_file_location("infinite_canvas_main", ROOT / "main.py")
 APP = importlib.util.module_from_spec(SPEC)
+sys.modules["infinite_canvas_main"] = APP
 SPEC.loader.exec_module(APP)
+
+# The exec'd module must not linger in sys.modules nor leave FIREFLY_MAIN_MODULE
+# set: otherwise later `import main` (same process) would bind routers to this
+# stale module. Routers already captured their _app_main reference at exec time.
+for _m in ("infinite_canvas_main",):
+    sys.modules.pop(_m, None)
+    for _k in list(sys.modules):
+        if _k.startswith(_m + "."):
+            sys.modules.pop(_k, None)
+import os as _os
+_os.environ.pop("FIREFLY_MAIN_MODULE", None)
+# restore services binding to the real main module if it was already imported
+try:
+    import app.services as _services
+    _services._bind_main(sys.modules["main"])
+except KeyError:
+    pass
 
 
 class FakeResponse:
