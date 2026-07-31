@@ -62,6 +62,21 @@ class FakeAsyncClient:
 
 
 class BananaOutpaintRequestTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            import app.services as _services
+            self._services = _services
+            self._services._bind_main(APP)
+        except Exception:
+            self._services = None
+
+    def tearDown(self):
+        if getattr(self, "_services", None) is not None:
+            try:
+                self._services._bind_main(sys.modules["main"])
+            except KeyError:
+                pass
+
     def test_openai_compatible_banana_edit_sends_supported_aspect_ratio(self):
         provider = {
             "id": "custom-api",
