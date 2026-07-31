@@ -1,0 +1,40 @@
+{
+  "active_library_id": "system",
+  "libraries": [
+    {
+      "id": "system",
+      "name": "系统提示词库",
+      "type": "prompt",
+      "readonly": false,
+      "system": true,
+      "categories": [
+        {
+          "id": "view",
+          "name": "视角"
+        },
+        {
+          "id": "storyboard",
+          "name": "分镜"
+        },
+        {
+          "id": "character",
+          "name": "角色"
+        },
+        {
+          "id": "product",
+          "name": "产品"
+        },
+        {
+          "id": "lighting",
+          "name": "光影"
+        },
+        {
+          "id": "custom",
+          "name": "我的"
+        }
+      ],
+      "items": []
+    }
+  ],
+  "updated_at": 1785522768793
+}
