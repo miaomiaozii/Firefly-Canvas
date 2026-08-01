@@ -257,7 +257,7 @@ _DOUBLE_EXT_MEDIA = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', 
 _AGENT_IMAGE_PARAM_SCHEMA: Dict[str, Tuple[type, ...]] = {'size': (str,), 'width': (int,), 'height': (int,), 'aspect_ratio': (str,), 'resolution': (str,), 'quality': (str,), 'model': (str,), 'provider_id': (str,), 'seed': (int,), 'prompt': (str,), 'media_type': (str,), 'n': (int,), 'reference_asset_ids': (list,)}
 _AGENT_VIDEO_PARAM_SCHEMA: Dict[str, Tuple[type, ...]] = {**_AGENT_IMAGE_PARAM_SCHEMA, 'duration': (int,), 'enhance_prompt': (bool,), 'enable_upsample': (bool,), 'watermark': (bool,), 'camera_fixed': (bool,), 'return_last_frame': (bool,), 'generate_audio': (bool,)}
 _AGENT_PROMPT_PARAM_SCHEMA: Dict[str, Tuple[type, ...]] = {'prompt': (str,), 'media_type': (str,), 'n': (int,), 'model': (str,), 'style': (str,), 'format': (str,), 'language': (str,), 'reference_asset_ids': (list,)}
-_AGENT_TASK_INPUT_KEYS = {'kind', 'media_type', 'type', 'count', 'quantity', 'n', 'params', 'parameters', 'prompt', 'model_type', 'modelType', 'model', 'reference_asset_ids', 'references', 'index', 'task_id', 'plan_id', 'result_node_id', 'status', 'created_at', 'updated_at', 'started_at', 'completed_at', 'error', 'outputs', 'result', 'prompt_output'}
+_AGENT_TASK_INPUT_KEYS = {'kind', 'media_type', 'type', 'count', 'quantity', 'n', 'params', 'parameters', 'prompt', 'model_type', 'modelType', 'model', 'reference_asset_ids', 'references', 'index', 'task_id', 'plan_id', 'result_node_id', 'status', 'created_at', 'updated_at', 'started_at', 'completed_at', 'error', 'outputs', 'result', 'prompt_output', 'dependencies'}
 _AGENT_FORBIDDEN_VALUE_TOKENS = ('delete', 'global_settings', 'global-setting', 'photoshop', 'comfyui', 'comfy', 'local_runtime', 'local-runtime', 'filesystem', 'project_library', 'workspace', 'rm -rf', 'rmrf', 'api_key', 'apikey', 'secret', 'password', 'bearer')
 IMAGE_PARAM_RATIOS = [{'value': '1:1', 'label': '1:1'}, {'value': '3:4', 'label': '3:4'}, {'value': '4:3', 'label': '4:3'}, {'value': '16:9', 'label': '16:9'}, {'value': '9:16', 'label': '9:16'}, {'value': '2:3', 'label': '2:3'}, {'value': '3:2', 'label': '3:2'}]
 IMAGE_PARAM_RESOLUTIONS = [{'value': '1k', 'label': '1K'}, {'value': '2k', 'label': '2K'}, {'value': '4k', 'label': '4K'}]
@@ -5202,6 +5202,15 @@ def _agent_normalize_task(raw: Dict[str, Any], index: int, *, goal: str, inputs:
     params.setdefault('prompt', prompt)
     params['media_type'] = kind
     params['n'] = count
+    dependencies = raw.get('dependencies')
+    if dependencies is not None:
+        if not isinstance(dependencies, list) or not all(isinstance(d, int) and not isinstance(d, bool) for d in dependencies):
+            raise HTTPException(status_code=400, detail='Agent 任务依赖必须是任务序号数组')
+        if any((d < 0 or d >= index for d in dependencies)):
+            raise HTTPException(status_code=400, detail='Agent 任务依赖只能引用更早的任务序号')
+        if index in dependencies:
+            raise HTTPException(status_code=400, detail='Agent 任务不能依赖自身')
+        dependencies = sorted(set(dependencies))
     model_type = str(raw.get('model_type') or raw.get('modelType') or raw.get('model') or params.get('model') or ('agent-prompt-node' if kind == 'prompt' else 'online-image' if kind == 'image' else 'online-video')).strip()[:160]
     if not model_type:
         model_type = 'agent-prompt-node' if kind == 'prompt' else 'online-image' if kind == 'image' else 'online-video'
@@ -5237,10 +5246,10 @@ def _agent_normalize_task(raw: Dict[str, Any], index: int, *, goal: str, inputs:
     params['reference_asset_ids'] = [str(item['asset_id']) for item in references]
     if kind == 'video':
         params.setdefault('duration', 5)
-    return {'index': index, 'kind': kind, 'model_type': model_type, 'count': count, 'prompt': prompt, 'params': params, 'references': copy.deepcopy(references), 'reference_asset_ids': [str(item['asset_id']) for item in references]}
+    return {'index': index, 'kind': kind, 'model_type': model_type, 'count': count, 'prompt': prompt, 'params': params, 'references': copy.deepcopy(references), 'reference_asset_ids': [str(item['asset_id']) for item in references], 'dependencies': dependencies}
 
 def _agent_plan_hash(plan: Mapping[str, Any]) -> str:
-    value = {'goal': plan.get('goal'), 'inputs': plan.get('inputs'), 'tasks': [{**{key: copy.deepcopy(item.get(key)) for key in ('task_id', 'result_node_id', 'kind', 'model_type', 'count', 'prompt', 'params', 'references', 'reference_asset_ids')}} for item in plan.get('tasks') or [] if isinstance(item, dict)]}
+    value = {'goal': plan.get('goal'), 'inputs': plan.get('inputs'), 'tasks': [{**{key: copy.deepcopy(item.get(key)) for key in ('task_id', 'result_node_id', 'kind', 'model_type', 'count', 'prompt', 'params', 'references', 'reference_asset_ids', 'dependencies')}} for item in plan.get('tasks') or [] if isinstance(item, dict)]}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 def _agent_task_canonical(task: Mapping[str, Any]) -> Dict[str, Any]:

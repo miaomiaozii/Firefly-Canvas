@@ -26,6 +26,76 @@ async def _agent_call_adapter(task_request: Dict[str, Any], kind: str) -> Any:
             raise RuntimeError('Agent 在线适配器超时，任务已安全失败') from exc
     return result
 
+def _agent_dispatch_dependents(project_id: str, agent_id: str, execution_id: str) -> None:
+    """Submit queued tasks whose dependencies have all succeeded (cascade).
+
+    Downstream tasks inherit the first media asset of each satisfied dependency
+    as an additional reference, so chained generations consume upstream output.
+    """
+    plan = None
+    try:
+        opened = _svc._main('project_store_call')('open_project', project_id)
+        agent_node = next((item for item in (opened.get('canvas') or {}).get('nodes') or [] if str(item.get('id') or '') == str(agent_id)), None)
+        plan = agent_node.get('agent_plan') if isinstance(agent_node, dict) else None
+    except Exception:
+        plan = None
+    dep_outputs: Dict[str, List[Dict[str, Any]]] = {}
+    if isinstance(plan, dict):
+        for item in plan.get('tasks') or []:
+            if not isinstance(item, dict):
+                continue
+            outputs = item.get('outputs') or []
+            if isinstance(outputs, list):
+                media = [m for m in outputs if isinstance(m, dict) and m.get('asset_id')]
+                idx = item.get('index')
+                dep_outputs[str(idx) if idx is not None else str(item.get('task_id') or '')] = media
+                dep_outputs[str(item.get('task_id') or '')] = media
+    with PROJECT_AGENT_TASKS_LOCK:
+        by_task_id = dict(PROJECT_AGENT_TASKS)
+    ready = []
+    for task_id, current in by_task_id.items():
+        if str(current.get('project_id') or '') != str(project_id) or str(current.get('agent_id') or '') != str(agent_id) or str(current.get('execution_id') or '') != str(execution_id):
+            continue
+        if str(current.get('status') or '') != 'queued':
+            continue
+        snapshot = current.get('task_snapshot') or {}
+        deps = snapshot.get('dependencies') or []
+        if all(dep_outputs.get(str(dep)) for dep in deps):
+            ready.append(snapshot)
+    if isinstance(plan, dict):
+        for item in plan.get('tasks') or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get('status') or '') not in {'planned', 'queued'}:
+                continue
+            deps = item.get('dependencies') or []
+            if not deps:
+                continue
+            if not all(dep_outputs.get(str(dep)) for dep in deps):
+                continue
+            if str(item.get('task_id') or '') in by_task_id:
+                continue
+            snapshot = copy.deepcopy(item)
+            snapshot['status'] = 'queued'
+            ready.append(snapshot)
+        for snapshot in ready:
+            inherited = [media for dep in (snapshot.get('dependencies') or []) for media in (dep_outputs.get(str(dep)) or [])]
+            if inherited:
+                snapshot = copy.deepcopy(snapshot)
+                existing = snapshot.get('references') or []
+                known_ids = {str(item.get('asset_id') or '') for item in existing if isinstance(item, dict)}
+                for media in inherited:
+                    asset_id = str(media.get('asset_id') or '')
+                    if asset_id and asset_id not in known_ids:
+                        existing = [*existing, {'asset_id': asset_id, 'kind': 'image', 'name': str(media.get('name') or 'generated')}]
+                        known_ids.add(asset_id)
+                snapshot['references'] = existing
+            _agent_submit_task(snapshot, project_id, agent_id, execution_id)
+
+
+
+
+
 def _agent_mark_task_terminal(project_id: str, agent_id: str, plan_id: str, execution_id: str, task_id: str, status: str, **fields: Any) -> None:
     """Merge a task result and close the execution when every task is terminal."""
     plan = _svc._main('_agent_update_plan')(project_id, agent_id, plan_id, task_updates={task_id: {'status': status, **copy.deepcopy(fields)}})
@@ -40,6 +110,8 @@ def _agent_mark_task_terminal(project_id: str, agent_id: str, plan_id: str, exec
         plan_item = next((candidate for candidate in plan.get('tasks') or [] if str(candidate.get('task_id') or '') == item_id), {})
         task_statuses.append({'task_id': item_id, 'result_node_id': str(plan_item.get('result_node_id') or item.get('result_node_id') or ''), 'kind': str(plan_item.get('kind') or item.get('kind') or ''), 'status': str(plan_item.get('status') or 'queued'), **({'error': str(plan_item.get('error') or '')[:1000]} if plan_item.get('error') else {})})
     terminal = all((item.get('status') in {'succeeded', 'failed', 'uncertain', 'cancelled'} for item in task_statuses))
+    if str(status) in {'succeeded', 'failed', 'uncertain', 'cancelled'}:
+        _agent_dispatch_dependents(project_id, agent_id, execution_id)
     all_succeeded = terminal and all((item.get('status') == 'succeeded' for item in task_statuses))
     all_cancelled = terminal and all((item.get('status') == 'cancelled' for item in task_statuses))
     execution_status = 'completed' if all_succeeded else 'cancelled' if all_cancelled else 'failed' if terminal else 'running'
@@ -638,7 +710,10 @@ def _agent_admit_execution_sync(project_id: str, node_id: str, payload_data: Map
             raise
         except (ProjectStoreError, InvalidMutation, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(tasks)}
+        print('ADMIT tasks deps:', [(t.get('index'), t.get('dependencies')) for t in tasks], flush=True)
+        dispatchable = [task for task in tasks if not (task.get('dependencies') or [])]
+        pending_deps = [task for task in tasks if task.get('dependencies')]
+        return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(dispatchable)}
 
 def project_conversation_media_budget(project_id: str, references: List[Dict[str, Any]]) -> None:
     """Validate the complete provider-consumed media set before reading any bytes."""

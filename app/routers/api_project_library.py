@@ -413,6 +413,15 @@ def _agent_normalize_task(raw: Dict[str, Any], index: int, *, goal: str, inputs:
     params.setdefault('prompt', prompt)
     params['media_type'] = kind
     params['n'] = count
+    dependencies = raw.get('dependencies')
+    if dependencies is not None:
+        if not isinstance(dependencies, list) or not all(isinstance(d, int) and not isinstance(d, bool) for d in dependencies):
+            raise HTTPException(status_code=400, detail='Agent 任务依赖必须是任务序号数组')
+        if any((d < 0 or d >= index for d in dependencies)):
+            raise HTTPException(status_code=400, detail='Agent 任务依赖只能引用更早的任务序号')
+        if index in dependencies:
+            raise HTTPException(status_code=400, detail='Agent 任务不能依赖自身')
+        dependencies = sorted(set(dependencies))
     model_type = str(raw.get('model_type') or raw.get('modelType') or raw.get('model') or params.get('model') or ('agent-prompt-node' if kind == 'prompt' else 'online-image' if kind == 'image' else 'online-video')).strip()[:160]
     if not model_type:
         model_type = 'agent-prompt-node' if kind == 'prompt' else 'online-image' if kind == 'image' else 'online-video'
@@ -448,7 +457,7 @@ def _agent_normalize_task(raw: Dict[str, Any], index: int, *, goal: str, inputs:
     params['reference_asset_ids'] = [str(item['asset_id']) for item in references]
     if kind == 'video':
         params.setdefault('duration', 5)
-    return {'index': index, 'kind': kind, 'model_type': model_type, 'count': count, 'prompt': prompt, 'params': params, 'references': copy.deepcopy(references), 'reference_asset_ids': [str(item['asset_id']) for item in references]}
+    return {'index': index, 'kind': kind, 'model_type': model_type, 'count': count, 'prompt': prompt, 'params': params, 'references': copy.deepcopy(references), 'reference_asset_ids': [str(item['asset_id']) for item in references], 'dependencies': dependencies}
 
 def _agent_plan_hash(plan: Mapping[str, Any]) -> str:
     value = {'goal': plan.get('goal'), 'inputs': plan.get('inputs'), 'tasks': [{**{key: copy.deepcopy(item.get(key)) for key in ('task_id', 'result_node_id', 'kind', 'model_type', 'count', 'prompt', 'params', 'references', 'reference_asset_ids')}} for item in plan.get('tasks') or [] if isinstance(item, dict)]}
@@ -784,7 +793,8 @@ def _agent_admit_execution_sync(project_id: str, node_id: str, payload_data: Map
             raise
         except (ProjectStoreError, InvalidMutation, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(tasks)}
+        dispatchable = [task for task in tasks if not (task.get('dependencies') or [])]
+        return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(dispatchable)}
 
 @router.post('/api/project-library/{project_id}/agent/{node_id}/execute')
 @router.post('/api/project-library/{project_id}/agent/{node_id}/confirm')

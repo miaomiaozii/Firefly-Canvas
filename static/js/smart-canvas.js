@@ -7970,6 +7970,13 @@ function agentNodeBodyHtml(node){
                 <button type="button" class="agent-node-action agent-node-draft-remove" data-agent-draft-remove="${index}" title="删除此任务">移除</button>
             </div>
             <input class="agent-node-control agent-node-draft-prompt" data-agent-draft-prompt="${index}" placeholder="此任务的提示词（可选，留空由 Agent 按目标生成）" value="${escapeAttr(item.prompt || '')}">
+            <div class="agent-node-draft-deps agent-node-control">
+                <label>依赖任务</label>
+                <select data-agent-draft-deps="${index}" aria-label="Agent 任务依赖">
+                    <option value="" ${Array.isArray(item.dependencies) && item.dependencies.length ? '' : 'selected'}>无依赖</option>
+                    ${Array.from({length: index}, (_, prev) => `<option value="${prev}" ${Array.isArray(item.dependencies) && item.dependencies.includes(prev) ? 'selected' : ''}>任务 ${prev}</option>`).join('')}
+                </select>
+            </div>
         </div>`).join('')}
         </div>
         <div class="agent-node-controls agent-node-control">
@@ -9629,10 +9636,10 @@ async function planAgentNode(node, goalEl, kindEl, countEl, button){
         ? node.agentTaskDrafts.map(item => {
             const itemKind = item?.kind === 'video' ? 'video' : item?.kind === 'prompt' ? 'prompt' : 'image';
             const itemCount = Math.max(1, Math.min(itemKind === 'prompt' ? 1 : itemKind === 'video' ? 4 : 8, Number(item?.count) || 1));
-            return {kind:itemKind, count:itemCount, params:{...(item?.params || {})}, prompt:String(item?.prompt || '').trim()};
+            return {kind:itemKind, count:itemCount, params:{...(item?.params || {})}, prompt:String(item?.prompt || '').trim(), ...(Array.isArray(item?.dependencies) && item.dependencies.length ? {dependencies:item.dependencies} : {})};
         }).slice(0, 8)
         : [{kind, count, params:{}, prompt:''}];
-    const taskPayloads = drafts.map(item => ({kind:item.kind, count:item.kind === 'prompt' ? 1 : item.count, params:{...(item.params || {}), ...(item.prompt ? {prompt:item.prompt} : {})}}));
+    const taskPayloads = drafts.map(item => ({kind:item.kind, count:item.kind === 'prompt' ? 1 : item.count, params:{...(item.params || {}), ...(item.prompt ? {prompt:item.prompt} : {})}, ...(Array.isArray(item.dependencies) && item.dependencies.length ? {dependencies:item.dependencies} : {})}));
     node.agentPlanning = true;
     if(button) button.disabled = true;
     render();
@@ -9739,6 +9746,20 @@ function bindAgentNodeControls(el, node){
             scheduleSave();
         });
     });
+    el.querySelectorAll('[data-agent-draft-deps]').forEach(depsEl => {
+        depsEl.addEventListener('change', event => {
+            const index = Number(depsEl.dataset.agentDraftDeps ?? 0);
+            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
+            const raw = String(event.target.value || '').trim();
+            item.dependencies = raw === '' ? undefined : [Number(raw)];
+            drafts[index] = item;
+            node.agentTaskDrafts = drafts;
+            if(node.agentTaskDraft) node.agentTaskDraft = item;
+            node.agentPlanRequestId = '';
+            scheduleSave();
+        });
+    });
     el.querySelector('[data-agent-draft-add]')?.addEventListener('click', event => {
         event.preventDefault();
         const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
@@ -9756,6 +9777,11 @@ function bindAgentNodeControls(el, node){
             const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
             if(drafts.length <= 1){ toast('至少保留一个任务'); return; }
             drafts.splice(index, 1);
+            drafts.forEach((item, i) => {
+                if(!Array.isArray(item.dependencies) || !item.dependencies.length) return;
+                const remapped = item.dependencies.map(dep => dep === index ? null : dep > index ? dep - 1 : dep).filter(dep => dep !== null && dep < i);
+                if(remapped.length) item.dependencies = remapped; else delete item.dependencies;
+            });
             node.agentTaskDrafts = drafts;
             node.agentPlanRequestId = '';
             scheduleSave();

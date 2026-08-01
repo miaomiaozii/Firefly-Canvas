@@ -491,6 +491,91 @@ class ProjectAgentContractTests(unittest.TestCase):
             self.assertIn("多任务提示词甲", str(prompt_nodes[0].get("text") or ""))
             generated.assert_awaited_once()
 
+    def test_dependent_task_runs_after_its_dependency_and_inherits_output_media(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        requests_seen = []
+        adapter_calls = {"count": 0}
+
+        async def adapter(request):
+            adapter_calls["count"] += 1
+            requests_seen.append(request)
+            if adapter_calls["count"] == 1:
+                return [tiny_png()]
+            stream = io.BytesIO()
+            Image.new("RGB", (4, 3), (200, 10, 10)).save(stream, format="PNG")
+            different = {"type": "b64", "value": base64.b64encode(stream.getvalue()).decode("ascii"), "mime_type": "image/png", "name": "downstream.png"}
+            return [different]
+
+        with patch.object(main, "agent_image_adapter", adapter):
+            planned = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[
+                    {"kind": "image", "count": 1, "params": {"prompt": "上游生成"}},
+                    {"kind": "image", "count": 1, "params": {"prompt": "下游生成"}, "dependencies": [0]},
+                ]),
+            )
+            self.assertEqual(planned.status_code, 200, planned.text)
+            plan = planned.json()["plan"]
+            self.assertEqual(plan["tasks"][1].get("dependencies"), [0])
+            execute = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "execution_id": "dependency-execution"},
+            )
+            self.assertEqual(execute.status_code, 202, execute.text)
+            first = self.wait(execute.json()["tasks"][0]["task_id"])
+            self.assertEqual(first["status"], "succeeded", first)
+            second = self.wait(execute.json()["tasks"][1]["task_id"])
+            self.assertEqual(second["status"], "succeeded", second)
+            self.assertEqual(adapter_calls["count"], 2)
+            self.assertEqual(len(requests_seen), 2)
+            downstream_request = requests_seen[1]
+            inherited = downstream_request.get("references") or []
+            self.assertTrue(any(item.get("asset_id") for item in inherited), downstream_request)
+            opened = self.store.open_project(self.project["id"])["canvas"]
+            tasks = [node for node in opened["nodes"] if node.get("type") == "agent-task"]
+            self.assertEqual(len(tasks), 2)
+            self.assertEqual(opened["logs"][-1]["type"], "agent-image")
+            plan_node = next((node for node in opened["nodes"] if node.get("id") == "agent-1"), None)
+            self.assertEqual(plan_node.get("agent_plan", {}).get("status"), "completed", plan_node)
+
+    def test_dependency_on_failed_task_never_dispatches_downstream(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        state = {"fail": True}
+
+        async def flaky(*args, **kwargs):
+            if state["fail"]:
+                state["fail"] = False
+                raise RuntimeError("boom")
+            return tiny_png(), {}
+
+        generated = AsyncMock(side_effect=flaky)
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", generated):
+            planned = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[
+                    {"kind": "image", "count": 1, "params": {"prompt": "会失败"}},
+                    {"kind": "image", "count": 1, "params": {"prompt": "依赖失败者"}, "dependencies": [0]},
+                ]),
+            )
+            plan = planned.json()["plan"]
+            execute = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "execution_id": "dependency-fail-execution"},
+            )
+            print('EXEC_RESP', execute.json(), flush=True)
+            print('EXEC_TASKS_DEPS', [(t.get('index'), t.get('dependencies')) for t in (planned.json()['plan']['tasks'] or [])], flush=True)
+            self.assertEqual(execute.status_code, 202, execute.text)
+            first = self.wait(execute.json()["tasks"][0]["task_id"])
+            self.assertEqual(first["status"], "failed", first)
+            time.sleep(0.6)
+            second = self.client.get(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{execute.json()['tasks'][1]['task_id']}")
+            self.assertEqual(second.status_code, 200, second.text)
+            self.assertEqual(second.json().get("status"), "queued", second.json())
+            self.assertEqual(generated.await_count, 1)
+
     def test_prompt_task_creates_unconnected_prompt_node_without_adapter(self):
         self.project, _image = self.seed()
         revision = self.store.canvas(self.project["id"])["revision"]
