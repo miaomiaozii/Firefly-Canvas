@@ -39,9 +39,11 @@ def _agent_mark_task_terminal(project_id: str, agent_id: str, plan_id: str, exec
         item_id = str(item.get('task_id') or '')
         plan_item = next((candidate for candidate in plan.get('tasks') or [] if str(candidate.get('task_id') or '') == item_id), {})
         task_statuses.append({'task_id': item_id, 'result_node_id': str(plan_item.get('result_node_id') or item.get('result_node_id') or ''), 'kind': str(plan_item.get('kind') or item.get('kind') or ''), 'status': str(plan_item.get('status') or 'queued'), **({'error': str(plan_item.get('error') or '')[:1000]} if plan_item.get('error') else {})})
-    terminal = all((item.get('status') in {'succeeded', 'failed', 'uncertain'} for item in task_statuses))
-    execution_status = 'completed' if terminal and all((item.get('status') == 'succeeded' for item in task_statuses)) else 'failed' if terminal else 'running'
-    _svc._main('_agent_update_plan')(project_id, agent_id, plan_id, execution_update={'execution_id': execution_id, 'status': execution_status, 'updated_at': _svc._main('now_ms')(), 'tasks': task_statuses}, status='completed' if terminal and all((item.get('status') == 'succeeded' for item in task_statuses)) else 'failed' if terminal else 'running')
+    terminal = all((item.get('status') in {'succeeded', 'failed', 'uncertain', 'cancelled'} for item in task_statuses))
+    all_succeeded = terminal and all((item.get('status') == 'succeeded' for item in task_statuses))
+    all_cancelled = terminal and all((item.get('status') == 'cancelled' for item in task_statuses))
+    execution_status = 'completed' if all_succeeded else 'cancelled' if all_cancelled else 'failed' if terminal else 'running'
+    _svc._main('_agent_update_plan')(project_id, agent_id, plan_id, execution_update={'execution_id': execution_id, 'status': execution_status, 'updated_at': _svc._main('now_ms')(), 'tasks': task_statuses}, status=execution_status)
 
 def _agent_submit_task(task: Mapping[str, Any], project_id: str, agent_id: str, execution_id: str) -> Optional[Future]:
     """Register and submit one durable task exactly once per process."""
@@ -55,7 +57,7 @@ def _agent_submit_task(task: Mapping[str, Any], project_id: str, agent_id: str, 
         existing_future = PROJECT_AGENT_FUTURES.get(task_id)
         if task_id in PROJECT_AGENT_RUNNING_IDS or (existing_future is not None and (not existing_future.done())):
             return existing_future
-        PROJECT_AGENT_TASKS[task_id] = {'id': task_id, 'task_id': task_id, 'project_id': str(project_id), 'agent_id': str(agent_id), 'execution_id': str(execution_id), 'status': 'queued', 'created_at': int(task.get('created_at') or _svc._main('now_ms')()), 'updated_at': time.time(), 'result': None, 'error': ''}
+        PROJECT_AGENT_TASKS[task_id] = {'id': task_id, 'task_id': task_id, 'project_id': str(project_id), 'agent_id': str(agent_id), 'execution_id': str(execution_id), 'status': 'queued', 'created_at': int(task.get('created_at') or _svc._main('now_ms')()), 'updated_at': time.time(), 'result': None, 'error': '', 'task_snapshot': copy.deepcopy(dict(task))}
     future = ensure_project_image_generation_executor().submit(asyncio.run, _svc._main('run_project_agent_task')(task_id, project_id, agent_id, copy.deepcopy(dict(task)), execution_id))
     with PROJECT_AGENT_TASKS_LOCK:
         PROJECT_AGENT_FUTURES[task_id] = future
@@ -72,6 +74,57 @@ def _agent_submit_task(task: Mapping[str, Any], project_id: str, agent_id: str, 
                     PROJECT_AGENT_TASKS.pop(old_id, None)
     future.add_done_callback(_forget)
     return future
+
+
+def project_agent_cancel_task(project_id: str, agent_id: str, task_id: str) -> bool:
+    """Cancel a queued or running Agent task; returns False when already terminal."""
+    task_id = str(task_id)
+    with PROJECT_AGENT_TASKS_LOCK:
+        current = PROJECT_AGENT_TASKS.get(task_id)
+        if not current:
+            return False
+        if str(current.get('project_id') or '') != str(project_id):
+            return False
+        if str(current.get('agent_id') or '') != str(agent_id):
+            return False
+        if current.get('status') in {'succeeded', 'failed', 'cancelled', 'uncertain'}:
+            return False
+        current['status'] = 'cancelled'
+        current['updated_at'] = time.time()
+        current['error'] = '任务已取消'
+    return True
+
+
+def project_agent_retry_task(project_id: str, agent_id: str, task_id: str) -> bool:
+    """Reset a failed task to queued so the agent execution loop may re-run it."""
+    task_id = str(task_id)
+    with PROJECT_AGENT_TASKS_LOCK:
+        current = PROJECT_AGENT_TASKS.get(task_id)
+        if not current:
+            return False
+        if str(current.get('project_id') or '') != str(project_id):
+            return False
+        if str(current.get('agent_id') or '') != str(agent_id):
+            return False
+        if current.get('status') != 'failed':
+            return False
+        current['status'] = 'queued'
+        current['updated_at'] = time.time()
+        current['error'] = ''
+        future = PROJECT_AGENT_FUTURES.get(task_id)
+        if future is not None and not future.done():
+            return True
+    snapshot = current.get('task_snapshot') if isinstance(current.get('task_snapshot'), dict) else dict(current)
+    _agent_submit_task(snapshot, project_id, agent_id, str(current.get('execution_id') or ''))
+    return True
+
+
+def project_agent_is_cancelled(task_id: str) -> bool:
+    """True when the task was cancelled while it was queued or running."""
+    with PROJECT_AGENT_TASKS_LOCK:
+        current = PROJECT_AGENT_TASKS.get(str(task_id))
+        return bool(current and current.get('status') == 'cancelled')
+
 
 async def project_conversation_adapter(request: Dict[str, Any]) -> Dict[str, Any]:
     """Run one project conversation turn through the injectable chat seam.
@@ -343,6 +396,12 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
             with PROJECT_AGENT_TASKS_LOCK:
                 PROJECT_AGENT_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'updated_at': time.time()})
             return
+        if project_agent_is_cancelled(task_id):
+            with PROJECT_AGENT_TASKS_LOCK:
+                PROJECT_AGENT_TASKS[task_id].update({'status': 'cancelled', 'updated_at': time.time(), 'error': '任务已取消'})
+            _svc._main('_agent_set_task_node')(project_id, task_id, status='cancelled', completed_at=_svc._main('now_ms')(), result=None, error='任务已取消')
+            _agent_mark_task_terminal(project_id, agent_id, str(task.get('plan_id') or ''), execution_id, task_id, 'cancelled', completed_at=_svc._main('now_ms')())
+            return
         raw_result = await _agent_call_adapter(request, kind)
         candidates = _agent_normalize_candidates(raw_result, kind)
         expected_count = int(task.get('count') or 1)
@@ -361,6 +420,19 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
                 if str(archived.get('asset_id') or '') in {str(item.get('asset_id') or '') for item in task.get('references') or []}:
                     raise RuntimeError('Agent 生成内容与参考原件重复，不能把输入原件作为结果')
                 generated_items.append(archived)
+        if project_agent_is_cancelled(task_id):
+            for generated in list(generated_items):
+                asset_id = str(generated.get('asset_id') or '') if isinstance(generated, dict) else ''
+                if asset_id:
+                    try:
+                        _svc._main('project_store_call')('delete_media_if_unreferenced', project_id, asset_id)
+                    except Exception:
+                        pass
+            with PROJECT_AGENT_TASKS_LOCK:
+                PROJECT_AGENT_TASKS[task_id].update({'status': 'cancelled', 'updated_at': time.time(), 'error': '任务已取消'})
+            _svc._main('_agent_set_task_node')(project_id, task_id, status='cancelled', completed_at=_svc._main('now_ms')(), result=None, error='任务已取消')
+            _agent_mark_task_terminal(project_id, agent_id, str(task.get('plan_id') or ''), execution_id, task_id, 'cancelled', completed_at=_svc._main('now_ms')())
+            return
         completed_at = _svc._main('now_ms')()
         history_record = {'id': f'agent-generation-{task_id}', 'type': 'agent-prompt' if kind == 'prompt' else 'agent-image' if kind == 'image' else 'agent-video', 'status': 'succeeded', 'createdAt': started_at, 'completedAt': completed_at, 'runMs': max(0, completed_at - started_at), 'platform': 'Agent', 'model': str(task.get('model_type') or ''), 'parameters': copy.deepcopy(task.get('params') or {}), 'input_references': [_agent_history_output(project_id, item, str(item.get('kind') or 'image')) for item in task.get('references') or []], 'request': {'task_id': task_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id}, 'agent_id': agent_id, 'task_id': task_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id, 'prompt': str(task.get('prompt') or ''), 'created_at': started_at, 'completed_at': completed_at, 'model_type': str(task.get('model_type') or ''), 'params': copy.deepcopy(task.get('params') or {}), 'references': [{'asset_id': str(item.get('asset_id')), 'kind': str(item.get('kind') or '')} for item in task.get('references') or []], 'outputs': [_agent_history_output(project_id, item, kind) for item in generated_items], 'result_node_id': str(task.get('result_node_id') or f'{task_id}-result')}
         canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_media_generation', project_id, str(task.get('result_node_id') or f'{task_id}-result'), generated_items, history_record, media_kind=kind)

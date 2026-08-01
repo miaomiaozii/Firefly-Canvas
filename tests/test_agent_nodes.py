@@ -835,6 +835,104 @@ class ProjectAgentContractTests(unittest.TestCase):
         finally:
             release.set()
 
+    def test_cancel_stops_queued_task_and_marks_cancelled(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        generated = AsyncMock(return_value=(tiny_png(), {}))
+
+        async def slow(_request, *_args, **_kwargs):
+            await asyncio.sleep(4)
+            return (tiny_png(), {})
+
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", AsyncMock(side_effect=slow)):
+            plan = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[{"kind": "image", "count": 1, "params": {}}]),
+            ).json()["plan"]
+            response = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"], "execution_id": "cancel-execution"},
+            )
+            task_id = response.json()["tasks"][0]["task_id"]
+            cancelled = self.client.post(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{task_id}/cancel")
+            self.assertEqual(cancelled.status_code, 200, cancelled.text)
+            self.assertEqual(cancelled.json()["status"], "cancelled")
+            deadline = time.monotonic() + 6
+            terminal = None
+            while time.monotonic() < deadline:
+                terminal = self.client.get(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{task_id}")
+                if terminal.status_code == 200 and terminal.json().get("status") in {"cancelled", "succeeded", "failed"}:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(terminal)
+            self.assertEqual(terminal.json().get("status"), "cancelled", terminal.text)
+            plan_deadline = time.monotonic() + 8
+            plan_state = None
+            while time.monotonic() < plan_deadline:
+                plan_state = self.client.get(f"/api/project-library/{self.project['id']}/agent/agent-1/plan").json()["plan"]
+                if plan_state["status"] != "running":
+                    break
+                time.sleep(0.05)
+            self.assertEqual(plan_state["status"], "cancelled", plan_state)
+
+    def test_cancel_after_terminal_returns_conflict(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        generated = AsyncMock(return_value=(tiny_png(), {}))
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", generated):
+            plan = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[{"kind": "image", "count": 1, "params": {}}]),
+            ).json()["plan"]
+            response = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"], "execution_id": "cancel-terminal"},
+            )
+            task_id = response.json()["tasks"][0]["task_id"]
+            self.wait(task_id)
+            cancelled = self.client.post(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{task_id}/cancel")
+            self.assertEqual(cancelled.status_code, 409, cancelled.text)
+
+    def test_retry_re_runs_failed_task(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+
+        attempt_counter = {"n": 0}
+
+        async def fail_once(prompt, *_args, **_kwargs):
+            attempt_counter["n"] += 1
+            if attempt_counter["n"] == 1:
+                raise RuntimeError("第一次失败")
+            return (tiny_png(), {})
+
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", AsyncMock(side_effect=fail_once)):
+            plan = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[{"kind": "image", "count": 1, "params": {}}]),
+            ).json()["plan"]
+            response = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"], "execution_id": "retry-execution"},
+            )
+            task_id = response.json()["tasks"][0]["task_id"]
+            failed = self.wait(task_id)
+            self.assertEqual(failed["status"], "failed", failed)
+            retried = self.client.post(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{task_id}/retry")
+            self.assertEqual(retried.status_code, 200, retried.text)
+            self.assertEqual(retried.json()["status"], "queued")
+            deadline = time.monotonic() + 6
+            terminal = None
+            while time.monotonic() < deadline:
+                terminal = self.client.get(f"/api/project-library/{self.project['id']}/agent/agent-1/tasks/{task_id}")
+                if terminal.status_code == 200 and terminal.json().get("status") == "succeeded":
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(terminal)
+            self.assertEqual(terminal.json().get("status"), "succeeded", terminal.text)
+
 
 if __name__ == "__main__":
     unittest.main()
