@@ -656,20 +656,21 @@ def video_api_root(provider):
 def video_submit_url_candidates(provider, base_url):
     if str(provider.get('video_generation_endpoint') or '').strip():
         return [_svc.provider_endpoint_url(provider, 'video_generation_endpoint', '/v1/videos/generations')]
+    root = video_api_root(provider)
     if is_agnes_provider(provider):
-        return [f'{base_url}/v1/videos']
+        return [f'{root}/v1/videos']
     if is_lingjing_provider(provider):
-        return [f'{base_url}/v1/videos']
+        return [f'{root}/v1/videos']
     if is_apimart_provider(provider):
-        return [f'{base_url}/videos/generations' if base_url.endswith('/v1') else f'{base_url}/v1/videos/generations']
+        return [f'{root}/v1/videos/generations']
     if is_volcengine_provider(provider):
         parsed = urllib.parse.urlparse(base_url)
         if parsed.path and parsed.path.rstrip('/'):
             return [base_url]
         return [f'{base_url}/api/v3/contents/generations/tasks']
     if is_yuli_provider(provider):
-        return [f'{base_url}/v1/video/create']
-    return [f'{base_url}/v1/videos/generations', f'{base_url}/v2/videos/generations']
+        return [f'{root}/v1/video/create']
+    return [f'{root}/v1/videos/generations', f'{root}/v2/videos/generations']
 
 def reserve_project_media_import(project_id: str, source_key: str):
     with project_lifecycle_lock(project_id):

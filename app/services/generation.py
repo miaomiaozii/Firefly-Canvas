@@ -1109,7 +1109,9 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         response = None
 
         async def post_openai_edits(edit_files=None):
-            data = {'model': model, 'prompt': prompt, 'size': size}
+            data = {'model': model, 'prompt': prompt}
+            if not routed_image_params.get('aspect_ratio'):
+                data['size'] = size
             if routed_image_params:
                 data.update(routed_image_params)
             if quality:
@@ -1176,7 +1178,10 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             extra_body = {'response_format': 'url'}
             if image_refs:
                 extra_body['image'] = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
-            body = {'model': model, 'prompt': prompt, 'size': size, 'extra_body': extra_body}
+            body = {'model': model, 'prompt': prompt}
+            if not routed_image_params.get('aspect_ratio'):
+                body['size'] = size
+            body['extra_body'] = extra_body
             if routed_image_params:
                 body.update(routed_image_params)
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
@@ -1189,7 +1194,9 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 body['aspect_ratio'] = routed_image_params['aspect_ratio']
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
         elif is_gpt2 and (not image_refs) and (not mask_refs):
-            body = {'model': model, 'prompt': prompt, 'size': size}
+            body = {'model': model, 'prompt': prompt}
+            if not routed_image_params.get('aspect_ratio'):
+                body['size'] = size
             if routed_image_params:
                 body.update(routed_image_params)
             if quality:
@@ -1234,7 +1241,9 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                     raise HTTPException(status_code=502, detail=f'GPT-Image-2 编辑接口 /images/edits 调用失败：{edit_failed_text[:300] or edit_failed_status}。已停止自动重试，避免上游可能已扣费后再次请求。')
                 print(f'/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON')
                 image_payload = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
-                body = {'model': model, 'prompt': prompt, 'size': size, 'response_format': 'url', 'n': 1, 'image': image_payload}
+                body = {'model': model, 'prompt': prompt, 'response_format': 'url', 'n': 1, 'image': image_payload}
+                if not routed_image_params.get('aspect_ratio'):
+                    body['size'] = size
                 if routed_image_params:
                     body.update(routed_image_params)
                 if quality:
@@ -1243,7 +1252,11 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 if response.status_code >= 400 and images_api_unsupported(response):
                     raise HTTPException(status_code=502, detail=f'编辑接口 /images/edits 调用失败，且该平台不支持 /images/generations：{edit_failed_text[:300] or edit_failed_status}')
         else:
-            body = {'model': model, 'prompt': prompt, 'size': size, 'response_format': 'url', 'n': 1}
+            body = {'model': model, 'prompt': prompt}
+            if not routed_image_params.get('aspect_ratio'):
+                body['size'] = size
+            body['response_format'] = 'url'
+            body['n'] = 1
             if routed_image_params:
                 body.update(routed_image_params)
             if quality:

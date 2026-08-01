@@ -4136,7 +4136,8 @@ def gemini_supported_aspect_ratio(size, fallback='1:1'):
     return min(GEMINI_IMAGE_ASPECT_RATIOS, key=lambda item: abs(math.log(ratio / (item[0] / item[1]))))[2]
 
 def banana_image_request_params(size):
-    return {'aspect_ratio': gemini_supported_aspect_ratio(size)}
+    _, resolution = apimart_size_resolution(size)
+    return {'aspect_ratio': gemini_supported_aspect_ratio(size), 'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution}
 
 def image_provider_model_ids(provider):
     return {str(item or '').strip().lower() for item in (provider or {}).get('image_models') or [] if str(item or '').strip()}
@@ -4158,16 +4159,31 @@ def route_openai_image_request(provider, model, size):
     params = {}
     routed_model = requested_model
     if family:
-        params = banana_image_request_params(size)
         available = image_provider_model_ids(provider)
         _, resolution = apimart_size_resolution(size)
-        target_model = family if resolution == '1k' else f'{family}-{resolution}'
-        if not available or target_model in available:
-            routed_model = target_model
+        requested_variant = requested_model != family
+        params = {'aspect_ratio': gemini_supported_aspect_ratio(size)}
+        if requested_variant:
+            if requested_model.lower() in available:
+                routed_model = requested_model
+            else:
+                if family in available:
+                    params['image_size'] = resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution
+                    routed_model = family
+                else:
+                    routed_model = requested_model
         elif family in available:
+            params['image_size'] = resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution
             routed_model = family
-        elif requested_model.lower() not in available:
-            routed_model = target_model
+        else:
+            params['image_size'] = resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution
+            target_model = f'{family}-{resolution}'
+            if target_model in available:
+                routed_model = target_model
+            elif requested_model.lower() not in available:
+                routed_model = target_model
+            else:
+                routed_model = family
     elif looks_like_gemini_image_model(requested_model):
         params = banana_image_request_params(size)
     return {'requested_model': requested_model, 'model': routed_model, 'params': params, 'family': family or ('gemini-image' if params else '')}
