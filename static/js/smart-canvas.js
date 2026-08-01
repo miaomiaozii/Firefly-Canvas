@@ -106,10 +106,6 @@ let panState = null;
 let didPan = false;
 let portDragState = null;
 let connectionEraseState = null;
-let saveTimer = null;
-let autosaveCountdownTimer = null;
-let autoSaveDueAt = 0;
-let autosaveIntervalMinutes = 20;
 const DEBOUNCED_SAVE_MS = 3000;
 let debouncedSaveTimer = null;
 let contentDirty = false;
@@ -1276,12 +1272,12 @@ function persistActiveSmartSettings(){
 async function backToProjectList(){
     savePromptDraftForCurrent();
     if(canvas?.format === 'firefly-canvas-v1' || params.get('project_mode') === '1'){
-        clearTimeout(saveTimer);
-        saveTimer = null;
+        clearTimeout(debouncedSaveTimer);
+        debouncedSaveTimer = null;
         setProjectSaveState('saving', tr('smart.projectSaving'));
         while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
-        clearTimeout(saveTimer);
-        saveTimer = null;
+        clearTimeout(debouncedSaveTimer);
+        debouncedSaveTimer = null;
         if(await saveCanvas() === false) return;
         window.location.href = '/';
         return;
@@ -5811,21 +5807,11 @@ async function loadCanvas(){
         startCanvasMetaPoll();
     } catch(e) { toast(tr('smart.toastCanvasFail')); }
 }
-const DEFAULT_AUTOSAVE_INTERVAL_MINUTES = 20;
-const MIN_AUTOSAVE_INTERVAL_MINUTES = 1;
-const MAX_AUTOSAVE_INTERVAL_MINUTES = 240;
-function normalizedAutosaveIntervalMinutes(value){
-    const interval = Number.parseInt(value, 10);
-    return Number.isInteger(interval) && interval >= MIN_AUTOSAVE_INTERVAL_MINUTES && interval <= MAX_AUTOSAVE_INTERVAL_MINUTES
-        ? interval
-        : DEFAULT_AUTOSAVE_INTERVAL_MINUTES;
-}
 async function loadAutosavePreferences(){
     try {
-        const preferences = await window.FireflyGlobalPreferences?.load?.();
-        if(preferences) autosaveIntervalMinutes = normalizedAutosaveIntervalMinutes(preferences.autosave_interval_minutes);
+        await window.FireflyGlobalPreferences?.load?.();
     } catch(error) {
-        autosaveIntervalMinutes = DEFAULT_AUTOSAVE_INTERVAL_MINUTES;
+        // ignore
     }
 }
 async function refreshAutosavePreferences(preferences=null){
@@ -5836,10 +5822,6 @@ async function refreshAutosavePreferences(preferences=null){
             if(!response.ok) return false;
             next = (await response.json()).preferences || {};
         }
-        autosaveIntervalMinutes = normalizedAutosaveIntervalMinutes(next.autosave_interval_minutes);
-        // 已经开始的 20 分钟窗口不重置；下一次内容变更才使用新间隔，避免配置修改
-        // 本身把当前画布再次推入自动保存队列。
-        updateAutosaveCountdown();
         return true;
     } catch(error) {
         return false;
@@ -5865,36 +5847,8 @@ function scheduleStateSave(){
     // 不会因为计时器刷新或任务状态广播单独启动新的 20 分钟窗口。
     if(hasDurableCanvasChanges()) markContentDirty();
 }
-function formatAutosaveCountdown(milliseconds){
-    const totalSeconds = Math.max(0, Math.ceil(Number(milliseconds || 0) / 1000));
-    const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
-    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-    return `${minutes}:${seconds}`;
-}
-function updateAutosaveCountdown(){
-    const indicator = document.getElementById('smartAutosaveCountdown');
-    if(!indicator) return;
-    const visible = canvas?.format === 'firefly-canvas-v1' && contentDirty && autoSaveDueAt > 0;
-    indicator.hidden = !visible;
-    if(visible) indicator.textContent = `${tr('smart.autosaveCountdown')} ${formatAutosaveCountdown(autoSaveDueAt - Date.now())}`;
-    if(!visible && autosaveCountdownTimer){
-        clearInterval(autosaveCountdownTimer);
-        autosaveCountdownTimer = null;
-    }
-}
-function startAutosaveCountdown(){
-    if(!autosaveCountdownTimer) autosaveCountdownTimer = setInterval(updateAutosaveCountdown, 1000);
-    updateAutosaveCountdown();
-}
-function clearAutosaveTimer(resetDue=true){
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    if(resetDue) autoSaveDueAt = 0;
-    updateAutosaveCountdown();
-}
 function markAutosaveSaved(){
     contentDirty = false;
-    clearAutosaveTimer(true);
     clearTimeout(debouncedSaveTimer);
     debouncedSaveTimer = null;
     if(canvas?.format === 'firefly-canvas-v1' && !persistedDurableSnapshot) refreshPersistedDurableSnapshot(canvasForStorage());
@@ -5903,18 +5857,8 @@ function markAutosaveSaved(){
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
     contentDirty = true;
-    if(!autoSaveDueAt){
-        autoSaveDueAt = Date.now() + normalizedAutosaveIntervalMinutes(autosaveIntervalMinutes) * 60 * 1000;
-        saveTimer = setTimeout(() => {
-            saveTimer = null;
-            autoSaveDueAt = 0;
-            updateAutosaveCountdown();
-            saveCanvas({automatic:true});
-        }, normalizedAutosaveIntervalMinutes(autosaveIntervalMinutes) * 60 * 1000);
-    }
     scheduleDebouncedSave();
     if(canvas?.format === 'firefly-canvas-v1') setProjectSaveState('dirty', tr('smart.projectDirty'));
-    startAutosaveCountdown();
 }
 function scheduleDebouncedSave(){
     // Content mutations are also flushed after a short quiet period, so an
@@ -5924,7 +5868,6 @@ function scheduleDebouncedSave(){
     debouncedSaveTimer = setTimeout(() => {
         debouncedSaveTimer = null;
         if(!contentDirty) return;
-        clearAutosaveTimer(true);
         saveCanvas({automatic:true});
     }, DEBOUNCED_SAVE_MS);
 }
@@ -5947,7 +5890,6 @@ function setProjectSaveState(state, text){
         smartSaveButton.dataset.state = state;
         smartSaveButton.disabled = smartSaveButton.dataset.busy === '1' || state === 'saving';
     }
-    updateAutosaveCountdown();
 }
 async function manualSaveCanvas(){
     if(!canvas || canvas.format !== 'firefly-canvas-v1' || !canvasId) return true;
@@ -5975,7 +5917,8 @@ async function manualSaveCanvas(){
 async function saveProjectCanvasUntilSettled({maxAttempts=4}={}){
     if(canvas?.format !== 'firefly-canvas-v1') return true;
     for(let attempt = 0; attempt < maxAttempts; attempt++){
-        clearAutosaveTimer(true);
+        clearTimeout(debouncedSaveTimer);
+        debouncedSaveTimer = null;
         while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
         const saved = await saveCanvas({automatic:false});
         if(saved !== true) return false;
@@ -6088,7 +6031,10 @@ async function saveCanvas({automatic=false}={}){
         markContentDirty();
         return;
     }
-    if(!automatic) clearAutosaveTimer(true);
+    if(!automatic){
+        clearTimeout(debouncedSaveTimer);
+        debouncedSaveTimer = null;
+    }
     savePromptDraftForCurrent();
     canvas.nodes = nodes;
     if(!isProjectCanvasData(canvas)){
@@ -7411,9 +7357,9 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
     const confirmText = deleteMedia ? tr('canvas.deleteLogMediaConfirm') : tr('canvas.deleteLogConfirm');
     if(!confirm(confirmText)) return;
     try {
-        if(saveTimer){
-            clearTimeout(saveTimer);
-            saveTimer = null;
+        if(debouncedSaveTimer){
+            clearTimeout(debouncedSaveTimer);
+            debouncedSaveTimer = null;
             await saveCanvas();
         }
         const projectHistory = canvas.format === 'firefly-canvas-v1';
@@ -7472,9 +7418,9 @@ async function deleteSmartProjectOriginal(logId, outputIndex){
     }
     if(!confirm(tr('canvas.deleteOriginalConfirm'))) return;
     try {
-        if(saveTimer){
-            clearTimeout(saveTimer);
-            saveTimer = null;
+        if(debouncedSaveTimer){
+            clearTimeout(debouncedSaveTimer);
+            debouncedSaveTimer = null;
             await saveCanvas();
         }
         const projectId = canvas.project_id || canvas.project || canvasId;

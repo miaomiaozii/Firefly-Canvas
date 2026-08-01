@@ -52,7 +52,6 @@
         "globalSettings.language": { zh: "语言", en: "Language" },
         "globalSettings.chinese": { zh: "简体中文", en: "Simplified Chinese" },
         "globalSettings.english": { zh: "English", en: "English" },
-        "globalSettings.autosaveInterval": { zh: "自动保存间隔（分钟）", en: "Autosave interval (minutes)" },
         "globalSettings.providers": { zh: "在线服务商与模型", en: "Online providers and models" },
         "globalSettings.addProvider": { zh: "添加服务商", en: "Add provider" },
         "globalSettings.saveProviders": { zh: "保存服务商", en: "Save providers" },

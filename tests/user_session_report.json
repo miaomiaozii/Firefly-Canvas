@@ -1,0 +1,588 @@
+{
+  "surface": "user-session",
+  "browser": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "viewport": [
+    1408,
+    710
+  ],
+  "project": {
+    "id": "ef184b1d7d66497b89ef169ec92d686e",
+    "name": ""
+  },
+  "steps": [
+    {
+      "step": 1,
+      "name": "打开项目列表页",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "列表页可加载，项目库渲染完成（项目卡片或空状态出现）",
+          "pass": true,
+          "actual": {
+            "gridChildren": 0,
+            "emptyHidden": false,
+            "statusText": ""
+          }
+        },
+        {
+          "name": "加载完成后状态栏清除“正在读取项目库…”提示",
+          "pass": true,
+          "actual": ""
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "name": "新建项目（真实 UI 对话框）",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "列表页提供新建项目按钮",
+          "pass": true,
+          "actual": "<button id=\"showCreate\" class=\"button primary\" type=\"button\" data-i18n=\"projectList.create\">新建项目</button>"
+        },
+        {
+          "name": "新建项目对话框打开",
+          "pass": true,
+          "actual": true
+        },
+        {
+          "name": "对话框提供项目名称输入",
+          "pass": true,
+          "actual": true
+        },
+        {
+          "name": "项目名称已填写",
+          "pass": true,
+          "actual": "QA运营工作流-msa29x49"
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "name": "进入项目画布",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "画布加载完成，标题为项目名",
+          "pass": true,
+          "actual": {
+            "title": "QA运营工作流-msa29x49",
+            "projectId": "ef184b1d7d66497b89ef169ec92d686e"
+          }
+        },
+        {
+          "name": "项目画布显示保存状态指示",
+          "pass": true,
+          "actual": "saved"
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "name": "添加提示词节点",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "创建菜单可选择提示词节点",
+          "pass": true,
+          "actual": "<button class=\"create-card\" type=\"button\" data-create-type=\"prompt\">\n                    <span class=\"create-card-icon\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"text-cursor-input\" aria-hidden=\"true\" class=\"lucide lucide-text-cursor-input\"><path d=\"M12 20h-1a2 2 0 0 1-2-2 2 2 0 0 1-2 2H6\"></path><path d=\"M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7\"></path><path d=\"M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1\"></path><path d=\"M6 4h1a2 2 0 0 1 2 2 2 2 0 0 1 2-2h1\"></path><path d=\"M9 6v12\"></path></svg></span>\n                    <span>\n                        <div class=\"create-card-title\">提示词</div>\n                        <div class=\"create-card-sub\">手写或用 LLM 生成文本</div>\n                    </span>\n                </button>"
+        },
+        {
+          "name": "画布上出现提示词节点",
+          "pass": true,
+          "actual": 1
+        },
+        {
+          "name": "提示词节点默认处于选中状态",
+          "pass": true,
+          "actual": "image-node    prompt-smart-node        selected   "
+        }
+      ]
+    },
+    {
+      "step": 5,
+      "name": "输入提示词文本并保存",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "提示词节点包含文本输入框",
+          "pass": true,
+          "actual": true
+        },
+        {
+          "name": "输入的中文提示词显示在节点里",
+          "pass": true,
+          "actual": "一只发光的萤火虫"
+        },
+        {
+          "name": "输入后保存状态变为未保存(dirty)",
+          "pass": true,
+          "actual": "dirty"
+        },
+        {
+          "name": "手动保存后状态变为已保存(saved)",
+          "pass": true,
+          "actual": "saved"
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "name": "提示词文本已持久化到服务端",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "服务端画布包含提示词节点",
+          "pass": true,
+          "actual": {
+            "id": "prompt_exnw06op9xe6",
+            "type": "smart-prompt",
+            "x": 649,
+            "y": 211,
+            "w": 316,
+            "h": 240,
+            "title": "Prompt",
+            "text": "一只发光的萤火虫",
+            "promptSeparator": ";",
+            "promptSplitEnabled": false,
+            "llmEnabled": false,
+            "llmProvider": "comfly",
+            "llmModel": "gpt-5.4",
+            "llmSystemEnabled": false,
+            "llmSystemPrompt": "You are a helpful prompt assistant.",
+            "llmInstruction": "",
+            "created_at": 1785569999694
+          }
+        },
+        {
+          "name": "服务端节点文本与输入一致",
+          "pass": true,
+          "actual": {
+            "expected": "一只发光的萤火虫",
+            "actual": "一只发光的萤火虫"
+          }
+        }
+      ]
+    },
+    {
+      "step": 7,
+      "name": "提示词节点可选中",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "点击节点后进入选中状态",
+          "pass": true,
+          "actual": "image-node    prompt-smart-node        selected   "
+        }
+      ]
+    },
+    {
+      "step": 8,
+      "name": "拖动节点位置",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "节点被拖动到新位置",
+          "pass": true,
+          "actual": {
+            "before": {
+              "left": "649px",
+              "top": "211px"
+            },
+            "after": {
+              "left": "799px",
+              "top": "301px"
+            }
+          }
+        },
+        {
+          "name": "拖动后保存状态进入未保存(dirty)——位置变化需进入保存队列",
+          "pass": true,
+          "actual": "dirty"
+        },
+        {
+          "name": "手动保存后新位置持久化到服务端",
+          "pass": true,
+          "actual": {
+            "original": {
+              "x": 649,
+              "y": 211
+            },
+            "server": {
+              "x": 799,
+              "y": 301
+            },
+            "draggedCss": {
+              "left": "799px",
+              "top": "301px"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "step": 9,
+      "name": "修改提示词文本并保存",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "修改后的文本显示在节点里",
+          "pass": true,
+          "actual": "一只发光的萤火虫，尾部泛着翠绿光晕"
+        },
+        {
+          "name": "修改后保存状态变为未保存(dirty)",
+          "pass": true,
+          "actual": "dirty"
+        },
+        {
+          "name": "修改后的文本持久化到服务端",
+          "pass": true,
+          "actual": {
+            "expected": "一只发光的萤火虫，尾部泛着翠绿光晕",
+            "actual": "一只发光的萤火虫，尾部泛着翠绿光晕"
+          }
+        }
+      ]
+    },
+    {
+      "step": 10,
+      "name": "添加 Agent 节点",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "创建菜单可选择 Agent 节点",
+          "pass": true,
+          "actual": "<button class=\"create-card\" type=\"button\" data-create-type=\"agent\">\n                    <span class=\"create-card-icon\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-lucide=\"bot\" aria-hidden=\"true\" class=\"lucide lucide-bot\"><path d=\"M12 8V4H8\"></path><rect width=\"16\" height=\"12\" x=\"4\" y=\"8\" rx=\"2\"></rect><path d=\"M2 14h2\"></path><path d=\"M20 14h2\"></path><path d=\"M15 13v2\"></path><path d=\"M9 13v2\"></path></svg></span>\n                    <span>\n                        <div class=\"create-card-title\">Agent</div>\n                        <div class=\"create-card-sub\">先展示计划，确认后创建提示词或执行在线图片/视频</div>\n                    </span>\n                </button>"
+        },
+        {
+          "name": "画布上出现 Agent 节点",
+          "pass": true,
+          "actual": 1
+        }
+      ]
+    },
+    {
+      "step": 11,
+      "name": "配置 Agent 目标、任务卡与依赖",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "Agent 暴露目标输入框",
+          "pass": true,
+          "actual": true
+        },
+        {
+          "name": "添加后有两张任务卡",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "两张任务卡均为在线图片任务",
+          "pass": true,
+          "actual": [
+            "image",
+            "image"
+          ]
+        },
+        {
+          "name": "第二张任务卡提供依赖控件",
+          "pass": true,
+          "actual": "<select data-agent-draft-deps=\"1\" aria-label=\"Agent 任务依赖\">\n                    <option value=\"\" selected=\"\">无依赖</option>\n                    <option value=\"0\">任务 0</option>\n                </select>"
+        },
+        {
+          "name": "第二张任务卡已设置依赖第一张",
+          "pass": true,
+          "actual": "0"
+        }
+      ]
+    },
+    {
+      "step": 12,
+      "name": "生成 Agent 计划",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "计划生成并进入等待确认状态",
+          "pass": true,
+          "actual": "等待确认"
+        },
+        {
+          "name": "计划包含两张任务卡",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "两张计划任务均为在线图片",
+          "pass": true,
+          "actual": [
+            "image",
+            "image"
+          ]
+        }
+      ]
+    },
+    {
+      "step": 13,
+      "name": "确认执行 Agent 计划",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "确认执行按钮可用",
+          "pass": true,
+          "actual": "<button type=\"button\" class=\"agent-node-action\" data-agent-confirm=\"\">确认并执行</button>"
+        },
+        {
+          "name": "两张生图任务均执行成功",
+          "pass": true,
+          "actual": [
+            {
+              "status": "succeeded",
+              "text": "已完成"
+            },
+            {
+              "status": "succeeded",
+              "text": "已完成"
+            }
+          ]
+        },
+        {
+          "name": "画布出现两张已完成的 Agent 任务卡",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "Agent 计划状态显示已完成",
+          "pass": true,
+          "actual": "已完成"
+        },
+        {
+          "name": "服务端记录 Agent 生图历史",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "生图适配器",
+          "pass": null,
+          "actual": "测试环境使用离线 fake image 适配器（无真实 API key），线上环境该步骤可能因缺 key 失败",
+          "observation": true
+        }
+      ]
+    },
+    {
+      "step": 14,
+      "name": "打开历史记录侧边栏",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "历史侧边栏打开且包含操作记录",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "历史记录样例",
+          "pass": null,
+          "actual": "\n            \n                \n                    成功\n                    Agent\n                    online-image\n       ",
+          "observation": true
+        }
+      ]
+    },
+    {
+      "step": 15,
+      "name": "刷新页面后画布内容仍在",
+      "pass": true,
+      "assertions": [
+        {
+          "name": "刷新后画布重新加载",
+          "pass": true,
+          "actual": "QA运营工作流-msa29x49"
+        },
+        {
+          "name": "刷新后提示词节点仍在",
+          "pass": true,
+          "actual": 1
+        },
+        {
+          "name": "刷新后提示词文本仍在",
+          "pass": true,
+          "actual": "一只发光的萤火虫，尾部泛着翠绿光晕"
+        },
+        {
+          "name": "刷新后 Agent 节点仍在",
+          "pass": true,
+          "actual": 1
+        },
+        {
+          "name": "刷新后 Agent 计划状态保留",
+          "pass": true,
+          "actual": "已完成"
+        },
+        {
+          "name": "刷新后两张 Agent 任务卡仍在",
+          "pass": true,
+          "actual": 2
+        },
+        {
+          "name": "刷新后保存状态为已保存",
+          "pass": true,
+          "actual": "saved"
+        },
+        {
+          "name": "服务端节点清单包含提示词与 Agent 节点",
+          "pass": true,
+          "actual": [
+            "prompt_exnw06op9xe6",
+            "agent_mokxkfcaa2ce",
+            "agent-task-ff2e710906ed47a68e5ac97422dbe6ce",
+            "agent-task-ff2e710906ed47a68e5ac97422dbe6ce-result",
+            "agent-task-1057c713bee7424e91626da9f798ac85",
+            "agent-task-1057c713bee7424e91626da9f798ac85-result"
+          ]
+        },
+        {
+          "name": "服务端提示词文本为最终修改值",
+          "pass": true,
+          "actual": "一只发光的萤火虫，尾部泛着翠绿光晕"
+        }
+      ]
+    }
+  ],
+  "timeline": [
+    {
+      "el": "#smartTitle",
+      "last": "核心画布",
+      "t": 1785570009538,
+      "emptyShown": null,
+      "title": "核心画布"
+    },
+    {
+      "t": 1785570009538,
+      "label": "DOMContentLoaded",
+      "title": "核心画布"
+    },
+    {
+      "el": "#smartTitle",
+      "last": "核心画布",
+      "t": 1785570009561,
+      "emptyShown": null,
+      "title": "核心画布"
+    },
+    {
+      "el": "#smartTitle",
+      "last": "QA运营工作流-msa29x49",
+      "t": 1785570009616,
+      "emptyShown": null,
+      "title": "QA运营工作流-msa29x49"
+    }
+  ],
+  "i18n_race_probe": {
+    "kind": "final",
+    "result_id": "user-session-msa29w0r-8qtxklfvovj",
+    "clientScriptLoaded": true,
+    "viewport": {
+      "width": 1392,
+      "height": 615
+    },
+    "steps": [
+      {
+        "step": 1,
+        "name": "i18n 竞态探测：快响应下项目列表加载完成",
+        "pass": true,
+        "assertions": [
+          {
+            "name": "项目列表内容渲染完成（卡片或空状态出现）",
+            "pass": true,
+            "actual": {
+              "gridChildren": 0,
+              "emptyHidden": false
+            }
+          },
+          {
+            "name": "加载完成后状态栏应被清除，不应残留“正在读取项目库…”",
+            "pass": true,
+            "actual": ""
+          }
+        ]
+      }
+    ],
+    "consoleErrors": [],
+    "pageErrors": [],
+    "exceptions": [],
+    "apiFailures": [],
+    "projectId": "",
+    "projectName": "",
+    "timeline": [
+      {
+        "el": "#status",
+        "last": "正在读取项目库…",
+        "t": 1785569997938,
+        "gridChildren": 0,
+        "emptyShown": false
+      },
+      {
+        "t": 1785569997938,
+        "label": "DOMContentLoaded",
+        "status": "正在读取项目库…"
+      },
+      {
+        "el": "#status",
+        "last": "",
+        "t": 1785569997940,
+        "gridChildren": 0,
+        "emptyShown": true
+      }
+    ],
+    "pass": true
+  },
+  "server_state": {
+    "revision": 16,
+    "node_count": 6,
+    "node_ids": [
+      "prompt_exnw06op9xe6",
+      "agent_mokxkfcaa2ce",
+      "agent-task-ff2e710906ed47a68e5ac97422dbe6ce",
+      "agent-task-ff2e710906ed47a68e5ac97422dbe6ce-result",
+      "agent-task-1057c713bee7424e91626da9f798ac85",
+      "agent-task-1057c713bee7424e91626da9f798ac85-result"
+    ],
+    "agent_plan": {
+      "status": "completed",
+      "plan_id": "agent-plan-46de3ee83f7348c6b0f19cc1ad976913",
+      "tasks": [
+        {
+          "task_id": "agent-task-ff2e710906ed47a68e5ac97422dbe6ce",
+          "kind": "image",
+          "status": "succeeded",
+          "error": ""
+        },
+        {
+          "task_id": "agent-task-1057c713bee7424e91626da9f798ac85",
+          "kind": "image",
+          "status": "succeeded",
+          "error": ""
+        }
+      ]
+    },
+    "logs": [
+      {
+        "id": "agent-generation-agent-task-ff2e710906ed47a68e5ac97422dbe6ce",
+        "type": "agent-image",
+        "status": "succeeded",
+        "error": ""
+      },
+      {
+        "id": "agent-generation-agent-task-1057c713bee7424e91626da9f798ac85",
+        "type": "agent-image",
+        "status": "succeeded",
+        "error": ""
+      }
+    ]
+  },
+  "console_errors": [],
+  "page_errors": [],
+  "exceptions": [],
+  "api_failures": [],
+  "api_request_count": 50,
+  "pass": true
+}

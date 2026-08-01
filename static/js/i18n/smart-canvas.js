@@ -9,7 +9,6 @@
         "smart.projectDirty": { zh: "有未保存修改", en: "Unsaved changes" },
         "smart.saveNow": { zh: "保存", en: "Save" },
         "smart.saveNowShortcut": { zh: "保存项目（Ctrl+S）", en: "Save project (Ctrl+S)" },
-        "smart.autosaveCountdown": { zh: "自动保存倒计时", en: "Autosave in" },
         "smart.projectConflict": { zh: "已载入其他窗口的新版本", en: "Loaded a newer version from another window" },
         "smart.projectSaveFailed": { zh: "保存失败", en: "Save failed" },
         "smart.engineApi": { zh: "API生成", en: "API" },

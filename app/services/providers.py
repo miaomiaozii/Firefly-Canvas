@@ -601,7 +601,7 @@ def update_env_values(updates):
         return _update_env_values_unlocked(updates)
 
 def load_global_preferences():
-    defaults = {'theme': 'dark', 'language': 'zh', 'autosave_interval_minutes': 20}
+    defaults = {'theme': 'dark', 'language': 'zh'}
     try:
         with open(_svc._main('GLOBAL_SETTINGS_FILE'), 'r', encoding='utf-8-sig') as handle:
             raw = json.load(handle)
@@ -609,17 +609,10 @@ def load_global_preferences():
         return defaults
     theme = raw.get('theme') if isinstance(raw, dict) else None
     language = raw.get('language') if isinstance(raw, dict) else None
-    autosave_interval = raw.get('autosave_interval_minutes') if isinstance(raw, dict) else None
-    try:
-        autosave_interval = int(autosave_interval)
-    except (TypeError, ValueError):
-        autosave_interval = defaults['autosave_interval_minutes']
-    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language'], 'autosave_interval_minutes': autosave_interval if 1 <= autosave_interval <= 240 else defaults['autosave_interval_minutes']}
+    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
-    current = load_global_preferences()
-    interval = current['autosave_interval_minutes'] if autosave_interval_minutes is None else int(autosave_interval_minutes)
-    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh', 'autosave_interval_minutes': interval if 1 <= interval <= 240 else 20}
+    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
     os.makedirs(os.path.dirname(_svc._main('GLOBAL_SETTINGS_FILE')), exist_ok=True)
     temporary = f"{_svc._main('GLOBAL_SETTINGS_FILE')}.{uuid.uuid4().hex}.tmp"
     try:

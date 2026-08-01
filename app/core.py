@@ -1153,7 +1153,6 @@ class FireflyProjectCreateRequest(BaseModel):
 class GlobalPreferencesPayload(BaseModel):
     theme: str = 'dark'
     language: str = 'zh'
-    autosave_interval_minutes: Optional[int] = Field(default=None, ge=1, le=240)
 
 class ProjectLibraryChangeRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)

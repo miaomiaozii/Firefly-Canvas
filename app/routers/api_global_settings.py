@@ -23,7 +23,7 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 def load_global_preferences():
-    defaults = {'theme': 'dark', 'language': 'zh', 'autosave_interval_minutes': 20}
+    defaults = {'theme': 'dark', 'language': 'zh'}
     try:
         with open(_app_main.GLOBAL_SETTINGS_FILE, 'r', encoding='utf-8-sig') as handle:
             raw = json.load(handle)
@@ -31,17 +31,10 @@ def load_global_preferences():
         return defaults
     theme = raw.get('theme') if isinstance(raw, dict) else None
     language = raw.get('language') if isinstance(raw, dict) else None
-    autosave_interval = raw.get('autosave_interval_minutes') if isinstance(raw, dict) else None
-    try:
-        autosave_interval = int(autosave_interval)
-    except (TypeError, ValueError):
-        autosave_interval = defaults['autosave_interval_minutes']
-    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language'], 'autosave_interval_minutes': autosave_interval if 1 <= autosave_interval <= 240 else defaults['autosave_interval_minutes']}
+    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
-    current = load_global_preferences()
-    interval = current['autosave_interval_minutes'] if autosave_interval_minutes is None else int(autosave_interval_minutes)
-    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh', 'autosave_interval_minutes': interval if 1 <= interval <= 240 else 20}
+    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
     os.makedirs(os.path.dirname(_app_main.GLOBAL_SETTINGS_FILE), exist_ok=True)
     temporary = f'{_app_main.GLOBAL_SETTINGS_FILE}.{uuid.uuid4().hex}.tmp'
     try:
@@ -61,7 +54,6 @@ def save_global_preferences(theme: str, language: str, autosave_interval_minutes
 class GlobalPreferencesPayload(BaseModel):
     theme: str = 'dark'
     language: str = 'zh'
-    autosave_interval_minutes: Optional[int] = Field(default=None, ge=1, le=240)
 
 class ProjectLibraryChangeRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)
@@ -142,7 +134,7 @@ async def global_settings():
 async def update_global_preferences(payload: GlobalPreferencesPayload):
     if payload.theme not in {'light', 'dark'} or payload.language not in {'zh', 'en'}:
         raise HTTPException(status_code=400, detail='主题或语言无效')
-    return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language, payload.autosave_interval_minutes)}
+    return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language)}
 
 @router.get('/api/global-settings/preferences')
 async def get_global_preferences():

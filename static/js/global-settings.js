@@ -4,7 +4,6 @@
   const cliGrid = document.getElementById('cliGrid');
   const libraryPath = document.getElementById('libraryPath');
   const moveExisting = document.getElementById('moveExisting');
-  const autosaveIntervalMinutes = document.getElementById('autosaveIntervalMinutes');
   const embedded = window.self !== window.top;
   let state = null;
   let studioApiChannel = null;
@@ -343,7 +342,6 @@
     renderCli(data.cli || {});
     document.getElementById('themeSelect').value = data.preferences?.theme || 'dark';
     document.getElementById('languageSelect').value = data.preferences?.language || 'zh';
-    autosaveIntervalMinutes.value = String(data.preferences?.autosave_interval_minutes || 20);
     libraryPath.value = data.project_library?.path || '';
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
     const ps = data.photoshop || {};
@@ -389,21 +387,15 @@
   document.getElementById('savePreferences').addEventListener('click', async () => {
     const theme = document.getElementById('themeSelect').value;
     const language = document.getElementById('languageSelect').value;
-    const autosaveInterval = Number.parseInt(autosaveIntervalMinutes.value, 10);
-    if(!Number.isInteger(autosaveInterval) || autosaveInterval < 1 || autosaveInterval > 240){
-      setStatus(localText('自动保存间隔需为 1 到 240 分钟', 'Autosave interval must be between 1 and 240 minutes'), 'error');
-      autosaveIntervalMinutes.focus();
-      return;
-    }
     setStatus(localText('正在保存偏好…', 'Saving preferences…'));
     try {
-      await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme, language, autosave_interval_minutes:autosaveInterval})});
+      await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme, language})});
       window.StudioTheme?.set(theme);
       window.StudioI18n?.set(language);
-      state.preferences = {theme, language, autosave_interval_minutes:autosaveInterval};
+      state.preferences = {theme, language};
       render(state);
       notifyCanvas('preferences-changed', {preferences:state.preferences});
-      setStatus(localText('外观、语言与自动保存间隔已保存', 'Appearance, language, and autosave interval saved'), 'success');
+      setStatus(localText('外观与语言已保存', 'Appearance and language saved'), 'success');
     } catch(error) { setStatus(error.message || localText('偏好保存失败', 'Failed to save preferences'), 'error'); }
   });
   document.getElementById('libraryForm').addEventListener('submit', async event => {

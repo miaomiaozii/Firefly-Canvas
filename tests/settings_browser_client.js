@@ -73,20 +73,14 @@
         assertion('CLI status renders all supported CLI cards', (frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0) === 3, frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0);
         if(!frameReady) return postResult();
 
-        const autosave = setting('#autosaveIntervalMinutes');
         const savePreferences = setting('#savePreferences');
-        setValue(autosave, '0');
-        savePreferences.click();
-        const invalidPreference = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'error');
-        assertion('invalid autosave interval is rejected before the request', invalidPreference, setting('#pageStatus')?.textContent || '');
 
         setValue(setting('#themeSelect'), 'light', 'change');
         setValue(setting('#languageSelect'), 'en', 'change');
-        setValue(autosave, '7');
         savePreferences.click();
-        const preferencesSaved = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && setting('#themeSelect')?.value === 'light' && setting('#autosaveIntervalMinutes')?.value === '7');
+        const preferencesSaved = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && setting('#themeSelect')?.value === 'light');
         const savedSettings = await fetchSettings();
-        assertion('valid theme, language, and autosave preferences save from the iframe', preferencesSaved && savedSettings.preferences?.theme === 'light' && savedSettings.preferences?.language === 'en' && savedSettings.preferences?.autosave_interval_minutes === 7, {
+        assertion('valid theme and language preferences save from the iframe', preferencesSaved && savedSettings.preferences?.theme === 'light' && savedSettings.preferences?.language === 'en', {
             status:setting('#pageStatus')?.textContent || '',
             preferences:savedSettings.preferences
         });

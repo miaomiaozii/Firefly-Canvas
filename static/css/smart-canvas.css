@@ -58,7 +58,6 @@ html[data-studio-scale="off"].studio-scale-managed .preview-modal {
 .project-save-state { position:absolute; left:22px; top:94px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; }
 .project-save-state[data-state="saved"] { color:#16945f; }
 .project-save-state[data-state="error"] { color:#dc3545; }
-.smart-autosave-countdown { position:absolute; left:22px; top:112px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; font-variant-numeric:tabular-nums; }
  .smart-log-toggle,.smart-shortcut-toggle { position:absolute; top:22px; z-index:56; width:96px; height:40px; padding:0 15px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; transition:transform .14s ease, border-color .14s ease; }
 .smart-log-toggle { right:130px; }
 .smart-shortcut-toggle { right:238px; }

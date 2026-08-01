@@ -271,28 +271,23 @@ class GlobalSettingsApiTests(unittest.TestCase):
         saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "en"})
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "en", "autosave_interval_minutes": 20})
+        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "en"})
         with (
             patch.object(main, "codex_status", AsyncMock(return_value={})),
             patch.object(main, "gemini_cli_status", AsyncMock(return_value={})),
             patch.object(main, "jimeng_status", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
-        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "en", "autosave_interval_minutes": 20})
+        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "en"})
 
-    def test_autosave_interval_is_persisted_and_validated(self):
+    def test_autosave_interval_field_is_ignored_for_backwards_compatibility(self):
         saved = self.client.patch("/api/global-settings/preferences", json={
             "theme": "dark", "language": "zh", "autosave_interval_minutes": 45,
         })
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"]["autosave_interval_minutes"], 45)
-        self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"]["autosave_interval_minutes"], 45)
-
-        invalid = self.client.patch("/api/global-settings/preferences", json={
-            "theme": "dark", "language": "zh", "autosave_interval_minutes": 0,
-        })
-        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(saved.json()["preferences"], {"theme": "dark", "language": "zh"})
+        self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], {"theme": "dark", "language": "zh"})
 
     def test_photoshop_connector_websocket_is_reported_as_connected(self):
         marker = object()
@@ -485,10 +480,10 @@ class GlobalSettingsUiContractTests(unittest.TestCase):
         self.assertIn("CLI 状态", settings_page)
         self.assertIn("项目库", settings_page)
         self.assertIn("Photoshop", settings_page)
-        self.assertIn('id="autosaveIntervalMinutes"', settings_page)
+        self.assertNotIn('id="autosaveIntervalMinutes"', settings_page)
         self.assertIn('/static/js/global-preferences.js?v=', settings_page)
-        self.assertIn("自动保存间隔", settings_page)
-        self.assertIn("autosave_interval_minutes", settings_script)
+        self.assertNotIn("自动保存间隔", settings_page)
+        self.assertNotIn("autosave_interval_minutes", settings_script)
         self.assertNotIn("comfyui", (settings_page + settings_script).lower())
         self.assertNotIn("comfyui", (project_page + canvas_page).lower())
         self.assertFalse((ROOT / "static" / "comfyui-settings.html").exists())
