@@ -356,6 +356,34 @@ class ProjectAgentContractTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/project-library/{self.project['id']}/agent/agent-1/plan").json()["plan"]["status"], "failed")
         adapter.assert_awaited_once()
 
+    def test_project_delete_is_blocked_while_agent_task_runs(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        generated = AsyncMock(return_value=(tiny_png(), {}))
+
+        async def slow(_request, *_args, **_kwargs):
+            await asyncio.sleep(3)
+            return (tiny_png(), {})
+
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", AsyncMock(side_effect=slow)):
+            plan = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[{"kind": "image", "count": 1, "params": {}}]),
+            ).json()["plan"]
+            response = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "plan_hash": plan["plan_hash"], "execution_id": "delete-while-running"},
+            )
+            task_id = response.json()["tasks"][0]["task_id"]
+            deleted = self.client.delete(f"/api/project-library/{self.project['id']}")
+            self.assertEqual(deleted.status_code, 409, deleted.text)
+            self.assertIn("Agent", deleted.json()["detail"])
+            task = self.wait(task_id)
+        self.assertEqual(task["status"], "succeeded", task)
+        deleted = self.client.delete(f"/api/project-library/{self.project['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+
     def test_failed_adapter_is_visible_and_not_retried_by_duplicate_execution(self):
         self.project, _image = self.seed()
         revision = self.store.canvas(self.project["id"])["revision"]

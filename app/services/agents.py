@@ -614,6 +614,15 @@ def project_has_active_conversation(project_id: str, *, trashed: bool=False) -> 
     except (ProjectStoreError, OSError, ValueError, json.JSONDecodeError):
         return True
 
+def project_has_active_agent_task(project_id: str) -> bool:
+    """Block lifecycle moves while any Agent task for the project is still queued or running."""
+    with PROJECT_AGENT_TASKS_LOCK:
+        return any(
+            str(task.get('project_id') or '') == str(project_id) and task.get('status') in {'queued', 'running'}
+            for task in PROJECT_AGENT_TASKS.values()
+        )
+
+
 def project_lifecycle_store_call(method_name: str, project_id: str, *, block_active_import: bool=False):
     with project_lifecycle_lock(project_id):
         if block_active_import and project_has_active_media_import(project_id):
@@ -624,6 +633,8 @@ def project_lifecycle_store_call(method_name: str, project_id: str, *, block_act
             raise ProjectMediaImportActive('项目仍有视频正在生成，请等待完成后再删除')
         if block_active_import and project_has_active_conversation(project_id, trashed=method_name == 'purge_trashed_project'):
             raise ProjectMediaImportActive('项目仍有对话任务待完成或待恢复，不能删除')
+        if block_active_import and project_has_active_agent_task(project_id):
+            raise ProjectMediaImportActive('项目仍有 Agent 任务正在执行，请等待完成后再删除')
         return _svc._main('project_store_call')(method_name, project_id)
 
 def project_conversation_connected_references(project_id: str, canvas: Dict[str, Any], node_id: str) -> List[Dict[str, Any]]:
