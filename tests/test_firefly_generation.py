@@ -10,8 +10,10 @@ if str(ROOT) not in sys.path:
 from firefly_generation import (
     ImageGenerationRequest,
     ModelRoutingError,
+    VideoGenerationRequest,
     apply_angle_preset,
     route_image_generation,
+    route_video_generation,
 )
 
 
@@ -186,6 +188,71 @@ class ImageGenerationRoutingTests(unittest.TestCase):
             raised.exception.incompatible_parameters,
             ["size", "width", "height", "aspect_ratio", "resolution", "reference_count"],
         )
+
+
+class VideoGenerationRoutingTests(unittest.TestCase):
+    def request(self, **overrides):
+        values = dict(
+            prompt="a cat",
+            size="1024x576",
+            width=None,
+            height=None,
+            aspect_ratio="16:9",
+            resolution="720p",
+            duration=5,
+        )
+        values.update(overrides)
+        return VideoGenerationRequest(**values)
+
+    def test_video_cli_protocol_without_adapter_reports_online_adapter_missing(self):
+        providers = [{
+            "id": "cli-only", "enabled": True, "protocol": "gemini-cli",
+            "video_models": ["veo2"],
+        }]
+        with self.assertRaises(ModelRoutingError) as raised:
+            route_video_generation(self.request(), providers)
+        self.assertEqual(raised.exception.code, "no_compatible_video_model")
+        self.assertIn("CLI 协议没有在线视频适配器", raised.exception.args[0])
+
+    def test_video_unknown_protocol_reports_protocol_without_online_adapter(self):
+        providers = [{
+            "id": "weird", "enabled": True, "protocol": "mystery-protocol",
+            "video_models": ["veo2"],
+        }]
+        with self.assertRaises(ModelRoutingError) as raised:
+            route_video_generation(self.request(), providers)
+        self.assertEqual(raised.exception.code, "no_compatible_video_model")
+        self.assertIn("协议 mystery-protocol 没有在线视频适配器", raised.exception.args[0])
+        self.assertIn("protocol", raised.exception.incompatible_parameters)
+
+    def test_video_pinned_model_not_found_lists_target(self):
+        providers = [{
+            "id": "p", "enabled": True, "protocol": "openai",
+            "video_models": ["veo2"],
+            "video_model_capabilities": {
+                "veo2": {"media_types": ["video"], "resolutions": ["720p"], "durations": [5], "aspect_ratios": ["16:9"]},
+            },
+        }]
+        with self.assertRaises(ModelRoutingError) as raised:
+            route_video_generation(self.request(), providers, model="missing-model")
+        self.assertEqual(raised.exception.code, "video_model_not_found")
+        self.assertIn("模型 missing-model", raised.exception.args[0])
+
+    def test_video_adapter_incompatible_parameters_are_merged(self):
+        providers = [{
+            "id": "p", "enabled": True, "protocol": "openai",
+            "video_models": ["veo2"],
+            "video_model_capabilities": {
+                "veo2": {"media_types": ["video"], "resolutions": ["720p"], "durations": [5], "aspect_ratios": ["16:9"]},
+            },
+        }]
+        with self.assertRaises(ModelRoutingError) as raised:
+            route_video_generation(
+                self.request(),
+                providers,
+                adapter_incompatible_parameters=lambda req, provider, model: ["watermark"],
+            )
+        self.assertIn("watermark", raised.exception.incompatible_parameters)
 
 
 if __name__ == "__main__":

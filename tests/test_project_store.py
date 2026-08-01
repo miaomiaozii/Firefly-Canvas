@@ -780,5 +780,63 @@ class ProjectStoreContractTests(unittest.TestCase):
             delayed.close()
 
 
+    def test_failed_media_generation_clears_pending_and_records_history(self):
+        project = self.store.create_project("生成失败回滚")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "out", "type": "smart-image", "x": 1, "y": 2, "title": "Out", "images": []}},
+        ])
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        task = {"taskId": "task-fail", "count": 1}
+        self.store.begin_media_generation(project["id"], "out", task, base_revision=revision, media_kind="image")
+        opened = self.store.open_project(project["id"])["canvas"]
+        node = next(item for item in opened["nodes"] if item["id"] == "out")
+        self.assertEqual(node.get("pending"), 1)
+        self.assertTrue(node.get("pendingTasks"))
+        result = self.store.fail_media_generation(
+            project["id"], "out", "task-fail",
+            {"id": "history-fail", "type": "agent-image", "status": "failed", "error": "boom"},
+        )
+        node = next(item for item in result["nodes"] if item["id"] == "out")
+        self.assertFalse(node.get("pendingTasks"))
+        self.assertEqual(node.get("pending"), 0)
+        self.assertIs(node.get("running"), False)
+        history = result.get("logs") or []
+        self.assertTrue(any(item.get("id") == "history-fail" and item.get("status") == "failed" for item in history))
+
+    def test_delete_media_if_unreferenced_and_purge_deleted_media(self):
+        project = self.store.create_project("回收站清理")
+        media = self.store.import_media(project["id"], b"png-bytes", "x.png", "image/png")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "image", "x": 1, "y": 2, "images": [{"asset_id": media["asset_id"], "name": "x.png"}]}},
+        ])
+        self.assertEqual(self.store.delete_media_if_unreferenced(project["id"], media["asset_id"]), False)
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "image", "x": 1, "y": 2, "images": []}},
+        ])
+        self.assertEqual(self.store.delete_media_if_unreferenced(project["id"], media["asset_id"]), True)
+        self.assertEqual(self.store.list_media(project["id"]), [])
+        self.assertEqual(self.store.purge_deleted_media(project["id"]), 0)
+
+        trash_media = self.store.import_media(
+            project["id"],
+            b"png-bytes-2",
+            "trash.png",
+            "image/png",
+            {"type": "online_generation", "name": "trash.png"},
+        )
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n2", "type": "smart-image", "x": 3, "y": 4, "images": [{"asset_id": trash_media["asset_id"], "name": "trash.png"}]}},
+        ])
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.store.delete_generated_original(project["id"], trash_media["asset_id"], base_revision=revision)
+        deleted = self.store.list_deleted_media(project["id"])
+        self.assertTrue(any(item["asset_id"] == trash_media["asset_id"] for item in deleted))
+        self.assertEqual(self.store.purge_deleted_media(project["id"], trash_media["asset_id"]), 1)
+        remaining = self.store.list_deleted_media(project["id"])
+        self.assertFalse(any(item["asset_id"] == trash_media["asset_id"] for item in remaining))
+
+
 if __name__ == "__main__":
     unittest.main()
