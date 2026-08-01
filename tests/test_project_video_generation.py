@@ -952,6 +952,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
             "enabled": True,
             "protocol": "openai",
             "base_url": f"http://127.0.0.1:{server.server_address[1]}",
+            "video_models": ["video-model"],
         }
         route = SimpleNamespace(provider_id=provider["id"], model="video-model")
         request = main.project_video_request(payload)
@@ -1355,7 +1356,8 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
             asyncio.run(main.canvas_video(payload))
 
         self.assertEqual(executed.exception.status_code, 400)
-        self.assertIn("protocol", executed.exception.detail["incompatible_parameters"])
+        self.assertEqual(executed.exception.detail.get("code"), "unsupported_video_adapter_parameters")
+        self.assertIn("不支持请求的参数", executed.exception.detail.get("message", ""))
         self.assertEqual(captured, [])
         save_output.assert_not_awaited()
 

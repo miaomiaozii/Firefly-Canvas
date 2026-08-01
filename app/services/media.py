@@ -653,7 +653,7 @@ def video_api_root(provider):
         base_url = base_url.rsplit('/', 1)[0]
     return base_url
 
-def video_submit_url_candidates(provider, base_url):
+def video_submit_url_candidates(provider, base_url, model=''):
     if str(provider.get('video_generation_endpoint') or '').strip():
         return [_svc.provider_endpoint_url(provider, 'video_generation_endpoint', '/v1/videos/generations')]
     root = video_api_root(provider)
@@ -670,6 +670,13 @@ def video_submit_url_candidates(provider, base_url):
         return [f'{base_url}/api/v3/contents/generations/tasks']
     if is_yuli_provider(provider):
         return [f'{root}/v1/video/create']
+    model_id = str(model or '').strip().lower()
+    if (model_id.startswith('veo') or model_id.startswith('wan2') or model_id.startswith('wanx')
+            or model_id.startswith('doubao-seedance') or model_id.startswith('seedance')
+            or model_id.startswith('grok-video') or model_id.startswith('grok-imagine-video')
+            or model_id.startswith('grok-1.5-video') or model_id.startswith('minimax-hailuo')
+            or model_id == 'hailuo-video' or model_id.startswith('sora-2') or model_id == 'sora2'):
+        return [f'{root}/v2/videos/generations', f'{root}/v1/videos/generations']
     return [f'{root}/v1/videos/generations', f'{root}/v2/videos/generations']
 
 def reserve_project_media_import(project_id: str, source_key: str):

@@ -2573,7 +2573,17 @@ def is_agnes_provider(provider, model=''):
 def is_kling_model(model=''):
     model_id = str(model or '').strip().lower()
     return (model_id.startswith('kling-v1') or model_id.startswith('kling-video-v1')
-            or model_id == 'kling-video-v3')
+            or model_id.startswith('kling-v3') or model_id == 'kling-video-v3'
+            or model_id.startswith('kling-omni'))
+
+def is_unified_format_video_model(model=''):
+    model_id = str(model or '').strip().lower()
+    return (model_id.startswith('veo') or model_id.startswith('wan2') or model_id.startswith('wanx')
+            or model_id.startswith('doubao-seedance') or model_id.startswith('seedance')
+            or model_id.startswith('grok-video') or model_id.startswith('grok-imagine-video')
+            or model_id.startswith('grok-1.5-video') or model_id.startswith('grok-omni')
+            or model_id.startswith('minimax-hailuo') or model_id == 'hailuo-video'
+            or model_id.startswith('sora-2') or model_id == 'sora2')
 
 def video_adapter_label(model='', provider=None):
     model_id = str(model or '').strip().lower()
@@ -2599,6 +2609,7 @@ def video_adapter_label(model='', provider=None):
     if model_id.startswith('wan2') or model_id.startswith('wanx'):
         return ('中转站-统一格式(wan)', True)
     if (model_id.startswith('doubao-seedance')
+            or model_id.startswith('seedance')
             or model_id.startswith('grok-video')
             or model_id.startswith('grok-imagine-video')
             or model_id.startswith('grok-1.5-video')
@@ -2612,8 +2623,12 @@ def video_adapter_label(model='', provider=None):
     known_video_hint = any(tag in model_id for tag in (
         'video', 'veo', 'wan', 'seedance', 'hailuo', 'runway', 'pika', 'sora',
         'grok-imagine', 'luma', 'mochi', 'ltx', 'hunyuan', 'cog', 'vidu', 'minimax-',
+        'higgsfield', 'pixverse', 'kling',
     ))
     if known_video_hint:
+        declared_models = [str(item or '').strip().lower() for item in (provider.get('video_models') or [])]
+        if model_id in declared_models:
+            return ('OpenAI 兼容兜底', True)
         return ('未适配', False)
     return ('OpenAI 兼容兜底', True)
 

@@ -1892,6 +1892,8 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     specialized = is_jimeng or is_runninghub or is_apimart or is_volcengine_direct or is_yuli or is_lingjing or is_agnes
+    if (not specialized) and 'protocol' in incompatible:
+        return incompatible
     if not specialized:
         return incompatible
     if quality != 'auto':
@@ -2163,7 +2165,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
     volc_is_proxy = bool(is_volcengine and urllib.parse.urlparse(base_url).path.rstrip('/'))
-    submit_urls = _svc.video_submit_url_candidates(provider, base_url)
+    submit_urls = _svc.video_submit_url_candidates(provider, base_url, payload.model)
     submit_url = submit_urls[0]
     requested_model = selected_model(payload.model, 'agnes-video-v2.0' if is_agnes else 'veo3-fast')
     is_veo31 = is_apimart and is_apimart_veo31_model(requested_model)
@@ -2397,38 +2399,72 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
                 if payload.enable_upsample:
                     body['enable_upsample'] = True
             else:
-                image_payload = []
-                for ref in payload.images:
-                    if ref.url:
-                        image_payload.append(_svc._main('reference_to_data_url')(ref.dict(), max_size=1536))
-                video_payload = [_svc.media_adapter_data_url(value, 'video') for value in payload.videos or [] if str(value or '').strip()]
-                audio_payload = [_svc.media_adapter_data_url(value, 'audio') for value in payload.audios or [] if str(value or '').strip()]
-                body = {'prompt': payload.prompt, 'model': selected_model(payload.model, 'veo3-fast'), 'duration': payload.duration, 'width': payload.width, 'height': payload.height, 'watermark': payload.watermark, 'quality': payload.quality, 'media_type': payload.media_type}
-                if payload.aspect_ratio:
-                    body['aspect_ratio'] = payload.aspect_ratio
-                    body['ratio'] = payload.aspect_ratio
-                if payload.size:
-                    body['size'] = payload.size
-                if payload.resolution:
-                    body['resolution'] = payload.resolution
-                if image_payload:
-                    body['images'] = image_payload
-                if video_payload:
-                    body['videos'] = video_payload
-                if audio_payload:
-                    body['audios'] = audio_payload
-                if payload.enhance_prompt:
-                    body['enhance_prompt'] = True
-                if payload.enable_upsample:
-                    body['enable_upsample'] = True
-                if payload.seed is not None:
-                    body['seed'] = payload.seed
-                if canvas_video_camera_fixed(payload):
-                    body['camerafixed'] = True
-                if payload.return_last_frame:
-                    body['return_last_frame'] = True
-                if payload.generate_audio:
-                    body['generate_audio'] = True
+                unified_format = _svc._main('is_unified_format_video_model')(requested_model)
+                if unified_format:
+                    body = {'prompt': payload.prompt, 'model': requested_model}
+                    ratio = str(payload.aspect_ratio or '').strip()
+                    if ratio and ratio != 'adaptive':
+                        body['aspect_ratio'] = ratio
+                    if payload.duration:
+                        body['duration'] = payload.duration
+                    if payload.resolution:
+                        body['resolution'] = payload.resolution
+                    if payload.watermark:
+                        body['watermark'] = payload.watermark
+                    if payload.seed is not None:
+                        body['seed'] = payload.seed
+                    if payload.generate_audio:
+                        body['generate_audio'] = True
+                    if payload.enhance_prompt:
+                        body['enhance_prompt'] = True
+                    if payload.enable_upsample:
+                        body['enable_upsample'] = True
+                    if canvas_video_camera_fixed(payload):
+                        body['camerafixed'] = True
+                    if payload.return_last_frame:
+                        body['return_last_frame'] = True
+                    image_payload = []
+                    for ref in payload.images:
+                        if ref.url:
+                            image_payload.append(_svc._main('reference_to_data_url')(ref.dict(), max_size=1536))
+                    if image_payload:
+                        body['images'] = image_payload
+                    video_payload = [_svc.media_adapter_data_url(value, 'video') for value in payload.videos or [] if str(value or '').strip()]
+                    if video_payload:
+                        body['videos'] = video_payload
+                else:
+                    image_payload = []
+                    for ref in payload.images:
+                        if ref.url:
+                            image_payload.append(_svc._main('reference_to_data_url')(ref.dict(), max_size=1536))
+                    video_payload = [_svc.media_adapter_data_url(value, 'video') for value in payload.videos or [] if str(value or '').strip()]
+                    audio_payload = [_svc.media_adapter_data_url(value, 'audio') for value in payload.audios or [] if str(value or '').strip()]
+                    body = {'prompt': payload.prompt, 'model': selected_model(payload.model, 'veo3-fast'), 'duration': payload.duration, 'width': payload.width, 'height': payload.height, 'watermark': payload.watermark, 'quality': payload.quality, 'media_type': payload.media_type}
+                    if payload.aspect_ratio:
+                        body['aspect_ratio'] = payload.aspect_ratio
+                        body['ratio'] = payload.aspect_ratio
+                    if payload.size:
+                        body['size'] = payload.size
+                    if payload.resolution:
+                        body['resolution'] = payload.resolution
+                    if image_payload:
+                        body['images'] = image_payload
+                    if video_payload:
+                        body['videos'] = video_payload
+                    if audio_payload:
+                        body['audios'] = audio_payload
+                    if payload.enhance_prompt:
+                        body['enhance_prompt'] = True
+                    if payload.enable_upsample:
+                        body['enable_upsample'] = True
+                    if payload.seed is not None:
+                        body['seed'] = payload.seed
+                    if canvas_video_camera_fixed(payload):
+                        body['camerafixed'] = True
+                    if payload.return_last_frame:
+                        body['return_last_frame'] = True
+                    if payload.generate_audio:
+                        body['generate_audio'] = True
             raw = None
             html_response = None
             last_response = None
