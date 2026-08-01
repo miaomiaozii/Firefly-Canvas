@@ -253,7 +253,7 @@ async function performUndo(){
             }
         }
         undoSuppressed = true;
-        nodes = snap.nodes;
+        nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
         if(canvas) canvas.connections = snap.connections;
         selectedId = snap.selectedId;
         selectedIds = snap.selectedIds;
@@ -1505,7 +1505,7 @@ function absorbImageNodeIntoSmartGroup(group, child){
     // 清掉显式尺寸，让缩略图网格按图片数自动整理排列（“放入图片自动整理”）。
     delete group.w; delete group.h;
     rerouteSmartConnections(child.id, group.id);
-    nodes = nodes.filter(n => n.id !== child.id);
+    nodes = nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = nodes;
     nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
     return true;
 }
@@ -1527,7 +1527,7 @@ function addNodeToSmartGroup(group, child){
             if(m) scaleSmartGroupMemberToZoom(group, m, zoom);
         });
         rerouteSmartConnections(child.id, group.id);
-        nodes = nodes.filter(n => n.id !== child.id);
+        nodes = nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = nodes;
         nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
         return true;
     }
@@ -10424,7 +10424,7 @@ function deleteNode(id){
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
-    nodes = nodes.filter(node => !deleteIds.has(node.id));
+    nodes = nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = nodes;
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
     nodes.forEach(node => {
         if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(inputId => !deleteIds.has(inputId));
@@ -10450,7 +10450,7 @@ function clearNodeMediaBeforeDelete(id){
     delete node.h;
     const history = historyGroupForNode(node);
     if(history){
-        nodes = nodes.filter(n => n.id !== history.id);
+        nodes = nodes.filter(n => n.id !== history.id); if(canvas) canvas.nodes = nodes;
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== history.id && c.to !== history.id);
     }
     if(selectedImage.nodeId === id) selectedImage = {nodeId:'', index:-1};
@@ -15137,7 +15137,7 @@ function restoreFromExtraction(node, extracted){
     node.images = extracted.images.slice();
     if(Number.isFinite(Number(extracted.w))) node.w = extracted.w;
     if(Number.isFinite(Number(extracted.h))) node.h = extracted.h;
-    nodes = nodes.filter(n => n.id !== extracted.id);
+    nodes = nodes.filter(n => n.id !== extracted.id); if(canvas) canvas.nodes = nodes;
     canvas.connections = (canvas.connections || []).filter(c => !(c.from === extracted.id && c.to === node.id));
     if(Array.isArray(node.inputNodeIds)){
         node.inputNodeIds = node.inputNodeIds.filter(id => id !== extracted.id);
@@ -16506,7 +16506,7 @@ async function runGeneration(){
         }
         pendingNode.pending = 0;
         if(branchNode){
-            nodes = nodes.filter(n => n.id !== branchNode.id);
+            nodes = nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = nodes;
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);
             selectedId = node.id;
         } else {
@@ -17278,7 +17278,7 @@ function ungroupNode(groupId){
                 return node;
             });
         }
-        nodes = nodes.filter(n => n.id !== groupId);
+        nodes = nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = nodes;
         nodes.push(...created);
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
         nodes.forEach(node => {
@@ -17320,7 +17320,7 @@ function ungroupNode(groupId){
         clearDetachedRunInputRefs(node);
         return node;
     });
-    nodes = nodes.filter(n => n.id !== groupId);
+    nodes = nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = nodes;
     nodes.push(...created);
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
     nodes.forEach(node => {
@@ -17356,7 +17356,7 @@ function mergeImageNodesIntoGroup(sourceId, targetId){
             node.inputNodeIds = Array.from(new Set(node.inputNodeIds.map(id => id === source.id ? target.id : id).filter(id => id !== node.id)));
         }
     });
-    nodes = nodes.filter(n => n.id !== source.id);
+    nodes = nodes.filter(n => n.id !== source.id); if(canvas) canvas.nodes = nodes;
     selectedIds = [];
     selectedId = target.id;
     selectedImage = {nodeId:'', index:-1};
