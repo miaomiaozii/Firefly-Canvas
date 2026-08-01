@@ -6226,6 +6226,7 @@ function createAgentNode(x, y, options={}){
         title:'Agent',
         agentGoal:'',
         agentTaskDraft:{kind:'image', count:1, params:{}},
+        agentTaskDrafts:[{kind:'image', count:1, params:{}, prompt:''}],
         agent_plan:null,
         created_at:Date.now()
     };
@@ -7962,9 +7963,17 @@ function agentNodeBodyHtml(node){
         <div class="agent-node-heading"><div class="agent-node-subtitle">先计划后执行 · 提示词节点 / 在线图片 / 视频</div><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan?.status || ''))}</span></div>
         <textarea class="agent-node-goal agent-node-control" data-agent-goal placeholder="描述 Agent 要完成的创作目标…">${escapeHtml(node.agentGoal || plan?.goal || '')}</textarea>
         ${refHtml}
+        <div class="agent-node-drafts" data-agent-drafts>${(Array.isArray(node.agentTaskDrafts) && node.agentTaskDrafts.length ? node.agentTaskDrafts : [draft]).map((item, index) => `<div class="agent-node-draft agent-node-control" data-agent-draft-index="${index}">
+            <div class="agent-node-controls agent-node-control">
+                <select data-agent-kind aria-label="Agent 任务类型"><option value="prompt" ${item.kind === 'prompt' ? 'selected' : ''}>创建提示词节点</option><option value="image" ${(item.kind || 'image') === 'image' ? 'selected' : ''}>在线图片</option><option value="video" ${item.kind === 'video' ? 'selected' : ''}>在线视频</option></select>
+                <input data-agent-count aria-label="Agent 任务数量" type="number" min="1" max="${item.kind === 'prompt' ? 1 : 8}" value="${Math.max(1, Math.min(item.kind === 'prompt' ? 1 : 8, Number(item.count) || 1))}">
+                <button type="button" class="agent-node-action agent-node-draft-remove" data-agent-draft-remove="${index}" title="删除此任务">移除</button>
+            </div>
+            <input class="agent-node-control agent-node-draft-prompt" data-agent-draft-prompt="${index}" placeholder="此任务的提示词（可选，留空由 Agent 按目标生成）" value="${escapeAttr(item.prompt || '')}">
+        </div>`).join('')}
+        </div>
         <div class="agent-node-controls agent-node-control">
-            <select data-agent-kind aria-label="Agent 任务类型"><option value="prompt" ${draft.kind === 'prompt' ? 'selected' : ''}>创建提示词节点</option><option value="image" ${draft.kind === 'image' ? 'selected' : ''}>在线图片</option><option value="video" ${draft.kind === 'video' ? 'selected' : ''}>在线视频</option></select>
-            <input data-agent-count aria-label="Agent 任务数量" type="number" min="1" max="${draft.kind === 'prompt' ? 1 : 8}" value="${Math.max(1, Math.min(draft.kind === 'prompt' ? 1 : 8, Number(draft.count) || 1))}">
+            <button type="button" class="agent-node-action" data-agent-draft-add>+ 添加任务</button>
             <button type="button" class="agent-node-action primary" data-agent-plan>生成计划</button>
             <button type="button" class="agent-node-action" data-agent-confirm ${canConfirm ? '' : 'disabled'}>确认并执行</button>
         </div>
@@ -9612,6 +9621,14 @@ async function planAgentNode(node, goalEl, kindEl, countEl, button){
     const count = Math.max(1, Math.min(kind === 'prompt' ? 1 : kind === 'video' ? 4 : 8, Number(countEl?.value) || 1));
     node.agentGoal = goal;
     node.agentTaskDraft = {kind, count, params:{}};
+    const drafts = Array.isArray(node.agentTaskDrafts) && node.agentTaskDrafts.length
+        ? node.agentTaskDrafts.map(item => {
+            const itemKind = item?.kind === 'video' ? 'video' : item?.kind === 'prompt' ? 'prompt' : 'image';
+            const itemCount = Math.max(1, Math.min(itemKind === 'prompt' ? 1 : itemKind === 'video' ? 4 : 8, Number(item?.count) || 1));
+            return {kind:itemKind, count:itemCount, params:{...(item?.params || {})}, prompt:String(item?.prompt || '').trim()};
+        }).slice(0, 8)
+        : [{kind, count, params:{}, prompt:''}];
+    const taskPayloads = drafts.map(item => ({kind:item.kind, count:item.kind === 'prompt' ? 1 : item.count, params:{...(item.params || {}), ...(item.prompt ? {prompt:item.prompt} : {})}}));
     node.agentPlanning = true;
     if(button) button.disabled = true;
     render();
@@ -9623,7 +9640,7 @@ async function planAgentNode(node, goalEl, kindEl, countEl, button){
         node.agentPlanRequestId = requestId;
         const postPlan = () => fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(node.id)}/plan`, {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({goal, request_id:requestId, tasks:[{kind, count, params:{}}], base_revision:Number(canvas?.revision || 0)})
+            body:JSON.stringify({goal, request_id:requestId, tasks:taskPayloads, base_revision:Number(canvas?.revision || 0)})
         });
         let response = await postPlan();
         if(response.status === 409){
@@ -9677,17 +9694,71 @@ function bindAgentNodeControls(el, node){
         control.addEventListener('click', event => event.stopPropagation());
     });
     const goalEl = el.querySelector('[data-agent-goal]');
-    const kindEl = el.querySelector('[data-agent-kind]');
-    const countEl = el.querySelector('[data-agent-count]');
     goalEl?.addEventListener('input', event => { node.agentGoal = event.target.value; node.agentPlanRequestId = ''; scheduleSave(); });
-    kindEl?.addEventListener('change', event => {
-        const kind = event.target.value === 'video' ? 'video' : event.target.value === 'prompt' ? 'prompt' : 'image';
-        node.agentTaskDraft = {...(node.agentTaskDraft || {}), kind, count:kind === 'prompt' ? 1 : Number(node.agentTaskDraft?.count || 1)};
-        if(countEl){ countEl.max = kind === 'prompt' ? '1' : '8'; if(kind === 'prompt') countEl.value = '1'; }
-        scheduleSave();
+    el.querySelectorAll('[data-agent-kind]').forEach(kindEl => {
+        kindEl.addEventListener('change', event => {
+            const index = Number(kindEl.closest('[data-agent-draft-index]')?.dataset?.agentDraftIndex ?? 0);
+            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
+            item.kind = event.target.value === 'video' ? 'video' : event.target.value === 'prompt' ? 'prompt' : 'image';
+            if(item.kind === 'prompt') item.count = 1;
+            drafts[index] = item;
+            node.agentTaskDrafts = drafts;
+            if(node.agentTaskDraft) node.agentTaskDraft = item;
+            node.agentPlanRequestId = '';
+            const countEl = kindEl.closest('[data-agent-draft-index]')?.querySelector('[data-agent-count]');
+            if(countEl){ countEl.max = item.kind === 'prompt' ? '1' : '8'; if(item.kind === 'prompt') countEl.value = '1'; }
+            scheduleSave();
+        });
     });
-    countEl?.addEventListener('input', event => { node.agentTaskDraft = {...(node.agentTaskDraft || {}), count:Number(event.target.value) || 1}; scheduleSave(); });
-    el.querySelector('[data-agent-plan]')?.addEventListener('click', event => { event.preventDefault(); planAgentNode(node, goalEl, kindEl, countEl, event.currentTarget); });
+    el.querySelectorAll('[data-agent-count]').forEach(countEl => {
+        countEl.addEventListener('input', event => {
+            const index = Number(countEl.closest('[data-agent-draft-index]')?.dataset?.agentDraftIndex ?? 0);
+            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
+            item.count = Number(event.target.value) || 1;
+            drafts[index] = item;
+            node.agentTaskDrafts = drafts;
+            if(node.agentTaskDraft) node.agentTaskDraft = item;
+            scheduleSave();
+        });
+    });
+    el.querySelectorAll('[data-agent-draft-prompt]').forEach(promptEl => {
+        promptEl.addEventListener('input', event => {
+            const index = Number(promptEl.dataset.agentDraftPrompt ?? 0);
+            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
+            item.prompt = event.target.value;
+            drafts[index] = item;
+            node.agentTaskDrafts = drafts;
+            if(node.agentTaskDraft) node.agentTaskDraft = item;
+            scheduleSave();
+        });
+    });
+    el.querySelector('[data-agent-draft-add]')?.addEventListener('click', event => {
+        event.preventDefault();
+        const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+        if(drafts.length >= 8){ toast('最多 8 个任务'); return; }
+        drafts.push({kind:'image', count:1, params:{}, prompt:''});
+        node.agentTaskDrafts = drafts;
+        node.agentPlanRequestId = '';
+        scheduleSave();
+        render();
+    });
+    el.querySelectorAll('[data-agent-draft-remove]').forEach(removeEl => {
+        removeEl.addEventListener('click', event => {
+            event.preventDefault();
+            const index = Number(removeEl.dataset.agentDraftRemove ?? 0);
+            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
+            if(drafts.length <= 1){ toast('至少保留一个任务'); return; }
+            drafts.splice(index, 1);
+            node.agentTaskDrafts = drafts;
+            node.agentPlanRequestId = '';
+            scheduleSave();
+            render();
+        });
+    });
+    el.querySelector('[data-agent-plan]')?.addEventListener('click', event => { event.preventDefault(); planAgentNode(node, goalEl, el.querySelector('[data-agent-kind]'), el.querySelector('[data-agent-count]'), event.currentTarget); });
     el.querySelector('[data-agent-confirm]')?.addEventListener('click', event => { event.preventDefault(); executeAgentNode(node, event.currentTarget); });
 }
 function bindAgentTaskNodeControls(el, node){

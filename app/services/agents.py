@@ -304,7 +304,12 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
         PROJECT_AGENT_RUNNING_IDS.add(task_id)
         PROJECT_AGENT_TASKS[task_id] = {'id': task_id, 'task_id': task_id, 'project_id': project_id, 'agent_id': agent_id, 'execution_id': execution_id, 'status': 'running', 'created_at': started_at, 'updated_at': time.time(), 'result': None, 'error': ''}
     kind = str(task.get('kind') or 'image')
-    request = {'project_id': project_id, 'agent_id': agent_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id, 'task_id': task_id, 'kind': kind, 'model_type': str(task.get('model_type') or ''), 'prompt': str(task.get('prompt') or ''), 'params': copy.deepcopy(task.get('params') or {}), 'references': copy.deepcopy(task.get('references') or [])}
+    raw_params = copy.deepcopy(task.get('params') or {})
+    task_prompt = str(task.get('prompt') or '')
+    if not task_prompt and isinstance(raw_params.get('prompt'), str):
+        task_prompt = raw_params['prompt'].strip()
+        task['prompt'] = task_prompt
+    request = {'project_id': project_id, 'agent_id': agent_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id, 'task_id': task_id, 'kind': kind, 'model_type': str(task.get('model_type') or ''), 'prompt': task_prompt, 'params': raw_params, 'references': copy.deepcopy(task.get('references') or [])}
     generated_items: List[Dict[str, Any]] = []
     history_record: Dict[str, Any]
     try:

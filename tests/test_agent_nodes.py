@@ -457,6 +457,40 @@ class ProjectAgentContractTests(unittest.TestCase):
         executor.assert_awaited_once()
         self.assertEqual(self.store.open_project(self.project["id"])["canvas"]["logs"][-1]["type"], "agent-video")
 
+    def test_multi_task_plan_executes_every_task_and_promotes_params_prompt(self):
+        self.project, _image = self.seed()
+        revision = self.store.canvas(self.project["id"])["revision"]
+        generated = AsyncMock(return_value=(tiny_png(), {}))
+        route = SimpleNamespace(provider_id="fake", provider_name="Fake", model="fake-model", to_dict=lambda: {"provider_id": "fake", "model": "fake-model"})
+        with patch.object(main, "load_api_providers", return_value=[]), patch.object(main, "route_image_generation", return_value=route), patch.object(main, "generate_ai_image", generated):
+            planned_response = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/plan",
+                json=self.plan_payload(revision, tasks=[
+                    {"kind": "prompt", "count": 1, "params": {"prompt": "多任务提示词甲"}},
+                    {"kind": "image", "count": 1, "params": {"prompt": "多任务提示词乙"}},
+                ]),
+            )
+            self.assertEqual(planned_response.status_code, 200, planned_response.text)
+            plan = planned_response.json()["plan"]
+            self.assertEqual(len(plan["tasks"]), 2)
+            execute = self.client.post(
+                f"/api/project-library/{self.project['id']}/agent/agent-1/execute",
+                json={"plan_id": plan["plan_id"], "execution_id": "multi-task-execution"},
+            )
+            self.assertEqual(execute.status_code, 202, execute.text)
+            self.assertEqual(execute.json()["status"], "running")
+            self.assertEqual(len(execute.json()["tasks"]), 2)
+            for task in execute.json()["tasks"]:
+                settled = self.wait(task["task_id"])
+                self.assertEqual(settled["status"], "succeeded", settled)
+            opened = self.store.open_project(self.project["id"])["canvas"]
+            tasks = [node for node in opened["nodes"] if node.get("type") == "agent-task"]
+            self.assertEqual(len(tasks), 2)
+            prompt_nodes = [node for node in opened["nodes"] if node.get("type") == "smart-prompt" and node.get("agent_task_id")]
+            self.assertEqual(len(prompt_nodes), 1)
+            self.assertIn("多任务提示词甲", str(prompt_nodes[0].get("text") or ""))
+            generated.assert_awaited_once()
+
     def test_prompt_task_creates_unconnected_prompt_node_without_adapter(self):
         self.project, _image = self.seed()
         revision = self.store.canvas(self.project["id"])["revision"]
