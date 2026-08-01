@@ -110,6 +110,8 @@ let saveTimer = null;
 let autosaveCountdownTimer = null;
 let autoSaveDueAt = 0;
 let autosaveIntervalMinutes = 20;
+const DEBOUNCED_SAVE_MS = 3000;
+let debouncedSaveTimer = null;
 let contentDirty = false;
 let persistedCoreSnapshot = null;
 let persistedDurableSnapshot = null;
@@ -5893,6 +5895,8 @@ function clearAutosaveTimer(resetDue=true){
 function markAutosaveSaved(){
     contentDirty = false;
     clearAutosaveTimer(true);
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = null;
     if(canvas?.format === 'firefly-canvas-v1' && !persistedDurableSnapshot) refreshPersistedDurableSnapshot(canvasForStorage());
     setProjectSaveState('saved', tr('smart.projectSaved'));
 }
@@ -5908,8 +5912,21 @@ function markContentDirty(){
             saveCanvas({automatic:true});
         }, normalizedAutosaveIntervalMinutes(autosaveIntervalMinutes) * 60 * 1000);
     }
+    scheduleDebouncedSave();
     if(canvas?.format === 'firefly-canvas-v1') setProjectSaveState('dirty', tr('smart.projectDirty'));
     startAutosaveCountdown();
+}
+function scheduleDebouncedSave(){
+    // Content mutations are also flushed after a short quiet period, so an
+    // active user never waits the full autosave interval before data lands
+    // on disk. A burst keeps resetting the timer, coalescing into one save.
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = setTimeout(() => {
+        debouncedSaveTimer = null;
+        if(!contentDirty) return;
+        clearAutosaveTimer(true);
+        saveCanvas({automatic:true});
+    }, DEBOUNCED_SAVE_MS);
 }
 function scheduleSave(options={}){
     // Content mutations start a coalescing window; later mutations keep its
