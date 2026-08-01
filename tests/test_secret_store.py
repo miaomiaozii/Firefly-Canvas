@@ -43,6 +43,48 @@ class SecretStoreTests(unittest.TestCase):
             self.assertTrue(stored.startswith("dpapi:"))
             self.assertEqual(secret_store.decrypt_env_value(stored), plain)
 
+    def test_load_env_file_skips_encrypted_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "API" / ".env"
+            env_file.parent.mkdir(parents=True)
+            encrypted = secret_store.encrypt_env_value("sk-plain-visible")
+            env_file.write_text(f"FIREFLY_DPAPI_SKIP_TEST={encrypted}\nFIREFLY_PLAIN_TEST=visible\n", encoding="utf-8")
+            previous = main.API_ENV_FILE
+            try:
+                main.API_ENV_FILE = str(env_file)
+                os.environ.pop("FIREFLY_DPAPI_SKIP_TEST", None)
+                os.environ.pop("FIREFLY_PLAIN_TEST", None)
+                main.load_env_file()
+                self.assertEqual(os.environ.get("FIREFLY_DPAPI_SKIP_TEST", ""), "")
+                self.assertEqual(os.environ.get("FIREFLY_PLAIN_TEST", ""), "visible")
+            finally:
+                main.API_ENV_FILE = previous
+                os.environ.pop("FIREFLY_DPAPI_SKIP_TEST", None)
+                os.environ.pop("FIREFLY_PLAIN_TEST", None)
+
+    def test_provider_env_key_value_decrypts_polluted_environment(self):
+        from app.services import providers as _providers_mod
+        from app.services.providers import provider_env_key_value, provider_key_env
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "API" / ".env"
+            env_file.parent.mkdir(parents=True)
+            plain = "sk-polluted-guard"
+            fake_provider = "dpapi-guard-fake"
+            env_key = provider_key_env(fake_provider)
+            self.assertNotIn("COMFLY", env_key)
+            env_file.write_text(f"{env_key}={secret_store.encrypt_env_value(plain)}\n", encoding="utf-8")
+            previous = main.API_ENV_FILE
+            os.environ.pop(env_key, None)
+            try:
+                main.API_ENV_FILE = str(env_file)
+                with patch.object(_providers_mod._svc, "_main", return_value=str(env_file)):
+                    self.assertEqual(provider_env_key_value(fake_provider), plain)
+                    os.environ[env_key] = "dpapi:not-a-valid-ciphertext"
+                    self.assertEqual(provider_env_key_value(fake_provider), plain)
+            finally:
+                main.API_ENV_FILE = previous
+                os.environ.pop(env_key, None)
+
 
 class WriteGuardTests(unittest.TestCase):
     def test_guard_blocks_real_config_paths_in_test_mode(self):

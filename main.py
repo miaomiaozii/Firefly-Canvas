@@ -657,6 +657,8 @@ def load_env_file():
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
+                if value.startswith("dpapi:"):
+                    continue
                 os.environ.setdefault(key, value)
     except Exception as e:
         print(f"加载 API/.env 失败: {e}")

@@ -25,8 +25,11 @@ def provider_env_key_value(provider_id: str) -> str:
     provider_id = str(provider_id or '').strip().lower()
     env_key = provider_key_env(provider_id)
     key = os.getenv(env_key, '') or read_api_env_value(env_key)
-    if key:
+    if key.startswith('dpapi:'):
+        key = secret_store.decrypt_env_value(key)
+    if key and not key.startswith('dpapi:'):
         return key
+    return read_api_env_value(env_key)
     if provider_id == 'modelscope':
         return MODELSCOPE_API_KEY or ''
     return ''
