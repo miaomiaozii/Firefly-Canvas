@@ -1785,7 +1785,7 @@ async def wait_for_kling_video_task(client, provider, task_id):
 
 def kling_model_name(requested_model):
     model_id = str(requested_model or '').strip().lower()
-    if model_id == 'kling-video-v3':
+    if model_id == 'kling-video-v3' or model_id.startswith('kling-video-v1'):
         return 'kling-v1-6'
     if model_id.startswith('kling-v1'):
         return 'kling-v1-6'

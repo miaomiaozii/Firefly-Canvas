@@ -2653,9 +2653,10 @@ function modelSearchInputHtml(param, count){
 }
 function videoAdapterHint(model){
     const m = String(model ?? '').toLocaleLowerCase();
-    if (m.startsWith('kling-v1') || m.startsWith('kling-video-v1')) return '';
+    if (m.startsWith('kling-v1') || m.startsWith('kling-video-v1') || m === 'kling-video-v3') return '';
     if (m.startsWith('veo3.1')) return '';
     if (m.startsWith('wan2') || m.startsWith('wanx')) return '';
+    if (m.startsWith('doubao-seedance') || m.startsWith('grok-video') || m.startsWith('grok-imagine-video') || m.startsWith('grok-1.5-video') || m.startsWith('minimax-hailuo') || m === 'hailuo-video') return '';
     if (/(video|veo|wan|seedance|hailuo|runway|pika|sora|grok-imagine|luma|mochi|ltx|hunyuan|cog|vidu|minimax-)/.test(m)) return '未适配';
     return '';
 }

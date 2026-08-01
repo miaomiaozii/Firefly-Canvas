@@ -2598,6 +2598,13 @@ def video_adapter_label(model='', provider=None):
         return ('中转站-统一格式', True)
     if model_id.startswith('wan2') or model_id.startswith('wanx'):
         return ('中转站-统一格式(wan)', True)
+    if (model_id.startswith('doubao-seedance')
+            or model_id.startswith('grok-video')
+            or model_id.startswith('grok-imagine-video')
+            or model_id.startswith('grok-1.5-video')
+            or model_id.startswith('minimax-hailuo')
+            or model_id == 'hailuo-video'):
+        return ('中转站-统一格式(seedance/grok/hailuo)', True)
     if is_codex_provider(provider):
         return ('官方-Codex CLI', True)
     if is_gemini_cli_provider(provider):

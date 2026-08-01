@@ -61,6 +61,12 @@ class VideoAdapterLabelTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("未适配", label)
 
+    def test_unified_format_families(self):
+        for model in ("doubao-seedance-2-0-260128", "grok-video-3", "MiniMax-Hailuo-2.3", "hailuo-video"):
+            label, ready = video_adapter_label(model, {})
+            self.assertTrue(ready, model)
+            self.assertIn("统一格式", label)
+
 
 class KlingFormatTests(unittest.TestCase):
     def test_kling_model_name_maps_v3_to_v1_6(self):
