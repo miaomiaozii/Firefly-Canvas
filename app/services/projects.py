@@ -95,6 +95,8 @@ def export_project_package(project_id: str, path: str):
             raise ProjectMediaImportActive('项目仍有视频正在生成，请稍后再导出')
         if _svc.project_has_active_conversation(project_id):
             raise ProjectMediaImportActive('项目仍有对话任务待完成或待恢复，请稍后再导出')
+        if _svc.project_has_active_agent_task(project_id):
+            raise ProjectMediaImportActive('项目仍有 Agent 任务正在执行，请稍后再导出')
         with PROJECT_LIBRARY_SWITCH_LOCK:
             store = _svc._main('FIREFLY_PROJECT_STORE')
         return store.export_fly_to(project_id, path)
