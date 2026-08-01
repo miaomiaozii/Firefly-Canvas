@@ -521,16 +521,19 @@ def _incompatible_common_parameters(request: Mapping[str, Any], capability: Mapp
         incompatible.append("media_type")
 
     sizes = capability.get("sizes") or []
-    size_supported = bool(capability.get("arbitrary_size") or "*" in sizes or request.get("size") in sizes)
+    requested_size = request.get("size")
+    size_supported = bool(capability.get("arbitrary_size") or "*" in sizes or (requested_size is None) or requested_size in sizes)
     if not size_supported:
         incompatible.append("size")
 
     aspect_ratios = capability.get("aspect_ratios") or []
-    if not capability.get("arbitrary_aspect_ratio") and "*" not in aspect_ratios and request.get("aspect_ratio") not in aspect_ratios:
+    requested_aspect_ratio = request.get("aspect_ratio")
+    if requested_aspect_ratio is not None and not capability.get("arbitrary_aspect_ratio") and "*" not in aspect_ratios and requested_aspect_ratio not in aspect_ratios:
         incompatible.append("aspect_ratio")
 
     resolutions = capability.get("resolutions") or []
-    if not capability.get("arbitrary_resolution") and "*" not in resolutions and request.get("resolution") not in resolutions:
+    requested_resolution = request.get("resolution")
+    if requested_resolution is not None and not capability.get("arbitrary_resolution") and "*" not in resolutions and requested_resolution not in resolutions:
         incompatible.append("resolution")
 
     for key, minimum_key, maximum_key in (

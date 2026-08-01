@@ -2570,6 +2570,14 @@ def is_agnes_provider(provider, model=''):
     model_id = str(model or '').strip().lower()
     return 'apihub.agnes-ai.com' in base_url or model_id.startswith('agnes-video-')
 
+def is_kling_model(model=''):
+    model_id = str(model or '').strip().lower()
+    return model_id == 'kling-video-v3' or model_id.startswith('kling-v1')
+
+def is_kling_provider(provider, model=''):
+    model_id = str(model or '').strip().lower()
+    return is_kling_model(model_id) or model_id.startswith('kling-')
+
 def avatar_platform_for_provider(provider) -> str:
     if not provider:
         return ''

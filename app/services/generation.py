@@ -1723,6 +1723,99 @@ async def generate_yuli_openai_video(client, payload, provider, base_url, reques
     local_urls = [await _svc._main('save_remote_video_to_output')(url) for url in urls]
     return {'videos': local_urls, 'task_id': task_id, 'raw': result}
 
+async def generate_kling_video(client, payload, provider, base_url, requested_model):
+    """快手可灵官方格式：POST /kling/v1/videos/text2video，查询 GET /kling/v1/images/text2video/{task_id}。"""
+    submit_url = f'{base_url}/kling/v1/videos/text2video'
+    data = {
+        'model_name': kling_model_name(requested_model),
+        'prompt': str(payload.prompt or ''),
+        'aspect_ratio': kling_aspect_ratio(payload.aspect_ratio or payload.size),
+        'duration': kling_duration(payload.duration),
+        'mode': 'pro' if getattr(payload, 'quality', '') == 'pro' else 'std',
+    }
+    if payload.negative_prompt:
+        data['negative_prompt'] = str(payload.negative_prompt or '')[:200]
+    headers = _svc._main('api_headers')(json_body=False, provider=provider)
+    response = await client.post(submit_url, headers=headers, json=data)
+    response.raise_for_status()
+    try:
+        raw = response.json()
+    except Exception as exc:
+        resp_text = (response.text or '')[:500]
+        raise HTTPException(status_code=502, detail=f'可灵视频接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}') from exc
+    task_id = str(raw.get('data') or {}).get('task_id') if isinstance(raw.get('data'), dict) else None
+    if not task_id:
+        task_id = str(raw.get('task_id') or extract_task_id(raw) or '').strip()
+    if not task_id:
+        raise HTTPException(status_code=502, detail=f'可灵视频接口未返回任务 ID：{raw}')
+    task_status = (raw.get('data') or {}).get('task_status') if isinstance(raw.get('data'), dict) else None
+    result = raw
+    if task_status != 'succeed':
+        result = await wait_for_kling_video_task(client, provider, task_id)
+    urls = kling_video_output_urls(result)
+    if not urls:
+        raise HTTPException(status_code=502, detail=f'可灵视频生成成功但没有返回视频：{result}')
+    local_urls = [await _svc._main('save_remote_video_to_output')(url) for url in urls]
+    return {'videos': local_urls, 'task_id': task_id, 'raw': result}
+
+async def wait_for_kling_video_task(client, provider, task_id):
+    query_url = f'{_svc.video_api_root(provider)}/kling/v1/images/text2video/{task_id}'
+    headers = _svc._main('api_headers')(json_body=False, provider=provider)
+    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    last_detail = ''
+    while time.monotonic() < deadline:
+        try:
+            response = await client.get(query_url, headers=headers)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            await asyncio.sleep(2.0)
+            last_detail = f'查询失败：{exc}'
+            continue
+        data = body.get('data') if isinstance(body.get('data'), dict) else {}
+        task_status = str(data.get('task_status') or body.get('task_status') or '').strip()
+        if task_status == 'succeed':
+            return body
+        if task_status == 'failed':
+            detail = str(data.get('task_status_msg') or body.get('task_status_msg') or last_detail or '任务失败')
+            raise HTTPException(status_code=502, detail=f'可灵视频任务失败：{detail}')
+        last_detail = str(data.get('task_status_msg') or '') or last_detail
+        await asyncio.sleep(3.0)
+    raise HTTPException(status_code=502, detail=f'可灵视频任务超时：{last_detail or "任务未在限定时间内完成"}')
+
+def kling_model_name(requested_model):
+    model_id = str(requested_model or '').strip().lower()
+    if model_id == 'kling-video-v3':
+        return 'kling-v1-6'
+    if model_id.startswith('kling-v1'):
+        return 'kling-v1-6'
+    return str(requested_model or 'kling-v1-6')
+
+def kling_aspect_ratio(size):
+    ratio = _svc._main('gemini_supported_aspect_ratio')(size)
+    if ratio in ('16:9', '9:16', '1:1'):
+        return ratio
+    return '16:9'
+
+def kling_duration(duration):
+    try:
+        seconds = int(float(duration or 0))
+    except (TypeError, ValueError):
+        seconds = 0
+    return '10' if seconds >= 10 else '5'
+
+def kling_video_output_urls(raw):
+    urls = []
+    data = raw.get('data') if isinstance(raw.get('data'), dict) else {}
+    result = data.get('task_result') if isinstance(data.get('task_result'), dict) else {}
+    videos = result.get('videos') if isinstance(result.get('videos'), list) else []
+    for item in videos:
+        if isinstance(item, dict):
+            url = str(item.get('url') or '').strip()
+            if url:
+                urls.append(url)
+    return urls or video_output_urls(raw)
+
 def project_video_candidate_inline_reference_kinds(provider: Mapping[str, Any], model: str) -> set[str]:
     if is_runninghub_provider(provider) or is_jimeng_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
         return set()
@@ -2071,6 +2164,17 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
     submit_url = submit_urls[0]
     requested_model = selected_model(payload.model, 'agnes-video-v2.0' if is_agnes else 'veo3-fast')
     is_veo31 = is_apimart and is_apimart_veo31_model(requested_model)
+    is_kling = _svc._main('is_kling_model')(requested_model)
+    if is_kling:
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as kling_client:
+                return await generate_kling_video(kling_client, payload, provider, base_url, requested_model)
+        except httpx.HTTPStatusError as exc:
+            text = exc.response.text
+            raise HTTPException(status_code=exc.response.status_code, detail=f'可灵视频接口错误：{text}') from exc
+        except httpx.HTTPError as exc:
+            log_net_error(f'视频(可灵) 网络/TLS错误 model={requested_model}', exc)
+            raise HTTPException(status_code=502, detail=f'请求可灵视频接口失败：{exc}') from exc
     if is_agnes:
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as agnes_client:
