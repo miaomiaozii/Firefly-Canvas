@@ -168,6 +168,7 @@
             promptConfirm?.click();
             const promptCompleted = await waitFor(() => promptAgentEl()?.querySelector('.agent-plan-task-status[data-status="succeeded"]') && document.querySelectorAll('.agent-task-node [data-agent-task-status][data-status="succeeded"]').length >= 2, 15000);
             assertion('prompt-node confirmation completes without an online adapter call', promptCompleted, promptAgentEl()?.querySelector('[data-agent-task-status]')?.textContent || '');
+            assertion('terminal task cards expose no cancel/retry controls', [...document.querySelectorAll('[data-agent-cancel-task],[data-agent-retry-task]')].length === 0, document.querySelectorAll('[data-agent-cancel-task],[data-agent-retry-task]').length);
             const promptCanvas = await refreshCanvas();
             const promptResult = (promptCanvas.nodes || []).find(node => node.agent_task_id && node.type === 'smart-prompt');
             const promptEdges = (promptCanvas.connections || []).filter(edge => edge.from === promptResult?.id || edge.to === promptResult?.id);
