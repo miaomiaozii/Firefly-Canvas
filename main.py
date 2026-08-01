@@ -1,4 +1,6 @@
 """Firefly Canvas server - app assembly (auto-split from monolith)."""
+from contextlib import asynccontextmanager
+
 from app.core import *  # noqa: F401,F403
 
 import os as _os_boot
@@ -526,7 +528,6 @@ class ConnectionManager:
                 if connection in self.active_connections:
                     self.active_connections.remove(connection)
 
-@app.on_event("startup")
 async def startup_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
     GLOBAL_LOOP = asyncio.get_running_loop()
@@ -560,7 +561,6 @@ async def startup_event():
     except Exception as exc:
         print(f"Agent 任务恢复失败: {exc}")
 
-@app.on_event("shutdown")
 async def shutdown_event():
     global PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_IMAGE_GENERATION_EXECUTOR, PROJECT_CONVERSATION_RUNNER
     conversation_runner = PROJECT_CONVERSATION_RUNNER
@@ -601,6 +601,16 @@ async def shutdown_event():
     if generation_executor is not None:
         await asyncio.to_thread(generation_executor.shutdown, wait=True, cancel_futures=True)
     await asyncio.to_thread(project_store_call, "close")
+
+
+@asynccontextmanager
+async def lifespan_context(_app):
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
+app.router.lifespan_context = lifespan_context
 
 def load_storage_settings():
     raw = {}
