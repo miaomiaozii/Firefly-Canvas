@@ -6668,6 +6668,8 @@ function resultMediaUrls(result){
                 const url = value.url || value.path || value.src || value.uri;
                 if(url){
                     const item = {url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''};
+                    if(value.mime_type) item.mime_type = value.mime_type;
+                    if(value.asset_id) item.asset_id = value.asset_id;
                     ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
                         const n = Number(value[key]);
                         if(Number.isFinite(n) && n > 0) item[key] = n;
@@ -15133,7 +15135,7 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     const imgs = cleanHistoryImages(urls.map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true});
+        return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})});
     }).filter(img => img.url));
     pendingNode.images = imgs;
     markSmartNodeComplete(pendingNode, meta);
@@ -15825,7 +15827,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
         const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
         const additions = result.urls.map((item, i) => {
             const url = typeof item === 'string' ? item : item?.url || '';
-            return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true}));
+            return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
         }).filter(item => item.url);
         if(ctx?.appendLoopOutputs) {
             appendLoopOutputsToNode(outputNode, additions, result.kind, ctx);
@@ -16020,7 +16022,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
             additions = result.urls.map((item, i) => {
                 const url = typeof item === 'string' ? item : item?.url || '';
-                return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true}));
+                return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
             }).filter(item => item.url);
             outputSlot = liveSmartNode(outputSlot);
             outputSlot.images = nonPreviewOutputImages(outputSlot.images);
@@ -16883,7 +16885,7 @@ function finalizeJimengPending(node, urls, kind='image'){
     const additions = (urls || []).map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true}));
+        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
     }).filter(item => item.url);
     if(!additions.length) return false;
     delete node.jimengPending;
@@ -17112,7 +17114,7 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
     const additions = cleanHistoryImages((mediaItems || []).map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true}));
+        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
     }).filter(item => item.url)).filter(item => {
         const key = `${item.kind || ''}|${item.url || ''}`;
         if(seen.has(key)) return false;
