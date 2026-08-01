@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (BASE_DIR, BaseModel, FileResponse, HTTPException, List, SHARED_FOLDERS_LOCK, SHARED_MEDIA_EXTS, SHARED_SCAN_MAX_ENTRIES, SharedFolderImport, SharedFolderRegister, _os, _sys, asset_library_media_kind, content_type_for_path, json, os, sanitize_asset_name, scan_shared_tree, shared_child_abs, shared_folder_abs, shared_resolve_register, urllib, uuid)
 _from_main_names = ['DATA_DIR', 'SHARED_FOLDERS_FILE', 'classify_asset_image_best_effort', 'find_asset_category_in_library', 'load_asset_library', 'make_asset_library_item', 'now_ms', 'output_file_from_url', 'save_asset_library', 'shared_folder_by_id', 'shared_folders_load', 'shared_folders_save']
 import app.services as _svc
 for _nm in _from_main_names:

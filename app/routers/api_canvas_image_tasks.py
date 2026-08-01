@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (CANVAS_TASKS, CANVAS_TASK_LOCK, HTTPException, JimengPendingError, OnlineImageRequest, _os, _sys, asyncio, extract_task_id_from_text, jimeng_pending_payload, re, require_online_image_project_media_scope, time, uuid)
 _from_main_names = ['build_online_image_result', 'run_canvas_image_task']
 import app.services as _svc
 for _nm in _from_main_names:

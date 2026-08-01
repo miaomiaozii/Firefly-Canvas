@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (AI_API_KEY, CHAT_MODEL, IMAGE_MODEL, MODELSCOPE_CHAT_MODELS, _os, _sys, json, os, preferred_chat_model)
 _from_main_names = ['AI_BASE_URL', 'CHAT_MODELS', 'GLOBAL_CONFIG_FILE', 'IMAGE_MODELS', 'VIDEO_MODELS', 'modelscope_api_key', 'public_api_providers']
 import app.services as _svc
 for _nm in _from_main_names:

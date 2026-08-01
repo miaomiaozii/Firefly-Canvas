@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (BaseModel, ConversationCreateRequest, Header, Request, _os, _sys, json, os, safe_user_id)
 _from_main_names = ['conversation_path', 'list_conversations', 'load_conversation', 'new_conversation', 'user_dir']
 import app.services as _svc
 for _nm in _from_main_names:

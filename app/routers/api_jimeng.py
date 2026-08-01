@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (BASE_DIR, BaseModel, HTTPException, JIMENG_LOGIN_SESSION, JIMENG_MIN_CLI_VERSION, JimengHelpRequest, JimengPendingError, JimengQueryMediaRequest, _os, _sys, asyncio, decode_wsl_output, jimeng_clean_wsl_stderr, jimeng_login_qr_from_text, jimeng_login_text, jimeng_pending_payload, re, time)
 _from_main_names = ['jimeng_cli_executable', 'jimeng_cli_version', 'jimeng_command', 'jimeng_login_reader', 'jimeng_query_result', 'jimeng_store_outputs', 'jimeng_use_wsl', 'run_jimeng_cli']
 import app.services as _svc
 for _nm in _from_main_names:

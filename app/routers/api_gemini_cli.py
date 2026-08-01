@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import *
+from app.core import (BASE_DIR, BaseModel, GeminiCliHelpRequest, HTTPException, _os, _sys, asyncio, codex_decode_output, is_antigravity_cli, os)
 _from_main_names = ['gemini_cli_display_name', 'gemini_cli_executable']
 import app.services as _svc
 for _nm in _from_main_names:
