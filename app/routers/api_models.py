@@ -11,8 +11,6 @@ import os as _os
 
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 
-import os
-
 from fastapi import APIRouter
 
 from app.core import CHAT_MODEL, IMAGE_MODEL, model_list
@@ -42,7 +40,6 @@ _DEFAULT_VIDEO_MODELS = [
 
 _DEFAULT_CHAT_MODELS = ["gpt-4o-mini", "gemini-3.1-flash-image-preview-2k"]
 _DEFAULT_IMAGE_MODELS = ["nano-banana-pro"]
-
 
 @router.get('/api/models')
 async def ai_models():

@@ -13,7 +13,6 @@ import shutil
 import uuid
 import hashlib
 import mimetypes
-from datetime import datetime
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -1555,7 +1554,6 @@ def project_has_active_conversation(project_id: str, *, trashed: bool=False) -> 
         return project_has_recoverable_conversation_sidecars(store, project_dir, project_id, canvas) or canvas_has_pending_conversation(canvas)
     except (ProjectStoreError, OSError, ValueError, json.JSONDecodeError):
         return True
-
 
 def project_has_active_agent_task(project_id: str) -> bool:
     """Block lifecycle moves while any Agent task for the project is still queued or running."""
