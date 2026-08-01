@@ -176,21 +176,30 @@
             const afterCount = c?.nodes?.length || 0;
             assertion('undo restores deleted nodes', restored && afterCount > beforeCount, `${beforeCount} -> ${afterCount} restored=${restored}`);
         }
+        // 4b. redo re-deletes the nodes (ctrl+shift+z)
+        {
+            const beforeCount = evalCanvas()?.nodes?.length || 0;
+            dispatchKey('z', {ctrlKey: true, shiftKey: true});
+            await sleep(200);
+            const c = evalCanvas();
+            const reDeleted = c?.nodes?.length === beforeCount - 2;
+            const hasPasted = c?.nodes?.some(n => String(n.id).startsWith('prompt_') || String(n.id).startsWith('smart_'));
+            assertion('redo re-deletes nodes', reDeleted && !hasPasted, `before=${beforeCount} after=${c?.nodes?.length} hasPasted=${hasPasted}`);
+        }
         // 5. group selected nodes
         {
             const c = evalCanvas();
             const prompt = c.nodes.find(n => n.id === 'seed-prompt');
             const img = c.nodes.find(n => n.type === 'smart-image' && String(n.id).startsWith('seed-'));
-            if(selectNode && prompt) selectNode(prompt.id);
-            await sleep(50);
-            const selectIds = evalFn('selectedIds');
-            if(selectIds) {
-                eval('selectedIds').push(img.id);
-                selectNode(prompt.id);
+            if(prompt && img){
+                eval('selectedIds.splice(0, selectedIds.length, ' + JSON.stringify(prompt.id) + ', ' + JSON.stringify(img.id) + ')');
+                eval('selectedId = ' + JSON.stringify(prompt.id));
             }
+            await sleep(80);
             const grp = groupSelectedNodes();
             const groupCount = (evalCanvas()?.nodes || []).filter(n => n.type === 'smart-group').length;
-            assertion('group creates smart-group node', grp === undefined || groupCount > 0, `groups=${groupCount}`);
+            result.diagnostics.push(`group diag: grp=${typeof grp} count=${groupCount} selId=${eval('selectedId')} selIds=${JSON.stringify(eval('selectedIds'))}`);
+            assertion('group creates smart-group node', groupCount > 0, `groups=${groupCount}`);
         }
         // 6. zoom via wheel changes viewport scale
         {

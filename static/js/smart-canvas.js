@@ -185,6 +185,7 @@ let conversationSelectionCandidate = null;
 let conversationExtractionReturnFocus = null;
 const UNDO_LIMIT = 40;
 const undoStack = [];
+const redoStack = [];
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
 function activeSmartCascadeCount(){ return smartCascadeRuns.size; }
@@ -252,6 +253,8 @@ async function performUndo(){
                 return;
             }
         }
+        redoStack.push(snapshotForUndo());
+        if(redoStack.length > UNDO_LIMIT) redoStack.shift();
         undoSuppressed = true;
         nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
         if(canvas) canvas.connections = snap.connections;
@@ -267,6 +270,27 @@ async function performUndo(){
         return;
     }
     toast(tr('smart.toastNoUndo'));
+}
+async function performRedo(){
+    while(redoStack.length){
+        const snap = redoStack.pop();
+        if(snap.projectOriginalDelete) continue;
+        pushUndo();
+        undoSuppressed = true;
+        nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
+        if(canvas) canvas.connections = snap.connections;
+        selectedId = snap.selectedId;
+        selectedIds = snap.selectedIds;
+        selectedImage = snap.selectedImage;
+        activeComposerSubject = null;
+        lastComposerNodeId = '';
+        render();
+        scheduleSave();
+        undoSuppressed = false;
+        toast(tr('smart.toastUndone'));
+        return;
+    }
+    toast(tr('smart.toastNoRedo'));
 }
 let cropState = null;
 let cropDrag = null;
@@ -18113,6 +18137,11 @@ window.addEventListener('keydown', e => {
     }
     if(e.key === 'Escape' && imageEditModal.classList.contains('open')){
         closeImageEditor();
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && (e.shiftKey && key === 'z' || key === 'y') && !isEditableTarget(e.target)){
+        e.preventDefault();
+        performRedo();
         return;
     }
     if((e.ctrlKey || e.metaKey) && key === 'z' && !isEditableTarget(e.target)){
