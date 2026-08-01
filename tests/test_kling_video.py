@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 
 import main
 from app.services import generation
-from app.core import is_kling_model, is_kling_provider
+from app.core import is_kling_model, is_kling_provider, video_adapter_label
 
 
 class KlingModelTests(unittest.TestCase):
@@ -18,13 +18,48 @@ class KlingModelTests(unittest.TestCase):
         self.assertTrue(is_kling_model("kling-video-v3"))
         self.assertTrue(is_kling_model("kling-v1-6"))
         self.assertTrue(is_kling_model("kling-v1-5"))
+        self.assertTrue(is_kling_model("kling-video-v1"))
+        self.assertTrue(is_kling_model("kling-video-v1-6"))
         self.assertFalse(is_kling_model("veo3.1"))
         self.assertFalse(is_kling_model("sora-2"))
 
     def test_kling_provider_detection(self):
-        self.assertTrue(is_kling_provider({}, "kling-video-v3"))
+        self.assertTrue(is_kling_provider({}, "kling-video-v1"))
         self.assertTrue(is_kling_provider({}, "kling-v1-6"))
         self.assertFalse(is_kling_provider({}, "veo3.1"))
+
+
+class VideoAdapterLabelTests(unittest.TestCase):
+    def test_official_kling(self):
+        label, ready = video_adapter_label("kling-v1-6", {})
+        self.assertTrue(ready)
+        self.assertIn("可灵", label)
+
+    def test_official_volcengine(self):
+        provider = {"id": "volcengine", "protocol": "volcengine", "base_url": "https://ark.cn-beijing.volces.com/api/v3"}
+        label, ready = video_adapter_label("doubao-seedance-2-0-260128", provider)
+        self.assertTrue(ready)
+        self.assertIn("火山", label)
+
+    def test_transit_veo31(self):
+        label, ready = video_adapter_label("veo3.1", {})
+        self.assertTrue(ready)
+        self.assertIn("veo3.1", label)
+
+    def test_transit_wan(self):
+        label, ready = video_adapter_label("wan2.6-t2v", {})
+        self.assertTrue(ready)
+        self.assertIn("wan", label)
+
+    def test_kling_v3_is_official_kling(self):
+        label, ready = video_adapter_label("kling-video-v3", {})
+        self.assertTrue(ready)
+        self.assertIn("可灵", label)
+
+    def test_unadapted_sora(self):
+        label, ready = video_adapter_label("sora-2", {})
+        self.assertFalse(ready)
+        self.assertIn("未适配", label)
 
 
 class KlingFormatTests(unittest.TestCase):

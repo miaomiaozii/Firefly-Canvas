@@ -2651,13 +2651,22 @@ function modelSearchInputHtml(param, count){
         ${countText}
     </label>`;
 }
+function videoAdapterHint(model){
+    const m = String(model ?? '').toLocaleLowerCase();
+    if (m.startsWith('kling-v1') || m.startsWith('kling-video-v1')) return '';
+    if (m.startsWith('veo3.1')) return '';
+    if (m.startsWith('wan2') || m.startsWith('wanx')) return '';
+    if (/(video|veo|wan|seedance|hailuo|runway|pika|sora|grok-imagine|luma|mochi|ltx|hunyuan|cog|vidu|minimax-)/.test(m)) return '未适配';
+    return '';
+}
 function searchableModelOptions(models, param, selected, emptyText, labelFor=(value => value)){
     const list = Array.isArray(models) ? models : [];
     const options = list.map(value => {
         const rawValue = String(value ?? '');
         const label = String(labelFor(value) ?? rawValue);
         const searchable = `${rawValue} ${label}`.toLocaleLowerCase();
-        return `<button type="button" class="direct-option ${rawValue === String(selected ?? '') ? 'active' : ''}" data-smart-param="${escapeHtml(param)}" data-smart-value="${escapeHtml(rawValue)}" data-model-option="${escapeHtml(searchable)}"><span>${escapeHtml(label)}</span></button>`;
+        const hint = param === 'videoModel' ? videoAdapterHint(rawValue) : '';
+        return `<button type="button" class="direct-option ${rawValue === String(selected ?? '') ? 'active' : ''}" data-smart-param="${escapeHtml(param)}" data-model-option="${escapeHtml(rawValue)}" ${hint ? 'data-unadapted="1"' : ''}>${escapeHtml(label)}${hint ? `<span class="model-adapt-badge">${escapeHtml(hint)}</span>` : ''}</button>`;
     }).join('');
     return `${modelSearchInputHtml(param, list.length)}
         <div class="model-list" data-model-options="${escapeHtml(param)}">

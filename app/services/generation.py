@@ -1759,7 +1759,7 @@ async def generate_kling_video(client, payload, provider, base_url, requested_mo
     return {'videos': local_urls, 'task_id': task_id, 'raw': result}
 
 async def wait_for_kling_video_task(client, provider, task_id):
-    query_url = f'{_svc.video_api_root(provider)}/kling/v1/images/text2video/{task_id}'
+    query_url = f'{_svc.video_api_root(provider)}/kling/v1/videos/text2video/{task_id}'
     headers = _svc._main('api_headers')(json_body=False, provider=provider)
     deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
     last_detail = ''
@@ -2133,7 +2133,10 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
 async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[str, Any]):
     incompatible = video_adapter_incompatible_parameters(payload, provider)
     if incompatible:
-        raise HTTPException(status_code=400, detail={'code': 'unsupported_video_adapter_parameters', 'message': f"{provider.get('name') or provider.get('id') or '当前视频适配器'} 不支持本次请求的全部参数", 'incompatible_parameters': incompatible})
+        raise HTTPException(status_code=400, detail={'code': 'unsupported_video_adapter_parameters', 'message': str(provider.get('name') or provider['id']) + ' 不支持请求的参数'})
+    adapter_label, adapter_ready = _svc._main('video_adapter_label')(payload.model, provider)
+    if not adapter_ready:
+        raise HTTPException(status_code=400, detail=f"模型 {payload.model} 未适配（{adapter_label}）。可用适配器：官方-可灵/火山/即梦/RunningHub、中转站统一格式(veo3.1/wan 等)、OpenAI 兼容。请先在 API 设置中更换为已适配模型。")
     if is_jimeng_provider(provider):
         return await _svc._main('generate_jimeng_video')(payload, provider)
     if is_runninghub_provider(provider):

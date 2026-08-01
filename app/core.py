@@ -2572,7 +2572,48 @@ def is_agnes_provider(provider, model=''):
 
 def is_kling_model(model=''):
     model_id = str(model or '').strip().lower()
-    return model_id == 'kling-video-v3' or model_id.startswith('kling-v1')
+    return (model_id.startswith('kling-v1') or model_id.startswith('kling-video-v1')
+            or model_id == 'kling-video-v3')
+
+def video_adapter_label(model='', provider=None):
+    model_id = str(model or '').strip().lower()
+    provider = provider or {}
+    if is_jimeng_provider(provider):
+        return ('官方-即梦 CLI', True)
+    if is_runninghub_provider(provider):
+        return ('官方-RunningHub', True)
+    if is_kling_model(model_id):
+        return ('官方-可灵', True)
+    if is_volcengine_provider(provider):
+        return ('官方-火山引擎', True)
+    if is_agnes_provider(provider, model_id):
+        return ('中转站-Agnes', True)
+    if is_lingjing_provider(provider):
+        return ('中转站-灵境', True)
+    if is_yuli_provider(provider):
+        return ('中转站-玉玉', True)
+    if is_apimart_veo31_model(model_id):
+        return ('中转站-统一格式(veo3.1)', True)
+    if is_apimart_provider(provider):
+        return ('中转站-统一格式', True)
+    if model_id.startswith('wan2') or model_id.startswith('wanx'):
+        return ('中转站-统一格式(wan)', True)
+    if is_codex_provider(provider):
+        return ('官方-Codex CLI', True)
+    if is_gemini_cli_provider(provider):
+        return ('官方-Gemini CLI', True)
+    known_video_hint = any(tag in model_id for tag in (
+        'video', 'veo', 'wan', 'seedance', 'hailuo', 'runway', 'pika', 'sora',
+        'grok-imagine', 'luma', 'mochi', 'ltx', 'hunyuan', 'cog', 'vidu', 'minimax-',
+    ))
+    if known_video_hint:
+        return ('未适配', False)
+    return ('OpenAI 兼容兜底', True)
+
+def is_gemini_cli_provider(provider):
+    base_url = str((provider or {}).get('base_url') or '').lower()
+    provider_id = str((provider or {}).get('id') or '').strip().lower()
+    return provider_id == 'gemini-cli' or 'gemini-cli' in base_url
 
 def is_kling_provider(provider, model=''):
     model_id = str(model or '').strip().lower()
