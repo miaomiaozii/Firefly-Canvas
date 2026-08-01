@@ -2666,18 +2666,9 @@ function searchableModelOptions(models, param, selected, emptyText, labelFor=(va
         </div>`;
 }
 function renderVideoRoutingControl(){
-    const mode = settings.videoRoutingMode === 'manual' ? 'manual' : 'auto';
-    const labels = {auto:'自动路由', manual:'高级固定'};
-    return `<div class="smart-control routing-mode-control">
-        <button class="smart-pill" type="button"><i data-lucide="route"></i><span>${labels[mode]}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
-        <div class="smart-popover compact-popover">
-            <div class="smart-popover-title">视频模型路由</div>
-            <div class="model-list">
-                ${Object.entries(labels).map(([value,label]) => `<button type="button" class="direct-option ${value === mode ? 'active' : ''}" data-smart-param="videoRoutingMode" data-smart-value="${value}"><span>${label}</span></button>`).join('')}
-            </div>
-            <div class="muted-note">自动路由只选择兼容模型，不会改动视频时长、比例、分辨率或参考素材。</div>
-        </div>
-    </div>`;
+    // 自动路由为默认无感行为：按视频参数自动选择兼容模型。
+    // 不再渲染显式切换开关；用户主动点选服务商或模型时即切换为固定（manual）。
+    return '';
 }
 function renderVideoModelControl(models){
     return `<div class="smart-control model-control">
@@ -2917,7 +2908,7 @@ function renderApiParams(){
     const outpaintLocked = settings.outpaintResolutionLocked === true;
     dynamicParams.innerHTML = `
         ${renderImageRoutingControl()}
-        ${settings.routingMode === 'manual' ? renderProviderControl(providers) : ''}
+        ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
         ${renderAnglePresetControl()}
@@ -2932,7 +2923,7 @@ function renderApiVideoParams(){
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
     dynamicParams.innerHTML = `
         ${renderVideoRoutingControl()}
-        ${settings.videoRoutingMode === 'manual' ? renderVideoProviderControl(providers) : ''}
+        ${renderVideoProviderControl(providers)}
         ${renderVideoModelControl(models)}
         ${renderVideoResolutionControl()}
         ${renderVideoAspectControl()}
@@ -2958,7 +2949,7 @@ function renderVolcengineParams(){
     const outpaintLocked = settings.outpaintResolutionLocked === true;
     dynamicParams.innerHTML = `
         ${renderImageRoutingControl()}
-        ${settings.routingMode === 'manual' ? renderProviderControl(providers) : ''}
+        ${renderProviderControl(providers)}
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
         ${renderAnglePresetControl()}
@@ -3191,18 +3182,9 @@ function renderProviderControl(providers){
     </div>`;
 }
 function renderImageRoutingControl(){
-    const mode = settings.routingMode === 'manual' ? 'manual' : 'auto';
-    const labels = {auto:'自动路由', manual:'高级固定'};
-    return `<div class="smart-control routing-mode-control">
-        <button class="smart-pill" type="button"><i data-lucide="route"></i><span>${labels[mode]}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
-        <div class="smart-popover compact-popover">
-            <div class="smart-popover-title">模型路由</div>
-            <div class="model-list">
-                ${Object.entries(labels).map(([value,label]) => `<button type="button" class="direct-option ${value === mode ? 'active' : ''}" data-smart-param="routingMode" data-smart-value="${value}"><span>${label}</span></button>`).join('')}
-            </div>
-            <div class="muted-note">Nano Banana Pro / Nano Banana 2 会按请求尺寸自动选择 1K、2K、4K 别名；不会改动宽高、比例、分辨率或参考图。</div>
-        </div>
-    </div>`;
+    // 自动路由为默认无感行为：按请求尺寸/分辨率自动选择兼容模型（1K/2K/4K）。
+    // 不再渲染显式切换开关；用户主动点选服务商或模型时即切换为固定（manual）。
+    return '';
 }
 function renderAnglePresetControl(){
     const options = [

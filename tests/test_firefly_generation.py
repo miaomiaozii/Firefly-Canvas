@@ -117,6 +117,75 @@ class ImageGenerationRoutingTests(unittest.TestCase):
         self.assertIn("resolution", raised.exception.incompatible_parameters)
         self.assertIn("reference_count", raised.exception.incompatible_parameters)
 
+    def test_pinned_model_upgrades_to_resolution_variant_when_platform_offers_it(self):
+        providers = [
+            {
+                "id": "comfly",
+                "name": "comfly",
+                "enabled": True,
+                "protocol": "openai",
+                "image_models": [
+                    "nano-banana-pro",
+                    "nano-banana-pro-2k",
+                    "nano-banana-pro-4k",
+                ],
+            }
+        ]
+        four_k = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="4096x4096", width=4096, height=4096,
+                aspect_ratio="1:1", resolution="4k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="nano-banana-pro",
+        )
+        self.assertEqual(four_k.model, "nano-banana-pro-4k")
+
+        two_k = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="2048x2048", width=2048, height=2048,
+                aspect_ratio="1:1", resolution="2k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="nano-banana-pro",
+        )
+        self.assertEqual(two_k.model, "nano-banana-pro-2k")
+
+        one_k = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="1024x1024", width=1024, height=1024,
+                aspect_ratio="1:1", resolution="1k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="nano-banana-pro",
+        )
+        self.assertEqual(one_k.model, "nano-banana-pro")
+
+    def test_pinned_model_without_variant_still_reports_incompatible_resolution(self):
+        providers = [
+            {
+                "id": "comfly",
+                "name": "comfly",
+                "enabled": True,
+                "protocol": "openai",
+                "image_models": ["nano-banana-pro"],
+            }
+        ]
+        with self.assertRaises(ModelRoutingError) as raised:
+            route_image_generation(
+                ImageGenerationRequest(
+                    prompt="t", size="4096x4096", width=4096, height=4096,
+                    aspect_ratio="1:1", resolution="4k",
+                ),
+                providers,
+                provider_id="comfly",
+                model="nano-banana-pro",
+            )
+        self.assertIn("resolution", raised.exception.incompatible_parameters)
+
     def test_no_compatible_model_reports_concrete_incompatible_parameters(self):
         with self.assertRaises(ModelRoutingError) as raised:
             route_image_generation(
@@ -157,12 +226,8 @@ class ImageGenerationRoutingTests(unittest.TestCase):
         }]
         route = route_image_generation(self.request(), providers)
         self.assertEqual(route.model, "nano-banana-pro-4k")
-        with self.assertRaises(ModelRoutingError) as raised:
-            route_image_generation(self.request(), providers, model="nano-banana-pro")
-        self.assertEqual(
-            raised.exception.incompatible_parameters,
-            ["size", "width", "height", "resolution"],
-        )
+        pinned = route_image_generation(self.request(), providers, model="nano-banana-pro")
+        self.assertEqual(pinned.model, "nano-banana-pro-4k")
 
     def test_banana_two_aliases_are_routed_by_user_resolution(self):
         providers = [{

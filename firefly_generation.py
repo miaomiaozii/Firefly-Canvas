@@ -380,9 +380,17 @@ def route_image_generation(
             continue
         models = _string_list(provider.get("image_models"))
         capabilities = normalize_image_model_capabilities(provider.get("image_model_capabilities"), models)
+        resolution_tag = str(request_snapshot.get("resolution") or "").strip().lower()
+        candidates_to_check: list[str] = []
         for current_model in models:
             if pinned_model and current_model != pinned_model:
                 continue
+            candidates_to_check.append(current_model)
+            if pinned_model and resolution_tag:
+                variant = f"{pinned_model}-{resolution_tag}"
+                if variant in models and variant not in candidates_to_check:
+                    candidates_to_check.append(variant)
+        for current_model in candidates_to_check:
             mismatches = _incompatible_parameters(request_snapshot, capabilities[current_model])
             candidates.append((provider, current_model, capabilities[current_model], mismatches))
             if not mismatches:

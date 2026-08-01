@@ -22,11 +22,11 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("registeredNode:task.registered_node", self.source)
         self.assertNotIn("registeredCanvas:task.registered_canvas", self.source)
 
-    def test_auto_routing_is_default_and_manual_pins_are_advanced(self):
+    def test_auto_routing_is_invisible_and_default(self):
         self.assertIn("routingMode:'auto'", self.source)
-        self.assertIn("renderImageRoutingControl", self.source)
-        self.assertIn("Nano Banana Pro / Nano Banana 2", self.source)
-        self.assertIn("settings.routingMode === 'manual'", self.source)
+        self.assertIn("function renderImageRoutingControl(){", self.source)
+        self.assertIn("return '';", self.source)
+        self.assertIn("if(key === 'model' && settings.routingMode !== 'manual') settings.routingMode = 'manual';", self.source)
         self.assertIn("routing_mode:runSettings.routingMode === 'manual' ? 'manual' : 'auto'", self.source)
         self.assertIn("renderProviderControl", self.source)
         self.assertIn("renderModelControl", self.source)

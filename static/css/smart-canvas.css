@@ -1097,6 +1097,7 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .direct-picker { display:grid; grid-template-columns:84px minmax(0,1fr); gap:7px; }
 .direct-picker-col { min-width:0; max-height:172px; overflow:auto; padding-right:4px; scrollbar-width:thin; scrollbar-color:rgba(148,163,184,.42) transparent; }
 .direct-option { width:100%; min-height:24px; padding:5px 8px; border-radius:8px; display:flex; align-items:center; justify-content:flex-start; color:var(--muted); background:transparent; border:1px solid transparent; font-size:var(--ctrl-pop-font); line-height:1.2; font-weight:500; text-align:left; overflow:hidden; transition:background .14s ease, color .14s ease, border-color .14s ease, transform .14s ease; }
+.direct-option[hidden] { display:none; }
 .direct-option span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .direct-option:hover { background:var(--soft); border-color:var(--line); color:var(--text); transform:translateY(-1px); }
 .direct-option.active { background:var(--card); border-color:var(--line); color:var(--strong); font-weight:650; box-shadow:inset 0 0 0 1px rgba(15,23,42,.02); }
