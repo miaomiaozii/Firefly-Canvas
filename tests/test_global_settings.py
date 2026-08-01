@@ -232,7 +232,10 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         serialized = json.dumps(response.json(), ensure_ascii=False)
         self.assertNotIn("replacement-secret", serialized)
-        self.assertIn("API_PROVIDER_SECRET_TEST_KEY=replacement-secret", Path(main.API_ENV_FILE).read_text(encoding="utf-8"))
+        env_content = Path(main.API_ENV_FILE).read_text(encoding="utf-8")
+        self.assertIn("API_PROVIDER_SECRET_TEST_KEY=dpapi:", env_content)
+        self.assertNotIn("replacement-secret", env_content)
+        self.assertEqual(main.read_api_env_value("API_PROVIDER_SECRET_TEST_KEY"), "replacement-secret")
         provider = next(item for item in response.json()["providers"] if item["id"] == "secret-test")
         self.assertEqual(provider["key_preview"], "••••••••cret")
         self.assertEqual(main.mask_secret("abc"), "••••••••")
@@ -254,7 +257,9 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         content = Path(main.API_ENV_FILE).read_text(encoding="utf-8")
         for index in range(12):
-            self.assertIn(f"FIREFLY_CONCURRENT_TEST_{index}=value-{index}", content)
+            self.assertIn(f"FIREFLY_CONCURRENT_TEST_{index}=dpapi:", content)
+        for index in range(12):
+            self.assertEqual(main.read_api_env_value(f"FIREFLY_CONCURRENT_TEST_{index}"), f"value-{index}")
 
     def test_nonempty_library_requires_explicit_move_confirmation(self):
         self.store.create_project("需确认")
@@ -311,7 +316,8 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(main.FIREFLY_PROJECT_STORE.root, target.resolve())
         self.assertEqual(main.FIREFLY_PROJECT_STORE.open_project(project["id"])["project"]["name"], "要移动")
         self.assertTrue((self.store.root / project["id"] / "project.json").is_file())
-        self.assertIn(f"FIREFLY_PROJECTS_ROOT={target.resolve()}", Path(main.API_ENV_FILE).read_text(encoding="utf-8"))
+        self.assertIn(f"FIREFLY_PROJECTS_ROOT=dpapi:", Path(main.API_ENV_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(main.read_api_env_value("FIREFLY_PROJECTS_ROOT"), str(target.resolve()))
 
     def test_failed_migration_rolls_back_active_library_and_env(self):
         project = self.store.create_project("原库")

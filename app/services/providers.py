@@ -2,6 +2,7 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _storage_abs_path  # noqa: E402,F401
+from . import secret_store, write_guard  # noqa: E402
 
 def read_api_env_value(key: str) -> str:
     key = str(key or '').strip()
@@ -15,7 +16,7 @@ def read_api_env_value(key: str) -> str:
                     continue
                 env_key, value = line.split('=', 1)
                 if env_key.strip() == key:
-                    return value.strip().strip('"').strip("'")
+                    return secret_store.decrypt_env_value(value.strip().strip('"').strip("'"))
     except Exception:
         return ''
     return ''
@@ -75,10 +76,12 @@ def modelscope_api_root(provider=None):
     return base_root if base_root.endswith('/v1') else f'{base_root}/v1'
 
 def _update_env_values_unlocked(updates):
-    os.makedirs(os.path.dirname(_svc._main('API_ENV_FILE')), exist_ok=True)
+    env_file = _svc._main('API_ENV_FILE')
+    write_guard.ensure_writable_config(env_file)
+    os.makedirs(os.path.dirname(env_file), exist_ok=True)
     lines = []
-    if os.path.exists(_svc._main('API_ENV_FILE')):
-        with open(_svc._main('API_ENV_FILE'), 'r', encoding='utf-8-sig') as f:
+    if os.path.exists(env_file):
+        with open(env_file, 'r', encoding='utf-8-sig') as f:
             lines = f.read().splitlines()
     seen = set()
     next_lines = []
@@ -89,21 +92,21 @@ def _update_env_values_unlocked(updates):
             continue
         key = line.split('=', 1)[0].strip()
         if key in updates:
-            next_lines.append(f'{key}={env_quote(updates[key])}')
+            next_lines.append(f'{key}={env_quote(secret_store.encrypt_env_value(updates[key]))}')
             seen.add(key)
         else:
             next_lines.append(line)
     for key, value in updates.items():
         if key not in seen:
-            next_lines.append(f'{key}={env_quote(value)}')
+            next_lines.append(f'{key}={env_quote(secret_store.encrypt_env_value(value))}')
     content = '\n'.join(next_lines).rstrip() + '\n'
-    temporary = f"{_svc._main('API_ENV_FILE')}.{uuid.uuid4().hex}.tmp"
+    temporary = f"{env_file}.{uuid.uuid4().hex}.tmp"
     try:
         with open(temporary, 'w', encoding='utf-8', newline='\n') as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temporary, _svc._main('API_ENV_FILE'))
+        os.replace(temporary, env_file)
         for key, value in updates.items():
             os.environ[key] = str(value or '')
     finally:
@@ -548,17 +551,34 @@ def load_api_providers():
         with open(_svc._main('API_PROVIDERS_FILE'), 'r', encoding='utf-8') as f:
             raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
+        providers = [_decrypt_provider_secrets(item) for item in providers]
         providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
     except Exception as e:
         print(f'加载 API 平台配置失败: {e}')
         return defaults
 
+def _decrypt_provider_secrets(provider):
+    provider = dict(provider or {})
+    for key in ('api_key', 'wallet_api_key', 'volcengine_secret_access_key'):
+        if key in provider and provider.get(key):
+            provider[key] = secret_store.decrypt_secret(provider[key])
+    return provider
+
 def save_api_providers(providers):
+    providers_file = _svc._main('API_PROVIDERS_FILE')
+    write_guard.ensure_writable_config(providers_file)
     os.makedirs(_svc._main('DATA_DIR'), exist_ok=True)
     with GLOBAL_CONFIG_LOCK:
-        with open(_svc._main('API_PROVIDERS_FILE'), 'w', encoding='utf-8') as f:
-            json.dump(providers, f, ensure_ascii=False, indent=2)
+        with open(providers_file, 'w', encoding='utf-8') as f:
+            json.dump([_encrypt_provider_secrets(item) for item in providers], f, ensure_ascii=False, indent=2)
+
+def _encrypt_provider_secrets(provider):
+    provider = dict(provider or {})
+    for key in ('api_key', 'wallet_api_key', 'volcengine_secret_access_key'):
+        if key in provider and provider.get(key):
+            provider[key] = secret_store.encrypt_secret(provider[key])
+    return provider
 
 def public_api_providers():
     return [public_provider(p) for p in _svc._main('load_api_providers')()]

@@ -122,10 +122,19 @@ def apply_locked_recommended_model_rules(base_url='', grouped=None):
     return grouped
 
 def save_api_providers(providers):
+    providers_file = _app_main.API_PROVIDERS_FILE
+    _svc.write_guard.ensure_writable_config(providers_file)
     os.makedirs(_app_main.DATA_DIR, exist_ok=True)
     with GLOBAL_CONFIG_LOCK:
-        with open(_app_main.API_PROVIDERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(providers, f, ensure_ascii=False, indent=2)
+        with open(providers_file, 'w', encoding='utf-8') as f:
+            json.dump([_encrypt_provider_secrets(item) for item in providers], f, ensure_ascii=False, indent=2)
+
+def _encrypt_provider_secrets(provider):
+    provider = dict(provider or {})
+    for key in ('api_key', 'wallet_api_key', 'volcengine_secret_access_key'):
+        if key in provider and provider.get(key):
+            provider[key] = _svc.secret_store.encrypt_secret(provider[key])
+    return provider
 
 class ApiProviderPayload(BaseModel):
     id: str = ''
