@@ -14022,6 +14022,7 @@ function stripImageGenerationMeta(img){
 }
 function addConnection(fromId, toId, kind='flow'){
     if(!fromId || !toId || fromId === toId) return;
+    if(!canvas) return;
     canvas.connections = canvas.connections || [];
     if(canvas.connections.some(c => c.from === fromId && c.to === toId && (c.kind || 'flow') === kind)) return;
     canvas.connections.push({from:fromId, to:toId, kind});
@@ -14042,6 +14043,7 @@ function connectInputNode(fromId, toId){
         }
         else to.localEditInputRoles.referenceNodes = Array.from(new Set([...(to.localEditInputRoles.referenceNodes || []), from.id]));
         to.inputNodeIds = Array.from(new Set([...(to.inputNodeIds || []), from.id]));
+        if(!canvas) return true;
         canvas.connections = canvas.connections || [];
         if(role === 'original') canvas.connections = canvas.connections.filter(c => !(c.to === to.id && c.kind === 'input' && c.role === role));
         if(!canvas.connections.some(c => c.from === from.id && c.to === to.id && (c.role || '') === role)) canvas.connections.push({from:from.id, to:to.id, kind:'input', role});

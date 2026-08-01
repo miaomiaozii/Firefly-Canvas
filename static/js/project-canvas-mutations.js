@@ -133,10 +133,15 @@
         return `${source}->${target}:${sourcePort}:${targetPort}`;
     }
 
+    function normalizeEdge(edge){
+        if(!edge || edge.id) return edge;
+        return {...edge, id: entityId(edge)};
+    }
+
     function snapshotFromCanvas(canvas){
         return {
             nodes:Object.fromEntries((canvas?.nodes || []).filter(node => node?.id).map(node => [String(node.id), JSON.stringify(node)])),
-            edges:Object.fromEntries((canvas?.connections || []).map(edge => [entityId(edge), JSON.stringify(edge)])),
+            edges:Object.fromEntries((canvas?.connections || []).map(edge => [entityId(edge), JSON.stringify(normalizeEdge(edge))])),
             meta:JSON.stringify({
                 title:canvas?.title || '',
                 icon:canvas?.icon || 'sparkles',
