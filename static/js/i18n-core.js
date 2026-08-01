@@ -39,6 +39,10 @@
 
     function apply(root=document){
         root.querySelectorAll('[data-i18n]').forEach(el => {
+            // 跳过已被 JS 显式清空的元素：业务代码（如项目列表的状态栏）会在 fetch 完成后
+            // 清空占位文本，若 i18n 在 DOMContentLoaded 阶段（可能晚于 fetch 返回）重写它，
+            // 会出现"正在读取项目库…"残留竞态。
+            if(el.textContent === '' && el.hasAttribute('data-i18n')) return;
             el.textContent = t(el.dataset.i18n);
         });
         root.querySelectorAll('[data-i18n-placeholder]').forEach(el => {

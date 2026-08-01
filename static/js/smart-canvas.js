@@ -18042,6 +18042,11 @@ window.onmouseup = e => {
         }
         if(stateChanged) commitPendingUndo();
         else discardPendingUndo();
+        if(stateChanged && !contentChanged){
+            // 纯位置拖动（未产生连线/分组等结构性变更）也是 durable 内容：x/y 会随手动保存落盘，
+            // 必须进入自动保存队列，否则界面显示"已保存"而关页后位置静默丢失。
+            scheduleSave();
+        }
         if(stateChanged || dragState.thumbDetached) suppressNodeClickUntil = Date.now() + 180;
         clearDropHighlight();
         loopInsertPreview = null;
