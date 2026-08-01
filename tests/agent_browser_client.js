@@ -122,6 +122,27 @@
         const promptKind = promptAgent?.querySelector('[data-agent-kind]');
         const promptPlanButton = promptAgent?.querySelector('[data-agent-plan]');
         assertion('a second Agent can independently plan a prompt-node task', Boolean(promptAgent && promptGoal && promptKind && promptPlanButton), promptAgent?.outerHTML || '');
+        // P1: multi-task draft cards — add/remove task cards without executing.
+        const multiDraftAdd = promptAgent?.querySelector('[data-agent-draft-add]');
+        const multiDraftCards = () => promptAgentEl()?.querySelectorAll('[data-agent-draft-index]') || [];
+        assertion('multi-task drafts start with a single task card', multiDraftCards().length === 1, multiDraftCards().length);
+        multiDraftAdd?.click();
+        await sleep(80);
+        assertion('adding a task card grows the draft list', multiDraftCards().length === 2, multiDraftCards().length);
+        const secondCardKind = promptAgentEl()?.querySelector('[data-agent-draft-index="1"] [data-agent-kind]');
+        const secondCardPrompt = promptAgentEl()?.querySelector('[data-agent-draft-index="1"] [data-agent-draft-prompt]');
+        if(secondCardKind){ secondCardKind.value = 'video'; secondCardKind.dispatchEvent(new Event('change', {bubbles:true})); }
+        if(secondCardPrompt){ secondCardPrompt.value = '第二张卡片的提示词'; secondCardPrompt.dispatchEvent(new Event('input', {bubbles:true})); }
+        await sleep(80);
+        document.querySelector('#smartSaveButton')?.click?.();
+        await waitFor(() => document.querySelector('#projectSaveState')?.dataset?.state === 'saved', 10000);
+        await sleep(150);
+        const savedDrafts = await savedCanvas();
+        const savedAgent2 = savedDrafts?.nodes?.find?.(item => item.id === 'agent-2') || {};
+        assertion('per-task kind and prompt persist to the saved canvas', Array.isArray(savedAgent2?.agentTaskDrafts) && savedAgent2.agentTaskDrafts.length === 2 && savedAgent2.agentTaskDrafts[1]?.kind === 'video' && savedAgent2.agentTaskDrafts[1]?.prompt === '第二张卡片的提示词', savedAgent2?.agentTaskDrafts);
+        promptAgentEl()?.querySelector('[data-agent-draft-index="1"] [data-agent-draft-remove]')?.click();
+        await sleep(80);
+        assertion('removing a task card shrinks the draft list back to one', multiDraftCards().length === 1, multiDraftCards().length);
         if(promptAgent && promptGoal && promptKind && promptPlanButton){
             promptGoal.value = '新建一段可复用的提示词';
             promptGoal.dispatchEvent(new Event('input', {bubbles:true}));
