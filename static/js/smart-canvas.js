@@ -6204,6 +6204,16 @@ async function saveCanvas({automatic=false}={}){
         }
     }
 }
+function flushPendingCanvasSaveOnExit(){
+    // 崩溃恢复兜底：页面被隐藏/关闭/刷新时，不等 3s 防抖立即落盘，
+    // 避免防抖窗口内关页导致未保存数据丢失。
+    if(!canvas || canvas.format !== 'firefly-canvas-v1' || !canvasId) return;
+    if(canvasSyncInFlight) return;
+    if(!contentDirty && !hasDurableCanvasChanges()) return;
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = null;
+    void saveCanvas({automatic:false});
+}
 function imageMetaFromNode(node){
     return {};
 }
@@ -19075,6 +19085,10 @@ smartEdgeReveal?.addEventListener('click', jumpToSmartEdgeRevealNode);
 shell?.addEventListener('pointerdown', () => {
     if(smartEdgeReveal?.classList.contains('visible')) hideSmartEdgeReveal();
 }, true);
+window.addEventListener('pagehide', () => flushPendingCanvasSaveOnExit());
+document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'hidden') flushPendingCanvasSaveOnExit();
+});
 smartSaveButton?.addEventListener('click', event => {
     event.preventDefault();
     void manualSaveCanvas();
