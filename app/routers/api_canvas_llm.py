@@ -33,7 +33,8 @@ async def canvas_llm(payload: CanvasLLMRequest):
         payload.model = model
         text, raw = await gemini_cli_chat_text(payload, payload.messages)
         return {'text': text, 'model': model, 'raw_usage': None, 'raw': raw}
-    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
+    _need_vision = bool((payload.images or []) or (payload.videos or []))
+    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=_need_vision)
     _llm_provider = _app_main.get_api_provider(payload.provider) if payload.provider not in ('modelscope',) else {}
     _is_apimart = is_apimart_provider(_llm_provider)
     system_prompt = (payload.system_prompt or '').strip()

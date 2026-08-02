@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 from app.core import (AGENT_ACTIONS, AGENT_EDIT_KEYWORDS, AGENT_IMAGE_KEYWORDS, AIReference, AI_REQUEST_TIMEOUT, BaseModel, BytesIO, CHAT_ATTACHMENT_MAX, CHAT_RATIO_SIZE_OPTIONS, CN_NUMERAL_MAP, CODEX_DEFAULT_CHAT_MODELS, ChatRequest, ET, EXCEL_MAX_COLS_PER_ROW, EXCEL_MAX_ROWS_PER_SHEET, EXCEL_MAX_SHEETS, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, Header, IMAGE_MODEL, Image, LLM_MESSAGE_MAX_LENGTH, List, MAX_ATTACHMENT_TEXT_CHARS, MAX_HISTORY_MESSAGES, Request, SYSTEM_PROMPT, StreamingResponse, TEXT_ATTACHMENT_EXTS, XLSX_IMAGE_EXTS, _os, _sys, _xlsx_cell_text, _xlsx_join_text, _xlsx_shared_strings, _xlsx_sheet_paths, _xml_local_name, base64, chat_prompt_size_override, chat_requested_image_count, chat_split_parallel_prompts, chat_system_prompt, display_title, friendly_chat_error_detail, friendly_image_error_detail, heuristic_agent_decision, html, httpx, image_references, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, is_image_reference, json, latest_chat_image_refs, log_net_error, os, parse_agent_decision, parse_size_pair, re, read_text_attachment, read_xlsx_attachment, safe_user_id, selected_model, snap_size_to_multiple, sse_event, text_delta_from_chat_chunk, text_from_chat_response, unwrap_apimart_response, uuid, xlsx_embedded_image_data_urls, zipfile)
 from app.core import _xlsx_cell_text, _xlsx_join_text, _xlsx_shared_strings, _xlsx_sheet_paths, _xml_local_name
-_from_main_names = ['attachment_embedded_image_data_urls', 'attachment_text_blocks', 'build_chat_text_reply', 'codex_chat_text', 'decide_chat_agent_action', 'gemini_cli_chat_text', 'generate_ai_image', 'get_api_provider', 'image_size_from_reference', 'load_api_providers', 'load_conversation', 'new_conversation', 'now_ms', 'output_file_from_url', 'pick_chat_image_provider', 'reference_to_data_url', 'resolve_chat_provider', 'save_ai_image_to_output', 'save_conversation', 'upstream_message_from_record']
+_from_main_names = ['attachment_embedded_image_data_urls', 'attachment_text_blocks', 'build_chat_text_reply', 'codex_chat_text', 'decide_chat_agent_action', 'gemini_cli_chat_text', 'generate_ai_image', 'get_api_provider', 'image_size_from_reference', 'latest_chat_image_refs', 'load_api_providers', 'load_conversation', 'new_conversation', 'now_ms', 'output_file_from_url', 'pick_chat_image_provider', 'reference_to_data_url', 'resolve_chat_provider', 'save_ai_image_to_output', 'save_conversation', 'upstream_message_from_record']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -436,7 +436,7 @@ async def decide_chat_agent_action(payload, conversation, refs):
     if is_gemini_cli_provider(provider_cfg):
         fallback['router_model'] = selected_model(payload.model, (provider_cfg.get('chat_models') or GEMINI_CLI_DEFAULT_CHAT_MODELS)[0])
         return fallback
-    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
+    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=bool(refs or has_previous_image))
     history = conversation['messages'][-MAX_HISTORY_MESSAGES:]
     custom_system_prompt = str(getattr(payload, 'system_prompt', '') or '').strip()
     system = '你是图片创作聊天 Agent 的意图路由器。只返回 JSON，不要 Markdown。\naction 只能是 chat、generate_image、edit_image。\nchat: 普通问答或不需要调用图片工具。\ngenerate_image: 用户要求生成、绘制、创建新图片。\nedit_image: 用户要求修改参考图、上一张图、刚才生成的图，或上传了参考图并要求基于它变化。\nprompt 是交给生图/改图工具的完整中文提示词；普通聊天时也填用户原话。\nreply 是可选的短状态文本。'
@@ -474,7 +474,7 @@ async def build_chat_text_reply(payload, conversation):
         payload.model = model
         text, raw = await gemini_cli_chat_text(payload, conversation['messages'][-MAX_HISTORY_MESSAGES:])
         return {'id': uuid.uuid4().hex, 'role': 'assistant', 'content': text, 'created_at': _app_main.now_ms(), 'model': model, 'raw_usage': None, 'raw': raw}
-    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
+    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=bool(latest_chat_image_refs(conversation, 1)))
     is_apimart = is_apimart_provider(provider_cfg)
     upstream_messages = [{'role': 'system', 'content': chat_system_prompt(payload)}]
     for item in conversation['messages'][-MAX_HISTORY_MESSAGES:]:
@@ -547,7 +547,7 @@ async def chat(payload: ChatRequest, request: Request, x_user_id: str=Header(def
             conversation['updated_at'] = _app_main.now_ms()
             save_conversation(user_id, conversation)
             return {'conversation': conversation, 'message': assistant_message}
-        chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
+        chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=bool(latest_chat_image_refs(conversation, 1)))
         _conv_provider = _app_main.get_api_provider(payload.provider) if payload.provider not in ('modelscope',) else {}
         _conv_is_apimart = is_apimart_provider(_conv_provider)
         history = conversation['messages'][-MAX_HISTORY_MESSAGES:]
@@ -681,7 +681,7 @@ async def chat_stream(payload: ChatRequest, request: Request, x_user_id: str=Hea
             yield sse_event({'type': 'delta', 'delta': text})
             yield sse_event({'type': 'done', 'conversation': conversation, 'message': assistant_message})
         return StreamingResponse(gemini_cli_stream(), media_type='text/event-stream')
-    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model)
+    chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=bool(latest_chat_image_refs(conversation, 1)))
     _stream_provider = _app_main.get_api_provider(payload.provider) if payload.provider not in ('modelscope',) else {}
     history = conversation['messages'][-MAX_HISTORY_MESSAGES:]
     upstream_messages = [{'role': 'system', 'content': chat_system_prompt(payload)}]

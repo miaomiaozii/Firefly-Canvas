@@ -2583,7 +2583,7 @@ async def caption_image_with_provider(abs_path, prompt, provider_id, model, ms_m
         payload = CanvasLLMRequest(message=(prompt or '描述图片').strip() or '描述图片', provider=provider_id or 'gemini-cli', model=resolved_model, images=[abs_path])
         text, _raw = await _svc.gemini_cli_chat_text(payload, [])
         return (text, resolved_model)
-    chat_base, chat_hdrs, resolved_model = _svc._main('resolve_chat_provider')(provider_id, model, ms_model)
+    chat_base, chat_hdrs, resolved_model = _svc._main('resolve_chat_provider')(provider_id, model, ms_model, need_vision=True)
     is_apimart = is_apimart_provider(llm_provider)
     prompt_text = (prompt or '描述图片').strip() or '描述图片'
     data_url = image_path_to_data_url(abs_path, max_size=1024)

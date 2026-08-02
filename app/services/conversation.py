@@ -190,7 +190,7 @@ def list_conversations(user_id):
         records.append({'id': data.get('id'), 'title': data.get('title', '新对话'), 'created_at': data.get('created_at', 0), 'updated_at': data.get('updated_at', 0), 'last_message': (last_message or {}).get('content', '')})
     return sorted(records, key=lambda item: item['updated_at'], reverse=True)
 
-def resolve_chat_provider(provider: str, model: str, ms_model: str):
+def resolve_chat_provider(provider: str, model: str, ms_model: str, need_vision: bool = False):
     if provider == 'modelscope':
         clean_token = _svc.modelscope_api_key()
         if not clean_token:
@@ -198,6 +198,8 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
         base = _svc.modelscope_api_root()
         hdrs = {'Authorization': bearer_auth_value(clean_token), 'Content-Type': 'application/json'}
         mdl = selected_model(ms_model or model, MODELSCOPE_CHAT_MODELS[0] if MODELSCOPE_CHAT_MODELS else 'MiniMax/MiniMax-M2.7')
+        if need_vision and not _svc._main('looks_like_vision_chat_model')(mdl):
+            raise HTTPException(status_code=400, detail=f'当前选择的模型 {mdl} 不支持识图，请切换到支持视觉的模型后再发送图片。')
         return (base, hdrs, mdl)
     api_provider = _svc._main('get_api_provider')(provider or '')
     if is_codex_provider(api_provider):
@@ -208,7 +210,24 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
     if not base_root:
         raise HTTPException(status_code=400, detail=f"{api_provider.get('name') or api_provider['id']} 未配置 Base URL")
     default_model = preferred_chat_model(api_provider)
+    if need_vision:
+        chat_models = api_provider.get('chat_models') or []
+        explicit_model = model or ''
+        if explicit_model and not _svc._main('looks_like_vision_chat_model')(explicit_model):
+            raise HTTPException(status_code=400, detail=f'当前选择的模型 {explicit_model} 不支持识图，请切换到支持视觉的模型后再发送图片。')
+        if not explicit_model:
+            vision_models = [candidate for candidate in chat_models if _svc._main('looks_like_vision_chat_model')(candidate)]
+            if vision_models:
+                default_model = vision_models[0]
+            elif chat_models and _svc._main('looks_like_vision_chat_model')(default_model):
+                pass
+            elif not chat_models:
+                default_model = ''
+            else:
+                raise HTTPException(status_code=400, detail='该服务商没有支持识图的聊天模型，无法处理图片消息。')
     mdl = selected_model(model, default_model)
+    if need_vision and not _svc._main('looks_like_vision_chat_model')(mdl):
+        raise HTTPException(status_code=400, detail=f'当前选择的模型 {mdl} 不支持识图，请切换到支持视觉的模型后再发送图片。')
     protocol = effective_protocol(api_provider, mdl)
     if protocol == 'gemini':
         base = base_root if base_root.endswith('/v1beta') else base_root + '/v1beta'
@@ -349,7 +368,7 @@ async def decide_chat_agent_action(payload, conversation, refs):
     if is_gemini_cli_provider(provider_cfg):
         fallback['router_model'] = selected_model(payload.model, (provider_cfg.get('chat_models') or GEMINI_CLI_DEFAULT_CHAT_MODELS)[0])
         return fallback
-    chat_base, chat_hdrs, model = _svc._main('resolve_chat_provider')(payload.provider, payload.model, payload.ms_model)
+    chat_base, chat_hdrs, model = _svc._main('resolve_chat_provider')(payload.provider, payload.model, payload.ms_model, need_vision=bool(refs or has_previous_image))
     history = conversation['messages'][-MAX_HISTORY_MESSAGES:]
     custom_system_prompt = str(getattr(payload, 'system_prompt', '') or '').strip()
     system = '你是图片创作聊天 Agent 的意图路由器。只返回 JSON，不要 Markdown。\naction 只能是 chat、generate_image、edit_image。\nchat: 普通问答或不需要调用图片工具。\ngenerate_image: 用户要求生成、绘制、创建新图片。\nedit_image: 用户要求修改参考图、上一张图、刚才生成的图，或上传了参考图并要求基于它变化。\nprompt 是交给生图/改图工具的完整中文提示词；普通聊天时也填用户原话。\nreply 是可选的短状态文本。'
@@ -387,7 +406,7 @@ async def build_chat_text_reply(payload, conversation):
         payload.model = model
         text, raw = await gemini_cli_chat_text(payload, conversation['messages'][-MAX_HISTORY_MESSAGES:])
         return {'id': uuid.uuid4().hex, 'role': 'assistant', 'content': text, 'created_at': _svc._main('now_ms')(), 'model': model, 'raw_usage': None, 'raw': raw}
-    chat_base, chat_hdrs, model = _svc._main('resolve_chat_provider')(payload.provider, payload.model, payload.ms_model)
+    chat_base, chat_hdrs, model = _svc._main('resolve_chat_provider')(payload.provider, payload.model, payload.ms_model, need_vision=bool(latest_chat_image_refs(conversation, 1)))
     is_apimart = is_apimart_provider(provider_cfg)
     upstream_messages = [{'role': 'system', 'content': chat_system_prompt(payload)}]
     for item in conversation['messages'][-MAX_HISTORY_MESSAGES:]:
