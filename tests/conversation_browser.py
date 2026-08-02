@@ -430,7 +430,7 @@ class ConversationBrowserServer:
 
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path in INJECT_PATHS:
+                if parsed.path == HTML_PAGE_PATH or parsed.path in INJECT_PATHS:
                     self.send_injected_canvas_html()
                     return
                 if parsed.path == CLIENT_SCRIPT_URL:
