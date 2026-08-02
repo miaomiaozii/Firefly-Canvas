@@ -143,6 +143,45 @@
       const hasReplyPersisted =
         String(storedNode).includes('这是对') || String(storedNode).includes('参考图片');
       record('conversation persisted', hasReplyPersisted, 'stored contains reply');
+
+      // ---- retry flow on a second conversation node ----
+      const retryCard = document.querySelector('.image-node[data-id="conv-retry"] .conversation-node-card');
+      record('retry node rendered', Boolean(retryCard), retryCard ? 'conv-retry card present' : 'missing');
+      if (retryCard) {
+        const retryInput = retryCard.querySelector('[data-conversation-input]');
+        const retrySend = retryCard.querySelector('[data-conversation-send]');
+        retryInput.value = '请重试我';
+        retryInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await sleep(120);
+        retrySend.click();
+
+        const failedShown = await waitFor('first attempt fails', () => {
+          const card = document.querySelector('.image-node[data-id="conv-retry"] .conversation-node-card');
+          const msg = card && card.querySelector('.conversation-node-message[data-role="user"]');
+          return msg && msg.getAttribute('data-status') === 'failed';
+        }, 40000);
+        record('first attempt shows failed status', failedShown, failedShown ? 'status=failed' : 'no failed msg');
+
+        const retryAppeared = await waitFor('retry button appears', () => {
+          const card = document.querySelector('.image-node[data-id="conv-retry"] .conversation-node-card');
+          return Boolean(card && card.querySelector('[data-conversation-retry]'));
+        }, 10000);
+        record('retry button rendered on failed message', retryAppeared, retryAppeared ? 'retry btn present' : 'missing');
+
+        const retryBtn = await evalFn('(() => { const card = document.querySelector(".image-node[data-id=\\"conv-retry\\"] .conversation-node-card"); return card && card.querySelector("[data-conversation-retry]") ? true : false; })()');
+        if (retryAppeared && retryBtn) {
+          await evalFn('(() => { const card = document.querySelector(".image-node[data-id=\\"conv-retry\\"] .conversation-node-card"); const btn = card && card.querySelector("[data-conversation-retry]"); if (btn) btn.click(); return true; })()');
+          const retryReply = await waitFor('retry succeeds', () => {
+            const card = document.querySelector('.image-node[data-id="conv-retry"] .conversation-node-card');
+            const msgs = card ? card.querySelectorAll('.conversation-node-message[data-role="assistant"]') : [];
+            return Array.from(msgs).some(msg => msg.textContent && msg.textContent.includes('重试成功'));
+          }, 30000);
+          const retryDump = await evalFn(
+            '(() => { const n = (typeof canvas !== "undefined" ? canvas : null); const node = n && n.nodes ? n.nodes.find(x => x.id === "conv-retry") : null; const msgs = (node && node.messages) || []; return JSON.stringify({ count: msgs.length, roles: msgs.map(m => m.role + ":" + (m.status || "done")), sending: node ? Boolean(node.conversationSending) : null }); })()'
+          );
+          record('retry sends again and reply arrives', retryReply, 'retry reply present; dump=' + retryDump);
+        }
+      }
     } catch (e) {
       record('fatal', false, String(e && e.stack ? e.stack : e).slice(0, 400));
     }

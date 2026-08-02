@@ -7897,10 +7897,12 @@ function conversationNodeBodyHtml(node){
             const messageId = String(message.id || `${node.id}-${role}-${index}`);
             const status = String(message.status || 'completed');
             const statusLabel = status === 'pending' ? '处理中…' : status === 'failed' ? '失败' : '';
+            const retryButton = status === 'failed' ? `<button type="button" class="conversation-node-message-retry" data-conversation-retry="${escapeHtml(messageId)}" title="重新发送这条消息">↻ 重试</button>` : '';
             return `<article class="conversation-node-message" data-role="${role}" data-status="${escapeHtml(status)}" data-message-id="${escapeHtml(messageId)}">
                 <div class="conversation-node-message-role">${role === 'assistant' ? '助手' : '你'}</div>
                 <div class="conversation-node-message-text" data-message-id="${escapeHtml(messageId)}" tabindex="0" aria-haspopup="menu" aria-label="对话消息；选中文字后按 Shift+F10 打开提取菜单">${escapeHtml(message.text || message.content || '')}</div>
                 ${statusLabel ? `<div class="conversation-node-message-status" data-status="${escapeHtml(status)}" role="status">${escapeHtml(statusLabel)}</div>` : ''}
+                ${retryButton}
             </article>`;
         }).join('')
         : '<div class="conversation-node-empty">发送第一条消息，开始项目内对话。</div>';
@@ -9535,6 +9537,23 @@ function bindConversationNodeControls(el, node){
             event.preventDefault();
             sendConversationMessage(node, input, send);
         }
+    });
+    el.querySelectorAll('[data-conversation-retry]').forEach(retryEl => {
+        retryEl.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const messageId = retryEl.getAttribute('data-conversation-retry');
+            const liveNode = nodes.find(item => item.id === node?.id) || node;
+            const failedMessage = (liveNode?.messages || []).find(item => String(item.id || '') === String(messageId));
+            const retryText = String(failedMessage?.text || failedMessage?.content || '').trim();
+            if(!retryText) return;
+            const liveInput = el.querySelector('[data-conversation-input]');
+            const liveSend = el.querySelector('[data-conversation-send]');
+            if(liveInput) liveInput.value = retryText;
+            const hasPending = (liveNode?.messages || []).some(item => item.role === 'user' && item.status === 'pending');
+            if(hasPending) return;
+            sendConversationMessage(liveNode, liveInput, liveSend);
+        });
     });
     el.querySelectorAll('.conversation-node-message-text').forEach(messageEl => {
         messageEl.addEventListener('pointerdown', event => event.stopPropagation());

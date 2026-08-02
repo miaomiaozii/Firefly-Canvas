@@ -52,6 +52,16 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
         "conversation_adapter": {"provider": "browser", "model": "offline-model"},
         "messages": [],
     }
+    retry_conversation_node = {
+        "id": "conv-retry",
+        "type": "smart-conversation",
+        "x": 240,
+        "y": 540,
+        "w": 380,
+        "h": 300,
+        "conversation_adapter": {"provider": "browser", "model": "offline-model"},
+        "messages": [],
+    }
     image_node = {
         "id": "img-ref",
         "type": "smart-image",
@@ -71,6 +81,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
         pid,
         [
             {"op": "upsert_node", "node": conversation_node},
+            {"op": "upsert_node", "node": retry_conversation_node},
             {"op": "upsert_node", "node": image_node},
             {"op": "upsert_edge", "edge": {"from": "img-ref", "to": "conv-main", "kind": "input"}},
         ],
@@ -116,12 +127,20 @@ def load_app(root: Path, store: ProjectStore):
     if previous_store is not None and previous_store is not store:
         previous_store.close()
 
+    _retry_node_id = "conv-retry"
+    _retry_calls: dict[str, int] = {}
+
     async def fake_conversation_adapter(request):
         import sys as _sys
 
         _sys.stderr.write(f"[UI-FAKE-ADAPTER] called request={json.dumps({k: request.get(k) for k in ('message', 'request_id')}, ensure_ascii=False)}\n")
         _sys.stderr.flush()
         prompt = request.get("message") or request.get("text") or ""
+        if request.get("node_id") == _retry_node_id or request.get("node") == _retry_node_id:
+            _retry_calls[prompt] = _retry_calls.get(prompt, 0) + 1
+            if _retry_calls[prompt] == 1:
+                raise RuntimeError("simulated first-attempt conversation failure")
+            return {"text": "重试成功：这次离线回复正常返回。", "model": "offline-browser-model"}
         if "参考" in str(prompt):
             return {"text": "已看到你直连的参考图片。", "model": "offline-browser-model"}
         return {"text": f"这是对「{str(prompt)[:40]}」的离线回复。", "model": "offline-browser-model"}
