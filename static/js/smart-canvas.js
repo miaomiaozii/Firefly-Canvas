@@ -4958,6 +4958,7 @@ function handleAssetLibraryUpdatedMessage(data={}){
 // 服务器广播 canvas_updated 时带回 client_id，自己发的就忽略，避免自我刷新。
 const smartClientId = `canvas_smart_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 let canvasSyncInFlight = false;
+let pendingRemoteUpdatedAt = 0;
 let canvasSyncTimer = null;
 let canvasMetaPollTimer = null;
 let connectionLayerRaf = 0;
@@ -5224,8 +5225,12 @@ function handleCanvasUpdatedMessage(data={}){
     if(!data || data.type !== 'canvas_updated') return;
     if(!canvasId || data.canvas_id !== canvasId) return;
     if(data.client_id && data.client_id === smartClientId) return; // 自己发的，忽略
-    if(canvasSyncInFlight) return; // 我正在保存，保存完成/409 合并会处理
     const remoteUpdatedAt = Number(data.updated_at || 0);
+    if(canvasSyncInFlight){
+        // 正在保存：记下这次更新的时间戳，保存完成后若确实比本地新再补偿拉取合并
+        if(remoteUpdatedAt > pendingRemoteUpdatedAt) pendingRemoteUpdatedAt = remoteUpdatedAt;
+        return;
+    }
     if(remoteUpdatedAt && remoteUpdatedAt <= Number(canvas?.updated_at || 0)) return;
     scheduleCanvasMergeReload(200);
 }
@@ -6072,6 +6077,12 @@ async function saveCanvas({automatic=false}={}){
             markContentDirty();
         } finally {
             canvasSyncInFlight = false;
+            // 保存期间到达的 canvas_updated 广播被 in-flight 跳过且确实比本地新时，
+            // 补偿一次远程合并，避免对方在保存窗口内的更新丢失（配合 meta poll 兜底）。
+            if(pendingRemoteUpdatedAt && pendingRemoteUpdatedAt > Number(canvas?.updated_at || 0)){
+                pendingRemoteUpdatedAt = 0;
+                mergeReloadCanvasNow();
+            }
         }
         return result?.saved === true;
     }
@@ -6120,6 +6131,12 @@ async function saveCanvas({automatic=false}={}){
         return false;
     } finally {
         canvasSyncInFlight = false;
+        // 保存期间到达的 canvas_updated 广播被 in-flight 跳过且确实比本地新时，
+        // 补偿一次远程合并，避免对方在保存窗口内的更新丢失（配合 meta poll 兜底）。
+        if(pendingRemoteUpdatedAt && pendingRemoteUpdatedAt > Number(canvas?.updated_at || 0)){
+            pendingRemoteUpdatedAt = 0;
+            mergeReloadCanvasNow();
+        }
     }
 }
 function imageMetaFromNode(node){
