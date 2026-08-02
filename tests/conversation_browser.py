@@ -597,7 +597,7 @@ def load_production_app(root: Path, store: ProjectStore):
     return production_main.app
 
 
-def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str]):
+def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str], result_timeout: float = 60):
     width, height = viewport
     print(f"launching {viewport} on {server.base_url}", flush=True)
     profile = Path(tempfile.mkdtemp(prefix="firefly-issue13-browser-profile-"))
@@ -624,7 +624,7 @@ def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int
         cwd=ROOT,
     )
     try:
-        result = server.wait_for_result(before)
+        result = server.wait_for_result(before, timeout=result_timeout)
         if not result.get("pass"):
             raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
         return result
@@ -663,3 +663,5 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

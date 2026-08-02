@@ -1010,6 +1010,7 @@ async def cancel_project_agent_task(project_id: str, node_id: str, task_id: str,
     cancelled = await asyncio.to_thread(_app_main.project_agent_cancel_task, project_id, node_id, task_id)
     if not cancelled:
         raise HTTPException(status_code=409, detail='任务已结束，无法取消')
+    await asyncio.to_thread(_app_main._agent_set_task_node, project_id, task_id, status='cancelled', completed_at=_app_main.now_ms(), result=None, error='任务已取消')
     return {'task_id': task_id, 'status': 'cancelled'}
 
 @router.post('/api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}/retry')
@@ -1022,6 +1023,7 @@ async def retry_project_agent_task(project_id: str, node_id: str, task_id: str, 
     retried = await asyncio.to_thread(_app_main.project_agent_retry_task, project_id, node_id, task_id)
     if not retried:
         raise HTTPException(status_code=409, detail='只有失败的任务可以重试')
+    await asyncio.to_thread(_app_main._agent_set_task_node, project_id, task_id, status='queued', completed_at=_app_main.now_ms(), result=None, error='')
     return {'task_id': task_id, 'status': 'queued'}
 
 @router.post('/api/project-library/{project_id}/image-generation-tasks')

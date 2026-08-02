@@ -9794,7 +9794,7 @@ function bindAgentNodeControls(el, node){
 async function agentTaskControlAction(node, taskId, action){
     if(!node || !taskId) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
-    const agentId = String(node.id || '');
+    const agentId = String(node?.agent_id || node?.id || '');
     const btn = null;
     try {
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/${action}`, {method:'POST'});
