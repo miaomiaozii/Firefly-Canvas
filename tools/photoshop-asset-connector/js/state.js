@@ -2,8 +2,8 @@ window.DX = window.DX || {};
 DX.state = {
   host: localStorage.getItem('firefly.ps.host') || '127.0.0.1:3000',
   clientId: localStorage.getItem('firefly.ps.clientId') || `ps_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-  // Project/source IDs are intentionally not global preferences.  They are
-  // restored only as part of an active, one-time binding below.
+  // 项目 / 源节点 / 源媒体 ID 不属于全局偏好：只在一次性往返绑定时恢复，
+  // 避免把一次会话的上下文泄漏给下一次。
   projectId: '',
   sourceNodeId: '',
   sourceMediaId: '',
