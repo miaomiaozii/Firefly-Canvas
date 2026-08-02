@@ -37,6 +37,7 @@ from firefly_projects import ProjectStore
 CLIENT_SCRIPT = ROOT / "tests" / "conversation_browser_client.js"
 HTML_PAGE_PATH = "/static/smart-canvas.html"
 CLIENT_SCRIPT_URL = "/tests/conversation_browser_client.js"
+INJECT_PATHS = {HTML_PAGE_PATH}
 VIEWPORTS = [(1424, 805), (1008, 673)]
 
 
@@ -429,7 +430,7 @@ class ConversationBrowserServer:
 
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path == HTML_PAGE_PATH:
+                if parsed.path in INJECT_PATHS:
                     self.send_injected_canvas_html()
                     return
                 if parsed.path == CLIENT_SCRIPT_URL:
