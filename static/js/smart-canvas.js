@@ -191,6 +191,13 @@ const undoStack = [];
 const redoStack = [];
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
+let redoPushing = false;
+const smartUndoButton = document.getElementById('smartUndoButton');
+const smartRedoButton = document.getElementById('smartRedoButton');
+function syncUndoRedoButtons(){
+    if(smartUndoButton) smartUndoButton.disabled = !undoStack.length;
+    if(smartRedoButton) smartRedoButton.disabled = !redoStack.length;
+}
 function activeSmartCascadeCount(){ return smartCascadeRuns.size; }
 function smartCascadeRunForLoop(loopId){ return loopId ? smartCascadeRuns.get(loopId) || null : null; }
 function smartCascadeIsLoopRunning(loopId){ return Boolean(smartCascadeRunForLoop(loopId)); }
@@ -240,6 +247,8 @@ function pushUndo(extra=null){
     if(extra && typeof extra === 'object') Object.assign(snapshot, extra);
     undoStack.push(snapshot);
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+    if(!redoPushing && redoStack.length) redoStack.length = 0;
+    syncUndoRedoButtons();
 }
 async function performUndo(){
     while(undoStack.length){
@@ -270,15 +279,19 @@ async function performUndo(){
         scheduleSave();
         undoSuppressed = false;
         toast(tr('smart.toastUndone'));
+        syncUndoRedoButtons();
         return;
     }
     toast(tr('smart.toastNoUndo'));
+    syncUndoRedoButtons();
 }
 async function performRedo(){
     while(redoStack.length){
         const snap = redoStack.pop();
         if(snap.projectOriginalDelete) continue;
+        redoPushing = true;
         pushUndo();
+        redoPushing = false;
         undoSuppressed = true;
         nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
         if(canvas) canvas.connections = snap.connections;
@@ -291,9 +304,11 @@ async function performRedo(){
         scheduleSave();
         undoSuppressed = false;
         toast(tr('smart.toastUndone'));
+        syncUndoRedoButtons();
         return;
     }
     toast(tr('smart.toastNoRedo'));
+    syncUndoRedoButtons();
 }
 let cropState = null;
 let cropDrag = null;
@@ -19089,6 +19104,8 @@ window.addEventListener('pagehide', () => flushPendingCanvasSaveOnExit());
 document.addEventListener('visibilitychange', () => {
     if(document.visibilityState === 'hidden') flushPendingCanvasSaveOnExit();
 });
+smartUndoButton?.addEventListener('click', () => { void performUndo(); });
+smartRedoButton?.addEventListener('click', () => { void performRedo(); });
 smartSaveButton?.addEventListener('click', event => {
     event.preventDefault();
     void manualSaveCanvas();
