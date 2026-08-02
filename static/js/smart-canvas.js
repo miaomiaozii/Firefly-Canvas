@@ -7325,7 +7325,7 @@ function smartLogSizeSummary(log, outputs=[]){
 }
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
 function cleanupSmartLogPreviewNode(){
-    if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)) nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID);
+    if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)){ nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID); if(canvas) canvas.nodes = nodes; }
     if(smartLogPreviewRestore){
         selectedId = smartLogPreviewRestore.selectedId;
         selectedImage = smartLogPreviewRestore.selectedImage;
