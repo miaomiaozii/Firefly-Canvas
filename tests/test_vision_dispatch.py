@@ -1,12 +1,29 @@
+import importlib
 import unittest
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.services import conversation as conv_mod
+
+def _conv_mod():
+    return importlib.import_module("app.services.conversation")
+
+
+def _looks_like_vision_chat_model(model):
+    lc = str(model or "").strip().lower()
+    if not lc:
+        return False
+    vision_keys = ["vision", "vl-", "-vl-", "internvl", "qvq", "qwen-vl", "doubao-vision", "glm-4v", "minicpm-v"]
+    return any(key in lc for key in vision_keys)
 
 
 def _real_main_call(name, *args, **kwargs):
+    if name == "looks_like_vision_chat_model":
+        return _looks_like_vision_chat_model
+    if _real_main_call.mod is None:
+        import main as main_mod
+
+        _real_main_call.mod = main_mod
     if args or kwargs:
         return getattr(_real_main_call.mod, name)(*args, **kwargs)
     return getattr(_real_main_call.mod, name)
@@ -20,6 +37,7 @@ def _load_real_main():
 
 
 _load_real_main()
+_real_main_call.mod = None
 
 
 def _patch_svc_main(provider=None):
@@ -28,10 +46,9 @@ def _patch_svc_main(provider=None):
             return lambda _pid: provider if provider is not None else {}
         if name == "api_headers":
             return lambda **kw: {"Authorization": "Bearer test-key", "Content-Type": "application/json"}
-        return getattr(_real_main_call.mod, name)
+        return _real_main_call(name)
 
     return patch("app.services.conversation._svc._main", side_effect=side_effect)
-
 
 class VisionDispatchTests(unittest.TestCase):
     def _provider(self, chat_models):
@@ -45,7 +62,7 @@ class VisionDispatchTests(unittest.TestCase):
 
     def _resolve(self, provider, model="", need_vision=False):
         with _patch_svc_main(provider=provider):
-            return conv_mod.resolve_chat_provider("p1", model, "", need_vision=need_vision)
+            return _conv_mod().resolve_chat_provider("p1", model, "", need_vision=need_vision)
 
     def test_explicit_non_vision_model_with_image_is_rejected(self):
         provider = self._provider(["gpt-5.4", "gemini-2.5-pro"])
@@ -78,13 +95,13 @@ class VisionDispatchTests(unittest.TestCase):
 
     def test_modelscope_with_vision_model_allowed(self):
         with _patch_svc_main(), patch("app.services.conversation._svc.modelscope_api_key", return_value="msk"):
-            _base, _hdrs, model = conv_mod.resolve_chat_provider("modelscope", "", "MiniMax/MiniMax-VL-01", need_vision=True)
+            _base, _hdrs, model = _conv_mod().resolve_chat_provider("modelscope", "", "MiniMax/MiniMax-VL-01", need_vision=True)
             self.assertTrue(_real_main_call("looks_like_vision_chat_model", model))
 
     def test_modelscope_with_non_vision_rejected(self):
         with _patch_svc_main(), patch("app.services.conversation._svc.modelscope_api_key", return_value="msk"):
             with self.assertRaises(HTTPException) as ctx:
-                conv_mod.resolve_chat_provider("modelscope", "", "MiniMax/MiniMax-M2.7", need_vision=True)
+                _conv_mod().resolve_chat_provider("modelscope", "", "MiniMax/MiniMax-M2.7", need_vision=True)
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("不支持识图", ctx.exception.detail)
 
