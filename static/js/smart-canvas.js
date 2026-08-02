@@ -160,6 +160,9 @@ let suppressImageClickUntil = 0;
 let lastMouseWorld = null;
 let lastConfigRefreshAt = 0;
 let smartMinimapState = null;
+let smartEdgeRevealTimer = 0;
+let smartEdgeRevealNodeId = '';
+let smartEdgeRevealHiding = false;
 let smartMinimapDrag = false;
 let zoomPreviewState = null;
 let runTimerInterval = null;
@@ -2294,6 +2297,67 @@ function centerViewportOnWorldPoint(point){
     viewport.x = shell.clientWidth / 2 - point.x * viewport.scale;
     viewport.y = shell.clientHeight / 2 - point.y * viewport.scale;
     applyViewport();
+}
+const SMART_EDGE_REVEAL_MS = 8000;
+const smartEdgeReveal = document.getElementById('smartEdgeReveal');
+const smartEdgeRevealLabel = document.getElementById('smartEdgeRevealLabel');
+function hideSmartEdgeReveal(){
+    if(!smartEdgeReveal) return;
+    clearTimeout(smartEdgeRevealTimer);
+    smartEdgeRevealNodeId = '';
+    smartEdgeReveal.classList.remove('visible');
+}
+function smartEdgeRevealPlacement(node){
+    const rect = nodeRect(node);
+    if(!rect || !shell) return null;
+    const cx = (rect.x + rect.width / 2) * viewport.scale + viewport.x;
+    const cy = (rect.y + rect.height / 2) * viewport.scale + viewport.y;
+    const w = shell.clientWidth;
+    const h = shell.clientHeight;
+    const margin = 18;
+    if(cx >= 0 && cx <= w && cy >= 0 && cy <= h) return null;
+    const dx = cx - w / 2;
+    const dy = cy - h / 2;
+    const primary = Math.abs(dx) / Math.max(1, w) >= Math.abs(dy) / Math.max(1, h);
+    if(primary) return {left: dx > 0 ? w - margin : margin, top: h / 2, side: dx > 0 ? 'right' : 'left'};
+    return {left: w / 2, top: dy > 0 ? h - margin : margin, side: dy > 0 ? 'bottom' : 'top'};
+}
+function requestSmartEdgeReveal(node){
+    if(!node?.id || !smartEdgeReveal) return;
+    const live = liveSmartNode(node);
+    if(!live || !nodes.some(n => n.id === live.id)) return;
+    const placement = smartEdgeRevealPlacement(live);
+    if(!placement) return;
+    const isVideo = live.outputKind === 'video';
+    const isAudio = live.outputKind === 'audio';
+    const count = (live.images || []).length;
+    if(smartEdgeRevealNodeId === live.id && smartEdgeReveal.classList.contains('visible')){
+        clearTimeout(smartEdgeRevealTimer);
+        smartEdgeRevealTimer = setTimeout(hideSmartEdgeReveal, SMART_EDGE_REVEAL_MS);
+        return;
+    }
+    smartEdgeRevealNodeId = live.id;
+    if(smartEdgeRevealLabel){
+        const kind = isVideo ? '视频' : isAudio ? '音频' : '图片';
+        smartEdgeRevealLabel.textContent = count > 1 ? `新${kind}已生成 ×${count}` : `新${kind}已生成`;
+    }
+    smartEdgeReveal.style.left = `${placement.left}px`;
+    smartEdgeReveal.style.top = `${placement.top}px`;
+    smartEdgeReveal.classList.add('visible');
+    clearTimeout(smartEdgeRevealTimer);
+    smartEdgeRevealTimer = setTimeout(hideSmartEdgeReveal, SMART_EDGE_REVEAL_MS);
+}
+function jumpToSmartEdgeRevealNode(){
+    const id = smartEdgeRevealNodeId;
+    hideSmartEdgeReveal();
+    if(!id) return;
+    const node = nodes.find(n => String(n.id) === String(id));
+    if(!node) return;
+    selectedId = node.id;
+    selectedIds = [];
+    selectedImage = {nodeId:'', index:-1};
+    centerViewportOnWorldPoint({x:Number(node.x || 0) + 120, y:Number(node.y || 0) + 100});
+    render();
 }
 function fitAllNodesViewport(){
     if(!nodes.length){
@@ -5005,7 +5069,7 @@ function clearSmartNodeBusyState(node){
     delete node.pendingTasks;
     return node;
 }
-function markSmartNodeComplete(node, meta=null){
+function markSmartNodeComplete(node, meta=null, revealResult=false){
     if(!node) return node;
     const keepHidden = node.runTimerHidden === true;
     clearSmartNodeBusyState(node);
@@ -5013,6 +5077,7 @@ function markSmartNodeComplete(node, meta=null){
     if(!node.runStartedAt) node.runStartedAt = meta?.createdAt || node.runFinishedAt;
     node.runElapsedMs = Math.max(0, Number(node.runFinishedAt || nowMs()) - Number(node.runStartedAt || node.runFinishedAt || nowMs()));
     node.runTimerHidden = meta?.hideTimer === true || keepHidden;
+    if(revealResult) requestSmartEdgeReveal(node);
     return node;
 }
 function completedDownstreamOutputForNode(sourceNode){
@@ -15174,7 +15239,7 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
         return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})});
     }).filter(img => img.url));
     pendingNode.images = imgs;
-    markSmartNodeComplete(pendingNode, meta);
+    markSmartNodeComplete(pendingNode, meta, true);
     pendingNode.outputKind = kind;
     if(imgs.length > 1) pendingNode.title = kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group';
     else pendingNode.title = kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image';
@@ -15637,7 +15702,7 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
         delete history.h;
     }
     node.images = next;
-    markSmartNodeComplete(node, meta);
+    markSmartNodeComplete(node, meta, true);
     node.outputKind = kind;
     node.title = cascadeOutputTitle(kind, node.images.length);
     node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
@@ -15664,7 +15729,7 @@ function appendOutputsToNode(node, additions, kind='image', options={}){
     });
     if(!next.length) return [];
     node.images = [...existing, ...next];
-    markSmartNodeComplete(node);
+    markSmartNodeComplete(node, undefined, true);
     node.outputKind = kind;
     node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image');
     delete node.w;
@@ -16065,7 +16130,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
         }
         outputSlot = liveSmartNode(outputSlot);
-        markSmartNodeComplete(outputSlot, meta);
+        markSmartNodeComplete(outputSlot, meta, true);
         clearSourceBusyStateIfDownstreamDone(rootNode);
         if(runPath?.states) {
             runPath.states[edgeKey] = 'done';
@@ -17124,6 +17189,9 @@ function absorbProjectGenerationResult(result){
             else delete resultNode[key];
         }
         result.project_node_applied = true;
+        if(Array.isArray(resultNode.images) && resultNode.images.length && result.history_record?.status !== 'failed'){
+            requestSmartEdgeReveal(resultNode);
+        }
     }
     if(
         revision > 0
@@ -17158,7 +17226,10 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
         return true;
     });
     node.images = [...existing, ...additions];
-    if(additions.length) node.outputKind = kind;
+    if(additions.length){
+        node.outputKind = kind;
+        requestSmartEdgeReveal(node);
+    }
     if(!node.pending && smartPendingTasks(node).length === 0){
         delete node.pendingTasks;
         node.runFinishedAt = nowMs();
@@ -19000,6 +19071,10 @@ window.addEventListener('studio-lang-change', () => {
     render();
 });
 setupSmartSettingsOverlay();
+smartEdgeReveal?.addEventListener('click', jumpToSmartEdgeRevealNode);
+shell?.addEventListener('pointerdown', () => {
+    if(smartEdgeReveal?.classList.contains('visible')) hideSmartEdgeReveal();
+}, true);
 smartSaveButton?.addEventListener('click', event => {
     event.preventDefault();
     void manualSaveCanvas();

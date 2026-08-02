@@ -1155,6 +1155,10 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
 .smart-minimap-content { position:absolute; inset:10px; border-radius:12px; overflow:hidden; background-image:radial-gradient(var(--grid) 1px, transparent 1px); background-size:12px 12px; opacity:.95; }
 .minimap-node { position:absolute; min-width:4px; min-height:4px; border-radius:3px; background:var(--strong); opacity:.8; }
 .smart-minimap-viewport { position:absolute; border-radius:8px; border:2px solid var(--strong); background:rgba(255,255,255,.12); }
+.smart-edge-reveal { position:absolute; z-index:9; display:flex; align-items:center; gap:6px; max-width:240px; height:34px; padding:0 14px; border-radius:999px; background:var(--panel); color:var(--strong); border:1px solid var(--strong); box-shadow:0 14px 32px var(--shadow); backdrop-filter:blur(16px); font-size:12px; font-weight:750; white-space:nowrap; cursor:pointer; opacity:0; pointer-events:none; transform:translateY(6px); transition:opacity .16s ease, transform .16s ease, background .16s ease, color .16s ease; }
+.smart-edge-reveal.visible { opacity:1; pointer-events:auto; transform:translateY(0); }
+.smart-edge-reveal:hover { background:var(--strong); color:var(--strong-text); }
+.smart-edge-reveal i,.smart-edge-reveal svg { width:14px; height:14px; }
 .asset-toggle { position:absolute; right:22px; top:22px; z-index:56; width:96px; height:40px; padding:0 16px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; }
 .asset-toggle:hover { border-color:var(--text); transform:translateY(-1px); }
 .asset-toggle.active { background:var(--strong); color:var(--strong-text); border-color:var(--strong); box-shadow:0 16px 38px var(--shadow); }
