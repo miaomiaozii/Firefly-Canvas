@@ -33,13 +33,27 @@ const smartLogList = document.getElementById('smartLogList');
 const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
 const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
 const smartHistoryResizeHandle = smartLogModal?.querySelector('[data-history-resize-handle]');
-let smartHistoryDrawerHeight = 240;
+let smartHistoryDrawerHeight = 268;
 let smartHistoryDrawerCollapsed = false;
 let smartHistoryDrawerResizeState = null;
 let smartHistoryPointerState = null;
 let smartHistoryTap = null;
-const SMART_HISTORY_PAGE_SIZE = 100;
-let smartHistoryPage = 0;
+let smartHistorySelectedImage = null;
+const SMART_HISTORY_DOM_LIMIT = 140;
+const SMART_HISTORY_OVERSCAN = 48;
+const SMART_HISTORY_RENDER_BUFFER = 24;
+const smartHistoryVirtualState = {
+    start:0,
+    end:0,
+    count:0,
+    stride:0,
+    gap:0,
+    signature:'',
+    frame:0,
+    force:false,
+    focusCard:null,
+    focusElement:null
+};
 let smartProjectMediaTrashRefreshVersion = 0;
 const smartShortcutModal = document.getElementById('smartShortcutModal');
 const smartSettingsLink = document.getElementById('smartSettingsLink');
@@ -2263,6 +2277,57 @@ function viewportCenter(){
         y:(shell.clientHeight / 2 - viewport.y) / viewport.scale
     };
 }
+function frameSmartCanvasContentIfNeeded(){
+    const compactViewport = Number(shell?.clientWidth || window.innerWidth || 0) < 720;
+    if(!shell || !nodes.length || (!compactViewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.scale !== 1))) return false;
+    const content = nodes
+        .filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID)
+        .map(nodeRect)
+        .filter(rect => rect.width > 0 && rect.height > 0);
+    if(!content.length) return false;
+
+    const drawerOpen = smartLogModal?.classList.contains('open');
+    const safe = {
+        left:32,
+        top:86,
+        right:Math.max(32, shell.clientWidth - 32),
+        bottom:Math.max(180, shell.clientHeight - (drawerOpen ? 300 : 92)),
+    };
+    const contentIsReadable = content.some(rect => {
+        const screen = {
+            left:rect.x * viewport.scale + viewport.x,
+            top:rect.y * viewport.scale + viewport.y,
+            right:(rect.x + rect.width) * viewport.scale + viewport.x,
+            bottom:(rect.y + rect.height) * viewport.scale + viewport.y,
+        };
+        const overlapW = Math.max(0, Math.min(screen.right, safe.right) - Math.max(screen.left, safe.left));
+        const overlapH = Math.max(0, Math.min(screen.bottom, safe.bottom) - Math.max(screen.top, safe.top));
+        const overlap = (overlapW * overlapH) / Math.max(1, (screen.right - screen.left) * (screen.bottom - screen.top));
+        const centerX = (screen.left + screen.right) / 2;
+        const centerY = (screen.top + screen.bottom) / 2;
+        return overlap >= 0.55 && centerX >= safe.left && centerX <= safe.right && centerY >= safe.top && centerY <= safe.bottom;
+    });
+    if(contentIsReadable) return false;
+
+    const bounds = content.reduce((acc, rect) => ({
+        left:Math.min(acc.left, rect.x),
+        top:Math.min(acc.top, rect.y),
+        right:Math.max(acc.right, rect.x + rect.width),
+        bottom:Math.max(acc.bottom, rect.y + rect.height),
+    }), {left:Infinity, top:Infinity, right:-Infinity, bottom:-Infinity});
+    const contentW = Math.max(1, bounds.right - bounds.left);
+    const contentH = Math.max(1, bounds.bottom - bounds.top);
+    const availableW = Math.max(320, safe.right - safe.left - 64);
+    const availableH = Math.max(240, safe.bottom - safe.top - 64);
+    viewport.scale = Math.min(1, availableW / (contentW + 96), availableH / (contentH + 96));
+    viewport.scale = Math.max(0.55, safeScale(viewport.scale));
+    const centerX = (bounds.left + bounds.right) / 2;
+    const centerY = (bounds.top + bounds.bottom) / 2;
+    viewport.x = (safe.left + safe.right) / 2 - centerX * viewport.scale;
+    viewport.y = (safe.top + safe.bottom) / 2 - centerY * viewport.scale;
+    applyViewport();
+    return true;
+}
 function renderMinimap(){
     if(!minimapContent || !minimapViewport) return;
     smartArrangeBtn?.classList.toggle('visible', selectedNodeIds().length > 0);
@@ -2770,7 +2835,7 @@ function searchableModelOptions(models, param, selected, emptyText, labelFor=(va
         const label = String(labelFor(value) ?? rawValue);
         const searchable = `${rawValue} ${label}`.toLocaleLowerCase();
         const hint = param === 'videoModel' ? videoAdapterHint(rawValue) : '';
-        return `<button type="button" class="direct-option ${rawValue === String(selected ?? '') ? 'active' : ''}" data-smart-param="${escapeHtml(param)}" data-model-option="${escapeHtml(rawValue)}" ${hint ? 'data-unadapted="1"' : ''}>${escapeHtml(label)}${hint ? `<span class="model-adapt-badge">${escapeHtml(hint)}</span>` : ''}</button>`;
+        return `<button type="button" class="direct-option ${rawValue === String(selected ?? '') ? 'active' : ''}" data-smart-param="${escapeHtml(param)}" data-smart-value="${escapeHtml(rawValue)}" data-model-option="${escapeHtml(rawValue)}" ${hint ? 'data-unadapted="1"' : ''}>${escapeHtml(label)}${hint ? `<span class="model-adapt-badge">${escapeHtml(hint)}</span>` : ''}</button>`;
     }).join('');
     return `${modelSearchInputHtml(param, list.length)}
         <div class="model-list" data-model-options="${escapeHtml(param)}">
@@ -5381,6 +5446,7 @@ function setAssetLibraryFromResponse(data, options={}){
 }
 function toggleAssetLibrary(open=!assetLibraryOpen){
     if(!assetPanel || !assetToggle) return;
+    if(open && smartLogModal?.classList.contains('open')) closeSmartCanvasLog();
     assetLibraryOpen = !!open;
     assetPanel.classList.toggle('open', assetLibraryOpen);
     assetToggle?.classList.toggle('active', assetLibraryOpen);
@@ -5901,6 +5967,7 @@ async function loadCanvas(){
         refreshPersistedDurableSnapshot(canvasForStorage());
         applyViewport();
         render();
+        frameSmartCanvasContentIfNeeded();
         if(cleanedDetachedInputs || recoveredLoopOutputs) scheduleSave();
         resumeConversationTasks();
         resumeSmartPendingTasks();
@@ -6244,6 +6311,11 @@ function createNode(x, y, images=[], options={}){
     const nodeImages = (images || []).map(img => ({...img}));
     const node = {id:uid('smart'), type:'smart-image', x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
     node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : mediaNodeDefaultScale(node);
+    if(options.title) node.title = String(options.title);
+    if(options.runMeta) attachRunMeta(node, options.runMeta);
+    if(options.historyLogId) node.historyLogId = String(options.historyLogId);
+    if(options.needsRegeneration != null) node.needsRegeneration = Boolean(options.needsRegeneration);
+    if(options.generationState) node.generationState = String(options.generationState);
     inheritNodeMetaFromImage(node);
     nodes.push(node);
     if(options.select !== false) selectedId = node.id;
@@ -7158,9 +7230,46 @@ function smartRunSnapshot(node, prompt, refs=[], kind='image'){
         nodeType:node?.type || 'smart-image',
         kind,
         settings:settingsSnapshot,
+        runSettings:cloneSmartSettings(settingsSnapshot),
+        displayPrompt:node?.runPrompt || prompt || '',
         prompt:prompt || '',
         refs:(refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || 'image', kind:ref.kind || ''})).filter(ref => ref.url),
         size: kind === 'image' && isApiLikeEngine(settingsSnapshot.engine) ? sizeForRun(settingsSnapshot) : ''
+    };
+}
+function smartLogRunMeta(log){
+    const request = log?.request && typeof log.request === 'object' ? log.request : {};
+    const params = log?.params && typeof log.params === 'object' ? log.params : {};
+    const snapshot = cloneSmartSettings(log?.runSettings || log?.settings || {});
+    if(!snapshot.provider_id && (request.provider_id || params.provider_id)) snapshot.provider_id = request.provider_id || params.provider_id;
+    if(!snapshot.model && (request.model || params.model)) snapshot.model = request.model || params.model;
+    if(!snapshot.quality && (request.quality || params.quality)) snapshot.quality = request.quality || params.quality;
+    if(!snapshot.count && (request.n || params.n || params.count)) snapshot.count = request.n || params.n || params.count;
+    if(!snapshot.size && (request.size || params.size)) snapshot.size = request.size || params.size;
+    if(!snapshot.resolution && (request.resolution || params.resolution)) snapshot.resolution = request.resolution || params.resolution;
+    if(!snapshot.videoAspect && (request.aspect_ratio || params.aspect_ratio)) snapshot.videoAspect = request.aspect_ratio || params.aspect_ratio;
+    if(!snapshot.videoDuration && (request.duration || params.duration)) snapshot.videoDuration = request.duration || params.duration;
+    if(!snapshot.routingMode) snapshot.routingMode = snapshot.provider_id || snapshot.model ? 'manual' : 'auto';
+    const refs = (log?.promptRefs || log?.runPromptRefs || log?.refs || []).map(ref => ({
+        asset_id:ref?.asset_id || '',
+        url:ref?.url || '',
+        name:ref?.name || 'image',
+        nodeId:ref?.nodeId || '',
+        imageIndex:ref?.imageIndex ?? '',
+        kind:ref?.kind || 'image'
+    })).filter(ref => ref.url);
+    const prompt = String(log?.prompt || '');
+    const displayPrompt = String(log?.displayPrompt || log?.promptText || prompt);
+    return {
+        prompt,
+        displayPrompt,
+        promptHtml:log?.promptHtml || '',
+        promptText:displayPrompt,
+        promptRefs:refs,
+        inputRefs:(log?.inputRefs || refs).map(ref => ({...ref})),
+        sourceNodeId:log?.sourceNodeId || log?.nodeId || '',
+        settings:snapshot,
+        createdAt:Number(log?.createdAt || Date.now())
     };
 }
 function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
@@ -7182,12 +7291,16 @@ function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
         id:uid('log'),
         createdAt:Date.now(),
         status:error ? 'failed' : 'success',
+        kind:run?.kind || 'image',
         platform:smartRunPlatformLabel(run),
         nodeId:run?.nodeId || '',
         nodeType:run?.nodeType || 'smart-image',
         model:smartRunTaskLabel(run),
         request:smartRunRequestMeta(run),
         prompt:run?.prompt || '',
+        displayPrompt:run?.displayPrompt || run?.prompt || '',
+        runSettings:cloneSmartSettings(run?.runSettings || run?.settings || {}),
+        promptRefs:(run?.refs || []).map(ref => ({...ref})),
         outputs:outputItems,
         refs:run?.refs || [],
         runMs:Number(runMs || 0),
@@ -7225,17 +7338,29 @@ function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
     const log = smartLogEntryById(logId);
     let outputs = smartLogImageOutputs(log);
     if(Number.isInteger(outputIndex)) outputs = outputs.filter(output => output.outputIndex === outputIndex);
-    if(!outputs.length) return;
+    if(log?.kind === 'video' && !outputs.length) return;
     const rect = shell.getBoundingClientRect();
     const point = dropPoint || screenToWorld({clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2});
+    const failed = log?.status === 'failed' || !outputs.length;
+    const runMeta = smartLogRunMeta(log);
     pushUndo();
-    createImageNodeAt(point, outputs.map(output => {
+    const node = createImageNodeAt(point, outputs.map(output => {
         const clean = {...output};
         delete clean.outputIndex;
         return clean;
-    }), {skipUndo:true});
+    }), {
+        skipUndo:true,
+        title:outputs.length > 1 ? 'Group' : 'Image',
+        runMeta,
+        historyLogId:log?.id || '',
+        needsRegeneration:failed,
+        generationState:failed ? 'ready' : 'complete'
+    });
+    node.runStatus = failed ? 'failed' : 'succeeded';
+    scheduleSave();
     closeSmartCanvasLog();
-    toast(tr('canvas.sentToCanvas').replace('{n}', outputs.length));
+    toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : '已将失败记录发送到画布，可直接重新生成');
+    return node;
 }
 function setSmartLogDragState(active, card=null){
     smartLogModal?.classList.toggle('log-drag-active', active);
@@ -7251,6 +7376,11 @@ function clearSmartHistoryTap(){
 }
 function selectSmartHistoryImage(card){
     if(!card) return;
+    const logItem = card.closest('[data-canvas-log-id]');
+    smartHistorySelectedImage = {
+        logId:logItem?.dataset.canvasLogId || '',
+        outputIndex:Number(card.dataset.logOutputIndex || 0)
+    };
     smartLogModal?.querySelectorAll('.log-media-card.is-selected').forEach(item => {
         item.classList.remove('is-selected');
         item.removeAttribute('data-history-selected');
@@ -7298,6 +7428,7 @@ function clearSmartHistoryPointerState(){
     try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) {}
     setSmartLogDragState(false);
     smartHistoryPointerState = null;
+    scheduleSmartHistoryWindowRender();
 }
 function setSmartHistoryDragPayload(event, item){
     const transfer = event.dataTransfer;
@@ -7489,11 +7620,14 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
         }
         const projectHistory = canvas.format === 'firefly-canvas-v1';
         const endpoint = projectHistory
-            ? `/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/history/delete`
+            ? (deleteMedia
+                ? `/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/history/delete-with-media`
+                : `/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/history/delete`)
             : `/api/canvases/${encodeURIComponent(canvasId)}/logs/delete`;
         const payload = projectHistory ? {
             log_id:logId,
-            base_revision:Number(canvas.revision || 0)
+            base_revision:Number(canvas.revision || 0),
+            delete_media:Boolean(deleteMedia)
         } : {
             log_id:logId,
             delete_unreferenced_media:deleteMedia,
@@ -7523,7 +7657,8 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
         }
         renderSmartCanvasLog();
-        const notes = [tr('canvas.logDeleted')];
+        if(projectHistory && deleteMedia) refreshSmartProjectMediaTrashButton();
+        const notes = [deleteMedia ? tr('canvas.deleteLogAndMedia') : tr('canvas.logDeleted')];
         if(data.removed_files?.length) notes.push(tr('canvas.logMediaRemoved').replace('{n}', data.removed_files.length));
         if(data.reset_node_ids?.length) notes.push(tr('canvas.logNodesReset').replace('{n}', data.reset_node_ids.length));
         if(data.skipped_referenced?.length) notes.push(tr('canvas.logMediaReferenced').replace('{n}', data.skipped_referenced.length));
@@ -7670,38 +7805,16 @@ async function purgeSmartProjectMediaTrash(){
         smartHistoryPurgeTrash.setAttribute('aria-busy', 'false');
     }
 }
-function renderSmartCanvasLog(){
-    const logs = canvas?.logs || [];
-    const pageCount = Math.max(1, Math.ceil(logs.length / SMART_HISTORY_PAGE_SIZE));
-    smartHistoryPage = Math.max(0, Math.min(pageCount - 1, smartHistoryPage));
-    const pageStart = smartHistoryPage * SMART_HISTORY_PAGE_SIZE;
-    const visibleLogs = logs.slice(pageStart, pageStart + SMART_HISTORY_PAGE_SIZE);
-    const cardsHtml = logs.length ? visibleLogs.map(log => {
+function smartHistoryLogCardHtml(log, historyIndex){
         const outputs = (log.outputs || []).map((output, outputIndex) => {
             const item = smartLogOutputItem(output);
             return item?.url ? {...item, outputIndex} : null;
         }).filter(Boolean);
-        const thumbs = outputs.slice(0, 8).map(item => {
-            const outputIndex = item.outputIndex;
-            const safe = escapeAttr(item.url);
-            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
-            const label = imageResolutionLabel(item);
-            const name = item.name || smartImageNameFromUrl(item.url);
-            const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
-            const attrs = kind === 'image'
-                ? `class="log-history-image" role="button" tabindex="0" aria-pressed="false" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
-                : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
-            const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
-            return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}">
-                ${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}
-                <div class="log-media-caption"><span>${escapeHtml(tr('canvas.originalImage'))} ${outputIndex + 1}${label ? ` · ${escapeHtml(label)}` : ''}</span>${kind === 'image' ? `<span class="log-drag-note"><i data-lucide="grip"></i>${escapeHtml(tr('canvas.dragImageHint'))}</span>` : ''}</div>
-                ${kind === 'image' ? `<div class="log-media-actions"><button class="log-media-send" type="button" data-log-send-output="${outputIndex}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button><button class="log-media-delete danger" type="button" data-log-delete-original="${outputIndex}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteOriginal'))}</span></button></div>` : ''}
-            </article>`;
-        }).join('') || (log.originalDeleted || log.status === 'original_deleted'
-            ? `<div class="log-deleted-media"><i data-lucide="image-off"></i><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div>`
-            : '');
+        const first = outputs[0] || null;
+        const rest = outputs.slice(1);
         const date = new Date(log.createdAt || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
         const req = log.request || {};
+        const prompt = String(log.prompt || '').trim();
         const taskId = req.task_id || req.taskId || req.prompt_id || req.promptId || '';
         const backend = req.provider_id || req.providerId || req.backend || '';
         const sizeSummary = smartLogSizeSummary(log, outputs);
@@ -7715,41 +7828,182 @@ function renderSmartCanvasLog(){
         ].filter(Boolean);
         const originalDeleted = log.originalDeleted || log.status === 'original_deleted';
         const upstreamDeleted = Array.isArray(log.deletedReferenceTombstones) && log.deletedReferenceTombstones.length > 0;
-        return `<div class="log-item ${log.status === 'failed' ? 'failed' : ''}" data-canvas-log-id="${escapeAttr(log.id || '')}">
+        const failed = log.status === 'failed';
+        let thumbHtml = '';
+        if(originalDeleted){
+            thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><i data-lucide="image-off"></i><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
+        } else if(first){
+            const item = first;
+            const outputIndex = item.outputIndex;
+            const safe = escapeAttr(item.url);
+            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
+            const label = imageResolutionLabel(item);
+            const name = item.name || smartImageNameFromUrl(item.url);
+            const selected = smartHistorySelectedImage?.logId === String(log.id || '')
+                && smartHistorySelectedImage.outputIndex === outputIndex;
+            const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
+            const attrs = kind === 'image'
+                ? `class="log-history-image" role="button" tabindex="0" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
+                : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
+            const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
+             const actionsHtml = '';
+            thumbHtml = `<div class="log-thumb-square"><article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>
+                ${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}
+            </div>`;
+        } else if(failed){
+            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder"><i data-lucide="image-off"></i></div></div>`;
+        }
+        const miniHtml = rest.length ? `<div class="log-output-minis">${rest.map(item => {
+            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
+            const label = imageResolutionLabel(item);
+            const safe = escapeAttr(item.url);
+            return `<button type="button" class="log-output-mini" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}" data-url="${safe}" data-kind="${escapeAttr(kind)}"><img src="${escapeAttr(smartMediaPreviewUrl(item.url, 96))}" alt="" loading="lazy" decoding="async"></button>`;
+        }).join('')}</div>` : '';
+        const promptPreview = prompt
+            ? `<div class="log-prompt-preview" title="${escapeAttr(prompt)}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span></div>`
+            : `<div class="log-prompt-preview is-empty">${escapeHtml(tr('canvas.noPromptMeta'))}</div>`;
+        return `<div class="log-item ${failed ? 'failed' : ''}" data-canvas-log-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
+            ${thumbHtml}
+            <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
             <div class="log-main">
                 <div class="log-meta">
-                    <span class="log-chip ${log.status === 'failed' ? 'status-failed' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(log.status === 'failed' ? tr('canvas.failed') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
+                    <span class="log-chip ${failed ? 'status-failed' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
                     <span class="log-chip">${escapeHtml(log.platform || '-')}</span>
                     ${log.model ? `<span class="log-chip">${escapeHtml(log.model)}</span>` : ''}
                     <span class="log-chip">${escapeHtml(formatRunDuration(log.runMs || 0))}</span>
-                </div>
-                <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
-                ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
-                ${log.error ? `<div class="log-error" title="${escapeAttr(log.error)}" data-error="${escapeAttr(log.error)}">${escapeHtml(log.error)}</div>` : ''}
-                <div class="log-prompt-block">
-                    <div class="log-prompt-head"><span>${escapeHtml(tr('canvas.promptUsed'))}</span><button type="button" data-log-copy-prompt ${log.prompt ? '' : 'disabled'}><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button></div>
-                    <div class="log-prompt" title="${escapeAttr(log.prompt || tr('canvas.noPromptMeta'))}" data-prompt="${escapeAttr(log.prompt || '')}">${escapeHtml(log.prompt || tr('canvas.noPromptMeta'))}</div>
-                </div>
-                <div class="log-actions">
-                    ${imageOutputCount ? `<button type="button" class="primary" data-log-send-all><i data-lucide="images"></i><span>${escapeHtml(tr('canvas.sendAllToCanvas'))}</span></button>` : ''}
-                    <button type="button" data-log-delete="record"><i data-lucide="list-x"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
-                </div>
-            </div>
-            <div class="log-thumbs">${thumbs}</div>
-        </div>`;
-    }).join('') : `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
-    const pagerHtml = logs.length > SMART_HISTORY_PAGE_SIZE ? `<nav class="history-page-nav" aria-label="生成历史分页">
-        <button type="button" data-history-page-prev ${smartHistoryPage <= 0 ? 'disabled' : ''} aria-label="上一页"><i data-lucide="chevron-left"></i><span>上一页</span></button>
-        <span data-history-page-status>${smartHistoryPage + 1} / ${pageCount} · 共 ${logs.length} 条</span>
-        <button type="button" data-history-page-next ${smartHistoryPage >= pageCount - 1 ? 'disabled' : ''} aria-label="下一页"><span>下一页</span><i data-lucide="chevron-right"></i></button>
-    </nav>` : '';
-    smartLogList.innerHTML = cardsHtml + pagerHtml;
+                 </div>
+                 <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
+                 ${promptPreview}
+                 ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
+                 ${log.error ? `<div class="log-error" role="tooltip" aria-label="${escapeAttr(log.error)}" data-error="${escapeAttr(log.error)}">${escapeHtml(log.error)}</div>` : ''}
+                 ${miniHtml}
+             </div>
+             <div class="log-buttons">
+                  ${(imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-log-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
+                  <button type="button" data-log-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
+                  <button type="button" class="danger" data-log-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>
+             </div>
+         </div>`;
+}
+function smartHistoryFocusedCard(logs){
+    const activeCard = document.activeElement?.closest?.('.log-item[data-canvas-log-id]');
+    const card = smartLogList?.contains(activeCard)
+        ? activeCard
+        : (smartHistoryVirtualState.focusCard?.isConnected ? smartHistoryVirtualState.focusCard : null);
+    if(!card || !smartLogList?.contains(card)) return {card:null, index:-1, logId:''};
+    const logId = card.dataset.canvasLogId || '';
+    return {card, index:logs.findIndex(log => String(log?.id || '') === logId), logId};
+}
+function protectSmartHistoryFocus(){
+    const active = document.activeElement;
+    const card = active?.closest?.('.log-item[data-canvas-log-id]');
+    if(card && smartLogList?.contains(card)){
+        smartHistoryVirtualState.focusCard = card;
+        smartHistoryVirtualState.focusElement = active;
+    } else {
+        smartHistoryVirtualState.focusCard = null;
+        smartHistoryVirtualState.focusElement = null;
+    }
+}
+function smartHistoryVisibleRange(count){
+    const stride = smartHistoryVirtualState.stride;
+    if(!stride) return {start:0, end:Math.min(count, 1)};
+    const left = Math.max(0, Number(smartLogList?.scrollLeft || 0));
+    const width = Math.max(1, Number(smartLogList?.clientWidth || stride));
+    const start = Math.max(0, Math.min(count - 1, Math.floor(left / stride)));
+    const end = Math.max(start + 1, Math.min(count, Math.ceil((left + width) / stride)));
+    return {start, end};
+}
+function smartHistoryWindowBounds(count, targetCount){
+    const target = Math.max(1, Math.min(count, targetCount));
+    const visible = smartHistoryVisibleRange(count);
+    const currentSize = smartHistoryVirtualState.end - smartHistoryVirtualState.start;
+    if(smartHistoryVirtualState.count === count && currentSize === target){
+        const leftBuffered = smartHistoryVirtualState.start === 0
+            || visible.start - smartHistoryVirtualState.start >= SMART_HISTORY_RENDER_BUFFER;
+        const rightBuffered = smartHistoryVirtualState.end === count
+            || smartHistoryVirtualState.end - visible.end >= SMART_HISTORY_RENDER_BUFFER;
+        if(leftBuffered && rightBuffered) return {start:smartHistoryVirtualState.start, end:smartHistoryVirtualState.end};
+    }
+    let start = Math.max(0, visible.start - SMART_HISTORY_OVERSCAN);
+    start = Math.min(start, Math.max(0, count - target));
+    if(visible.end > start + target) start = Math.min(count - target, visible.end - target);
+    return {start, end:start + target};
+}
+function smartHistorySpacerHtml(position, omitted){
+    return `<div data-history-spacer="${position}" data-history-omitted="${omitted}" aria-hidden="true"></div>`;
+}
+function smartHistoryRailHtml(logs, indexes){
+    let html = smartHistorySpacerHtml('before', indexes[0]);
+    let previous = -1;
+    indexes.forEach(index => {
+        if(previous >= 0 && index > previous + 1){
+            html += smartHistorySpacerHtml('gap', index - previous - 1);
+        }
+        html += smartHistoryLogCardHtml(logs[index], index);
+        previous = index;
+    });
+    html += smartHistorySpacerHtml('after', logs.length - previous - 1);
+    return html;
+}
+function replaceSmartHistoryRail(html, focused){
+    const savedScrollLeft = smartLogList.scrollLeft;
+    if(!focused.card || focused.index < 0){
+        smartLogList.innerHTML = html;
+        return savedScrollLeft;
+    }
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const desiredNodes = [...template.content.children];
+    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasLogId === focused.logId);
+    if(focusPosition < 0){
+        smartLogList.replaceChildren(template.content);
+        return savedScrollLeft;
+    }
+    const generatedFocusedCard = desiredNodes[focusPosition];
+    focused.card.dataset.historyIndex = generatedFocusedCard.dataset.historyIndex || String(focused.index);
+    [...smartLogList.childNodes].forEach(node => {
+        if(node !== focused.card) node.remove();
+    });
+    const before = document.createDocumentFragment();
+    desiredNodes.slice(0, focusPosition).forEach(node => before.appendChild(node));
+    smartLogList.insertBefore(before, focused.card);
+    desiredNodes.slice(focusPosition + 1).forEach(node => smartLogList.appendChild(node));
+    return savedScrollLeft;
+}
+function updateSmartHistorySpacerWidths(){
+    const card = smartLogList.querySelector('.log-item');
+    if(card){
+        const cardWidth = Number(card.getBoundingClientRect().width || card.offsetWidth || 0);
+        const listStyle = getComputedStyle(smartLogList);
+        const gap = Number.parseFloat(listStyle.columnGap || listStyle.gap || '0') || 0;
+        if(cardWidth > 0){
+            smartHistoryVirtualState.gap = gap;
+            smartHistoryVirtualState.stride = cardWidth + gap;
+        }
+    }
+    const stride = smartHistoryVirtualState.stride;
+    const gap = smartHistoryVirtualState.gap;
+    smartLogList.querySelectorAll('[data-history-spacer]').forEach(spacer => {
+        const omitted = Math.max(0, Number(spacer.dataset.historyOmitted || 0));
+        spacer.hidden = omitted === 0;
+        const width = omitted && stride ? Math.max(0, omitted * stride - gap) : 0;
+        spacer.style.flex = `0 0 ${width}px`;
+        spacer.style.width = `${width}px`;
+        spacer.style.minWidth = `${width}px`;
+        spacer.style.height = '1px';
+        spacer.style.pointerEvents = 'none';
+    });
+}
+function bindSmartHistoryWindow(){
     bindSmartPreviewImageFallbacks(smartLogList);
     smartLogList.querySelectorAll('[data-log-preview]').forEach(el => {
         el.onclick = e => {
             e.stopPropagation();
             const card = el.closest('.log-media-card');
-            if(card?.dataset.url) smartLogPreviewNode(card.dataset.url, card.dataset.kind || 'image');
+            const url = el.dataset.url || card?.dataset.url || '';
+            const kind = el.dataset.kind || card?.dataset.kind || 'image';
+            if(url) smartLogPreviewNode(url, kind);
         };
     });
     const bindLogCopy = (selector, key) => {
@@ -7821,25 +8075,81 @@ function renderSmartCanvasLog(){
             deleteCanvasLogEntry(logId, button.dataset.logDelete === 'media');
         };
     });
-    smartLogList.querySelector('[data-history-page-prev]')?.addEventListener('click', event => {
-        event.stopPropagation();
-        smartHistoryPage = Math.max(0, smartHistoryPage - 1);
-        renderSmartCanvasLog();
-    });
-    smartLogList.querySelector('[data-history-page-next]')?.addEventListener('click', event => {
-        event.stopPropagation();
-        smartHistoryPage = Math.min(pageCount - 1, smartHistoryPage + 1);
-        renderSmartCanvasLog();
-    });
     refreshIcons();
 }
+function renderSmartHistoryWindow(force=false){
+    if(!smartLogList || (!force && smartHistoryPointerState)) return;
+    const logs = canvas?.logs || [];
+    if(!logs.length){
+        smartLogList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
+        smartHistoryVirtualState.start = 0;
+        smartHistoryVirtualState.end = 0;
+        smartHistoryVirtualState.count = 0;
+        smartHistoryVirtualState.signature = 'empty';
+        smartHistoryVirtualState.focusCard = null;
+        smartHistoryVirtualState.focusElement = null;
+        refreshIcons();
+        return;
+    }
+    if(smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === smartHistorySelectedImage.logId)){
+        smartHistorySelectedImage = null;
+    }
+    const focused = smartHistoryFocusedCard(logs);
+    let bounds = smartHistoryWindowBounds(logs.length, SMART_HISTORY_DOM_LIMIT);
+    const focusOutside = focused.index >= 0 && (focused.index < bounds.start || focused.index >= bounds.end);
+    if(focusOutside && logs.length > 1){
+        bounds = smartHistoryWindowBounds(logs.length, SMART_HISTORY_DOM_LIMIT - 1);
+    }
+    const indexes = [];
+    for(let index = bounds.start; index < bounds.end; index++) indexes.push(index);
+    if(focused.index >= 0 && !indexes.includes(focused.index)) indexes.push(focused.index);
+    indexes.sort((a, b) => a - b);
+    const pinnedIndex = focused.index >= 0 && (focused.index < bounds.start || focused.index >= bounds.end)
+        ? focused.index
+        : -1;
+    const signature = `${logs.length}:${bounds.start}:${bounds.end}:${pinnedIndex}`;
+    if(!force && signature === smartHistoryVirtualState.signature){
+        smartHistoryVirtualState.focusCard = null;
+        smartHistoryVirtualState.focusElement = null;
+        return;
+    }
+    const protectedFocusElement = focused.card?.contains(document.activeElement)
+        ? document.activeElement
+        : smartHistoryVirtualState.focusElement;
+    const savedScrollLeft = replaceSmartHistoryRail(smartHistoryRailHtml(logs, indexes), focused);
+    smartHistoryVirtualState.start = bounds.start;
+    smartHistoryVirtualState.end = bounds.end;
+    smartHistoryVirtualState.count = logs.length;
+    smartHistoryVirtualState.signature = signature;
+    updateSmartHistorySpacerWidths();
+    smartLogList.scrollLeft = Math.min(savedScrollLeft, Math.max(0, smartLogList.scrollWidth - smartLogList.clientWidth));
+    bindSmartHistoryWindow();
+    if(protectedFocusElement?.isConnected && document.activeElement !== protectedFocusElement){
+        protectedFocusElement.focus({preventScroll:true});
+    }
+    smartHistoryVirtualState.focusCard = null;
+    smartHistoryVirtualState.focusElement = null;
+}
+function renderSmartCanvasLog(){
+    renderSmartHistoryWindow(true);
+}
+function scheduleSmartHistoryWindowRender(force=false){
+    smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
+    if(smartHistoryVirtualState.frame) return;
+    smartHistoryVirtualState.frame = requestAnimationFrame(() => {
+        smartHistoryVirtualState.frame = 0;
+        const shouldForce = smartHistoryVirtualState.force;
+        smartHistoryVirtualState.force = false;
+        renderSmartHistoryWindow(shouldForce);
+    });
+}
 function smartHistoryDrawerMaxHeight(){
-    return Math.max(1, Math.floor(shell?.clientHeight || window.innerHeight || 800) / 3);
+    return Math.max(268, Math.floor(shell?.clientHeight || window.innerHeight || 800) / 3);
 }
 function applySmartHistoryDrawerHeight(value){
     const max = Math.floor(smartHistoryDrawerMaxHeight());
     const min = Math.min(160, max);
-    smartHistoryDrawerHeight = Math.max(min, Math.min(max, Math.round(Number(value) || 240)));
+    smartHistoryDrawerHeight = Math.max(min, Math.min(max, Math.round(Number(value) || 268)));
     smartLogModal?.style.setProperty('--history-drawer-height', `${smartHistoryDrawerHeight}px`);
     smartHistoryResizeHandle?.setAttribute('aria-valuemin', String(min));
     smartHistoryResizeHandle?.setAttribute('aria-valuemax', String(max));
@@ -7859,6 +8169,7 @@ function toggleSmartHistoryDrawerCollapsed(){
     if(!smartLogModal?.classList.contains('open')) openSmartCanvasLog();
     smartHistoryDrawerCollapsed = !smartHistoryDrawerCollapsed;
     updateSmartHistoryDrawerCollapseUi();
+    if(!smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
 }
 function beginSmartHistoryDrawerResize(event){
     if(event.button !== 0 || smartHistoryDrawerCollapsed) return;
@@ -7883,9 +8194,43 @@ function beginSmartHistoryDrawerResize(event){
     window.addEventListener('pointerup', finish, true);
     window.addEventListener('pointercancel', finish, true);
 }
+function scrollSmartHistoryRailTo(value, immediate=false){
+    if(!smartLogList) return false;
+    const before = smartLogList.scrollLeft;
+    const max = Math.max(0, smartLogList.scrollWidth - smartLogList.clientWidth);
+    const next = Math.max(0, Math.min(max, Number(value) || 0));
+    if(Math.abs(next - before) < 0.5) return false;
+    protectSmartHistoryFocus();
+    smartLogList.scrollLeft = next;
+    if(immediate) renderSmartHistoryWindow();
+    else scheduleSmartHistoryWindowRender();
+    return Math.abs(smartLogList.scrollLeft - before) >= 0.5;
+}
+function handleSmartHistoryWheel(event){
+    event.stopPropagation();
+    const unit = event.deltaMode === 1
+        ? 40
+        : event.deltaMode === 2
+            ? Math.max(1, smartLogList.clientWidth)
+            : 1;
+    const delta = (Number(event.deltaX || 0) + Number(event.deltaY || 0)) * unit;
+    if(delta && scrollSmartHistoryRailTo(smartLogList.scrollLeft + delta)) event.preventDefault();
+}
+function handleSmartHistoryKeydown(event){
+    if(event.altKey || event.ctrlKey || event.metaKey) return;
+    const stride = smartHistoryVirtualState.stride || Math.max(1, smartLogList.clientWidth / 2);
+    let next = smartLogList.scrollLeft;
+    if(event.key === 'ArrowLeft') next -= stride;
+    else if(event.key === 'ArrowRight') next += stride;
+    else if(event.key === 'Home') next = 0;
+    else if(event.key === 'End') next = smartLogList.scrollWidth - smartLogList.clientWidth;
+    else return;
+    event.stopPropagation();
+    if(scrollSmartHistoryRailTo(next, event.key === 'Home' || event.key === 'End')) event.preventDefault();
+}
 function setupSmartHistoryDrawer(){
     if(!smartLogModal) return;
-    applySmartHistoryDrawerHeight(Math.min(240, smartHistoryDrawerMaxHeight()));
+    applySmartHistoryDrawerHeight(Math.min(268, smartHistoryDrawerMaxHeight()));
     smartHistoryResizeHandle?.addEventListener('pointerdown', beginSmartHistoryDrawerResize);
     smartHistoryResizeHandle?.addEventListener('keydown', event => {
         let next = smartHistoryDrawerHeight;
@@ -7902,10 +8247,17 @@ function setupSmartHistoryDrawer(){
     smartLogModal.addEventListener('mousedown', event => event.stopPropagation());
     smartLogModal.addEventListener('click', event => event.stopPropagation());
     smartLogModal.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
+    if(smartLogList){
+        smartLogList.tabIndex = 0;
+        smartLogList.addEventListener('scroll', () => scheduleSmartHistoryWindowRender(), {passive:true});
+        smartLogList.addEventListener('wheel', handleSmartHistoryWheel, {passive:false});
+        smartLogList.addEventListener('keydown', handleSmartHistoryKeydown);
+    }
     updateSmartHistoryDrawerCollapseUi();
 }
 function openSmartCanvasLog(){
     if(!canvas) return;
+    if(assetLibraryOpen) toggleAssetLibrary(false);
     renderSmartCanvasLog();
     applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
     smartLogModal.classList.add('open');
@@ -13222,28 +13574,61 @@ function loadPromptDraft(subject){
     }
 }
 function positionComposerForNode(node){
-    if(!node) return;
-    const rect = nodeRect(node);
+    if(!node || !composer) return;
     const gap = 14;
-    const cardW = 540;
-    const viewportW = Math.max(1, Number(shell?.clientWidth || window.innerWidth || cardW));
-    const viewportH = Math.max(1, Number(shell?.clientHeight || window.innerHeight || 720));
-    const composerH = Math.max(260, Number(composer?.offsetHeight || 308));
+    const viewportW = Math.max(1, Number(shell?.clientWidth || window.innerWidth || 1));
+    const viewportH = Math.max(1, Number(shell?.clientHeight || window.innerHeight || 1));
     const edge = 18;
-    composer.style.width = `${cardW}px`;
-    const centeredLeft = rect.x + rect.width / 2 - cardW / 2;
-    const left = Math.max(edge, Math.min(centeredLeft, viewportW - cardW - edge));
-    const belowTop = rect.y + rect.height + gap;
-    const aboveTop = rect.y - composerH - gap;
-    // 图片节点可能比首屏还高：优先放到图片下方，否则回退到上方，最后再在视口内夹住，
-    // 保证提示词框和“运行”按钮不会被画布边缘吞掉。
+    const renderedNode = world?.querySelector?.(`[data-id="${CSS.escape(node.id)}"]`);
+    const nodeViewport = renderedNode?.getBoundingClientRect();
+    const worldTransform = getComputedStyle(world).transform;
+    const matrix = worldTransform && worldTransform !== 'none'
+        ? new DOMMatrix(worldTransform)
+        : new DOMMatrix();
+    const scaleX = Math.max(0.01, Math.abs(matrix.a || 1));
+    const scaleY = Math.max(0.01, Math.abs(matrix.d || 1));
+    const modelRect = nodeRect(node);
+    const rect = nodeViewport || {
+        left: (matrix.e || 0) + modelRect.x * scaleX,
+        top: (matrix.f || 0) + modelRect.y * scaleY,
+        width: modelRect.width * scaleX,
+        height: modelRect.height * scaleY,
+        right: (matrix.e || 0) + (modelRect.x + modelRect.width) * scaleX,
+        bottom: (matrix.f || 0) + (modelRect.y + modelRect.height) * scaleY,
+    };
+    const availableW = Math.max(1, viewportW - edge * 2);
+    composer.style.removeProperty('width');
+    composer.style.removeProperty('max-width');
+    let composerRect = composer.getBoundingClientRect();
+    const naturalScreenW = Number(composerRect.width || 0) || Number(composer.offsetWidth || 0) * scaleX;
+    if(naturalScreenW > availableW){
+        composer.style.maxWidth = `${availableW / scaleX}px`;
+        composerRect = composer.getBoundingClientRect();
+    }
+    const fallbackScreenW = Math.min(availableW, Math.max(1, Number(rect.width || availableW)));
+    const screenW = Math.min(
+        availableW,
+        Number(composerRect.width || 0) || Number(composer.offsetWidth || 0) * scaleX || fallbackScreenW
+    );
+    const availableH = Math.max(1, viewportH - edge * 2);
+    const fallbackScreenH = Math.min(availableH, Math.max(1, Number(rect.height || availableH)));
+    const composerH = Math.min(
+        availableH,
+        Number(composerRect.height || 0) || Number(composer.offsetHeight || 0) * scaleY || fallbackScreenH
+    );
+    const centeredLeft = rect.left + rect.width / 2 - screenW / 2;
+    const left = Math.max(edge, Math.min(centeredLeft, viewportW - screenW - edge));
+    const belowTop = rect.bottom + gap;
+    const aboveTop = rect.top - composerH - gap;
+    // Position in screen space first, then convert back to the transformed world.
+    // This keeps the full composer visible after zooming, panning, or dynamic controls expand.
     const preferredTop = belowTop + composerH <= viewportH - edge
         ? belowTop
         : aboveTop >= edge
             ? aboveTop
             : Math.max(edge, viewportH - composerH - edge);
-    composer.style.left = `${left}px`;
-    composer.style.top = `${preferredTop}px`;
+    composer.style.left = `${(left - (matrix.e || 0)) / scaleX}px`;
+    composer.style.top = `${(preferredTop - (matrix.f || 0)) / scaleY}px`;
 }
 let composerUpdateTimer = 0;
 let composerUpdateSeq = 0;
@@ -13299,7 +13684,6 @@ function updateComposer(){
     }
     setPromptInputLocked(false);
     syncCascadeRunButton(node);
-    positionComposerForNode(node);
     const ph = Math.max(60, Math.min(380, Number(settings.promptH) || 124));
     promptInput.style.setProperty('--prompt-h', `${ph}px`);
     renderInputThumbsRow(node);
@@ -13307,6 +13691,9 @@ function updateComposer(){
     syncCascadeRunButton(node);
     scheduleDynamicParamsRefresh(140);
     syncRunButtonState(node);
+    requestAnimationFrame(() => {
+        if(activeComposerNode()?.id === node.id) positionComposerForNode(node);
+    });
 }
 function renderInputPromptPreview(node){
     if(!inputPromptPreview) return;
@@ -19028,7 +19415,13 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
 window.addEventListener('resize', () => {
     if(cropState) syncImageEditOverflow();
     if(panoramaState.enabled) resizePanoramaViewer();
-    if(smartLogModal) applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
+    if(smartLogModal){
+        applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
+        if(smartLogModal.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    }
+    if((shell?.clientWidth || window.innerWidth || 0) < 720) {
+        requestAnimationFrame(() => frameSmartCanvasContentIfNeeded());
+    }
 });
 window.addEventListener('studio-theme-change', event => applyTheme(event.detail?.theme || 'light'));
 try {

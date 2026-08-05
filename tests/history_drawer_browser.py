@@ -163,8 +163,9 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
         {
             "id": f"history-filler-{index:04d}",
             "type": "online-image",
-            "status": "succeeded",
+            "status": "failed" if index == 0 else "succeeded",
             "prompt": f"分页历史 {index}",
+            "error": "测试失败记录：模型不支持当前生成参数" if index == 0 else "",
             "outputs": [],
         }
         for index in range(4996)
@@ -216,7 +217,7 @@ class HistoryBrowserServer:
     def __init__(self, store: ProjectStore):
         self.store = store
         self.results: list[dict] = []
-        self.request_counts = {"original_delete": 0, "original_restore": 0}
+        self.request_counts = {"history_delete_with_media": 0, "original_delete": 0, "original_restore": 0}
         self.condition = threading.Condition()
         owner = self
 
@@ -344,6 +345,15 @@ class HistoryBrowserServer:
                 project_id = self.project_id_from_parts(parts)
                 body = self.read_json()
                 try:
+                    if project_id and len(parts) == 5 and parts[3] == "history" and parts[4] == "delete-with-media":
+                        owner.request_counts["history_delete_with_media"] += 1
+                        deleted = owner.store.delete_history_record_with_media(
+                            project_id,
+                            body["log_id"],
+                            base_revision=body["base_revision"],
+                        )
+                        self.send_json({"ok": True, **deleted})
+                        return
                     if project_id and len(parts) == 5 and parts[3] == "history" and parts[4] == "delete":
                         canvas = owner.store.delete_history_record(project_id, body["log_id"], base_revision=body["base_revision"])
                         owner.store.flush(project_id)

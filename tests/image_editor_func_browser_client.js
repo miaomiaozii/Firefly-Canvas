@@ -39,6 +39,30 @@
     function modalOpen(){ return document.getElementById('imageEditModal')?.classList.contains('open') === true; }
     function cropImageLoaded(){ const img = document.getElementById('cropImage'); return !!(img && img.naturalWidth > 0); }
     function cropStateReady(){ const c = (0, eval)('cropState'); return !!(c && c.w > 0 && c.h > 0); }
+    function imageNodeGeometry(){
+        const node = document.querySelector('#world .image-node[data-id="edit-node"]');
+        const toolbar = node?.querySelector('.smart-node-floating-menu');
+        const filename = node?.querySelector('.image-name-badge-outside');
+        const media = node?.querySelector('.image-wrap > .node-img');
+        if(!node || !toolbar || !filename || !media) return null;
+        const matrix = new DOMMatrix(getComputedStyle(document.getElementById('world')).transform);
+        const scale = Math.max(0.01, Math.abs(matrix.a || 1));
+        const toolbarRect = toolbar.getBoundingClientRect();
+        const filenameRect = filename.getBoundingClientRect();
+        const mediaRect = media.getBoundingClientRect();
+        return {
+            scale,
+            toolbarRect,
+            filenameRect,
+            mediaRect,
+            toolbarToFilename:(filenameRect.top - toolbarRect.bottom) / scale,
+            filenameToImage:(mediaRect.top - filenameRect.bottom) / scale,
+            toolbarOpacity:getComputedStyle(toolbar).opacity,
+            toolbarPointerEvents:getComputedStyle(toolbar).pointerEvents,
+            toolbarFont:getComputedStyle(toolbar.querySelector('button')).fontSize,
+            filenameFont:getComputedStyle(filename).fontSize,
+        };
+    }
     async function fetchImage(url){
         const res = await fetch(url);
         if(!res.ok) throw new Error('fetch ' + url + ' -> ' + res.status);
@@ -82,6 +106,20 @@
         }, 5000);
         trace('boot-done:' + bootOk);
         assertion('canvas boot with edit-node', bootOk, bootOk ? 'ok' : 'nodes missing');
+
+        const imageNode = document.querySelector('#world .image-node[data-id="edit-node"]');
+        imageNode?.click();
+        const imageChromeReady = await waitFor(() => imageNodeGeometry()?.toolbarOpacity === '1', 3000);
+        const imageGeometry = imageNodeGeometry();
+        assertion('image node exposes toolbar, filename, and image geometry', imageChromeReady && Boolean(imageGeometry), imageGeometry ? {opacity:imageGeometry.toolbarOpacity, pointerEvents:imageGeometry.toolbarPointerEvents} : 'missing');
+        if(imageGeometry){
+            const firstGapOk = imageGeometry.toolbarToFilename >= 5.9 && imageGeometry.toolbarToFilename <= 8.1;
+            const secondGapOk = imageGeometry.filenameToImage >= 5.9 && imageGeometry.filenameToImage <= 8.1;
+            assertion('image node vertical order is toolbar -> filename -> image', imageGeometry.toolbarRect.bottom <= imageGeometry.filenameRect.top && imageGeometry.filenameRect.bottom <= imageGeometry.mediaRect.top, {toolbarBottom:imageGeometry.toolbarRect.bottom, filenameTop:imageGeometry.filenameRect.top, filenameBottom:imageGeometry.filenameRect.bottom, imageTop:imageGeometry.mediaRect.top});
+            assertion('image toolbar and filename keep 6-8px geometry gaps', firstGapOk && secondGapOk, {toolbarToFilename:imageGeometry.toolbarToFilename, filenameToImage:imageGeometry.filenameToImage, scale:imageGeometry.scale});
+            assertion('image toolbar and filename typography follows foundation', imageGeometry.toolbarFont === '12px' && imageGeometry.filenameFont === '11px', {toolbar:imageGeometry.toolbarFont, filename:imageGeometry.filenameFont});
+            assertion('image toolbar is interactive without covering node content', imageGeometry.toolbarPointerEvents === 'auto' && imageGeometry.toolbarRect.bottom < imageGeometry.mediaRect.top, {pointerEvents:imageGeometry.toolbarPointerEvents, toolbarBottom:imageGeometry.toolbarRect.bottom, imageTop:imageGeometry.mediaRect.top});
+        }
 
         trace('crop-step');
         // --- crop ---

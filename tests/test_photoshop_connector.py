@@ -36,7 +36,9 @@ class PhotoshopConnectorSurfaceTests(unittest.TestCase):
         domains = manifest["requiredPermissions"]["network"]["domains"]
         self.assertNotEqual(domains, "all")
         self.assertNotIn("all", domains if isinstance(domains, list) else [domains])
-        self.assertIn("ws://127.0.0.1:3000", domains)
+        entries = [d if isinstance(d, str) else d.get("domain", "") for d in domains]
+        self.assertTrue(any("127.0.0.1" in e for e in entries), entries)
+        self.assertTrue(any("localhost" in e for e in entries), entries)
 
     def test_connector_documents_protocol_boundary(self):
         readme = (CONNECTOR / "README.md").read_text(encoding="utf-8").lower()

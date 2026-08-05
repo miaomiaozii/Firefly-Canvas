@@ -7,6 +7,7 @@
       hasDocument: () => false,
       placeSource: async () => { throw new Error('需在 Photoshop UXP 宿主内执行'); },
       exportCurrent: async () => { throw new Error('需在 Photoshop UXP 宿主内执行'); },
+      onDocChange: () => {},
     };
     return;
   }
@@ -47,12 +48,27 @@
   }
 
   async function placeSource(source) {
-    const file = await temporaryFile('firefly_source', extensionForMime(source.mime_type), bytesFromBase64(source.bytes_base64));
+    // webp/bmp/tiff/heic 等 PS 打不开的格式：先走后端转 JPEG（大熊同款策略，绕开 UXP 解码限制）
+    let bytes = bytesFromBase64(source.bytes_base64);
+    let mime = source.mime_type || 'image/png';
+    let extension = extensionForMime(mime);
+    if (net.needsJpeg(mime)) {
+      const converted = await net.jpegForBase64(source.bytes_base64, mime);
+      bytes = converted.buffer;
+      mime = converted.mime_type;
+      extension = 'jpg';
+    }
+    const file = await temporaryFile('firefly_source', extension, bytes);
     try {
       const token = await fs.createSessionToken(file);
       await core.executeAsModal(async () => {
         if (!app.documents.length) { await app.open(file); return; }
-        await action.batchPlay([{ _obj: 'placeEvent', null: { _path: token, _kind: 'local' }, freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' } }], {});
+        await action.batchPlay([{
+          _obj: 'placeEvent',
+          null: { _path: token, _kind: 'local' },
+          freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
+          offset: { _obj: 'offset', horizontal: { _unit: 'pixelsUnit', _value: 0 }, vertical: { _unit: 'pixelsUnit', _value: 0 } },
+        }], {});
       }, { commandName: '发送到 Photoshop' });
       return app.activeDocument ? app.activeDocument.id : '';
     } finally { await deleteTemporary(file); }
@@ -139,5 +155,11 @@
     return exportComposite(expectedId);
   }
 
-  DX.ps = { hasDocument, placeSource, exportCurrent };
+  // 文档打开/关闭/切换时通知（刷新导出按钮可用性），大熊同款监听，部分版本不支持则静默跳过
+  function onDocChange(callback) {
+    try { action.addNotificationListener(['open', 'close', 'select', 'newDocument'], callback); }
+    catch (_) {}
+  }
+
+  DX.ps = { hasDocument, placeSource, exportCurrent, onDocChange };
 })();

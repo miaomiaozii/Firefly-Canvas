@@ -102,9 +102,10 @@
       const documentId = await ps.placeSource(source);
       state.roundTrip = { ...binding, project_id: state.projectId, source_node_id: state.sourceNodeId, source_media_id: state.sourceMediaId, document_id: documentId || '' };
       localStorage.setItem('firefly.ps.roundTrip', JSON.stringify(state.roundTrip));
-      lockBinding(true); els.returnBtn.disabled = false; els.roundState.textContent = `已激活 ${requestId}`;
+      lockBinding(true); els.returnBtn.disabled = !ps.hasDocument(); els.roundState.textContent = `已激活 ${requestId}`;
       message(els.requestStatus, '源图已放置到 Photoshop，可开始编辑后返回。', 'ok');
     } catch (error) {
+      console.error('[firefly-ps] activate FAILED', error?.message || String(error));
       if (isStaleRoundTrip(error)) clearActiveRoundTrip('该 Photoshop 请求已过期或已返回，请从画布重新发送。');
       else message(els.requestStatus, error.message || '获取源图失败', 'error');
     }
@@ -194,6 +195,7 @@
   els.send.addEventListener('click', send);
   els.returnBtn.addEventListener('click', returnToProject);
   els.refresh.addEventListener('click', refresh);
+  ps.onDocChange(() => { els.returnBtn.disabled = !state.roundTrip || !ps.hasDocument(); });
 
   if (state.roundTrip) {
     state.projectId = String(state.roundTrip.project_id || '');
@@ -203,7 +205,7 @@
   els.host.value = state.host; els.project.value = state.projectId; els.sourceNode.value = state.sourceNodeId; els.sourceMedia.value = state.sourceMediaId;
   lockBinding(Boolean(state.roundTrip)); syncFields();
   if (state.roundTrip) {
-    els.returnBtn.disabled = false;
+    els.returnBtn.disabled = !ps.hasDocument();
     els.roundState.textContent = `已绑定 ${state.roundTrip.request_id}`;
   }
   // 恢复连接只探测健康端点，绝不创建或重放往返请求；用户可点连接重置退避。

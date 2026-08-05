@@ -1,0 +1,67 @@
+:root {
+  --page: #f4f6f9;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --soft: #eef1f6;
+  --text: #182233;
+  --muted: #5e697b;
+  --faint: #707b8c;
+  --line: #d7dde5;
+  --accent: #5879dc;
+  --accent-text: #0c1423;
+  --danger: #b4233a;
+
+  --radius-panel: 12px;
+  --radius-card: 8px;
+  --radius-input: 8px;
+  --radius-utility: 6px;
+  --radius-pill: 999px;
+
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+
+  --height-utility: 30px;
+  --height-control: 34px;
+  --height-input: 34px;
+  --height-composer: 32px;
+  --min-height-textarea: 90px;
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-micro: 10px;
+  --font-caption: 11px;
+  --font-control: 12px;
+  --font-body: 13px;
+  --font-card-title: 14px;
+  --font-component-title: 16px;
+  --font-section-title: 20px;
+  --font-page-title: clamp(32px, 4vw, 48px);
+
+  --line-control: 1;
+  --line-compact: 1.3;
+  --line-body: 1.5;
+  --line-title: 1.15;
+
+  --weight-regular: 500;
+  --weight-medium: 600;
+  --weight-strong: 700;
+  --weight-title: 800;
+}
+
+html.studio-theme-dark {
+  --page: #0c1119;
+  --panel: #121924;
+  --card: #151e2a;
+  --soft: #101822;
+  --text: #e8edf5;
+  --muted: #a8b3c2;
+  --faint: #7f8da0;
+  --line: #344050;
+  --accent: #5879dc;
+  --accent-text: #0c1423;
+  --danger: #ff8fa0;
+}

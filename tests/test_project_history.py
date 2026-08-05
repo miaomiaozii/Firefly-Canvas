@@ -235,6 +235,53 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertFalse((Path(self.temp_dir.name) / "projects" / project["id"] / "trash" / "media" / original["filename"]).exists())
         self.assertFalse((Path(self.temp_dir.name) / "projects" / project["id"] / "trash" / "previews" / preview.name).exists())
 
+    def test_history_delete_with_media_removes_all_outputs_in_one_revision(self):
+        project, _other_project, original, _reference, _downstream_media, _other_media = self._seed_projects()
+        second = self.store.import_media(
+            project["id"],
+            b"generated-original-two",
+            "generated-two.png",
+            "image/png",
+            {"type": "online_generation", "name": "generated-two.png"},
+        )
+        opened = self.store.open_project(project["id"])
+        generator = next(node for node in opened["canvas"]["nodes"] if node["id"] == "generator")
+        generator["images"].append({"asset_id": second["asset_id"], "kind": "image", "name": "generated-two.png"})
+        history = opened["canvas"]["logs"][0]
+        history["outputs"].append({"asset_id": second["asset_id"], "kind": "image", "name": "generated-two.png"})
+        changed = self.store.apply_mutations(
+            project["id"],
+            [
+                {"op": "upsert_node", "node": generator},
+                {"op": "set_canvas_meta", "logs": [history]},
+            ],
+            base_revision=1,
+        )
+        self.assertEqual(changed["revision"], 2)
+
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/history/delete-with-media",
+            json={"log_id": "history-original", "base_revision": 2},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["canvas"]["revision"], 3)
+        self.assertEqual(len(payload["deleted"]), 2)
+        self.assertEqual(len(payload["removed_files"]), 2)
+        self.assertEqual(payload["canvas"]["logs"], [])
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{project['id']}/media/{original['asset_id']}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{project['id']}/media/{second['asset_id']}").status_code,
+            404,
+        )
+        deleted_node = next(node for node in payload["canvas"]["nodes"] if node["id"] == "generator")
+        self.assertEqual(deleted_node["images"], [])
+        self.assertTrue(deleted_node["needsRegeneration"])
+        self.assertEqual(len(self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"]), 2)
+
     def test_delete_distinguishes_output_owner_and_reference_consumer_and_restore_merges_later_edits(self):
         project, _other_project, original, _reference, downstream_media, _other_media = self._seed_projects()
         downstream_history = {

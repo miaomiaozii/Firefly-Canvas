@@ -2233,6 +2233,214 @@ class ProjectStore:
             result["logs"] = copy.deepcopy(history)
             return result
 
+    def delete_history_record_with_media(
+        self,
+        project_id: str,
+        log_id: str,
+        *,
+        base_revision: int,
+    ) -> Dict[str, Any]:
+        """Delete one generation record and all of its generated originals atomically."""
+        project_id = _clean_project_id(project_id)
+        log_id = str(log_id or "").strip()
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                opened = self.open_project(project_id)
+                current_revision = int(opened["canvas"].get("revision") or 0)
+                if int(base_revision) != current_revision:
+                    raise RevisionConflict(opened["canvas"])
+                history = copy.deepcopy(self._histories.get(project_id, []))
+                target = next((item for item in history if str(item.get("id") or "") == log_id), None)
+                if not isinstance(target, dict):
+                    raise ProjectNotFound("生成历史不存在")
+
+                output_asset_ids = sorted({
+                    str(item.get("asset_id") or "").strip()
+                    for item in target.get("outputs") or []
+                    if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+                })
+                if not output_asset_ids:
+                    history = [item for item in history if str(item.get("id") or "") != log_id]
+                    canvas = copy.deepcopy(opened["canvas"])
+                    canvas.pop("logs", None)
+                    canvas["revision"] = current_revision + 1
+                    canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
+                    self._canvases[project_id] = canvas
+                    self._histories[project_id] = history
+                    self._schedule_snapshot(project_id)
+                    result = copy.deepcopy(canvas)
+                    result["logs"] = copy.deepcopy(history)
+                    return {"canvas": result, "deleted": [], "removed_files": [], "reset_node_ids": []}
+
+                self._cleanup_expired_deleted_media_locked(project_id)
+                media_index = self._load_media_index(project_id)
+                project_dir = self._project_directory(project_id)
+                preview_root = self._safe_project_path(project_dir, "previews")
+                for relative in ("media", "trash", "trash/media", "trash/previews", "trash/undo"):
+                    self._safe_project_path(project_dir, relative)
+
+                old_media_index = copy.deepcopy(media_index)
+                old_trash_index = self._load_media_trash_index(project_id)
+                trash_index = copy.deepcopy(old_trash_index)
+                move_plan = []
+                deleted_items = []
+                deleted_ids = set()
+                deleted_at = _now_ms()
+                snapshot_filename = f"history-{log_id or uid('delete')}-{deleted_at}.json"
+                for asset_id in output_asset_ids:
+                    original = media_index["items"].get(asset_id)
+                    if not isinstance(original, dict) or not self._is_generated_original(original):
+                        continue
+                    if self._active_generation_references_asset(opened["canvas"], asset_id):
+                        raise ProjectStoreError("该原图正在被生成任务引用，请等待任务完成后再删除")
+                    media_path = self._safe_project_path(
+                        project_dir,
+                        (Path("media") / str(original.get("filename") or "")).as_posix(),
+                    )
+                    if not media_path.is_file():
+                        raise ProjectNotFound("项目媒体不存在")
+                    preview_files = []
+                    for path in sorted(preview_root.glob(f"{asset_id}-*")):
+                        if path.is_file():
+                            preview_files.append(self._safe_project_path(project_dir, path.relative_to(project_dir).as_posix()))
+                    item = copy.deepcopy(original)
+                    item.update({
+                        "asset_id": asset_id,
+                        "deleted_at": deleted_at,
+                        "expires_at": deleted_at + MEDIA_TRASH_RETENTION_MS,
+                        "media_filename": media_path.name,
+                        "preview_filenames": [path.name for path in preview_files],
+                        "reason": "delete-generated-history",
+                        "undo": {
+                            "operation": "restore-generated-history",
+                            "asset_id": asset_id,
+                            "deleted_revision": current_revision + 1,
+                            "snapshot_filename": snapshot_filename,
+                        },
+                    })
+                    trash_index["items"] = [
+                        candidate for candidate in trash_index.get("items", [])
+                        if not (isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id)
+                    ]
+                    trash_index["items"].append(item)
+                    media_index["items"].pop(asset_id, None)
+                    deleted_ids.add(asset_id)
+                    deleted_items.append(item)
+                    move_plan.append((
+                        media_path,
+                        self._safe_project_path(project_dir, (Path("trash") / "media" / media_path.name).as_posix()),
+                    ))
+                    move_plan.extend(
+                        (
+                            path,
+                            self._safe_project_path(project_dir, (Path("trash") / "previews" / path.name).as_posix()),
+                        )
+                        for path in preview_files
+                    )
+
+                old_history = copy.deepcopy(history)
+                original_nodes = copy.deepcopy(opened["canvas"].get("nodes") or [])
+                undo_snapshot = {
+                    "nodes": [node for node in original_nodes if deleted_ids.intersection(self._collect_asset_ids(node))],
+                    "history": [record for record in old_history if deleted_ids.intersection(self._collect_asset_ids(record)) or str(record.get("id") or "") == log_id],
+                }
+                history_producer_ids = {
+                    str(record.get("result_node_id") or "").strip()
+                    for record in old_history
+                    if str(record.get("result_node_id") or "").strip()
+                    and deleted_ids.intersection(self._collect_asset_ids(record.get("outputs") or []))
+                }
+
+                cleaned_history = []
+                for record in old_history:
+                    if str(record.get("id") or "") == log_id:
+                        continue
+                    matching = deleted_ids.intersection(self._collect_asset_ids(record))
+                    if not matching:
+                        cleaned_history.append(record)
+                        continue
+                    cleaned = copy.deepcopy(record)
+                    for asset_id in matching:
+                        cleaned = self._remove_asset_references(cleaned, asset_id) or {}
+                        self._append_deleted_asset_tombstone(cleaned, "deletedReferenceTombstones", asset_id, old_media_index.get("items", {}).get(asset_id, {}))
+                    cleaned_history.append(cleaned)
+
+                nodes = []
+                reset_node_ids = []
+                for node in original_nodes:
+                    matching = deleted_ids.intersection(self._collect_asset_ids(node))
+                    cleaned_node = copy.deepcopy(node)
+                    if matching:
+                        owns_original = bool(
+                            deleted_ids.intersection(self._collect_asset_ids(node.get("images") or []))
+                            and (str(node.get("id") or "") in history_producer_ids or self._has_explicit_generation_metadata(node))
+                        )
+                        for asset_id in matching:
+                            cleaned_node = self._remove_asset_references(cleaned_node, asset_id) or {}
+                            self._append_deleted_asset_tombstone(cleaned_node, "deletedOutputTombstones" if owns_original else "deletedInputTombstones", asset_id, old_media_index.get("items", {}).get(asset_id, {}))
+                        if owns_original:
+                            cleaned_node["needsRegeneration"] = True
+                            cleaned_node["generationState"] = "ready"
+                            cleaned_node["resultDeleted"] = True
+                            cleaned_node["pending"] = 0
+                            cleaned_node["running"] = False
+                            cleaned_node["queued"] = False
+                            reset_node_ids.append(str(node.get("id") or ""))
+                            for key in ("pendingTasks", "runFinishedAt", "runElapsedMs"):
+                                cleaned_node.pop(key, None)
+                    nodes.append(cleaned_node)
+
+                canvas = copy.deepcopy(opened["canvas"])
+                canvas.pop("logs", None)
+                canvas["nodes"] = nodes
+                canvas["revision"] = current_revision + 1
+                canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
+                metadata = _read_json(self._safe_project_path(project_dir, "project.json"))
+                before_canvas = copy.deepcopy(opened["canvas"])
+                before_canvas.pop("logs", None)
+                before_metadata = self._metadata_for_canvas(metadata, before_canvas)
+                after_metadata = self._metadata_for_canvas(metadata, canvas)
+                files = [
+                    {"live": source.relative_to(project_dir).as_posix(), "trash": destination.relative_to(project_dir).as_posix(), "required": True}
+                    for source, destination in move_plan
+                ]
+                self._commit_original_media_transaction(
+                    project_id,
+                    "delete",
+                    log_id,
+                    files,
+                    snapshot_filename,
+                    {
+                        "file_location": "live",
+                        "canvas": before_canvas,
+                        "history": old_history,
+                        "media_index": old_media_index,
+                        "trash_index": old_trash_index,
+                        "project": before_metadata,
+                        "undo_snapshot": None,
+                    },
+                    {
+                        "file_location": "trash",
+                        "canvas": canvas,
+                        "history": cleaned_history,
+                        "media_index": media_index,
+                        "trash_index": trash_index,
+                        "project": after_metadata,
+                        "undo_snapshot": undo_snapshot,
+                    },
+                )
+                self._canvases[project_id] = canvas
+                self._histories[project_id] = cleaned_history
+                self._saved_revisions[project_id] = int(canvas["revision"])
+                result = copy.deepcopy(canvas)
+                result["logs"] = copy.deepcopy(cleaned_history)
+                return {
+                    "canvas": result,
+                    "deleted": copy.deepcopy(deleted_items),
+                    "removed_files": [item.get("media_filename") for item in deleted_items],
+                    "reset_node_ids": reset_node_ids,
+                }
+
     def begin_media_generation(
         self,
         project_id: str,
@@ -2317,6 +2525,7 @@ class ProjectStore:
                 history = [item for item in history if str(item.get("id") or "") != history_id]
             history.append(clean_history)
             self._histories[project_id] = history[-5000:]
+            self._persist_history(project_id)
             return self._commit_generation_canvas(project_id, canvas)
 
     def fail_image_generation(
@@ -2337,6 +2546,18 @@ class ProjectStore:
         result = copy.deepcopy(canvas)
         result["logs"] = copy.deepcopy(self._histories.get(project_id, []))
         return result
+
+    def _persist_history(self, project_id: str) -> None:
+        """立即把内存中的生成历史写盘，不依赖前端后续 flush 触发。
+
+        生成任务在服务端完成/失败时即落盘，前端即使未保存、进程重启也不会丢成功记录。
+        """
+        project_id = _clean_project_id(project_id)
+        history = self._histories.get(project_id)
+        if history is None:
+            history = self._load_history(project_id)
+            self._histories[project_id] = history
+        _write_json_atomic(self.root / project_id / "history.json", {"records": history}, keep_backup=False)
 
     def complete_media_generation(
         self,
@@ -2421,6 +2642,7 @@ class ProjectStore:
             history.append(clean_history)
             history = history[-5000:]
             self._histories[project_id] = history
+            self._persist_history(project_id)
             return self._commit_generation_canvas(project_id, canvas)
 
     def complete_image_generation(

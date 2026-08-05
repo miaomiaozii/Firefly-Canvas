@@ -179,6 +179,7 @@ class ProjectConversationMessageRequest(BaseModel):
 class ProjectHistoryDeleteRequest(BaseModel):
     log_id: str
     base_revision: int = Field(ge=0)
+    delete_media: bool = False
 
 class ProjectOriginalDeleteRequest(BaseModel):
     asset_id: str
@@ -2241,6 +2242,33 @@ async def delete_project_history(project_id: str, payload: ProjectHistoryDeleteR
     await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
     await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
     return {'ok': True, 'canvas': canvas}
+
+@router.post('/api/project-library/{project_id}/history/delete-with-media')
+async def delete_project_history_with_media(project_id: str, payload: ProjectHistoryDeleteRequest):
+    try:
+        result = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'delete_history_record_with_media',
+            project_id,
+            payload.log_id,
+            base_revision=payload.base_revision,
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    canvas = result['canvas']
+    await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+    await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
+    return {
+        'ok': True,
+        'canvas': canvas,
+        'deleted': result.get('deleted', []),
+        'removed_files': result.get('removed_files', []),
+        'reset_node_ids': result.get('reset_node_ids', []),
+    }
 
 @router.post('/api/project-library/{project_id}/original/delete')
 async def delete_project_generated_original(project_id: str, payload: ProjectOriginalDeleteRequest):

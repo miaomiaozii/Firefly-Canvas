@@ -204,7 +204,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         self.assertEqual(body["model"], "nano-banana-pro-4k")
         self.assertNotIn("size", body)
         self.assertEqual(body["aspect_ratio"], "21:9")
-        self.assertNotIn("image_size", body)
+        self.assertEqual(body["image_size"], "4K")
 
     def test_image_2_request_does_not_receive_banana_only_fields(self):
         provider = {

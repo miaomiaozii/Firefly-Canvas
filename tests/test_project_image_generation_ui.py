@@ -55,7 +55,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("closeAllSmartPopovers();", self.source)
 
     def test_composer_stays_inside_the_viewport_for_large_image_nodes(self):
-        self.assertIn("const composerH = Math.max(260, Number(composer?.offsetHeight || 308));", self.source)
+        self.assertIn("const nodeViewport = renderedNode?.getBoundingClientRect();", self.source)
+        self.assertIn("composer.style.removeProperty('width');", self.source)
+        self.assertIn("let composerRect = composer.getBoundingClientRect();", self.source)
+        self.assertIn("Number(composer.offsetWidth || 0) * scaleX", self.source)
+        self.assertNotIn("const cardW =", self.source)
+        self.assertNotIn("composer.style.width =", self.source)
         self.assertIn("belowTop + composerH <= viewportH - edge", self.source)
         self.assertIn("requestAnimationFrame(() => positionComposerForNode(activeComposerNode()))", self.source)
 

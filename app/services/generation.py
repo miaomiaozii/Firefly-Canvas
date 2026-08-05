@@ -1,7 +1,7 @@
 # generation domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
-from app.core import _local_upload_kind_ext  # noqa: E402,F401
+from app.core import _local_upload_kind_ext, banana_model_family, looks_like_gemini_image_model  # noqa: E402,F401
 
 async def generate_jimeng_provider_image(prompt, size, model, reference_images=None, provider=None):
     refs = [ref for ref in reference_images or [] if ref.get('url')]
@@ -1088,6 +1088,8 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     if is_volcengine_provider(provider):
         return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider, preserve_model)
     image_route = {'model': selected_model(model, IMAGE_MODEL), 'params': {key: value for key, value in (image_parameters or {}).items() if key in {'aspect_ratio', 'resolution'} and value not in (None, '')}} if preserve_model else route_openai_image_request(provider, model, size)
+    if preserve_model and image_route['params'].get('resolution') and (banana_model_family(image_route['model']) or looks_like_gemini_image_model(image_route['model'])):
+        image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
     model = image_route['model']
     routed_image_params = image_route['params']
     is_gpt2 = is_gpt_image_2_model(model)

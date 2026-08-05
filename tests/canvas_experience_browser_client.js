@@ -79,6 +79,51 @@
   try {
     await waitFor('画布加载', () => evalFn('() => nodes.some(n => n.id === "edge-prompt")')(), 20000);
 
+    const foundationLink = document.querySelector('link[href*="/static/css/studio-foundation.css"]');
+    check('画布加载共享 UI foundation', Boolean(foundationLink), foundationLink?.getAttribute('href') || 'missing');
+    check('共享控件字号 token 可用', getComputedStyle(document.documentElement).getPropertyValue('--font-control').trim() === '12px', getComputedStyle(document.documentElement).getPropertyValue('--font-control'));
+
+    const shell = document.getElementById('shell');
+    const shellStyle = getComputedStyle(shell);
+    const shellBackground = shellStyle.backgroundImage;
+    const shellBefore = getComputedStyle(shell, '::before');
+    check('画布背景只有一层均匀点阵', (shellBackground.match(/radial-gradient/g) || []).length === 1 && !/linear-gradient|ellipse/i.test(shellBackground), shellBackground);
+    check('画布点阵间距为 24-26px', /^2[4-6]px\s+2[4-6]px$/.test(shellStyle.backgroundSize), shellStyle.backgroundSize);
+    check('画布没有 ambient 伪元素 band', shellBefore.content === 'none' && shellBefore.backgroundImage === 'none', `${shellBefore.content} / ${shellBefore.backgroundImage}`);
+
+    const toolbar = document.querySelector('.smart-toolbar[role="toolbar"]');
+    const toolbarControls = toolbar ? [...toolbar.children] : [];
+    const toolbarOrder = [
+      toolbarControls[0]?.matches('.smart-back'),
+      toolbarControls[1]?.id === 'smartUndoButton',
+      toolbarControls[2]?.id === 'smartRedoButton',
+      toolbarControls[3]?.id === 'smartSettingsLink',
+      toolbarControls[4]?.id === 'smartShortcutToggle',
+      toolbarControls[5]?.id === 'smartLogToggle',
+      toolbarControls[6]?.id === 'assetToggle',
+      toolbarControls[7]?.id === 'smartSaveButton',
+    ];
+    check('八个画布控件位于唯一工具栏并保持规范顺序', toolbarControls.length === 8 && toolbarOrder.every(Boolean), toolbarControls.map(control => control.id || control.className).join(' > '));
+    const allChromeControls = [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle')];
+    check('顶部右侧没有第二工具栏', allChromeControls.length === 8 && allChromeControls.every(control => control.closest('.smart-toolbar') === toolbar), allChromeControls.length);
+    const toolbarRect = toolbar?.getBoundingClientRect();
+    const controlRects = toolbarControls.map(control => control.getBoundingClientRect());
+    const controlStyles = toolbarControls.map(control => getComputedStyle(control));
+    const toolbarStyle = toolbar && getComputedStyle(toolbar);
+    check('工具栏控件共享 30px 几何与 12px 字号', controlRects.length === 8 && controlRects.every((rect, index) => Math.abs(Number.parseFloat(controlStyles[index].height) - 30) <= 0.5 && Math.abs(rect.top - controlRects[0].top) <= 0.5) && controlStyles.every(style => style.fontSize === '12px'), JSON.stringify(controlRects.map((rect, index) => ({renderedHeight: rect.height, cssHeight: controlStyles[index]?.height, top: rect.top, font: controlStyles[index]?.fontSize}))));
+    check('工具栏使用左上安全边距', Boolean(toolbarStyle) && Number.parseFloat(toolbarStyle.left) >= 12 && Number.parseFloat(toolbarStyle.left) <= 16.5 && Number.parseFloat(toolbarStyle.top) >= 12 && Number.parseFloat(toolbarStyle.top) <= 16.5, toolbarStyle && JSON.stringify({left: toolbarStyle.left, top: toolbarStyle.top}));
+    check('所有图标工具控件有可访问名称', toolbarControls.every(control => Boolean(control.getAttribute('aria-label') || control.textContent.trim())), toolbarControls.map(control => control.getAttribute('aria-label') || '').join('|'));
+    const toolbarLabelsHidden = toolbarControls.every(control => getComputedStyle(control.querySelector('span')).display === 'none');
+    check('工具栏始终只显示图标并保留可访问名称', toolbarLabelsHidden, `width=${innerWidth}, labelsHidden=${toolbarLabelsHidden}`);
+
+    const minimap = document.getElementById('minimap');
+    const minimapRect = minimap?.getBoundingClientRect();
+    const minimapStyle = minimap && getComputedStyle(minimap);
+    const minimapVisible = minimapRect && getComputedStyle(minimap).display !== 'none' && minimapRect.width > 0 && minimapRect.height > 0;
+    const chromeOverlaps = toolbarRect && minimapRect && !(toolbarRect.right <= minimapRect.left || minimapRect.right <= toolbarRect.left || toolbarRect.bottom <= minimapRect.top || minimapRect.bottom <= toolbarRect.top);
+    check('小地图始终可见且不与工具栏重叠', minimapVisible && !chromeOverlaps, JSON.stringify({toolbar: toolbarRect && {right: toolbarRect.right, bottom: toolbarRect.bottom}, minimap: minimapRect && {left: minimapRect.left, top: minimapRect.top, width: minimapRect.width, height: minimapRect.height}}));
+    check('小地图位于右上安全区', Boolean(minimapRect) && Number.parseFloat(minimapStyle.right) >= 11 && Number.parseFloat(minimapStyle.right) <= 16.5 && (innerWidth >= 1100 ? Number.parseFloat(minimapStyle.top) >= 15 && Number.parseFloat(minimapStyle.top) <= 16.5 : minimapRect.top >= toolbarRect.bottom + 6), minimapRect && JSON.stringify({cssRight: minimapStyle.right, cssTop: minimapStyle.top, renderedTop: minimapRect.top, toolbarBottom: toolbarRect?.bottom}));
+
     const diag = evalFn('() => { const el = document.getElementById("smartEdgeReveal"); return el ? { found: true, cls: el.className } : { found: false }; }')();
     check('初始无边缘指示', !revealVisible(), 'diag=' + JSON.stringify(diag));
 

@@ -55,6 +55,21 @@
     return btoa(out);
   }
 
+  // Photoshop/UXP 打不开的图片格式：走后端 /api/image-jpeg 转成 JPEG 再给 PS 用。
+  // 大熊插件的同款策略（UXP_UNSUPPORTED），我们按 mime 而非 url 后缀判断。
+  const UXP_UNSUPPORTED = /^(image\/(webp|bmp|avif|x-ms-bmp)|image\/tiff|image\/heic|image\/heif)/;
+  function needsJpeg(mime) { return UXP_UNSUPPORTED.test(String(mime || '').toLowerCase().split(';', 1)[0]); }
+
+  // 上传 base64 原图换一个可访问 url，再走后端转 JPEG（绕开 UXP 的 FormData，与本地素材导入同链）。
+  async function jpegForBase64(bytesBase64, mime) {
+    const uploaded = await request('POST', '/api/ai/upload-base64', { data: bytesBase64, name: 'firefly_source', content_type: mime || 'image/png' });
+    const url = (uploaded.files || [])[0]?.url;
+    if (!url) throw new Error('上传源图失败，后端未返回地址');
+    const response = await fetch(`${base()}${'/api/image-jpeg?url='}${encodeURIComponent(url)}`);
+    if (!response.ok) throw new Error(`图片格式转换失败 HTTP ${response.status}`);
+    return { buffer: await response.arrayBuffer(), mime_type: 'image/jpeg' };
+  }
+
   async function sha256(value) {
     const digest = await crypto.subtle.digest('SHA-256', value);
     return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -90,5 +105,5 @@
     } catch (_) { onStatus?.(false); return false; }
   }
 
-  DX.net = { parseHost, request, toBase64, sha256, openSocket, closeSocket };
+  DX.net = { parseHost, request, toBase64, needsJpeg, jpegForBase64, sha256, openSocket, closeSocket };
 })();
