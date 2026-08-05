@@ -61,8 +61,14 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("Number(composer.offsetWidth || 0) * scaleX", self.source)
         self.assertNotIn("const cardW =", self.source)
         self.assertNotIn("composer.style.width =", self.source)
-        self.assertIn("belowTop + composerH <= viewportH - edge", self.source)
+        self.assertIn("const placements = [", self.source)
+        self.assertIn("{left:rect.left - screenW - gap, top:sideTop}", self.source)
+        self.assertIn("const preferred = placements.sort((a, b) => a.score - b.score)[0]", self.source)
+        self.assertIn("frameSmartCanvasContentIfNeeded();", self.source)
+        self.assertIn("if(subject && composer && getComputedStyle(composer).display !== 'none')", self.source)
         self.assertIn("requestAnimationFrame(() => positionComposerForNode(activeComposerNode()))", self.source)
+        self.assertIn("const repositionComposer = () => {", self.source)
+        self.assertIn("requestAnimationFrame(repositionComposer);", self.source)
 
     def test_async_generation_re_resolves_nodes_after_server_canvas_broadcast(self):
         self.assertIn("function liveNode(node)", self.source)

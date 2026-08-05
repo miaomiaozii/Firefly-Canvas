@@ -124,6 +124,39 @@
     check('小地图始终可见且不与工具栏重叠', minimapVisible && !chromeOverlaps, JSON.stringify({toolbar: toolbarRect && {right: toolbarRect.right, bottom: toolbarRect.bottom}, minimap: minimapRect && {left: minimapRect.left, top: minimapRect.top, width: minimapRect.width, height: minimapRect.height}}));
     check('小地图位于右上安全区', Boolean(minimapRect) && Number.parseFloat(minimapStyle.right) >= 11 && Number.parseFloat(minimapStyle.right) <= 16.5 && (innerWidth >= 1100 ? Number.parseFloat(minimapStyle.top) >= 15 && Number.parseFloat(minimapStyle.top) <= 16.5 : minimapRect.top >= toolbarRect.bottom + 6), minimapRect && JSON.stringify({cssRight: minimapStyle.right, cssTop: minimapStyle.top, renderedTop: minimapRect.top, toolbarBottom: toolbarRect?.bottom}));
 
+    document.getElementById('smartShortcutToggle')?.click();
+    const shortcut = await waitFor('快捷键面板打开', () => document.querySelector('.shortcut-modal.open'));
+    const shortcutRect = shortcut.getBoundingClientRect();
+    const titleRect = document.getElementById('smartTitle')?.getBoundingClientRect();
+    const saveState = document.getElementById('projectSaveState');
+    const saveStateRect = saveState && !saveState.hidden ? saveState.getBoundingClientRect() : null;
+    const leftChromeBottom = Math.max(toolbarRect?.bottom || 0, titleRect?.bottom || 0, saveStateRect?.bottom || 0);
+    const shortcutObstacles = [...document.querySelectorAll('.image-node'), document.getElementById('composer')]
+        .filter(Boolean)
+        .map(element => ({rect:element.getBoundingClientRect(), style:getComputedStyle(element)}))
+        .filter(item => item.style.display !== 'none' && item.style.visibility !== 'hidden')
+        .map(item => item.rect)
+        .filter(rect => rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight);
+    const overlapArea = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+        * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    const actualShortcutOverlap = shortcutObstacles.reduce((total, rect) => total + overlapArea(shortcutRect, rect), 0);
+    const baselineShortcutRect = {
+      left:shortcutRect.left,
+      right:shortcutRect.right,
+      top:leftChromeBottom + 8,
+      bottom:leftChromeBottom + 8 + shortcutRect.height,
+    };
+    const baselineShortcutOverlap = shortcutObstacles.reduce((total, rect) => total + overlapArea(baselineShortcutRect, rect), 0);
+    const shortcutMinimapOverlap = minimapRect && !(shortcutRect.right <= minimapRect.left || minimapRect.right <= shortcutRect.left || shortcutRect.bottom <= minimapRect.top || minimapRect.bottom <= shortcutRect.top);
+    const worldWhileShortcutOpen = getComputedStyle(document.getElementById('world')).translate;
+    check('快捷键面板从左侧展开并避开顶部状态区', shortcutRect.left >= 11 && shortcutRect.left <= 16.5 && shortcutRect.top >= leftChromeBottom + 8, JSON.stringify({shortcut:{left:shortcutRect.left, top:shortcutRect.top}, leftChromeBottom}));
+    check('快捷键面板选择重叠更少的左侧垂直位置', actualShortcutOverlap <= baselineShortcutOverlap + 1, JSON.stringify({actualShortcutOverlap, baselineShortcutOverlap, top:shortcutRect.top}));
+    check('快捷键面板不遮挡右上小地图', !shortcutMinimapOverlap, JSON.stringify({shortcut:{right:shortcutRect.right, bottom:shortcutRect.bottom}, minimap:minimapRect && {left:minimapRect.left, top:minimapRect.top}}));
+    check('桌面快捷键面板作为左侧抽屉让画布内容让位', innerWidth < 901 || (document.getElementById('shell')?.classList.contains('shortcut-panel-open') && worldWhileShortcutOpen !== 'none'), JSON.stringify({viewport:innerWidth, translate:worldWhileShortcutOpen}));
+    shortcut.querySelector('.shortcut-head button')?.click();
+    await waitFor('快捷键面板关闭', () => !document.querySelector('.shortcut-modal.open'));
+    check('关闭快捷键抽屉后画布恢复原位', !document.getElementById('shell')?.classList.contains('shortcut-panel-open') && getComputedStyle(document.getElementById('world')).translate === 'none', getComputedStyle(document.getElementById('world')).translate);
+
     const diag = evalFn('() => { const el = document.getElementById("smartEdgeReveal"); return el ? { found: true, cls: el.className } : { found: false }; }')();
     check('初始无边缘指示', !revealVisible(), 'diag=' + JSON.stringify(diag));
 

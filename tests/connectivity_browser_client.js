@@ -95,12 +95,14 @@
             return {className:control.className, height:rect.height, font:getComputedStyle(control).fontSize};
         });
         const runRect = document.getElementById('runBtn').getBoundingClientRect();
+        const promptRect = document.getElementById('promptInput').getBoundingClientRect();
         const composerWidthContract = innerWidth < 760
             ? composer.style.width === '' && Math.abs(composerCssWidth - (innerWidth - 24)) <= 1
-            : composer.style.width === '' && composerCssWidth >= 620 && composerCssWidth <= 680;
+            : composer.style.width === '' && composerCssWidth >= 700 && composerCssWidth <= 720;
         assertion('composer width is CSS-owned and follows its responsive width band', composerWidthContract, {viewport:innerWidth, inlineWidth:composer.style.width, cssWidth:composerCssWidth});
         assertion('composer stays inside the viewport', composerRect.left >= shellRect.left - 1 && composerRect.right <= shellRect.right + 1 && composerRect.top >= shellRect.top - 1 && composerRect.bottom <= shellRect.bottom + 1, {composer:{left:composerRect.left, right:composerRect.right, top:composerRect.top, bottom:composerRect.bottom}, shell:{left:shellRect.left, right:shellRect.right, top:shellRect.top, bottom:shellRect.bottom}});
         assertion('composer prompt uses 13px body typography', getComputedStyle(document.getElementById('promptInput')).fontSize === '13px', getComputedStyle(document.getElementById('promptInput')).fontSize);
+        assertion('composer uses the compact prompt height by default', promptRect.height >= 72 && promptRect.height <= 90, promptRect.height);
         assertion('composer parameter controls share 30-32px geometry and 12px typography', mainControlGeometry.length >= 4 && mainControlGeometry.every(item => item.height >= 30 && item.height <= 32.5 && Number.parseFloat(item.font) >= 12) && runRect.height >= 30 && runRect.height <= 32.5 && getComputedStyle(document.getElementById('runBtn')).fontSize === '12px', {controls:mainControlGeometry, run:{height:runRect.height, font:getComputedStyle(document.getElementById('runBtn')).fontSize}});
         const desktopSingleRow = paramRects.length >= 4 && paramRects.every(rect => Math.abs(rect.top - paramRects[0].top) <= 1) && Math.abs(runRect.top - paramRects[0].top) <= 1;
         const narrowWrap = paramRects.length >= 4

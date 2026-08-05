@@ -462,7 +462,7 @@ let settings = {
     rhRandomActive:{},
     width:1024,
     height:1024,
-    promptH:124
+    promptH:84
 };
 const MS_GEN_MODELS = {
     custom: { label:tr('smart.custom') || '自定义', modelId:'', acceptsImage:true }
@@ -5968,6 +5968,12 @@ async function loadCanvas(){
         applyViewport();
         render();
         frameSmartCanvasContentIfNeeded();
+        requestAnimationFrame(() => {
+            const subject = selectedNode();
+            if(subject && composer && getComputedStyle(composer).display !== 'none'){
+                positionComposerForNode(subject);
+            }
+        });
         if(cleanedDetachedInputs || recoveredLoopOutputs) scheduleSave();
         resumeConversationTasks();
         resumeSmartPendingTasks();
@@ -8309,12 +8315,43 @@ function setupSmartSettingsOverlay(){
     smartSettingsModal?.addEventListener('mousedown', event => event.stopPropagation());
     smartSettingsModal?.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
 }
+function positionSmartCanvasShortcuts(){
+    if(!smartShortcutModal?.classList.contains('open') || !shell) return;
+    smartShortcutModal.style.removeProperty('top');
+    const panel = smartShortcutModal.getBoundingClientRect();
+    const toolbar = document.querySelector('.smart-toolbar')?.getBoundingClientRect();
+    const title = document.querySelector('.smart-title')?.getBoundingClientRect();
+    const saveState = document.querySelector('.smart-save-state')?.getBoundingClientRect();
+    const safeTop = Math.max(16, ...[toolbar, title, saveState].filter(Boolean).map(rect => rect.bottom + 10));
+    const maxTop = Math.max(safeTop, shell.clientHeight - panel.height - 16);
+    const obstacles = [...(world?.querySelectorAll?.('.image-node') || []), composer]
+        .filter(Boolean)
+        .map(element => ({rect:element.getBoundingClientRect(), style:getComputedStyle(element)}))
+        .filter(item => item.style.display !== 'none' && item.style.visibility !== 'hidden')
+        .map(item => item.rect)
+        .filter(rect => rect.right > 0 && rect.bottom > 0 && rect.left < shell.clientWidth && rect.top < shell.clientHeight);
+    const overlapArea = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+        * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    const candidates = Array.from({length:7}, (_, index) => safeTop + (maxTop - safeTop) * index / 6);
+    const bestTop = candidates
+        .map(top => {
+            const candidate = {left:panel.left, right:panel.right, top, bottom:top + panel.height};
+            const overlap = obstacles.reduce((total, rect) => total + overlapArea(candidate, rect), 0);
+            return {top, score:overlap + (top - safeTop) * .01};
+        })
+        .sort((a, b) => a.score - b.score)[0]?.top ?? safeTop;
+    smartShortcutModal.style.top = `${Math.round(bestTop)}px`;
+}
 function openSmartCanvasShortcuts(){
     smartShortcutModal?.classList.add('open');
+    shell?.classList.add('shortcut-panel-open');
     refreshIcons();
+    requestAnimationFrame(positionSmartCanvasShortcuts);
 }
 function closeSmartCanvasShortcuts(){
     smartShortcutModal?.classList.remove('open');
+    shell?.classList.remove('shortcut-panel-open');
+    smartShortcutModal?.style.removeProperty('top');
 }
 function conversationConnectedReferences(node){
     if(!node || !canvas) return [];
@@ -13617,18 +13654,36 @@ function positionComposerForNode(node){
         Number(composerRect.height || 0) || Number(composer.offsetHeight || 0) * scaleY || fallbackScreenH
     );
     const centeredLeft = rect.left + rect.width / 2 - screenW / 2;
-    const left = Math.max(edge, Math.min(centeredLeft, viewportW - screenW - edge));
     const belowTop = rect.bottom + gap;
     const aboveTop = rect.top - composerH - gap;
+    const sideTop = rect.top + rect.height / 2 - composerH / 2;
+    const clampLeft = value => Math.max(edge, Math.min(value, viewportW - screenW - edge));
+    const clampTop = value => Math.max(edge, Math.min(value, viewportH - composerH - edge));
+    const obstacles = [...(world?.querySelectorAll?.('.image-node[data-id]') || [])]
+        .filter(element => element !== renderedNode)
+        .map(element => element.getBoundingClientRect())
+        .filter(item => item.right > 0 && item.bottom > 0 && item.left < viewportW && item.top < viewportH);
+    const overlapArea = (candidate, obstacle) => Math.max(0,
+        Math.min(candidate.left + screenW, obstacle.right) - Math.max(candidate.left, obstacle.left)
+    ) * Math.max(0,
+        Math.min(candidate.top + composerH, obstacle.bottom) - Math.max(candidate.top, obstacle.top)
+    );
+    const placements = [
+        {left:centeredLeft, top:belowTop},
+        {left:centeredLeft, top:aboveTop},
+        {left:rect.left - screenW - gap, top:sideTop},
+        {left:rect.right + gap, top:sideTop},
+    ].map((candidate, order) => {
+        const placed = {left:clampLeft(candidate.left), top:clampTop(candidate.top)};
+        const displacement = Math.abs(placed.left - candidate.left) + Math.abs(placed.top - candidate.top);
+        const overlap = obstacles.reduce((total, obstacle) => total + overlapArea(placed, obstacle), 0);
+        return {...placed, score:overlap + displacement * 1000 + order};
+    });
+    const preferred = placements.sort((a, b) => a.score - b.score)[0];
     // Position in screen space first, then convert back to the transformed world.
-    // This keeps the full composer visible after zooming, panning, or dynamic controls expand.
-    const preferredTop = belowTop + composerH <= viewportH - edge
-        ? belowTop
-        : aboveTop >= edge
-            ? aboveTop
-            : Math.max(edge, viewportH - composerH - edge);
-    composer.style.left = `${(left - (matrix.e || 0)) / scaleX}px`;
-    composer.style.top = `${(preferredTop - (matrix.f || 0)) / scaleY}px`;
+    // Prefer a clear side when the usual below/above placement would cover another node.
+    composer.style.left = `${(preferred.left - (matrix.e || 0)) / scaleX}px`;
+    composer.style.top = `${(preferred.top - (matrix.f || 0)) / scaleY}px`;
 }
 let composerUpdateTimer = 0;
 let composerUpdateSeq = 0;
@@ -13684,7 +13739,10 @@ function updateComposer(){
     }
     setPromptInputLocked(false);
     syncCascadeRunButton(node);
-    const ph = Math.max(60, Math.min(380, Number(settings.promptH) || 124));
+    const storedPromptH = Number(settings.promptH);
+    const promptHeightNeedsMigration = storedPromptH === 124 || storedPromptH > 160;
+    const ph = Math.max(60, Math.min(160, promptHeightNeedsMigration ? 84 : (storedPromptH || 84)));
+    if(promptHeightNeedsMigration) settings.promptH = ph;
     promptInput.style.setProperty('--prompt-h', `${ph}px`);
     renderInputThumbsRow(node);
     renderInputPromptPreview(node);
@@ -18127,7 +18185,7 @@ window.onmousemove = e => {
     if(promptResizeState){
         e.preventDefault();
         const dy = e.clientY - promptResizeState.startY;
-        settings.promptH = Math.max(60, Math.min(380, promptResizeState.startH + dy));
+        settings.promptH = Math.max(60, Math.min(160, promptResizeState.startH + dy));
         promptInput.style.setProperty('--prompt-h', `${settings.promptH}px`);
         persistActiveSmartSettings();
         return;
@@ -18732,7 +18790,7 @@ if(promptResize){
         e.preventDefault(); e.stopPropagation();
         promptResizeState = {
             startY: e.clientY,
-            startH: Number(settings.promptH) || promptInput.offsetHeight || 124
+            startH: Number(settings.promptH) || promptInput.offsetHeight || 84
         };
     });
 }
@@ -19419,8 +19477,18 @@ window.addEventListener('resize', () => {
         applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
         if(smartLogModal.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
+    const repositionComposer = () => {
+        const active = activeComposerNode();
+        if(active?.id && composer?.classList.contains('open')) positionComposerForNode(active);
+        if(smartShortcutModal?.classList.contains('open')) positionSmartCanvasShortcuts();
+    };
     if((shell?.clientWidth || window.innerWidth || 0) < 720) {
-        requestAnimationFrame(() => frameSmartCanvasContentIfNeeded());
+        requestAnimationFrame(() => {
+            frameSmartCanvasContentIfNeeded();
+            requestAnimationFrame(repositionComposer);
+        });
+    } else {
+        requestAnimationFrame(repositionComposer);
     }
 });
 window.addEventListener('studio-theme-change', event => applyTheme(event.detail?.theme || 'light'));

@@ -66,6 +66,25 @@
     if (!agentNode) throw new Error('agent node not rendered');
     const goal = agentEl()?.querySelector('[data-agent-goal]');
     if (!goal) throw new Error('goal input missing');
+    const firstDraft = agentEl()?.querySelector('[data-agent-draft-index="0"]');
+    const draftControls = firstDraft ? [...firstDraft.querySelectorAll('select,input')] : [];
+    const agentStyle = getComputedStyle(agentEl());
+    const goalStyle = getComputedStyle(goal);
+    const draftStyle = firstDraft ? getComputedStyle(firstDraft) : null;
+    record('agent node uses the studio panel surface', agentStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' && Number.parseFloat(agentStyle.borderTopWidth) >= 1, {background:agentStyle.backgroundColor, border:agentStyle.borderTopWidth});
+    record('agent goal uses readable form typography and compact geometry', Number.parseFloat(goalStyle.fontSize) >= 13 && goal.getBoundingClientRect().height >= 58 && goal.getBoundingClientRect().height <= 90, {font:goalStyle.fontSize, height:goal.getBoundingClientRect().height});
+    record('agent draft is a bounded compact card', Boolean(firstDraft) && Number.parseFloat(draftStyle?.borderTopWidth || '0') >= 1 && firstDraft.getBoundingClientRect().width <= agentEl().getBoundingClientRect().width, firstDraft ? {draft:firstDraft.getBoundingClientRect().toJSON(), node:agentEl().getBoundingClientRect().toJSON()} : 'missing');
+    const referenceFieldStyle = draftControls.length ? getComputedStyle(draftControls[0]) : null;
+    record('agent draft fields use themed controls instead of browser defaults', draftControls.length >= 4 && draftControls.every((el) => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.backgroundColor === referenceFieldStyle?.backgroundColor
+        && style.color === referenceFieldStyle?.color
+        && style.backgroundColor !== 'rgb(255, 255, 255)'
+        && Number.parseFloat(style.fontSize) >= 12
+        && rect.height >= 30
+        && rect.height <= 34;
+    }), draftControls.map((el) => ({tag:el.tagName, font:getComputedStyle(el).fontSize, height:el.getBoundingClientRect().height, background:getComputedStyle(el).backgroundColor})));
     goal.value = '测试取消与重试';
     goal.dispatchEvent(new Event('input', { bubbles: true }));
     await sleep(150);
