@@ -75,6 +75,9 @@ def seed_restore_preserves_edit(store: ProjectStore) -> str:
             "h": 220,
             "text": "before restore",
             "title": "待编辑提示词",
+            "llmEnabled": True,
+            "llmProvider": "browser",
+            "llmModel": "offline-model",
         },
     ]
     logs = [

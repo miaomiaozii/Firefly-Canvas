@@ -1,0 +1,380 @@
+{
+  "schema_version": 1,
+  "family": "openai-compatible-comfly-banana-image",
+  "family_keys": [
+    "openai-provider:comfly",
+    "openai-model:nano-banana"
+  ],
+  "execution_tests": {
+    "openai-provider:comfly": [
+      "tests.test_provider_contract_template.ProviderContractTemplateTests.test_zero_reference_matrix_reaches_one_final_json_request_without_rewriting_user_parameters",
+      "tests.test_provider_contract_template.ProviderContractTemplateTests.test_multipart_edit_preserves_reference_order_and_duplicate_occurrences"
+    ],
+    "openai-model:nano-banana": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_image_edit_families_preserve_ordered_duplicate_references"
+    ]
+  },
+  "protocol": "openai",
+  "operations": [
+    "generation",
+    "edit"
+  ],
+  "requested_model": "nano-banana-pro",
+  "retrieved_at": "2026-08-09",
+  "sources": [
+    {
+      "id": "google-gemini-image",
+      "authority": "primary-documentation",
+      "url": "https://ai.google.dev/gemini-api/docs/image-generation",
+      "retrieved_at": "2026-08-09",
+      "supports": [
+        "Gemini image aspect ratios and 1K, 2K, and 4K imageSize values"
+      ]
+    },
+    {
+      "id": "openai-images",
+      "authority": "primary-documentation",
+      "url": "https://developers.openai.com/api/reference/resources/images",
+      "retrieved_at": "2026-08-09",
+      "supports": [
+        "JSON image generation and multipart image edit request shapes",
+        "data[].url response shape"
+      ]
+    },
+    {
+      "id": "nano-banana-reference-implementation",
+      "authority": "external-reference-implementation",
+      "url": "https://github.com/oomol-lab/oomol-fusion-sdk-ts/blob/0a656373f09fb1201493c854459241c5edcaf9b6/src/generated/openapi-types.ts",
+      "retrieved_at": "2026-08-09",
+      "supports": [
+        "third-party Nano Banana model variants, aspect ratios, and 1K, 2K, and 4K image controls",
+        "this is a fixed-commit reference implementation, not Comfly documentation"
+      ]
+    },
+    {
+      "id": "local-generation-adapters",
+      "authority": "local-implementation",
+      "path": "app/services/generation.py",
+      "symbols": ["generate_ai_image"],
+      "retrieved_at": "2026-08-09",
+      "supports": [
+        "Comfly endpoint selection and image_size payload mapping",
+        "ordered multipart reference occurrences"
+      ]
+    },
+    {
+      "id": "local-image-routing",
+      "authority": "local-implementation",
+      "path": "firefly_generation.py",
+      "symbols": ["route_image_generation", "ModelRoutingError"],
+      "retrieved_at": "2026-08-09",
+      "supports": [
+        "model variant selection without rewriting the routed request",
+        "incompatible parameter reporting before execution"
+      ]
+    }
+  ],
+  "request_shapes": {
+    "generation": "application/json",
+    "edit": "multipart/form-data"
+  },
+  "response_shape": {
+    "data": [
+      {
+        "url": "string"
+      }
+    ]
+  },
+  "contracts": [
+    {
+      "key": "openai-provider:comfly",
+      "status": "active-provider-special-case",
+      "boundary": "httpx.AsyncClient.post",
+      "request_shape": "OpenAI Images JSON generation or WebP multipart edit",
+      "response_shape": {"data": [{"url": "string"}]},
+      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
+      "parameter_mapping": {"prompt": "json/data.prompt", "aspect_ratio": "json/data.aspect_ratio", "resolution": "json/data.image_size", "references": "multipart WebP image occurrences in caller order"},
+      "source_refs": ["google-gemini-image", "openai-images", "nano-banana-reference-implementation", "local-generation-adapters", "local-image-routing"],
+      "final_request_golden": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/edits",
+        "header_names": ["authorization"],
+        "json": null,
+        "data": {"prompt": "provider contract prompt", "model": "nano-banana-pro-4k", "response_format": "url", "aspect_ratio": "2:3", "image_size": "4K"},
+        "files": [
+          {"field": "image", "filename": "first.webp", "mime_type": "image/webp", "sha256": "fedcb870e896b821e64be748cf14c2fb5e774dd6f7c3d55e46660e17569e7b8d"},
+          {"field": "image", "filename": "second.webp", "mime_type": "image/webp", "sha256": "97af2d80d44efc42dd053f7ea4984a746094c082c8d18619138022724e2250af"},
+          {"field": "image", "filename": "first.webp", "mime_type": "image/webp", "sha256": "fedcb870e896b821e64be748cf14c2fb5e774dd6f7c3d55e46660e17569e7b8d"}
+        ]
+      }
+    },
+    {
+      "key": "openai-model:nano-banana",
+      "status": "active-model-special-case",
+      "boundary": "httpx.AsyncClient.post",
+      "request_shape": "OpenAI-compatible Images JSON generation or multipart edit",
+      "response_shape": {"data": [{"url": "string"}]},
+      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
+      "parameter_mapping": {"prompt": "json/data.prompt", "aspect_ratio": "json/data.aspect_ratio", "resolution": "json/data.image_size", "references": "multipart image occurrences in caller order"},
+      "source_refs": ["google-gemini-image", "openai-images", "nano-banana-reference-implementation", "local-generation-adapters", "local-image-routing"],
+      "final_request_golden": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/generations",
+        "header_names": ["authorization"],
+        "json": {"model": "nano-banana", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "image_size": "2K", "response_format": "url", "n": 1, "quality": "high"},
+        "data": null,
+        "files": []
+      },
+      "reference_edit_golden": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/edits",
+        "header_names": ["authorization"],
+        "json": null,
+        "data": {"model": "nano-banana", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "image_size": "2K", "quality": "high"},
+        "files": [
+          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"},
+          {"field": "image", "filename": "second.png", "mime_type": "image/png", "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"},
+          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"}
+        ]
+      }
+    }
+  ],
+  "network_policy": "non-loopback and real-provider requests are hard denied by the domain quality gate",
+  "provider_fixture": {
+    "id": "comfly",
+    "name": "Comfly contract fixture",
+    "enabled": true,
+    "protocol": "openai",
+    "base_url": "https://provider.invalid/v1",
+    "image_models": [
+      "nano-banana-pro",
+      "nano-banana-pro-2k",
+      "nano-banana-pro-4k"
+    ],
+    "available_models": {
+      "image_models": [
+        "nano-banana-pro",
+        "nano-banana-pro-2k",
+        "nano-banana-pro-4k"
+      ]
+    },
+    "image_model_capabilities": {
+      "nano-banana-pro": {
+        "media_types": ["image"],
+        "sizes": ["1024x1024"],
+        "aspect_ratios": ["1:1"],
+        "resolutions": ["1k"],
+        "max_reference_images": 20
+      },
+      "nano-banana-pro-2k": {
+        "media_types": ["image"],
+        "sizes": ["2048x1152"],
+        "aspect_ratios": ["16:9"],
+        "resolutions": ["2k"],
+        "max_reference_images": 20
+      },
+      "nano-banana-pro-4k": {
+        "media_types": ["image"],
+        "sizes": ["2352x3520"],
+        "aspect_ratios": ["2:3"],
+        "resolutions": ["4k"],
+        "max_reference_images": 20
+      }
+    }
+  },
+  "matrix": [
+    {
+      "size": "1024x1024",
+      "width": 1024,
+      "height": 1024,
+      "aspect_ratio": "1:1",
+      "resolution": "1k",
+      "expected_model": "nano-banana-pro",
+      "expected_route": {
+        "provider_id": "comfly",
+        "provider_name": "Comfly contract fixture",
+        "model": "nano-banana-pro",
+        "protocol": "openai",
+        "adapter": "http",
+        "reason": "手动固定服务商和模型并通过能力校验",
+        "request": {
+          "prompt": "provider contract prompt",
+          "size": "1024x1024",
+          "width": 1024,
+          "height": 1024,
+          "aspect_ratio": "1:1",
+          "resolution": "1k",
+          "reference_asset_ids": [],
+          "reference_count": 0,
+          "media_type": "image",
+          "quality": "high",
+          "count": 1
+        }
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/generations",
+        "header_names": ["authorization"],
+        "json": {
+          "prompt": "provider contract prompt",
+          "model": "nano-banana-pro",
+          "n": 1,
+          "response_format": "url",
+          "aspect_ratio": "1:1",
+          "image_size": "1K"
+        },
+        "data": null,
+        "files": []
+      }
+    },
+    {
+      "size": "2048x1152",
+      "width": 2048,
+      "height": 1152,
+      "aspect_ratio": "16:9",
+      "resolution": "2k",
+      "expected_model": "nano-banana-pro-2k",
+      "expected_route": {
+        "provider_id": "comfly",
+        "provider_name": "Comfly contract fixture",
+        "model": "nano-banana-pro-2k",
+        "protocol": "openai",
+        "adapter": "http",
+        "reason": "手动固定服务商和模型并通过能力校验",
+        "request": {
+          "prompt": "provider contract prompt",
+          "size": "2048x1152",
+          "width": 2048,
+          "height": 1152,
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "reference_asset_ids": [],
+          "reference_count": 0,
+          "media_type": "image",
+          "quality": "high",
+          "count": 1
+        }
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/generations",
+        "header_names": ["authorization"],
+        "json": {
+          "prompt": "provider contract prompt",
+          "model": "nano-banana-pro-2k",
+          "n": 1,
+          "response_format": "url",
+          "aspect_ratio": "16:9",
+          "image_size": "2K"
+        },
+        "data": null,
+        "files": []
+      }
+    },
+    {
+      "size": "2352x3520",
+      "width": 2352,
+      "height": 3520,
+      "aspect_ratio": "2:3",
+      "resolution": "4k",
+      "expected_model": "nano-banana-pro-4k",
+      "expected_route": {
+        "provider_id": "comfly",
+        "provider_name": "Comfly contract fixture",
+        "model": "nano-banana-pro-4k",
+        "protocol": "openai",
+        "adapter": "http",
+        "reason": "手动固定服务商和模型并通过能力校验",
+        "request": {
+          "prompt": "provider contract prompt",
+          "size": "2352x3520",
+          "width": 2352,
+          "height": 3520,
+          "aspect_ratio": "2:3",
+          "resolution": "4k",
+          "reference_asset_ids": [],
+          "reference_count": 0,
+          "media_type": "image",
+          "quality": "high",
+          "count": 1
+        }
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://provider.invalid/v1/images/generations",
+        "header_names": ["authorization"],
+        "json": {
+          "prompt": "provider contract prompt",
+          "model": "nano-banana-pro-4k",
+          "n": 1,
+          "response_format": "url",
+          "aspect_ratio": "2:3",
+          "image_size": "4K"
+        },
+        "data": null,
+        "files": []
+      }
+    }
+  ],
+  "expected_edit_route": {
+    "provider_id": "comfly",
+    "provider_name": "Comfly contract fixture",
+    "model": "nano-banana-pro-4k",
+    "protocol": "openai",
+    "adapter": "http",
+    "reason": "手动固定服务商和模型并通过能力校验",
+    "request": {
+      "prompt": "provider contract prompt",
+      "size": "2352x3520",
+      "width": 2352,
+      "height": 3520,
+      "aspect_ratio": "2:3",
+      "resolution": "4k",
+      "reference_asset_ids": ["first", "second", "first"],
+      "reference_count": 3,
+      "media_type": "image",
+      "quality": "high",
+      "count": 1
+    }
+  },
+  "expected_edit_request": {
+    "method": "POST",
+    "url": "https://provider.invalid/v1/images/edits",
+    "header_names": ["authorization"],
+    "json": null,
+    "data": {
+      "prompt": "provider contract prompt",
+      "model": "nano-banana-pro-4k",
+      "response_format": "url",
+      "aspect_ratio": "2:3",
+      "image_size": "4K"
+    },
+    "files": [
+      {
+        "field": "image",
+        "filename": "first.webp",
+        "mime_type": "image/webp",
+        "sha256": "fedcb870e896b821e64be748cf14c2fb5e774dd6f7c3d55e46660e17569e7b8d"
+      },
+      {
+        "field": "image",
+        "filename": "second.webp",
+        "mime_type": "image/webp",
+        "sha256": "97af2d80d44efc42dd053f7ea4984a746094c082c8d18619138022724e2250af"
+      },
+      {
+        "field": "image",
+        "filename": "first.webp",
+        "mime_type": "image/webp",
+        "sha256": "fedcb870e896b821e64be748cf14c2fb5e774dd6f7c3d55e46660e17569e7b8d"
+      }
+    ]
+  },
+  "response_fixture": {
+    "data": [
+      {
+        "url": "http://127.0.0.1/provider-contract-output.png"
+      }
+    ]
+  }
+}

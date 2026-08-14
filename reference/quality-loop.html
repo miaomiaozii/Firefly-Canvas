@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firefly Canvas 质量闭环速查</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="kicker">Reference · Firefly Canvas</p>
+  <h1>质量闭环速查</h1>
+  <p class="lede">发现 bug 的目的，不只是让这一次变绿，而是让同一类错误以后无法静默回来。</p>
+
+  <div class="flow" aria-label="质量闭环">
+    <span>用户旅程<br>定义风险</span>
+    <span>最小复现<br>稳定变红</span>
+    <span>正确层级<br>回归测试</span>
+    <span>最小修复<br>由红变绿</span>
+    <span>质量门禁<br>阻止复发</span>
+  </div>
+
+  <h2>测试放哪一层</h2>
+  <table>
+    <thead><tr><th>问题</th><th>优先测试层</th><th>Firefly Canvas 例子</th></tr></thead>
+    <tbody>
+      <tr><td>纯参数映射</td><td>单元/矩阵测试</td><td>Banana 2K 选择是否映射到 <code>-2k</code></td></tr>
+      <tr><td>模块边界协议</td><td>集成/假 HTTP</td><td>最终 multipart 是否含两张有序参考图</td></tr>
+      <tr><td>浏览器交互</td><td>少量浏览器测试</td><td>尺寸控件是否真的写入项目请求</td></tr>
+      <tr><td>真实配置漂移</td><td>只读运行时探针</td><td>线上模型能力是否与版本化配置一致</td></tr>
+    </tbody>
+  </table>
+
+  <h2>每个 bug 的完成定义</h2>
+  <ol>
+    <li>有一个已经运行过、能稳定捕获原症状的命令。</li>
+    <li>回归测试位于最小且真实的调用边界。</li>
+    <li>修复后，原始复现和最小测试都通过。</li>
+    <li>相关参数合同被写成测试，不再靠记忆。</li>
+    <li>测试进入日常质量门禁，而不是留在聊天记录里。</li>
+  </ol>
+
+  <h2>不要这样做</h2>
+  <ul>
+    <li>看见视觉结果不对就直接猜 CSS 或 provider。</li>
+    <li>只增加一个巨大端到端测试，失败后再全仓库找原因。</li>
+    <li>为让测试变绿而删除正确的参数断言。</li>
+    <li>修完后不记录协议来源，几天后再次“整理”掉关键字段。</li>
+    <li>让用户承担完整的探索性测试工作。</li>
+  </ul>
+
+  <p class="meta">配套课程：<a href="../lessons/0001-stop-chasing-bugs.html">停止追着 bug 跑</a></p>
+</main>
+</body>
+</html>

@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 
 from app.core import *  # noqa: F401,F403
+import app.core as _core_runtime
 
 import os as _os_boot
 import sys as _sys_boot
@@ -531,6 +532,7 @@ class ConnectionManager:
 async def startup_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
     GLOBAL_LOOP = asyncio.get_running_loop()
+    _core_runtime.GLOBAL_LOOP = GLOBAL_LOOP
     if PROJECT_CONVERSATION_RUNNER is not None:
         await PROJECT_CONVERSATION_RUNNER.stop()
     PROJECT_CONVERSATION_RUNNER = ProjectConversationTaskRunner()
@@ -562,7 +564,7 @@ async def startup_event():
         print(f"Agent 任务恢复失败: {exc}")
 
 async def shutdown_event():
-    global PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_IMAGE_GENERATION_EXECUTOR, PROJECT_CONVERSATION_RUNNER
+    global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
     conversation_runner = PROJECT_CONVERSATION_RUNNER
     if conversation_runner is not None:
         await conversation_runner.stop()
@@ -583,15 +585,16 @@ async def shutdown_event():
         if PROJECT_MEDIA_IMPORT_EXECUTOR is None:
             PROJECT_MEDIA_IMPORT_SHUTTING_DOWN = False
             PROJECT_MEDIA_IMPORT_ACCEPTING = True
+    # Persist an explicit terminal while the store is still open, then stop
+    # the actual shared runtime before allowing ProjectStore to close.
+    await _r_api_project_library.shutdown_project_generation_tasks()
     with CANVAS_TASK_LOCK:
-        generation_executor = PROJECT_IMAGE_GENERATION_EXECUTOR
-        PROJECT_IMAGE_GENERATION_EXECUTOR = None
+        generation_executor = _core_runtime.PROJECT_IMAGE_GENERATION_EXECUTOR
+        _core_runtime.PROJECT_IMAGE_GENERATION_EXECUTOR = None
         generation_futures = [
             *PROJECT_IMAGE_GENERATION_FUTURES.values(),
             *PROJECT_VIDEO_GENERATION_FUTURES.values(),
         ]
-        PROJECT_IMAGE_GENERATION_FUTURES.clear()
-        PROJECT_VIDEO_GENERATION_FUTURES.clear()
     async_generation_tasks = [future for future in generation_futures if isinstance(future, asyncio.Task)]
     for future in generation_futures:
         if not future.done():
@@ -600,6 +603,11 @@ async def shutdown_event():
         await asyncio.gather(*async_generation_tasks, return_exceptions=True)
     if generation_executor is not None:
         await asyncio.to_thread(generation_executor.shutdown, wait=True, cancel_futures=True)
+    with CANVAS_TASK_LOCK:
+        PROJECT_IMAGE_GENERATION_FUTURES.clear()
+        PROJECT_VIDEO_GENERATION_FUTURES.clear()
+    GLOBAL_LOOP = None
+    _core_runtime.GLOBAL_LOOP = None
     await asyncio.to_thread(project_store_call, "close")
 
 

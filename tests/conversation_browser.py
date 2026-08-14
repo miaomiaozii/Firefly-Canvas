@@ -261,7 +261,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
 
 
 class ConversationBrowserServer:
-    def __init__(self, store: ProjectStore, app):
+    def __init__(self, store: ProjectStore, app, *, client_script: Path | None = CLIENT_SCRIPT):
         self.store = store
         self.app = app
         self.results: list[dict] = []
@@ -279,9 +279,10 @@ class ConversationBrowserServer:
         self.lifespan_future = None
         self.delayed_conversation_response = False
         self.delayed_conversation_response_lock = threading.Lock()
+        self.client_script = client_script
         owner = self
-        if not CLIENT_SCRIPT.is_file():
-            raise FileNotFoundError(f"conversation browser client is missing: {CLIENT_SCRIPT}")
+        if self.client_script is not None and not self.client_script.is_file():
+            raise FileNotFoundError(f"conversation browser client is missing: {self.client_script}")
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, _format, *_args):
@@ -430,11 +431,11 @@ class ConversationBrowserServer:
 
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path == HTML_PAGE_PATH or parsed.path in INJECT_PATHS:
+                if owner.client_script is not None and (parsed.path == HTML_PAGE_PATH or parsed.path in INJECT_PATHS):
                     self.send_injected_canvas_html()
                     return
-                if parsed.path == CLIENT_SCRIPT_URL:
-                    self.send_bytes(CLIENT_SCRIPT.read_bytes(), "text/javascript; charset=utf-8")
+                if owner.client_script is not None and parsed.path == CLIENT_SCRIPT_URL:
+                    self.send_bytes(owner.client_script.read_bytes(), "text/javascript; charset=utf-8")
                     return
                 self.forward_to_production()
 

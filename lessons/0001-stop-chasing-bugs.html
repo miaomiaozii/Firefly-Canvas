@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第一课：停止追着 bug 跑</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="kicker">Lesson 0001 · 约 8 分钟</p>
+  <h1>停止追着<br>bug 跑</h1>
+  <p class="lede">你现在的痛苦，不一定说明 bug 特别多；它更说明发现、定位和防复发仍然依赖人的记忆与点击。</p>
+
+  <div class="verdict">不需要你把所有 bug 一个一个指出来。你应该定义关键旅程和优先级；工程系统负责批量发现、稳定复现并阻止复发。</div>
+
+  <h2>先分清两种工作</h2>
+  <div class="grid">
+    <section class="card">
+      <strong>救火</strong>
+      你发现一次异常，我们修一次。它能恢复当下，却会随着功能和模型数量线性增长。
+    </section>
+    <section class="card">
+      <strong>建设免疫系统</strong>
+      一次异常变成一个自动信号；以后任何改动触发同类错误，合并或发布立即被拦住。
+    </section>
+  </div>
+  <p>Google SRE 把手工、重复、可自动化、没有持久价值、会随规模线性增长的工作称为 <em>toil</em>。让你不停点画布找 bug，正是这种工作。正确目标不是更勤快地找，而是让每次人工发现都减少未来的人工发现。</p>
+
+  <h2>刚才 Banana 事故说明了什么</h2>
+  <p>表面症状是“4K 参数不对”。真正的问题跨了四层：</p>
+  <table>
+    <thead><tr><th>层</th><th>可能看起来正确</th><th>必须证明的合同</th></tr></thead>
+    <tbody>
+      <tr><td>界面</td><td>显示 4K、两张输入图</td><td>用户选择进入项目请求</td></tr>
+      <tr><td>任务路由</td><td>日志仍写 4K</td><td>选中同系列真实 4K 模型</td></tr>
+      <tr><td>适配器</td><td>请求能成功返回</td><td>最终请求仍有 <code>image_size=4K</code></td></tr>
+      <tr><td>媒体边界</td><td>显示“2 输入图”</td><td>两张图片按顺序进入 multipart</td></tr>
+    </tbody>
+  </table>
+  <p>所以一次 UI 手测永远不够。我们最终建立的是 5 个模型族 × 3 个分辨率的路由矩阵，再加最终假 HTTP 边界断言。这种测试不花 provider 费用，而且能准确指出坏在哪一层。</p>
+
+  <h2>Firefly Canvas 需要四道门</h2>
+  <div class="flow" aria-label="四层质量门与用户反馈">
+    <span>参数矩阵<br>秒级</span>
+    <span>模块合同<br>假 provider</span>
+    <span>关键旅程<br>浏览器</span>
+    <span>全量回归<br>发布前</span>
+    <span>用户反馈<br>补盲区</span>
+  </div>
+  <ol>
+    <li><strong>参数矩阵：</strong>覆盖模型族、1K/2K/4K、比例、参考图数量、固定/自动选择。</li>
+    <li><strong>模块合同：</strong>在最终 HTTP 边界断言真实字段，禁止“中间日志正确、出站参数丢失”。</li>
+    <li><strong>关键旅程：</strong>只保留少量高价值浏览器流程，例如生成、LLM 引图、重载、历史、下载、并发。</li>
+    <li><strong>发布门禁：</strong>静态检查、目标模块、浏览器烟测、全量测试按速度分层执行。</li>
+  </ol>
+  <p>Google Testing Blog 强调，反馈循环要快、可靠、能隔离失败；不是端到端测试越多越好。Google SRE 也建议：老项目不要企图一次性给所有函数补测试，而要先排业务关键面，并把每个已报告 bug 变成回归用例。</p>
+
+  <h2>你和系统各自负责什么</h2>
+  <div class="grid">
+    <section class="card">
+      <strong>你负责</strong>
+      定义最重要的 5 到 10 条用户旅程；说明什么错误绝不能接受；对真实输出的审美和业务正确性做判断。
+    </section>
+    <section class="card">
+      <strong>系统负责</strong>
+      自动枚举参数组合；验证请求合同；重放关键旅程；保存失败证据；阻止已知错误再次进入可试用版本。
+    </section>
+  </div>
+
+  <h2>接下来不是继续盲修</h2>
+  <p>对当前项目，建议先暂停新增功能，做一次短期“稳定化冲刺”：</p>
+  <ol>
+    <li>列出七个风险面：画布交互、项目持久化、媒体引用、模型能力、provider 协议、任务并发、历史与下载。</li>
+    <li>每个风险面选一条最值钱的用户旅程，先形成 7 条烟测，而不是穷举所有按钮。</li>
+    <li>把现有已知事故映射到最小测试层；重复或矛盾的合同先统一。</li>
+    <li>形成一个质量门命令；未通过时不继续堆功能。</li>
+    <li>再做一轮主动探索 QA，由代理系统性扫描，而不是等你偶然碰到。</li>
+  </ol>
+
+  <section class="quiz" data-quiz>
+    <h2>30 秒检索练习</h2>
+    <p>假设以后又发现“选择 2K，但 provider 收到 1K”。最有持久价值的第一产物是什么？</p>
+    <button type="button" data-answer="wrong">写一条消息提醒以后小心</button>
+    <button type="button" data-answer="right">建立最终出站合同的失败测试</button>
+    <button type="button" data-answer="wrong">再完整点击一遍所有画布功能</button>
+    <p class="feedback" aria-live="polite"></p>
+  </section>
+
+  <section class="next">
+    <strong>你的下一步：</strong>不要列所有 bug。只列出你认为“坏了就没法试用”的 5 条用户旅程。下一课我们会把它们变成 Firefly Canvas 的风险地图和质量门。
+  </section>
+
+  <p>有任何术语或步骤不清楚，直接问我。配套速查：<a href="../reference/quality-loop.html">质量闭环速查</a>。</p>
+  <p class="meta">主要资料：<a href="https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html">Google Testing Blog</a> · <a href="https://sre.google/sre-book/testing-reliability/">Google SRE: Testing for Reliability</a> · <a href="https://sre.google/sre-book/eliminating-toil/">Google SRE: Eliminating Toil</a></p>
+</main>
+<script>
+  document.querySelectorAll('[data-quiz] button').forEach((button) => {
+    button.addEventListener('click', () => {
+      const feedback = button.parentElement.querySelector('.feedback');
+      const correct = button.dataset.answer === 'right';
+      feedback.className = `feedback ${correct ? 'good' : 'bad'}`;
+      feedback.textContent = correct
+        ? '正确。它会让同一类参数漂移在发布前自动失败。'
+        : '再想一次：这项工作能否在下一次改动时自动阻止复发？';
+    });
+  });
+</script>
+</body>
+</html>

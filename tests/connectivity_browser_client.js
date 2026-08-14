@@ -2,9 +2,10 @@
     'use strict';
     const query = new URLSearchParams(location.search);
     const projectId = query.get('project') || '';
+    const browserRole = query.get('role') || 'probe';
     const result = {
         kind: 'final',
-        role: 'probe',
+        role: browserRole,
         result_id: `connectivity-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
         clientScriptLoaded: true,
         viewport: {width: innerWidth, height: innerHeight},
@@ -21,7 +22,7 @@
     async function waitFor(predicate, timeout=15000){
         const deadline = performance.now() + timeout;
         while(performance.now() < deadline){
-            try { if(predicate()) return true; } catch(_) {}
+            try { if(await predicate()) return true; } catch(_) {}
             await sleep(60);
         }
         return false;
@@ -57,16 +58,129 @@
     }
     async function run(){
         if(!await waitFor(() => (evalCanvas()?.nodes || []).length >= 3, 20000)) return;
+        if(browserRole === 'secondary'){
+            await fetch('/__multiclient_ready', {method:'POST'});
+            let observedTaskIds = [];
+            const observedBothPending = await waitFor(() => {
+                const current = nodeById('gen-conn');
+                const pending = current?.pendingTasks || [];
+                const logs = evalCanvas()?.logs || [];
+                const ids = pending.map(item => String(item.taskId || '')).filter(Boolean);
+                if(ids.length < 2 || !ids.every(id => logs.some(log => log.status === 'pending' && String(log.request?.task_id || '') === id))) return false;
+                observedTaskIds = ids;
+                evalFn('openSmartCanvasLog')?.();
+                return ids.every(id => document.querySelector(`[data-log-cancel-task="${CSS.escape(id)}"]`));
+            }, 30000);
+            assertion('second client renders one independent status card per overlapping task', observedBothPending, {
+                observedTaskIds,
+                pending:nodeById('gen-conn')?.pendingTasks || [],
+                logs:(evalCanvas()?.logs || []).filter(log => log.status === 'pending').map(log => ({id:log.id, task:log.request?.task_id})),
+            });
+            if(observedBothPending) await fetch('/__multiclient_observed', {method:'POST'});
+            const observedIndependentTerminals = await waitFor(() => {
+                if(observedTaskIds.length < 2) return false;
+                const logs = evalCanvas()?.logs || [];
+                const states = observedTaskIds.map(id => logs.find(log => String(log.task_id || log.request?.task_id || '') === id)?.status || '');
+                return states.includes('cancelled') && states.includes('succeeded');
+            }, 60000);
+            const terminalStates = observedTaskIds.map(id => {
+                const log = (evalCanvas()?.logs || []).find(item => String(item.task_id || item.request?.task_id || '') === id);
+                return {taskId:id, status:log?.status || ''};
+            });
+            assertion('second client merges remote cancelled and succeeded records by task identity', observedIndependentTerminals, terminalStates);
+            assertion('second client clears only terminal pending identities', !(nodeById('gen-conn')?.pendingTasks || []).some(item => observedTaskIds.includes(String(item.taskId || ''))), nodeById('gen-conn')?.pendingTasks || []);
+            return;
+        }
+        if(sessionStorage.getItem('t09-submission-recovery-phase') === 'verify'){
+            const carried = JSON.parse(sessionStorage.getItem('t09-submission-recovery-result') || '{}');
+            result.assertions.push(...(carried.assertions || []));
+            result.errors.push(...(carried.errors || []));
+            result.diagnostics.push(...(carried.diagnostics || []));
+            const recoveredAfterReload = await waitFor(() => {
+                const current = nodeById('gen-conn');
+                const logs = evalCanvas()?.logs || [];
+                return !(current?.generationSubmissions || []).length
+                    && logs.some(log => log.status === 'succeeded' && String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY'));
+            }, 60000);
+            const recoveredCaptured = await (await fetch('/__captured_requests')).json();
+            assertion('reload replays an unknown submission with the same durable key', recoveredAfterReload, {
+                submissions:nodeById('gen-conn')?.generationSubmissions || [],
+                matchingLogs:(evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY')).map(log => ({task:log.task_id, status:log.status})),
+            });
+            assertion('response-loss recovery invokes the fake adapter only once', recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length === 1, recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length);
+            sessionStorage.removeItem('t09-submission-recovery-phase');
+            sessionStorage.removeItem('t09-submission-recovery-result');
+            return;
+        }
+        const secondaryReady = await waitFor(async () => {
+            const response = await fetch('/__multiclient_ready');
+            return response.ok && Boolean((await response.json()).ready);
+        }, 20000);
+        assertion('second real browser client is ready before overlap begins', secondaryReady, secondaryReady);
         const settings = smartSettings();
         assertion('settings loaded', Boolean(settings), Boolean(settings));
 
+        const mergeNode = evalFn('mergeSmartNode');
+        const mergedOverlap = mergeNode?.(
+            {id:'merge-probe', type:'smart-image', images:[{url:'project-media://merge-probe/existing.png'}], runFinishedAt:20, pending:0},
+            {id:'merge-probe', type:'smart-image', images:[], pending:1, pendingTasks:[{taskId:'remote-live-task', count:1, kind:'image'}]},
+            new Set(),
+        );
+        assertion('server merge preserves remote overlapping task beside completed local output', Boolean(
+            mergedOverlap?.images?.some(item => item.url === 'project-media://merge-probe/existing.png')
+            && mergedOverlap?.pendingTasks?.some(item => item.taskId === 'remote-live-task')
+            && Number(mergedOverlap?.pending || 0) === 1
+        ), mergedOverlap);
+
+        const applyMergedCanvas = evalFn('applyMergedServerCanvas');
+        const absorbGeneration = evalFn('absorbProjectGenerationResult');
+        const probeNode = {id:'revision-probe', type:'smart-image', images:[{url:'project-media://revision-probe/local.png'}], runFinishedAt:10, pending:0};
+        try {
+            eval('nodes').push(probeNode);
+            applyMergedCanvas?.({
+                revision:40,
+                updated_at:Date.now(),
+                nodes:[{...probeNode, images:[{url:'project-media://revision-probe/newest.png'}], runFinishedAt:40}],
+                connections:[],
+                logs:[],
+            });
+            await absorbGeneration?.({
+                project_id:projectId,
+                project_revision:39,
+                registered_revision:38,
+                result_node_id:'revision-probe',
+                final_node:{...probeNode, images:[{url:'project-media://revision-probe/stale.png'}], runFinishedAt:39},
+                history_record:{id:'revision-probe-history', task_id:'revision-probe-task', status:'succeeded', outputs:[]},
+            });
+            const revisionProbe = nodeById('revision-probe');
+            assertion('delayed lower-revision generation response cannot overwrite merged newer node', Boolean(
+                revisionProbe?.images?.some(item => item.url === 'project-media://revision-probe/newest.png')
+                && !revisionProbe?.images?.some(item => item.url === 'project-media://revision-probe/stale.png')
+            ), revisionProbe?.images);
+        } finally {
+            eval('nodes').splice(0, eval('nodes').length, ...eval('nodes').filter(item => item.id !== 'revision-probe'));
+            evalCanvas().nodes = eval('nodes');
+            evalCanvas().logs = (evalCanvas().logs || []).filter(item => item.id !== 'revision-probe-history');
+        }
+
         const ref = nodeById('img-ref');
         assertion('img-ref node has reference image', Boolean(ref?.images?.length), JSON.stringify(ref?.images || []));
+
+        document.querySelector('[data-id="prompt-conn"]')?.click();
+        const promptNodeEditorReady = await waitFor(() => Boolean(document.querySelector('[data-id="prompt-conn"] .prompt-node-text')), 8000);
+        const promptNodeEditor = document.querySelector('[data-id="prompt-conn"] .prompt-node-text');
+        assertion('LLM prompt output remains directly editable', promptNodeEditorReady && promptNodeEditor?.readOnly === false, {ready:promptNodeEditorReady, readOnly:promptNodeEditor?.readOnly});
+        if(promptNodeEditor){
+            promptNodeEditor.value = 'edited prompt output';
+            promptNodeEditor.dispatchEvent(new Event('input', {bubbles:true}));
+        }
+        assertion('editing the LLM prompt output updates the node text', nodeById('prompt-conn')?.text === 'edited prompt output', nodeById('prompt-conn')?.text);
 
         const genNode = document.querySelector('[data-id="gen-conn"]');
         genNode?.click();
         const composerOpen = await waitFor(() => document.querySelector('#composer')?.classList?.contains('open'), 8000);
         const paramsRendered = await waitFor(() => Boolean(document.querySelector('#dynamicParams .model-control .smart-pill')), 8000);
+        await waitFor(() => Boolean(document.querySelector('#composer')?.style?.left && document.querySelector('#composer')?.style?.top), 1200);
         assertion('select gen-conn opens composer', composerOpen, composerOpen);
         assertion('dynamic params render model control', paramsRendered, paramsRendered);
 
@@ -79,6 +193,7 @@
 
         const composer = document.getElementById('composer');
         const composerRect = composer.getBoundingClientRect();
+        const selectedNodeRect = document.querySelector('[data-id="gen-conn"]')?.getBoundingClientRect();
         const shellRect = shell.getBoundingClientRect();
         const composerCssWidth = Number.parseFloat(getComputedStyle(composer).width || '0');
         const visibleParamControls = [...document.querySelectorAll('#dynamicParams > *')].filter(control => {
@@ -96,21 +211,27 @@
         });
         const runRect = document.getElementById('runBtn').getBoundingClientRect();
         const promptRect = document.getElementById('promptInput').getBoundingClientRect();
-        const composerWidthContract = innerWidth < 760
-            ? composer.style.width === '' && Math.abs(composerCssWidth - (innerWidth - 24)) <= 1
-            : composer.style.width === '' && composerCssWidth >= 700 && composerCssWidth <= 720;
-        assertion('composer width is CSS-owned and follows its responsive width band', composerWidthContract, {viewport:innerWidth, inlineWidth:composer.style.width, cssWidth:composerCssWidth});
+        const layoutViewportWidth = document.documentElement.clientWidth;
+        const expectedComposerWidth = Math.min(720, layoutViewportWidth - 36);
+        const mobileWidthPasses = composerCssWidth <= layoutViewportWidth - 24 + 1 && composerCssWidth >= layoutViewportWidth - 48;
+        const composerWidthContract = composer.style.width === '' && (layoutViewportWidth < 760 ? mobileWidthPasses : Math.abs(composerCssWidth - expectedComposerWidth) <= 1);
+        assertion('image composer uses a fixed desktop width and a viewport-safe mobile width', composerWidthContract, {viewport:innerWidth, layoutViewport:layoutViewportWidth, inlineWidth:composer.style.width, cssWidth:composerCssWidth, expectedComposerWidth, mobileWidthPasses});
         assertion('composer stays inside the viewport', composerRect.left >= shellRect.left - 1 && composerRect.right <= shellRect.right + 1 && composerRect.top >= shellRect.top - 1 && composerRect.bottom <= shellRect.bottom + 1, {composer:{left:composerRect.left, right:composerRect.right, top:composerRect.top, bottom:composerRect.bottom}, shell:{left:shellRect.left, right:shellRect.right, top:shellRect.top, bottom:shellRect.bottom}});
+        const centeredLeft = selectedNodeRect.left + (selectedNodeRect.width - composerRect.width) / 2;
+        const canCenterHorizontally = centeredLeft >= shellRect.left + 8 && centeredLeft + composerRect.width <= shellRect.right - 8;
+        const canFitBelow = selectedNodeRect.bottom + 8 + composerRect.height <= shellRect.bottom - 8;
+        const composerPlacementPasses = (!canCenterHorizontally || Math.abs((composerRect.left + composerRect.width / 2) - (selectedNodeRect.left + selectedNodeRect.width / 2)) <= 2)
+            && (!canFitBelow || composerRect.top >= selectedNodeRect.bottom + 8);
+        assertion('composer stays centered below the selected node when the viewport has room', composerPlacementPasses, {canCenterHorizontally, canFitBelow, composer:{left:composerRect.left, top:composerRect.top, width:composerRect.width, height:composerRect.height}, node:{left:selectedNodeRect.left, bottom:selectedNodeRect.bottom, width:selectedNodeRect.width}});
         assertion('composer prompt uses 13px body typography', getComputedStyle(document.getElementById('promptInput')).fontSize === '13px', getComputedStyle(document.getElementById('promptInput')).fontSize);
         assertion('composer uses the compact prompt height by default', promptRect.height >= 72 && promptRect.height <= 90, promptRect.height);
         assertion('composer parameter controls share 30-32px geometry and 12px typography', mainControlGeometry.length >= 4 && mainControlGeometry.every(item => item.height >= 30 && item.height <= 32.5 && Number.parseFloat(item.font) >= 12) && runRect.height >= 30 && runRect.height <= 32.5 && getComputedStyle(document.getElementById('runBtn')).fontSize === '12px', {controls:mainControlGeometry, run:{height:runRect.height, font:getComputedStyle(document.getElementById('runBtn')).fontSize}});
-        const desktopSingleRow = paramRects.length >= 4 && paramRects.every(rect => Math.abs(rect.top - paramRects[0].top) <= 1) && Math.abs(runRect.top - paramRects[0].top) <= 1;
-        const narrowWrap = paramRects.length >= 4
-            && new Set(paramRects.map(rect => Math.round(rect.top))).size >= 2
+        const controlsStayInsideComposer = paramRects.length >= 4
             && paramRects.every(rect => rect.left >= composerRect.left - 1 && rect.right <= composerRect.right + 1)
-            && runRect.top >= Math.max(...paramRects.map(rect => rect.bottom)) - 1;
-        assertion('composer uses the responsive parameter layout contract', innerWidth >= 760 ? desktopSingleRow : narrowWrap, {viewport:innerWidth, tops:paramRects.map(rect => rect.top), runTop:runRect.top});
-        assertion('composer does not create a horizontal scrollbar', composer.scrollWidth <= composer.clientWidth + 1, {scrollWidth:composer.scrollWidth, clientWidth:composer.clientWidth});
+            && runRect.left >= composerRect.left - 1 && runRect.right <= composerRect.right + 1;
+        assertion('composer keeps wrapped parameter controls inside its fixed width', controlsStayInsideComposer, {viewport:innerWidth, composer:{left:composerRect.left, right:composerRect.right}, controls:paramRects.map(rect => ({left:rect.left, right:rect.right, top:rect.top})), run:{left:runRect.left, right:runRect.right, top:runRect.top}});
+        const composerOverflowX = getComputedStyle(composer).overflowX;
+        assertion('composer does not create a horizontal scrollbar', !['auto', 'scroll'].includes(composerOverflowX), {overflowX:composerOverflowX, scrollWidth:composer.scrollWidth, clientWidth:composer.clientWidth});
 
         const defaultModel = smartSettings()?.model;
         assertion('default model is browser-image-model', defaultModel === 'browser-image-model', defaultModel);
@@ -120,7 +241,7 @@
         const optionCount = document.querySelectorAll('#dynamicParams [data-model-option]').length;
         assertion('model popover lists 2 models', optionsShown && optionCount === 2, optionCount);
         const modelPopoverRect = document.querySelector('#dynamicParams .model-control .smart-popover')?.getBoundingClientRect();
-        assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= innerWidth - 8 && composer.scrollWidth <= composer.clientWidth + 1, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:innerWidth, scrollWidth:composer.scrollWidth, clientWidth:composer.clientWidth} : 'missing');
+        assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= layoutViewportWidth - 8, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:layoutViewportWidth} : 'missing');
 
         const second = [...document.querySelectorAll('#dynamicParams [data-model-option]')].find(o => (o.dataset.modelOption || o.textContent || '').includes('browser-image-model-2'));
         second?.click();
@@ -142,6 +263,12 @@
         const qPicked = await waitFor(() => clickParam('quality-control', 'quality', 'high'), 8000);
         const qSet = await waitFor(() => smartSettings()?.quality === 'high', 8000);
         assertion('quality switch to high', qClicked && qPicked && qSet, smartSettings()?.quality);
+        const parameterLabels = [...document.querySelectorAll('#dynamicParams .smart-pill')]
+            .filter(element => element.textContent.trim() && getComputedStyle(element).display !== 'none');
+        const clippedParameterLabels = parameterLabels
+            .filter(element => element.scrollWidth > element.clientWidth + 1)
+            .map(element => ({text:element.textContent.trim(), scrollWidth:element.scrollWidth, clientWidth:element.clientWidth}));
+        assertion('image composer keeps every visible parameter label readable', parameterLabels.length >= 4 && clippedParameterLabels.length === 0, {labels:parameterLabels.map(element => element.textContent.trim()), clipped:clippedParameterLabels});
 
         const promptEl = document.querySelector('#composer [data-prompt-text], #composer textarea, #composer [contenteditable="true"], #promptInput');
         if(promptEl){
@@ -158,7 +285,83 @@
         const runBtn = document.querySelector('#runBtn');
         const runClickable = await waitFor(() => !runBtn?.disabled, 10000);
         assertion('run button enabled', runClickable, runBtn?.disabled);
+        const setGenerationCount = async value => {
+            const opened = clickPill('count-control');
+            const picked = await waitFor(() => clickParam('count-control', 'count', String(value)), 3000);
+            return opened && picked;
+        };
+        const firstCountSelected = await setGenerationCount(3);
+        const firstCountApplied = await waitFor(() => Number(smartSettings()?.count || 0) === 3, 3000);
+        assertion('first cancellable task requests three outputs', firstCountSelected && firstCountApplied, smartSettings()?.count);
+        const historyCountBeforeRun = (evalCanvas()?.logs || []).length;
         runBtn?.click();
+        await sleep(120);
+        const firstPendingNode = document.querySelector('[data-id="gen-conn"]');
+        const firstPlaceholder = firstPendingNode?.querySelector('.generation-placeholder');
+        const firstPlaceholderSpinner = firstPlaceholder?.querySelector('.generation-placeholder-spinner');
+        assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner), firstPlaceholderSpinner ? {className:firstPlaceholderSpinner.className} : 'missing');
+        const firstNodeProgress = firstPendingNode?.querySelector('.generation-stage-progress');
+        assertion('node placeholder shows six honest generation stages without a fake percent', Boolean(firstNodeProgress) && firstNodeProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstNodeProgress.textContent.includes('%'), firstNodeProgress?.outerHTML || 'missing');
+        document.getElementById('smartLogToggle')?.click();
+        const pendingHistoryVisible = await waitFor(() => Boolean(document.querySelector('#smartLogList .log-item.pending .log-history-placeholder')), 5000);
+        const pendingHistoryCard = document.querySelector('#smartLogList .log-item.pending');
+        const pendingHistoryPlaceholder = pendingHistoryCard?.querySelector('.log-history-placeholder');
+        assertion('history immediately shows the running task as the newest pending card', pendingHistoryVisible && document.querySelector('#smartLogList .log-item') === pendingHistoryCard, pendingHistoryCard?.dataset?.canvasLogId || 'missing');
+        assertion('history pending card has an animated placeholder', Boolean(pendingHistoryPlaceholder) && getComputedStyle(pendingHistoryPlaceholder).animationName !== 'none', pendingHistoryPlaceholder ? {className:pendingHistoryPlaceholder.className, animation:getComputedStyle(pendingHistoryPlaceholder).animationName} : 'missing');
+        const firstHistoryProgress = pendingHistoryCard?.querySelector('.generation-stage-progress');
+        assertion('history placeholder shows the same six generation stages', Boolean(firstHistoryProgress) && firstHistoryProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstHistoryProgress.textContent.includes('%'), firstHistoryProgress?.outerHTML || 'missing');
+        const livePhaseSynced = await waitFor(() => {
+            const nodeProgress = document.querySelector('[data-id="gen-conn"] .generation-stage-progress');
+            const historyProgress = document.querySelector('#smartLogList .log-item.pending .generation-stage-progress');
+            return nodeProgress?.dataset?.phase === 'provider_generating'
+                && historyProgress?.dataset?.phase === nodeProgress.dataset.phase;
+        }, 7000);
+        assertion('node and history progress advance to the same live provider stage', livePhaseSynced, {
+            node:document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.dataset?.phase || '',
+            history:document.querySelector('#smartLogList .log-item.pending .generation-stage-progress')?.dataset?.phase || '',
+        });
+        const concurrentRunEnabled = await waitFor(() => !runBtn?.disabled, 3000);
+        assertion('run button stays enabled while the current generation is pending', concurrentRunEnabled, runBtn?.disabled);
+        if(promptEl){
+            promptEl.textContent = '并发微调提示词';
+            promptEl.dispatchEvent(new Event('input', {bubbles:true}));
+            promptEl.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'并发微调提示词'}));
+        }
+        assertion('prompt remains editable while generation is pending', promptEl?.getAttribute('contenteditable') !== 'false' && promptEl?.textContent === '并发微调提示词', {
+            contenteditable:promptEl?.getAttribute('contenteditable'),
+            text:promptEl?.textContent || '',
+        });
+        const secondCountSelected = await setGenerationCount(1);
+        const secondCountApplied = await waitFor(() => Number(smartSettings()?.count || 0) === 1, 3000);
+        assertion('overlapping survivor requests one output', secondCountSelected && secondCountApplied, smartSettings()?.count);
+        runBtn?.click();
+        const concurrentPendingVisible = await waitFor(() => document.querySelectorAll('#smartLogList .log-item.pending').length >= 2, 5000);
+        assertion('a second run creates an independent pending history card', concurrentPendingVisible, document.querySelectorAll('#smartLogList .log-item.pending').length);
+        const firstPendingLog = (evalCanvas()?.logs || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('连通性测试提示词'));
+        const firstPendingCard = firstPendingLog ? document.querySelector(`[data-canvas-log-id="${firstPendingLog.id}"]`) : null;
+        const firstCancelButton = firstPendingCard?.querySelector('[data-log-cancel-task]');
+        assertion('each project pending card exposes a task-scoped cancel control', Boolean(firstCancelButton), firstPendingCard?.outerHTML || 'missing');
+        const secondClientObservedOverlap = await waitFor(async () => {
+            const response = await fetch('/__multiclient_observed');
+            return response.ok && Boolean((await response.json()).ready);
+        }, 15000);
+        assertion('second real browser observes both task cards before cancellation', secondClientObservedOverlap, secondClientObservedOverlap);
+        firstCancelButton?.click();
+        const firstCancelled = await waitFor(() => {
+            const logs = evalCanvas()?.logs || [];
+            const cancelled = logs.find(log => log.status === 'cancelled' && String(log.prompt || '').includes('连通性测试提示词'));
+            const remaining = logs.filter(log => log.status === 'pending');
+            return Boolean(cancelled) && remaining.length === 1;
+        }, 5000);
+        assertion('cancelling the first task preserves the overlapping second task', firstCancelled, (evalCanvas()?.logs || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
+        const cancelledCountReconciled = await waitFor(() => {
+            const current = nodeById('gen-conn');
+            return Number(current?.pending || 0) === 1 && (current?.pendingTasks || []).length === 1;
+        }, 5000);
+        assertion('cancelling an n>1 task recomputes pending from the one surviving task', cancelledCountReconciled, {
+            pending:nodeById('gen-conn')?.pending,
+            tasks:(nodeById('gen-conn')?.pendingTasks || []).map(task => ({taskId:task.taskId, count:task.count})),
+        });
         await sleep(2500);
         const toastText = document.querySelector('#toast, .toast, [class*="toast"]')?.textContent?.trim() || '';
         const diagNode = nodeById('gen-conn');
@@ -169,16 +372,26 @@
             return Boolean(n?.images?.length && n.images.some(i => i.url) && !n.pending && n.runFinishedAt);
         }, 60000);
         assertion('generation completes on gen-conn', completed, JSON.stringify(nodeById('gen-conn')?.images?.map(i => i.url) || []));
+        const pendingHistoryReplaced = await waitFor(() => {
+            const logs = evalCanvas()?.logs || [];
+            return logs.length === historyCountBeforeRun + 2
+                && logs.filter(log => log.status === 'cancelled').length >= 1
+                && logs.filter(log => log.status === 'succeeded').length >= 1
+                && !logs.some(log => log.status === 'pending')
+                && Boolean(document.querySelector('#smartLogList .log-item:not(.pending) .log-history-image'));
+        }, 8000);
+        assertion('cancelled and completed tasks replace only their own history placeholders', pendingHistoryReplaced, {before:historyCountBeforeRun, after:(evalCanvas()?.logs || []).length, statuses:(evalCanvas()?.logs || []).map(log => log.status)});
+        assertion('completed node no longer renders the stage progress placeholder', !document.querySelector('[data-id="gen-conn"] .generation-stage-progress'), document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.outerHTML || 'removed');
         const genImages = nodeById('gen-conn')?.images || [];
         const urlImage = genImages.find(i => i.url);
         assertion('generated image has url', Boolean(urlImage?.url), urlImage?.url || '');
 
         const captured = await (await fetch('/__captured_requests')).json();
-        const last = captured[captured.length - 1] || {};
+        const last = [...captured].reverse().find(item => String(item.prompt || '').includes('并发微调提示词')) || {};
         result.diagnostics.push(`captured=${JSON.stringify(captured)}`);
         assertion('at least one request captured', captured.length >= 1, captured.length);
         assertion('payload model is switched model', last.model === 'browser-image-model-2', last.model);
-        assertion('payload prompt text correct', String(last.prompt || '').includes('连通性测试提示词'), last.prompt);
+        assertion('second payload carries the edited prompt', String(last.prompt || '').includes('并发微调提示词'), last.prompt);
         assertion('payload size matches ratio/resolution', last.size === expectedSize, `${last.size} vs ${expectedSize}`);
         assertion('payload quality is high', last.quality === 'high', last.quality);
         assertion('payload provider is browser-image', last.provider_id === 'browser-image', last.provider_id);
@@ -202,7 +415,6 @@
         const autoReset = await evalFn(`(p) => {
             const n = nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
-            n.images = [];
             n.pending = false;
             n.queued = false;
             delete n.runFinishedAt;
@@ -229,6 +441,11 @@
         const autoRunClickable = await waitFor(() => !runBtn2?.disabled, 10000);
         assertion('auto run button enabled', autoReset && reSelect && autoRunClickable, {autoReset, reSelect, disabled: runBtn2?.disabled});
         runBtn2?.click();
+        await sleep(120);
+        const rerunNode = document.querySelector('[data-id="gen-conn"]');
+        const rerunPlaceholder = rerunNode?.querySelector('.generation-placeholder');
+        const rerunPlaceholderSpinner = rerunPlaceholder?.querySelector('.generation-placeholder-spinner');
+        assertion('rerunning a node with an old image replaces it visually with the placeholder', Boolean(rerunPlaceholderSpinner) && !rerunNode?.querySelector('.node-img'), rerunPlaceholderSpinner ? {className:rerunPlaceholderSpinner.className, oldImageVisible:Boolean(rerunNode?.querySelector('.node-img'))} : 'missing');
         const autoDone = await waitFor(() => {
             const n = nodeById('gen-conn');
             return Boolean(n?.images?.length && !n.pending && n.runFinishedAt);
@@ -239,6 +456,67 @@
         assertion('auto routing selects provider', autoEntry.provider_id === 'browser-image', autoEntry.provider_id);
         assertion('auto routing selects model', Boolean(autoEntry.model), autoEntry.model);
         assertion('auto routing forwards prompt', String(autoEntry.prompt || '').includes('自动路由测试提示词'), autoEntry.prompt);
+        const autoHistorySettled = await waitFor(() => {
+            const matching = (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词'));
+            return matching.some(log => log.status === 'succeeded') && !matching.some(log => log.status === 'pending');
+        }, 15000);
+        assertion('auto routing history settles before the failure journey begins', autoHistorySettled, (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词')).map(log => log.status));
+
+        const historyCountBeforeFailure = (evalCanvas()?.logs || []).length;
+        const failedCountBefore = (evalCanvas()?.logs || []).filter(log => log.status === 'failed').length;
+        const promptEl3 = document.querySelector('#composer [data-prompt-text], #composer textarea, #composer [contenteditable="true"], #promptInput');
+        if(promptEl3){
+            promptEl3.textContent = 'FORCE_HISTORY_FAILURE';
+            promptEl3.dispatchEvent(new Event('input', {bubbles:true}));
+            promptEl3.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'FORCE_HISTORY_FAILURE'}));
+        }
+        await sleep(120);
+        const failedRunBtn = document.querySelector('#runBtn');
+        const failedRunClickable = await waitFor(() => !failedRunBtn?.disabled, 10000);
+        assertion('forced failure run button enabled', failedRunClickable, failedRunBtn?.disabled);
+        failedRunBtn?.click();
+        const failedPendingVisible = await waitFor(() => {
+            const card = document.querySelector('#smartLogList .log-item.pending');
+            const placeholder = card?.querySelector('.log-history-placeholder');
+            return Boolean(card && placeholder && getComputedStyle(placeholder).animationName !== 'none');
+        }, 5000);
+        assertion('failing generation first appears as an animated history placeholder', failedPendingVisible, document.querySelector('#smartLogList .log-item.pending')?.dataset?.canvasLogId || 'missing');
+        const failedHistoryResolved = await waitFor(() => {
+            const logs = evalCanvas()?.logs || [];
+            const matching = logs.filter(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+            return logs.length === historyCountBeforeFailure + 1
+                && matching.length === 1
+                && !logs.some(log => log.status === 'pending');
+        }, 60000);
+        assertion('failed result replaces the history placeholder without adding a duplicate', failedHistoryResolved, {
+            before: historyCountBeforeFailure,
+            after: (evalCanvas()?.logs || []).length,
+            pending: (evalCanvas()?.logs || []).filter(log => log.status === 'pending').length,
+            failed: (evalCanvas()?.logs || []).filter(log => log.status === 'failed').length - failedCountBefore,
+        });
+        const failedLog = (evalCanvas()?.logs || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+        evalFn('renderSmartCanvasLog')?.();
+        const failedStageProgress = failedLog ? document.querySelector(`[data-canvas-log-id="${CSS.escape(String(failedLog.id || ''))}"] .generation-stage-progress.is-failed`) : null;
+        assertion('failed history keeps the stage where generation stopped', failedStageProgress?.dataset?.phase === 'provider_generating', failedStageProgress?.outerHTML || failedLog?.progress || 'missing');
+        const failedTaskId = failedLog?.task_id || failedLog?.request?.task_id || '';
+        const retryButton = failedLog ? document.querySelector(`[data-canvas-log-id="${failedLog.id}"] [data-log-retry-task]`) : null;
+        assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.logRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
+        retryButton?.click();
+        const retryPending = await waitFor(() => {
+            const retryLog = (evalCanvas()?.logs || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+            const retryTaskId = retryLog?.task_id || retryLog?.request?.task_id || '';
+            return retryTaskId && retryTaskId !== failedTaskId;
+        }, 5000);
+        assertion('retry creates a distinct pending task identity', retryPending, (evalCanvas()?.logs || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
+        const retryCompleted = await waitFor(() => {
+            const matching = (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+            return matching.some(log => log.status === 'failed')
+                && matching.some(log => log.status === 'succeeded')
+                && !matching.some(log => log.status === 'pending');
+        }, 60000);
+        assertion('explicit retry preserves the failed record and completes the new task', retryCompleted, (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE')).map(log => ({task:log.task_id || log.request?.task_id, status:log.status})));
+        const capturedAfterRetry = await (await fetch('/__captured_requests')).json();
+        assertion('explicit retry invokes the fake adapter exactly once more', capturedAfterRetry.filter(item => String(item.prompt || '').includes('FORCE_HISTORY_FAILURE')).length === 2, capturedAfterRetry.filter(item => String(item.prompt || '').includes('FORCE_HISTORY_FAILURE')).length);
 
         const types = ['conversation', 'agent', 'local-edit', 'loop'];
         const beforeCount = (evalCanvas()?.nodes || []).length;
@@ -254,6 +532,53 @@
         assertion('other node types create (conversation/agent/local-edit/loop)', Object.values(createdOk).every(Boolean), JSON.stringify(createdOk));
         const finalCount = (evalCanvas()?.nodes || []).length;
         assertion('node count grew by 4', finalCount === beforeCount + 4, `${beforeCount} -> ${finalCount}`);
+
+        const recoverySelected = await evalFn(`() => {
+            const n = nodes.find(n => n.id === 'gen-conn');
+            if(!n) return false;
+            selectedId = n.id;
+            n.runSettings = {...(n.runSettings || {}), engine:'api', apiKind:'image', routingMode:'auto', count:1};
+            updateComposer();
+            renderDynamicParams();
+            return true;
+        }`)();
+        await sleep(250);
+        const recoveryPrompt = document.querySelector('#composer [data-prompt-text], #composer textarea, #composer [contenteditable="true"], #promptInput');
+        if(recoveryPrompt){
+            recoveryPrompt.textContent = 'RESPONSE_LOST_RECOVERY';
+            recoveryPrompt.dispatchEvent(new Event('input', {bubbles:true}));
+            recoveryPrompt.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:'RESPONSE_LOST_RECOVERY'}));
+        }
+        const originalFetch = window.fetch.bind(window);
+        let droppedSubmissionResponses = 0;
+        window.fetch = async (input, init={}) => {
+            const url = typeof input === 'string' ? input : String(input?.url || '');
+            const isTarget = String(init?.method || 'GET').toUpperCase() === 'POST'
+                && url.includes('/image-generation-tasks')
+                && String(init?.body || '').includes('RESPONSE_LOST_RECOVERY');
+            const response = await originalFetch(input, init);
+            if(isTarget && droppedSubmissionResponses < 2){
+                droppedSubmissionResponses += 1;
+                throw new TypeError('simulated response loss after server accepted request');
+            }
+            return response;
+        };
+        const recoveryRunReady = await waitFor(() => !document.querySelector('#runBtn')?.disabled, 10000);
+        assertion('response-loss recovery run is ready', recoverySelected && recoveryRunReady, {recoverySelected, disabled:document.querySelector('#runBtn')?.disabled});
+        document.querySelector('#runBtn')?.click();
+        const durableUnknownSubmission = await waitFor(() => {
+            const submissions = nodeById('gen-conn')?.generationSubmissions || [];
+            return droppedSubmissionResponses === 2 && submissions.some(item => item.idempotencyKey && item.requestPayload?.prompt === 'RESPONSE_LOST_RECOVERY');
+        }, 15000);
+        window.fetch = originalFetch;
+        assertion('paid POST response loss leaves a durable unknown submission marker', durableUnknownSubmission, {
+            droppedSubmissionResponses,
+            submissions:nodeById('gen-conn')?.generationSubmissions || [],
+        });
+        sessionStorage.setItem('t09-submission-recovery-result', JSON.stringify({assertions:result.assertions, errors:result.errors, diagnostics:result.diagnostics}));
+        sessionStorage.setItem('t09-submission-recovery-phase', 'verify');
+        location.reload();
+        await new Promise(() => {});
     }
     window.addEventListener('error', event => {
         if(event?.error?.message) result.errors.push(event.error.message);

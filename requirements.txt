@@ -5,3 +5,4 @@ pydantic
 python-multipart
 httpx[socks]
 pillow
+websockets>=14,<15

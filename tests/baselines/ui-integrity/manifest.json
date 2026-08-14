@@ -1,0 +1,389 @@
+{
+  "schema_version": 1,
+  "contract": "desktop-ui-integrity",
+  "accepted": true,
+  "accepted_by": "miaomiaozii",
+  "reason": "用户实测验收通过；重采基线消除toast时序噪声，比较器降采样吸收Chrome光栅抖动",
+  "accepted_at": "2026-08-13T03:55:58.325476+00:00",
+  "environment": {
+    "os": "Windows",
+    "browser": {
+      "name": "Google Chrome",
+      "channel": "stable",
+      "version": "Chrome/151.0.7922.77"
+    },
+    "dpr": 1,
+    "color_scheme": "light",
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai",
+    "fonts": {
+      "Inter": true,
+      "JetBrains Mono": true,
+      "Space Grotesk": true
+    },
+    "provider": "offline-none",
+    "animations": "disabled-for-baseline"
+  },
+  "screenshots": [
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "canvas-composer",
+      "path": "1920x1080/canvas-composer.png",
+      "sha256": "362d3a671635ceb5998e82aa5d5b4ba15d409b0a2232c28dbcde671c05e8699a"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "composer-size",
+      "path": "1920x1080/composer-size.png",
+      "sha256": "59a8dc0a68b9826ec82d413fa96db226d3062f8b0570afa5018c64a619f51fd0"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "composer-flow",
+      "path": "1920x1080/composer-flow.png",
+      "sha256": "38a3b836a810a64bebfa6f2a62347e09d89df511b3fd484c953e83c1c759c9eb"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "create-menu",
+      "path": "1920x1080/create-menu.png",
+      "sha256": "d02f654643655e6e5668cebf2e0154d22b3a7dd69ba6a37cddf9503e01a229bf"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "history",
+      "path": "1920x1080/history.png",
+      "sha256": "789e2c74c437280a8d9905dd4bb48020581920b01bd9463c410765ddef217d88"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "generation-detail",
+      "path": "1920x1080/generation-detail.png",
+      "sha256": "d5e4ce8a1d538126ec9c0cd87bfb7e22564059d6ae1405c81c0568797964a5c0"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "settings",
+      "path": "1920x1080/settings.png",
+      "sha256": "a5c309f86cbf375e3abeb6e24149fa7d5ff308dfb6eb65773f15adfbeb0a85f2"
+    },
+    {
+      "viewport": [
+        1920,
+        1080
+      ],
+      "scene": "shortcuts",
+      "path": "1920x1080/shortcuts.png",
+      "sha256": "9285654e95c2e2577269ce3ce101e3e3203593c763dae4fcec037e52cf1cb73e"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "canvas-composer",
+      "path": "1440x900/canvas-composer.png",
+      "sha256": "47cc1e99d2fe034cdfc45740ca87db4ef14e66ea244aa756258a71d422f469d8"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "composer-size",
+      "path": "1440x900/composer-size.png",
+      "sha256": "8e1bbe9aba0d1bf30f47c3945b389c5e52efdd07944a199ed9cf57add69cff4c"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "composer-flow",
+      "path": "1440x900/composer-flow.png",
+      "sha256": "cfd402a3c677e9b81cc6fa480ab48f2883cd3c0d61b0ebe6e0af17f58f58740c"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "create-menu",
+      "path": "1440x900/create-menu.png",
+      "sha256": "f673306c252858bf94fffb09f7cb150c6860362c5a8258b7d755e9f2fbd82240"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "history",
+      "path": "1440x900/history.png",
+      "sha256": "210637c9e09b7ea59c3e1b7b1346f98b40e5c40d99cc58fe942e77174248d741"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "generation-detail",
+      "path": "1440x900/generation-detail.png",
+      "sha256": "f9cc8d725f0dc7ff267732952149b9cbe54f0c565f1675273ff1224ef566d485"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "settings",
+      "path": "1440x900/settings.png",
+      "sha256": "59f2312332d4127c6747eb799f61e30f5348bfd49668500df38bde85e18d465b"
+    },
+    {
+      "viewport": [
+        1440,
+        900
+      ],
+      "scene": "shortcuts",
+      "path": "1440x900/shortcuts.png",
+      "sha256": "7e31dd1bbcb88e08423529f96bc9f6c56170318183d2ca9363e08061a40ff26c"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "canvas-composer",
+      "path": "1280x720/canvas-composer.png",
+      "sha256": "a953167aed1a1430d81c10d378cebedb4c6f677f13bcda0c54ea3cc772c414f0"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "composer-size",
+      "path": "1280x720/composer-size.png",
+      "sha256": "53170b4cfd19e44124b7380e1219fc53c1709fb9623fe0c4712d57e0ae02d276"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "composer-flow",
+      "path": "1280x720/composer-flow.png",
+      "sha256": "96031ec78837dddafcf7ed58bbecdaeb0d6506a4921694326a5a3c21a3efbb89"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "create-menu",
+      "path": "1280x720/create-menu.png",
+      "sha256": "8258458d18e20006081b3e4fd1ec98db6c9045cba27f02fe94bd69d2902a46ff"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "history",
+      "path": "1280x720/history.png",
+      "sha256": "a1ec18e4b32f311c66f93a605ec3685a57f065d47989835e39043a1b0edf0369"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "generation-detail",
+      "path": "1280x720/generation-detail.png",
+      "sha256": "a6797936690ef334ebb8a51d8488b32ee2db4dda32abf7debac2249e08fbf38d"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "settings",
+      "path": "1280x720/settings.png",
+      "sha256": "7fdc844a980469b68dc3d22b44ce07156af320336a9cf8aa8d55c3f33730d3e4"
+    },
+    {
+      "viewport": [
+        1280,
+        720
+      ],
+      "scene": "shortcuts",
+      "path": "1280x720/shortcuts.png",
+      "sha256": "ef362cffa54ccbc4bb2f1d9ee253934663c1b482066f22f153889301b6d62500"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "canvas-composer",
+      "path": "1024x768/canvas-composer.png",
+      "sha256": "afb2bede31b1c9f7862402f321fc8b64c13b39e487e69f0d9e4576cb01761dd4"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "composer-size",
+      "path": "1024x768/composer-size.png",
+      "sha256": "4768d2b92f70f023c46bdcf932f1678c324e455d5fde34c80b6ee1382c63a5ea"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "composer-flow",
+      "path": "1024x768/composer-flow.png",
+      "sha256": "603d5f7ff63d53740ac78f72ecf4d792d879923b5666fde77fbaf240cf49989b"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "create-menu",
+      "path": "1024x768/create-menu.png",
+      "sha256": "5228398283e2ef7956a092168a933b036f316c4aedb547435587685e9684858b"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "history",
+      "path": "1024x768/history.png",
+      "sha256": "1ce251136c6ecba2dda6f7c450f4583c481ac2eed8cc9604eac0787f589c16f3"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "generation-detail",
+      "path": "1024x768/generation-detail.png",
+      "sha256": "a50da375d834ccb1032d26884bfd2ab87ee5f789c874ed6ccd88686e411f2d68"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "settings",
+      "path": "1024x768/settings.png",
+      "sha256": "175c58276918019058b723edce1d3101f8c4a7888b42dbb77250900766a69778"
+    },
+    {
+      "viewport": [
+        1024,
+        768
+      ],
+      "scene": "shortcuts",
+      "path": "1024x768/shortcuts.png",
+      "sha256": "c89a3f2aa5477e4c9b86cda5037ea22f145c8ab098c7ad512be0b68c584b0194"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "canvas-composer",
+      "path": "800x600/canvas-composer.png",
+      "sha256": "02e552f0b03b6c5c7d6902ded4162f1f31551df76e5a9e568e3199e0c3fb05a2"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "composer-size",
+      "path": "800x600/composer-size.png",
+      "sha256": "bd359352058b6182b4c4beeae22224430a18286de926d781adace26db7b3f1a6"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "composer-flow",
+      "path": "800x600/composer-flow.png",
+      "sha256": "51dd010d9c11afda2ac2e8430c115445eb8c2a1bdf4688402114ba68ddac60c8"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "create-menu",
+      "path": "800x600/create-menu.png",
+      "sha256": "168c3ba452525ce6175989da0e28b002f81a62e2a27066eb22eb51bfe03c4664"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "history",
+      "path": "800x600/history.png",
+      "sha256": "d1d8f77c43f85d8cfd457af32c80cac3aa9dd2184347ea6eac37b1c753a20b04"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "generation-detail",
+      "path": "800x600/generation-detail.png",
+      "sha256": "2493ee14d275afe0c86462d02d9aea60a27d429666c056e19105106c7c795b63"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "settings",
+      "path": "800x600/settings.png",
+      "sha256": "291348af5ba9e724199d3ce016c86daf63a1fa99f29f64be1a800111cac950d0"
+    },
+    {
+      "viewport": [
+        800,
+        600
+      ],
+      "scene": "shortcuts",
+      "path": "800x600/shortcuts.png",
+      "sha256": "5b878921bb7141c9e8eb3264132f8aac5f2991cb545f38d226c9be6b982b6755"
+    }
+  ]
+}

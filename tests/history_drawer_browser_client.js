@@ -93,6 +93,7 @@
         assertion('history drawer keeps a 120-to-160-card DOM window for large project history', renderedHistoryCount() >= 120 && renderedHistoryCount() <= 160, renderedHistoryCount());
         assertion('history drawer has no manual pagination controls or status', !document.querySelector('.history-page-nav,[data-history-page-prev],[data-history-page-next],[data-history-page-status]'), document.querySelector('.history-page-nav,[data-history-page-prev],[data-history-page-next],[data-history-page-status]')?.outerHTML || 'none');
         assertion('history spacers preserve all 5000 logical records', Boolean(historyRail.querySelector('[data-history-spacer="before"]')) && Boolean(historyRail.querySelector('[data-history-spacer="after"]')) && representedHistoryCount() === 5000, {represented:representedHistoryCount(), spacers:[...historyRail.querySelectorAll('[data-history-spacer]')].map(spacer => Number(spacer.dataset.historyOmitted || 0))});
+        assertion('history renders the newest record at the far left after loading', historyRail.querySelector('.log-item')?.dataset?.canvasLogId === 'history-first', historyRail.querySelector('.log-item')?.dataset?.canvasLogId || '');
         const initialCard = historyCard('history-first');
         const initialThumb = initialCard?.querySelector('.log-thumb-square');
         const initialCardRect = initialCard?.getBoundingClientRect();
@@ -100,6 +101,27 @@
         const thumbLeftInset = initialCardRect && initialThumbRect ? initialThumbRect.left - initialCardRect.left : -1;
         const thumbRightInset = initialCardRect && initialThumbRect ? initialCardRect.right - initialThumbRect.right : -1;
         assertion('history thumbnail is horizontally centered inside its card', Boolean(initialCardRect && initialThumbRect) && Math.abs(thumbLeftInset - thumbRightInset) <= 1, {left:thumbLeftInset, right:thumbRightInset});
+        assertion('history thumbnail grows with the card width', Boolean(initialCardRect && initialThumbRect) && thumbLeftInset <= 7 && thumbRightInset <= 7, {cardWidth:initialCardRect?.width, thumbWidth:initialThumbRect?.width, left:thumbLeftInset, right:thumbRightInset});
+        const friendlyModelChip = initialCard?.querySelector('.log-chip.model-chip');
+        assertion('history shows the friendly model name and keeps the raw id as a tooltip', friendlyModelChip?.textContent.trim() === 'Nano Banana 2' && friendlyModelChip?.title === 'gemini-3.1-flash-image-preview', {text:friendlyModelChip?.textContent, title:friendlyModelChip?.title});
+        assertion('history keeps the full friendly model name visible', Boolean(friendlyModelChip) && friendlyModelChip.scrollWidth <= friendlyModelChip.clientWidth + 1, friendlyModelChip ? {text:friendlyModelChip.textContent.trim(), scrollWidth:friendlyModelChip.scrollWidth, clientWidth:friendlyModelChip.clientWidth} : 'missing');
+        const resolutionChips = initialCard ? [...initialCard.querySelectorAll('.log-chip.resolution-chip')] : [];
+        assertion('history shows exactly one resolution tier that follows the request', resolutionChips.length === 1 && resolutionChips[0].textContent.trim() === '4K', resolutionChips.map(chip => chip.textContent.trim()));
+        assertion('history model name uses adaptive space instead of a fixed cap', Boolean(friendlyModelChip) && getComputedStyle(friendlyModelChip).maxWidth === 'none' && getComputedStyle(friendlyModelChip).flexShrink === '1', friendlyModelChip ? {maxWidth:getComputedStyle(friendlyModelChip).maxWidth, flexShrink:getComputedStyle(friendlyModelChip).flexShrink, width:friendlyModelChip.getBoundingClientRect().width} : 'missing');
+        const historyButtons = initialCard?.querySelector('.log-buttons');
+        const deleteButton = historyButtons?.querySelector('[data-log-delete="media"]');
+        const duration = historyButtons?.querySelector('.log-duration');
+        const deleteRect = deleteButton?.getBoundingClientRect();
+        const durationRect = duration?.getBoundingClientRect();
+        const deleteIconRect = deleteButton?.querySelector('svg')?.getBoundingClientRect();
+        const durationTextRange = document.createRange();
+        if(duration) durationTextRange.selectNodeContents(duration);
+        const durationTextRect = duration ? durationTextRange.getBoundingClientRect() : null;
+        const visibleBottomDiff = deleteIconRect && durationTextRect
+            ? Math.abs(deleteIconRect.bottom - durationTextRect.bottom)
+            : Number.POSITIVE_INFINITY;
+        assertion('history duration follows the delete action at the bottom', Boolean(deleteButton && duration) && duration.previousElementSibling === deleteButton && duration.textContent.trim() === '1:44s' && !initialCard?.querySelector('.log-meta .log-duration') && visibleBottomDiff <= 2, {buttons:historyButtons?.textContent?.trim(), duration:duration?.textContent?.trim(), deleteRect, deleteIconRect, durationRect, durationTextRect, visibleBottomDiff});
+        assertion('history card is wide enough for readable metadata', Number(initialCardRect?.width || 0) >= 184, initialCardRect?.width || 0);
         const failedCard = document.querySelector('.log-item.failed');
         const failedChip = failedCard?.querySelector('.log-chip.status-failed');
         const failedCardRect = failedCard?.getBoundingClientRect();
@@ -114,7 +136,7 @@
         assertion('history focus probe is established before virtual scrolling', document.activeElement === focusedHistoryControl, document.activeElement?.tagName || 'none');
         const endKey = new KeyboardEvent('keydown', {key:'End', bubbles:true, cancelable:true});
         focusedHistoryControl?.dispatchEvent(endKey);
-        const reachedRemoteHistory = await waitFor(() => Boolean(historyCard('history-filler-4995')), 1800);
+        const reachedRemoteHistory = await waitFor(() => historyRail.scrollLeft >= historyRail.scrollWidth - historyRail.clientWidth - 2, 1800);
         assertion('End reaches the remote end of a 5000-record virtual history', reachedRemoteHistory && endKey.defaultPrevented, {reached:reachedRemoteHistory, scrollLeft:historyRail.scrollLeft, scrollWidth:historyRail.scrollWidth});
         assertion('remote history rendering remains DOM-bounded', renderedHistoryCount() <= 160 && representedHistoryCount() === 5000, {rendered:renderedHistoryCount(), represented:representedHistoryCount()});
         assertion('a focused history card is not unloaded by a remote virtual-window jump', document.activeElement === focusedHistoryControl && focusedHistoryControl?.isConnected && Boolean(historyCard('history-first')), {active:document.activeElement === focusedHistoryControl, connected:focusedHistoryControl?.isConnected});
@@ -124,8 +146,8 @@
 
         const homeKey = new KeyboardEvent('keydown', {key:'Home', bubbles:true, cancelable:true});
         focusedHistoryControl?.dispatchEvent(homeKey);
-        await waitFor(() => Boolean(historyCard('history-second')) && historyRail.scrollLeft < 1, 1800);
-        assertion('Home returns the virtual history to its first records', homeKey.defaultPrevented && Boolean(historyCard('history-second')) && historyRail.scrollLeft < 1, historyRail.scrollLeft);
+        await waitFor(() => Boolean(historyCard('history-first')) && historyRail.scrollLeft < 1, 1800);
+        assertion('Home returns the virtual history to its first records', homeKey.defaultPrevented && Boolean(historyCard('history-first')) && historyRail.scrollLeft < 1, historyRail.scrollLeft);
         const verticalWheel = new WheelEvent('wheel', {deltaY:120, bubbles:true, cancelable:true});
         historyRail.dispatchEvent(verticalWheel);
         assertion('vertical wheel delta moves the history rail horizontally', verticalWheel.defaultPrevented && historyRail.scrollLeft > 0, {defaultPrevented:verticalWheel.defaultPrevented, scrollLeft:historyRail.scrollLeft});
@@ -151,9 +173,8 @@
         const drawerRect = drawer.getBoundingClientRect();
         const minimapRect = minimap.getBoundingClientRect();
         const arrangeRect = arrange.getBoundingClientRect();
-        const maxHeight = Math.max(268, Math.floor(shell.clientHeight / 3));
-        const defaultHeight = Math.min(268, maxHeight);
-        assertion('drawer uses the short-viewport default height contract', Math.abs(drawerRect.height - defaultHeight) <= 1, {actual:drawerRect.height, expected:defaultHeight});
+        const defaultHeight = Math.min(324, shell.clientHeight - 32);
+        assertion('drawer uses the fixed image-first height contract', Math.abs(drawerRect.height - defaultHeight) <= 1, {actual:drawerRect.height, expected:defaultHeight});
         assertion('drawer stays attached to the bottom rail of the canvas', Math.abs((shellRect.bottom - drawerRect.bottom) - 16) <= 1, {drawerBottom:drawerRect.bottom, shellBottom:shellRect.bottom, gutter:shellRect.bottom - drawerRect.bottom});
         const drawerSideGutter = shell.clientWidth <= 620 ? 12 : 16;
         assertion('drawer spans the bottom rail with symmetric safe gutters', Math.abs(drawerRect.left - drawerSideGutter) <= 1 && Math.abs((shellRect.right - drawerRect.right) - drawerSideGutter) <= 1, {left:drawerRect.left, rightGap:shellRect.right - drawerRect.right, expected:drawerSideGutter});
@@ -167,20 +188,7 @@
         collapse.click();
         await sleep(60);
         assertion('drawer can expand again', !drawer.classList.contains('collapsed') && drawer.getBoundingClientRect().height > 46, drawer.getBoundingClientRect().height);
-        const resizeHandle = drawer.querySelector('[data-history-resize-handle]');
-        assertion('history resize handle exposes separator keyboard semantics', resizeHandle?.getAttribute('role') === 'separator' && resizeHandle?.tabIndex === 0 && resizeHandle?.getAttribute('aria-orientation') === 'horizontal', {role:resizeHandle?.getAttribute('role'), tabIndex:resizeHandle?.tabIndex, orientation:resizeHandle?.getAttribute('aria-orientation')});
-        const resizePoint = center(resizeHandle);
-        const beforeResize = drawer.getBoundingClientRect().height;
-        pointer(resizeHandle, 'pointerdown', resizePoint.x, resizePoint.y, 71);
-        pointer(resizeHandle, 'pointermove', resizePoint.x, resizePoint.y + 28, 71);
-        pointer(resizeHandle, 'pointerup', resizePoint.x, resizePoint.y + 28, 71);
-        await sleep(50);
-        const afterResize = drawer.getBoundingClientRect().height;
-        assertion('drawer resize stays within the 160px-to-viewport-third-or-268px range', afterResize >= Math.min(160, maxHeight) - 1 && afterResize <= maxHeight + 1, {before:beforeResize, after:afterResize, max:maxHeight});
-        resizeHandle?.focus();
-        resizeHandle?.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowUp', bubbles:true, cancelable:true}));
-        await sleep(40);
-        assertion('history resize handle supports keyboard resizing', drawer.getBoundingClientRect().height >= afterResize, {before:afterResize, after:drawer.getBoundingClientRect().height});
+        assertion('fixed history drawer does not expose a resize handle', !drawer.querySelector('[data-history-resize-handle]'), drawer.querySelector('[data-history-resize-handle]')?.outerHTML || 'none');
 
         const firstImage = document.querySelector('.log-history-image');
         const firstCard = firstImage.closest('.log-media-card');
@@ -197,9 +205,21 @@
         pointer(firstImage, 'pointerdown', firstPoint.x + 4, firstPoint.y + 3, 13);
         pointer(firstImage, 'pointerup', firstPoint.x + 4, firstPoint.y + 3, 13);
         await sleep(60);
-        assertion('double click opens the lightweight preview', document.getElementById('smartLogLightbox')?.classList.contains('open'), document.getElementById('smartLogLightbox')?.className || 'closed');
-        document.getElementById('smartLogLightbox')?.click();
+        assertion('double click opens generation detail', document.getElementById('smartLogLightbox')?.classList.contains('open'), document.getElementById('smartLogLightbox')?.className || 'closed');
+        assertion('generation detail exposes shared preview frame, zoom, metadata and sharing actions', ['.smart-log-detail-frame','.smart-log-detail-zoom-tools','.smart-log-detail-model','.smart-log-detail-time','.smart-log-detail-prompt','.smart-log-detail-download','.smart-log-detail-copy-2k'].every(selector => document.querySelector(selector)), document.querySelector('.smart-log-detail')?.innerText || 'missing');
+        const detailStage = document.querySelector('.smart-log-detail-stage');
+        const detailWheel = new WheelEvent('wheel', {deltaY:-120, clientX:firstPoint.x, clientY:firstPoint.y, bubbles:true, cancelable:true});
+        detailStage?.dispatchEvent(detailWheel);
         await sleep(30);
+        assertion('generation detail reuses wheel zoom preview behavior', detailWheel.defaultPrevented && Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom || 1) > 1, {defaultPrevented:detailWheel.defaultPrevented, zoom:document.querySelector('.smart-log-detail-frame')?.dataset.zoom});
+        const detailEscape = new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true});
+        document.dispatchEvent(detailEscape);
+        await sleep(30);
+        assertion('Escape closes only generation detail and keeps history open', detailEscape.defaultPrevented && !document.getElementById('smartLogLightbox')?.classList.contains('open') && drawer.classList.contains('open'), {defaultPrevented:detailEscape.defaultPrevented, detailOpen:document.getElementById('smartLogLightbox')?.classList.contains('open'), historyOpen:drawer.classList.contains('open')});
+        const historyEscape = new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true});
+        document.dispatchEvent(historyEscape);
+        await sleep(30);
+        assertion('Escape never closes the generation history drawer', drawer.classList.contains('open'), drawer.className);
         firstImage.focus();
         firstImage.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true, cancelable:true}));
         await sleep(30);

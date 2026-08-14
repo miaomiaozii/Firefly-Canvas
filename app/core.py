@@ -85,6 +85,19 @@ PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES = 3
 PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES = 3
 PROJECT_IMAGE_GENERATION_MAX_PENDING = 32
 PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT = 8
+
+
+def image_generation_task_timeout_seconds() -> float:
+    """图片生成任务的硬超时（秒）。默认 1800s，env FIREFLY_IMAGE_GENERATION_TASK_TIMEOUT_SECONDS 可调。
+
+    超时后任务必须到达 timeout 终态——provider 挂起时不能让任务无限 running，否则
+    前端永远收不到终态事件、节点无限停留在「生成中」。
+    """
+    raw = os.environ.get('FIREFLY_IMAGE_GENERATION_TASK_TIMEOUT_SECONDS', '1800') or '1800'
+    try:
+        return max(0.1, float(raw))
+    except (TypeError, ValueError):
+        return 1800.0
 PROJECT_AGENT_TASKS: Dict[str, Dict[str, Any]] = {}
 PROJECT_AGENT_TASKS_LOCK = RLock()
 PROJECT_AGENT_FUTURES: Dict[str, Future] = {}
@@ -1108,6 +1121,7 @@ def chat_system_prompt(payload):
     return prompt or SYSTEM_PROMPT
 
 class CanvasLLMRequest(BaseModel):
+    project_id: str = ''
     message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
     system_prompt: str = ''
     model: str = ''
@@ -1212,6 +1226,18 @@ class ProjectHistoryDeleteRequest(BaseModel):
     base_revision: int = Field(ge=0)
 
 class ProjectOriginalDeleteRequest(BaseModel):
+    asset_id: str
+    base_revision: int = Field(ge=0)
+    log_id: str = Field(min_length=1, max_length=200)
+    output_id: str = Field(min_length=1, max_length=200)
+    output_index: int = Field(ge=0)
+
+class ProjectOriginalRestoreRequest(BaseModel):
+    asset_id: str
+    base_revision: int = Field(ge=0)
+    deletion_id: str = Field(min_length=1, max_length=200)
+
+class ProjectOriginalProjectWideRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
 
@@ -1604,6 +1630,8 @@ def looks_like_generated_image_url(value):
     if not text:
         return False
     if text.startswith('data:image/'):
+        return True
+    if text.lower().startswith(('http://', 'https://')):
         return True
     clean = text.split('?', 1)[0].split('#', 1)[0].lower()
     return text.startswith(('http://', 'https://', '/output/', '/assets/')) and re.search('\\.(png|jpe?g|webp|gif|bmp|tiff?)$', clean)
@@ -2182,7 +2210,9 @@ def is_codex_provider(provider):
     return provider_protocol(provider) == 'codex'
 
 def is_gemini_cli_provider(provider):
-    return provider_protocol(provider) == 'gemini-cli'
+    provider_id = str((provider or {}).get('id') or '').strip().lower()
+    base_url = str((provider or {}).get('base_url') or '').strip().lower()
+    return provider_protocol(provider) == 'gemini-cli' or provider_id == 'gemini-cli' or 'gemini-cli' in base_url
 
 def codex_timeout(default=CODEX_DEFAULT_TIMEOUT):
     try:
@@ -2574,7 +2604,8 @@ def is_kling_model(model=''):
     model_id = str(model or '').strip().lower()
     return (model_id.startswith('kling-v1') or model_id.startswith('kling-video-v1')
             or model_id.startswith('kling-v3') or model_id == 'kling-video-v3'
-            or model_id.startswith('kling-omni'))
+            or model_id.startswith('kling-v2') or model_id.startswith('kling-video-o1')
+            or model_id.startswith('kling-video/v') or model_id.startswith('kling-omni'))
 
 def is_unified_format_video_model(model=''):
     model_id = str(model or '').strip().lower()
@@ -2631,11 +2662,6 @@ def video_adapter_label(model='', provider=None):
             return ('OpenAI 兼容兜底', True)
         return ('未适配', False)
     return ('OpenAI 兼容兜底', True)
-
-def is_gemini_cli_provider(provider):
-    base_url = str((provider or {}).get('base_url') or '').lower()
-    provider_id = str((provider or {}).get('id') or '').strip().lower()
-    return provider_id == 'gemini-cli' or 'gemini-cli' in base_url
 
 def is_kling_provider(provider, model=''):
     model_id = str(model or '').strip().lower()
@@ -4211,10 +4237,14 @@ def banana_image_request_params(size):
     return {'aspect_ratio': gemini_supported_aspect_ratio(size), 'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution}
 
 def image_provider_model_ids(provider):
-    return {str(item or '').strip().lower() for item in (provider or {}).get('image_models') or [] if str(item or '').strip()}
+    configured = (provider or {}).get('image_models') or []
+    discovered = ((provider or {}).get('available_models') or {}).get('image_models') or []
+    return {str(item or '').strip().lower() for item in [*configured, *discovered] if str(item or '').strip()}
 
 def banana_model_family(model):
     value = str(model or '').strip().lower()
+    if value in {'nano-banana', 'nano-banana-hd'}:
+        return 'nano-banana'
     if value in {'banana', 'nano-banana-pro'}:
         return 'nano-banana-pro'
     match = re.fullmatch('(nano-banana-(?:pro|2))(?:-(?:1k|2k|4k))?', value)
@@ -4233,7 +4263,11 @@ def route_openai_image_request(provider, model, size):
         available = image_provider_model_ids(provider)
         _, resolution = apimart_size_resolution(size)
         requested_variant = requested_model != family
-        params = {'aspect_ratio': gemini_supported_aspect_ratio(size)}
+        params = {
+            'aspect_ratio': gemini_supported_aspect_ratio(size),
+            'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution,
+        }
+        target_model = 'nano-banana-hd' if family == 'nano-banana' and resolution in {'2k', '4k'} else f'{family}-{resolution}'
         if requested_variant:
             if requested_model.lower() in available:
                 routed_model = requested_model
@@ -4244,11 +4278,8 @@ def route_openai_image_request(provider, model, size):
                 else:
                     routed_model = requested_model
         elif family in available:
-            params['image_size'] = resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution
-            routed_model = family
+            routed_model = target_model if resolution in {'2k', '4k'} and target_model in available else family
         else:
-            params['image_size'] = resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution
-            target_model = f'{family}-{resolution}'
             if target_model in available:
                 routed_model = target_model
             elif requested_model.lower() not in available:
@@ -4257,6 +4288,11 @@ def route_openai_image_request(provider, model, size):
                 routed_model = family
     elif looks_like_gemini_image_model(requested_model):
         params = banana_image_request_params(size)
+        available = image_provider_model_ids(provider)
+        _, resolution = apimart_size_resolution(size)
+        target_model = f'{requested_model}-{resolution}'
+        if resolution in {'2k', '4k'} and not re.search(r'-(?:1k|2k|4k)$', requested_model.lower()) and target_model.lower() in available:
+            routed_model = target_model
     return {'requested_model': requested_model, 'model': routed_model, 'params': params, 'family': family or ('gemini-image' if params else '')}
 
 def gemini_image_config(size, image_parameters=None):

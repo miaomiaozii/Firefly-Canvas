@@ -19,6 +19,7 @@ const cascadeRunBtn = document.getElementById('cascadeRunBtn');
 const fileInput = document.getElementById('fileInput');
 const apiKindToggle = document.getElementById('apiKindToggle');
 const inputThumbsRow = document.getElementById('inputThumbsRow');
+const promptFlowContext = document.getElementById('promptFlowContext');
 const SMART_UPLOAD_MAX = 20;
 const SMART_REFERENCE_IMAGE_MAX = 20;
 const SMART_ONLINE_ENGINES = new Set(['api','volcengine']);
@@ -32,10 +33,7 @@ const smartLogModal = document.getElementById('smartLogModal');
 const smartLogList = document.getElementById('smartLogList');
 const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
 const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
-const smartHistoryResizeHandle = smartLogModal?.querySelector('[data-history-resize-handle]');
-let smartHistoryDrawerHeight = 268;
 let smartHistoryDrawerCollapsed = false;
-let smartHistoryDrawerResizeState = null;
 let smartHistoryPointerState = null;
 let smartHistoryTap = null;
 let smartHistorySelectedImage = null;
@@ -95,6 +93,12 @@ const promptTemplateLibrarySelect = document.getElementById('promptTemplateLibra
 const promptTemplateCats = document.getElementById('promptTemplateCats');
 const promptTemplateBody = document.getElementById('promptTemplateBody');
 const composerTemplateBtn = document.getElementById('composerTemplateBtn');
+const composerExpandBtn = document.getElementById('composerExpandBtn');
+const composerFlowBtn = document.getElementById('composerFlowBtn');
+const longContentReader = document.getElementById('longContentReader');
+const longContentReaderTitle = document.getElementById('longContentReaderTitle');
+const longContentReaderBody = document.getElementById('longContentReaderBody');
+const longContentReaderClose = document.getElementById('longContentReaderClose');
 let minimapViewport = document.getElementById('minimapViewport');
 let canvas = null;
 let canvasUsesConnections = true;
@@ -103,6 +107,7 @@ let selectedId = '';
 let selectedIds = [];
 let selectedImage = {nodeId:'', index:-1};
 let dragState = null;
+let composerDragSettleTimer = 0;
 let loopInsertPreview = null;
 let selectionState = null;
 let isRKeyDown = false;
@@ -115,6 +120,34 @@ let uploadTargetId = '';
 let pendingGroupUploadPoint = null;
 let mentionRange = null;
 let mentionAnchorEl = null;
+let promptCompositionActive = false;
+const composerPromptView = {
+    mode:'manual',
+    returnMode:'manual',
+    nodeId:'',
+    manualHeight:84,
+    expandedHeight:84,
+    expandedExtra:0,
+    scrollTop:0,
+    restoreFlowScroll:false,
+    applyingScrollRestore:false
+};
+const promptNodeFlowView = {
+    mode:'idle',
+    nodeId:'',
+    element:null,
+    textarea:null,
+    trigger:null,
+    scrollTop:0,
+    selection:null,
+    compositionActive:false
+};
+const longContentSession = {
+    mode:'idle',
+    kind:'',
+    trigger:null,
+    triggerIdentity:null
+};
 let mentionInsertMode = 'token';
 let panState = null;
 let didPan = false;
@@ -191,7 +224,10 @@ let transientSmartCloudLinks = [];
 let runBtnCooldownToken = 0;
 let smartRunStateToken = 0;
 const activeSmartTaskPolls = new Map();
+const smartGenerationNodeRevisions = new Map();
+const activeSmartSubmissionRecoveries = new Set();
 const smartNodeRunTokens = new Map();
+const smartGenerationRegistrationQueues = new Map();
 let smartRhRandomValues = {};
 let lastImagePasteAt = 0;
 let lastNodePasteAt = 0;
@@ -545,7 +581,19 @@ async function copyTextToClipboard(text){
     } catch(_) {}
     return false;
 }
-function refreshIcons(){ if(window.lucide) lucide.createIcons(); }
+function syncIconButtonAccessibility(root=document){
+    root?.querySelectorAll?.('button').forEach(button => {
+        if(button.textContent.trim()) return;
+        const title = String(button.getAttribute('title') || '').trim();
+        const accessibleName = String(button.getAttribute('aria-label') || '').trim();
+        if(title && !accessibleName) button.setAttribute('aria-label', title);
+        else if(accessibleName && !title) button.title = accessibleName;
+    });
+}
+function refreshIcons(root=document){
+    if(window.lucide) lucide.createIcons();
+    syncIconButtonAccessibility(root);
+}
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
 function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 const escapeAttr = escapeHtml;
@@ -1014,6 +1062,7 @@ function canvasForStorage(){
     // 日志预览的临时节点（编辑器打开期间临时塞进 nodes）绝不能被持久化，否则刷新后会留下幽灵节点。
     if(Array.isArray(clean.nodes)) clean.nodes = clean.nodes.filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID);
     (clean.nodes || []).forEach(node => {
+        delete node._pendingHistoryLogId;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
         if(node.type === 'smart-conversation') delete node.conversationSending;
@@ -1026,7 +1075,7 @@ function canvasForStorage(){
         }
     });
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
-    clean.logs = mediaReferencesForStorage(clean.logs || []);
+    clean.logs = mediaReferencesForStorage((clean.logs || []).filter(log => log?.status !== 'pending'));
     return clean;
 }
 function apiErrorMessage(data, fallback='请求失败'){
@@ -1678,8 +1727,18 @@ function smartGroupThumbLayout(node){
     const gap = 8;
     const maxVisibleRows = compactMembers.length ? count : SMART_GROUP_MAX_VISIBLE_ROWS;
     if(hasExplicit){
-        const fitted = groupImageGridLayout(count, Math.max(72, explicitW - outerPad), Math.max(56, explicitH - outerPad - summarySpace), 100000, 0, gap, maxVisibleRows);
-        return {...fitted, refs, compactMembers, width:Math.round(explicitW), height:Math.round(explicitH)};
+        const innerW = Math.max(72, explicitW - outerPad);
+        const fitted = groupImageGridLayout(count, innerW, Math.max(56, explicitH - outerPad - summarySpace), 100000, 0, gap, maxVisibleRows);
+        // 自动整理会把“贴合内容”的高度持久化成显式 w/h；再次渲染时若用高度约束拟合，
+        // 横图会被压小并在底部留下空白。这里按宽度取缩略图尺寸，网格高度按行自适应，
+        // 仅当用户真正把分组拉得更高时才保留显式高度。
+        const fittedThumb = Math.max(28, Math.floor((innerW - (fitted.cols - 1) * gap) / fitted.cols));
+        const gridHeight = compactMembers.length
+            ? (fitted.visibleRows * (fittedThumb + gap) - gap)
+            : mediaGroupGridHeight(items, fitted.cols, fitted.visibleRows, fittedThumb);
+        const contentHeight = gridHeight + outerPad + summarySpace;
+        const height = explicitH > contentHeight + 12 ? explicitH : contentHeight;
+        return {...fitted, refs, compactMembers, gridHeight, thumb:fittedThumb, width:Math.round(explicitW), height:Math.round(height)};
     }
     const thumb = Math.round(MEDIA_GROUP_THUMB_BASE * scale);
     const cell = thumb + gap;
@@ -1687,7 +1746,9 @@ function smartGroupThumbLayout(node){
     const rows = Math.ceil(count / cols);
     const visibleRows = Math.min(maxVisibleRows, rows);
     const gridW = cols * thumb + (cols - 1) * gap;
-    const gridH = visibleRows * cell - gap;
+    const gridH = !compactMembers.length && items.length
+        ? mediaGroupGridHeight(items, cols, visibleRows, thumb)
+        : (visibleRows * cell - gap);
     return {
         refs,
         compactMembers,
@@ -1695,6 +1756,7 @@ function smartGroupThumbLayout(node){
         rows,
         visibleRows,
         thumb,
+        gridHeight:gridH,
         width:Math.max(SMART_GROUP_MIN_WIDTH, Math.round(gridW + outerPad)),
         height:Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(gridH + outerPad + summarySpace))
     };
@@ -2038,8 +2100,8 @@ function smartGroupImageGridLayout(node){
         return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:fitted.visibleRows * (fitted.thumb + 8) - 8 + PAD, thumb:fitted.thumb};
     }
     const width = Math.max(Math.round(226 * s), cols * cell + PAD);
-    const height = visibleRows * cell - 8 + PAD;
-    return {cols, rows, visibleRows, width, height, thumb:baseThumb};
+    const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, baseThumb);
+    return {cols, rows, visibleRows, width, height:gridHeight + PAD, thumb:baseThumb, gridHeight};
 }
 function imageLayout(images, scale=1, node=null){
     if(node?.type === 'smart-group'){
@@ -2099,20 +2161,23 @@ function imageLayout(images, scale=1, node=null){
         const visibleRows = Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, rows);
         if(Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
             const fittedThumb = Math.max(28, Math.floor(Math.min((explicitW - PAD - (cols - 1) * 8) / cols, (explicitH - PAD - (visibleRows - 1) * 8) / visibleRows)));
-            return {cols, rows, visibleRows, width:Math.round(explicitW), height:visibleRows * (fittedThumb + 8) - 8 + PAD, thumb:fittedThumb};
+            const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, fittedThumb);
+            return {cols, rows, visibleRows, width:Math.round(explicitW), height:gridHeight + PAD, thumb:fittedThumb, gridHeight};
         }
-        return {cols, rows, visibleRows, width:Math.max(Math.round(226*s), cols * cell + PAD), height:visibleRows * cell - 8 + PAD, thumb};
+        const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
+        return {cols, rows, visibleRows, width:Math.max(Math.round(226*s), cols * cell + PAD), height:gridHeight + PAD, thumb, gridHeight};
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
     const visibleRows = Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, rows);
     if(Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
         const fitted = groupImageGridLayout(count, explicitW, explicitH, thumb, PAD, 8);
-        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:fitted.visibleRows * (fitted.thumb + 8) - 8 + PAD, thumb:fitted.thumb};
+        const gridHeight = mediaGroupGridHeight(images, fitted.cols, fitted.visibleRows, fitted.thumb);
+        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:gridHeight + PAD, thumb:fitted.thumb, gridHeight};
     }
     const width = Math.max(Math.round(226*s), cols * cell + PAD);
-    const height = visibleRows * cell - 8 + PAD;
-    return {cols, rows, visibleRows, width, height, thumb};
+    const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
+    return {cols, rows, visibleRows, width, height:gridHeight + PAD, thumb, gridHeight};
 }
 function smartLoopCount(node){
     return Math.max(1, Math.min(100, Number(node?.count || 1) || 1));
@@ -2245,6 +2310,99 @@ function arrangeSelectedSmartNodes(){
     render();
     toast('已整理选中节点');
 }
+let smartNodeMenuPositionFrame = 0;
+function smartNodeActionIds(node){
+    if(!node) return [];
+    return isSmartGroupNode(node)
+        ? ['arrange','preview','grid','download','ungroup']
+        : ['preview','crop','outpaint','mask','brush','grid','send-ps','download'];
+}
+function positionSmartNodeFloatingMenus(){
+    smartNodeMenuPositionFrame = 0;
+    if(!world || !shell) return;
+    const shellRect = shell.getBoundingClientRect();
+    const margin = 12;
+    world.querySelectorAll('.image-node .smart-node-floating-menu').forEach(menu => {
+        menu.style.removeProperty('left');
+        menu.style.removeProperty('top');
+        const nodeEl = menu.closest('.image-node');
+        if(!nodeEl?.classList.contains('selected') || world.classList.contains('smart-multi-selected')) return;
+        const nodeRect = nodeEl.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        if(!nodeRect.width || !nodeRect.height || !menuRect.width || !menuRect.height) return;
+        const minX = shellRect.left + margin;
+        const maxX = shellRect.right - margin;
+        const desiredCenter = nodeRect.left + nodeRect.width / 2;
+        const clampCenter = value => Math.min(
+            Math.max(value, minX + menuRect.width / 2),
+            maxX - menuRect.width / 2
+        );
+        const clampTop = value => Math.min(
+            Math.max(value, shellRect.top + margin),
+            shellRect.bottom - margin - menuRect.height
+        );
+        const nameBadge = nodeEl.querySelector('.image-name-badge-outside');
+        const nameRect = nameBadge && getComputedStyle(nameBadge).visibility !== 'hidden'
+            ? nameBadge.getBoundingClientRect()
+            : null;
+        const uiBlockers = ['#composer','#minimap','.smart-top-left'].map(selector => {
+            const element = document.querySelector(selector);
+            if(!element || getComputedStyle(element).display === 'none' || getComputedStyle(element).visibility === 'hidden') return null;
+            return element.getBoundingClientRect();
+        }).filter(Boolean);
+        const centerCandidates = [
+            desiredCenter,
+            ...uiBlockers.flatMap(rect => [
+                rect.left - margin - menuRect.width / 2,
+                rect.right + margin + menuRect.width / 2
+            ])
+        ].map(clampCenter).filter((value, index, values) => values.indexOf(value) === index);
+        const topCandidates = [
+            clampTop(Math.min(nodeRect.top, nameRect?.top ?? nodeRect.top) - menuRect.height - 12),
+            clampTop(nodeRect.bottom + 12)
+        ];
+        const blockers = [nodeRect, nameRect, ...uiBlockers].filter(Boolean);
+        const overlapArea = (left, top, rect) => {
+            const width = Math.max(0, Math.min(left + menuRect.width, rect.right) - Math.max(left, rect.left));
+            const height = Math.max(0, Math.min(top + menuRect.height, rect.bottom) - Math.max(top, rect.top));
+            return width * height;
+        };
+        const candidates = [
+            ...centerCandidates.flatMap(center => topCandidates.map(top => ({center, top}))),
+            {
+                center:clampCenter(nodeRect.right + margin + menuRect.width / 2),
+                top:clampTop(nodeRect.top)
+            },
+            {
+                center:clampCenter(nodeRect.left - margin - menuRect.width / 2),
+                top:clampTop(nodeRect.top)
+            },
+            {
+                center:clampCenter(nodeRect.right + margin + menuRect.width / 2),
+                top:clampTop(nodeRect.top + menuRect.height + margin)
+            },
+            {
+                center:clampCenter(nodeRect.left - margin - menuRect.width / 2),
+                top:clampTop(nodeRect.top + menuRect.height + margin)
+            }
+        ];
+        const score = candidate => blockers.reduce((total, rect, index) => {
+            const weight = index === 0 ? 1 : 10;
+            return total + overlapArea(candidate.center - menuRect.width / 2, candidate.top, rect) * weight;
+        }, Math.abs(candidate.center - desiredCenter) * 0.02);
+        const position = candidates.reduce((best, candidate) => score(candidate) < score(best) ? candidate : best, candidates[0]);
+        const centerX = position.center;
+        const screenTop = position.top;
+        const scaleX = nodeRect.width / Math.max(1, nodeEl.offsetWidth);
+        const scaleY = nodeRect.height / Math.max(1, nodeEl.offsetHeight);
+        menu.style.left = `${(centerX - nodeRect.left) / Math.max(scaleX, 0.001)}px`;
+        menu.style.top = `${(screenTop - nodeRect.top) / Math.max(scaleY, 0.001)}px`;
+    });
+}
+function scheduleSmartNodeFloatingMenuPosition(){
+    if(smartNodeMenuPositionFrame) return;
+    smartNodeMenuPositionFrame = requestAnimationFrame(positionSmartNodeFloatingMenus);
+}
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
     if(isProjectCanvasData()) persistProjectViewport();
@@ -2256,6 +2414,7 @@ function applyViewport(){
     shell.style.backgroundSize = '24px 24px';
     shell.style.backgroundPosition = '0 0';
     renderMinimap();
+    scheduleSmartNodeFloatingMenuPosition();
 }
 function screenToWorld(event){
     const rect = shell.getBoundingClientRect();
@@ -2406,6 +2565,7 @@ function requestSmartEdgeReveal(node){
     if(!node?.id || !smartEdgeReveal) return;
     const live = liveSmartNode(node);
     if(!live || !nodes.some(n => n.id === live.id)) return;
+    animateSmartGenerationResult(live);
     const placement = smartEdgeRevealPlacement(live);
     if(!placement) return;
     const isVideo = live.outputKind === 'video';
@@ -2426,6 +2586,18 @@ function requestSmartEdgeReveal(node){
     smartEdgeReveal.classList.add('visible');
     clearTimeout(smartEdgeRevealTimer);
     smartEdgeRevealTimer = setTimeout(hideSmartEdgeReveal, SMART_EDGE_REVEAL_MS);
+}
+function animateSmartGenerationResult(node){
+    if(!node?.id || !world) return;
+    requestAnimationFrame(() => {
+        const element = [...world.querySelectorAll('.image-node[data-id]')]
+            .find(item => item.dataset.id === String(node.id));
+        if(!element) return;
+        element.classList.remove('generation-result-enter');
+        void element.offsetWidth;
+        element.classList.add('generation-result-enter');
+        setTimeout(() => element.classList.remove('generation-result-enter'), 420);
+    });
 }
 function jumpToSmartEdgeRevealNode(){
     const id = smartEdgeRevealNodeId;
@@ -2637,6 +2809,18 @@ function orderedProviderModels(provider, field, kind){
     const preferred = recommended && models.includes(recommended) ? recommended : models[0];
     return [...new Set([preferred, ...models].filter(Boolean))];
 }
+// 模型展示名：优先 provider.model_names（桥豆麻衣酱友好名），否则回退原始模型 ID。
+function modelDisplayName(provider, model){
+    const raw = String(model ?? '');
+    if(provider?.model_names && Object.prototype.hasOwnProperty.call(provider.model_names, raw)){
+        const label = String(provider.model_names[raw] ?? '').trim();
+        if(label && label !== raw) return label;
+    }
+    return raw;
+}
+function providerModelNameLookup(provider){
+    return (value) => modelDisplayName(provider, value);
+}
 function resolveChatProviderId(providerId=''){
     const providers = chatApiProviders();
     if(providers.some(p => p.id === providerId)) return providerId;
@@ -2821,11 +3005,10 @@ function modelSearchInputHtml(param, count){
 }
 function videoAdapterHint(model){
     const m = String(model ?? '').toLocaleLowerCase();
-    if (m.startsWith('kling-v1') || m.startsWith('kling-video-v1') || m === 'kling-video-v3') return '';
-    if (m.startsWith('veo3.1')) return '';
+    if (m.startsWith('kling-v1') || m.startsWith('kling-video-v1') || m.startsWith('kling-v3') || m === 'kling-video-v3' || m.startsWith('kling-omni')) return '';
+    if (m.startsWith('veo')) return '';
     if (m.startsWith('wan2') || m.startsWith('wanx')) return '';
-    if (m.startsWith('doubao-seedance') || m.startsWith('grok-video') || m.startsWith('grok-imagine-video') || m.startsWith('grok-1.5-video') || m.startsWith('minimax-hailuo') || m === 'hailuo-video') return '';
-    if (/(video|veo|wan|seedance|hailuo|runway|pika|sora|grok-imagine|luma|mochi|ltx|hunyuan|cog|vidu|minimax-)/.test(m)) return '未适配';
+    if (m.startsWith('doubao-seedance') || m.startsWith('seedance') || m.startsWith('grok-video') || m.startsWith('grok-imagine-video') || m.startsWith('grok-1.5-video') || m.startsWith('minimax-hailuo') || m === 'hailuo-video' || m.startsWith('sora-2') || m === 'sora2') return '';
     return '';
 }
 function searchableModelOptions(models, param, selected, emptyText, labelFor=(value => value)){
@@ -2962,9 +3145,22 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
     const ratioKey = ratioValue && SIZE_MAP[ratioValue] ? ratioValue : 'square';
     return SIZE_MAP[ratioKey]?.[resolutionKey] || SIZE_MAP.square[resolutionKey] || SIZE_MAP.square['1k'];
 }
+function apiImageUsesExplicitResolution(sourceSettings=settings){
+    if(String(sourceSettings?.engine || '') !== 'api') return true;
+    const providerId = String(sourceSettings?.provider_id || '').trim();
+    const provider = apiProviderById(providerId) || {};
+    const capabilities = provider?.image_model_capabilities?.[String(sourceSettings?.model || '').trim()];
+    if(capabilities) return capabilities.arbitrary_resolution === true || (Array.isArray(capabilities.resolutions) && capabilities.resolutions.length > 0);
+    return true;
+}
 function normalizeApiSizeSettings(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
+    if(!prefix && !apiImageUsesExplicitResolution(settings)){
+        settings[resKey] = 'auto';
+        if(!settings[ratioKey]) settings[ratioKey] = 'square';
+        return;
+    }
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     if(!settings[resKey]) settings[resKey] = allowAuto ? defaultSmartApiResolution(settings.model) : '1k';
     if(!allowAuto && settings[resKey] === 'auto') settings[resKey] = '1k';
@@ -3383,11 +3579,12 @@ function renderAnglePresetControl(){
     </div>`;
 }
 function renderModelControl(models){
+    const labelFor = providerModelNameLookup(settings.provider_id === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === settings.provider_id));
     return `<div class="smart-control model-control">
-        <button class="smart-pill" type="button"><i data-lucide="sparkles"></i><span class="sub">${escapeHtml(settings.model || tr('smart.model'))}</span></button>
+        <button class="smart-pill" type="button"><i data-lucide="sparkles"></i><span class="sub">${escapeHtml(labelFor(settings.model) || tr('smart.model'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.imageModel'))}</div>
-            ${searchableModelOptions(models, 'model', settings.model, tr('smart.noImageModel'))}
+            ${searchableModelOptions(models, 'model', settings.model, tr('smart.noImageModel'), labelFor)}
             <div class="model-selection-note">${escapeHtml(tr('smart.modelSelectionNote'))}</div>
         </div>
     </div>`;
@@ -3466,6 +3663,7 @@ function sizePickerDefaultResolution(prefix=''){
     return value === 'auto' ? '1k' : value;
 }
 function sizePickerLabel(prefix=''){
+    if(!prefix && !apiImageUsesExplicitResolution(settings)) return ratioLabel(prefix);
     const scope = sizePickerScope(prefix);
     if(scope === 'auto') return '自动';
     if(scope === 'custom'){
@@ -3496,6 +3694,19 @@ function renderSizePickerControl(prefix='', includeSource=false){
         ['story','9:16','竖屏'], ['wide','16:9','宽屏'], ['ultrawide','21:9','超宽'], ['ultratall','9:21','超竖'],
         ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || '原图', '适配输入']] : [])
     ];
+    if(!prefix && !apiImageUsesExplicitResolution(settings)){
+        return `<div class="smart-control size-picker-control resolution-free">
+            <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">画幅</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(ratioLabel(prefix))}</span></span></button>
+            <div class="smart-popover size-picker-popover resolution-free">
+                <div class="smart-popover-title">画幅比例</div>
+                <div class="size-picker-pane size-picker-preset resolution-free">
+                    <div class="size-picker-list">
+                        ${ratios.map(([value, label, sub]) => `<button type="button" class="size-picker-option ${value === currentRatio ? 'active' : ''}" data-smart-param="${ratioKey}" data-smart-value="${escapeHtml(value)}"><span>${escapeHtml(label)}</span><small>${escapeHtml(sub)}</small></button>`).join('')}
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    }
     const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
     const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
     return `<div class="smart-control size-picker-control ${scope === 'auto' ? 'auto-mode' : ''} ${scope === 'custom' ? 'custom-mode' : ''}">
@@ -3515,7 +3726,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
                     ${ratios.map(([value, label, sub]) => `<button type="button" class="size-picker-option ${value === currentRatio ? 'active' : ''}" data-smart-param="${ratioKey}" data-smart-value="${escapeHtml(value)}"><span>${escapeHtml(label)}</span><small>${escapeHtml(sub)}</small></button>`).join('')}
                 </div>
                 <div class="size-picker-list">
-                    ${options.filter(v => v !== 'auto').map(value => `<button type="button" class="size-picker-option ${value === currentRes ? 'active' : ''}" data-smart-param="${resKey}" data-smart-value="${value}"><span>${value.toUpperCase()}</span><small>${escapeHtml(apiImageSize(currentRatio, value, currentCustomRatio, '') || '')}</small></button>`).join('')}
+                    ${options.filter(v => v !== 'auto').map(value => `<button type="button" class="size-picker-option ${value === currentRes ? 'active' : ''}" data-smart-param="${resKey}" data-smart-value="${value}"><span>${value.toUpperCase()}</span></button>`).join('')}
                 </div>
             </div>` : ''}
             ${scope === 'custom' ? `<div class="size-picker-pane size-picker-custom">
@@ -5107,25 +5318,36 @@ let canvasSyncTimer = null;
 let canvasMetaPollTimer = null;
 let connectionLayerRaf = 0;
 function mergeSmartImageLists(localImgs, remoteImgs){
-    const out = [];
-    const seen = new Set();
-    (localImgs || []).forEach(img => {
-        const u = img && img.url;
-        if(u && seen.has(u)) return;
-        if(u) seen.add(u);
-        out.push(img);
+    const merged = new Map();
+    const keyFor = (image, fallbackIndex) => {
+        const outputId = String(image?.output_id || '').trim();
+        if(outputId) return `output:${outputId}`;
+        const assetId = String(image?.asset_id || '').trim();
+        if(assetId) return `asset:${assetId}`;
+        const url = String(image?.url || '').trim();
+        return url ? `url:${url}` : `anonymous:${fallbackIndex}`;
+    };
+    (localImgs || []).forEach((image, index) => {
+        merged.set(keyFor(image, `local:${index}`), image);
     });
-    (remoteImgs || []).forEach(img => {
-        const u = img && img.url;
-        if(!u || seen.has(u)) return;
-        seen.add(u);
-        out.push(img);
+    (remoteImgs || []).forEach((image, index) => {
+        const key = keyFor(image, `remote:${index}`);
+        merged.set(key, {...(merged.get(key) || {}), ...image});
     });
-    return out;
+    const images = [...merged.values()];
+    if(images.every(image => Number.isInteger(Number(image?.output_order)))){
+        images.sort((left, right) => Number(left.output_order) - Number(right.output_order));
+    }
+    return images;
+}
+function smartGenerationSubmissions(node){
+    return Array.isArray(node?.generationSubmissions)
+        ? node.generationSubmissions.filter(item => item && item.idempotencyKey)
+        : [];
 }
 function smartNodeInFlight(node){
     if(smartNodeHasCompletedResult(node)) return false;
-    return Boolean(node && (node.running || node.pending || node.queued || node.jimengPending || smartPendingTasks(node).length));
+    return Boolean(node && (node.running || node.pending || node.queued || node.jimengPending || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
 }
 function smartNodeHasDisplayResult(node){
     return Boolean((node?.images || []).some(img => img?.url && !img.loopInputPreview));
@@ -5133,7 +5355,7 @@ function smartNodeHasDisplayResult(node){
 function smartNodeHasCompletedResult(node){
     if(!smartNodeHasDisplayResult(node)) return false;
     if(node?.runFinishedAt) return true;
-    return !node?.jimengPending && !smartPendingTasks(node).length && !Number(node?.pending || 0) && !node?.queued;
+    return !node?.jimengPending && !smartPendingTasks(node).length && !smartGenerationSubmissions(node).length && !Number(node?.pending || 0) && !node?.queued;
 }
 function liveSmartNode(node){
     if(!node?.id) return node;
@@ -5263,43 +5485,136 @@ function completeSmartNodeWithImages(node, images){
     if(smartNodeHasDisplayResult(copy)) markSmartNodeComplete(copy);
     return copy;
 }
+function smartNodeAllowsOverlappingRun(node){
+    if(!node || canvas?.format !== 'firefly-canvas-v1') return false;
+    const runSettings = smartSettingsForNode(node);
+    return isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video';
+}
 function syncRunButtonState(node=selectedNode()){
     if(!runBtn) return;
     // 只在“当前选中节点自己”忙时禁用运行：节点正在生成/排队，或它本身是正在跑的循环。
     // 不再因为“画布上有任意循环/级联在跑”就全局禁用——跑循环时仍可对其他节点点生成。
     let missingPrompt = false;
-    if(isSmartRunnableNode(node) && !smartNodeInFlight(node)){
+    if(isSmartRunnableNode(node)){
         const request = buildPromptRequestForNode(node, null);
         missingPrompt = !request.prompt.trim() && smartRunNeedsPrompt(settings);
     }
-    runBtn.disabled = !isSmartRunnableNode(node) || smartNodeInFlight(node) || smartCascadeIsLoopRunning(node?.id) || missingPrompt;
+    const flightLocked = smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node);
+    runBtn.disabled = !isSmartRunnableNode(node) || flightLocked || smartCascadeIsLoopRunning(node?.id) || missingPrompt;
     if(missingPrompt) runBtn.title = tr('smart.toastNeedPrompt');
     else runBtn.removeAttribute('title');
 }
-function mergeSmartNode(local, remote){
+function terminalSmartGenerationTaskIds(...logLists){
+    const terminal = new Set();
+    logLists.flat().forEach(log => {
+        if(!log || !['succeeded', 'failed', 'cancelled'].includes(String(log.status || ''))) return;
+        const taskId = String(log.task_id || log.request?.task_id || log.request?.taskId || '');
+        const idempotencyKey = String(log.idempotency_key || log.idempotencyKey || log.request?.idempotency_key || log.request?.idempotencyKey || '');
+        if(taskId) terminal.add(taskId);
+        if(idempotencyKey) terminal.add(`key:${idempotencyKey}`);
+    });
+    return terminal;
+}
+function smartHistoryTaskId(log){
+    return String(log?.task_id || log?.request?.task_id || log?.request?.taskId || '').trim();
+}
+function mergeSmartHistoryRecordLists(localLogs, remoteLogs){
+    const merged = new Map();
+    [...(localLogs || []), ...(remoteLogs || [])].forEach(log => {
+        if(!log || typeof log !== 'object') return;
+        const taskId = smartHistoryTaskId(log);
+        const recordId = String(log.id || '');
+        const key = taskId ? `task:${taskId}` : `id:${recordId}`;
+        if(!taskId && !recordId) return;
+        const current = merged.get(key);
+        if(!current){
+            merged.set(key, hydrateProjectMediaReferences(log));
+            return;
+        }
+        const currentTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(current.status || ''));
+        const nextTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(log.status || ''));
+        if(currentTerminal && !nextTerminal) return;
+        if(nextTerminal || !currentTerminal){
+            const hydrated = hydrateProjectMediaReferences(log);
+            if(nextTerminal && !hydrated?.progress && current?.progress) hydrated.progress = {...current.progress};
+            merged.set(key, hydrated);
+        }
+    });
+    return sortSmartHistoryLogs([...merged.values()]).slice(0, 5000);
+}
+function mergeSmartPendingTaskLists(local, remote, terminalTaskIds=new Set()){
+    const merged = new Map();
+    [...smartPendingTasks(local), ...smartPendingTasks(remote)].forEach(task => {
+        const taskId = String(task?.taskId || '');
+        if(!taskId || terminalTaskIds.has(taskId)) return;
+        merged.set(taskId, {...(merged.get(taskId) || {}), ...task, taskId});
+    });
+    return [...merged.values()];
+}
+function mergeSmartSubmissionLists(local, remote, terminalTaskIds=new Set()){
+    const merged = new Map();
+    [...smartGenerationSubmissions(local), ...smartGenerationSubmissions(remote)].forEach(submission => {
+        const key = String(submission?.idempotencyKey || '');
+        if(key && !terminalTaskIds.has(`key:${key}`)) merged.set(key, {...(merged.get(key) || {}), ...submission, idempotencyKey:key});
+    });
+    return [...merged.values()];
+}
+function smartNodeUsesGenerationMerge(node){
+    if(!node || typeof node !== 'object') return false;
+    return Array.isArray(node.images)
+        || Array.isArray(node.pendingTasks)
+        || Array.isArray(node.generationSubmissions)
+        || Object.prototype.hasOwnProperty.call(node, 'pending')
+        || Object.prototype.hasOwnProperty.call(node, 'running')
+        || Object.prototype.hasOwnProperty.call(node, 'queued')
+        || Object.prototype.hasOwnProperty.call(node, 'jimengPending');
+}
+function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
+    // Remote task broadcasts pass every canvas node through this merge.  Nodes
+    // that do not own media/task state must keep their exact persisted shape;
+    // otherwise a read-only poll invents images:[] and busy flags that the next
+    // authoritative save writes back as unrelated user changes.
+    if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote)){
+        return {...remote};
+    }
     const images = mergeSmartImageLists(local.images, remote.images);
     const localDone = smartNodeHasCompletedResult(local);
     const remoteDone = smartNodeHasCompletedResult(remote);
-    const localBusy = smartNodeInFlight(local);
-    const remoteBusy = smartNodeInFlight(remote);
-    if(localDone && remoteBusy && !remoteDone) return completeSmartNodeWithImages(local, images);
-    if(remoteDone && localBusy && !localDone) return completeSmartNodeWithImages(remote, images);
+    let base = remote;
     if(localDone && remoteDone){
-        const localFinished = Number(local.runFinishedAt || 0);
-        const remoteFinished = Number(remote.runFinishedAt || 0);
-        return completeSmartNodeWithImages(remoteFinished >= localFinished ? remote : local, images);
+        base = Number(remote.runFinishedAt || 0) >= Number(local.runFinishedAt || 0) ? remote : local;
+    }else if(localDone && !remoteDone){
+        base = local;
+    }else if(!remoteDone && smartNodeInFlight(local)){
+        base = local;
     }
-    // 本地正在生成/排队的节点完全以本地为准，只把对方可能多出来的图并进来，绝不被对方旧状态冲掉
-    if(smartNodeInFlight(local)){
-        return {...local, images};
+    const merged = {...base, images};
+    const pendingTasks = mergeSmartPendingTaskLists(local, remote, terminalTaskIds);
+    const submissions = mergeSmartSubmissionLists(local, remote, terminalTaskIds);
+    if(pendingTasks.length){
+        merged.pendingTasks = pendingTasks;
+        merged.pending = Math.max(pendingTasks.length, pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
+        merged.running = Boolean(local.running || remote.running);
+        merged.queued = !merged.running && Boolean(local.queued || remote.queued);
+        delete merged.runFinishedAt;
+    }else{
+        delete merged.pendingTasks;
+        merged.pending = 0;
+        merged.running = false;
+        merged.queued = false;
     }
-    // 否则以对方（最新保存方）的布局/标题/设置为基底，但图片取并集——双方生成结果都不丢
-    const merged = {...remote, images};
-    return smartNodeHasDisplayResult(merged) && (merged.pending || merged.queued || smartPendingTasks(merged).length)
+    if(submissions.length){
+        merged.generationSubmissions = submissions;
+        merged.pending = Math.max(Number(merged.pending || 0), submissions.length);
+        delete merged.runFinishedAt;
+    }else{
+        delete merged.generationSubmissions;
+    }
+    return smartNodeHasDisplayResult(merged) && !pendingTasks.length && !submissions.length
         ? completeSmartNodeWithImages(merged, images)
         : merged;
 }
-function mergeSmartNodeLists(localNodes, remoteNodes){
+function mergeSmartNodeLists(localNodes, remoteNodes, terminalTaskIds=new Set()){
     const localById = new Map((localNodes || []).map(n => [n.id, n]));
     const remoteById = new Map((remoteNodes || []).map(n => [n.id, n]));
     const order = [];
@@ -5311,7 +5626,7 @@ function mergeSmartNodeLists(localNodes, remoteNodes){
         const remote = remoteById.get(id);
         if(local && !remote) return local;     // 仅本地存在：保留（我新建的节点；对方删了也宁可复活也不丢结果）
         if(remote && !local) return remote;     // 仅对方存在：加入对方新建的节点
-        return mergeSmartNode(local, remote);
+        return mergeSmartNode(local, remote, terminalTaskIds);
     }).filter(Boolean);
 }
 function mergeSmartConnections(localConns, remoteConns, nodeIds){
@@ -5329,10 +5644,26 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function applyMergedServerCanvas(serverCanvas){
     if(!serverCanvas || !canvas) return false;
     const remoteNodes = (Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean);
-    const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes);
+    const serverRevision = Number(serverCanvas.revision || 0);
+    if(serverRevision > 0){
+        remoteNodes.forEach(node => {
+            const nodeId = String(node?.id || '');
+            if(nodeId) smartGenerationNodeRevisions.set(nodeId, Math.max(serverRevision, Number(smartGenerationNodeRevisions.get(nodeId) || 0)));
+        });
+    }
+    canvas.logs = mergeSmartHistoryRecordLists(canvas.logs || [], serverCanvas.logs || []);
+    const terminalTaskIds = terminalSmartGenerationTaskIds(canvas.logs || []);
+    const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, terminalTaskIds);
     const nodeIds = new Set(mergedNodes.map(n => n.id));
     nodes = mergedNodes;
+    canvas.nodes = nodes;
     canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
+    let createdRemoteTaskCards = false;
+    nodes.forEach(node => {
+        if(smartPendingTasks(node).length){
+            createdRemoteTaskCards = ensureSmartPendingHistoryLogs(node, smartPendingTasks(node)) || createdRemoteTaskCards;
+        }
+    });
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
@@ -5343,7 +5674,8 @@ function applyMergedServerCanvas(serverCanvas){
     }
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
-    if(recoveredLoopOutputs) scheduleSave();
+    if(recoveredLoopOutputs || createdRemoteTaskCards) scheduleSave();
+    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
     resumeJimengPendingNodes();
     return true;
@@ -5403,7 +5735,8 @@ function connectAssetLibrarySyncSocket(){
     let retryTimer = null;
     const connect = () => {
         try {
-            socket = new WebSocket(`${protocol}://${host}/ws/stats?client_id=${clientId}`);
+            const projectQuery = canvasId ? `&project_id=${encodeURIComponent(canvasId)}` : '';
+            socket = new WebSocket(`${protocol}://${host}/ws/stats?client_id=${clientId}${projectQuery}`);
         } catch(e) {
             retryTimer = setTimeout(connect, 3000);
             return;
@@ -5924,7 +6257,7 @@ async function loadCanvas(){
         document.title = canvas.title || tr('canvas.smartCanvas');
         document.getElementById('smartTitle').textContent = canvas.title || tr('canvas.smartCanvas');
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+        canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes.forEach(n => {
@@ -5932,6 +6265,7 @@ async function loadCanvas(){
             if(pendingTasks.length){
                 n.pending = Math.max(pendingTasks.length, Number(n.pending || 0) || pendingTasks.length);
                 n.running = false;
+                ensureSmartPendingHistoryLogs(n, pendingTasks);
             } else if(smartNodeHasDisplayResult(n)){
                 markSmartNodeComplete(n, {hideTimer:true});
             } else if(n.pending || n.queued){
@@ -6158,7 +6492,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
             canvas = localView.canvas;
             nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-            canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+            canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
             canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
             persistedCoreSnapshot = projectCanvasSnapshot(flushResult.serverCanvas);
             persistedDurableSnapshot = durableSnapshotForCanvas(flushResult.serverCanvas);
@@ -6184,7 +6518,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
         canvas = localView.canvas;
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+        canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         applyViewport();
         render();
@@ -6736,7 +7070,7 @@ function updateNodeElementDuringResize(node){
             grid.style.setProperty('--thumb-cols', layout.cols);
             grid.style.setProperty('--thumb-size', `${layout.thumb}px`);
             const visibleRows = Math.max(1, Math.min(maxVisibleRows, Number(layout.visibleRows || layout.rows || 1)));
-            const maxHeight = visibleRows * Number(layout.thumb || 96) + Math.max(0, visibleRows - 1) * 8;
+            const maxHeight = Number(layout.gridHeight) || mediaGroupGridHeight(imgs, layout.cols, visibleRows, layout.thumb);
             grid.style.setProperty('--thumb-max-height', `${maxHeight}px`);
             grid.querySelectorAll('.thumb-item').forEach((itemEl, index) => {
                 applyThumbDisplaySizeToElement(itemEl, imgs[index], layout.thumb);
@@ -6942,6 +7276,18 @@ function thumbDisplaySize(img, maxSize){
         width:Math.max(28, Math.round(w * fit)),
         height:Math.max(28, Math.round(h * fit))
     };
+}
+function mediaGroupGridHeight(images, cols, visibleRows, thumb){
+    const columnCount = Math.max(1, Number(cols) || 1);
+    const rowCount = Math.max(1, Number(visibleRows) || 1);
+    let height = 0;
+    for(let row = 0; row < rowCount; row += 1){
+        const items = (images || []).slice(row * columnCount, (row + 1) * columnCount);
+        if(!items.length) break;
+        height += Math.max(...items.map(item => thumbDisplaySize(item, thumb).height));
+        if(row > 0) height += 8;
+    }
+    return height;
 }
 function thumbItemStyle(img, maxSize){
     const size = thumbDisplaySize(img, maxSize);
@@ -7231,6 +7577,7 @@ function smartRunRequestMeta(run){
 }
 function smartRunSnapshot(node, prompt, refs=[], kind='image'){
     const settingsSnapshot = cloneSmartSettings(settings);
+    if(kind === 'image' && !apiImageUsesExplicitResolution(settingsSnapshot)) settingsSnapshot.resolution = '';
     return {
         nodeId:node?.id || '',
         nodeType:node?.type || 'smart-image',
@@ -7278,9 +7625,243 @@ function smartLogRunMeta(log){
         createdAt:Number(log?.createdAt || Date.now())
     };
 }
+function smartHistoryLogTimestamp(log){
+    const value = Number(log?.createdAt ?? log?.created_at ?? 0);
+    if(!Number.isFinite(value) || value <= 0) return 0;
+    return value < 1000000000000 ? value * 1000 : value;
+}
+function smartLogRunMs(log){
+    const value = Number(log?.runMs ?? 0);
+    if(Number.isFinite(value) && value > 0) return value;
+    const start = smartHistoryLogTimestamp(log);
+    const end = Number(log?.completedAt ?? log?.completed_at ?? 0);
+    const endMs = Number.isFinite(end) && end > 0 ? (end < 1000000000000 ? end * 1000 : end) : 0;
+    return start && endMs > start ? endMs - start : 0;
+}
+function historyLogModelMeta(log){
+    const raw = String(log?.actual_model || log?.model || log?.request?.model || log?.params?.model || '').trim();
+    if(!raw) return {raw:'', label:''};
+    const providerKey = String(
+        log?.actual_provider_id
+        || log?.request?.provider_id
+        || log?.request?.providerId
+        || log?.params?.provider_id
+        || log?.actual_provider_name
+        || log?.platform
+        || ''
+    ).trim();
+    let provider = (apiProviders || []).find(item =>
+        String(item?.id || '') === providerKey || String(item?.name || '') === providerKey
+    );
+    if(!provider){
+        provider = (apiProviders || []).find(item =>
+            item?.model_names && Object.prototype.hasOwnProperty.call(item.model_names, raw)
+        );
+    }
+    return {raw, label:modelDisplayName(provider, raw)};
+}
+function sortSmartHistoryLogs(logs){
+    const list = Array.isArray(logs) ? logs : [];
+    return list.slice().sort((a, b) => smartHistoryLogTimestamp(b) - smartHistoryLogTimestamp(a) || 0);
+}
+function smartPendingHistoryLogId(taskId){
+    return `pending-generation-${String(taskId || '').trim()}`;
+}
+function smartPendingHistoryTaskId(log){
+    const request = log?.request || {};
+    return String(request.task_id || request.taskId || '').trim();
+}
+const GENERATION_PROGRESS_PHASES = [
+    ['queued','排队'],
+    ['preparing_reference','准备参考图'],
+    ['uploading','上传'],
+    ['provider_generating','模型生成'],
+    ['receiving','接收结果'],
+    ['saving','写入画布']
+];
+function generationProgressBytes(value){
+    const bytes = Math.max(0, Number(value) || 0);
+    if(bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+    if(bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${Math.round(bytes)} B`;
+}
+function generationStageProgressHtml(progress={}){
+    const phase = String(progress?.phase || 'queued');
+    const failed = Boolean(progress?.failed);
+    const configuredIndex = Number(progress?.phase_index);
+    const fallbackIndex = GENERATION_PROGRESS_PHASES.findIndex(item => item[0] === phase);
+    const phaseIndex = Math.max(0, Math.min(5, Number.isFinite(configuredIndex) ? configuredIndex : Math.max(0, fallbackIndex)));
+    const phaseLabel = String(progress?.label || GENERATION_PROGRESS_PHASES[phaseIndex]?.[1] || '排队');
+    const label = failed ? `失败 · ${phaseLabel}` : phaseLabel;
+    const startedAt = Number(progress?.started_at || 0);
+    const elapsedMs = startedAt > 0 ? Math.max(Number(progress?.elapsed_ms || 0), Date.now() - startedAt) : Math.max(0, Number(progress?.elapsed_ms || 0));
+    const elapsed = formatRunDuration(elapsedMs) || '0s';
+    const bytesDone = Number(progress?.bytes_done || 0);
+    const bytesTotal = Number(progress?.bytes_total || 0);
+    const bytesText = bytesTotal > 0 ? `${generationProgressBytes(bytesDone)} / ${generationProgressBytes(bytesTotal)}` : '';
+    const segments = GENERATION_PROGRESS_PHASES.map(([key, title], index) => `<span class="generation-stage-segment${index < phaseIndex ? ' done' : index === phaseIndex ? ' active' : ''}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-stage="${escapeAttr(key)}"></span>`).join('');
+    return `<div class="generation-stage-progress${failed ? ' is-failed' : ''}" data-phase="${escapeAttr(phase)}" data-phase-index="${phaseIndex}" role="status" aria-label="${escapeAttr(`${label} · ${elapsed}`)}"><div class="generation-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(bytesText || elapsed)}</span></div><div class="generation-stage-track" aria-hidden="true">${segments}</div><div class="generation-stage-labels" aria-hidden="true">${GENERATION_PROGRESS_PHASES.map(([, title]) => `<span>${escapeHtml(title)}</span>`).join('')}</div></div>`;
+}
+function applySmartTaskProgress(taskId, progress){
+    const normalizedTaskId = String(taskId || '').trim();
+    if(!normalizedTaskId || !progress || typeof progress !== 'object') return false;
+    let changed = false;
+    nodes.forEach(node => {
+        const tasks = Array.isArray(node?.pendingTasks) ? node.pendingTasks : [];
+        tasks.forEach(task => {
+            if(String(task?.taskId || task?.task_id || '') !== normalizedTaskId) return;
+            const next = JSON.stringify(progress);
+            if(JSON.stringify(task.progress || {}) === next) return;
+            task.progress = {...progress};
+            changed = true;
+        });
+    });
+    const taskLog = (canvas?.logs || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);
+    if(taskLog){
+        const nextProgress = {...progress, failed:taskLog.status === 'failed' || Boolean(progress.failed)};
+        if(JSON.stringify(taskLog.progress || {}) !== JSON.stringify(nextProgress)){
+            taskLog.progress = nextProgress;
+            changed = true;
+        }
+    }
+    if(changed){
+        render();
+        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    }
+    return changed;
+}
+function beginSmartPendingHistoryLog(node, defaults={}){
+    if(!canvas || !node) return '';
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    if(!defaults.forceNew){
+        const currentId = String(node._pendingHistoryLogId || '');
+        const current = canvas.logs.find(log => String(log?.id || '') === currentId && log?.status === 'pending');
+        if(current) return currentId;
+        const matching = canvas.logs.find(log =>
+            log?.status === 'pending'
+            && String(log?.nodeId || '') === String(node.id || '')
+            && !smartPendingHistoryTaskId(log)
+        );
+        if(matching){
+            node._pendingHistoryLogId = matching.id;
+            return matching.id;
+        }
+    }
+    const runSettings = defaults.runSettings || smartSettingsForNode(node);
+    const providerId = String(defaults.providerId || runSettings.providerId || runSettings.provider_id || '');
+    const model = String(defaults.model || runSettings.model || '');
+    const prompt = String(defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
+    const id = `pending-local-${uid('generation')}`;
+    canvas.logs.push({
+        id,
+        createdAt:Number(defaults.createdAt || node.runStartedAt || Date.now()),
+        status:'pending',
+        kind:String(defaults.kind || runSettings.apiKind || 'image'),
+        platform:String(defaults.providerName || providerId || ''),
+        nodeId:node.id || '',
+        nodeType:node.type || 'smart-image',
+        model,
+        actual_provider_id:providerId,
+        request:{provider_id:providerId, model},
+        prompt,
+        displayPrompt:prompt,
+        runSettings:cloneSmartSettings(runSettings),
+        outputs:[]
+    });
+    node._pendingHistoryLogId = id;
+    canvas.logs = sortSmartHistoryLogs(canvas.logs);
+    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    return id;
+}
+function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defaults={}){
+    if(!canvas || !node) return false;
+    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    let changed = false;
+    const runSettings = smartSettingsForNode(node);
+    (Array.isArray(tasks) ? tasks : []).forEach(task => {
+        const taskId = String(task?.taskId || task?.task_id || '').trim();
+        if(!taskId) return;
+        const id = smartPendingHistoryLogId(taskId);
+        if(canvas.logs.some(log => String(log?.id || '') === id || smartHistoryTaskId(log) === taskId)) return;
+        const createdAt = Number(task?.createdAt || task?.created_at || defaults.createdAt || node.runStartedAt || Date.now());
+        const kind = String(task?.kind || defaults.kind || runSettings.apiKind || 'image');
+        const providerId = String(task?.providerId || task?.provider_id || defaults.providerId || runSettings.providerId || '');
+        const model = String(task?.model || defaults.model || runSettings.model || '');
+        const prompt = String(task?.prompt || defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
+        const localId = String(task?.pendingHistoryLogId || node._pendingHistoryLogId || '');
+        const localEntry = canvas.logs.find(log =>
+            log?.status === 'pending'
+            && !smartPendingHistoryTaskId(log)
+            && (String(log?.id || '') === localId || String(log?.nodeId || '') === String(node.id || ''))
+        );
+        if(localEntry){
+            localEntry.id = id;
+            localEntry.createdAt = createdAt;
+            localEntry.kind = kind;
+            localEntry.platform = String(task?.providerName || task?.provider_name || defaults.providerName || providerId || '');
+            localEntry.model = model;
+            localEntry.actual_provider_id = providerId;
+            localEntry.request = {...(localEntry.request || {}), task_id:taskId, provider_id:providerId, model};
+            localEntry.prompt = prompt || localEntry.prompt || '';
+            localEntry.displayPrompt = localEntry.prompt;
+            localEntry.runSettings = cloneSmartSettings(runSettings);
+            if(task?.progress) localEntry.progress = {...task.progress};
+            if(String(node._pendingHistoryLogId || '') === localId) node._pendingHistoryLogId = id;
+            changed = true;
+            return;
+        }
+        canvas.logs.push({
+            id,
+            createdAt,
+            status:'pending',
+            kind,
+            platform:String(task?.providerName || task?.provider_name || defaults.providerName || providerId || ''),
+            nodeId:node.id || '',
+            nodeType:node.type || 'smart-image',
+            model,
+            actual_provider_id:providerId,
+            request:{task_id:taskId, provider_id:providerId, model},
+            prompt,
+            displayPrompt:prompt,
+            runSettings:cloneSmartSettings(runSettings),
+            progress:task?.progress ? {...task.progress} : undefined,
+            outputs:[]
+        });
+        changed = true;
+    });
+    if(changed){
+        canvas.logs = sortSmartHistoryLogs(canvas.logs);
+        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    }
+    return changed;
+}
+function failSmartPendingHistoryLog(taskId, error=''){
+    const id = smartPendingHistoryLogId(taskId);
+    const entry = (canvas?.logs || []).find(log => String(log?.id || '') === id || (log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId || '')));
+    if(!entry) return false;
+    entry.status = 'failed';
+    entry.error = String(error || tr('smart.errRunFailed'));
+    entry.completed_at = Date.now();
+    entry.runMs = Math.max(0, entry.completed_at - smartHistoryLogTimestamp(entry));
+    entry.id = uid('log');
+    canvas.logs = sortSmartHistoryLogs(canvas.logs || []);
+    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    return true;
+}
 function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
     if(!canvas) return;
     canvas.logs = canvas.logs || [];
+    const runNodeId = String(run?.nodeId || '');
+    const runNode = nodes.find(node => String(node?.id || '') === runNodeId);
+    const pendingId = String(run?.pendingHistoryLogId || runNode?._pendingHistoryLogId || '');
+    const pendingEntry = canvas.logs.find(log =>
+        log?.status === 'pending'
+        && (String(log?.id || '') === pendingId || (runNodeId && String(log?.nodeId || '') === runNodeId))
+    );
+    if(pendingEntry){
+        canvas.logs = canvas.logs.filter(log => log !== pendingEntry);
+        if(runNode && String(runNode._pendingHistoryLogId || '') === pendingId) delete runNode._pendingHistoryLogId;
+    }
     const outputItems = resultMediaUrls(outputs).map(item => {
         if(typeof item === 'string') return {url:item};
         if(!item || typeof item !== 'object') return null;
@@ -7295,7 +7876,7 @@ function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
     if(!error && outputItems.length) playGenerationCompleteSound();
     const entry = {
         id:uid('log'),
-        createdAt:Date.now(),
+        createdAt:Number(pendingEntry?.createdAt || Date.now()),
         status:error ? 'failed' : 'success',
         kind:run?.kind || 'image',
         platform:smartRunPlatformLabel(run),
@@ -7337,7 +7918,13 @@ function smartLogImageOutputs(log){
     return (log?.outputs || []).map((output, outputIndex) => {
         const item = smartLogOutputItem(output);
         const kind = item?.kind || (outputUrlLooksVideo(item?.url || '') ? 'video' : 'image');
-        return item?.url && kind === 'image' ? {...item, outputIndex, kind:'image', name:item.name || smartImageNameFromUrl(item.url)} : null;
+        return item?.url && kind === 'image' ? {
+            ...item,
+            outputIndex,
+            outputId:String(item.output_id || ''),
+            kind:'image',
+            name:item.name || smartImageNameFromUrl(item.url)
+        } : null;
     }).filter(Boolean);
 }
 function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
@@ -7385,16 +7972,24 @@ function selectSmartHistoryImage(card){
     const logItem = card.closest('[data-canvas-log-id]');
     smartHistorySelectedImage = {
         logId:logItem?.dataset.canvasLogId || '',
-        outputIndex:Number(card.dataset.logOutputIndex || 0)
+        outputIndex:Number(card.dataset.logOutputIndex || 0),
+        outputId:String(card.dataset.outputId || '')
     };
     smartLogModal?.querySelectorAll('.log-media-card.is-selected').forEach(item => {
         item.classList.remove('is-selected');
         item.removeAttribute('data-history-selected');
         item.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'false');
     });
+    smartLogModal?.querySelectorAll('.log-output-preview.is-selected').forEach(item => {
+        item.classList.remove('is-selected');
+        item.setAttribute('aria-current', 'false');
+    });
     card.classList.add('is-selected');
     card.dataset.historySelected = 'true';
     card.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'true');
+    const preview = logItem?.querySelector(`.log-output-preview[data-log-output-preview="${smartHistorySelectedImage.outputIndex}"]`);
+    preview?.classList.add('is-selected');
+    preview?.setAttribute('aria-current', 'true');
 }
 function smartHistoryDrawerContainsPoint(clientX, clientY){
     const rect = smartLogModal?.getBoundingClientRect?.();
@@ -7415,7 +8010,7 @@ function handleSmartHistoryTap(image, logId, outputIndex, clientX, clientY){
         && Math.hypot(clientX - previous.clientX, clientY - previous.clientY) <= 20;
     if(sameImage){
         clearSmartHistoryTap();
-        openSmartLogLightbox(image?.dataset?.originalSrc || image?.dataset?.url || '', 'image');
+        openSmartLogDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', logId, outputIndex});
         return;
     }
     if(previous?.timer) clearTimeout(previous.timer);
@@ -7544,7 +8139,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         } else if(event.key === ' ' || event.key === 'Spacebar'){
             event.preventDefault();
             event.stopPropagation();
-            openSmartLogLightbox(image?.dataset?.originalSrc || image?.dataset?.url || '', 'image');
+            openSmartLogDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', logId, outputIndex});
         }
     };
 }
@@ -7553,6 +8148,30 @@ function normalizedSizeLabel(value){
     const w = Number(parsed?.width || 0);
     const h = Number(parsed?.height || 0);
     return w > 0 && h > 0 ? `${Math.round(w)} x ${Math.round(h)}` : '';
+}
+function normalizedResolutionTier(value){
+    const match = String(value || '').trim().toLowerCase().match(/^([124])\s*k$/);
+    return match ? `${match[1]}K` : '';
+}
+function smartLogResolutionTier(log, outputs=[]){
+    if(log?.kind === 'video' || log?.outputKind === 'video' || outputs.some(item => item?.kind === 'video' || outputUrlLooksVideo(item?.url || ''))) return '';
+    const sources = [log?.params, log?.request, log?.runSettings].filter(Boolean);
+    for(const source of sources){
+        const tier = normalizedResolutionTier(source.resolution || source.image_size || source.imageSize || '');
+        if(tier) return tier;
+    }
+    for(const source of sources){
+        const parsed = parseSizeValue(source.size || '');
+        const longest = Math.max(Number(parsed?.width || 0), Number(parsed?.height || 0));
+        if(longest >= 3072) return '4K';
+        if(longest >= 1536) return '2K';
+        if(longest >= 768) return '1K';
+    }
+    const longest = outputs.reduce((maxValue, item) => Math.max(maxValue, Number(item?.natural_w || item?.width || 0), Number(item?.natural_h || item?.height || 0)), 0);
+    if(longest >= 3072) return '4K';
+    if(longest >= 1536) return '2K';
+    if(longest >= 768) return '1K';
+    return '';
 }
 function smartLogSizeSummary(log, outputs=[]){
     const req = log?.request || {};
@@ -7576,48 +8195,359 @@ function cleanupSmartLogPreviewNode(){
         smartLogPreviewRestore = null;
     }
 }
+let smartLogDetailLastFocus = null;
+let smartLogDetailSession = {logId:'', outputs:[], outputIndex:0, outputId:''};
+let smartLogDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
+function applySmartLogDetailTransform(){
+    const box = document.getElementById('smartLogLightbox');
+    const stage = box?.querySelector('.smart-log-detail-stage');
+    const frame = box?.querySelector('.smart-log-detail-frame');
+    if(frame){
+        frame.style.transform = `translate(${smartLogDetailView.pan.x}px, ${smartLogDetailView.pan.y}px) scale(${smartLogDetailView.zoom})`;
+        frame.dataset.zoom = String(smartLogDetailView.zoom);
+    }
+    stage?.classList.toggle('panning', Boolean(smartLogDetailView.drag));
+    const label = box?.querySelector('.smart-log-detail-zoom-label');
+    if(label) label.textContent = `${Math.round(smartLogDetailView.zoom * 100)}%`;
+}
+function resetSmartLogDetailView(){
+    smartLogDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
+    applySmartLogDetailTransform();
+}
+function zoomSmartLogDetail(factor, clientX=null, clientY=null){
+    const frame = document.querySelector('#smartLogLightbox.open .smart-log-detail-frame');
+    const rect = frame?.getBoundingClientRect();
+    if(!rect) return;
+    const next = zoomPanAroundPoint(
+        smartLogDetailView.zoom,
+        smartLogDetailView.pan,
+        factor,
+        rect,
+        clientX ?? rect.left + rect.width / 2,
+        clientY ?? rect.top + rect.height / 2,
+        {min:0.1, max:8}
+    );
+    smartLogDetailView.zoom = next.zoom;
+    smartLogDetailView.pan = next.pan;
+    applySmartLogDetailTransform();
+}
+function finishSmartLogDetailPan(stage, pointerId){
+    if(!smartLogDetailView.drag) return;
+    try { stage?.releasePointerCapture?.(pointerId ?? smartLogDetailView.drag.pointerId); } catch (_) {}
+    smartLogDetailView.drag = null;
+    applySmartLogDetailTransform();
+}
+function setupSmartLogDetailInteractions(box){
+    const stage = box.querySelector('.smart-log-detail-stage');
+    stage.addEventListener('wheel', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        zoomSmartLogDetail(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
+    }, {passive:false});
+    stage.addEventListener('pointerdown', event => {
+        if(event.button !== 0 || event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
+        event.stopPropagation();
+        stage.setPointerCapture?.(event.pointerId);
+        smartLogDetailView.drag = {
+            pointerId:event.pointerId,
+            clientX:event.clientX,
+            clientY:event.clientY,
+            startX:smartLogDetailView.pan.x,
+            startY:smartLogDetailView.pan.y
+        };
+        applySmartLogDetailTransform();
+    });
+    stage.addEventListener('pointermove', event => {
+        const drag = smartLogDetailView.drag;
+        if(!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        smartLogDetailView.pan = {
+            x:drag.startX + event.clientX - drag.clientX,
+            y:drag.startY + event.clientY - drag.clientY
+        };
+        applySmartLogDetailTransform();
+    });
+    stage.addEventListener('pointerup', event => finishSmartLogDetailPan(stage, event.pointerId));
+    stage.addEventListener('pointercancel', event => finishSmartLogDetailPan(stage, event.pointerId));
+    stage.addEventListener('dblclick', event => {
+        if(event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        resetSmartLogDetailView();
+    });
+    box.querySelectorAll('[data-smart-log-detail-zoom]').forEach(button => {
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const action = button.dataset.smartLogDetailZoom;
+            if(action === 'reset') resetSmartLogDetailView();
+            else zoomSmartLogDetail(action === 'in' ? 1.12 : 1 / 1.12);
+        });
+    });
+}
 function closeSmartLogLightbox(){
     const box = document.getElementById('smartLogLightbox');
     if(!box) return;
     box.classList.remove('open');
-    const img = box.querySelector('img');
+    box.setAttribute('aria-hidden', 'true');
+    const img = box.querySelector('.smart-log-detail-image');
     if(img){ img.onerror = null; img.removeAttribute('src'); }
+    smartLogDetailSession = {logId:'', outputs:[], outputIndex:0, outputId:''};
+    box.querySelector('.smart-log-detail-output-strip')?.replaceChildren();
+    resetSmartLogDetailView();
+    const restore = smartLogDetailLastFocus;
+    smartLogDetailLastFocus = null;
+    if(restore?.isConnected) requestAnimationFrame(() => restore.focus({preventScroll:true}));
 }
-// 日志缩略图的轻量预览：只弹一张大图（不进编辑器那套裁剪/涂抹的重组件），点背景或关闭按钮即关。
-function openSmartLogLightbox(url, kind='image'){
-    if(!url) return;
-    if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(displayMediaUrl({url}), '_blank'); return; }
-    let box = document.getElementById('smartLogLightbox');
-    if(!box){
-        box = document.createElement('div');
-        box.id = 'smartLogLightbox';
-        box.className = 'smart-log-lightbox';
-        box.innerHTML = `<img alt="preview" draggable="false"><button class="smart-log-lightbox-close" type="button" aria-label="${escapeAttr(tr('common.close') || '关闭')}"><i data-lucide="x"></i></button>`;
-        document.body.appendChild(box);
-        box.addEventListener('click', e => {
-            if(e.target === box || e.target.closest('.smart-log-lightbox-close')) closeSmartLogLightbox();
-        });
+async function smartLogImage2kPngBlob(item){
+    const sourceUrl = displayMediaUrl(item);
+    if(!sourceUrl) throw new Error('图片地址不可用');
+    const response = await fetch(sourceUrl, {credentials:'same-origin'});
+    if(!response.ok) throw new Error(`读取图片失败（${response.status}）`);
+    const sourceBlob = await response.blob();
+    const bitmap = await createImageBitmap(sourceBlob);
+    try {
+        const longest = Math.max(bitmap.width, bitmap.height, 1);
+        const scale = Math.min(1, 2048 / longest);
+        const canvas2k = document.createElement('canvas');
+        canvas2k.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas2k.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas2k.getContext('2d', {alpha:false});
+        if(!context) throw new Error('浏览器无法创建 2K 对图');
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas2k.width, canvas2k.height);
+        context.drawImage(bitmap, 0, 0, canvas2k.width, canvas2k.height);
+        return await new Promise((resolve, reject) => canvas2k.toBlob(
+            blob => blob ? resolve(blob) : reject(new Error('2K PNG 导出失败')),
+            'image/png'
+        ));
+    } finally {
+        bitmap.close?.();
     }
-    const img = box.querySelector('img');
-    // 原图加载失败时回退到缩略图同款的 media-preview 代理（PIL 渲染，对截断文件更宽容）。
+}
+async function copySmartLogImage2k(item){
+    if(!item?.url) throw new Error('图片地址不可用');
+    if(typeof ClipboardItem !== 'function' || !navigator.clipboard?.write){
+        throw new Error('当前浏览器不支持复制图片，请使用下载');
+    }
+    const blob = await smartLogImage2kPngBlob(item);
+    await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
+    return {width:'≤2048', mime:'image/png'};
+}
+function ensureSmartLogDetail(){
+    let box = document.getElementById('smartLogLightbox');
+    if(box) return box;
+    box = document.createElement('div');
+    box.id = 'smartLogLightbox';
+    box.className = 'smart-log-lightbox';
+    box.setAttribute('aria-hidden', 'true');
+    box.innerHTML = `<article class="smart-log-detail" role="dialog" aria-modal="true" aria-labelledby="smartLogDetailTitle">
+        <div class="smart-log-detail-stage preview-stage" aria-label="${escapeAttr(tr('smart.generationDetailPreview'))}">
+            <div class="smart-log-detail-frame preview-frame"><img class="smart-log-detail-image" alt="${escapeAttr(tr('canvas.originalImage'))}" draggable="false"></div>
+            <button class="smart-log-detail-output-nav is-previous" type="button" data-smart-log-detail-output-nav="previous" title="${escapeAttr(tr('smart.generationPreviousOutput'))}" aria-label="${escapeAttr(tr('smart.generationPreviousOutput'))}"><i data-lucide="chevron-left"></i></button>
+            <button class="smart-log-detail-output-nav is-next" type="button" data-smart-log-detail-output-nav="next" title="${escapeAttr(tr('smart.generationNextOutput'))}" aria-label="${escapeAttr(tr('smart.generationNextOutput'))}"><i data-lucide="chevron-right"></i></button>
+            <div class="smart-log-detail-zoom-tools" aria-label="${escapeAttr(tr('smart.previewZoomControls'))}">
+                <button type="button" data-smart-log-detail-zoom="out" title="${escapeAttr(tr('smart.previewZoomOut'))}" aria-label="${escapeAttr(tr('smart.previewZoomOut'))}"><i data-lucide="minus"></i></button>
+                <output class="smart-log-detail-zoom-label" aria-live="polite">100%</output>
+                <button type="button" data-smart-log-detail-zoom="in" title="${escapeAttr(tr('smart.previewZoomIn'))}" aria-label="${escapeAttr(tr('smart.previewZoomIn'))}"><i data-lucide="plus"></i></button>
+                <button type="button" data-smart-log-detail-zoom="reset" title="${escapeAttr(tr('smart.previewZoomReset'))}" aria-label="${escapeAttr(tr('smart.previewZoomReset'))}"><i data-lucide="rotate-ccw"></i></button>
+            </div>
+            <span class="smart-log-detail-preview-hint">${escapeHtml(tr('smart.generationDetailPreviewHint'))}</span>
+        </div>
+        <aside class="smart-log-detail-info">
+            <header class="smart-log-detail-head"><h2 id="smartLogDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close') || '关闭')}" aria-label="${escapeAttr(tr('common.close') || '关闭')}"><i data-lucide="x"></i></button></header>
+            <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
+            <section class="smart-log-detail-outputs" aria-labelledby="smartLogDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartLogDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
+            <section class="smart-log-detail-prompt-wrap"><h3>${escapeHtml(tr('smart.generationPromptDetail'))}</h3><div class="smart-log-detail-prompt" tabindex="0"></div></section>
+            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
+        </aside>
+    </article>`;
+    document.body.appendChild(box);
+    box.addEventListener('click', event => {
+        if(event.target === box || event.target.closest('.smart-log-lightbox-close')) closeSmartLogLightbox();
+    });
+    setupSmartLogDetailInteractions(box);
+    box.querySelectorAll('[data-smart-log-detail-output-nav]').forEach(button => {
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            switchSmartLogDetailOutput(button.dataset.smartLogDetailOutputNav === 'previous' ? -1 : 1);
+        });
+    });
+    return box;
+}
+function smartLogDetailPositionLabel(current, total){
+    return tr('smart.generationOutputPosition')
+        .replace('{current}', String(current))
+        .replace('{total}', String(total));
+}
+function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
+    const box = document.querySelector('#smartLogLightbox.open') || document.getElementById('smartLogLightbox');
+    const outputs = smartLogDetailSession.outputs;
+    const requested = Number(outputIndex);
+    const sessionIndex = outputs.findIndex(output => output.outputIndex === requested);
+    if(!box || !outputs.length || sessionIndex < 0) return false;
+    const item = outputs[sessionIndex];
+    smartLogDetailSession.outputIndex = item.outputIndex;
+    smartLogDetailSession.outputId = String(item.output_id || '');
+    resetSmartLogDetailView();
+    const total = outputs.length;
+    const position = smartLogDetailPositionLabel(sessionIndex + 1, total);
+    const positionOutput = box.querySelector('.smart-log-detail-output-position');
+    if(positionOutput) positionOutput.textContent = position;
+    box.querySelectorAll('.smart-log-detail-output').forEach(button => {
+        const selected = String(button.dataset.outputId || '') === String(item.output_id || '');
+        button.classList.toggle('is-selected', selected);
+        button.setAttribute('aria-current', selected ? 'true' : 'false');
+        if(selected && focus) requestAnimationFrame(() => button.focus({preventScroll:true}));
+    });
+    box.querySelectorAll('.smart-log-detail-output-nav').forEach(button => {
+        button.hidden = total < 2;
+    });
+    const download = box.querySelector('.smart-log-detail-download');
+    download.dataset.outputIndex = String(item.outputIndex);
+    download.dataset.outputId = String(item.output_id || '');
+    download.dataset.assetId = String(item.asset_id || '');
+    download.title = `${tr('smart.downloadOriginal')} · ${position}`;
+    download.setAttribute('aria-label', download.title);
+    download.onclick = event => {
+        event.preventDefault();
+        downloadPreviewFile(item);
+    };
+    const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
+    deleteOriginal.dataset.outputIndex = String(item.outputIndex);
+    deleteOriginal.dataset.outputId = String(item.output_id || '');
+    deleteOriginal.dataset.assetId = String(item.asset_id || '');
+    deleteOriginal.title = `${tr('canvas.deleteSelectedOriginal')} · ${position}`;
+    deleteOriginal.setAttribute('aria-label', deleteOriginal.title);
+    deleteOriginal.hidden = !item.asset_id || canvas?.format !== 'firefly-canvas-v1';
+    deleteOriginal.onclick = event => {
+        event.preventDefault();
+        void deleteSmartProjectOriginal(smartLogDetailSession.logId, item.outputIndex);
+    };
+    const copy2k = box.querySelector('.smart-log-detail-copy-2k');
+    copy2k.dataset.outputIndex = String(item.outputIndex);
+    copy2k.dataset.outputId = String(item.output_id || '');
+    copy2k.dataset.assetId = String(item.asset_id || '');
+    copy2k.title = `${tr('smart.copy2k')} · ${position}`;
+    copy2k.setAttribute('aria-label', copy2k.title);
+    copy2k.disabled = false;
+    copy2k.removeAttribute('aria-busy');
+    copy2k.onclick = async event => {
+        event.preventDefault();
+        copy2k.disabled = true;
+        copy2k.setAttribute('aria-busy', 'true');
+        try {
+            await copySmartLogImage2k(item);
+            toast(tr('smart.copy2kDone'));
+        } catch(error){
+            toast(error?.message || '复制 2K 对图失败，请使用下载');
+        } finally {
+            copy2k.disabled = false;
+            copy2k.removeAttribute('aria-busy');
+        }
+    };
+    const img = box.querySelector('.smart-log-detail-image');
     let triedFallback = false;
     img.onerror = () => {
         if(triedFallback) return;
         triedFallback = true;
-        const fb = smartMediaPreviewUrl({url}, 2048);
-        if(fb && fb !== img.getAttribute('src')) img.src = fb;
+        const fallback = smartMediaPreviewUrl(item, 2048);
+        if(fallback && fallback !== img.getAttribute('src')) img.src = fallback;
     };
-    img.src = displayMediaUrl({url});
-    box.classList.add('open');
-    refreshIcons();
+    img.dataset.outputIndex = String(item.outputIndex);
+    img.dataset.outputId = String(item.output_id || '');
+    img.dataset.assetId = String(item.asset_id || '');
+    img.alt = `${tr('canvas.originalImage')} · ${position}`;
+    img.src = displayMediaUrl(item);
+    return true;
 }
-function smartLogPreviewNode(url, kind='image'){
-    openSmartLogLightbox(url, kind);
+function switchSmartLogDetailOutput(delta){
+    const outputs = smartLogDetailSession.outputs;
+    if(outputs.length < 2) return false;
+    const current = outputs.findIndex(output => output.outputIndex === smartLogDetailSession.outputIndex);
+    const next = (Math.max(0, current) + Number(delta) + outputs.length) % outputs.length;
+    return selectSmartLogDetailOutput(outputs[next].outputIndex, {focus:true});
+}
+function renderSmartLogDetailOutputs(box){
+    const outputs = smartLogDetailSession.outputs;
+    const strip = box.querySelector('.smart-log-detail-output-strip');
+    strip.style.cssText = `--smart-log-output-count:${Math.min(outputs.length, 8)};--smart-log-output-columns:${Math.min(outputs.length, 4)}`;
+    strip.innerHTML = outputs.map((item, index) => {
+        const position = smartLogDetailPositionLabel(index + 1, outputs.length);
+        const preview = smartPreviewImgHtml(item, 256, `alt="${escapeAttr(position)}" draggable="false"`);
+        return `<button class="smart-log-detail-output" type="button" data-output-index="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="false" aria-label="${escapeAttr(position)}" title="${escapeAttr(position)}">${preview}<span>${index + 1}</span></button>`;
+    }).join('');
+    bindSmartPreviewImageFallbacks(strip);
+    strip.querySelectorAll('.smart-log-detail-output').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            selectSmartLogDetailOutput(Number(button.dataset.outputIndex), {focus:true});
+        };
+    });
+}
+function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
+    if(!url) return;
+    if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(displayMediaUrl({url}), '_blank'); return; }
+    const log = smartLogEntryById(logId);
+    const fallback = smartLogOutputItem({url, kind, name:smartImageNameFromUrl(url)});
+    const outputs = smartLogImageOutputs(log);
+    const requestedIndex = Number(outputIndex);
+    if(!outputs.some(output => output.outputIndex === requestedIndex) && fallback?.url){
+        outputs.push({...fallback, outputIndex:requestedIndex, kind:'image'});
+    }
+    if(!outputs.length) return;
+    const modelMeta = historyLogModelMeta(log);
+    const timestamp = smartHistoryLogTimestamp(log);
+    const box = ensureSmartLogDetail();
+    smartLogDetailLastFocus = document.activeElement;
+    const requestedOutput = outputs.find(output => output.outputIndex === requestedIndex) || outputs[0];
+    smartLogDetailSession = {
+        logId:String(logId || ''),
+        outputs,
+        outputIndex:requestedOutput.outputIndex,
+        outputId:String(requestedOutput.output_id || ''),
+    };
+    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || '未记录';
+    box.querySelector('.smart-log-detail-time').textContent = timestamp
+        ? new Date(timestamp).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN')
+        : '未记录';
+    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || '未记录提示词');
+    renderSmartLogDetailOutputs(box);
+    box.classList.add('open');
+    box.setAttribute('aria-hidden', 'false');
+    selectSmartLogDetailOutput(requestedIndex);
+    refreshIcons(box);
+    requestAnimationFrame(() => box.querySelector('.smart-log-lightbox-close')?.focus({preventScroll:true}));
+}
+function openSmartLogLightbox(url, kind='image', context={}){
+    openSmartLogDetail({url, kind, ...context});
+}
+function smartLogPreviewNode(url, kind='image', context={}){
+    openSmartLogDetail({url, kind, ...context});
+}
+function smartActiveHistoryTaskLogs(logs, excludedLogId=''){
+    return (logs || []).filter(item =>
+        item?.status === 'pending'
+        && smartPendingHistoryTaskId(item)
+        && String(item.id || '') !== String(excludedLogId || '')
+    );
+}
+function mergeSmartActiveHistoryTaskLogs(serverLogs, activeTaskLogs){
+    const hydratedServerLogs = hydrateProjectMediaReferences(serverLogs || []);
+    const serverLogIds = new Set(hydratedServerLogs.map(item => String(item?.id || '')));
+    return sortSmartHistoryLogs([
+        ...hydratedServerLogs,
+        ...(activeTaskLogs || []).filter(item => !serverLogIds.has(String(item?.id || ''))),
+    ]);
 }
 async function deleteCanvasLogEntry(logId, deleteMedia=false){
     if(!canvas || !canvasId || !logId) return;
     const confirmText = deleteMedia ? tr('canvas.deleteLogMediaConfirm') : tr('canvas.deleteLogConfirm');
     if(!confirm(confirmText)) return;
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs, logId);
     try {
         if(debouncedSaveTimer){
             clearTimeout(debouncedSaveTimer);
@@ -7648,7 +8578,10 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
         const data = await res.json().catch(() => ({}));
         if(!res.ok) throw new Error(data.detail || tr('canvas.logDeleteFailed'));
         if(projectHistory && data.canvas) data.canvas = hydrateProjectMediaReferences(data.canvas);
-        canvas.logs = data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId);
+        canvas.logs = mergeSmartActiveHistoryTaskLogs(
+            data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId),
+            activeTaskLogs,
+        );
         if(data.canvas?.nodes){
             canvas.nodes = data.canvas.nodes;
             canvas.connections = data.canvas.connections || [];
@@ -7673,34 +8606,149 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
         toast(err?.message || tr('canvas.logDeleteFailed'));
     }
 }
+function captureSmartOriginalDeletionUiState(logId, outputId, outputIndex=-1){
+    const normalizedOutputId = String(outputId || '');
+    const logOutputs = smartLogImageOutputs(smartLogEntryById(logId));
+    const deletionPosition = logOutputs.findIndex(output => String(output.output_id || '') === normalizedOutputId);
+    const historySelectedOutputId = String(smartHistorySelectedImage?.outputId || '');
+    const historyOutput = smartHistorySelectedImage?.logId === String(logId || '')
+        ? historySelectedOutputId
+            ? logOutputs.find(output => String(output.output_id || '') === historySelectedOutputId)
+            : logOutputs.find(output => output.outputIndex === Number(smartHistorySelectedImage.outputIndex))
+        : null;
+    const detailOpen = Boolean(document.querySelector('#smartLogLightbox.open'));
+    const detailSelectedOutputId = String(smartLogDetailSession.outputId || '');
+    const detailOutput = detailSelectedOutputId
+        ? smartLogDetailSession.outputs.find(output => String(output.output_id || '') === detailSelectedOutputId)
+        : smartLogDetailSession.outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex);
+    const detailPosition = detailSelectedOutputId
+        ? smartLogDetailSession.outputs.findIndex(output => String(output.output_id || '') === detailSelectedOutputId)
+        : smartLogDetailSession.outputs.findIndex(output => output.outputIndex === smartLogDetailSession.outputIndex);
+    const selectedNode = nodes.find(node => String(node?.id || '') === String(selectedImage.nodeId || ''));
+    const selectedCanvasImages = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
+    const canvasSelectedOutputId = String(selectedImage.outputId || '');
+    const canvasPosition = canvasSelectedOutputId
+        ? selectedCanvasImages.findIndex(image => String(image?.output_id || '') === canvasSelectedOutputId)
+        : Number(selectedImage.index);
+    const selectedCanvasItem = selectedCanvasImages[canvasPosition];
+    return {
+        deletionPosition:deletionPosition >= 0 ? deletionPosition : Number(outputIndex),
+        historySelectedOutputId:String(historyOutput?.output_id || ''),
+        detailOpen,
+        detailLogId:String(smartLogDetailSession.logId || ''),
+        detailPosition,
+        detailSelectedOutputId:String(detailOutput?.output_id || ''),
+        canvasNodeId:String(selectedNode?.id || ''),
+        canvasPosition:canvasPosition >= 0 ? canvasPosition : Number(selectedImage.index),
+        canvasSelectedOutputId:String(selectedCanvasItem?.output_id || ''),
+    };
+}
+function smartOutputAtPreservedPosition(outputs, preservedOutputId, fallbackPosition){
+    const preserved = outputs.find(output => String(output.output_id || '') === String(preservedOutputId || ''));
+    if(preserved) return preserved;
+    if(!outputs.length) return null;
+    return outputs[Math.max(0, Math.min(outputs.length - 1, Number(fallbackPosition) || 0))];
+}
+function reconcileSmartOriginalDeletionUi(logId, deletedOutputId, state){
+    const outputs = smartLogImageOutputs(smartLogEntryById(logId));
+    if(smartHistorySelectedImage?.logId === String(logId || '') || state.historySelectedOutputId){
+        const nextHistory = smartOutputAtPreservedPosition(
+            outputs,
+            state.historySelectedOutputId === String(deletedOutputId || '') ? '' : state.historySelectedOutputId,
+            state.deletionPosition,
+        );
+        smartHistorySelectedImage = nextHistory
+            ? {
+                logId:String(logId || ''),
+                outputIndex:nextHistory.outputIndex,
+                outputId:String(nextHistory.output_id || ''),
+            }
+            : null;
+    }
+    if(state.canvasNodeId){
+        const selectedNode = nodes.find(node => String(node?.id || '') === state.canvasNodeId);
+        const images = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
+        const preservedIndex = images.findIndex(image =>
+            String(image?.output_id || '') === state.canvasSelectedOutputId
+            && state.canvasSelectedOutputId !== String(deletedOutputId || '')
+        );
+        const nextIndex = preservedIndex >= 0
+            ? preservedIndex
+            : Math.max(0, Math.min(images.length - 1, state.canvasPosition));
+        selectedImage = images.length
+            ? {
+                nodeId:state.canvasNodeId,
+                index:nextIndex,
+                outputId:String(images[nextIndex]?.output_id || ''),
+            }
+            : {nodeId:'', index:-1, outputId:''};
+    }
+    if(state.detailOpen && state.detailLogId === String(logId || '')){
+        const box = document.querySelector('#smartLogLightbox.open');
+        if(!box || !outputs.length){
+            closeSmartLogLightbox();
+        } else {
+            const nextDetail = smartOutputAtPreservedPosition(
+                outputs,
+                state.detailSelectedOutputId === String(deletedOutputId || '') ? '' : state.detailSelectedOutputId,
+                state.detailPosition,
+            );
+            smartLogDetailSession = {
+                logId:String(logId || ''),
+                outputs,
+                outputIndex:nextDetail.outputIndex,
+                outputId:String(nextDetail.output_id || ''),
+            };
+            renderSmartLogDetailOutputs(box);
+            selectSmartLogDetailOutput(nextDetail.outputIndex);
+            refreshIcons(box);
+        }
+    }
+}
+async function settleProjectCanvasBeforeOriginalMutation(){
+    if(!canvas || canvas.format !== 'firefly-canvas-v1') return true;
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = null;
+    while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
+    return await saveProjectCanvasUntilSettled();
+}
 async function deleteSmartProjectOriginal(logId, outputIndex){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
     const log = smartLogEntryById(logId);
     const item = smartLogImageOutputs(log).find(output => output.outputIndex === Number(outputIndex));
     const assetId = item?.asset_id || '';
-    if(!assetId){
+    const outputId = String(item?.output_id || '');
+    if(!assetId || !outputId){
         toast(tr('canvas.originalDeleteUnavailable'));
         return;
     }
     if(!confirm(tr('canvas.deleteOriginalConfirm'))) return;
+    const deletionUiState = captureSmartOriginalDeletionUiState(logId, outputId, outputIndex);
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs);
     try {
-        if(debouncedSaveTimer){
-            clearTimeout(debouncedSaveTimer);
-            debouncedSaveTimer = null;
-            await saveCanvas();
+        if(await settleProjectCanvasBeforeOriginalMutation() !== true){
+            throw new Error(tr('smart.projectSaveFailed'));
         }
         const projectId = canvas.project_id || canvas.project || canvasId;
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/delete`, {
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({asset_id:assetId, base_revision:Number(canvas.revision || 0)})
+            body:JSON.stringify({
+                asset_id:assetId,
+                base_revision:Number(canvas.revision || 0),
+                log_id:logId,
+                output_id:outputId,
+                output_index:Number(outputIndex),
+            })
         });
         const data = await res.json().catch(() => ({}));
         if(!res.ok) throw new Error(data.detail || tr('canvas.originalDeleteFailed'));
-        pushUndo({projectOriginalDelete:{assetId, projectId}});
+        const deletionId = String(data.deleted?.deletion_id || '');
+        if(!deletionId) throw new Error(tr('canvas.originalDeleteFailed'));
+        pushUndo({projectOriginalDelete:{assetId, outputId, deletionId, logId, projectId}});
         canvas = data.canvas || canvas;
         canvas = hydrateProjectMediaReferences(canvas);
-        canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+        canvas.logs = mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs);
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
         canvas.nodes = nodes;
@@ -7709,6 +8757,7 @@ async function deleteSmartProjectOriginal(logId, outputIndex){
         const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
         persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
         persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
+        reconcileSmartOriginalDeletionUi(logId, outputId, deletionUiState);
         render();
         renderSmartCanvasLog();
         refreshSmartProjectMediaTrashButton();
@@ -7717,21 +8766,43 @@ async function deleteSmartProjectOriginal(logId, outputIndex){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
     }
 }
+function smartLogIdForDeletedOutput(assetId, deletionId=''){
+    const normalizedAssetId = String(assetId || '');
+    const normalizedDeletionId = String(deletionId || '');
+    const log = (canvas?.logs || []).find(item => (item?.deletedOutputTombstones || []).some(tombstone =>
+        normalizedDeletionId
+            ? String(tombstone?.deletion_id || '') === normalizedDeletionId
+            : String(tombstone?.deleted_asset_id || tombstone?.asset_id || '') === normalizedAssetId
+    ));
+    return String(log?.id || '');
+}
 async function restoreSmartProjectOriginalUndo(snapshot){
     if(!canvas || canvas.format !== 'firefly-canvas-v1' || !snapshot?.projectOriginalDelete?.assetId){
         throw new Error(tr('canvas.originalDeleteFailed'));
     }
+    const restoreAssetId = String(snapshot.projectOriginalDelete.assetId || '');
+    const restoreDeletionId = String(snapshot.projectOriginalDelete.deletionId || '');
+    if(await settleProjectCanvasBeforeOriginalMutation() !== true){
+        throw new Error(tr('smart.projectSaveFailed'));
+    }
+    const restoreLogId = String(snapshot.projectOriginalDelete.logId || '')
+        || smartLogIdForDeletedOutput(restoreAssetId, restoreDeletionId);
+    const restoreUiState = restoreLogId
+        ? captureSmartOriginalDeletionUiState(restoreLogId, '')
+        : null;
     const projectId = snapshot.projectOriginalDelete.projectId || canvas.project_id || canvas.project || canvasId;
     canvas.nodes = nodes;
     const localCanvasBeforeRestore = canvasForStorage();
     const localBaseline = persistedCoreSnapshot || projectCanvasSnapshot(localCanvasBeforeRestore);
     const localChanges = buildCoreMutations(localCanvasBeforeRestore, localBaseline);
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs);
     const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/restore`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
             asset_id:snapshot.projectOriginalDelete.assetId,
-            base_revision:Number(canvas.revision || 0)
+            base_revision:Number(canvas.revision || 0),
+            deletion_id:snapshot.projectOriginalDelete.deletionId || null,
         })
     });
     const data = await res.json().catch(() => ({}));
@@ -7751,12 +8822,13 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     }
     canvas = restoredCanvas;
     canvas = hydrateProjectMediaReferences(canvas);
-    canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+    canvas.logs = mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs);
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
+    if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreLogId, '', restoreUiState);
     render();
     if(localChanges.mutations.length){
         if(await saveProjectCanvasUntilSettled() !== true) throw new Error(tr('smart.projectSaveFailed'));
@@ -7768,6 +8840,35 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     }
     renderSmartCanvasLog();
     refreshSmartProjectMediaTrashButton();
+}
+async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', logId=''){
+    const normalizedAssetId = String(assetId || '').trim();
+    if(!normalizedAssetId) return;
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    const token = {
+        assetId:normalizedAssetId,
+        deletionId:String(deletionId || ''),
+        outputId:String(outputId || ''),
+        logId:String(logId || ''),
+        projectId,
+    };
+    try {
+        await restoreSmartProjectOriginalUndo({projectOriginalDelete:token});
+        for(let index = undoStack.length - 1; index >= 0; index--){
+            const token = undoStack[index]?.projectOriginalDelete;
+            if(
+                token?.assetId === normalizedAssetId
+                && (!deletionId || token.deletionId === deletionId)
+                && (token.projectId || projectId) === projectId
+            ){
+                undoStack.splice(index, 1);
+            }
+        }
+        syncUndoRedoButtons();
+        toast(tr('canvas.originalRestored'));
+    } catch(err){
+        toast(err?.message || tr('canvas.originalDeleteFailed'));
+    }
 }
 async function refreshSmartProjectMediaTrashButton(){
     if(!smartHistoryPurgeTrash) return;
@@ -7817,14 +8918,16 @@ function smartHistoryLogCardHtml(log, historyIndex){
             return item?.url ? {...item, outputIndex} : null;
         }).filter(Boolean);
         const first = outputs[0] || null;
-        const rest = outputs.slice(1);
-        const date = new Date(log.createdAt || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
+        const date = new Date(smartHistoryLogTimestamp(log) || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
         const req = log.request || {};
         const prompt = String(log.prompt || '').trim();
-        const taskId = req.task_id || req.taskId || req.prompt_id || req.promptId || '';
+        const taskId = log.task_id || log.taskId || req.task_id || req.taskId || req.prompt_id || req.promptId || '';
         const backend = req.provider_id || req.providerId || req.backend || '';
+        const projectTask = String(taskId || '').startsWith('project_img_');
         const sizeSummary = smartLogSizeSummary(log, outputs);
+        const resolutionTier = smartLogResolutionTier(log, outputs);
         const imageOutputCount = smartLogImageOutputs(log).length;
+        const modelMeta = historyLogModelMeta(log);
         const subParts = [
             date,
             `${window.StudioI18n?.lang() === 'en' ? 'outputs' : '输出'} ${outputs.length}`,
@@ -7833,62 +8936,92 @@ function smartHistoryLogCardHtml(log, historyIndex){
             backend
         ].filter(Boolean);
         const originalDeleted = log.originalDeleted || log.status === 'original_deleted';
+        const deletedOriginalTombstone = (log.deletedOutputTombstones || [])
+            .find(item => item?.deleted_asset_id || item?.asset_id) || null;
+        const deletedOriginalAssetId = deletedOriginalTombstone?.deleted_asset_id
+            || deletedOriginalTombstone?.asset_id
+            || '';
         const upstreamDeleted = Array.isArray(log.deletedReferenceTombstones) && log.deletedReferenceTombstones.length > 0;
         const failed = log.status === 'failed';
+        const cancelled = log.status === 'cancelled';
+        const pending = log.status === 'pending';
         let thumbHtml = '';
         if(originalDeleted){
             thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><i data-lucide="image-off"></i><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
         } else if(first){
-            const item = first;
-            const outputIndex = item.outputIndex;
-            const safe = escapeAttr(item.url);
-            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
-            const label = imageResolutionLabel(item);
-            const name = item.name || smartImageNameFromUrl(item.url);
-            const selected = smartHistorySelectedImage?.logId === String(log.id || '')
-                && smartHistorySelectedImage.outputIndex === outputIndex;
-            const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
-            const attrs = kind === 'image'
-                ? `class="log-history-image" role="button" tabindex="0" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
-                : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
-            const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
-             const actionsHtml = '';
-            thumbHtml = `<div class="log-thumb-square"><article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>
+            const outputCards = outputs.map(item => {
+                const outputIndex = item.outputIndex;
+                const safe = escapeAttr(item.url);
+                const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
+                const label = imageResolutionLabel(item);
+                const name = item.name || smartImageNameFromUrl(item.url);
+                const selected = smartHistorySelectedImage?.logId === String(log.id || '')
+                    && smartHistorySelectedImage.outputIndex === outputIndex;
+                const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
+                const attrs = kind === 'image'
+                    ? `class="log-history-image" role="button" tabindex="0" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
+                    : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
+                const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
+                const actionsHtml = item.asset_id && canvas?.format === 'firefly-canvas-v1'
+                    ? `<button type="button" class="log-media-download-original" data-log-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button>`
+                    : '';
+                return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
+            }).join('');
+            const outputPreviews = outputs.length > 1 ? outputs.map((item, index) => {
+                const position = smartLogDetailPositionLabel(index + 1, outputs.length);
+                const preview = smartPreviewImgHtml(item, 192, `alt="${escapeAttr(position)}" draggable="false"`);
+                const previewSelected = smartHistorySelectedImage?.logId === String(log.id || '')
+                    && smartHistorySelectedImage.outputIndex === item.outputIndex;
+                const previewHint = `${position} · ${tr('smart.generationOutputPreviewHint')}`;
+                return `<button class="log-output-preview${previewSelected ? ' is-selected' : ''}" type="button" data-log-output-preview="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="${previewSelected ? 'true' : 'false'}" aria-label="${escapeAttr(previewHint)}" title="${escapeAttr(previewHint)}">${preview}</button>`;
+            }).join('') : '';
+            const previewCount = Math.min(outputs.length, 8);
+            const previewColumns = previewCount;
+            const previewRows = 1;
+            const previewTrackHeight = 25;
+            const previewLayout = `--log-output-count:${previewCount};--log-output-columns:${previewColumns};--log-output-rows:${previewRows};--log-output-track-height:${previewTrackHeight}px`;
+            thumbHtml = `<div class="log-thumb-square" style="${previewLayout}"><div class="log-output-gallery" role="group" aria-label="${escapeAttr(tr('canvas.originalImage'))}">${outputCards}</div>
+                ${outputPreviews ? `<div class="log-output-preview-list" role="group" aria-label="${escapeAttr(tr('smart.generationOutputs'))}">${outputPreviews}</div>` : ''}
                 ${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}
             </div>`;
-        } else if(failed){
-            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder"><i data-lucide="image-off"></i></div></div>`;
+        } else if(pending){
+            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-placeholder" role="status" aria-label="${escapeAttr(tr('canvas.generating'))}"><span class="log-history-placeholder-spinner" aria-hidden="true"></span>${generationStageProgressHtml(log.progress || {})}</div></div>`;
+        } else if(failed || cancelled){
+            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-failed-placeholder"><i data-lucide="${cancelled ? 'circle-x' : 'image-off'}"></i>${log.progress ? generationStageProgressHtml({...log.progress, failed}) : ''}</div></div>`;
         }
-        const miniHtml = rest.length ? `<div class="log-output-minis">${rest.map(item => {
-            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
-            const label = imageResolutionLabel(item);
-            const safe = escapeAttr(item.url);
-            return `<button type="button" class="log-output-mini" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}" data-url="${safe}" data-kind="${escapeAttr(kind)}"><img src="${escapeAttr(smartMediaPreviewUrl(item.url, 96))}" alt="" loading="lazy" decoding="async"></button>`;
-        }).join('')}</div>` : '';
         const promptPreview = prompt
-            ? `<div class="log-prompt-preview" title="${escapeAttr(prompt)}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span></div>`
+            ? `<button class="log-prompt-preview long-content-trigger" type="button" data-long-content-open="history-prompt" aria-haspopup="dialog" title="${escapeAttr(tr('smart.historyPromptFull'))}" aria-label="${escapeAttr(tr('smart.historyPromptFull'))}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span><i data-lucide="book-open-text"></i></button>`
             : `<div class="log-prompt-preview is-empty">${escapeHtml(tr('canvas.noPromptMeta'))}</div>`;
-        return `<div class="log-item ${failed ? 'failed' : ''}" data-canvas-log-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
+        const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length;
+        const deleteOriginalLabel = outputs.length > 1
+            ? tr('canvas.deleteSelectedOriginal')
+            : tr('canvas.deleteOriginal');
+        return `<div class="log-item ${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-log-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
             ${thumbHtml}
             <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
             <div class="log-main">
                 <div class="log-meta">
-                    <span class="log-chip ${failed ? 'status-failed' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
-                    <span class="log-chip">${escapeHtml(log.platform || '-')}</span>
-                    ${log.model ? `<span class="log-chip">${escapeHtml(log.model)}</span>` : ''}
-                    <span class="log-chip">${escapeHtml(formatRunDuration(log.runMs || 0))}</span>
+                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? '已取消' : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
+                    <span class="log-chip">${escapeHtml(log.platform || log.actual_provider_name || '-')}</span>
+                    ${modelMeta.label ? `<span class="log-chip model-chip" title="${escapeAttr(modelMeta.raw)}">${escapeHtml(modelMeta.label)}</span>` : ''}
+                    ${resolutionTier ? `<span class="log-chip resolution-chip">${escapeHtml(resolutionTier)}</span>` : ''}
                  </div>
                  <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
                  ${promptPreview}
                  ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
-                 ${log.error ? `<div class="log-error" role="tooltip" aria-label="${escapeAttr(log.error)}" data-error="${escapeAttr(log.error)}">${escapeHtml(log.error)}</div>` : ''}
-                 ${miniHtml}
+                 ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><i data-lucide="book-open-text"></i></button>` : ''}
              </div>
              <div class="log-buttons">
-                  ${(imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-log-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
-                  <button type="button" data-log-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
-                  <button type="button" class="danger" data-log-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>
-             </div>
+                  ${pending && projectTask ? `<button type="button" data-log-cancel-task="${escapeAttr(taskId)}" title="取消这个任务" aria-label="取消这个任务"><i data-lucide="square"></i><span>取消任务</span></button>` : ''}
+                  ${failed && projectTask ? `<button type="button" data-log-retry-task="${escapeAttr(taskId)}" title="重试这个任务" aria-label="重试这个任务"><i data-lucide="rotate-cw"></i><span>重试任务</span></button>` : ''}
+                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-log-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
+                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-log-delete-original="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
+                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-log-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
+                  ${!pending ? `<button type="button" data-log-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
+                  <button type="button" data-log-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
+                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-log-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
+                  <span class="log-duration">${escapeHtml(formatRunDuration(smartLogRunMs(log)))}</span>` : ''}
+              </div>
          </div>`;
 }
 function smartHistoryFocusedCard(logs){
@@ -7952,9 +9085,9 @@ function smartHistoryRailHtml(logs, indexes){
     html += smartHistorySpacerHtml('after', logs.length - previous - 1);
     return html;
 }
-function replaceSmartHistoryRail(html, focused){
+function replaceSmartHistoryRail(html, focused, preserveFocusedCard=true){
     const savedScrollLeft = smartLogList.scrollLeft;
-    if(!focused.card || focused.index < 0){
+    if(!preserveFocusedCard || !focused.card || focused.index < 0){
         smartLogList.innerHTML = html;
         return savedScrollLeft;
     }
@@ -8001,15 +9134,103 @@ function updateSmartHistorySpacerWidths(){
         spacer.style.pointerEvents = 'none';
     });
 }
+async function controlProjectImageTask(logId, taskId, action, button=null){
+    if(!taskId || !['cancel', 'retry'].includes(action)) return;
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    const sourceLog = smartLogEntryById(logId);
+    if(button){
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+    }
+    try {
+        const response = await fetch(`${projectImageTaskUrl(taskId)}/${action}`, {method:'POST'});
+        const data = await response.json().catch(() => ({}));
+        if(!response.ok) throw new Error(apiErrorMessage(data, action === 'cancel' ? '取消任务失败' : '重试任务失败'));
+        if(action === 'cancel'){
+            absorbProjectGenerationResult(data.result || {}, taskId);
+            toast('任务已取消');
+            render();
+            return;
+        }
+        const retryTaskId = String(data.task_id || '');
+        if(!retryTaskId) throw new Error('重试响应缺少任务 ID');
+        const taskResult = {
+            taskIds:[retryTaskId],
+            count:Number(data.registered_node?.pendingTasks?.find(item => item?.taskId === retryTaskId)?.count || 1),
+            providerId:data.route?.provider_id || '',
+            model:data.route?.model || '',
+            route:data.route || {},
+            projectRevision:data.project_revision,
+            registeredNode:data.registered_node,
+            idempotencyKey:data.idempotency_key || '',
+            retry_of_task_id:data.retry_of_task_id || taskId
+        };
+        await acceptProjectGenerationRegistration(taskResult);
+        const nodeId = data.registered_node?.id || sourceLog?.result_node_id || sourceLog?.nodeId || '';
+        const resultNode = nodes.find(node => String(node?.id || '') === String(nodeId));
+        if(!resultNode) throw new Error('重试任务缺少结果节点');
+        const retryTask = smartPendingTasks(resultNode).find(item => item.taskId === retryTaskId);
+        if(retryTask){
+            retryTask.prompt = sourceLog?.prompt || retryTask.prompt || '';
+            retryTask.createdAt = Date.now();
+            retryTask.idempotencyKey = data.idempotency_key || retryTask.idempotencyKey || '';
+            retryTask.retryOfTaskId = data.retry_of_task_id || taskId;
+        }
+        ensureSmartPendingHistoryLogs(resultNode, smartPendingTasks(resultNode), {
+            kind:'image',
+            providerId:taskResult.providerId,
+            providerName:taskResult.route?.provider_name || '',
+            model:taskResult.model,
+            prompt:sourceLog?.prompt || ''
+        });
+        render();
+        toast('任务已重新排队');
+        void resumeSmartPendingNode(resultNode, {taskIds:[retryTaskId]}).catch(() => {});
+    } catch(error){
+        toast((error?.message || (action === 'cancel' ? '取消任务失败' : '重试任务失败')).slice(0, 160));
+    } finally {
+        if(button?.isConnected){
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
+        }
+    }
+}
+function bindLongContentHistoryTriggers(){
+    smartLogList?.querySelectorAll?.('[data-long-content-open="history-prompt"], [data-long-content-open="history-error"]').forEach(button => {
+        const activate = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const log = smartLogEntryById(logId);
+            const kind = button.dataset.longContentOpen;
+            const isError = kind === 'history-error';
+            const text = String(isError ? log?.error || '' : log?.prompt || '');
+            if(!text) return;
+            openLongContentReader({
+                title:tr(isError ? 'smart.generationErrorFull' : 'smart.historyPromptFull'),
+                text,
+                trigger:button,
+                triggerIdentity:{kind, logId}
+            });
+        };
+        button.onclick = activate;
+        button.onkeydown = event => {
+            if(event.key === 'Enter' || event.key === ' ') activate(event);
+        };
+    });
+}
 function bindSmartHistoryWindow(){
     bindSmartPreviewImageFallbacks(smartLogList);
+    bindLongContentHistoryTriggers();
     smartLogList.querySelectorAll('[data-log-preview]').forEach(el => {
         el.onclick = e => {
             e.stopPropagation();
             const card = el.closest('.log-media-card');
             const url = el.dataset.url || card?.dataset.url || '';
             const kind = el.dataset.kind || card?.dataset.kind || 'image';
-            if(url) smartLogPreviewNode(url, kind);
+            const logId = el.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const outputIndex = Number(el.dataset.logOutputIndex ?? card?.dataset.logOutputIndex ?? 0);
+            if(url) smartLogPreviewNode(url, kind, {logId, outputIndex});
         };
     });
     const bindLogCopy = (selector, key) => {
@@ -8058,6 +9279,61 @@ function bindSmartHistoryWindow(){
             sendSmartLogOutputsToCanvas(button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '');
         };
     });
+    smartLogList.querySelectorAll('[data-log-output-preview]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const card = button.closest('[data-canvas-log-id]');
+            const logId = card?.dataset.canvasLogId || '';
+            const outputIndex = Number(button.dataset.logOutputPreview || 0);
+            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
+            const gallery = card?.querySelector('.log-output-gallery');
+            const outputCard = card?.querySelector(`[data-log-output-index="${outputIndex}"]`);
+            if(gallery && outputCard) gallery.scrollTo({left:outputCard.offsetLeft, behavior:'instant'});
+            selectSmartHistoryImage(outputCard);
+        };
+        button.ondblclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const outputIndex = Number(button.dataset.logOutputPreview || 0);
+            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
+            if(item?.url) openSmartLogDetail({url:item.url, kind:'image', logId, outputIndex});
+        };
+        button.onkeydown = event => {
+            if(event.key !== ' ' && event.key !== 'Spacebar') return;
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const outputIndex = Number(button.dataset.logOutputPreview || 0);
+            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
+            if(item?.url) openSmartLogDetail({url:item.url, kind:'image', logId, outputIndex});
+        };
+    });
+    smartLogList.querySelectorAll('.log-output-gallery').forEach(gallery => {
+        gallery.addEventListener('wheel', event => {
+            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            if(!delta) return;
+            const before = gallery.scrollLeft;
+            gallery.scrollLeft += delta;
+            if(Math.abs(gallery.scrollLeft - before) > 0.5){
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }, {passive:false});
+    });
+    smartLogList.querySelectorAll('.log-output-preview-list').forEach(track => {
+        track.addEventListener('wheel', event => {
+            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            if(!delta) return;
+            const before = track.scrollLeft;
+            track.scrollLeft += delta;
+            if(Math.abs(track.scrollLeft - before) > 0.5){
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }, {passive:false});
+    });
     smartLogList.querySelectorAll('.log-history-image').forEach(image => {
         const card = image.closest('.log-media-card');
         const logId = card?.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
@@ -8066,12 +9342,55 @@ function bindSmartHistoryWindow(){
             url:card?.dataset.url || ''
         }), logId, Number(card?.dataset.logOutputIndex));
     });
+    smartLogList.querySelectorAll('[data-log-cancel-task]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            void controlProjectImageTask(logId, button.dataset.logCancelTask || '', 'cancel', button);
+        };
+    });
+    smartLogList.querySelectorAll('[data-log-retry-task]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            void controlProjectImageTask(logId, button.dataset.logRetryTask || '', 'retry', button);
+        };
+    });
+    smartLogList.querySelectorAll('[data-log-download-original]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const output = (smartLogEntryById(logId)?.outputs || [])[Number(button.dataset.logDownloadOriginal)];
+            const item = smartLogOutputItem(output);
+            if(item?.url) downloadPreviewFile(item);
+        };
+    });
     smartLogList.querySelectorAll('[data-log-delete-original]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
             const card = button.closest('[data-canvas-log-id]');
-            deleteSmartProjectOriginal(card?.dataset.canvasLogId || '', Number(button.dataset.logDeleteOriginal));
+            const logId = card?.dataset.canvasLogId || '';
+            const selectedIndex = smartHistorySelectedImage?.logId === logId
+                ? Number(smartHistorySelectedImage.outputIndex)
+                : Number(button.dataset.logDeleteOriginal);
+            deleteSmartProjectOriginal(logId, selectedIndex);
+        };
+    });
+    smartLogList.querySelectorAll('[data-log-restore-original]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            restoreSmartProjectOriginal(
+                button.dataset.logRestoreOriginal || '',
+                button.dataset.deletionId || '',
+                button.dataset.outputId || '',
+                logId,
+            );
         };
     });
     smartLogList.querySelectorAll('[data-log-delete]').forEach(button => {
@@ -8081,10 +9400,31 @@ function bindSmartHistoryWindow(){
             deleteCanvasLogEntry(logId, button.dataset.logDelete === 'media');
         };
     });
+    smartLogList.querySelectorAll('button').forEach(button => {
+        button.onmousedown = event => {
+            if(event.button !== 0) return;
+            const state = {
+                image:null,
+                card:button.closest('.log-item'),
+                pointerId:1,
+                actionButton:button,
+            };
+            smartHistoryPointerState = state;
+            window.addEventListener('mouseup', () => {
+                setTimeout(() => {
+                    if(smartHistoryPointerState === state) clearSmartHistoryPointerState();
+                }, 0);
+            }, {once:true});
+        };
+    });
     refreshIcons();
 }
 function renderSmartHistoryWindow(force=false){
-    if(!smartLogList || (!force && smartHistoryPointerState)) return;
+    if(!smartLogList) return;
+    if(smartHistoryPointerState){
+        smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
+        return;
+    }
     const logs = canvas?.logs || [];
     if(!logs.length){
         smartLogList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
@@ -8122,7 +9462,7 @@ function renderSmartHistoryWindow(force=false){
     const protectedFocusElement = focused.card?.contains(document.activeElement)
         ? document.activeElement
         : smartHistoryVirtualState.focusElement;
-    const savedScrollLeft = replaceSmartHistoryRail(smartHistoryRailHtml(logs, indexes), focused);
+    const savedScrollLeft = replaceSmartHistoryRail(smartHistoryRailHtml(logs, indexes), focused, !force);
     smartHistoryVirtualState.start = bounds.start;
     smartHistoryVirtualState.end = bounds.end;
     smartHistoryVirtualState.count = logs.length;
@@ -8149,18 +9489,6 @@ function scheduleSmartHistoryWindowRender(force=false){
         renderSmartHistoryWindow(shouldForce);
     });
 }
-function smartHistoryDrawerMaxHeight(){
-    return Math.max(268, Math.floor(shell?.clientHeight || window.innerHeight || 800) / 3);
-}
-function applySmartHistoryDrawerHeight(value){
-    const max = Math.floor(smartHistoryDrawerMaxHeight());
-    const min = Math.min(160, max);
-    smartHistoryDrawerHeight = Math.max(min, Math.min(max, Math.round(Number(value) || 268)));
-    smartLogModal?.style.setProperty('--history-drawer-height', `${smartHistoryDrawerHeight}px`);
-    smartHistoryResizeHandle?.setAttribute('aria-valuemin', String(min));
-    smartHistoryResizeHandle?.setAttribute('aria-valuemax', String(max));
-    smartHistoryResizeHandle?.setAttribute('aria-valuenow', String(smartHistoryDrawerHeight));
-}
 function updateSmartHistoryDrawerCollapseUi(){
     smartLogModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
     smartLogModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartLogModal.classList.contains('open')));
@@ -8176,29 +9504,6 @@ function toggleSmartHistoryDrawerCollapsed(){
     smartHistoryDrawerCollapsed = !smartHistoryDrawerCollapsed;
     updateSmartHistoryDrawerCollapseUi();
     if(!smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
-}
-function beginSmartHistoryDrawerResize(event){
-    if(event.button !== 0 || smartHistoryDrawerCollapsed) return;
-    event.preventDefault();
-    event.stopPropagation();
-    smartHistoryDrawerResizeState = {startY:event.clientY, startHeight:smartHistoryDrawerHeight, pointerId:event.pointerId ?? 1};
-    smartLogModal.classList.add('is-resizing');
-    const move = moveEvent => {
-        if(!smartHistoryDrawerResizeState) return;
-        moveEvent.preventDefault();
-        applySmartHistoryDrawerHeight(smartHistoryDrawerResizeState.startHeight - (moveEvent.clientY - smartHistoryDrawerResizeState.startY));
-    };
-    const finish = finishEvent => {
-        if(finishEvent && finishEvent.pointerId != null && finishEvent.pointerId !== smartHistoryDrawerResizeState?.pointerId) return;
-        window.removeEventListener('pointermove', move, true);
-        window.removeEventListener('pointerup', finish, true);
-        window.removeEventListener('pointercancel', finish, true);
-        smartHistoryDrawerResizeState = null;
-        smartLogModal.classList.remove('is-resizing');
-    };
-    window.addEventListener('pointermove', move, true);
-    window.addEventListener('pointerup', finish, true);
-    window.addEventListener('pointercancel', finish, true);
 }
 function scrollSmartHistoryRailTo(value, immediate=false){
     if(!smartLogList) return false;
@@ -8236,19 +9541,6 @@ function handleSmartHistoryKeydown(event){
 }
 function setupSmartHistoryDrawer(){
     if(!smartLogModal) return;
-    applySmartHistoryDrawerHeight(Math.min(268, smartHistoryDrawerMaxHeight()));
-    smartHistoryResizeHandle?.addEventListener('pointerdown', beginSmartHistoryDrawerResize);
-    smartHistoryResizeHandle?.addEventListener('keydown', event => {
-        let next = smartHistoryDrawerHeight;
-        if(event.key === 'ArrowUp') next += 16;
-        else if(event.key === 'ArrowDown') next -= 16;
-        else if(event.key === 'Home') next = Math.min(160, Math.floor(smartHistoryDrawerMaxHeight()));
-        else if(event.key === 'End') next = Math.floor(smartHistoryDrawerMaxHeight());
-        else return;
-        event.preventDefault();
-        event.stopPropagation();
-        applySmartHistoryDrawerHeight(next);
-    });
     smartLogModal.addEventListener('pointerdown', event => event.stopPropagation());
     smartLogModal.addEventListener('mousedown', event => event.stopPropagation());
     smartLogModal.addEventListener('click', event => event.stopPropagation());
@@ -8265,7 +9557,6 @@ function openSmartCanvasLog(){
     if(!canvas) return;
     if(assetLibraryOpen) toggleAssetLibrary(false);
     renderSmartCanvasLog();
-    applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
     smartLogModal.classList.add('open');
     updateSmartHistoryDrawerCollapseUi();
     refreshSmartProjectMediaTrashButton();
@@ -8499,7 +9790,6 @@ function promptNodeBodyHtml(node){
     node.llmSystemEnabled = node.llmSystemEnabled === true;
     node.promptSplitEnabled = node.promptSplitEnabled === true;
     node.promptSeparator = promptNodeSeparator(node);
-    const readonly = node.llmEnabled ? 'readonly' : '';
     const systemPrompt = (node.llmSystemPrompt || '').trim();
     const inputThumbs = smartNodeInputThumbsHtml(promptNodeInputImages(node));
     const templateActive = activePromptTemplateNodeId() === node.id;
@@ -8526,7 +9816,10 @@ function promptNodeBodyHtml(node){
             ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
-        <textarea class="prompt-node-text prompt-node-control" ${readonly} placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
+        <div class="prompt-node-view-actions">
+            <button class="prompt-node-flow-toggle prompt-node-control" type="button" aria-pressed="false" title="${escapeAttr(tr('smart.promptNodeFlowEnter'))}" aria-label="${escapeAttr(tr('smart.promptNodeFlowEnter'))}"><i data-lucide="maximize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span></button>
+        </div>
+        <textarea class="prompt-node-text prompt-node-control" placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
             <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
             <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>分隔符</span></button>
@@ -8707,12 +10000,12 @@ function smartGroupBodyHtml(node){
         }
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
         const visibleRows = Math.max(1, Math.min(groupMaxVisibleRows, Number(groupThumbLayout.visibleRows || groupThumbLayout.rows || 1)));
-        const maxHeight = Math.max(44, visibleRows * Number(groupThumbLayout.thumb || 96) + Math.max(0, visibleRows - 1) * 8);
+        const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight) || (visibleRows * Number(groupThumbLayout.thumb || 96) + Math.max(0, visibleRows - 1) * 8));
         return `<div class="smart-group-card has-thumbs">
             <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
             <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${groupThumbLayout.thumb}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>`;
+                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, groupThumbLayout.thumb)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>`;
             }).join('')}</div>
         </div>`;
     }
@@ -8783,6 +10076,19 @@ function localEditBodyHtml(node){
         ${node.output_asset_id ? `<div class="local-edit-status" role="status">已生成合成结果</div>` : '<div class="local-edit-status" role="status">等待输入</div>'}
     </div>`;
 }
+function generationPlaceholderHtml(layout, count=1, queued=false, progress={}){
+    const total = Math.max(1, Math.min(4, Number(count) || 1));
+    const label = queued ? '排队中' : tr('canvas.generating');
+    const normalizedProgress = Object.keys(progress || {}).length ? progress : {phase:queued ? 'queued' : 'provider_generating', label:queued ? '排队' : '模型生成', phase_index:queued ? 0 : 3, phase_count:6};
+    const copy = `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span></span>${generationStageProgressHtml(normalizedProgress)}</div>`;
+    if(total === 1){
+        return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="${escapeAttr(label)}">${copy}</div>`;
+    }
+    const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(total))));
+    const rows = Math.ceil(total / cols);
+    const cells = Array.from({length:total}).map((_, index) => `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}">${index === 0 ? copy : ''}</div>`).join('');
+    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, 1fr);grid-template-rows:repeat(${rows}, 1fr);width:${layout.width}px;height:${layout.height}px;padding:8px;box-sizing:border-box">${cells}</div>`;
+}
 function nodeBodyHtml(node, layout){
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
     if(node.type === 'smart-group') return smartGroupBodyHtml(node);
@@ -8800,21 +10106,20 @@ function nodeBodyHtml(node, layout){
         return imageTaskRecoverBodyHtml(node, recoverTask, layout);
     }
     if(node.queued && imgs.length === 0 && !node.pending){
-        return `<div class="loading-cell single queued" style="width:${layout.width}px;height:${layout.height}px"></div>`;
+        const queuedProgress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
+        return generationPlaceholderHtml(layout, 1, true, queuedProgress);
     }
-    if(node.pending && imgs.length === 0){
+    if(node.pending){
         const count = Math.max(1, Number(node.pending) || 1);
-        if(count <= 1) return `<div class="loading-cell single" style="width:${layout.width}px;height:${layout.height}px"></div>`;
-        const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
-        const rows = Math.ceil(count / cols);
-        return `<div class="loading-skeleton" style="grid-template-columns:repeat(${cols}, 1fr);grid-template-rows:repeat(${rows}, 1fr);width:${layout.width}px;height:${layout.height}px;padding:8px;box-sizing:border-box">${Array.from({length:count}).map(() => `<div class="loading-cell"></div>`).join('')}</div>`;
+        const progress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
+        return generationPlaceholderHtml(layout, count, false, progress);
     }
     if(imgs.length > 1){
         const visibleRows = Math.max(1, Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, Number(layout.visibleRows || layout.rows || 1)));
-        const maxHeight = visibleRows * Number(layout.thumb || 96) + Math.max(0, visibleRows - 1) * 8;
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
+        const maxHeight = Number(layout.gridHeight) || mediaGroupGridHeight(imgs, layout.cols, visibleRows, layout.thumb);
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyle(img, layout.thumb)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
     }
-    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`;
+    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`;
     return `<div class="node-drop" data-upload-action="files">
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
@@ -8835,11 +10140,15 @@ function jimengPendingBodyHtml(node, layout){
     </div>`;
 }
 function smartRecoverableImageTask(node){
-    return smartPendingTasks(node).find(task => task.failed && task.recoverTaskId) || null;
+    const fromPending = smartPendingTasks(node).find(task => task.failed && task.recoverTaskId) || null;
+    if(fromPending) return fromPending;
+    if(!Array.isArray(node?.recoveredGenerationTasks)) return null;
+    return node.recoveredGenerationTasks.find(task => task.failed && task.recoverTaskId) || null;
 }
 function imageTaskRecoverBodyHtml(node, task, layout){
     const querying = Boolean(task.querying);
-    const failedCount = smartPendingTasks(node).filter(item => item.failed && item.recoverTaskId).length;
+    const failedCount = smartPendingTasks(node).filter(item => item.failed && item.recoverTaskId).length
+        + (Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks.filter(item => item.failed && item.recoverTaskId).length : 0);
     const title = querying ? '查询中' : '任务未丢失';
     const sub = failedCount > 1 ? `还有 ${failedCount} 个任务可查询` : `任务 ID：${task.recoverTaskId || ''}`;
     return `<div class="jimeng-pending-cell loading-cell single" style="width:${layout.width}px;height:${layout.height}px">
@@ -8885,7 +10194,7 @@ function smartNodeToolbarHtml(node){
         {key:'download', icon:'download', label:'下载', enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
-        <button type="button" data-smart-node-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}">
+        <button type="button" data-smart-node-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
             <i data-lucide="${escapeAttr(action.icon)}"></i><span>${escapeHtml(action.label)}</span>
         </button>`).join('')}</div>`;
 }
@@ -8974,7 +10283,7 @@ function smartGroupToolbarHtml(node){
         {key:'ungroup', icon:'ungroup', label:'解散分组', enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-group-menu="1">${actions.map(action => `
-        <button type="button" data-smart-group-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}">
+        <button type="button" data-smart-group-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
             <i data-lucide="${escapeAttr(action.icon)}"></i><span>${escapeHtml(action.label)}</span>
         </button>`).join('')}</div>`;
 }
@@ -9015,7 +10324,7 @@ function formatRunDuration(ms){
     const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
     const min = Math.floor(total / 60);
     const sec = total % 60;
-    return min ? `${min}:${String(sec).padStart(2, '0')}` : `${sec}s`;
+    return min ? `${min}:${String(sec).padStart(2, '0')}s` : `${sec}s`;
 }
 function nodeRunElapsedMs(node){
     if(!node) return 0;
@@ -9109,7 +10418,7 @@ function render(){
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
         const isHistory = isHistoryGroupNode(node);
         const isGroup = isImageNode && imgs.length > 1;
-        const isPending = ((node.pending || isQueued || isJimengPending) && imgs.length === 0);
+        const isPending = Boolean(node.pending || isQueued || isJimengPending);
         const body = nodeBodyHtml(node, layout);
         const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
         const hint = isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isAgentTask ? 'Agent 计划任务 · 状态持久保存' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
@@ -9141,6 +10450,9 @@ function render(){
     });
     const keepEls = new Set();
     reusableNodes.forEach(el => keepEls.add(el));
+    if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.element?.isConnected){
+        keepEls.add(promptNodeFlowView.element);
+    }
     if(composerEl) keepEls.add(composerEl);
     [...world.childNodes].forEach(child => {
         if(!keepEls.has(child)) child.remove();
@@ -9150,6 +10462,7 @@ function render(){
     if(composerEl && !promptHadFocus) world.appendChild(composerEl);
     world.insertAdjacentHTML('beforeend', renderConnections());
     nodeHtmlEntries.forEach(entry => {
+        if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.nodeId === entry.node.id && promptNodeFlowView.element?.isConnected) return;
         const fresh = renderedNodeEls.get(entry.node.id);
         if(!fresh) return;
         world.appendChild(fresh);
@@ -9164,10 +10477,11 @@ function render(){
     bindConnectionEvents();
     updateComposer();
     renderMinimap();
-    if(window.lucide) lucide.createIcons();
+    refreshIcons();
     bindSmartPreviewImageFallbacks(world);
     syncSmartSelectedImageResolution(world);
     measureSmartNodeImages();
+    scheduleSmartNodeFloatingMenuPosition();
     refreshRunTimerPills();
     return;
     world.innerHTML = '';
@@ -9204,8 +10518,9 @@ function render(){
     bindConnectionEvents();
     updateComposer();
     renderMinimap();
-    if(window.lucide) lucide.createIcons();
+    refreshIcons();
     measureSmartNodeImages();
+    scheduleSmartNodeFloatingMenuPosition();
     refreshRunTimerPills();
 }
 function measureSmartNodeImages(){
@@ -9320,8 +10635,35 @@ function bindPromptNodeControls(el, node){
         control.addEventListener('dblclick', e => e.stopPropagation());
     });
     const textEl = el.querySelector('.prompt-node-text');
+    const flowToggle = el.querySelector('.prompt-node-flow-toggle');
+    if(flowToggle){
+        flowToggle.addEventListener('mousedown', e => {
+            if(e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        const activate = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.nodeId === node.id) exitPromptNodeFlow();
+            else enterPromptNodeFlow(node.id, flowToggle);
+        };
+        flowToggle.onclick = activate;
+        flowToggle.onkeydown = event => {
+            if(event.key === 'Enter' || event.key === ' ') activate(event);
+        };
+    }
     if(textEl) {
         bindScrollableText(textEl);
+        textEl.addEventListener('compositionstart', () => { promptNodeFlowView.compositionActive = true; });
+        textEl.addEventListener('compositionend', () => { promptNodeFlowView.compositionActive = false; });
+        textEl.addEventListener('keydown', event => {
+            if(event.key === 'Escape' && promptNodeFlowView.mode === 'flow' && promptNodeFlowView.nodeId === node.id){
+                event.preventDefault();
+                event.stopPropagation();
+                exitPromptNodeFlow();
+            }
+        });
         textEl.oninput = e => {
             const prevExtra = promptNodeSplitExtraHeight(node);
             node.text = e.target.value;
@@ -9946,7 +11288,7 @@ function applyConversationCanvasResponse(nextCanvas){
     );
     canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
     nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.logs = hydrateProjectMediaReferences(canvas.logs || []);
+    canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     if(canvas.format === 'firefly-canvas-v1'){
         persistedCoreSnapshot = responseState.serverSnapshot;
@@ -10566,6 +11908,7 @@ function bindLocalEditNodeControls(el, node){
 function bindNodeEvents(){
     world.querySelectorAll('.image-node').forEach(el => {
         const id = el.dataset.id;
+        if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.element === el) return;
         const nodeForControls = nodes.find(n => n.id === id);
         if(isSmartConversationNode(nodeForControls)) bindConversationNodeControls(el, nodeForControls);
         if(isSmartAgentNode(nodeForControls)) bindAgentNodeControls(el, nodeForControls);
@@ -10864,6 +12207,11 @@ function bindNodeEvents(){
                 return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
             }).filter(Boolean);
             dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey)};
+            if(composerDragSettleTimer){
+                clearTimeout(composerDragSettleTimer);
+                composerDragSettleTimer = 0;
+            }
+            document.body.classList.remove('smart-node-drag-settling');
             document.body.classList.add('smart-node-drag');
             capturePendingUndo();
         };
@@ -11628,6 +12976,20 @@ function setImageEditMode(mode, userTouched=false){
 let previewCompareOn = false;
 let previewCompareIndex = -1;
 let previewMetaExtraText = '';
+function zoomPanAroundPoint(zoom, pan, factor, rect, clientX, clientY, {min=0.05, max=8}={}){
+    const nextZoom = Math.max(min, Math.min(max, zoom * factor));
+    if(!rect || nextZoom === zoom) return {zoom:nextZoom, pan:{...pan}};
+    const originX = clientX - rect.left - rect.width / 2;
+    const originY = clientY - rect.top - rect.height / 2;
+    const ratio = nextZoom / zoom;
+    return {
+        zoom:nextZoom,
+        pan:{
+            x:pan.x - originX * (ratio - 1),
+            y:pan.y - originY * (ratio - 1)
+        }
+    };
+}
 function applyPreviewTransform(){
     const frame = document.getElementById('previewFrame');
     if(frame){
@@ -13610,80 +14972,499 @@ function loadPromptDraft(subject){
         setPromptText('');
     }
 }
+function restoreLongContentTriggerFocus(identity, fallback){
+    let target = fallback?.isConnected ? fallback : null;
+    const kind = String(identity?.kind || '');
+    if(!target && kind === 'input-prompt'){
+        const nodeId = String(identity?.nodeId || '');
+        if(activeComposerNode()?.id === nodeId){
+            target = inputPromptPreview?.querySelector?.('[data-long-content-open="input-prompt"]') || null;
+        }
+    }
+    if(!target && (kind === 'history-prompt' || kind === 'history-error')){
+        const logId = String(identity?.logId || '');
+        const cardSelector = `.log-item[data-canvas-log-id="${CSS.escape(logId)}"]`;
+        let card = smartLogList?.querySelector?.(cardSelector) || null;
+        if(!card && smartLogList){
+            const index = (canvas?.logs || []).findIndex(log => String(log?.id || '') === logId);
+            if(index >= 0){
+                const stride = smartHistoryVirtualState.stride || Math.max(1, smartLogList.clientWidth || 1);
+                smartLogList.scrollLeft = Math.max(0, index * stride);
+                renderSmartHistoryWindow(true);
+                card = smartLogList.querySelector(cardSelector);
+            }
+        }
+        target = card?.querySelector?.(`[data-long-content-open="${kind}"]`) || null;
+    }
+    if(target?.isConnected){
+        target.focus({preventScroll:true});
+        return true;
+    }
+    return false;
+}
+function openLongContentReader({title, text, trigger=null, triggerIdentity=null}){
+    if(!longContentReader || !longContentReaderBody) return false;
+    if(longContentSession.mode === 'readonly') closeLongContentReader({restoreFocus:false});
+    if(promptNodeFlowView.mode === 'flow') exitPromptNodeFlow();
+    if(longContentReader.parentElement !== document.body) document.body.appendChild(longContentReader);
+    longContentSession.mode = 'readonly';
+    longContentSession.kind = String(triggerIdentity?.kind || 'readonly');
+    longContentSession.trigger = trigger;
+    longContentSession.triggerIdentity = triggerIdentity;
+    longContentReaderTitle.textContent = String(title || tr('smart.readFullContent'));
+    longContentReaderBody.textContent = String(text || '');
+    longContentReaderBody.scrollTop = 0;
+    longContentReader.classList.add('open');
+    longContentReader.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('long-content-reader-active');
+    requestAnimationFrame(() => longContentReaderBody.focus({preventScroll:true}));
+    return true;
+}
+function closeLongContentReader({restoreFocus=true}={}){
+    if(longContentSession.mode !== 'readonly') return false;
+    const trigger = longContentSession.trigger;
+    const identity = longContentSession.triggerIdentity;
+    longContentSession.mode = 'idle';
+    longContentSession.kind = '';
+    longContentSession.trigger = null;
+    longContentSession.triggerIdentity = null;
+    longContentReader?.classList.remove('open');
+    longContentReader?.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('long-content-reader-active');
+    if(restoreFocus) requestAnimationFrame(() => restoreLongContentTriggerFocus(identity, trigger));
+    return true;
+}
+function promptNodeFlowSelection(textarea){
+    return {
+        start:Number(textarea?.selectionStart || 0),
+        end:Number(textarea?.selectionEnd || 0),
+        direction:textarea?.selectionDirection || 'none'
+    };
+}
+function restorePromptNodeFlowSelection(textarea, selection){
+    if(!textarea || !selection) return;
+    try { textarea.setSelectionRange(selection.start, selection.end, selection.direction); } catch (_) {}
+}
+function clearPromptNodeFlowGeometry(element){
+    if(!element) return;
+    ['--prompt-node-flow-left','--prompt-node-flow-top','--prompt-node-flow-width','--prompt-node-flow-height','--prompt-node-flow-scale-x','--prompt-node-flow-scale-y']
+        .forEach(property => element.style.removeProperty(property));
+}
+function positionPromptNodeFlow(){
+    if(promptNodeFlowView.mode !== 'flow' || !promptNodeFlowView.element) return;
+    const margin = Math.max(14, Math.min(38, Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.035)));
+    const scale = composerWorldScale();
+    const worldRect = world.getBoundingClientRect();
+    const element = promptNodeFlowView.element;
+    element.style.setProperty('--prompt-node-flow-left', `${(margin - worldRect.left) / scale.x}px`);
+    element.style.setProperty('--prompt-node-flow-top', `${(margin - worldRect.top) / scale.y}px`);
+    element.style.setProperty('--prompt-node-flow-width', `${Math.max(292, window.innerWidth - margin * 2)}px`);
+    element.style.setProperty('--prompt-node-flow-height', `${Math.max(320, window.innerHeight - margin * 2)}px`);
+    element.style.setProperty('--prompt-node-flow-scale-x', String(1 / scale.x));
+    element.style.setProperty('--prompt-node-flow-scale-y', String(1 / scale.y));
+}
+function syncPromptNodeFlowControl(element, active){
+    const button = element?.querySelector?.('.prompt-node-flow-toggle');
+    if(!button) return;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.title = tr(active ? 'smart.promptNodeFlowExit' : 'smart.promptNodeFlowEnter');
+    button.setAttribute('aria-label', button.title);
+    button.innerHTML = active
+        ? `<i data-lucide="minimize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
+        : `<i data-lucide="maximize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span>`;
+    refreshIcons();
+}
+function enterPromptNodeFlow(nodeId, trigger=null){
+    const nodeElement = world?.querySelector?.(`.prompt-smart-node[data-id="${CSS.escape(String(nodeId || ''))}"]`);
+    const textarea = nodeElement?.querySelector?.('.prompt-node-text');
+    if(!nodeElement || !textarea || promptNodeFlowView.mode === 'flow') return false;
+    if(longContentSession.mode === 'readonly') closeLongContentReader({restoreFocus:false});
+    if(composerPromptView.mode === 'flow') exitPromptFlow();
+    promptNodeFlowView.mode = 'flow';
+    promptNodeFlowView.nodeId = String(nodeId || '');
+    promptNodeFlowView.element = nodeElement;
+    promptNodeFlowView.textarea = textarea;
+    promptNodeFlowView.trigger = trigger;
+    promptNodeFlowView.scrollTop = textarea.scrollTop;
+    promptNodeFlowView.selection = promptNodeFlowSelection(textarea);
+    nodeElement.classList.add('prompt-node-flow');
+    document.body.classList.add('prompt-node-flow-active');
+    syncPromptNodeFlowControl(nodeElement, true);
+    positionPromptNodeFlow();
+    textarea.focus({preventScroll:true});
+    restorePromptNodeFlowSelection(textarea, promptNodeFlowView.selection);
+    requestAnimationFrame(() => { textarea.scrollTop = promptNodeFlowView.scrollTop; });
+    return true;
+}
+function exitPromptNodeFlow(){
+    if(promptNodeFlowView.mode !== 'flow') return false;
+    const element = promptNodeFlowView.element;
+    const textarea = promptNodeFlowView.textarea;
+    const selection = promptNodeFlowSelection(textarea);
+    const scrollTop = textarea?.scrollTop || 0;
+    promptNodeFlowView.mode = 'idle';
+    promptNodeFlowView.selection = selection;
+    promptNodeFlowView.scrollTop = scrollTop;
+    element?.classList.remove('prompt-node-flow');
+    clearPromptNodeFlowGeometry(element);
+    document.body.classList.remove('prompt-node-flow-active');
+    syncPromptNodeFlowControl(element, false);
+    requestAnimationFrame(() => {
+        if(textarea?.isConnected){
+            textarea.focus({preventScroll:true});
+            restorePromptNodeFlowSelection(textarea, selection);
+            textarea.scrollTop = Math.min(scrollTop, Math.max(0, textarea.scrollHeight - textarea.clientHeight));
+        }
+        if(promptNodeFlowView.mode === 'idle' && promptNodeFlowView.element === element){
+            promptNodeFlowView.nodeId = '';
+            promptNodeFlowView.element = null;
+            promptNodeFlowView.textarea = null;
+            promptNodeFlowView.trigger = null;
+        }
+    });
+    return true;
+}
+function closeActiveLongContentSession(){
+    if(longContentSession.mode === 'readonly') return closeLongContentReader();
+    if(promptNodeFlowView.mode === 'flow') return exitPromptNodeFlow();
+    return false;
+}
+function composerWorldScale(){
+    const transform = getComputedStyle(world).transform;
+    const matrix = transform && transform !== 'none' ? new DOMMatrix(transform) : new DOMMatrix();
+    return {
+        x:Math.max(0.01, Math.abs(matrix.a || 1)),
+        y:Math.max(0.01, Math.abs(matrix.d || 1))
+    };
+}
+function promptExpandedHeightLimit(){
+    const viewportH = Math.max(1, Number(shell?.clientHeight || window.innerHeight || 1));
+    const currentInputH = Math.max(1, Number(promptInput?.getBoundingClientRect?.().height || promptInput?.offsetHeight || 84));
+    const currentComposerH = Math.max(currentInputH, Number(composer?.getBoundingClientRect?.().height || composer?.offsetHeight || currentInputH));
+    const chromeH = Math.max(112, currentComposerH - currentInputH);
+    return Math.max(160, Math.floor(viewportH - chromeH - 36));
+}
+function clampPromptManualHeight(value){
+    return Math.max(60, Math.min(promptExpandedHeightLimit(), Number(value) || 84));
+}
+function setPromptEditorHeight(value){
+    const height = Math.max(60, Math.round(Number(value) || 84));
+    promptInput.style.setProperty('--prompt-h', `${height}px`);
+    return height;
+}
+function promptNaturalHeight(){
+    return Math.max(60, Math.ceil(Number(promptInput?.scrollHeight || 0) + 2));
+}
+function syncComposerPromptViewControls(){
+    const expanded = composerPromptView.mode === 'expanded';
+    const flow = composerPromptView.mode === 'flow';
+    composer?.classList.toggle('prompt-expanded', expanded);
+    composer?.classList.toggle('prompt-flow', flow);
+    document.body.classList.toggle('prompt-flow-active', flow);
+    if(composerExpandBtn){
+        composerExpandBtn.classList.toggle('active', expanded);
+        composerExpandBtn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+        composerExpandBtn.title = tr(expanded ? 'smart.promptCollapse' : 'smart.promptExpand');
+        composerExpandBtn.setAttribute('aria-label', composerExpandBtn.title);
+        composerExpandBtn.innerHTML = expanded
+            ? `<i data-lucide="panel-top-close"></i><span>${escapeHtml(tr('smart.promptCollapse'))}</span>`
+            : `<i data-lucide="panel-top-open"></i><span>${escapeHtml(tr('smart.promptExpand'))}</span>`;
+    }
+    if(composerFlowBtn){
+        composerFlowBtn.classList.toggle('active', flow);
+        composerFlowBtn.setAttribute('aria-pressed', flow ? 'true' : 'false');
+        composerFlowBtn.title = tr(flow ? 'smart.promptFlowExit' : 'smart.promptFlowEnter');
+        composerFlowBtn.setAttribute('aria-label', composerFlowBtn.title);
+        composerFlowBtn.innerHTML = flow
+            ? `<i data-lucide="minimize-2"></i><span>${escapeHtml(tr('smart.promptFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
+            : `<i data-lucide="focus"></i><span>${escapeHtml(tr('smart.promptFlowEnter'))}</span>`;
+    }
+    refreshIcons();
+}
+function clearPromptFlowGeometry(){
+    ['--prompt-flow-width','--prompt-flow-height','transform','transform-origin'].forEach(property => composer.style.removeProperty(property));
+}
+function recentPromptFlowImages(limit=2){
+    const seen = new Set();
+    const results = [];
+    for(const log of sortSmartHistoryLogs(canvas?.logs || [])){
+        if(['pending','failed','cancelled','original_deleted'].includes(String(log?.status || ''))) continue;
+        for(const output of smartLogImageOutputs(log)){
+            const key = output.asset_id || output.url;
+            if(!key || seen.has(key)) continue;
+            seen.add(key);
+            results.push({...output, logId:String(log?.id || '')});
+            if(results.length >= limit) return results;
+        }
+    }
+    return results;
+}
+function promptFlowContextImageHtml(item, {kind='reference', index=0}={}){
+    const label = tr(kind === 'recent' ? 'smart.flowRecentImage' : 'smart.flowReferenceImage').replace('{n}', String(index + 1));
+    const image = smartPreviewImgHtml(item, 512, `alt="${escapeAttr(label)}" draggable="false"`);
+    if(kind === 'recent'){
+        return `<button class="prompt-flow-context-image is-recent" type="button" data-flow-recent-log-id="${escapeAttr(item.logId || '')}" data-flow-recent-output-index="${Number(item.outputIndex || 0)}" data-flow-recent-url="${escapeAttr(item.url || '')}" title="查看${escapeAttr(label)}详情">${image}<span>${escapeHtml(label)}</span></button>`;
+    }
+    return `<figure class="prompt-flow-context-image is-reference" title="${escapeAttr(item.name || label)}">${image}<figcaption>${escapeHtml(label)}</figcaption></figure>`;
+}
+function fitPromptFlowRecentImages(root){
+    const list = root?.querySelector?.('.prompt-flow-context-group.is-recent .prompt-flow-context-list');
+    const cards = [...(list?.querySelectorAll?.('.prompt-flow-context-image.is-recent') || [])];
+    if(!list || !cards.length || !list.clientWidth || !list.clientHeight) return;
+    const ratios = cards.map(card => {
+        const image = card.querySelector('img');
+        return image?.naturalWidth > 0 && image?.naturalHeight > 0
+            ? image.naturalWidth / image.naturalHeight
+            : 0;
+    });
+    if(ratios.some(ratio => !ratio)) return;
+    const styles = getComputedStyle(list);
+    const gap = Number.parseFloat(styles.columnGap || styles.gap || '0') || 0;
+    const availableWidth = Math.max(1, list.clientWidth - gap * Math.max(0, cards.length - 1));
+    const fittedHeight = Math.max(1, Math.min(list.clientHeight, availableWidth / ratios.reduce((sum, ratio) => sum + ratio, 0)));
+    cards.forEach((card, index) => {
+        const fittedWidth = fittedHeight * ratios[index];
+        card.style.height = `${fittedHeight}px`;
+        card.style.width = `${fittedWidth}px`;
+        card.style.flexBasis = `${fittedWidth}px`;
+    });
+}
+function bindPromptFlowImageAspectRatios(root){
+    root?.querySelectorAll?.('.prompt-flow-context-image img').forEach(image => {
+        const sync = () => {
+            const width = Number(image.naturalWidth || 0);
+            const height = Number(image.naturalHeight || 0);
+            if(width > 0 && height > 0){
+                image.closest('.prompt-flow-context-image')?.style.setProperty('--prompt-flow-media-ratio', String(width / height));
+                fitPromptFlowRecentImages(root);
+            }
+        };
+        if(image.complete) sync();
+        else image.addEventListener('load', sync, {once:true});
+    });
+    root?._promptFlowRecentResizeObserver?.disconnect?.();
+    const recentList = root?.querySelector?.('.prompt-flow-context-group.is-recent .prompt-flow-context-list');
+    if(recentList && typeof ResizeObserver === 'function'){
+        root._promptFlowRecentResizeObserver = new ResizeObserver(() => fitPromptFlowRecentImages(root));
+        root._promptFlowRecentResizeObserver.observe(recentList);
+    }
+    requestAnimationFrame(() => fitPromptFlowRecentImages(root));
+}
+function promptFlowReferenceImagesFor(node){
+    if(!node) return [];
+    const upstream = smartImageUsesWorkflowInput(node)
+        ? workflowInputImagesFor(node)
+        : inputImagesFor(node);
+    const combined = [...upstream, ...manualReferenceImagesFor(node), ...collectMentionedImagesFromPrompt()];
+    const seen = new Set();
+    return combined.filter(item => {
+        const key = String(item?.url || '');
+        if(!key || seen.has(key)) return false;
+        seen.add(key);
+        return !isVideoMediaItem(item) && mediaKindForItem(item) === 'image';
+    }).map((item, index) => ({
+        ...item,
+        name:item.name || `图${index + 1}`,
+        role:item.role || `image_${index + 1}`,
+        imageIndex:Number.isFinite(Number(item.imageIndex)) ? Number(item.imageIndex) : index
+    }));
+}
+function renderPromptFlowContext(node){
+    if(!promptFlowContext) return;
+    if(composerPromptView.mode !== 'flow' || !node){
+        promptFlowContext._promptFlowRecentResizeObserver?.disconnect?.();
+        promptFlowContext._promptFlowRecentResizeObserver = null;
+        promptFlowContext.innerHTML = '';
+        promptFlowContext.classList.remove('has-content');
+        return;
+    }
+    const recent = recentPromptFlowImages(2);
+    const references = promptFlowReferenceImagesFor(node);
+    const recentHtml = recent.map((item, index) => promptFlowContextImageHtml(item, {kind:'recent', index})).join('');
+    const referencesHtml = references.map((item, index) => promptFlowContextImageHtml(item, {kind:'reference', index})).join('');
+    const recentCount = recent.length ? tr('smart.flowRecentCount').replace('{n}', String(recent.length)) : '—';
+    const referenceCount = tr('smart.flowReferenceCount').replace('{n}', String(references.length));
+    promptFlowContext.innerHTML = `<div class="prompt-flow-context-group is-recent"><header><strong>${escapeHtml(tr('smart.flowRecent'))}</strong><span>${escapeHtml(recentCount)}</span></header><div class="prompt-flow-context-list">${recentHtml || `<span class="prompt-flow-context-empty">${escapeHtml(tr('smart.flowRecentEmpty'))}</span>`}</div></div><div class="prompt-flow-context-group is-reference"><header><strong>${escapeHtml(tr('smart.flowReferences'))}</strong><span>${escapeHtml(referenceCount)}</span></header><div class="prompt-flow-context-list">${referencesHtml || `<span class="prompt-flow-context-empty">${escapeHtml(tr('smart.flowReferenceEmpty'))}</span>`}</div></div>`;
+    promptFlowContext.classList.add('has-content');
+    bindSmartPreviewImageFallbacks(promptFlowContext);
+    bindPromptFlowImageAspectRatios(promptFlowContext);
+    promptFlowContext.querySelectorAll('[data-flow-recent-log-id]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openSmartLogDetail({
+                url:button.dataset.flowRecentUrl || '',
+                kind:'image',
+                logId:button.dataset.flowRecentLogId || '',
+                outputIndex:Number(button.dataset.flowRecentOutputIndex || 0)
+            });
+        };
+    });
+}
+function positionPromptFlowComposer(){
+    if(composerPromptView.mode !== 'flow') return;
+    const margin = Math.max(12, Math.min(32, Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.03)));
+    const scale = composerWorldScale();
+    const worldRect = world.getBoundingClientRect();
+    const targetWidth = Math.max(320, Math.min(1320, window.innerWidth - margin * 2));
+    const targetHeight = Math.max(360, window.innerHeight - margin * 2);
+    const screenLeft = Math.max(margin, (window.innerWidth - targetWidth) / 2);
+    composer.style.left = `${(screenLeft - worldRect.left) / scale.x}px`;
+    composer.style.top = `${(margin - worldRect.top) / scale.y}px`;
+    composer.style.setProperty('--prompt-flow-width', `${targetWidth}px`);
+    composer.style.setProperty('--prompt-flow-height', `${targetHeight}px`);
+    composer.style.transformOrigin = 'top left';
+    composer.style.transform = `scale(${1 / scale.x}, ${1 / scale.y})`;
+}
+function enterPromptFlow(returnMode=composerPromptView.mode){
+    if(!promptInput || !composer || composerPromptView.mode === 'flow') return;
+    composerPromptView.returnMode = returnMode === 'expanded' ? 'expanded' : 'manual';
+    if(!composerPromptView.restoreFlowScroll) composerPromptView.scrollTop = promptInput.scrollTop;
+    composerPromptView.restoreFlowScroll = false;
+    composerPromptView.mode = 'flow';
+    syncComposerPromptViewControls();
+    renderPromptFlowContext(activeComposerNode());
+    positionPromptFlowComposer();
+    requestAnimationFrame(() => {
+        promptInput.scrollTop = composerPromptView.scrollTop;
+    });
+}
+function exitPromptFlow(){
+    if(composerPromptView.mode !== 'flow') return false;
+    const scrollTop = promptInput.scrollTop;
+    composerPromptView.scrollTop = scrollTop;
+    composerPromptView.restoreFlowScroll = true;
+    composerPromptView.applyingScrollRestore = true;
+    const canReturnExpanded = composerPromptView.returnMode === 'expanded'
+        && promptNaturalHeight() <= promptExpandedHeightLimit();
+    composerPromptView.mode = canReturnExpanded ? 'expanded' : 'manual';
+    clearPromptFlowGeometry();
+    syncComposerPromptViewControls();
+    renderPromptFlowContext(null);
+    if(canReturnExpanded){
+        const target = Math.min(promptExpandedHeightLimit(), Math.max(composerPromptView.manualHeight, promptNaturalHeight()) + composerPromptView.expandedExtra);
+        composerPromptView.expandedHeight = setPromptEditorHeight(target);
+    } else {
+        setPromptEditorHeight(composerPromptView.manualHeight);
+    }
+    requestAnimationFrame(() => {
+        promptInput.scrollTop = Math.min(scrollTop, Math.max(0, promptInput.scrollHeight - promptInput.clientHeight));
+        const node = activeComposerNode();
+        if(node) positionComposerForNode(node);
+        keepComposerReachableByPanningCanvas();
+        requestAnimationFrame(() => { composerPromptView.applyingScrollRestore = false; });
+    });
+    return true;
+}
+function collapseExpandedPrompt(){
+    if(composerPromptView.mode !== 'expanded') return false;
+    composerPromptView.mode = 'manual';
+    composerPromptView.expandedExtra = 0;
+    setPromptEditorHeight(composerPromptView.manualHeight);
+    syncComposerPromptViewControls();
+    const node = activeComposerNode();
+    if(node) requestAnimationFrame(() => {
+        positionComposerForNode(node);
+        keepComposerReachableByPanningCanvas();
+    });
+    return true;
+}
+function expandPromptToContent(){
+    if(composerPromptView.mode === 'flow') return exitPromptFlow();
+    if(composerPromptView.mode === 'expanded') return collapseExpandedPrompt();
+    composerPromptView.manualHeight = clampPromptManualHeight(settings.promptH || promptInput.offsetHeight || 84);
+    composerPromptView.expandedExtra = 0;
+    const natural = promptNaturalHeight();
+    const limit = promptExpandedHeightLimit();
+    if(natural > limit){
+        enterPromptFlow('manual');
+        return true;
+    }
+    composerPromptView.mode = 'expanded';
+    composerPromptView.expandedHeight = setPromptEditorHeight(Math.max(composerPromptView.manualHeight, natural));
+    syncComposerPromptViewControls();
+    const node = activeComposerNode();
+    if(node) requestAnimationFrame(() => {
+        positionComposerForNode(node);
+        keepComposerReachableByPanningCanvas();
+    });
+    return true;
+}
+function refreshExpandedPromptHeight(){
+    if(composerPromptView.mode !== 'expanded') return;
+    const natural = promptNaturalHeight();
+    const limit = promptExpandedHeightLimit();
+    if(natural > limit){
+        enterPromptFlow('manual');
+        return;
+    }
+    composerPromptView.expandedHeight = setPromptEditorHeight(
+        Math.min(limit, Math.max(composerPromptView.manualHeight, natural) + composerPromptView.expandedExtra)
+    );
+    const node = activeComposerNode();
+    if(node) requestAnimationFrame(() => {
+        positionComposerForNode(node);
+        keepComposerReachableByPanningCanvas();
+    });
+}
+function bindComposerPromptViewToNode(node){
+    const nodeId = String(node?.id || '');
+    if(composerPromptView.nodeId === nodeId) return;
+    if(composerPromptView.mode === 'flow'){
+        composerPromptView.mode = 'manual';
+        clearPromptFlowGeometry();
+    }
+    composerPromptView.nodeId = nodeId;
+    composerPromptView.mode = 'manual';
+    composerPromptView.returnMode = 'manual';
+    composerPromptView.expandedExtra = 0;
+    composerPromptView.restoreFlowScroll = false;
+    composerPromptView.applyingScrollRestore = false;
+    syncComposerPromptViewControls();
+}
 function positionComposerForNode(node){
     if(!node || !composer) return;
-    const gap = 14;
-    const viewportW = Math.max(1, Number(shell?.clientWidth || window.innerWidth || 1));
-    const viewportH = Math.max(1, Number(shell?.clientHeight || window.innerHeight || 1));
-    const edge = 18;
-    const renderedNode = world?.querySelector?.(`[data-id="${CSS.escape(node.id)}"]`);
-    const nodeViewport = renderedNode?.getBoundingClientRect();
-    const worldTransform = getComputedStyle(world).transform;
-    const matrix = worldTransform && worldTransform !== 'none'
-        ? new DOMMatrix(worldTransform)
-        : new DOMMatrix();
-    const scaleX = Math.max(0.01, Math.abs(matrix.a || 1));
-    const scaleY = Math.max(0.01, Math.abs(matrix.d || 1));
+    if(composerPromptView.mode === 'flow'){
+        positionPromptFlowComposer();
+        return;
+    }
     const modelRect = nodeRect(node);
-    const rect = nodeViewport || {
-        left: (matrix.e || 0) + modelRect.x * scaleX,
-        top: (matrix.f || 0) + modelRect.y * scaleY,
-        width: modelRect.width * scaleX,
-        height: modelRect.height * scaleY,
-        right: (matrix.e || 0) + (modelRect.x + modelRect.width) * scaleX,
-        bottom: (matrix.f || 0) + (modelRect.y + modelRect.height) * scaleY,
-    };
-    const availableW = Math.max(1, viewportW - edge * 2);
     composer.style.removeProperty('width');
     composer.style.removeProperty('max-width');
-    let composerRect = composer.getBoundingClientRect();
-    const naturalScreenW = Number(composerRect.width || 0) || Number(composer.offsetWidth || 0) * scaleX;
-    if(naturalScreenW > availableW){
-        composer.style.maxWidth = `${availableW / scaleX}px`;
-        composerRect = composer.getBoundingClientRect();
+    const composerWidth = Math.max(1, Number(composer.offsetWidth || modelRect.width || 1));
+    // Keep the ordinary Composer in world coordinates so node and editor share
+    // one transform. Viewport zoom/pan must never flip or clamp it elsewhere.
+    composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`;
+    composer.style.top = `${modelRect.y + modelRect.height + 14}px`;
+}
+function keepComposerReachableByPanningCanvas(){
+    if(!shell || !composer?.classList.contains('open') || composerPromptView.mode === 'flow') return false;
+    const frame = shell.getBoundingClientRect();
+    const rect = composer.getBoundingClientRect();
+    const safeTop = frame.top + 16;
+    const safeBottom = frame.bottom - 16;
+    let contentTop = rect.top;
+    let contentBottom = rect.bottom;
+    const node = activeComposerNode();
+    const nodeElement = node?.id
+        ? world?.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`)
+        : null;
+    const nodeRect = nodeElement?.getBoundingClientRect?.();
+    if(nodeRect?.height > 0){
+        const unionTop = Math.min(contentTop, nodeRect.top);
+        const unionBottom = Math.max(contentBottom, nodeRect.bottom);
+        if(unionBottom - unionTop <= safeBottom - safeTop){
+            contentTop = unionTop;
+            contentBottom = unionBottom;
+        }
     }
-    const fallbackScreenW = Math.min(availableW, Math.max(1, Number(rect.width || availableW)));
-    const screenW = Math.min(
-        availableW,
-        Number(composerRect.width || 0) || Number(composer.offsetWidth || 0) * scaleX || fallbackScreenW
-    );
-    const availableH = Math.max(1, viewportH - edge * 2);
-    const fallbackScreenH = Math.min(availableH, Math.max(1, Number(rect.height || availableH)));
-    const composerH = Math.min(
-        availableH,
-        Number(composerRect.height || 0) || Number(composer.offsetHeight || 0) * scaleY || fallbackScreenH
-    );
-    const centeredLeft = rect.left + rect.width / 2 - screenW / 2;
-    const belowTop = rect.bottom + gap;
-    const aboveTop = rect.top - composerH - gap;
-    const sideTop = rect.top + rect.height / 2 - composerH / 2;
-    const clampLeft = value => Math.max(edge, Math.min(value, viewportW - screenW - edge));
-    const clampTop = value => Math.max(edge, Math.min(value, viewportH - composerH - edge));
-    const obstacles = [...(world?.querySelectorAll?.('.image-node[data-id]') || [])]
-        .filter(element => element !== renderedNode)
-        .map(element => element.getBoundingClientRect())
-        .filter(item => item.right > 0 && item.bottom > 0 && item.left < viewportW && item.top < viewportH);
-    const overlapArea = (candidate, obstacle) => Math.max(0,
-        Math.min(candidate.left + screenW, obstacle.right) - Math.max(candidate.left, obstacle.left)
-    ) * Math.max(0,
-        Math.min(candidate.top + composerH, obstacle.bottom) - Math.max(candidate.top, obstacle.top)
-    );
-    const placements = [
-        {left:centeredLeft, top:belowTop},
-        {left:centeredLeft, top:aboveTop},
-        {left:rect.left - screenW - gap, top:sideTop},
-        {left:rect.right + gap, top:sideTop},
-    ].map((candidate, order) => {
-        const placed = {left:clampLeft(candidate.left), top:clampTop(candidate.top)};
-        const displacement = Math.abs(placed.left - candidate.left) + Math.abs(placed.top - candidate.top);
-        const overlap = obstacles.reduce((total, obstacle) => total + overlapArea(placed, obstacle), 0);
-        return {...placed, score:overlap + displacement * 1000 + order};
-    });
-    const preferred = placements.sort((a, b) => a.score - b.score)[0];
-    // Position in screen space first, then convert back to the transformed world.
-    // Prefer a clear side when the usual below/above placement would cover another node.
-    composer.style.left = `${(preferred.left - (matrix.e || 0)) / scaleX}px`;
-    composer.style.top = `${(preferred.top - (matrix.f || 0)) / scaleY}px`;
+    let shiftY = contentBottom > safeBottom ? safeBottom - contentBottom : 0;
+    if(contentTop + shiftY < safeTop) shiftY += safeTop - (contentTop + shiftY);
+    if(Math.abs(shiftY) < 0.5) return false;
+    viewport.y += shiftY;
+    applyViewport();
+    return true;
 }
 let composerUpdateTimer = 0;
 let composerUpdateSeq = 0;
@@ -13716,6 +15497,7 @@ function updateComposer(){
     }
     composer.classList.toggle('open', !!node);
     if(!isSmartRunnableNode(node)){
+        bindComposerPromptViewToNode(null);
         if(cascadeRunBtn) cascadeRunBtn.style.display = 'none';
         savePromptDraftForCurrent();
         composer.classList.remove('open');
@@ -13727,6 +15509,7 @@ function updateComposer(){
     }
     // composer 只绑定节点本身：图片只是素材/结果，不携带提示词或参数状态。
     const subject = node;
+    bindComposerPromptViewToNode(node);
     const composerKey = `${node.id}:node`;
     const switchedNode = lastComposerNodeId !== composerKey;
     if(switchedNode) savePromptDraftForCurrent();
@@ -13740,12 +15523,14 @@ function updateComposer(){
     setPromptInputLocked(false);
     syncCascadeRunButton(node);
     const storedPromptH = Number(settings.promptH);
-    const promptHeightNeedsMigration = storedPromptH === 124 || storedPromptH > 160;
-    const ph = Math.max(60, Math.min(160, promptHeightNeedsMigration ? 84 : (storedPromptH || 84)));
-    if(promptHeightNeedsMigration) settings.promptH = ph;
-    promptInput.style.setProperty('--prompt-h', `${ph}px`);
+    const ph = clampPromptManualHeight(storedPromptH === 124 ? 84 : (storedPromptH || 84));
+    if(storedPromptH !== ph) settings.promptH = ph;
+    composerPromptView.manualHeight = ph;
+    if(composerPromptView.mode === 'manual') setPromptEditorHeight(ph);
+    else if(composerPromptView.mode === 'expanded') refreshExpandedPromptHeight();
     renderInputThumbsRow(node);
     renderInputPromptPreview(node);
+    if(composerPromptView.mode === 'flow') renderPromptFlowContext(node);
     syncCascadeRunButton(node);
     scheduleDynamicParamsRefresh(140);
     syncRunButtonState(node);
@@ -13759,8 +15544,27 @@ function renderInputPromptPreview(node){
     const text = node ? [groupText, inputPromptTextFor(node).trim()].filter(Boolean).join('\n\n') : '';
     inputPromptPreview.classList.toggle('has-text', Boolean(text));
     inputPromptPreview.innerHTML = text
-        ? `<div class="input-prompt-preview-label">${escapeHtml(tr('smart.inputUpstream'))}</div><div class="input-prompt-preview-text">${escapeHtml(text)}</div>`
+        ? `<div class="input-prompt-preview-head"><div class="input-prompt-preview-label">${escapeHtml(tr('smart.inputUpstream'))}</div><button class="long-content-trigger input-prompt-preview-open" type="button" data-long-content-open="input-prompt" title="${escapeAttr(tr('smart.connectionPromptFull'))}" aria-label="${escapeAttr(tr('smart.connectionPromptFull'))}"><i data-lucide="book-open-text"></i><span>${escapeHtml(tr('smart.readFullContent'))}</span></button></div><div class="input-prompt-preview-text">${escapeHtml(text)}</div>`
         : '';
+    const openButton = inputPromptPreview.querySelector('[data-long-content-open="input-prompt"]');
+    if(openButton){
+        const activate = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openLongContentReader({
+                title:tr('smart.connectionPromptFull'),
+                text,
+                trigger:openButton,
+                triggerIdentity:{kind:'input-prompt', nodeId:String(node?.id || '')}
+            });
+        };
+        openButton.addEventListener('mousedown', event => event.stopPropagation());
+        openButton.onclick = activate;
+        openButton.onkeydown = event => {
+            if(event.key === 'Enter' || event.key === ' ') activate(event);
+        };
+    }
+    refreshIcons();
 }
 function renderInputThumbsRow(node){
     if(!inputThumbsRow) return;
@@ -14378,9 +16182,37 @@ function flushImportantProjectMutation(){
 async function acceptProjectGenerationRegistration(taskResult){
     const revision = Number(taskResult?.projectRevision || 0);
     if(canvas?.format !== 'firefly-canvas-v1' || !revision) return false;
-    if(!taskResult.registeredNode?.id || !persistedCoreSnapshot?.nodes) return false;
     canvas.revision = Math.max(Number(canvas.revision || 0), revision);
-    persistedCoreSnapshot.nodes[String(taskResult.registeredNode.id)] = JSON.stringify(taskResult.registeredNode);
+    const registeredNode = taskResult.registeredNode;
+    if(!registeredNode?.id || !persistedCoreSnapshot?.nodes) return false;
+    const currentNode = nodes.find(item => item.id === registeredNode.id);
+    if(currentNode){
+        const localTasks = smartPendingTasks(currentNode);
+        const currentTaskIds = new Set((taskResult.taskIds || []).filter(Boolean));
+        const pendingHistoryLogId = String(taskResult.pendingHistoryLogId || '');
+        const preserved = {
+            pendingHistoryLogId:currentNode._pendingHistoryLogId,
+            generationBatchApplied:currentNode._generationBatchApplied,
+            runStartedAt:currentNode.runStartedAt
+        };
+        Object.assign(currentNode, hydrateProjectMediaReferences(registeredNode));
+        const mergedTasks = smartPendingTasks(registeredNode).map(task => {
+            const local = localTasks.find(item => item.taskId && item.taskId === task.taskId)
+                || (currentTaskIds.has(task.taskId) ? localTasks.find(item => !item.taskId && String(item.pendingHistoryLogId || '') === pendingHistoryLogId) : null);
+            return {
+                ...task,
+                ...(local || {}),
+                taskId:task.taskId,
+                pendingHistoryLogId:String(local?.pendingHistoryLogId || (currentTaskIds.has(task.taskId) ? pendingHistoryLogId : '') || '')
+            };
+        });
+        currentNode.pendingTasks = mergedTasks;
+        currentNode.pending = Math.max(mergedTasks.length, mergedTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
+        if(preserved.pendingHistoryLogId) currentNode._pendingHistoryLogId = preserved.pendingHistoryLogId;
+        if(preserved.generationBatchApplied !== undefined) currentNode._generationBatchApplied = preserved.generationBatchApplied;
+        if(preserved.runStartedAt) currentNode.runStartedAt = preserved.runStartedAt;
+    }
+    persistedCoreSnapshot.nodes[String(registeredNode.id)] = JSON.stringify(registeredNode);
     setProjectSaveState('saved', tr('smart.projectSaved'));
     return true;
 }
@@ -14389,14 +16221,26 @@ async function pollGenerationTaskResultForNode(node, taskResult, taskKind='image
     if(!taskIds.length) return [];
     const projectRegistered = canvas?.format === 'firefly-canvas-v1' && Number(taskResult?.projectRevision || 0) > 0;
     if(projectRegistered){
-        node.pendingTasks = taskIds.map(taskId => ({
+        const registeredTasks = taskIds.map(taskId => ({
             taskId,
             kind:taskKind,
             count:taskResult.count || 1,
             providerId:taskResult.providerId,
-            model:taskResult.model
+            providerName:taskResult?.route?.provider_name || '',
+            model:taskResult.model,
+            prompt:node.runPrompt || node.promptDraftText || '',
+            createdAt:Date.now(),
+            idempotencyKey:taskResult.idempotencyKey || ''
         }));
-        node.pending = Math.max(taskIds.length, Number(node.pending || 0) || taskIds.length);
+        node.pendingTasks = mergeSmartPendingTaskLists(smartPendingTasks(node), registeredTasks);
+        ensureSmartPendingHistoryLogs(node, registeredTasks, {
+            kind:taskKind,
+            providerId:taskResult?.providerId || '',
+            providerName:taskResult?.route?.provider_name || '',
+            model:taskResult?.model || '',
+            prompt:node.runPrompt || node.promptDraftText || ''
+        });
+        node.pending = Math.max(node.pendingTasks.length, node.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
         node.running = false;
         render();
     }
@@ -14406,10 +16250,11 @@ async function pollGenerationTaskResultForNode(node, taskResult, taskKind='image
     } finally {
         if(projectRegistered){
             const completed = new Set(taskIds);
-            node.pendingTasks = smartPendingTasks(node).filter(task => !completed.has(task.taskId));
-            node.pending = node.pendingTasks.length;
-            if(!node.pendingTasks.length) delete node.pendingTasks;
-            node.running = false;
+            const currentNode = nodes.find(item => String(item.id || '') === String(node.id || '')) || node;
+            currentNode.pendingTasks = smartPendingTasks(currentNode).filter(task => !completed.has(task.taskId));
+            currentNode.pending = currentNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0);
+            if(!currentNode.pendingTasks.length) delete currentNode.pendingTasks;
+            currentNode.running = false;
             render();
         }
     }
@@ -14933,12 +16778,9 @@ function toggleInputRefBlocked(node, img){
 }
 function defaultReferenceImagesFor(node, consume=false, ctx=smartLoopContext){
     if(!node) return [];
-    const self = selfReferenceImagesForNode(node, consume, ctx).filter(img => img?.url);
     const upstream = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))
         .filter(img => img?.url);
     const manual = manualReferenceImagesFor(node);
-    if(smartImageUsesWorkflowInput(node, ctx)) return uniqueReferenceImages([...upstream, ...manual]);
-    if(self.length) return uniqueReferenceImages([...self, ...upstream, ...manual]);
     return uniqueReferenceImages([...upstream, ...manual]);
 }
 function lineConnectionsFor(node){
@@ -16568,6 +18410,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             }
             const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
             outputSlot.pendingTasks = taskIds.map(taskId => ({taskId, kind:'image', count:taskResult.count || 1, providerId:taskResult.providerId, model:taskResult.model}));
+            ensureSmartPendingHistoryLogs(outputSlot, outputSlot.pendingTasks, {prompt, kind:'image'});
             outputSlot.pending = Math.max(taskIds.length, Number(outputSlot.pending || 0) || taskIds.length);
             outputSlot.running = false;
             render();
@@ -16919,7 +18762,7 @@ async function runGeneration(){
     const request = buildPromptRequest(node, null, true, smartLoopContext);
     const prompt = request.prompt.trim();
     if(!node) return;
-    if(smartNodeInFlight(node)) return;
+    if(smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node)) return;
     const refs = request.refs;
     const previousSettings = cloneSmartSettings(settings);
     const runSettings = smartSettingsForNode(node);
@@ -16952,7 +18795,9 @@ async function runGeneration(){
     const apiConcurrentRun = isApiLikeEngine(settings.engine) || settings.engine === 'runninghub' || settings.engine === 'modelscope';
     const nodeHasImages = isSmartGroupNode(node) ? imagesForNode(node).some(img => img?.url) : (node.images || []).some(img => img?.url);
     const workflowModeRun = smartImageUsesWorkflowInput(node, smartLoopContext);
-    const sourceVisualState = isSmartImageNode(node) && nodeHasImages && !workflowModeRun ? {
+    const groupRun = isSmartGroupNode(node);
+    const shouldCreateBranchOutput = groupRun;
+    const sourceVisualState = shouldCreateBranchOutput && isSmartImageNode(node) && nodeHasImages && !workflowModeRun ? {
         images:(node.images || []).map(img => ({...img})),
         title:node.title,
         w:node.w,
@@ -16963,17 +18808,29 @@ async function runGeneration(){
     pushUndo();
     let extracted = null;
     let branchNode = null;
-    const groupRun = isSmartGroupNode(node);
-    const shouldCreateBranchOutput = groupRun || (nodeHasImages && !workflowModeRun);
     const pendingMeta = shouldCreateBranchOutput ? stripRunInputMeta(meta) : meta;
     undoSuppressed = true;
     if(shouldCreateBranchOutput) branchNode = createPendingOutputFromSource(node, expectedCount, pendingMeta, {connectSource:false, selectOutput:true, refs});
     undoSuppressed = false;
     const pendingNode = branchNode || node;
+    const priorPendingTasks = smartPendingTasks(pendingNode);
+    const pendingHistoryLogId = apiConcurrentRun && logKind === 'image'
+        ? beginSmartPendingHistoryLog(pendingNode, {
+            prompt,
+            kind:logKind,
+            providerId:runSettings.providerId || runSettings.provider_id || '',
+            model:runSettings.model || '',
+            runSettings,
+            forceNew:true
+        })
+        : '';
+    if(pendingHistoryLogId) runLog.pendingHistoryLogId = pendingHistoryLogId;
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
-        pendingNode.pending = Math.max(1, Number(expectedCount) || 1);
-        pendingNode.runStartedAt = nowMs();
+        const priorPendingCount = priorPendingTasks.reduce((total, task) => total + Math.max(1, Number(task?.count || 1)), 0);
+        pendingNode.pending = Math.max(1, priorPendingCount + Math.max(1, Number(expectedCount) || 1));
+        if(!priorPendingTasks.length) pendingNode._generationBatchApplied = false;
+        pendingNode.runStartedAt = Number(pendingNode.runStartedAt || 0) || nowMs();
         delete pendingNode.runFinishedAt;
         delete pendingNode.runElapsedMs;
         pendingNode.runTimerHidden = false;
@@ -16996,9 +18853,10 @@ async function runGeneration(){
             if(Array.isArray(videoResult?.taskIds)){
                 const taskIds = videoResult.taskIds.filter(Boolean);
                 if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-                pendingNode.pendingTasks = taskIds.map(taskId => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model}));
-                pendingNode.pending = Math.max(taskIds.length, Number(pendingNode.pending || 0) || taskIds.length);
-                pendingNode.runStartedAt = nowMs();
+                const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryLogId:index === 0 ? pendingHistoryLogId : ''}));
+                pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
+                ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'video'});
+                pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
                 pendingNode.runTimerHidden = false;
                 pendingNode.running = false;
                 render();
@@ -17006,7 +18864,7 @@ async function runGeneration(){
                     scheduleSave();
                     await saveCanvas();
                 }
-                await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart});
+                await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
                 const completedVideoNode = liveNode(pendingNode);
                 if(completedVideoNode.jimengPending || smartRecoverableImageTask(completedVideoNode)){
                     if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
@@ -17036,7 +18894,7 @@ async function runGeneration(){
         }
         const rhModelMode = settings.engine === 'runninghub' && Boolean(runningHubSelectedModel(settings));
         const outImages = rhModelMode
-            ? await runApiGeneration(prompt, refs, runningHubModelApiSettings(settings), pendingNode)
+            ? await runApiGeneration(prompt, refs, runningHubModelApiSettings(settings), pendingNode, {pendingHistoryLogId})
             : settings.engine === 'runninghub'
                 ? await runRunningHubGeneration(prompt, refs)
                 : settings.engine === 'modelscope'
@@ -17051,14 +18909,15 @@ async function runGeneration(){
                     resolution:settings.msResolution || '1k',
                     customRatio:settings.msCustomRatio || '',
                     customSize:settings.msCustomSize || ''
-                }, pendingNode)
-                : await runApiGeneration(prompt, refs, settings, pendingNode);
+                }, pendingNode, {pendingHistoryLogId})
+                : await runApiGeneration(prompt, refs, settings, pendingNode, {pendingHistoryLogId, overlapping:priorPendingTasks.length > 0});
         if(isApiLikeEngine(settings.engine) || rhModelMode){
             const taskIds = Array.isArray(outImages?.taskIds) ? outImages.taskIds : [];
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-            pendingNode.pendingTasks = taskIds.map(taskId => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model}));
-            pendingNode.pending = Math.max(taskIds.length, Number(pendingNode.pending || 0) || taskIds.length);
-            pendingNode.runStartedAt = nowMs();
+            const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, createdAt:runLogStart, pendingHistoryLogId:index === 0 ? pendingHistoryLogId : ''}));
+            pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
+            ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'image'});
+            pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
             pendingNode.runTimerHidden = false;
             pendingNode.running = false;
             render();
@@ -17066,7 +18925,7 @@ async function runGeneration(){
                 scheduleSave();
                 await saveCanvas();
             }
-            await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart});
+            await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
             const completedImageNode = liveNode(pendingNode);
             if(completedImageNode.jimengPending || smartRecoverableImageTask(completedImageNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
@@ -17095,19 +18954,29 @@ async function runGeneration(){
         scheduleSave();
     } catch(e) {
         settings = previousSettings;
+        if(e?.smartSubmissionUnknown){
+            pendingNode.running = false;
+            pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
+            scheduleSave();
+            toast((e.message || '提交结果未知，将使用同一请求标识恢复').slice(0, 160));
+            return;
+        }
         if(handleJimengPendingSignal(pendingNode, e)){
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
             delete pendingNode._runMetaTargetId;
             clearPromptInput({preserveDraft:true});
             return;
         }
-        pendingNode.pending = 0;
+        const remainingTasks = smartPendingTasks(pendingNode);
+        pendingNode.pending = remainingTasks.length
+            ? Math.max(remainingTasks.length, remainingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0))
+            : 0;
         if(branchNode){
             nodes = nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = nodes;
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);
             selectedId = node.id;
         } else {
-            pendingNode.pending = 0;
+            pendingNode.pending = remainingTasks.length ? pendingNode.pending : 0;
             pendingNode.running = false;
             if(!(pendingNode.images || []).length){
                 delete pendingNode.w;
@@ -17145,6 +19014,7 @@ async function runPromptLLMNode(nodeId){
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
+                project_id:projectId,
                 message,
                 messages:[],
                 images,
@@ -17169,14 +19039,84 @@ async function runPromptLLMNode(nodeId){
         render();
     }
 }
-async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=null){
+async function queueSmartGenerationRegistration(nodeId, operation){
+    const key = String(nodeId || '');
+    const previous = smartGenerationRegistrationQueues.get(key) || Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    smartGenerationRegistrationQueues.set(key, current);
+    try {
+        return await current;
+    } finally {
+        if(smartGenerationRegistrationQueues.get(key) === current){
+            smartGenerationRegistrationQueues.delete(key);
+        }
+    }
+}
+function upsertSmartGenerationSubmission(node, submission){
+    if(!node || !submission?.idempotencyKey) return null;
+    const key = String(submission.idempotencyKey);
+    const current = smartGenerationSubmissions(node).filter(item => String(item.idempotencyKey) !== key);
+    const saved = {...submission, idempotencyKey:key, outcome:'unknown'};
+    node.generationSubmissions = [...current, saved];
+    node.pending = Math.max(Number(node.pending || 0), node.generationSubmissions.length);
+    return saved;
+}
+function clearSmartGenerationSubmission(node, idempotencyKey){
+    if(!node || !idempotencyKey) return;
+    const remaining = smartGenerationSubmissions(node).filter(item => String(item.idempotencyKey) !== String(idempotencyKey));
+    if(remaining.length) node.generationSubmissions = remaining;
+    else delete node.generationSubmissions;
+}
+async function postProjectImageTaskWithReplay(projectId, payload){
+    let lastError = null;
+    for(let attempt = 0; attempt < 2; attempt += 1){
+        try {
+            const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks`, {
+                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+            });
+            const data = await response.json().catch(() => ({}));
+            if(response.ok) return data;
+            const error = new Error(apiErrorMessage(data, tr('smart.errRunFailed')));
+            if(response.status < 500){
+                error.smartSubmissionRejected = true;
+                throw error;
+            }
+            lastError = error;
+        } catch(error) {
+            if(error?.smartSubmissionRejected) throw error;
+            if(error?.message && !lastError) lastError = error;
+            if(attempt >= 1 || error?.name === 'AbortError') break;
+        }
+        await sleep(250);
+    }
+    const unknown = new Error(`提交结果未知，将使用同一请求标识恢复：${lastError?.message || '网络中断'}`);
+    unknown.smartSubmissionUnknown = true;
+    unknown.idempotencyKey = payload.idempotency_key;
+    throw unknown;
+}
+async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=null, runOptions={}){
     const count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
+    const pendingHistoryLogId = runOptions.pendingHistoryLogId || beginSmartPendingHistoryLog(resultNode, {
+            prompt,
+            kind:'image',
+            providerId:runSettings.providerId || runSettings.provider_id || '',
+            model:runSettings.model || '',
+            runSettings
+        });
+    if(canvas?.format === 'firefly-canvas-v1' && !runOptions.registrationQueued){
+        if(!resultNode?.id) throw new Error('项目生图缺少结果节点');
+        return queueSmartGenerationRegistration(resultNode.id, () => runApiGeneration(prompt, refs, runSettings, resultNode, {
+            ...runOptions,
+            pendingHistoryLogId,
+            registrationQueued:true
+        }));
+    }
     if(canvas?.format === 'firefly-canvas-v1'){
         if(!resultNode?.id) throw new Error('项目生图缺少结果节点');
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error('画布尚未保存，已停止生图');
-        const size = sizeForRun(runSettings);
-        const parsed = parseSizeValue(size);
-        if(!parsed) throw new Error('生图尺寸无效');
+        const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);
+        const size = usesExplicitResolution ? sizeForRun(runSettings) : '';
+        const parsed = usesExplicitResolution ? parseSizeValue(size) : null;
+        if(usesExplicitResolution && !parsed) throw new Error('生图尺寸无效');
         const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
         if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error('参考图尚未归入当前项目');
@@ -17187,26 +19127,44 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             provider_id:runSettings.routingMode === 'manual' ? (runSettings.provider_id || '') : '',
             model:runSettings.routingMode === 'manual' ? (runSettings.model || '') : '',
             size,
-            width:parsed.width,
-            height:parsed.height,
+            width:parsed?.width || null,
+            height:parsed?.height || null,
             aspect_ratio:aspectRatioForRun(runSettings),
-            resolution:runSettings.resolution || '',
+            resolution:usesExplicitResolution ? (runSettings.resolution || '') : '',
             quality:runSettings.quality || 'auto',
             n:count,
             reference_asset_ids,
             media_type:'image',
             result_node_id:resultNode.id,
             angle_preset:runSettings.anglePreset || 'none',
-            base_revision:Number(canvas.revision || 0)
+            base_revision:Number(canvas.revision || 0),
+            idempotency_key:runOptions.idempotencyKey || `browser:${projectId}:${pendingHistoryLogId || uid('generation')}`
         };
-        const task = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks`, {
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-        }).then(async response => {
-            const data = await response.json().catch(() => ({}));
-            if(!response.ok) throw new Error(apiErrorMessage(data, tr('smart.errRunFailed')));
-            return data;
+        const submission = upsertSmartGenerationSubmission(resultNode, {
+            idempotencyKey:payload.idempotency_key,
+            requestPayload:{...payload},
+            pendingHistoryLogId,
+            count,
+            prompt,
+            createdAt:nowMs()
         });
-        return {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node};
+        scheduleSave();
+        if(!await flushProjectCanvasBeforeGeneration()){
+            clearSmartGenerationSubmission(resultNode, payload.idempotency_key);
+            scheduleSave();
+            throw new Error('画布尚未保存，已停止生图');
+        }
+        // The durable submission marker was saved at the previous revision.
+        // A first-time replay uses the latest revision; duplicate resolution
+        // ignores this mutable field and still returns the original task.
+        payload.base_revision = Number(canvas.revision || payload.base_revision || 0);
+        if(submission) submission.requestPayload = {...payload};
+        const task = await postProjectImageTaskWithReplay(projectId, payload);
+        const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryLogId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
+        await acceptProjectGenerationRegistration(taskResult);
+        clearSmartGenerationSubmission(nodes.find(item => item.id === resultNode.id) || resultNode, payload.idempotency_key);
+        scheduleSave();
+        return taskResult;
     }
     if(!runSettings.provider_id || !runSettings.model) throw new Error(tr('smart.errNoApiModel'));
     const payload = {prompt, provider_id:runSettings.provider_id, model:runSettings.model, size:sizeForRun(runSettings), quality:runSettings.quality || 'auto', n:1, reference_images:imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX)};
@@ -17386,6 +19344,13 @@ function smartPendingTasks(node){
     if(!node || !Array.isArray(node.pendingTasks)) return [];
     return node.pendingTasks.filter(task => task && task.taskId);
 }
+function projectImageTaskUrl(taskId){
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    if(canvas?.format === 'firefly-canvas-v1' && String(taskId || '').startsWith('project_img_')){
+        return `/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks/${encodeURIComponent(taskId)}`;
+    }
+    return `/api/canvas-image-tasks/${encodeURIComponent(taskId)}`;
+}
 class JimengPendingSignal extends Error {
     constructor(info){
         const data = info || {};
@@ -17552,6 +19517,8 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
             task.failed = false;
             task.querying = false;
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
+            node.recoveredGenerationTasks = (node.recoveredGenerationTasks || []).filter(item => item.taskId !== task.taskId);
+            if(!node.recoveredGenerationTasks.length) delete node.recoveredGenerationTasks;
             render();
             scheduleSave();
             return;
@@ -17612,23 +19579,45 @@ async function pollSmartCanvasTask(taskId){
     const promise = (async () => {
         for(let i = 0; i < 900; i++){
             await new Promise(resolve => setTimeout(resolve, 2000));
-            const task = await fetch(`/api/canvas-image-tasks/${encodeURIComponent(taskId)}`).then(async r => {
+            const task = await fetch(projectImageTaskUrl(taskId)).then(async r => {
                 if(!r.ok) throw new Error(await r.text());
                 return r.json();
             });
+            applySmartTaskProgress(taskId, task.progress);
             if(task.status === 'succeeded'){
                 const result = task.result || {};
-                absorbProjectGenerationResult(result);
+                absorbProjectGenerationResult(result, taskId);
                 return result;
             }
             if(task.status === 'jimeng_pending') throw new JimengPendingSignal({submitId:task.submit_id, kind:task.kind, queueInfo:task.queue_info, message:task.message});
+            if(task.status === 'cancelled'){
+                const cancelledResult = absorbProjectGenerationResult(task.result || {}, taskId);
+                const error = new Error(task.error || '任务已取消');
+                error.generationCancelled = true;
+                if(cancelledResult?.history_recorded) error.smartGenerationLogged = true;
+                if(cancelledResult?.project_node_applied) error.projectNodeApplied = true;
+                throw error;
+            }
             if(task.status === 'failed'){
-                const failureResult = absorbProjectGenerationResult(task.result || {});
+                const failureResult = absorbProjectGenerationResult(task.result || {}, taskId);
+                if(!failureResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunFailed'));
                 const recoverTaskId = task.upstream_task_id || extractUpstreamTaskId(task.error || '');
                 const error = recoverTaskId
                     ? new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind:task.kind || 'image', message:task.error || tr('smart.errRunFailed')})
                     : new Error(task.error || tr('smart.errRunFailed'));
                 if(failureResult?.history_recorded) error.smartGenerationLogged = true;
+                if(failureResult?.project_node_applied) error.projectNodeApplied = true;
+                throw error;
+            }
+            if(task.status === 'timeout'){
+                // #41：任务级硬超时是终态——按失败处理，立即清理 pending/计时器，
+                // 不再进入 30 分钟轮询超时路径。
+                const timeoutResult = absorbProjectGenerationResult(task.result || {}, taskId);
+                if(!timeoutResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunTimeout'));
+                const error = new Error(task.error || tr('smart.errRunTimeout'));
+                error.generationTimedOut = true;
+                if(timeoutResult?.history_recorded) error.smartGenerationLogged = true;
+                if(timeoutResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
             }
         }
@@ -17641,40 +19630,70 @@ async function pollSmartCanvasTask(taskId){
         activeSmartTaskPolls.delete(taskId);
     }
 }
-function absorbProjectGenerationResult(result){
+function absorbProjectGenerationResult(result, taskId=''){
     if(!result?.history_recorded || !canvas) return result;
     const revision = Number(result.project_revision || 0);
     const registeredRevision = Number(result.registered_revision || 0);
     if(result.history_record?.id){
         canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+        let pendingProgress = null;
+        if(taskId){
+            const pendingId = smartPendingHistoryLogId(taskId);
+            const taskLog = canvas.logs.find(log => String(log?.id || '') === pendingId || smartHistoryTaskId(log) === String(taskId));
+            if(taskLog?.progress) pendingProgress = {...taskLog.progress};
+            canvas.logs = canvas.logs.filter(log => String(log?.id || '') !== pendingId && !(log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId)));
+        }
+        const hydratedRecord = hydrateProjectMediaReferences(result.history_record);
+        if(['failed', 'cancelled'].includes(result.history_record.status) && pendingProgress) hydratedRecord.progress = {...pendingProgress, failed:result.history_record.status === 'failed'};
         const index = canvas.logs.findIndex(item => item?.id === result.history_record.id);
-        if(index >= 0) canvas.logs[index] = hydrateProjectMediaReferences(result.history_record);
-        else canvas.logs.push(hydrateProjectMediaReferences(result.history_record));
+        if(index >= 0) canvas.logs[index] = hydratedRecord;
+        else canvas.logs.unshift(hydratedRecord);
+        canvas.logs = mergeSmartHistoryRecordLists(canvas.logs, []);
+        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     const resultNode = nodes.find(item => item.id === result.result_node_id);
-    if(resultNode && result.final_node){
+    const resultNodeId = String(resultNode?.id || '');
+    const appliedNodeRevision = resultNodeId ? Number(smartGenerationNodeRevisions.get(resultNodeId) || 0) : 0;
+    const nodeSnapshotCurrent = revision <= 0 || revision >= appliedNodeRevision;
+    if(resultNode && result.final_node && nodeSnapshotCurrent){
         const finalNode = hydrateProjectMediaReferences(result.final_node);
-        for(const key of ['images', 'pendingTasks', 'pending', 'running', 'queued', 'title', 'outputKind']){
+        for(const key of ['images', 'pendingTasks', 'pending', 'running', 'queued', 'title', 'outputKind', '_generationBatchApplied']){
             if(Object.prototype.hasOwnProperty.call(finalNode, key)) resultNode[key] = finalNode[key];
             else delete resultNode[key];
         }
+        if(!smartPendingTasks(resultNode).length){
+            delete resultNode._pendingHistoryLogId;
+            resultNode.runFinishedAt = nowMs();
+            if(!resultNode.runStartedAt) resultNode.runStartedAt = resultNode.runFinishedAt;
+            resultNode.runElapsedMs = Math.max(0, resultNode.runFinishedAt - Number(resultNode.runStartedAt || resultNode.runFinishedAt));
+            resultNode.runTimerHidden = false;
+        }
+        if(revision > 0 && resultNodeId) smartGenerationNodeRevisions.set(resultNodeId, revision);
         result.project_node_applied = true;
-        if(Array.isArray(resultNode.images) && resultNode.images.length && result.history_record?.status !== 'failed'){
+        if(Array.isArray(resultNode.images) && resultNode.images.length && result.history_record?.status === 'succeeded'){
             requestSmartEdgeReveal(resultNode);
         }
+    } else if(resultNode && !nodeSnapshotCurrent && taskId){
+        // #41：服务端快照落后于本地编辑（revision < appliedNodeRevision）时不能覆盖
+        // 节点内容，但任务已是终态——必须终结该任务的 pending 状态，否则节点永远
+        // “生成中”、计时器无限增长。
+        const pendingTask = smartPendingTasks(resultNode).find(item => item.taskId === taskId);
+        finalizeSmartPendingTask(resultNode, taskId, [], 'image', Number(pendingTask?.count || 1));
+        result.project_node_applied = true;
     }
     if(
         revision > 0
         && registeredRevision > 0
         && revision === registeredRevision + 1
         && Number(canvas.revision || 0) === registeredRevision
+        && nodeSnapshotCurrent
     ){
         canvas.revision = revision;
         if(result.final_node?.id && persistedCoreSnapshot?.nodes){
             persistedCoreSnapshot.nodes[String(result.final_node.id)] = JSON.stringify(result.final_node);
         }
     }
-    if(resultNode && result.history_record?.status !== 'failed') resultNode._serverGenerationHistoryRecorded = true;
+    if(resultNode && result.history_record?.status === 'succeeded') resultNode._serverGenerationHistoryRecorded = true;
     return result;
 }
 function finalizeSmartPendingTask(node, taskId, images, kind='image', completedCount=1){
@@ -17715,7 +19734,8 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
     }
 }
 async function resumeSmartPendingNode(node, logContext={}){
-    const tasks = smartPendingTasks(node);
+    const scopedTaskIds = new Set(Array.isArray(logContext.taskIds) ? logContext.taskIds.filter(Boolean) : []);
+    const tasks = smartPendingTasks(node).filter(task => !scopedTaskIds.size || scopedTaskIds.has(task.taskId));
     if(!node || !tasks.length) return;
     const logTaskFailure = (message, task) => {
         if(!logContext?.run || !message) return;
@@ -17741,7 +19761,9 @@ async function resumeSmartPendingNode(node, logContext={}){
             const resultImages = result?.project_node_applied
                 ? []
                 : resultMediaUrls(resultItems);
-            finalizeSmartPendingTask(node, task.taskId, resultImages, task.kind || 'image', task.count || 1);
+            if(!result?.project_node_applied){
+                finalizeSmartPendingTask(node, task.taskId, resultImages, task.kind || 'image', task.count || 1);
+            }
             render();
             scheduleSave();
         } catch(e) {
@@ -17753,21 +19775,33 @@ async function resumeSmartPendingNode(node, logContext={}){
                 return;
             }
             if(e && e.imageTaskRecover && e.recoverTaskId){
+                // #41：任务在服务端已丢失（终态），不能继续留在 pendingTasks 里让节点
+                // 永远“生成中”。把可手动查询的恢复信息移入 recoveredGenerationTasks，
+                // 再按终态清理 pending，停止计时器/轮询/loading。
                 task.failed = true;
                 task.querying = false;
                 task.recoverTaskId = e.recoverTaskId;
                 task.providerId = e.providerId || task.providerId || providerIdForSmartTask(node, task);
                 task.error = e.message || tr('smart.errRunFailed');
-                node.running = false;
-                node.pending = Math.max(1, smartPendingTasks(node).length);
                 if(!e?.smartGenerationLogged) logTaskFailure(task.error, task);
+                node.recoveredGenerationTasks = Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks : [];
+                if(!node.recoveredGenerationTasks.some(item => item.taskId === task.taskId && item.recoverTaskId === task.recoverTaskId)){
+                    node.recoveredGenerationTasks.push({taskId:task.taskId, recoverTaskId:task.recoverTaskId, providerId:task.providerId, kind:task.kind || 'image', error:task.error, failed:true, at:nowMs()});
+                }
+                finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
+                node.running = false;
                 toast('任务未丢失，可稍后手动查询结果');
                 render();
                 scheduleSave();
                 return;
             }
-            node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
-            node.pending = Math.max(0, Number(node.pending || 0) - 1);
+            if(!e?.projectNodeApplied){
+                const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
+                node.pendingTasks = remainingTasks;
+                node.pending = remainingTasks.length
+                    ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
+                    : 0;
+            }
             if(!node.pending && smartPendingTasks(node).length === 0){
                 delete node.pendingTasks;
                 node.running = false;
@@ -17786,13 +19820,73 @@ async function resumeSmartPendingNode(node, logContext={}){
             scheduleSave();
         }
     }));
-    if(failures.length && !(node.images || []).length){
+    if(failures.length){
         throw failures[0];
     }
 }
+async function resumeSmartGenerationSubmission(node, submission){
+    const nodeId = String(node?.id || '');
+    const idempotencyKey = String(submission?.idempotencyKey || '');
+    const recoveryKey = `${nodeId}:${idempotencyKey}`;
+    if(!nodeId || !idempotencyKey || activeSmartSubmissionRecoveries.has(recoveryKey)) return;
+    activeSmartSubmissionRecoveries.add(recoveryKey);
+    try {
+        const projectId = canvas.project_id || canvas.project || canvasId;
+        const payload = {...(submission.requestPayload || {}), idempotency_key:idempotencyKey, result_node_id:nodeId, base_revision:Number(canvas.revision || 0)};
+        const task = await postProjectImageTaskWithReplay(projectId, payload);
+        const pendingHistoryLogId = String(submission.pendingHistoryLogId || smartPendingHistoryLogId(task.task_id));
+        const taskResult = {
+            taskIds:[task.task_id].filter(Boolean),
+            count:Number(submission.count || payload.n || 1),
+            providerId:task.route?.provider_id || '',
+            model:task.route?.model || '',
+            route:task.route,
+            projectRevision:task.project_revision,
+            registeredNode:task.registered_node,
+            pendingHistoryLogId,
+            idempotencyKey:task.idempotency_key || idempotencyKey
+        };
+        await acceptProjectGenerationRegistration(taskResult);
+        const currentNode = nodes.find(item => String(item.id || '') === nodeId) || node;
+        clearSmartGenerationSubmission(currentNode, idempotencyKey);
+        const taskIds = taskResult.taskIds;
+        const newTasks = taskIds.map(taskId => ({
+            taskId,
+            kind:'image',
+            count:taskResult.count,
+            providerId:taskResult.providerId,
+            model:taskResult.model,
+            prompt:submission.prompt || payload.prompt || '',
+            createdAt:Number(submission.createdAt || nowMs()),
+            pendingHistoryLogId,
+            idempotencyKey
+        }));
+        currentNode.pendingTasks = [...smartPendingTasks(currentNode).filter(item => !taskIds.includes(item.taskId)), ...newTasks];
+        ensureSmartPendingHistoryLogs(currentNode, newTasks, {prompt:submission.prompt || payload.prompt || '', kind:'image'});
+        currentNode.pending = Math.max(currentNode.pendingTasks.length, currentNode.pendingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0));
+        currentNode.running = false;
+        render();
+        scheduleSave();
+        await resumeSmartPendingNode(currentNode, {taskIds});
+    } catch(error) {
+        if(!error?.smartSubmissionUnknown){
+            const currentNode = nodes.find(item => String(item.id || '') === nodeId) || node;
+            clearSmartGenerationSubmission(currentNode, idempotencyKey);
+            scheduleSave();
+        }
+        toast((error?.message || '恢复生图提交失败').slice(0, 160));
+    } finally {
+        activeSmartSubmissionRecoveries.delete(recoveryKey);
+    }
+}
 function resumeSmartPendingTasks(){
+    nodes.filter(node => smartGenerationSubmissions(node).length).forEach(node => {
+        smartGenerationSubmissions(node).forEach(submission => {
+            void resumeSmartGenerationSubmission(node, submission);
+        });
+    });
     nodes.filter(node => smartPendingTasks(node).length).forEach(node => {
-        resumeSmartPendingNode(node);
+        void resumeSmartPendingNode(node).catch(() => {});
     });
 }
 function updateSelectionBox(event){
@@ -18010,13 +20104,16 @@ function openCreateMenu(event, options={}){
     if(!createMenu) return;
     createMenuPoint = screenToWorld(event);
     createMenuGroupId = options.groupId || '';
-    const w = 500;
-    const h = 218;
+    createMenu.style.left = '14px';
+    createMenu.style.top = '14px';
+    createMenu.classList.add('open');
+    const menuRect = createMenu.getBoundingClientRect();
+    const w = Math.max(1, menuRect.width);
+    const h = Math.max(1, menuRect.height);
     const left = Math.max(14, Math.min(window.innerWidth - w - 14, event.clientX + 8));
     const top = Math.max(14, Math.min(window.innerHeight - h - 14, event.clientY + 8));
     createMenu.style.left = `${left}px`;
     createMenu.style.top = `${top}px`;
-    createMenu.classList.add('open');
     refreshIcons();
 }
 function addCreatedNodeToMenuGroup(node){
@@ -18078,6 +20175,8 @@ shell.onmousedown = e => {
     if(e.button === 0 && isRKeyDown){
         e.preventDefault();
         didPan = false;
+        shell.tabIndex = -1;
+        shell.focus({preventScroll:true});
         selectionState = {startScreen:{x:e.clientX, y:e.clientY}, startWorld:screenToWorld(e)};
         updateSelectionBox(e);
         return;
@@ -18085,6 +20184,8 @@ shell.onmousedown = e => {
     if(e.button === 0 && (e.ctrlKey || e.metaKey)){
         e.preventDefault();
         didPan = false;
+        shell.tabIndex = -1;
+        shell.focus({preventScroll:true});
         selectionState = {startScreen:{x:e.clientX, y:e.clientY}, startWorld:screenToWorld(e)};
         updateSelectionBox(e);
         return;
@@ -18185,9 +20286,20 @@ window.onmousemove = e => {
     if(promptResizeState){
         e.preventDefault();
         const dy = e.clientY - promptResizeState.startY;
-        settings.promptH = Math.max(60, Math.min(160, promptResizeState.startH + dy));
-        promptInput.style.setProperty('--prompt-h', `${settings.promptH}px`);
-        persistActiveSmartSettings();
+        const target = clampPromptManualHeight(promptResizeState.startH + dy);
+        if(promptResizeState.mode === 'expanded'){
+            const naturalBase = Math.max(composerPromptView.manualHeight, promptNaturalHeight());
+            composerPromptView.expandedExtra = Math.max(0, target - naturalBase);
+            composerPromptView.expandedHeight = setPromptEditorHeight(Math.max(naturalBase, target));
+        } else {
+            settings.promptH = target;
+            composerPromptView.manualHeight = target;
+            setPromptEditorHeight(target);
+            persistActiveSmartSettings();
+        }
+        const node = activeComposerNode();
+        if(node) positionComposerForNode(node);
+        keepComposerReachableByPanningCanvas();
         return;
     }
     if(selectionState){
@@ -18391,6 +20503,7 @@ window.onmousemove = e => {
     if(!node) return;
     const moveDx = (e.clientX - dragState.startX) / viewport.scale;
     const moveDy = (e.clientY - dragState.startY) / viewport.scale;
+    if(Math.abs(moveDx) > 1 || Math.abs(moveDy) > 1) dragState.moved = true;
     (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
         const n = nodes.find(x => x.id === item.id);
         if(!n) return;
@@ -18420,8 +20533,17 @@ window.onmousemove = e => {
     if(target) setDropHighlight(target.id);
 };
 window.onmouseup = e => {
+    const nodeDragMoved = Boolean(dragState?.moved);
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
+    if(nodeDragMoved){
+        document.body.classList.add('smart-node-drag-settling');
+        if(composerDragSettleTimer) clearTimeout(composerDragSettleTimer);
+        composerDragSettleTimer = setTimeout(() => {
+            composerDragSettleTimer = 0;
+            document.body.classList.remove('smart-node-drag-settling');
+        }, 180);
+    }
     if(connectionEraseState){
         const changed = finishConnectionErase();
         connectionEraseState = null;
@@ -18615,8 +20737,38 @@ window.onmouseup = e => {
         scheduleConnectionLayerRefresh();
     }
 };
+function canvasWheelIsReserved(target){
+    if(composerPromptView.mode === 'flow' || promptNodeFlowView.mode === 'flow') return true;
+    return Boolean(target?.closest?.([
+        '.prompt-input',
+        '[contenteditable="true"]',
+        'textarea',
+        'input[type="text"]',
+        'input[type="search"]',
+        '.composer .smart-popover',
+        '.composer .mention-picker',
+        '.composer .prompt-preset-panel',
+        '.composer .prompt-template-panel',
+        '.composer .prompt-flow-context-list',
+        '.smart-settings-modal',
+        '.smart-settings',
+        '.smart-back',
+        '.image-edit-modal',
+        '.asset-panel',
+        '.asset-toggle',
+        '.smart-log-toggle',
+        '.smart-shortcut-toggle',
+        '.log-modal',
+        '.shortcut-modal',
+        '.prompt-node-segments',
+        '.prompt-node-text',
+        '.prompt-node-llm',
+        '.smart-group-list',
+        '[data-thumb-scroll]'
+    ].join(',')));
+}
 shell.addEventListener('wheel', e => {
-    if(e.target.closest('.composer,.smart-settings-modal,.smart-settings,.smart-back,.image-edit-modal,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.log-modal,.shortcut-modal,.prompt-node-segments,.prompt-node-text,.prompt-node-llm,.smart-group-list,[data-thumb-scroll]')) return;
+    if(canvasWheelIsReserved(e.target)) return;
     e.preventDefault();
     const rect = shell.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -18786,14 +20938,29 @@ let promptResizeState = null;
 const promptResize = document.getElementById('promptResize');
 if(promptResize){
     promptResize.addEventListener('mousedown', e => {
-        if(e.button !== 0) return;
+        if(e.button !== 0 || composerPromptView.mode === 'flow') return;
         e.preventDefault(); e.stopPropagation();
         promptResizeState = {
             startY: e.clientY,
-            startH: Number(settings.promptH) || promptInput.offsetHeight || 84
+            startH: promptInput.getBoundingClientRect().height / composerWorldScale().y,
+            mode:composerPromptView.mode
         };
     });
 }
+[composerExpandBtn, composerFlowBtn].forEach(button => {
+    button?.addEventListener('mousedown', event => event.preventDefault());
+});
+if(composerExpandBtn) composerExpandBtn.onclick = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    expandPromptToContent();
+};
+if(composerFlowBtn) composerFlowBtn.onclick = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if(composerPromptView.mode === 'flow') exitPromptFlow();
+    else enterPromptFlow(composerPromptView.mode);
+};
 runBtn.onclick = runGeneration;
 cascadeRunBtn.onclick = () => {
     const node = selectedNode();
@@ -19129,6 +21296,40 @@ composer.addEventListener('click', event => {
     if(!event.target.closest('.smart-control') && !event.target.closest('#runBtn') && !event.target.closest('#cascadeRunBtn')) closeAllSmartPopovers();
     event.stopPropagation();
 });
+longContentReader?.addEventListener('pointerdown', event => event.stopPropagation());
+longContentReader?.addEventListener('mousedown', event => event.stopPropagation());
+longContentReader?.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
+longContentReader?.addEventListener('click', event => {
+    event.stopPropagation();
+    if(event.target === longContentReader) closeLongContentReader();
+});
+longContentReader?.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if(event.key === 'Escape'){
+        event.preventDefault();
+        closeLongContentReader();
+        return;
+    }
+    if(event.key !== 'Tab') return;
+    const focusable = [longContentReaderClose, longContentReaderBody].filter(Boolean);
+    if(!focusable.length) return;
+    event.preventDefault();
+    const index = focusable.indexOf(document.activeElement);
+    const next = event.shiftKey
+        ? (index <= 0 ? focusable.length - 1 : index - 1)
+        : (index < 0 || index === focusable.length - 1 ? 0 : index + 1);
+    focusable[next].focus({preventScroll:true});
+});
+longContentReaderClose?.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeLongContentReader();
+});
+promptInput.addEventListener('scroll', () => {
+    if(composerPromptView.mode !== 'flow' && !composerPromptView.applyingScrollRestore){
+        composerPromptView.restoreFlowScroll = false;
+    }
+});
 promptInput.addEventListener('input', maybeOpenMentionPicker);
 promptInput.addEventListener('input', () => {
     // A model popover can remain visible while the pointer is over the
@@ -19137,9 +21338,17 @@ promptInput.addEventListener('input', () => {
     closeAllSmartPopovers();
     delete promptInput.dataset.preserveDraftOnce;
     savePromptDraftForCurrent();
-    renderInputThumbsRow(selectedNode());
+    const currentNode = selectedNode();
+    renderInputThumbsRow(currentNode);
+    if(composerPromptView.mode === 'flow') renderPromptFlowContext(currentNode);
     syncRunButtonState(selectedNode());
     scheduleSave();
+    if(!promptCompositionActive) refreshExpandedPromptHeight();
+});
+promptInput.addEventListener('compositionstart', () => { promptCompositionActive = true; });
+promptInput.addEventListener('compositionend', () => {
+    promptCompositionActive = false;
+    refreshExpandedPromptHeight();
 });
 promptInput.addEventListener('keyup', maybeOpenMentionPicker);
 promptInput.addEventListener('mouseup', saveMentionRange);
@@ -19152,6 +21361,12 @@ document.addEventListener('selectionchange', () => {
     if(document.activeElement === promptInput) saveMentionRange();
 });
 promptInput.addEventListener('keydown', event => {
+    if(event.key === 'Escape' && composerPromptView.mode === 'flow'){
+        event.preventDefault();
+        event.stopPropagation();
+        exitPromptFlow();
+        return;
+    }
     if(event.key === 'Escape') closeMentionPicker();
 });
 promptInput.addEventListener('mouseover', event => {
@@ -19205,12 +21420,44 @@ document.addEventListener('click', event => {
     if(!event.target.closest('.prompt-template-panel') && !event.target.closest('.prompt-preset-edit') && !event.target.closest('#composerTemplateBtn')) closePromptTemplatePanel();
 });
 document.addEventListener('keydown', event => {
+    if(document.querySelector('#smartLogLightbox.open') && !event.altKey && !event.ctrlKey && !event.metaKey){
+        if(event.key === 'ArrowLeft'){
+            event.preventDefault();
+            event.stopPropagation();
+            switchSmartLogDetailOutput(-1);
+            return;
+        }
+        if(event.key === 'ArrowRight'){
+            event.preventDefault();
+            event.stopPropagation();
+            switchSmartLogDetailOutput(1);
+            return;
+        }
+    }
+    if(event.key === 'Escape' && document.querySelector('#smartLogLightbox.open')){
+        event.preventDefault();
+        event.stopPropagation();
+        closeSmartLogLightbox();
+        return;
+    }
+    if(event.key === 'Escape' && closeActiveLongContentSession()){
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+    }
+    if(event.key === 'Escape' && composerPromptView.mode === 'flow'){
+        event.preventDefault();
+        exitPromptFlow();
+        return;
+    }
     if(event.key === 'Escape' && document.querySelector('[data-extract-prompt-selection].open')){
         event.preventDefault();
         closeConversationExtractionMenu();
         return;
     }
-    if(event.key === 'Escape') { closeSmartLogLightbox(); closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasLog(); closeSmartCanvasShortcuts(); closePromptPresetPanel(); closePromptTemplatePanel(); }
+    // Generation history is persistent workspace chrome: Escape closes
+    // transient layers only; the drawer itself is closed by its button.
+    if(event.key === 'Escape') { closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasShortcuts(); closePromptPresetPanel(); closePromptTemplatePanel(); }
 });
 function cropDragModeFromPointer(event){
     const explicit = event.target.closest?.('[data-crop-handle]')?.dataset?.cropHandle;
@@ -19423,18 +21670,18 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
             updateZoomLabel();
             return;
         }
-        const oldZoom = previewZoom;
         const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-        previewZoom = Math.max(0.05, previewZoom * factor);
         const frame = document.getElementById('previewFrame');
-        const rect = frame?.getBoundingClientRect();
-        if(rect){
-            const originX = event.clientX - rect.left - rect.width / 2;
-            const originY = event.clientY - rect.top - rect.height / 2;
-            const ratio = previewZoom / oldZoom;
-            previewPan.x -= originX * (ratio - 1);
-            previewPan.y -= originY * (ratio - 1);
-        }
+        const next = zoomPanAroundPoint(
+            previewZoom,
+            previewPan,
+            factor,
+            frame?.getBoundingClientRect(),
+            event.clientX,
+            event.clientY
+        );
+        previewZoom = next.zoom;
+        previewPan = next.pan;
         applyPreviewTransform();
         return;
     }
@@ -19473,13 +21720,11 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
 window.addEventListener('resize', () => {
     if(cropState) syncImageEditOverflow();
     if(panoramaState.enabled) resizePanoramaViewer();
-    if(smartLogModal){
-        applySmartHistoryDrawerHeight(smartHistoryDrawerHeight);
-        if(smartLogModal.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    }
+    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     const repositionComposer = () => {
         const active = activeComposerNode();
         if(active?.id && composer?.classList.contains('open')) positionComposerForNode(active);
+        if(promptNodeFlowView.mode === 'flow') positionPromptNodeFlow();
         if(smartShortcutModal?.classList.contains('open')) positionSmartCanvasShortcuts();
     };
     if((shell?.clientWidth || window.innerWidth || 0) < 720) {

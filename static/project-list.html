@@ -59,6 +59,30 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="cleanupPreviewDialog" class="create-dialog cleanup-preview-dialog" aria-labelledby="cleanupPreviewTitle">
+    <div class="cleanup-preview-content">
+      <p class="eyebrow">READ-ONLY PREVIEW</p>
+      <h2 id="cleanupPreviewTitle" data-i18n="projectList.cleanupTitle">永久清理预览</h2>
+      <p id="cleanupPreviewProject" class="cleanup-preview-project"></p>
+      <p class="cleanup-preview-summary">
+        <strong id="cleanupCandidateCount">0</strong>
+        <span data-i18n="projectList.cleanupCandidates">项可证明的清理候选</span>
+        <span id="cleanupTotalBytes"></span>
+      </p>
+      <p id="cleanupPermanentScope" class="cleanup-permanent-scope" data-i18n="projectList.cleanupScope">永久删除范围仅包括下列媒体原件及其媒体索引记录，不包括项目内容、历史、恢复、撤销或事务数据。本次预览不会删除任何内容。</p>
+      <p id="cleanupPreviewError" class="form-error" role="alert"></p>
+      <div id="cleanupCandidateList" class="cleanup-candidate-list" aria-live="polite"></div>
+      <div id="cleanupConfirmArea" class="cleanup-confirm-area" hidden>
+        <p id="cleanupConfirmNote" class="cleanup-confirm-note" data-i18n="projectList.cleanupConfirmNote">确认后立即永久删除以上候选媒体原件及其索引记录，不进入项目回收站，无法撤销；执行前会重新验证项目版本与所有权证明，任何变化都会中止并要求重新预览。</p>
+        <p id="cleanupConfirmError" class="form-error" role="alert"></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="closeCleanupPreview" class="button secondary" type="button" data-i18n="projectList.cleanupClose">关闭预览</button>
+        <button id="confirmCleanup" class="button danger" type="button" data-i18n="projectList.cleanupConfirm" disabled hidden>确认永久清理</button>
+      </div>
+    </div>
+  </dialog>
   <script src="/static/js/project-list.js"></script>
 </body>
 </html>

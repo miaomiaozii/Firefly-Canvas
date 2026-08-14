@@ -6,6 +6,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 import os
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from firefly_projects import ProjectNotFound
 from app.core import (FileResponse, HTTPException, Request, StreamingResponse, _os, _sys, content_type_for_path, filename_from_media_url, os, requests, rewrite_runninghub_file_url, sanitize_export_filename, urllib)
 _from_main_names = ['local_media_file_by_basename', 'output_file_from_url']
 import app.services as _svc
@@ -27,6 +28,32 @@ def download_output(request: Request, url: str, name: str='', inline: bool=False
         filename = sanitize_export_filename(os.path.basename(name) if name else os.path.basename(path), os.path.basename(path))
         return FileResponse(path, media_type=content_type_for_path(path), filename=None if inline else filename)
     parsed = urllib.parse.urlparse(str(url or '').strip())
+    segments = parsed.path.split('/')
+    project_media_path = (
+        not parsed.scheme
+        and not parsed.netloc
+        and len(segments) in (6, 7)
+        and segments[1:3] == ['api', 'project-library']
+        and segments[4] == 'media'
+        and (len(segments) == 6 or segments[6] == 'preview')
+    )
+    if project_media_path:
+        project_id = urllib.parse.unquote(segments[3])
+        asset_id = urllib.parse.unquote(segments[5])
+        if project_id and asset_id:
+            try:
+                record = _app_main.project_store_call('media_record', project_id, asset_id)
+            except ProjectNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            media_path = str(record.get('path') or '')
+            if media_path:
+                fallback = os.path.basename(media_path)
+                filename = sanitize_export_filename(os.path.basename(name) if name else record.get('name') or fallback, fallback)
+                return FileResponse(
+                    media_path,
+                    media_type=record.get('mime_type') or content_type_for_path(media_path),
+                    filename=None if inline else filename,
+                )
     if parsed.scheme not in ('http', 'https') or not parsed.netloc:
         raise HTTPException(status_code=400, detail='无效的下载地址')
     try:

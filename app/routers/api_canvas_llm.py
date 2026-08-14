@@ -4,7 +4,7 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, require_project_media_values_scope, selected_model, text_from_chat_response, unwrap_apimart_response)
+from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, unwrap_apimart_response)
 _from_main_names = ['codex_chat_text', 'gemini_cli_chat_text', 'get_api_provider', 'is_image_reference_value', 'is_video_reference_value', 'media_reference_to_url', 'resolve_chat_provider', 'video_reference_to_frame_data_urls']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -18,7 +18,40 @@ router = APIRouter()
 @router.post('/api/canvas-llm')
 async def canvas_llm(payload: CanvasLLMRequest):
     media_values = [str(getattr(item, 'url', item) or '') for item in payload.images or []] + [str(item or '') for item in payload.videos or []] + [str(item or '') for item in payload.audios or []] + [str(item.get('url') or '') for item in payload.audio_references or [] if isinstance(item, dict)]
-    require_project_media_values_scope(media_values)
+    project_id = str(payload.project_id or '').strip()
+    project_scope = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id) if project_id else None
+    try:
+        require_project_media_values_scope(media_values)
+        if project_scope is not None:
+            def resolve_image(value: str) -> str:
+                if not project_media_adapter_reference_from_url(value):
+                    return value
+                return _svc._main('reference_to_data_url')(
+                    {'url': value},
+                    max_size=1536,
+                    max_bytes=_svc._main('PROJECT_CONVERSATION_MEDIA_MAX_FILE_BYTES'),
+                )
+
+            def resolve_media(value: str, kind: str) -> str:
+                if not project_media_adapter_reference_from_url(value):
+                    return value
+                return _svc.media_adapter_data_url(
+                    value,
+                    kind,
+                    max_bytes=_svc._main('PROJECT_CONVERSATION_MEDIA_MAX_FILE_BYTES'),
+                )
+
+            payload.images = [resolve_image(value) for value in payload.images or []]
+            payload.videos = [resolve_media(value, 'video') for value in payload.videos or []]
+            payload.audios = [resolve_media(value, 'audio') for value in payload.audios or []]
+            payload.audio_references = [
+                {**item, 'url': resolve_media(str(item.get('url') or ''), 'audio')}
+                if isinstance(item, dict) and item.get('url') else item
+                for item in payload.audio_references or []
+            ]
+    finally:
+        if project_scope is not None:
+            PROJECT_MEDIA_ADAPTER_PROJECT.reset(project_scope)
     _provider = _app_main.get_api_provider(payload.provider)
     audio_references = [item for item in payload.audio_references or [] if isinstance(item, dict) and str(item.get('asset_id') or item.get('url') or '').strip()]
     if (payload.audios or audio_references) and (not chat_provider_supports_audio(_provider)):

@@ -250,7 +250,12 @@ async def build_online_image_result(payload: OnlineImageRequest):
     count = max(1, min(8, int(payload.n or 1)))
 
     async def generate_one():
-        image_data, raw_item = await _svc._main('generate_ai_image')(payload.prompt, request_size, payload.quality, model, image_refs, provider['id'])
+        # #41: 受控并发 + 429 退避（共享 helper）。#40 的全串行 Semaphore(1) 会让
+        # count=8 变成「间隔很久一张一张传」，这里恢复并发连发。
+        image_data, raw_item = await _svc._main('run_provider_generation_with_backoff')(
+            provider['id'], _svc._main('generate_ai_image'),
+            payload.prompt, request_size, payload.quality, model, image_refs, provider['id'],
+        )
         try:
             image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]
         except HTTPException:

@@ -46,7 +46,8 @@ textarea:focus-visible {
 }
 
 .settings-shell {
-  width: min(1120px, calc(100% - 32px));
+  width: calc(100% - 40px);
+  max-width: none;
   margin: 0 auto;
   padding: var(--space-24) 0 calc(var(--space-24) * 3);
 }
@@ -503,9 +504,10 @@ input[type="radio"] {
   border-color: var(--accent);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 800px) {
   .settings-shell {
-    width: min(calc(100% - 24px), 1120px);
+    width: calc(100% - 24px);
+    max-width: none;
     padding-top: var(--space-16);
     padding-bottom: calc(var(--space-24) * 2);
   }

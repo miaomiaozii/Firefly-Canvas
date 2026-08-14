@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import firefly_projects
 from firefly_projects import InvalidMutation, ProjectStore, ProjectStoreError, RevisionConflict
 
 
@@ -76,6 +77,974 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(opened["canvas"]["project_id"], project["id"])
         self.assertEqual(opened["canvas"]["kind"], "core")
         self.assertEqual(list((self.root / project["id"]).glob("canvas*.json")), [self.root / project["id"] / "canvas.json"])
+
+    def test_cleanup_preview_lists_unowned_transient_generation_without_mutating_project(self):
+        project = self.store.create_project("待清理项目")
+        candidate = self.store.import_media(
+            project["id"],
+            b"transient-generation-bytes",
+            "failed-output.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        project_dir = self.root / project["id"]
+
+        def tree_snapshot():
+            return {
+                path.relative_to(project_dir).as_posix(): (
+                    "directory" if path.is_dir() else "file",
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else b"",
+                )
+                for path in sorted(project_dir.rglob("*"))
+            }
+
+        before = tree_snapshot()
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["project_id"], project["id"])
+        self.assertEqual(preview["revision"], 0)
+        self.assertRegex(preview["ownership_proof"], r"^[0-9a-f]{64}$")
+        self.assertEqual(preview["candidate_count"], 1)
+        self.assertEqual(preview["total_bytes"], len(b"transient-generation-bytes"))
+        self.assertEqual(preview["candidates"], [{
+            "asset_id": candidate["asset_id"],
+            "name": "failed-output.png",
+            "kind": "image",
+            "mime_type": "image/png",
+            "size": len(b"transient-generation-bytes"),
+            "source_category": "transient_generation",
+        }])
+        self.assertEqual(tree_snapshot(), before)
+
+    def test_cleanup_preview_lists_unowned_failed_generation(self):
+        project = self.store.create_project("失败生成残留")
+        candidate = self.store.import_media(
+            project["id"],
+            b"failed-generation",
+            "failed.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 1)
+        self.assertEqual(preview["candidates"][0]["asset_id"], candidate["asset_id"])
+        self.assertEqual(preview["candidates"][0]["source_category"], "failed_generation")
+
+    def test_cleanup_preview_preserves_conflicting_generation_lifecycles(self):
+        project = self.store.create_project("生成生命周期冲突")
+        succeeded = self.store.import_media(
+            project["id"],
+            b"shared-generation-lifecycle",
+            "succeeded.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "succeeded"},
+        )
+        transient = self.store.import_media(
+            project["id"],
+            b"shared-generation-lifecycle",
+            "transient.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        self.assertEqual(transient["asset_id"], succeeded["asset_id"])
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+        self.assertEqual(preview["candidates"], [])
+
+    def test_cleanup_preview_fails_closed_on_unknown_candidate_schema(self):
+        project = self.store.create_project("未知候选 schema")
+        candidate = self.store.import_media(
+            project["id"],
+            b"unknown-candidate-schema",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        index_path = self.root / project["id"] / "media" / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][candidate["asset_id"]]["future_owner"] = {"kind": "unknown"}
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+
+        with self.assertRaisesRegex(ProjectStoreError, "媒体 schema"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_on_noncanonical_media_provenance(self):
+        project = self.store.create_project("非规范来源信息")
+        candidate = self.store.import_media(
+            project["id"],
+            b"noncanonical-provenance",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        index_path = self.root / project["id"] / "media" / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][candidate["asset_id"]]["source"]["future_owner"] = "unknown"
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+
+        with self.assertRaisesRegex(ProjectStoreError, "媒体来源"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_on_malformed_media_provenance(self):
+        project = self.store.create_project("损坏来源信息")
+        candidate = self.store.import_media(
+            project["id"],
+            b"malformed-provenance",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        index_path = self.root / project["id"] / "media" / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["items"][candidate["asset_id"]]["sources"].append("unknown-owner")
+        index_path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+
+        with self.assertRaisesRegex(ProjectStoreError, "媒体来源"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_preserves_media_with_user_owned_provenance(self):
+        project = self.store.create_project("媒体所有权")
+        transient = self.store.import_media(
+            project["id"],
+            b"shared-content",
+            "failed-output.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        imported = self.store.import_media(
+            project["id"],
+            b"shared-content",
+            "user-import.png",
+            "image/png",
+            source_info={"type": "remote_url", "locator": "https://example.test/user.png"},
+        )
+        self.assertEqual(imported["asset_id"], transient["asset_id"])
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+        self.assertEqual(preview["candidates"], [])
+        self.assertTrue(Path(self.store.media_record(project["id"], transient["asset_id"])["path"]).is_file())
+
+    def test_cleanup_preview_treats_the_persisted_canvas_as_a_recovery_owner(self):
+        project = self.store.create_project("磁盘快照所有权")
+        candidate = self.store.import_media(
+            project["id"],
+            b"persisted-canvas-owner",
+            "persisted.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        canvas_path = self.root / project["id"] / "canvas.json"
+        persisted = json.loads(canvas_path.read_text(encoding="utf-8"))
+        persisted["future_recovery_owner"] = candidate["asset_id"]
+        canvas_path.write_text(json.dumps(persisted, ensure_ascii=False), encoding="utf-8")
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+
+    def test_cleanup_preview_uses_the_current_in_memory_canvas_as_an_owner(self):
+        project = self.store.create_project("尚未快照的内容")
+        candidate = self.store.import_media(
+            project["id"],
+            b"current-memory-owner",
+            "current.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        self.store.apply_mutations(project["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "current-result",
+                "type": "generated_image",
+                "images": [{"asset_id": candidate["asset_id"]}],
+            },
+        }], base_revision=0)
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["revision"], 1)
+        self.assertEqual(preview["candidate_count"], 0)
+
+    def test_cleanup_preview_fails_closed_on_conflicting_backup_ownership(self):
+        project = self.store.create_project("冲突恢复所有权")
+        self.store.import_media(
+            project["id"],
+            b"backup-conflict",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        project_dir = self.root / project["id"]
+        backup = json.loads((project_dir / "canvas.json").read_text(encoding="utf-8"))
+        backup["project_id"] = "another-project"
+        (project_dir / "canvas.json.bak").write_text(
+            json.dumps(backup, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ProjectStoreError, "恢复数据所有权"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_treats_unknown_backup_reference_as_an_owner(self):
+        project = self.store.create_project("恢复所有权")
+        candidate = self.store.import_media(
+            project["id"],
+            b"recovery-owned",
+            "recovery.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        project_dir = self.root / project["id"]
+        backup = json.loads((project_dir / "canvas.json").read_text(encoding="utf-8"))
+        backup["future_recovery_owner"] = candidate["asset_id"]
+        (project_dir / "canvas.json.bak").write_text(
+            json.dumps(backup, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+        self.assertEqual(preview["candidates"], [])
+
+    def test_cleanup_preview_treats_unknown_undo_snapshot_reference_as_an_owner(self):
+        project = self.store.create_project("撤销所有权")
+        candidate = self.store.import_media(
+            project["id"],
+            b"undo-owned",
+            "undo.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        undo_dir = self.root / project["id"] / "trash" / "undo"
+        undo_dir.mkdir(parents=True, exist_ok=True)
+        (undo_dir / "future-deletion.json").write_text(
+            json.dumps({"future_undo_owner": candidate["asset_id"]}),
+            encoding="utf-8",
+        )
+        trash_index_path = self.root / project["id"] / "trash" / "index.json"
+        trash_index_path.write_text(json.dumps({"items": [{
+            "asset_id": "deleted-owner",
+            "undo": {"snapshot_filename": "future-deletion.json"},
+        }]}), encoding="utf-8")
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+        self.assertEqual(preview["candidates"], [])
+
+    def test_cleanup_preview_preserves_generation_that_was_successfully_committed(self):
+        project = self.store.create_project("成功生成所有权")
+        media = self.store.import_media(
+            project["id"],
+            b"committed-generation",
+            "committed.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        output = {"asset_id": media["asset_id"], "kind": "image", "name": "committed.png"}
+        self.store.complete_image_generation(
+            project["id"],
+            "result-node",
+            [output],
+            {
+                "id": "generation-success",
+                "type": "online-image",
+                "status": "succeeded",
+                "outputs": [output],
+                "result_node_id": "result-node",
+            },
+        )
+        self.store.flush(project["id"])
+        self.apply_mutations(project["id"], [
+            {"op": "remove_node", "node_id": "result-node"},
+        ])
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.store.delete_history_record(
+            project["id"],
+            "generation-success",
+            base_revision=revision,
+        )
+        self.store.flush(project["id"])
+        self.store.flush(project["id"])
+
+        preview = self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(preview["candidate_count"], 0)
+        self.assertEqual(preview["candidates"], [])
+
+    def test_cleanup_preview_fails_closed_on_unindexed_trash_media(self):
+        project = self.store.create_project("未索引恢复媒体")
+        self.store.import_media(
+            project["id"],
+            b"valid-candidate",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        trash_media = self.root / project["id"] / "trash" / "media"
+        trash_media.mkdir()
+        (trash_media / "unknown.png").write_bytes(b"unknown-recovery-owner")
+
+        with self.assertRaisesRegex(ProjectStoreError, "恢复媒体"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_while_original_media_transaction_exists(self):
+        project = self.store.create_project("事务中项目")
+        self.store.import_media(
+            project["id"],
+            b"transaction-owned",
+            "transaction.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        transaction_path = self.root / project["id"] / "trash" / firefly_projects.ORIGINAL_MEDIA_TRANSACTION_NAME
+        transaction_path.write_text(
+            json.dumps({
+                "format": firefly_projects.ORIGINAL_MEDIA_TRANSACTION_FORMAT,
+                "project_id": project["id"],
+                "phase": "prepared",
+            }),
+            encoding="utf-8",
+        )
+        before = transaction_path.read_bytes()
+
+        with self.assertRaisesRegex(ProjectStoreError, "事务尚未完成"):
+            self.store.preview_project_cleanup(project["id"])
+
+        self.assertEqual(transaction_path.read_bytes(), before)
+
+    def test_cleanup_preview_fails_closed_on_unknown_media_directory_entry(self):
+        project = self.store.create_project("媒体目录未知条目")
+        self.store.import_media(
+            project["id"],
+            b"valid-candidate",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        media_root = self.root / project["id"] / "media"
+        (media_root / "unexpected").mkdir()
+
+        with self.assertRaisesRegex(ProjectStoreError, "媒体目录"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_on_unindexed_media_file(self):
+        project = self.store.create_project("未索引媒体")
+        self.store.import_media(
+            project["id"],
+            b"valid-candidate",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        media_root = self.root / project["id"] / "media"
+        (media_root / "unknown.bin").write_bytes(b"unknown-owner")
+
+        with self.assertRaisesRegex(ProjectStoreError, "未索引媒体"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_when_any_indexed_media_file_is_missing(self):
+        project = self.store.create_project("媒体读取不完整")
+        candidate = self.store.import_media(
+            project["id"],
+            b"candidate-present",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        owned = self.store.import_media(
+            project["id"],
+            b"owned-but-missing",
+            "owned.png",
+            "image/png",
+            source_info={"type": "remote_url", "locator": "https://example.test/owned.png"},
+        )
+        Path(self.store.media_record(project["id"], owned["asset_id"])["path"]).unlink()
+
+        with self.assertRaisesRegex(ProjectStoreError, "媒体读取不完整"):
+            self.store.preview_project_cleanup(project["id"])
+
+        self.assertTrue(Path(
+            self.store.media_record(project["id"], candidate["asset_id"])["path"]
+        ).is_file())
+
+    def test_cleanup_preview_fails_closed_on_unknown_top_level_schema(self):
+        project = self.store.create_project("未知顶层 schema")
+        history_path = self.root / project["id"] / "history.json"
+        history_path.write_text("[]", encoding="utf-8")
+
+        with self.assertRaisesRegex(ProjectStoreError, "项目数据"):
+            self.store.preview_project_cleanup(project["id"])
+
+    def test_cleanup_preview_fails_closed_on_corrupt_history_without_mutating_project(self):
+        project = self.store.create_project("损坏历史")
+        self.store.import_media(
+            project["id"],
+            b"untrusted-candidate",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        project_dir = self.root / project["id"]
+        (project_dir / "history.json").write_text("{not-json", encoding="utf-8")
+
+        def tree_snapshot():
+            return {
+                path.relative_to(project_dir).as_posix(): (
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in sorted(project_dir.rglob("*"))
+            }
+
+        before = tree_snapshot()
+        with self.assertRaisesRegex(ProjectStoreError, "无法读取项目数据"):
+            self.store.preview_project_cleanup(project["id"])
+        self.assertEqual(tree_snapshot(), before)
+
+    def test_cleanup_execute_permanently_deletes_exact_confirmed_candidates_without_recovery_writes(self):
+        project = self.store.create_project("永久清理执行")
+        transient = self.store.import_media(
+            project["id"],
+            b"transient-orphan",
+            "orphan.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        failed = self.store.import_media(
+            project["id"],
+            b"failed-orphan",
+            "failed.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        owned = self.store.import_media(
+            project["id"],
+            b"user-owned",
+            "user.png",
+            "image/png",
+            source_info={"locator": "https://example.test/user.png", "type": "remote_url"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        self.assertEqual(
+            [item["asset_id"] for item in preview["candidates"]],
+            sorted([failed["asset_id"], transient["asset_id"]]),
+        )
+        project_dir = self.root / project["id"]
+
+        def file_tree_snapshot():
+            return {
+                path.relative_to(project_dir).as_posix(): (
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.read_bytes(),
+                )
+                for path in sorted(project_dir.rglob("*"))
+                if path.is_file()
+            }
+
+        def directory_tree():
+            return {
+                path.relative_to(project_dir).as_posix()
+                for path in sorted(project_dir.rglob("*"))
+                if path.is_dir()
+            }
+
+        before_files = file_tree_snapshot()
+        before_directories = directory_tree()
+
+        result = self.store.execute_project_cleanup(
+            project["id"],
+            revision=preview["revision"],
+            ownership_proof=preview["ownership_proof"],
+            candidate_asset_ids=[item["asset_id"] for item in preview["candidates"]],
+        )
+
+        self.assertEqual(result["project_id"], project["id"])
+        self.assertEqual(result["deleted_count"], 2)
+        self.assertEqual(result["deleted_bytes"], len(b"transient-orphan") + len(b"failed-orphan"))
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(
+            sorted(item["asset_id"] for item in result["deleted"]),
+            sorted([failed["asset_id"], transient["asset_id"]]),
+        )
+        after_files = file_tree_snapshot()
+        changed = sorted(set(before_files) ^ set(after_files))
+        self.assertEqual(
+            changed,
+            [
+                f"media/{failed['asset_id']}.png",
+                f"media/{transient['asset_id']}.png",
+            ],
+        )
+        unchanged = set(before_files) & set(after_files)
+        self.assertTrue(all(
+            before_files[name] == after_files[name]
+            for name in unchanged
+            if name != "media/index.json"
+        ))
+        self.assertEqual(directory_tree(), before_directories)
+        index = json.loads(
+            (project_dir / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(index["items"]), {owned["asset_id"]})
+        self.assertFalse((project_dir / "media" / f"{failed['asset_id']}.png").exists())
+        self.assertFalse((project_dir / "media" / f"{transient['asset_id']}.png").exists())
+        self.assertTrue((project_dir / "media" / f"{owned['asset_id']}.png").is_file())
+        self.assertFalse((project_dir / "trash" / "original-media-transaction.json").exists())
+        with self.assertRaises(ProjectStoreError):
+            self.store.media_record(project["id"], failed["asset_id"])
+        # 再次提交同一确认：候选集合已经变化，必须要求重新预览。
+        with self.assertRaisesRegex(firefly_projects.CleanupDrift, "重新预览"):
+            self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[item["asset_id"] for item in preview["candidates"]],
+            )
+
+    def test_cleanup_execute_rejects_revision_drift_without_deleting(self):
+        project = self.store.create_project("版本漂移")
+        candidate = self.store.import_media(
+            project["id"],
+            b"revision-drift",
+            "drift.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "drift", "type": "prompt", "x": 10, "y": 20}},
+        ])
+
+        with self.assertRaisesRegex(firefly_projects.CleanupDrift, "重新预览"):
+            self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[candidate["asset_id"]],
+            )
+
+        self.assertTrue((self.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file())
+        index = json.loads(
+            (self.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(candidate["asset_id"], index["items"])
+
+    def test_cleanup_execute_rejects_ownership_proof_drift_without_deleting(self):
+        project = self.store.create_project("证明漂移")
+        candidate = self.store.import_media(
+            project["id"],
+            b"proof-drift",
+            "proof.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        history_path = self.root / project["id"] / "history.json"
+        payload = json.loads(history_path.read_text(encoding="utf-8"))
+        payload["extra"] = "drift"
+        history_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        with self.assertRaisesRegex(firefly_projects.CleanupDrift, "所有权证明"):
+            self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[candidate["asset_id"]],
+            )
+
+        self.assertTrue((self.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file())
+        index = json.loads(
+            (self.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(candidate["asset_id"], index["items"])
+
+    def test_cleanup_execute_rejects_candidate_set_drift_without_deleting(self):
+        project = self.store.create_project("候选漂移")
+        first = self.store.import_media(
+            project["id"],
+            b"first-candidate",
+            "first.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        second = self.store.import_media(
+            project["id"],
+            b"second-candidate",
+            "second.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+
+        with self.assertRaisesRegex(firefly_projects.CleanupDrift, "重新预览"):
+            self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[first["asset_id"]],
+            )
+
+        for asset_id in (first["asset_id"], second["asset_id"]):
+            self.assertTrue(
+                (self.root / project["id"] / "media" / f"{asset_id}.png").is_file()
+            )
+        index = json.loads(
+            (self.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(index["items"]), {first["asset_id"], second["asset_id"]})
+
+    def test_cleanup_execute_rejects_invalid_confirmation_shapes_without_deleting(self):
+        project = self.store.create_project("无效确认")
+        candidate = self.store.import_media(
+            project["id"],
+            b"invalid-confirmation",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        cases = [
+            {"revision": None},
+            {"revision": "0"},
+            {"revision": -1},
+            {"revision": True},
+            {"ownership_proof": ""},
+            {"ownership_proof": "not-a-proof"},
+            {"ownership_proof": "A" * 64},
+            {"candidate_asset_ids": None},
+            {"candidate_asset_ids": "abc"},
+            {"candidate_asset_ids": ["../outside.png"]},
+            {"candidate_asset_ids": ["deadbeef"]},
+            {"candidate_asset_ids": [candidate["asset_id"], candidate["asset_id"]]},
+        ]
+        for override in cases:
+            confirmation = {
+                "revision": preview["revision"],
+                "ownership_proof": preview["ownership_proof"],
+                "candidate_asset_ids": [candidate["asset_id"]],
+            }
+            confirmation.update(override)
+            with self.subTest(override=override):
+                with self.assertRaises(ProjectStoreError):
+                    self.store.execute_project_cleanup(project["id"], **confirmation)
+                self.assertTrue(
+                    (self.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file()
+                )
+
+    def test_cleanup_execute_reports_exact_partial_unlink_failure_without_claiming_deletion(self):
+        project = self.store.create_project("部分删除失败")
+        failing = self.store.import_media(
+            project["id"],
+            b"failing-unlink",
+            "failing.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        removed = self.store.import_media(
+            project["id"],
+            b"removed-unlink",
+            "removed.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        original_unlink = firefly_projects.os.unlink
+        failing_name = f"{failing['asset_id']}.png"
+
+        def selective_unlink(path, *args, **kwargs):
+            if str(path).endswith(failing_name):
+                raise OSError("injected unlink failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(firefly_projects.os, "unlink", side_effect=selective_unlink):
+            result = self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[failing["asset_id"], removed["asset_id"]],
+            )
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual([item["asset_id"] for item in result["failed"]], [failing["asset_id"]])
+        self.assertEqual([item["asset_id"] for item in result["deleted"]], [removed["asset_id"]])
+        index = json.loads(
+            (self.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(index["items"]), {failing["asset_id"]})
+        self.assertTrue((self.root / project["id"] / "media" / failing_name).is_file())
+        self.assertFalse((self.root / project["id"] / "media" / f"{removed['asset_id']}.png").exists())
+
+    def test_cleanup_execute_interrupted_deletion_fails_closed(self):
+        project = self.store.create_project("中断删除")
+        candidate = self.store.import_media(
+            project["id"],
+            b"interrupted-deletion",
+            "interrupted.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        # 模拟“文件已删除、索引尚未提交”的中断状态。
+        (self.root / project["id"] / "media" / f"{candidate['asset_id']}.png").unlink()
+        project_dir = self.root / project["id"]
+
+        def tree_snapshot():
+            return {
+                path.relative_to(project_dir).as_posix(): (
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in sorted(project_dir.rglob("*"))
+            }
+
+        before = tree_snapshot()
+        with self.assertRaises(ProjectStoreError):
+            self.store.execute_project_cleanup(
+                project["id"],
+                revision=preview["revision"],
+                ownership_proof=preview["ownership_proof"],
+                candidate_asset_ids=[candidate["asset_id"]],
+            )
+        self.assertEqual(tree_snapshot(), before)
+        self.assertFalse((project_dir / "trash" / "original-media-transaction.json").exists())
+
+    def test_cleanup_execute_preserves_owned_user_and_succeeded_generation_media(self):
+        project = self.store.create_project("保留归属媒体")
+        succeeded = self.store.import_media(
+            project["id"],
+            b"succeeded-generation",
+            "succeeded.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "succeeded"},
+        )
+        user = self.store.import_media(
+            project["id"],
+            b"imported-by-user",
+            "imported.png",
+            "image/png",
+            source_info={"locator": "https://example.test/imported.png", "type": "remote_url"},
+        )
+        preview = self.store.preview_project_cleanup(project["id"])
+        self.assertEqual(preview["candidate_count"], 0)
+        project_dir = self.root / project["id"]
+
+        def file_tree_snapshot():
+            return {
+                path.relative_to(project_dir).as_posix(): (
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.read_bytes(),
+                )
+                for path in sorted(project_dir.rglob("*"))
+                if path.is_file()
+            }
+
+        before = file_tree_snapshot()
+        result = self.store.execute_project_cleanup(
+            project["id"],
+            revision=preview["revision"],
+            ownership_proof=preview["ownership_proof"],
+            candidate_asset_ids=[],
+        )
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertEqual(result["deleted"], [])
+        self.assertEqual(file_tree_snapshot(), before)
+        for asset_id in (succeeded["asset_id"], user["asset_id"]):
+            self.assertTrue((project_dir / "media" / f"{asset_id}.png").is_file())
+
+    def test_create_project_removes_partial_directory_when_initialization_fails(self):
+        original_write = firefly_projects._write_json_atomic
+        write_count = 0
+
+        def fail_during_initialization(path, payload, **kwargs):
+            nonlocal write_count
+            write_count += 1
+            if write_count == 3:
+                raise OSError("injected project initialization failure")
+            return original_write(path, payload, **kwargs)
+
+        with patch.object(firefly_projects, "_write_json_atomic", side_effect=fail_during_initialization):
+            with self.assertRaisesRegex(OSError, "injected project initialization failure"):
+                self.store.create_project("半成品")
+
+        self.assertEqual(self.store.list_projects(), [])
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_create_project_uuid_collision_does_not_delete_existing_project(self):
+        existing = self.store.create_project("existing")
+        metadata_path = self.root / existing["id"] / "project.json"
+        original_metadata = metadata_path.read_bytes()
+        collision = type("Collision", (), {"hex": existing["id"]})()
+
+        with patch.object(firefly_projects.uuid, "uuid4", return_value=collision):
+            with self.assertRaises(FileExistsError):
+                self.store.create_project("collision")
+
+        self.assertEqual(self.store.open_project(existing["id"])["project"]["name"], "existing")
+        self.assertEqual(metadata_path.read_bytes(), original_metadata)
+        self.assertEqual([item["id"] for item in self.store.list_projects()], [existing["id"]])
+
+    def test_duplicate_project_preserves_durable_content_with_a_new_project_identity(self):
+        source = self.store.create_project("原项目")
+        referenced = self.store.import_media(
+            source["id"],
+            b"referenced-original",
+            "referenced.png",
+            "image/png",
+            source_info={"locator": "https://example.test/reference.png?token=secret", "type": "remote_url"},
+        )
+        unreferenced = self.store.import_media(
+            source["id"],
+            b"unreferenced-original",
+            "unreferenced.png",
+            "image/png",
+            source_info={"locator": "file:///D:/assets/unreferenced.png", "type": "external_path"},
+        )
+        self.apply_mutations(source["id"], [
+            {"op": "upsert_node", "node": {"id": "prompt", "type": "prompt", "x": 120, "y": 80, "w": 280, "h": 180}},
+            {"op": "upsert_node", "node": {"id": "image", "type": "image", "x": 520, "y": 140, "w": 320, "h": 240, "images": [{"asset_id": referenced["asset_id"]}]}},
+            {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt", "to": "image"}},
+            {"op": "set_canvas_meta", "logs": [{"id": "log-1", "output_asset_id": referenced["asset_id"]}]},
+        ])
+        self.store.flush(source["id"])
+
+        duplicate = self.store.duplicate_project(source["id"])
+
+        self.assertNotEqual(duplicate["id"], source["id"])
+        self.assertEqual(duplicate["id"], duplicate["canvas_id"])
+        self.assertEqual(duplicate["name"], "原项目 副本")
+        source_opened = self.store.open_project(source["id"])
+        copied_opened = self.store.open_project(duplicate["id"])
+        self.assertEqual(copied_opened["canvas"]["id"], duplicate["id"])
+        self.assertEqual(copied_opened["canvas"]["project_id"], duplicate["id"])
+        self.assertEqual(copied_opened["canvas"]["project"], duplicate["id"])
+        self.assertEqual(copied_opened["canvas"]["title"], duplicate["name"])
+        self.assertEqual(copied_opened["canvas"]["revision"], 0)
+        self.assertEqual(copied_opened["canvas"]["nodes"], source_opened["canvas"]["nodes"])
+        self.assertEqual(copied_opened["canvas"]["connections"], source_opened["canvas"]["connections"])
+        self.assertEqual(copied_opened["canvas"]["logs"], source_opened["canvas"]["logs"])
+        backup = json.loads((self.root / duplicate["id"] / "canvas.json.bak").read_text(encoding="utf-8"))
+        self.assertEqual(backup["nodes"], source_opened["canvas"]["nodes"])
+        self.assertEqual(backup["connections"], source_opened["canvas"]["connections"])
+        self.assertEqual(
+            {item["asset_id"] for item in self.store.list_media(duplicate["id"])},
+            {referenced["asset_id"], unreferenced["asset_id"]},
+        )
+        for asset_id in (referenced["asset_id"], unreferenced["asset_id"]):
+            original = self.store.media_record(source["id"], asset_id)
+            copied = self.store.media_record(duplicate["id"], asset_id)
+            self.assertEqual(copied["sha256"], original["sha256"])
+            self.assertEqual(copied.get("source"), original.get("source"))
+            self.assertNotEqual(copied["path"], original["path"])
+            self.assertEqual(Path(copied["path"]).read_bytes(), Path(original["path"]).read_bytes())
+
+        self.apply_mutations(duplicate["id"], [{"op": "remove_node", "node_id": "image"}])
+        self.store.trash_project(duplicate["id"])
+        self.assertEqual(len(self.store.open_project(source["id"])["canvas"]["nodes"]), 2)
+        self.assertTrue(Path(self.store.media_record(source["id"], referenced["asset_id"])["path"]).is_file())
+        self.store.restore_project(duplicate["id"])
+        self.assertEqual(len(self.store.open_project(duplicate["id"])["canvas"]["nodes"]), 1)
+
+    def test_duplicate_project_reserves_the_copy_suffix_at_the_name_limit(self):
+        source = self.store.create_project("甲" * 60)
+
+        duplicate = self.store.duplicate_project(source["id"])
+
+        self.assertEqual(duplicate["name"], ("甲" * 57) + " 副本")
+        self.assertEqual(len(duplicate["name"]), 60)
+
+    def test_duplicate_project_does_not_copy_runtime_task_state(self):
+        source = self.store.create_project("运行中项目")
+        runtime_fields = {
+            "pending": 2,
+            "running": True,
+            "queued": True,
+            "pendingTasks": [{"taskId": "task-source", "kind": "image"}],
+            "jimengPending": {"taskId": "jimeng-source"},
+            "runStartedAt": 123,
+            "runFinishedAt": 456,
+            "runElapsedMs": 333,
+            "runTimerHidden": True,
+            "_runMetaTargetId": "output-source",
+            "conversationSending": True,
+            "agentPlanning": True,
+            "agentExecuting": True,
+        }
+        creative_fields = {"id": "prompt", "type": "smart-prompt", "text": "保留创作内容", "x": 120, "y": 80}
+        self.apply_mutations(source["id"], [
+            {"op": "upsert_node", "node": {**creative_fields, **runtime_fields}},
+        ])
+
+        duplicate = self.store.duplicate_project(source["id"])
+
+        source_node = self.store.open_project(source["id"])["canvas"]["nodes"][0]
+        copied_node = self.store.open_project(duplicate["id"])["canvas"]["nodes"][0]
+        for key, value in creative_fields.items():
+            self.assertEqual(copied_node[key], value)
+        for key in runtime_fields:
+            self.assertIn(key, source_node)
+            self.assertNotIn(key, copied_node)
+
+    def test_duplicate_project_media_copy_does_not_block_other_projects(self):
+        source = self.store.create_project("large source")
+        other = self.store.create_project("other project")
+        imported = self.store.import_media(source["id"], b"media", "source.png", "image/png")
+        source_media_path = Path(self.store.media_record(source["id"], imported["asset_id"])["path"])
+        copy_started = threading.Event()
+        release_copy = threading.Event()
+        duplicate_errors = []
+        original_copyfile = firefly_projects.shutil.copyfile
+
+        def slow_copy(source_path, target_path):
+            if Path(source_path) == source_media_path:
+                copy_started.set()
+                if not release_copy.wait(2):
+                    raise TimeoutError("test did not release duplicate media copy")
+            return original_copyfile(source_path, target_path)
+
+        def duplicate_source():
+            try:
+                self.store.duplicate_project(source["id"])
+            except Exception as error:  # pragma: no cover - asserted below
+                duplicate_errors.append(error)
+
+        with patch.object(firefly_projects.shutil, "copyfile", side_effect=slow_copy):
+            worker = threading.Thread(target=duplicate_source)
+            worker.start()
+            self.assertTrue(copy_started.wait(1))
+            release_timer = threading.Timer(1, release_copy.set)
+            release_timer.start()
+            started = time.monotonic()
+            try:
+                self.apply_mutations(other["id"], [
+                    {"op": "upsert_node", "node": {"id": "other-node", "type": "prompt"}},
+                ])
+                elapsed = time.monotonic() - started
+            finally:
+                release_timer.cancel()
+                release_copy.set()
+                worker.join(3)
+
+        self.assertLess(elapsed, 0.5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(duplicate_errors, [])
 
     def test_open_migrates_legacy_viewport_and_settings_out_of_project_files(self):
         project = self.store.create_project("旧格式迁移")
@@ -320,22 +1289,157 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(node["pending"], 0)
         self.assertEqual(failed["logs"][-1]["id"], "failure-1")
 
-    def test_generation_registration_uses_revision_cas_and_rejects_same_node_overlap(self):
+    def test_generation_registration_uses_revision_cas_and_allows_same_node_overlap(self):
         project = self.store.create_project("生成并发")
         self.apply_mutations(project["id"], [
             {"op": "upsert_node", "node": {"id": "result", "type": "smart-image"}},
         ])
-        self.store.begin_image_generation(
+        started = self.store.begin_image_generation(
             project["id"], "result", {"taskId": "first", "count": 1}, base_revision=1,
         )
         with self.assertRaises(RevisionConflict):
             self.store.begin_image_generation(
                 project["id"], "result", {"taskId": "stale", "count": 1}, base_revision=1,
             )
-        with self.assertRaisesRegex(InvalidMutation, "正在运行"):
-            self.store.begin_image_generation(
-                project["id"], "result", {"taskId": "overlap", "count": 1}, base_revision=2,
-            )
+        overlapped = self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "overlap", "count": 1}, base_revision=int(started["revision"]),
+        )
+        result_node = next(item for item in overlapped["nodes"] if item["id"] == "result")
+        self.assertEqual([task["taskId"] for task in result_node["pendingTasks"]], ["first", "overlap"])
+        self.assertEqual(result_node["pending"], 2)
+
+    def test_ordinary_node_upsert_cannot_drop_or_resurrect_server_owned_pending_tasks(self):
+        project = self.store.create_project("并发任务身份由服务端持有")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "result", "type": "smart-image", "title": "initial"}},
+            {"op": "upsert_node", "node": {"id": "other", "type": "smart-image", "title": "no task"}},
+        ])
+        first = self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "first", "count": 3, "requestPayload": {"prompt": "server first"}, "route": {"model": "server-model"}}, base_revision=1,
+        )
+        overlapped = self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "second", "count": 1, "requestPayload": {"prompt": "server second"}, "route": {"model": "server-model"}}, base_revision=int(first["revision"]),
+        )
+
+        # A stale browser only knows about second. Its ordinary content save
+        # cannot erase first, which may already be executing at the provider.
+        saved = self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result", "type": "smart-image", "title": "client edit", "pendingTasks": [{"taskId": "second", "count": 99, "requestPayload": {"prompt": "tampered"}, "route": {"model": "tampered"}}, {"taskId": "invented", "count": 50}]}}],
+            base_revision=int(overlapped["revision"]),
+        )
+        node = next(item for item in self.store.open_project(project["id"])["canvas"]["nodes"] if item["id"] == "result")
+        self.assertEqual([item["taskId"] for item in node["pendingTasks"]], ["first", "second"])
+        self.assertEqual(node["pending"], 4)
+        second_task = next(item for item in node["pendingTasks"] if item["taskId"] == "second")
+        self.assertEqual(second_task["count"], 1)
+        self.assertEqual(second_task["requestPayload"]["prompt"], "server second")
+        self.assertEqual(second_task["route"]["model"], "server-model")
+
+        # A node with no server task cannot invent a ghost through an ordinary
+        # canvas save either.
+        injected = self.store.apply_mutations(
+            project["id"],
+            [
+                {"op": "upsert_node", "node": {"id": "other", "type": "smart-image", "title": "edited", "pendingTasks": [{"taskId": "ghost", "count": 7}]}},
+                {"op": "upsert_node", "node": {"id": "result", "title": "type omitted", "pendingTasks": []}},
+            ],
+            base_revision=int(saved["revision"]),
+        )
+        opened_after_injection = self.store.open_project(project["id"])["canvas"]
+        other = next(item for item in opened_after_injection["nodes"] if item["id"] == "other")
+        protected = next(item for item in opened_after_injection["nodes"] if item["id"] == "result")
+        self.assertNotIn("pendingTasks", other)
+        self.assertEqual(other.get("pending"), 0)
+        self.assertEqual(protected["type"], "smart-image")
+        self.assertEqual([item["taskId"] for item in protected["pendingTasks"]], ["first", "second"])
+
+        changed_type = self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result", "type": "smart-prompt", "title": "type tampered", "pendingTasks": [{"taskId": "invented"}]}}],
+            base_revision=int(injected["revision"]),
+        )
+        protected = next(item for item in self.store.open_project(project["id"])["canvas"]["nodes"] if item["id"] == "result")
+        self.assertEqual(protected["type"], "smart-image")
+        self.assertEqual([item["taskId"] for item in protected["pendingTasks"]], ["first", "second"])
+
+        forged_terminal = self.store.apply_mutations(
+            project["id"],
+            [
+                {"op": "set_canvas_meta", "logs": [{"id": "forged-success", "task_id": "second", "status": "succeeded"}]},
+                {"op": "upsert_node", "node": {"id": "result", "type": "smart-image", "title": "forged terminal attempted"}},
+            ],
+            base_revision=int(changed_type["revision"]),
+        )
+        opened_after_forgery = self.store.open_project(project["id"])["canvas"]
+        protected = next(item for item in opened_after_forgery["nodes"] if item["id"] == "result")
+        self.assertEqual([item["taskId"] for item in protected["pendingTasks"]], ["first", "second"])
+        self.assertFalse(any(item.get("id") == "forged-success" for item in opened_after_forgery["logs"]))
+
+        cancelled = self.store.cancel_image_generation(
+            project["id"],
+            "result",
+            "first",
+            {"id": "cancel-first", "task_id": "first", "status": "cancelled", "error": "cancelled"},
+        )
+        # A later stale upsert cannot resurrect the terminal first identity.
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result", "type": "smart-image", "title": "later edit", "pendingTasks": [{"taskId": "first", "count": 3}, {"taskId": "second", "count": 1}]}}],
+            base_revision=int(cancelled["revision"]),
+        )
+        node = next(item for item in self.store.open_project(project["id"])["canvas"]["nodes"] if item["id"] == "result")
+        self.assertEqual([item["taskId"] for item in node["pendingTasks"]], ["second"])
+        self.assertEqual(node["pending"], 1)
+        self.assertEqual(node["title"], "later edit")
+
+    def test_overlapping_generation_completions_form_one_result_group(self):
+        project = self.store.create_project("并发生图分组")
+        old = self.store.import_media(project["id"], b"old", "old.png", "image/png")
+        first = self.store.import_media(project["id"], b"first", "first.png", "image/png")
+        second = self.store.import_media(project["id"], b"second", "second.png", "image/png")
+        self.apply_mutations(project["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "result",
+                "type": "smart-image",
+                "images": [{"asset_id": old["asset_id"], "kind": "image"}],
+            },
+        }])
+        started = self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "first", "count": 1}, base_revision=1,
+        )
+        self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "second", "count": 1}, base_revision=int(started["revision"]),
+        )
+
+        after_second = self.store.complete_image_generation(
+            project["id"],
+            "result",
+            [{"asset_id": second["asset_id"], "kind": "image"}],
+            {"id": "generation-second", "task_id": "second", "status": "succeeded"},
+            task_id="second",
+        )
+        result_node = next(item for item in after_second["nodes"] if item["id"] == "result")
+        self.assertEqual([item["asset_id"] for item in result_node["images"]], [second["asset_id"]])
+        self.assertEqual([task["taskId"] for task in result_node["pendingTasks"]], ["first"])
+        self.assertEqual(result_node["pending"], 1)
+
+        completed = self.store.complete_image_generation(
+            project["id"],
+            "result",
+            [{"asset_id": first["asset_id"], "kind": "image"}],
+            {"id": "generation-first", "task_id": "first", "status": "succeeded"},
+            task_id="first",
+        )
+        result_node = next(item for item in completed["nodes"] if item["id"] == "result")
+        self.assertEqual(
+            [item["asset_id"] for item in result_node["images"]],
+            [second["asset_id"], first["asset_id"]],
+        )
+        self.assertNotIn("pendingTasks", result_node)
+        self.assertEqual(result_node["pending"], 0)
+        self.assertEqual(result_node["title"], "Group")
 
     def test_invalid_batch_does_not_partially_change_history(self):
         project = self.store.create_project("事务边界")
@@ -451,8 +1555,20 @@ class ProjectStoreContractTests(unittest.TestCase):
         imported = self.store.import_fly(package_path.read_bytes())
         self.assertNotEqual(imported["id"], project["id"])
         reopened = self.store.open_project(imported["id"])["canvas"]
-        self.assertEqual(reopened["nodes"][0]["images"], [{"asset_id": media["asset_id"]}])
-        self.assertEqual(reopened["logs"][0]["outputs"], [{"asset_id": media["asset_id"]}])
+        node_image = reopened["nodes"][0]["images"][0]
+        history_output = reopened["logs"][0]["outputs"][0]
+        self.assertEqual(
+            {key: value for key, value in node_image.items() if key not in {"output_id", "output_order"}},
+            {"asset_id": media["asset_id"]},
+        )
+        self.assertEqual(
+            {key: value for key, value in history_output.items() if key not in {"output_id", "output_order"}},
+            {"asset_id": media["asset_id"]},
+        )
+        self.assertRegex(history_output["output_id"], r"^output-[a-f0-9]{32}$")
+        self.assertEqual(history_output["output_order"], 0)
+        self.assertNotIn("output_id", node_image)
+        self.assertNotIn("output_order", node_image)
         imported_media = self.store.media_record(imported["id"], media["asset_id"])
         self.assertEqual(imported_media["name"], "original.png")
         self.assertEqual(imported_media["mime_type"], "image/png")
@@ -830,7 +1946,9 @@ class ProjectStoreContractTests(unittest.TestCase):
             {"op": "upsert_node", "node": {"id": "n2", "type": "smart-image", "x": 3, "y": 4, "images": [{"asset_id": trash_media["asset_id"], "name": "trash.png"}]}},
         ])
         revision = self.store.open_project(project["id"])["canvas"]["revision"]
-        self.store.delete_generated_original(project["id"], trash_media["asset_id"], base_revision=revision)
+        self.store.delete_generated_original_project_wide(
+            project["id"], trash_media["asset_id"], base_revision=revision,
+        )
         deleted = self.store.list_deleted_media(project["id"])
         self.assertTrue(any(item["asset_id"] == trash_media["asset_id"] for item in deleted))
         self.assertEqual(self.store.purge_deleted_media(project["id"], trash_media["asset_id"]), 1)

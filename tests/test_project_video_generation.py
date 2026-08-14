@@ -750,9 +750,18 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertTrue(record["filename"].endswith(".mp4"))
         self.assertEqual(self.client.get(f"/api/project-library/{project['id']}/media/{generated_asset}").content, small_structural_mp4())
         self.assertNotIn("url", node["images"][0])
-        self.assertEqual(opened["logs"][-1]["outputs"], [{"asset_id": generated_asset, "kind": "video"}])
+        history_output = opened["logs"][-1]["outputs"][0]
+        self.assertEqual(
+            {key: value for key, value in history_output.items() if key not in {"output_id", "output_order"}},
+            {"asset_id": generated_asset, "kind": "video"},
+        )
+        self.assertRegex(history_output["output_id"], r"^output-[a-f0-9]{32}$")
+        self.assertEqual(history_output["output_id"], node["images"][0]["output_id"])
+        self.assertEqual((history_output["output_order"], node["images"][0]["output_order"]), (0, 0))
         self.assertEqual(opened["logs"][-1]["params"]["audio_reference_count"], 1)
         self.assertIs(opened["logs"][-1]["params"]["return_last_frame"], True)
+        self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
+        self.assertGreater(opened["logs"][-1]["createdAt"], 0)
 
         with patch.object(main, "generate_video_preview_image", return_value=Image.new("RGB", (8, 6), "red")):
             preview = self.client.get(f"/api/project-library/{project['id']}/media/{generated_asset}/preview?w=128")
@@ -1376,6 +1385,8 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         node = next(item for item in opened["nodes"] if item["id"] == "video-result")
         self.assertEqual(node["pending"], 0)
         self.assertEqual(opened["logs"][-1]["status"], "failed")
+        self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
+        self.assertGreater(opened["logs"][-1]["createdAt"], 0)
         self.assertEqual(self.store.list_media(project["id"]), [])
 
         recover_provider = AsyncMock(return_value=([{"type": "b64", "value": good, "mime_type": "video/mp4"}], {}))

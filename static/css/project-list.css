@@ -364,6 +364,103 @@ h1 {
   font-size: var(--font-body);
 }
 
+.cleanup-preview-dialog {
+  width: min(680px, calc(100% - 32px));
+}
+
+.cleanup-preview-content {
+  padding: var(--space-24);
+}
+
+.cleanup-preview-content h2 {
+  margin: 0;
+  font-size: var(--font-section-title);
+  line-height: var(--line-title);
+}
+
+.cleanup-preview-project,
+.cleanup-preview-summary,
+.cleanup-permanent-scope,
+.cleanup-empty {
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+
+.cleanup-preview-summary strong {
+  color: var(--text);
+  font-size: var(--font-card-title);
+}
+
+.cleanup-permanent-scope {
+  border-left: 3px solid var(--danger);
+  padding-left: var(--space-12);
+}
+
+.cleanup-candidate-list {
+  max-height: min(420px, 55vh);
+  display: grid;
+  gap: var(--space-8);
+  overflow: auto;
+}
+
+.cleanup-candidate {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--space-12);
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-utility);
+  padding: var(--space-8);
+  background: var(--soft);
+}
+
+.cleanup-candidate img,
+.cleanup-candidate video {
+  width: 72px;
+  height: 54px;
+  border-radius: var(--radius-utility);
+  object-fit: cover;
+  background: var(--page);
+}
+
+.cleanup-candidate div {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.cleanup-candidate strong,
+.cleanup-candidate span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cleanup-candidate span {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.cleanup-confirm-area {
+  margin-top: var(--space-12);
+  display: grid;
+  gap: var(--space-8);
+}
+
+/* The hidden attribute must win over the display rules above:
+   UA [hidden] { display: none } is outranked by author display. */
+.cleanup-confirm-area[hidden],
+#confirmCleanup[hidden] {
+  display: none;
+}
+
+.cleanup-confirm-note {
+  border-left: 3px solid var(--danger);
+  padding-left: var(--space-12);
+  color: var(--text);
+  font-size: var(--font-body);
+}
+
 @media (max-width: 700px) {
   .project-shell {
     width: min(calc(100% - 24px), 1180px);

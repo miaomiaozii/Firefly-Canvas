@@ -7,6 +7,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (HTTPException, WebSocket, WebSocketDisconnect, _ensure_photoshop_loopback, _os, _sys, json)
 from app.core import _ensure_photoshop_loopback
+from app.project_sessions import register_project_session, unregister_project_session
 _from_main_names = ['manager']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -18,7 +19,11 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 @router.websocket('/ws/stats')
-async def websocket_endpoint(websocket: WebSocket, client_id: str=None):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    client_id: str = None,
+    project_id: str = None,
+):
     if str(client_id or '').lower().startswith('ps_'):
         try:
             _ensure_photoshop_loopback(websocket)
@@ -26,13 +31,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str=None):
             await websocket.close(code=1008, reason=str(exc.detail))
             return
     await manager.connect(websocket, client_id)
+    if str(client_id or '').lower().startswith('canvas_') and project_id:
+        register_project_session(websocket, project_id)
     try:
         while True:
             data = await websocket.receive_text()
             if data == 'ping':
                 await websocket.send_text(json.dumps({'type': 'pong'}))
     except WebSocketDisconnect:
-        await manager.disconnect(websocket, client_id)
+        pass
     except Exception as e:
         print(f'WS Error: {e}')
+    finally:
+        unregister_project_session(websocket)
         await manager.disconnect(websocket, client_id)

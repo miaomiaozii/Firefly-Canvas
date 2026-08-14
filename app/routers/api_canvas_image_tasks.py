@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from app.core import (CANVAS_TASKS, CANVAS_TASK_LOCK, HTTPException, JimengPendingError, OnlineImageRequest, _os, _sys, asyncio, extract_task_id_from_text, jimeng_pending_payload, re, require_online_image_project_media_scope, time, uuid)
+from app.core import (CANVAS_TASKS, CANVAS_TASK_LOCK, HTTPException, JimengPendingError, OnlineImageRequest, _os, _sys, asyncio, extract_task_id_from_text, image_generation_task_timeout_seconds, jimeng_pending_payload, re, require_online_image_project_media_scope, time, uuid)
 _from_main_names = ['build_online_image_result', 'run_canvas_image_task']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -30,13 +30,18 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
             CANVAS_TASKS[task_id]['status'] = 'running'
             CANVAS_TASKS[task_id]['updated_at'] = time.time()
     try:
-        result = await build_online_image_result(payload)
+        # #41: 任务级硬超时——provider 挂起时也必须到达终态（timeout），不能无限 running。
+        result = await asyncio.wait_for(build_online_image_result(payload), timeout=image_generation_task_timeout_seconds())
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
     except JimengPendingError as exc:
         info = jimeng_pending_payload(exc)
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'jimeng_pending', 'jimeng_pending': True, 'submit_id': exc.submit_id, 'kind': exc.kind, 'queue_info': exc.queue_info, 'message': info['message'], 'error': '', 'updated_at': time.time()})
+    except (TimeoutError, asyncio.TimeoutError):
+        timeout_seconds = image_generation_task_timeout_seconds()
+        with CANVAS_TASK_LOCK:
+            CANVAS_TASKS[task_id].update({'status': 'timeout', 'error': f'生成任务执行超时（{timeout_seconds:g}s），已终止', 'status_code': 504, 'updated_at': time.time()})
     except Exception as exc:
         detail = getattr(exc, 'detail', None) or str(exc)
         status_code = getattr(exc, 'status_code', 500)

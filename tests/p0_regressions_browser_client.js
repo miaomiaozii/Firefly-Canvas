@@ -86,6 +86,7 @@
     const editedText = 'edited while original is deleted';
     check('editable prompt exists during original deletion', Boolean(prompt));
     if (!prompt) return;
+    check('LLM-enabled prompt output remains directly editable', prompt.readOnly === false, {readOnly: prompt.readOnly});
     dispatchTextInput(prompt, editedText);
     await sleep(250);
     const beforeRestore = await canvasSnapshot();

@@ -327,6 +327,22 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     identifier = str(model or "").strip().lower()
     capability: dict[str, Any] = {"media_types": ["image"]}
     banana = re.fullmatch(r"nano-banana-(?:pro|2)(?:-(1k|2k|4k))?", identifier)
+    if identifier == "nano-banana":
+        capability.update({
+            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "resolutions": ["1k"],
+            "sizes": list(COMMON_IMAGE_SIZES["1k"]),
+            "max_reference_images": 20,
+        })
+        return capability
+    if identifier == "nano-banana-hd":
+        capability.update({
+            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "resolutions": ["2k", "4k"],
+            "sizes": [*COMMON_IMAGE_SIZES["2k"], *COMMON_IMAGE_SIZES["4k"]],
+            "max_reference_images": 20,
+        })
+        return capability
     if identifier in {"banana", "nano-banana-pro"}:
         banana_resolution = "1k"
     else:
@@ -379,17 +395,25 @@ def route_image_generation(
         if pinned_provider and current_provider_id != pinned_provider:
             continue
         models = _string_list(provider.get("image_models"))
-        capabilities = normalize_image_model_capabilities(provider.get("image_model_capabilities"), models)
+        available_models = provider.get("available_models") or {}
+        discovered_models = _string_list(available_models.get("image_models")) if isinstance(available_models, Mapping) else []
+        known_models = list(dict.fromkeys([*models, *discovered_models]))
+        capabilities = normalize_image_model_capabilities(provider.get("image_model_capabilities"), known_models)
         resolution_tag = str(request_snapshot.get("resolution") or "").strip().lower()
         candidates_to_check: list[str] = []
-        for current_model in models:
-            if pinned_model and current_model != pinned_model:
-                continue
-            candidates_to_check.append(current_model)
-            if pinned_model and resolution_tag:
-                variant = f"{pinned_model}-{resolution_tag}"
-                if variant in models and variant not in candidates_to_check:
-                    candidates_to_check.append(variant)
+        if pinned_model:
+            variant = ""
+            if resolution_tag in {"2k", "4k"}:
+                if pinned_model == "nano-banana":
+                    variant = "nano-banana-hd"
+                elif not re.search(r"-(?:1k|2k|4k)$", pinned_model):
+                    variant = f"{pinned_model}-{resolution_tag}"
+            if variant in known_models:
+                candidates_to_check.append(variant)
+            if pinned_model in known_models:
+                candidates_to_check.append(pinned_model)
+        else:
+            candidates_to_check.extend(models)
         for current_model in candidates_to_check:
             mismatches = _incompatible_parameters(request_snapshot, capabilities[current_model])
             candidates.append((provider, current_model, capabilities[current_model], mismatches))

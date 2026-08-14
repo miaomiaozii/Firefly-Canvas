@@ -1,7 +1,13 @@
 # generation domain — extracted from app/services.py (W1d)
+import sys
+import time
+import threading  # noqa: E402
+import random  # noqa: E402
+import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, looks_like_gemini_image_model  # noqa: E402,F401
+from firefly_diagnostics import emit as _diag_emit
 
 async def generate_jimeng_provider_image(prompt, size, model, reference_images=None, provider=None):
     refs = [ref for ref in reference_images or [] if ref.get('url')]
@@ -1070,7 +1076,193 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
         raw = response.json()
         return (extract_image(raw), raw)
 
-async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None):
+@functools.lru_cache(maxsize=8)
+def _lossless_webp_reference_upload(path, mtime_ns, source_size):
+    source_path = Path(path)
+    original = source_path.read_bytes()
+    fallback = (source_path.name, original, content_type_for_path(path))
+    if source_path.suffix.lower() != '.png' or len(original) != source_size:
+        return fallback
+    try:
+        with Image.open(BytesIO(original)) as image:
+            image.load()
+            if image.mode not in {'RGB', 'RGBA'} or getattr(image, 'n_frames', 1) != 1:
+                return fallback
+            if image.getexif().get(274, 1) != 1:
+                return fallback
+            source = image.copy()
+            save_options = {'lossless': True, 'method': 4, 'exact': True}
+            if image.info.get('icc_profile'):
+                save_options['icc_profile'] = image.info['icc_profile']
+            if image.info.get('exif'):
+                save_options['exif'] = image.info['exif']
+        buffer = BytesIO()
+        source.save(buffer, 'WEBP', **save_options)
+        encoded = buffer.getvalue()
+        if len(encoded) >= len(original):
+            return fallback
+        with Image.open(BytesIO(encoded)) as decoded:
+            decoded.load()
+            if decoded.size != source.size or decoded.mode != source.mode or decoded.tobytes() != source.tobytes():
+                return fallback
+        return (f'{source_path.stem}.webp', encoded, 'image/webp')
+    except Exception:
+        return fallback
+
+
+def _openai_edit_reference_upload(path, optimize_lossless=False):
+    stat = os.stat(path)
+    if optimize_lossless:
+        return _lossless_webp_reference_upload(os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+    return (os.path.basename(path), Path(path).read_bytes(), content_type_for_path(path))
+
+
+class _ProgressUpload:
+    def __init__(self, stream, size, on_progress):
+        self._stream = stream
+        self._size = max(0, int(size or 0))
+        self._on_progress = on_progress
+        self._maximum_position = 0
+
+    def read(self, size=-1):
+        chunk = self._stream.read(size)
+        try:
+            position = int(self._stream.tell())
+        except Exception:
+            position = self._maximum_position + len(chunk or b'')
+        self._maximum_position = max(self._maximum_position, min(self._size, position))
+        self._on_progress(self._maximum_position)
+        return chunk
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
+    """Provider-boundary diagnostics span around the image generation pipeline.
+
+    Emits one provider.request event and exactly one terminal event
+    (provider.response or provider.failed) per call; payloads never enter the
+    log — only correlation fields and a redacted exception chain.
+    """
+    started = time.monotonic()
+    provider_label = str(provider_id or 'comfly')
+    model_label = str(model or '')
+    _diag_emit('provider.request', provider_id=provider_label, model=model_label, state='requested')
+    try:
+        result = await _generate_ai_image_impl(
+            prompt, size, quality, model, reference_images, provider_id=provider_id,
+            preserve_model=preserve_model, image_parameters=image_parameters,
+            progress_callback=progress_callback,
+        )
+    except Exception:
+        _diag_emit(
+            'provider.failed',
+            provider_id=provider_label,
+            model=model_label,
+            state='failed',
+            duration_ms=int((time.monotonic() - started) * 1000),
+            exception=sys.exc_info()[1],
+        )
+        raise
+    _diag_emit(
+        'provider.response',
+        provider_id=provider_label,
+        model=model_label,
+        state='succeeded',
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
+# #41: provider 出站的受控并发 + 429 退避重试（v1 与 legacy 两条生图路径共用）。
+# 并发敏感 provider 在多个请求同时在飞时会拒绝其中大部分（例如 8 连发只接受 1 个），
+# 因此既要「连发」又不能无界并发：每 provider 一个信号量限制同时在飞请求数，并对 429
+# 做有限退避重试。信号量按 event loop 区分存储：同 loop 复用，异 loop 重建。
+_PROVIDER_GENERATION_SEMAPHORES = {}
+_PROVIDER_GENERATION_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _provider_generation_semaphore(provider_id: str) -> 'asyncio.Semaphore':
+    loop = asyncio.get_running_loop()
+    with _PROVIDER_GENERATION_SEMAPHORES_LOCK:
+        entry = _PROVIDER_GENERATION_SEMAPHORES.get(provider_id)
+        if entry is None or entry[0] is not loop:
+            try:
+                max_concurrency = max(1, int(os.environ.get('FIREFLY_PROVIDER_GENERATION_MAX_CONCURRENCY', '3') or '3'))
+            except (TypeError, ValueError):
+                max_concurrency = 3
+            entry = (loop, asyncio.Semaphore(max_concurrency))
+            _PROVIDER_GENERATION_SEMAPHORES[provider_id] = entry
+        return entry[1]
+
+
+def _retry_after_seconds(response) -> 'Optional[float]':
+    """从 429 响应解析 Retry-After（秒数或 HTTP 日期），无则返回 None。"""
+    value = str((response.headers.get('retry-after') if hasattr(response, 'headers') else '') or '').strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+        if seconds >= 0:
+            return seconds
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+        if parsed is not None:
+            return max(0.0, parsed.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+async def run_provider_generation_with_backoff(provider_id: str, generate_callable, *args, **kwargs):
+    """受控并发 + 429 有限退避地执行一次 provider 生图调用。
+
+    count=8 类连发任务的所有 provider 出站都应经由本 helper（而不是裸调
+    generate_ai_image）：
+    - 每 provider 一个信号量限制同时在飞请求数（默认 3，env
+      FIREFLY_PROVIDER_GENERATION_MAX_CONCURRENCY 可调）；
+    - 429 在退避后有限重试（默认 5 次，env FIREFLY_PROVIDER_429_RETRY_ATTEMPTS 可调；
+      provider 携带 Retry-After 时优先按其等待，否则线性递增 ×±20% 抖动避免锁步互撞，
+      env FIREFLY_PROVIDER_429_BACKOFF_SECONDS 可调基础退避）。
+    其余异常原样上抛。
+    """
+    semaphore = _provider_generation_semaphore(str(provider_id or 'default'))
+    try:
+        attempts = max(1, int(os.environ.get('FIREFLY_PROVIDER_429_RETRY_ATTEMPTS', '5') or '5'))
+    except (TypeError, ValueError):
+        attempts = 5
+    try:
+        backoff_seconds = float(os.environ.get('FIREFLY_PROVIDER_429_BACKOFF_SECONDS', '0.5') or '0.5')
+    except (TypeError, ValueError):
+        backoff_seconds = 0.5
+    for attempt in range(attempts):
+        try:
+            async with semaphore:
+                return await generate_callable(*args, **kwargs)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 429 or attempt + 1 >= attempts:
+                raise
+            retry_after = _retry_after_seconds(exc.response)
+            if retry_after is not None:
+                sleep_seconds = max(0.05, retry_after)
+            else:
+                sleep_seconds = max(0.01, backoff_seconds * (attempt + 1) * random.uniform(0.8, 1.2))
+            log_net_error(f"生图 429 限流，退避重试 attempt={attempt + 1} provider={provider_id}", exc)
+            await asyncio.sleep(sleep_seconds)
+
+
+async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
+    def report_progress(phase, **details):
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(phase, **details)
+        except Exception:
+            pass
+
     require_project_media_values_scope([str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip() for ref in reference_images or [] if str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip()])
     provider = _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider')(provider_id)
     if provider['id'] == 'modelscope':
@@ -1087,9 +1279,18 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider, image_parameters)
     if is_volcengine_provider(provider):
         return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider, preserve_model)
-    image_route = {'model': selected_model(model, IMAGE_MODEL), 'params': {key: value for key, value in (image_parameters or {}).items() if key in {'aspect_ratio', 'resolution'} and value not in (None, '')}} if preserve_model else route_openai_image_request(provider, model, size)
+    is_comfly_provider = 'comfly' in str((provider.get('base_url') or _svc._main('AI_BASE_URL') or '')).strip().lower() or 'comfly' in str(provider.get('id') or '').strip().lower()
+    inline_base64 = is_comfly_provider
+    if preserve_model:
+        route_params = {key: value for key, value in (image_parameters or {}).items() if key in {'aspect_ratio', 'resolution'} and value not in (None, '')}
+        image_route = route_openai_image_request(provider, selected_model(model, IMAGE_MODEL), size)
+        image_route['params'].update(route_params)
+    else:
+        image_route = route_openai_image_request(provider, model, size)
     if preserve_model and image_route['params'].get('resolution') and (banana_model_family(image_route['model']) or looks_like_gemini_image_model(image_route['model'])):
         image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
+    if is_comfly_provider:
+        image_route['params'].pop('resolution', None)
     model = image_route['model']
     routed_image_params = image_route['params']
     is_gpt2 = is_gpt_image_2_model(model)
@@ -1112,13 +1313,29 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
 
         async def post_openai_edits(edit_files=None):
             data = {'model': model, 'prompt': prompt}
+            if is_comfly_provider:
+                data['response_format'] = 'url'
             if not routed_image_params.get('aspect_ratio'):
                 data['size'] = size
             if routed_image_params:
                 data.update(routed_image_params)
-            if quality:
+            if quality and not is_comfly_provider:
                 data['quality'] = quality
-            return await client.post(edit_url, headers=_svc._main('api_headers')(json_body=False, provider=provider, model=model), data=data, files=edit_files if edit_files is not None else {})
+            if not callable(progress_callback):
+                return await client.post(
+                    edit_url,
+                    headers=_svc._main('api_headers')(json_body=False, provider=provider, model=model),
+                    data=data,
+                    files=edit_files if edit_files is not None else {},
+                )
+            request = client.build_request('POST', edit_url, headers=_svc._main('api_headers')(json_body=False, provider=provider, model=model), data=data, files=edit_files if edit_files is not None else {})
+            response = await client.send(request, stream=True)
+            total_header = str(response.headers.get('content-length') or '').strip()
+            response_total = int(total_header) if total_header.isdigit() else 0
+            report_progress('receiving', bytes_done=0, bytes_total=response_total)
+            content = await response.aread()
+            report_progress('receiving', bytes_done=len(content), bytes_total=response_total or len(content))
+            return response
         if image_request_mode == 'openai-video-proxy':
             body = {'model': model, 'prompt': prompt, 'aspect_ratio': routed_image_params.get('aspect_ratio') or runninghub_aspect_from_size(size, '1:1')}
             if routed_image_params.get('resolution'):
@@ -1216,6 +1433,10 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                     path = _svc._main('output_file_from_url')(ref.get('url', ''))
                     if not path:
                         continue
+                    if inline_base64:
+                        filename, payload, mime_type = await asyncio.to_thread(_openai_edit_reference_upload, path, True)
+                        files.append(('image', (filename, payload, mime_type)))
+                        continue
                     fh = open(path, 'rb')
                     opened.append(fh)
                     files.append(('image', (os.path.basename(path), fh, content_type_for_path(path))))
@@ -1225,8 +1446,39 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                         fh = open(mask_path, 'rb')
                         opened.append(fh)
                         files.append(('mask', (os.path.basename(mask_path), fh, content_type_for_path(mask_path))))
+                tracked_files = files
+                if callable(progress_callback):
+                    upload_sizes = []
+                    for _field, (_filename, content, _mime_type) in files:
+                        if isinstance(content, (bytes, bytearray)):
+                            upload_sizes.append(len(content))
+                        else:
+                            try:
+                                upload_sizes.append(os.fstat(content.fileno()).st_size)
+                            except Exception:
+                                upload_sizes.append(0)
+                    upload_total = sum(upload_sizes)
+                    upload_positions = [0] * len(files)
+                    upload_last_reported = -1
+
+                    def report_upload(index, position):
+                        nonlocal upload_last_reported
+                        upload_positions[index] = max(upload_positions[index], int(position or 0))
+                        uploaded = min(upload_total, sum(upload_positions))
+                        if uploaded == upload_total or uploaded - upload_last_reported >= 256 * 1024:
+                            upload_last_reported = uploaded
+                            report_progress('uploading', bytes_done=uploaded, bytes_total=upload_total)
+                        if upload_total > 0 and uploaded >= upload_total:
+                            report_progress('provider_generating')
+
+                    tracked_files = []
+                    if upload_total > 0:
+                        report_progress('uploading', bytes_done=0, bytes_total=upload_total)
+                    for index, (field, (filename, content, mime_type)) in enumerate(files):
+                        stream = BytesIO(content) if isinstance(content, (bytes, bytearray)) else content
+                        tracked_files.append((field, (filename, _ProgressUpload(stream, upload_sizes[index], lambda position, index=index: report_upload(index, position)), mime_type)))
                 try:
-                    response = await post_openai_edits(files)
+                    response = await post_openai_edits(tracked_files)
                     if response.status_code >= 400:
                         edit_failed_status = response.status_code
                         edit_failed_text = response.text[:500]
@@ -1248,7 +1500,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                     body['size'] = size
                 if routed_image_params:
                     body.update(routed_image_params)
-                if quality:
+                if quality and not is_comfly_provider:
                     body['quality'] = quality
                 response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
                 if response.status_code >= 400 and images_api_unsupported(response):
@@ -1261,7 +1513,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             body['n'] = 1
             if routed_image_params:
                 body.update(routed_image_params)
-            if quality:
+            if quality and not is_comfly_provider:
                 body['quality'] = quality
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
             if response.status_code >= 400 and images_api_unsupported(response):
@@ -1302,15 +1554,90 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             setattr(exc, 'upstream_task_id', task_id)
             raise
 
+_GENERATION_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024
+_GENERATION_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+_GENERATION_DOWNLOAD_MIN_PARALLEL = 2 * 1024 * 1024
+_GENERATION_DOWNLOAD_MAX_WORKERS = 6
+
+
+async def _download_generation_asset(value: str, temporary_path: Path, timeout: httpx.Timeout) -> None:
+    """Download an online generation asset with Range-based parallel chunking.
+
+    CDNs commonly throttle a single connection (e.g. 172 KB/s observed on
+    webstatic.aiproxy.vip); splitting the payload across parallel Range
+    requests multiplies the effective throughput. Falls back to a plain
+    sequential download when the server does not advertise Range support or
+    the payload is small. Verifies that every chunk was fully received and
+    that the final size matches the declared Content-Length.
+    """
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+        current_url = value
+        for redirect_count in range(6):
+            request_url, request_headers, request_extensions = await ensure_public_generation_target(current_url)
+            async with client.stream('GET', request_url, headers=request_headers, extensions=request_extensions) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get('location')
+                    if not location or redirect_count >= 5:
+                        raise ProjectStoreError('在线模型返回的图片地址重定向过多')
+                    current_url = urllib.parse.urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                content_length = response.headers.get('content-length')
+                total = int(content_length) if content_length and content_length.isdigit() else 0
+                if total <= 0 or total < _GENERATION_DOWNLOAD_MIN_PARALLEL or total > _GENERATION_DOWNLOAD_MAX_BYTES:
+                    with temporary_path.open('wb') as handle:
+                        async for chunk in response.aiter_bytes(1024 * 1024):
+                            total += len(chunk)
+                            if total > _GENERATION_DOWNLOAD_MAX_BYTES:
+                                raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
+                            handle.write(chunk)
+                    return
+                break
+        else:
+            raise ProjectStoreError('在线模型返回的图片地址重定向过多')
+        await _parallel_range_download(client, request_url, request_headers, request_extensions, temporary_path, total)
+
+
+async def _parallel_range_download(client: httpx.AsyncClient, request_url: str, request_headers: Dict[str, str], request_extensions: Dict[str, Any], temporary_path: Path, total: int) -> None:
+    """Download ``total`` bytes in parallel Range chunks into temporary_path."""
+    if total > _GENERATION_DOWNLOAD_MAX_BYTES:
+        raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
+    chunk_size = _GENERATION_DOWNLOAD_CHUNK_BYTES
+    ranges = [(start, min(start + chunk_size - 1, total - 1)) for start in range(0, total, chunk_size)]
+
+    async def fetch_chunk(start: int, end: int) -> bytes:
+        async with client.stream('GET', request_url, headers={**request_headers, 'Range': f'bytes={start}-{end}'}, extensions=request_extensions) as response:
+            response.raise_for_status()
+            if response.status_code == 200:
+                raise ProjectStoreError('在线模型返回的图片不支持分段下载')
+            parts = [part async for part in response.aiter_bytes(1024 * 1024)]
+            received = b''.join(parts)
+            if len(received) != (end - start + 1):
+                raise ProjectStoreError('在线模型返回的图片分块下载不完整')
+            return received
+
+    semaphore = asyncio.Semaphore(_GENERATION_DOWNLOAD_MAX_WORKERS)
+
+    async def bounded_fetch(start: int, end: int) -> Tuple[int, bytes]:
+        async with semaphore:
+            return start, await fetch_chunk(start, end)
+
+    chunks = await asyncio.gather(*(bounded_fetch(start, end) for start, end in ranges))
+    with temporary_path.open('wb') as handle:
+        for start, content in chunks:
+            handle.write(content)
+
+
 async def archive_project_generated_image(project_id: str, image_data: Dict[str, Any], index: int) -> Dict[str, Any]:
     kind = str(image_data.get('type') or 'url')
     mime_type = str(image_data.get('mime_type') or 'image/png')
     filename = generated_image_filename(index, mime_type)
-    source_info = {'type': 'online_generation', 'name': filename}
+    source_info = {'type': 'online_generation', 'name': filename, 'lifecycle': 'transient'}
     width = height = 0
     if kind == 'b64':
         try:
-            content = base64.b64decode(str(image_data.get('value') or ''), validate=True)
+            encoded = str(image_data.get('value') or '').strip()
+            content = base64.b64decode(encoded + '=' * (-len(encoded) % 4), validate=True)
         except (ValueError, TypeError) as exc:
             raise ProjectStoreError('在线模型返回了无效的图片数据') from exc
         width, height, mime_type = validate_generated_image(BytesIO(content))
@@ -1329,28 +1656,7 @@ async def archive_project_generated_image(project_id: str, image_data: Dict[str,
             os.close(descriptor)
             temporary_path = Path(temporary_name)
             try:
-                total = 0
-                current_url = value
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-                    for redirect_count in range(6):
-                        request_url, request_headers, request_extensions = await ensure_public_generation_target(current_url)
-                        async with client.stream('GET', request_url, headers=request_headers, extensions=request_extensions) as response:
-                            if response.status_code in {301, 302, 303, 307, 308}:
-                                location = response.headers.get('location')
-                                if not location or redirect_count >= 5:
-                                    raise ProjectStoreError('在线模型返回的图片地址重定向过多')
-                                current_url = urllib.parse.urljoin(current_url, location)
-                                continue
-                            response.raise_for_status()
-                            with temporary_path.open('wb') as handle:
-                                async for chunk in response.aiter_bytes(1024 * 1024):
-                                    total += len(chunk)
-                                    if total > 1024 * 1024 * 1024:
-                                        raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
-                                    handle.write(chunk)
-                            break
-                    else:
-                        raise ProjectStoreError('在线模型返回的图片地址重定向过多')
+                await _download_generation_asset(value, temporary_path, timeout)
                 width, height, mime_type = validate_generated_image(temporary_path)
                 filename = generated_image_filename(index, mime_type)
                 record = await asyncio.to_thread(_svc._main('project_store_call'), 'import_media_file', project_id, temporary_path, filename, mime_type, {**source_info, 'name': filename, 'locator': value})
@@ -1366,7 +1672,7 @@ async def archive_project_generated_video(project_id: str, video_data: Dict[str,
     kind = str(video_data.get('type') or 'url')
     declared_mime = str(video_data.get('mime_type') or 'video/mp4')
     filename = f'generated-{index + 1}.mp4'
-    source_info = {'type': 'online_generation', 'name': filename}
+    source_info = {'type': 'online_generation', 'name': filename, 'lifecycle': 'transient'}
     record = None
     verified_mime = declared_mime
     if kind == 'b64':
@@ -1456,7 +1762,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回图片')
         timestamp = _svc._main('now_ms')()
-        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'completed_at': timestamp, 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
         canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record)
         await asyncio.to_thread(_svc._main('project_store_call'), 'flush', project_id)
         base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
@@ -1470,7 +1776,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         detail = getattr(exc, 'detail', None) or str(exc)
         failure_time = _svc._main('now_ms')()
         failure_result = None
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-image', 'status': 'failed', 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'completed_at': failure_time, 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
+        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-image', 'status': 'failed', 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
         try:
             failed_canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'fail_image_generation', project_id, payload.result_node_id, task_id, failure_record)
             await asyncio.to_thread(_svc._main('project_store_call'), 'flush', project_id)
@@ -1500,7 +1806,7 @@ async def run_project_video_task(task_id: str, project_id: str, payload: Project
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回视频')
         completed_at = _svc._main('now_ms')()
-        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-video', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'completed_at': completed_at, 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in references], 'outputs': [{'asset_id': item['asset_id'], 'kind': 'video'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-video', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in references], 'outputs': [{'asset_id': item['asset_id'], 'kind': 'video'} for item in generated_items], 'result_node_id': payload.result_node_id}
         canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_media_generation', project_id, payload.result_node_id, generated_items, history_record, media_kind='video')
         await asyncio.to_thread(_svc._main('project_store_call'), 'flush', project_id)
         base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
@@ -1513,7 +1819,7 @@ async def run_project_video_task(task_id: str, project_id: str, payload: Project
     except Exception as exc:
         detail = getattr(exc, 'detail', None) or str(exc)
         failure_time = _svc._main('now_ms')()
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-video', 'status': 'failed', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'completed_at': failure_time, 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
+        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-video', 'status': 'failed', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
         failure_result = None
         try:
             failed_canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'fail_media_generation', project_id, payload.result_node_id, task_id, failure_record)

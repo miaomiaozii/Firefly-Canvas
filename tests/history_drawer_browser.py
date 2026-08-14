@@ -129,7 +129,12 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "type": "online-image",
             "status": "succeeded",
             "prompt": "第一条历史提示词",
-            "params": {"model": "offline-browser-model", "size": "1024x1024"},
+            "actual_provider_id": "history-provider",
+            "actual_provider_name": "comfly",
+            "actual_model": "gemini-3.1-flash-image-preview",
+            "runMs": 104319,
+            "createdAt": 5000000,
+            "params": {"model": "offline-browser-model", "size": "1024x1024", "resolution": "4k"},
             "outputs": [{"asset_id": first_media["asset_id"], "kind": "image", "name": "first.png"}],
             "result_node_id": "generator",
         },
@@ -138,6 +143,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "type": "online-image",
             "status": "succeeded",
             "prompt": "第二条历史提示词",
+            "createdAt": 2000000,
             "params": {"model": "offline-browser-model", "size": "1024x1024"},
             "outputs": [{"asset_id": second_media["asset_id"], "kind": "image", "name": "second.png"}],
             "result_node_id": "second-generator",
@@ -147,6 +153,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "type": "online-image",
             "status": "succeeded",
             "prompt": "第三条历史提示词",
+            "createdAt": 3000000,
             "outputs": [{"asset_id": third_media["asset_id"], "kind": "image", "name": "third.png"}],
             "result_node_id": "third-generator",
         },
@@ -155,6 +162,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "type": "online-image",
             "status": "succeeded",
             "prompt": "导入素材不允许删除原图",
+            "createdAt": 4000000,
             "outputs": [{"asset_id": imported_media["asset_id"], "kind": "image", "name": "imported.png"}],
             "result_node_id": "imported-node",
         },
@@ -165,11 +173,15 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "type": "online-image",
             "status": "failed" if index == 0 else "succeeded",
             "prompt": f"分页历史 {index}",
+            "createdAt": 1500000 if index == 0 else 1000 + index,
             "error": "测试失败记录：模型不支持当前生成参数" if index == 0 else "",
             "outputs": [],
         }
         for index in range(4996)
     )
+    # The project store returns append order (oldest to newest).
+    featured = history_records[:4]
+    history_records = [*history_records[4:], *featured[1:], featured[0]]
     store.apply_mutations(
         first_project["id"],
         [
@@ -269,7 +281,17 @@ class HistoryBrowserServer:
                     return
                 parts = [urllib.parse.unquote(item) for item in parsed.path.split("/") if item]
                 if parts == ["api", "config"]:
-                    self.send_json({"api_providers": [], "chat_models": [], "image_models": [], "video_models": []})
+                    self.send_json({
+                        "api_providers": [{
+                            "id": "history-provider",
+                            "name": "comfly",
+                            "image_models": ["gemini-3.1-flash-image-preview"],
+                            "model_names": {"gemini-3.1-flash-image-preview": "Nano Banana 2"},
+                        }],
+                        "chat_models": [],
+                        "image_models": ["gemini-3.1-flash-image-preview"],
+                        "video_models": [],
+                    })
                     return
                 if parts == ["api", "prompt-libraries"]:
                     self.send_json({"library": {"libraries": []}})
@@ -361,12 +383,24 @@ class HistoryBrowserServer:
                         return
                     if project_id and len(parts) == 5 and parts[3] == "original" and parts[4] == "delete":
                         owner.request_counts["original_delete"] += 1
-                        deleted = owner.store.delete_generated_original(project_id, body["asset_id"], base_revision=body["base_revision"])
+                        deleted = owner.store.delete_generated_original(
+                            project_id,
+                            body["asset_id"],
+                            base_revision=body["base_revision"],
+                            log_id=body.get("log_id"),
+                            output_id=body.get("output_id"),
+                            output_index=body.get("output_index"),
+                        )
                         self.send_json({"ok": True, **deleted})
                         return
                     if project_id and len(parts) == 5 and parts[3] == "original" and parts[4] == "restore":
                         owner.request_counts["original_restore"] += 1
-                        restored = owner.store.restore_deleted_original(project_id, body["asset_id"], base_revision=body["base_revision"])
+                        restored = owner.store.restore_deleted_original(
+                            project_id,
+                            body["asset_id"],
+                            base_revision=body["base_revision"],
+                            deletion_id=body.get("deletion_id"),
+                        )
                         self.send_json({"ok": True, **restored})
                         return
                     if project_id and len(parts) == 4 and parts[3] == "flush":

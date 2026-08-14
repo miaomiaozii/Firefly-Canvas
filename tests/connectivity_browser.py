@@ -4,6 +4,7 @@
 直接读取服务端 fake 适配器捕获到的真实生成请求 payload，逐字段断言传参正确性。
 """
 from __future__ import annotations
+import asyncio
 import base64
 import io
 import json
@@ -32,7 +33,7 @@ CLIENT_SCRIPT_URL = '/tests/connectivity_browser_client.js'
 HTML_PAGE_PATH = '/static/smart-canvas.html'
 RESULTS_PATH = '/__conversation_browser_results'
 CAPTURED_PATH = '/__captured_requests'
-VIEWPORT = (1424, 900)
+VIEWPORT = tuple(int(part) for part in os.environ.get('FIREFLY_CONNECTIVITY_VIEWPORT', '1424,900').split(','))
 RESULT_TIMEOUT = 240
 
 IMAGE_PROVIDERS = [
@@ -98,9 +99,26 @@ async def fake_generate_ai_image(prompt, size=None, quality=None, model=None,
     }
     with CAPTURED_LOCK:
         CAPTURED.append(entry)
+        forced_failure_attempt = sum(
+            1 for item in CAPTURED
+            if 'FORCE_HISTORY_FAILURE' in str(item.get('prompt') or '')
+        )
+    progress_callback = kwargs.get('progress_callback')
+    if 'FORCE_HISTORY_FAILURE' in str(prompt or '') and forced_failure_attempt == 1:
+        if progress_callback:
+            progress_callback('provider_generating')
+        await asyncio.sleep(0.35)
+        raise RuntimeError('forced history placeholder failure')
+    if progress_callback:
+        progress_callback('uploading', bytes_done=4, bytes_total=8)
+        await asyncio.sleep(1.1)
+        progress_callback('provider_generating')
+        await asyncio.sleep(1.4)
+        progress_callback('receiving', bytes_done=8, bytes_total=8)
+    prompt_color = zlib.crc32(str(prompt or '').encode('utf-8')).to_bytes(4, 'big')
     data = {
         'type': 'b64',
-        'value': base64.b64encode(tiny_png(color=(38, 190, 133), size=5)).decode('ascii'),
+        'value': base64.b64encode(tiny_png(color=(prompt_color[0], prompt_color[1], prompt_color[2]), size=5)).decode('ascii'),
         'mime_type': 'image/png',
     }
     return data, {'usage': {'total_tokens': 1}}
@@ -119,7 +137,10 @@ def seed_store(store: ProjectStore) -> dict:
             }},
             {'op': 'upsert_node', 'node': {
                 'id': 'prompt-conn', 'type': 'smart-prompt',
-                'x': 20, 'y': 340, 'w': 316, 'h': 240, 'text': 'seed prompt',
+                'x': 0, 'y': 360, 'w': 1050, 'h': 360, 'text': 'seed prompt',
+                'llmEnabled': True,
+                'llmProvider': 'browser-offline',
+                'llmModel': 'browser-offline-model',
             }},
             {'op': 'upsert_node', 'node': {
                 'id': 'gen-conn', 'type': 'smart-image',
@@ -168,6 +189,8 @@ class ResultCollector:
 
 def build_composed_app(app, collector):
     client_js = CLIENT_SCRIPT.read_bytes()
+    multiclient_ready = threading.Event()
+    multiclient_observed = threading.Event()
 
     async def composed(scope, receive, send):
         if scope['type'] != 'http':
@@ -183,6 +206,19 @@ def build_composed_app(app, collector):
             ]
             await send({'type': 'http.response.start', 'status': 200, 'headers': headers})
             await send({'type': 'http.response.body', 'body': client_js, 'more_body': False})
+            return
+        if path in {'/__multiclient_ready', '/__multiclient_observed'}:
+            event = multiclient_ready if path == '/__multiclient_ready' else multiclient_observed
+            if method == 'POST':
+                event.set()
+            body = json.dumps({'ready': event.is_set()}).encode('utf-8')
+            headers = [
+                (b'content-type', b'application/json'),
+                (b'content-length', str(len(body)).encode()),
+                (b'cache-control', b'no-store'),
+            ]
+            await send({'type': 'http.response.start', 'status': 200, 'headers': headers})
+            await send({'type': 'http.response.body', 'body': body, 'more_body': False})
             return
         if path == CAPTURED_PATH and method == 'GET':
             with CAPTURED_LOCK:
@@ -263,9 +299,9 @@ def load_app(root: Path, store: ProjectStore):
     return app
 
 
-def launch_chrome(browser, base_url, fixture):
-    profile = Path(tempfile.mkdtemp(prefix='firefly-connectivity-profile-'))
-    query = urllib.parse.urlencode({'project': fixture['project_id'], 'role': 'probe', 'browserTest': '1'})
+def launch_chrome(browser, base_url, fixture, *, role='probe'):
+    profile = Path(tempfile.mkdtemp(prefix=f'firefly-connectivity-{role}-profile-'))
+    query = urllib.parse.urlencode({'project': fixture['project_id'], 'role': role, 'browserTest': '1'})
     url = f"{base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
     process = subprocess.Popen(
         [
@@ -301,28 +337,33 @@ def main():
         port = server.servers[0].sockets[0].getsockname()[1]
         base_url = f'http://127.0.0.1:{port}'
         print(f'seeded {fixture["project_id"]} on {base_url}', flush=True)
-        proc, profile = launch_chrome(browser, base_url, fixture)
+        proc, profile = launch_chrome(browser, base_url, fixture, role='probe')
+        secondary_proc, secondary_profile = launch_chrome(browser, base_url, fixture, role='secondary')
         try:
             result = collector.wait_for_role('probe', timeout=RESULT_TIMEOUT)
-            passed = bool(result.get('pass'))
+            secondary_result = collector.wait_for_role('secondary', timeout=RESULT_TIMEOUT)
+            passed = bool(result.get('pass')) and bool(secondary_result.get('pass'))
             summary = {
                 'suite': 'connectivity',
                 'browser': str(browser),
                 'passed': passed,
                 'result': result,
+                'secondary_result': secondary_result,
                 'captured_count': len(CAPTURED),
                 'captured': list(CAPTURED),
             }
             print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
             return 0 if passed else 1
         finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+            for browser_process in (proc, secondary_proc):
+                browser_process.terminate()
+                try:
+                    browser_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    browser_process.kill()
+                    browser_process.wait(timeout=5)
             harness.remove_profile(profile)
+            harness.remove_profile(secondary_profile)
             server.should_exit = True
             thread.join(timeout=10)
             store.close()

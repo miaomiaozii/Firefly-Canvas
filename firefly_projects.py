@@ -25,6 +25,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, Iterable, List
 
+from firefly_diagnostics import emit as _diag_emit
+
 
 MEDIA_TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 ORIGINAL_MEDIA_TRANSACTION_FORMAT = "firefly-original-media-transaction-v1"
@@ -47,6 +49,10 @@ class RevisionConflict(ProjectStoreError):
     def __init__(self, canvas: Dict[str, Any]):
         super().__init__("画布已在其他窗口更新")
         self.canvas = canvas
+
+
+class CleanupDrift(ProjectStoreError):
+    """A cleanup confirmation no longer matches the project's current state."""
 
 
 def _validated_projects_root(value: Path | str) -> Path:
@@ -136,6 +142,197 @@ def _library_manifest(root: Path) -> Dict[str, Any]:
 
 
 class ProjectStore:
+    _MEDIA_ASSET_ID_FIELDS = frozenset({
+        "original_asset_id", "originalAssetId",
+        "input_asset_id", "inputAssetId",
+        "output_asset_id", "outputAssetId",
+        "model_input_asset_id", "modelInputAssetId",
+        "model_result_asset_id", "modelResultAssetId",
+        "selection_asset_id", "selectionAssetId",
+        "mask_asset_id", "maskAssetId",
+    })
+    _MEDIA_ASSET_ID_LIST_FIELDS = frozenset({
+        "asset_ids", "assetIds",
+        "reference_asset_ids", "referenceAssetIds",
+        "image_reference_asset_ids", "imageReferenceAssetIds",
+        "video_reference_asset_ids", "videoReferenceAssetIds",
+        "audio_reference_asset_ids", "audioReferenceAssetIds",
+    })
+    _OUTPUT_ID_PATTERN = re.compile(r"output-[a-f0-9]{32}")
+    _DELETION_ID_PATTERN = re.compile(r"deletion-[a-f0-9]{32}")
+
+    @classmethod
+    def _valid_output_id(cls, value: Any) -> str:
+        output_id = str(value or "").strip().lower()
+        return output_id if cls._OUTPUT_ID_PATTERN.fullmatch(output_id) else ""
+
+    @staticmethod
+    def _valid_output_order(value: Any) -> int | None:
+        try:
+            order = int(value)
+        except (TypeError, ValueError):
+            return None
+        return order if order >= 0 else None
+
+    @classmethod
+    def _stable_legacy_output_id(
+        cls,
+        owner_id: str,
+        output_index: int,
+        asset_id: str,
+        discriminator: int = 0,
+    ) -> str:
+        seed = f"{owner_id}\0{output_index}\0{asset_id}\0{discriminator}".encode("utf-8")
+        return f"output-{hashlib.sha256(seed).hexdigest()[:32]}"
+
+    @classmethod
+    def _ensure_output_occurrence_ids(
+        cls,
+        canvas: Dict[str, Any],
+        history: List[Dict[str, Any]],
+    ) -> bool:
+        """Give every generated output a stable identity owned by the Store.
+
+        History records are the canonical owners.  Their producer node mirrors
+        the same IDs by position and asset, while unrelated records that happen
+        to share content-addressed media receive different IDs.  Existing IDs
+        are preserved so deleting an earlier output never renumbers survivors.
+        """
+        changed = False
+        used_history_ids: set[str] = set()
+        producer_outputs: Dict[str, List[Dict[str, str]]] = {}
+        for record_index, record in enumerate(history):
+            if not isinstance(record, dict):
+                continue
+            outputs = record.get("outputs")
+            if not isinstance(outputs, list):
+                continue
+            owner_id = str(record.get("id") or f"legacy-history-{record_index}")
+            canonical: List[Dict[str, Any]] = []
+            reserved_ids = {
+                cls._valid_output_id(item.get("deleted_output_id"))
+                for item in record.get("deletedOutputTombstones") or []
+                if isinstance(item, dict)
+            }
+            used_history_ids.update(output_id for output_id in reserved_ids if output_id)
+            used_orders = {
+                order
+                for item in record.get("deletedOutputTombstones") or []
+                if isinstance(item, dict)
+                for order in [cls._valid_output_order(item.get("output_order"))]
+                if order is not None
+            }
+            next_order = max(used_orders, default=-1) + 1
+            for output_index, item in enumerate(outputs):
+                if not isinstance(item, dict):
+                    canonical.append({"asset_id": "", "output_id": ""})
+                    continue
+                asset_id = str(item.get("asset_id") or "")
+                output_id = cls._valid_output_id(item.get("output_id"))
+                if not output_id or output_id in used_history_ids:
+                    discriminator = 0
+                    output_id = cls._stable_legacy_output_id(
+                        owner_id, output_index, asset_id, discriminator,
+                    )
+                    while output_id in used_history_ids:
+                        discriminator += 1
+                        output_id = cls._stable_legacy_output_id(
+                            owner_id, output_index, asset_id, discriminator,
+                        )
+                    item["output_id"] = output_id
+                    changed = True
+                elif item.get("output_id") != output_id:
+                    item["output_id"] = output_id
+                    changed = True
+                used_history_ids.add(output_id)
+                output_order = cls._valid_output_order(item.get("output_order"))
+                if output_order is None or output_order in used_orders:
+                    while next_order in used_orders:
+                        next_order += 1
+                    output_order = next_order
+                    next_order += 1
+                    item["output_order"] = output_order
+                    changed = True
+                elif item.get("output_order") != output_order:
+                    item["output_order"] = output_order
+                    changed = True
+                used_orders.add(output_order)
+                canonical.append({
+                    "asset_id": asset_id,
+                    "output_id": output_id,
+                    "output_order": output_order,
+                })
+            result_node_id = str(
+                record.get("result_node_id")
+                or record.get("resultNodeId")
+                or record.get("nodeId")
+                or record.get("node_id")
+                or ""
+            ).strip()
+            if result_node_id:
+                producer_outputs.setdefault(result_node_id, []).extend(canonical)
+
+        for node_index, node in enumerate(canvas.get("nodes") or []):
+            if not isinstance(node, dict):
+                continue
+            images = node.get("images")
+            if not isinstance(images, list):
+                continue
+            node_id = str(node.get("id") or f"legacy-node-{node_index}")
+            canonical = producer_outputs.get(node_id, [])
+            if not canonical:
+                continue
+            assigned_node_ids: set[str] = set()
+            assigned_node_orders: set[int] = set()
+            for image_index, item in enumerate(images):
+                if not isinstance(item, dict):
+                    continue
+                asset_id = str(item.get("asset_id") or "")
+                existing_output_id = cls._valid_output_id(item.get("output_id"))
+                aligned = next(
+                    (
+                        candidate for candidate in canonical
+                        if candidate["asset_id"] == asset_id
+                        and candidate["output_id"] not in assigned_node_ids
+                        and (
+                            not existing_output_id
+                            or candidate["output_id"] == existing_output_id
+                        )
+                    ),
+                    None,
+                )
+                if aligned is None and not existing_output_id:
+                    aligned = next(
+                        (
+                            candidate for candidate in canonical
+                            if candidate["asset_id"] == asset_id
+                            and candidate["output_id"] not in assigned_node_ids
+                        ),
+                        None,
+                    )
+                if aligned is None:
+                    continue
+                output_id = aligned["output_id"]
+                existing_order = cls._valid_output_order(item.get("output_order"))
+                aligned_order = cls._valid_output_order(aligned.get("output_order"))
+                if existing_order is not None and existing_order not in assigned_node_orders:
+                    output_order = existing_order
+                elif aligned_order is not None and aligned_order not in assigned_node_orders:
+                    output_order = aligned_order
+                else:
+                    output_order = max(0, image_index)
+                    while output_order in assigned_node_orders:
+                        output_order += 1
+                if item.get("output_id") != output_id:
+                    item["output_id"] = output_id
+                    changed = True
+                if item.get("output_order") != output_order:
+                    item["output_order"] = output_order
+                    changed = True
+                assigned_node_ids.add(output_id)
+                assigned_node_orders.add(output_order)
+        return changed
+
     def __init__(self, root: Path | str | None = None, *, snapshot_delay: float = 1.2):
         self.root = _validated_projects_root(root) if root is not None else default_projects_root()
         self.snapshot_delay = max(0.0, float(snapshot_delay))
@@ -481,18 +678,89 @@ class ProjectStore:
                 "connections": [],
             }
             directory = self.root / project_id
-            directory.mkdir(parents=False, exist_ok=False)
-            for child in ("media", "previews", "trash"):
-                (directory / child).mkdir()
-            _write_json_atomic(directory / "media" / "index.json", {"items": {}}, keep_backup=False)
-            _write_json_atomic(directory / "trash" / "index.json", {"items": []}, keep_backup=False)
-            _write_json_atomic(directory / "project.json", metadata, keep_backup=False)
-            _write_json_atomic(directory / "canvas.json", canvas, keep_backup=False)
-            _write_json_atomic(directory / "history.json", {"records": []}, keep_backup=False)
+            created_directory = False
+            try:
+                directory.mkdir(parents=False, exist_ok=False)
+                created_directory = True
+                for child in ("media", "previews", "trash"):
+                    (directory / child).mkdir()
+                _write_json_atomic(directory / "media" / "index.json", {"items": {}}, keep_backup=False)
+                _write_json_atomic(directory / "trash" / "index.json", {"items": []}, keep_backup=False)
+                _write_json_atomic(directory / "project.json", metadata, keep_backup=False)
+                _write_json_atomic(directory / "canvas.json", canvas, keep_backup=False)
+                _write_json_atomic(directory / "history.json", {"records": []}, keep_backup=False)
+            except Exception:
+                if created_directory:
+                    shutil.rmtree(directory, ignore_errors=True)
+                raise
             self._canvases[project_id] = canvas
             self._histories[project_id] = []
             self._saved_revisions[project_id] = 0
             return self._project_record(metadata)
+
+    def duplicate_project(self, project_id: str) -> Dict[str, Any]:
+        project_id = _clean_project_id(project_id)
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                self.flush(project_id)
+                source = self.open_project(project_id)
+                source_name = str(source["project"].get("name") or "未命名项目")
+                canvas = copy.deepcopy(source["canvas"])
+                history = copy.deepcopy(self._histories.get(project_id) or self._load_history(project_id))
+                media_snapshot = []
+                for asset_id in self._load_media_index(project_id)["items"]:
+                    record = self.media_record(project_id, asset_id)
+                    media_snapshot.append((asset_id, copy.deepcopy(record), Path(record["path"])))
+
+            duplicate = self.create_project(f"{source_name[:57]} 副本")
+            duplicate_id = duplicate["id"]
+            duplicate_dir = self.root / duplicate_id
+            try:
+                timestamp = duplicate["created_at"]
+                canvas.update({
+                    "id": duplicate_id,
+                    "project_id": duplicate_id,
+                    "project": duplicate_id,
+                    "title": duplicate["name"],
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "revision": 0,
+                })
+                runtime_keys = {
+                    "pending", "running", "queued", "pendingTasks", "jimengPending",
+                    "runStartedAt", "runFinishedAt", "runElapsedMs", "runTimerHidden",
+                    "_runMetaTargetId", "conversationSending", "agentPlanning", "agentExecuting",
+                }
+                for node in canvas.get("nodes") or []:
+                    if isinstance(node, dict):
+                        for key in runtime_keys:
+                            node.pop(key, None)
+                media_index = {"items": {}}
+                for asset_id, record, source_path in media_snapshot:
+                    record.pop("path", None)
+                    target_path = self._safe_project_path(
+                        duplicate_dir,
+                        (Path("media") / str(record.get("filename") or "")).as_posix(),
+                    )
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source_path, target_path)
+                    media_index["items"][asset_id] = copy.deepcopy(record)
+                _write_json_atomic(duplicate_dir / "media" / "index.json", media_index, keep_backup=False)
+                self._canvases[duplicate_id] = canvas
+                self._histories[duplicate_id] = history
+                self.flush(duplicate_id)
+                _write_json_atomic(
+                    duplicate_dir / "canvas.json.bak",
+                    self._project_canvas_for_persistence(canvas),
+                    keep_backup=False,
+                )
+                return self._project_record(_read_json(duplicate_dir / "project.json"))
+            except Exception:
+                self._canvases.pop(duplicate_id, None)
+                self._histories.pop(duplicate_id, None)
+                self._saved_revisions.pop(duplicate_id, None)
+                shutil.rmtree(duplicate_dir, ignore_errors=True)
+                raise
 
     def export_fly_to(self, project_id: str, target: Path | str) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
@@ -985,6 +1253,7 @@ class ProjectStore:
             if history is None:
                 history = self._load_history(project_id)
                 self._histories[project_id] = history
+            self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
             opened_canvas["logs"] = copy.deepcopy(history)
             return {"project": self._project_record(metadata), "canvas": opened_canvas}
@@ -1314,6 +1583,429 @@ class ProjectStore:
                 records.append(record)
             return sorted(records, key=lambda item: (int(item.get("created_at") or 0), str(item.get("asset_id") or "")), reverse=True)
 
+    def preview_project_cleanup(self, project_id: str) -> Dict[str, Any]:
+        """Describe proven transient media orphans without changing project state."""
+        project_id = _clean_project_id(project_id)
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                project_dir = self._project_directory(project_id)
+                transaction_path = self._safe_project_path(
+                    project_dir,
+                    f"trash/{ORIGINAL_MEDIA_TRANSACTION_NAME}",
+                )
+                if transaction_path.exists():
+                    raise ProjectStoreError("项目清理预览发现媒体事务尚未完成")
+                try:
+                    project = _read_json(self._safe_project_path(project_dir, "project.json"))
+                    persisted_canvas = _read_json(self._safe_project_path(project_dir, "canvas.json"))
+                    persisted_history_payload = _read_json(
+                        self._safe_project_path(project_dir, "history.json")
+                    )
+                    media_index = _read_json(self._safe_project_path(project_dir, "media/index.json"))
+                    trash_index = _read_json(self._safe_project_path(project_dir, "trash/index.json"))
+                except (OSError, ValueError) as exc:
+                    raise ProjectStoreError("项目清理预览无法读取项目数据") from exc
+                persisted_history = persisted_history_payload.get("records")
+                canvas = copy.deepcopy(persisted_canvas)
+                history = copy.deepcopy(persisted_history)
+                loaded_canvas = self._canvases.get(project_id)
+                loaded_history = self._histories.get(project_id)
+                runtime_canvas = (
+                    copy.deepcopy(loaded_canvas) if isinstance(loaded_canvas, dict) else None
+                )
+                runtime_history = (
+                    copy.deepcopy(loaded_history) if isinstance(loaded_history, list) else None
+                )
+                if runtime_canvas is not None:
+                    canvas = runtime_canvas
+                if runtime_history is not None:
+                    history = runtime_history
+                media_items = media_index.get("items")
+                trash_items = trash_index.get("items")
+                if (
+                    project.get("format") != "firefly-project-v1"
+                    or project.get("id") != project_id
+                    or persisted_canvas.get("format") != "firefly-canvas-v1"
+                    or persisted_canvas.get("project_id") != project_id
+                    or persisted_canvas.get("id") != project_id
+                    or canvas.get("format") != "firefly-canvas-v1"
+                    or canvas.get("project_id") != project_id
+                    or canvas.get("id") != project_id
+                    or not isinstance(persisted_history, list)
+                    or not isinstance(history, list)
+                    or not isinstance(media_items, dict)
+                    or not isinstance(trash_items, list)
+                ):
+                    raise ProjectStoreError("项目清理预览无法验证项目数据")
+
+                ownership_documents: Dict[str, Any] = {
+                    "project.json": project,
+                    "canvas.json": persisted_canvas,
+                    "history.json": persisted_history_payload,
+                    "media/index.json": media_index,
+                    "trash/index.json": trash_index,
+                }
+                if runtime_canvas is not None:
+                    ownership_documents["runtime/canvas.json"] = runtime_canvas
+                if runtime_history is not None:
+                    ownership_documents["runtime/history.json"] = {"records": runtime_history}
+                backup_path = self._safe_project_path(project_dir, "canvas.json.bak")
+                undo_dir = self._safe_project_path(project_dir, "trash/undo")
+                try:
+                    if backup_path.exists():
+                        backup = _read_json(backup_path)
+                        if (
+                            not isinstance(backup, dict)
+                            or backup.get("format") != "firefly-canvas-v1"
+                            or backup.get("id") != project_id
+                            or backup.get("project_id") != project_id
+                        ):
+                            raise ProjectStoreError("项目清理预览发现恢复数据所有权冲突")
+                        ownership_documents["canvas.json.bak"] = backup
+                    if undo_dir.exists():
+                        if not undo_dir.is_dir():
+                            raise ProjectStoreError("项目清理预览无法验证撤销记录")
+                        for undo_path in sorted(undo_dir.iterdir(), key=lambda item: item.name):
+                            relative_name = undo_path.relative_to(project_dir).as_posix()
+                            safe_undo_path = self._safe_project_path(project_dir, relative_name)
+                            if safe_undo_path.suffix.lower() != ".json" or not safe_undo_path.is_file():
+                                raise ProjectStoreError("项目清理预览无法验证撤销记录")
+                            ownership_documents[relative_name] = _read_json(safe_undo_path)
+                except (OSError, ValueError) as exc:
+                    raise ProjectStoreError("项目清理预览无法读取恢复数据") from exc
+
+                declared_trash_files = {
+                    "media": set(),
+                    "previews": set(),
+                    "undo": set(),
+                }
+                for item in trash_items:
+                    if not isinstance(item, dict):
+                        raise ProjectStoreError("项目清理预览无法验证恢复索引")
+                    media_filename = item.get("media_filename")
+                    if media_filename not in (None, ""):
+                        if not isinstance(media_filename, str) or Path(media_filename).name != media_filename:
+                            raise ProjectStoreError("项目清理预览无法验证恢复媒体路径")
+                        declared_trash_files["media"].add(media_filename)
+                    preview_filenames = item.get("preview_filenames")
+                    if preview_filenames is not None:
+                        if (
+                            not isinstance(preview_filenames, list)
+                            or any(
+                                not isinstance(name, str) or Path(name).name != name
+                                for name in preview_filenames
+                            )
+                        ):
+                            raise ProjectStoreError("项目清理预览无法验证恢复预览路径")
+                        declared_trash_files["previews"].update(preview_filenames)
+                    undo = item.get("undo")
+                    if undo is not None:
+                        snapshot_filename = (
+                            undo.get("snapshot_filename") if isinstance(undo, dict) else None
+                        )
+                        if (
+                            not isinstance(snapshot_filename, str)
+                            or Path(snapshot_filename).name != snapshot_filename
+                            or not snapshot_filename.endswith(".json")
+                        ):
+                            raise ProjectStoreError("项目清理预览无法验证撤销路径")
+                        declared_trash_files["undo"].add(snapshot_filename)
+                for directory_name, expected_names in declared_trash_files.items():
+                    directory = self._safe_project_path(
+                        project_dir,
+                        f"trash/{directory_name}",
+                    )
+                    if not directory.exists():
+                        if expected_names:
+                            raise ProjectStoreError("项目清理预览恢复数据读取不完整")
+                        continue
+                    if not directory.is_dir():
+                        raise ProjectStoreError("项目清理预览无法验证恢复数据目录")
+                    try:
+                        entries = list(directory.iterdir())
+                    except OSError as exc:
+                        raise ProjectStoreError("项目清理预览无法读取恢复数据目录") from exc
+                    actual_names = set()
+                    for entry in entries:
+                        safe_entry = self._safe_project_path(
+                            project_dir,
+                            entry.relative_to(project_dir).as_posix(),
+                        )
+                        if not safe_entry.is_file():
+                            raise ProjectStoreError("项目清理预览无法验证恢复数据文件")
+                        actual_names.add(entry.name)
+                    if actual_names != expected_names:
+                        label = "恢复媒体" if directory_name == "media" else "恢复数据"
+                        raise ProjectStoreError(f"项目清理预览发现未索引{label}或恢复文件缺失")
+
+                owned_asset_ids = self._collect_asset_ids(canvas)
+                owned_asset_ids.update(self._collect_asset_ids(history))
+                owned_asset_ids.update(self._collect_asset_ids(trash_index))
+                ownership_json = json.dumps(
+                    {
+                        key: value
+                        for key, value in ownership_documents.items()
+                        if key != "media/index.json"
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+
+                candidates: List[Dict[str, Any]] = []
+                proof_candidates: List[Dict[str, str]] = []
+                for asset_id, record in media_items.items():
+                    if not isinstance(asset_id, str) or not isinstance(record, dict):
+                        raise ProjectStoreError("项目清理预览无法验证媒体索引")
+                    filename = str(record.get("filename") or "")
+                    sha256 = str(record.get("sha256") or "").lower()
+                    if (
+                        record.get("asset_id") != asset_id
+                        or not re.fullmatch(r"[0-9a-f]{64}", asset_id)
+                        or sha256 != asset_id
+                        or Path(filename).stem != asset_id
+                    ):
+                        raise ProjectStoreError("项目清理预览无法验证媒体身份")
+                    media_path = self._safe_project_path(
+                        project_dir,
+                        (Path("media") / filename).as_posix(),
+                    )
+                    if not media_path.is_file() or _file_sha256(media_path) != sha256:
+                        raise ProjectStoreError("项目清理预览媒体读取不完整")
+                    try:
+                        size = int(record.get("size"))
+                    except (TypeError, ValueError) as exc:
+                        raise ProjectStoreError("项目清理预览无法验证媒体大小") from exc
+                    if size != media_path.stat().st_size:
+                        raise ProjectStoreError("项目清理预览无法验证媒体大小")
+                    known_media_fields = {
+                        "asset_id", "filename", "name", "mime_type", "size",
+                        "sha256", "kind", "created_at", "source", "sources",
+                    }
+                    if set(record) - known_media_fields:
+                        raise ProjectStoreError("项目清理预览无法验证媒体 schema")
+                    raw_source = record.get("source")
+                    raw_sources = record.get("sources")
+                    if (
+                        raw_source is not None and not isinstance(raw_source, dict)
+                        or raw_sources is not None and (
+                            not isinstance(raw_sources, list)
+                            or any(not isinstance(item, dict) for item in raw_sources)
+                        )
+                    ):
+                        raise ProjectStoreError("项目清理预览无法验证媒体来源")
+                    sources = []
+                    if isinstance(raw_source, dict):
+                        sources.append(raw_source)
+                    if isinstance(raw_sources, list):
+                        sources.extend(raw_sources)
+                    if (
+                        any(self._media_source(source) != source for source in sources)
+                        or isinstance(raw_sources, list)
+                        and isinstance(raw_source, dict)
+                        and (not raw_sources or raw_sources[0] != raw_source)
+                    ):
+                        raise ProjectStoreError("项目清理预览无法验证媒体来源")
+                    source_types = {
+                        str(source.get("type") or "")
+                        for source in sources
+                        if str(source.get("type") or "")
+                    }
+                    cleanup_lifecycles = {
+                        str(source.get("lifecycle") or "")
+                        for source in sources
+                        if str(source.get("type") or "") == "online_generation"
+                    }
+                    cleanup_lifecycle = (
+                        next(iter(cleanup_lifecycles))
+                        if len(cleanup_lifecycles) == 1
+                        and cleanup_lifecycles <= {"failed", "transient"}
+                        else ""
+                    )
+                    if (
+                        not cleanup_lifecycle
+                        or source_types != {"online_generation"}
+                        or asset_id in owned_asset_ids
+                        or asset_id in ownership_json
+                    ):
+                        continue
+                    candidates.append({
+                        "asset_id": asset_id,
+                        "name": str(record.get("name") or filename),
+                        "kind": str(record.get("kind") or self._media_kind(
+                            str(record.get("mime_type") or ""), filename,
+                        )),
+                        "mime_type": str(record.get("mime_type") or "application/octet-stream"),
+                        "size": size,
+                        "source_category": f"{cleanup_lifecycle}_generation",
+                    })
+                    proof_candidates.append({
+                        "asset_id": asset_id,
+                        "filename": filename,
+                        "sha256": sha256,
+                    })
+
+                media_root = self._safe_project_path(project_dir, "media")
+                indexed_filenames = {
+                    str(record.get("filename") or "")
+                    for record in media_items.values()
+                    if isinstance(record, dict)
+                }
+                try:
+                    media_entries = list(media_root.iterdir())
+                    if any(
+                        path.name != "index.json" and not path.is_file()
+                        for path in media_entries
+                    ):
+                        raise ProjectStoreError("项目清理预览发现无法验证的媒体目录条目")
+                    physical_filenames = {
+                        path.name
+                        for path in media_entries
+                        if path.name != "index.json"
+                    }
+                except OSError as exc:
+                    raise ProjectStoreError("项目清理预览无法读取媒体目录") from exc
+                if physical_filenames != indexed_filenames:
+                    raise ProjectStoreError("项目清理预览发现未索引媒体或缺失索引文件")
+
+                candidates.sort(key=lambda item: item["asset_id"])
+                proof_candidates.sort(key=lambda item: item["asset_id"])
+                proof_payload = {
+                    "format": "firefly-project-cleanup-preview-v1",
+                    "project_id": project_id,
+                    "revision": int(canvas.get("revision") or 0),
+                    "ownership": ownership_documents,
+                    "candidates": proof_candidates,
+                }
+                ownership_proof = hashlib.sha256(json.dumps(
+                    proof_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")).hexdigest()
+                return {
+                    "project_id": project_id,
+                    "revision": proof_payload["revision"],
+                    "ownership_proof": ownership_proof,
+                    "candidate_count": len(candidates),
+                    "total_bytes": sum(int(item["size"]) for item in candidates),
+                    "candidates": candidates,
+                }
+
+    def execute_project_cleanup(
+        self,
+        project_id: str,
+        *,
+        revision: int,
+        ownership_proof: str,
+        candidate_asset_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Permanently delete exactly the previewed cleanup candidates.
+
+        The confirmation must bind the preview's revision, ownership proof and
+        exact candidate identities.  Current state is re-analysed read-only and
+        compared against the confirmation before any deletion; any drift aborts
+        without deleting and demands a fresh preview.  Deletion writes no
+        recovery transaction, trash record or undo entry: successful deletions
+        are permanent and unrecoverable.
+        """
+        project_id = _clean_project_id(project_id)
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ProjectStoreError("永久清理确认包含无效版本")
+        proof = str(ownership_proof or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", proof):
+            raise ProjectStoreError("永久清理确认包含无效所有权证明")
+        submitted = candidate_asset_ids
+        if (
+            not isinstance(submitted, list)
+            or any(
+                not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+                for item in submitted
+            )
+            or len({item for item in submitted if isinstance(item, str)}) != len(submitted)
+        ):
+            raise ProjectStoreError("永久清理确认包含无效候选")
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                preview = self.preview_project_cleanup(project_id)
+                if int(preview.get("revision") or 0) != revision:
+                    raise CleanupDrift("项目版本已变化，请重新预览后再确认")
+                if preview.get("ownership_proof") != proof:
+                    raise CleanupDrift("项目所有权证明已变化，请重新预览后再确认")
+                current_candidates = {
+                    str(item["asset_id"])
+                    for item in preview.get("candidates") or []
+                    if isinstance(item, dict) and item.get("asset_id")
+                }
+                if current_candidates != set(submitted):
+                    raise CleanupDrift("清理候选已变化，请重新预览后再确认")
+                previewed_by_id = {
+                    str(item["asset_id"]): item
+                    for item in preview.get("candidates") or []
+                    if isinstance(item, dict) and item.get("asset_id")
+                }
+                project_dir = self._project_directory(project_id)
+                index = self._load_media_index(project_id)
+                deleted: List[Dict[str, Any]] = []
+                failed: List[Dict[str, Any]] = []
+                for asset_id in sorted(set(submitted)):
+                    record = index["items"].get(asset_id)
+                    if not isinstance(record, dict):
+                        raise CleanupDrift("清理执行时媒体索引已变化，请重新预览后再确认")
+                    filename = str(record.get("filename") or "")
+                    media_path = self._safe_project_path(
+                        project_dir,
+                        (Path("media") / filename).as_posix(),
+                    )
+                    try:
+                        media_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        # The candidate stays fully indexed so a later preview
+                        # can prove it again; report the exact failure instead
+                        # of claiming the deletion.
+                        failed.append({
+                            "asset_id": asset_id,
+                            "reason": str(exc) or "文件删除失败",
+                        })
+                        continue
+                    index["items"].pop(asset_id, None)
+                    previewed = previewed_by_id.get(asset_id) or {}
+                    deleted.append({
+                        "asset_id": asset_id,
+                        "filename": filename,
+                        "name": str(record.get("name") or filename),
+                        "kind": str(record.get("kind") or self._media_kind(
+                            str(record.get("mime_type") or ""), filename,
+                        )),
+                        "mime_type": str(record.get("mime_type") or "application/octet-stream"),
+                        "size": int(record.get("size") or 0),
+                        "source_category": str(previewed.get("source_category") or ""),
+                    })
+                if deleted:
+                    _write_json_atomic(
+                        self._safe_project_path(project_dir, "media/index.json"),
+                        index,
+                        keep_backup=False,
+                    )
+                _diag_emit(
+                    "cleanup.executed",
+                    project_id=project_id,
+                    revision=revision,
+                    deleted_count=len(deleted),
+                    failed_count=len(failed),
+                    deleted_bytes=sum(int(item.get("size") or 0) for item in deleted),
+                    state="completed" if not failed else "partial",
+                )
+                return {
+                    "project_id": project_id,
+                    "revision": revision,
+                    "deleted_count": len(deleted),
+                    "deleted_bytes": sum(int(item["size"]) for item in deleted),
+                    "deleted": sorted(deleted, key=lambda item: item["asset_id"]),
+                    "failed": sorted(failed, key=lambda item: item["asset_id"]),
+                    "complete": not failed,
+                }
+
     def delete_media_if_unreferenced(self, project_id: str, asset_id: str) -> bool:
         project_id = _clean_project_id(project_id)
         asset_id = str(asset_id or "").strip()
@@ -1336,20 +2028,417 @@ class ProjectStore:
             _write_json_atomic(media_root / "index.json", index, keep_backup=False)
             return True
 
+    @classmethod
+    def _append_output_occurrence_tombstone(
+        cls,
+        owner: Dict[str, Any],
+        *,
+        asset_id: str,
+        output_id: str,
+        deletion_id: str,
+        log_id: str,
+        output_index: int,
+        record: Dict[str, Any],
+    ) -> None:
+        items = [item for item in owner.get("deletedOutputTombstones") or [] if isinstance(item, dict)]
+        items = [item for item in items if str(item.get("deletion_id") or "") != deletion_id]
+        tombstone = cls._deleted_asset_tombstone(asset_id, record)
+        tombstone.update({
+            "deleted_output_id": output_id,
+            "deletion_id": deletion_id,
+            "log_id": log_id,
+            "output_index": output_index,
+        })
+        items.append(tombstone)
+        owner["deletedOutputTombstones"] = items
+
+    @staticmethod
+    def _remove_output_occurrence_tombstone(owner: Dict[str, Any], deletion_id: str) -> None:
+        remaining = [
+            item for item in owner.get("deletedOutputTombstones") or []
+            if not (isinstance(item, dict) and str(item.get("deletion_id") or "") == deletion_id)
+        ]
+        if remaining:
+            owner["deletedOutputTombstones"] = remaining
+        else:
+            owner.pop("deletedOutputTombstones", None)
+
+    @classmethod
+    def _pop_output_occurrence(
+        cls,
+        owner: Dict[str, Any],
+        key: str,
+        *,
+        asset_id: str,
+        output_id: str,
+        expected_index: int | None,
+    ) -> Dict[str, Any]:
+        values = owner.get(key)
+        if not isinstance(values, list):
+            raise InvalidMutation("生成输出身份与项目记录不一致")
+        matches = [
+            index for index, item in enumerate(values)
+            if isinstance(item, dict)
+            and cls._valid_output_id(item.get("output_id")) == output_id
+        ]
+        if expected_index is None:
+            if len(matches) != 1:
+                raise InvalidMutation("生成输出身份已变化，请刷新后重试")
+            selected_index = matches[0]
+        else:
+            if matches != [expected_index]:
+                raise InvalidMutation("生成输出身份已变化，请刷新后重试")
+            selected_index = expected_index
+        selected = values[selected_index]
+        if str(selected.get("asset_id") or "") != asset_id:
+            raise InvalidMutation("生成输出身份与媒体资源不一致")
+        return values.pop(selected_index)
+
+    @classmethod
+    def _insert_output_occurrence(
+        cls,
+        owner: Dict[str, Any],
+        key: str,
+        item: Dict[str, Any],
+        *,
+        output_id: str,
+        output_index: int,
+    ) -> None:
+        values = owner.get(key)
+        if not isinstance(values, list):
+            values = []
+            owner[key] = values
+        if any(
+            isinstance(value, dict)
+            and cls._valid_output_id(value.get("output_id")) == output_id
+            for value in values
+        ):
+            raise InvalidMutation("生成输出已恢复")
+        restored = copy.deepcopy(item)
+        restored_order = cls._valid_output_order(restored.get("output_order"))
+        if restored_order is None:
+            restored["output_order"] = max(0, int(output_index))
+        values.append(restored)
+        decorated = list(enumerate(values))
+        decorated.sort(key=lambda pair: (
+            cls._valid_output_order(pair[1].get("output_order"))
+            if isinstance(pair[1], dict) and cls._valid_output_order(pair[1].get("output_order")) is not None
+            else 1_000_000_000 + pair[0]
+        ))
+        values[:] = [value for _index, value in decorated]
+
+    def _delete_generated_output_occurrence(
+        self,
+        project_id: str,
+        asset_id: str,
+        *,
+        base_revision: int,
+        log_id: str,
+        output_id: str,
+        output_index: int,
+    ) -> Dict[str, Any]:
+        project_id = _clean_project_id(project_id)
+        log_id = str(log_id or "").strip()
+        output_id = self._valid_output_id(output_id)
+        if not log_id or not output_id:
+            raise InvalidMutation("删除当前原图需要稳定的生成输出身份")
+        try:
+            output_index = int(output_index)
+        except (TypeError, ValueError) as exc:
+            raise InvalidMutation("生成输出位置无效") from exc
+        if output_index < 0:
+            raise InvalidMutation("生成输出位置无效")
+
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                opened = self.open_project(project_id)
+                current_revision = int(opened["canvas"].get("revision") or 0)
+                if int(base_revision) != current_revision:
+                    raise RevisionConflict(opened["canvas"])
+                self._cleanup_expired_deleted_media_locked(project_id)
+                media_index = self._load_media_index(project_id)
+                original = media_index["items"].get(asset_id)
+                if not isinstance(original, dict):
+                    raise ProjectNotFound("项目媒体不存在")
+                if not self._is_generated_original(original):
+                    raise ProjectStoreError("只能删除项目生成原图")
+                blocking_task_ids = self._active_generation_references_asset(opened["canvas"], asset_id)
+                if blocking_task_ids:
+                    raise ProjectStoreError(
+                        "该原图正在被生成任务引用，请等待任务完成后再删除："
+                        + "、".join(blocking_task_ids)
+                    )
+
+                history = copy.deepcopy(self._histories.get(project_id, []))
+                record_matches = [
+                    record for record in history
+                    if isinstance(record, dict) and str(record.get("id") or "") == log_id
+                ]
+                if len(record_matches) != 1:
+                    raise InvalidMutation("生成记录身份已变化，请刷新后重试")
+                target_record = record_matches[0]
+                result_node_id = str(
+                    target_record.get("result_node_id")
+                    or target_record.get("resultNodeId")
+                    or target_record.get("nodeId")
+                    or target_record.get("node_id")
+                    or ""
+                ).strip()
+                nodes = copy.deepcopy(opened["canvas"].get("nodes") or [])
+                node_matches = [
+                    node for node in nodes
+                    if isinstance(node, dict) and str(node.get("id") or "") == result_node_id
+                ] if result_node_id else []
+                if result_node_id and len(node_matches) != 1:
+                    raise InvalidMutation("生成结果节点身份已变化，请刷新后重试")
+                target_node = node_matches[0] if node_matches else None
+
+                history_owner_state = {
+                    key: copy.deepcopy(target_record[key])
+                    for key in ("status", "originalDeleted")
+                    if key in target_record
+                }
+                node_state_keys = (
+                    "needsRegeneration", "generationState", "resultDeleted", "pending",
+                    "running", "queued", "pendingTasks", "runFinishedAt", "runElapsedMs",
+                )
+                node_owner_state = {
+                    key: copy.deepcopy(target_node[key])
+                    for key in node_state_keys
+                    if target_node is not None and key in target_node
+                }
+                selected_output = self._pop_output_occurrence(
+                    target_record,
+                    "outputs",
+                    asset_id=asset_id,
+                    output_id=output_id,
+                    expected_index=output_index,
+                )
+                selected_image = None
+                if target_node is not None:
+                    selected_image = self._pop_output_occurrence(
+                        target_node,
+                        "images",
+                        asset_id=asset_id,
+                        output_id=output_id,
+                        expected_index=None,
+                    )
+
+                deletion_id = f"deletion-{uuid.uuid4().hex}"
+                self._append_output_occurrence_tombstone(
+                    target_record,
+                    asset_id=asset_id,
+                    output_id=output_id,
+                    deletion_id=deletion_id,
+                    log_id=log_id,
+                    output_index=output_index,
+                    record=original,
+                )
+                remaining_outputs = target_record.get("outputs") or []
+                if remaining_outputs:
+                    target_record.pop("originalDeleted", None)
+                    if target_record.get("status") == "original_deleted":
+                        target_record["status"] = "succeeded"
+                else:
+                    target_record["status"] = "original_deleted"
+                    target_record["originalDeleted"] = True
+                if target_node is not None:
+                    self._append_output_occurrence_tombstone(
+                        target_node,
+                        asset_id=asset_id,
+                        output_id=output_id,
+                        deletion_id=deletion_id,
+                        log_id=log_id,
+                        output_index=output_index,
+                        record=original,
+                    )
+                    if not target_node.get("images"):
+                        self._reset_deleted_original_owner_state(target_node)
+
+                canvas = copy.deepcopy(opened["canvas"])
+                canvas.pop("logs", None)
+                canvas["nodes"] = nodes
+                canvas["revision"] = current_revision + 1
+                canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
+                referenced_after = asset_id in self._collect_asset_ids({
+                    "nodes": nodes,
+                    "history": history,
+                })
+
+                project_dir = self._project_directory(project_id)
+                self._safe_project_path(project_dir, "trash")
+                self._safe_project_path(project_dir, "trash/undo")
+                self._safe_project_path(project_dir, "trash/media")
+                self._safe_project_path(project_dir, "trash/previews")
+                media_path = self._safe_project_path(
+                    project_dir,
+                    (Path("media") / str(original.get("filename") or "")).as_posix(),
+                )
+                if not media_path.is_file():
+                    raise ProjectNotFound("项目媒体不存在")
+                preview_root = self._safe_project_path(project_dir, "previews")
+                preview_files = [
+                    self._safe_project_path(project_dir, path.relative_to(project_dir).as_posix())
+                    for path in sorted(preview_root.glob(f"{asset_id}-*"))
+                    if path.is_file()
+                ]
+                move_plan: List[tuple[Path, Path]] = []
+                old_media_index = copy.deepcopy(media_index)
+                if not referenced_after:
+                    move_plan = [
+                        (
+                            media_path,
+                            self._safe_project_path(
+                                project_dir,
+                                (Path("trash") / "media" / media_path.name).as_posix(),
+                            ),
+                        )
+                    ] + [
+                        (
+                            path,
+                            self._safe_project_path(
+                                project_dir,
+                                (Path("trash") / "previews" / path.name).as_posix(),
+                            ),
+                        )
+                        for path in preview_files
+                    ]
+                    media_index["items"].pop(asset_id, None)
+
+                old_trash_index = self._load_media_trash_index(project_id)
+                trash_index = copy.deepcopy(old_trash_index)
+                deleted_at = _now_ms()
+                snapshot_filename = f"{deletion_id}.json"
+                trash_item = copy.deepcopy(original)
+                trash_item.update({
+                    "deletion_id": deletion_id,
+                    "output_id": output_id,
+                    "log_id": log_id,
+                    "result_node_id": result_node_id,
+                    "output_index": output_index,
+                    "asset_id": asset_id,
+                    "deleted_at": deleted_at,
+                    "expires_at": deleted_at + MEDIA_TRASH_RETENTION_MS,
+                    "media_retained": referenced_after,
+                    "media_filename": "" if referenced_after else media_path.name,
+                    "preview_filenames": [] if referenced_after else [path.name for path in preview_files],
+                    "reason": "delete-generated-output",
+                    "undo": {
+                        "operation": "restore-generated-output",
+                        "asset_id": asset_id,
+                        "deletion_id": deletion_id,
+                        "output_id": output_id,
+                        "log_id": log_id,
+                        "deleted_revision": current_revision + 1,
+                        "snapshot_filename": snapshot_filename,
+                    },
+                })
+                trash_index["items"] = [
+                    item for item in trash_index.get("items", [])
+                    if not (
+                        isinstance(item, dict)
+                        and str(item.get("deletion_id") or "") == deletion_id
+                    )
+                ]
+                trash_index["items"].append(trash_item)
+                undo_snapshot = {
+                    "deletion_id": deletion_id,
+                    "output_id": output_id,
+                    "asset_id": asset_id,
+                    "log_id": log_id,
+                    "result_node_id": result_node_id,
+                    "output_index": output_index,
+                    "history_output": copy.deepcopy(selected_output),
+                    "node_image": copy.deepcopy(selected_image),
+                    "history_owner_state": history_owner_state,
+                    "node_owner_state": node_owner_state,
+                }
+
+                before_canvas = copy.deepcopy(opened["canvas"])
+                before_canvas.pop("logs", None)
+                metadata = _read_json(self._safe_project_path(project_dir, "project.json"))
+                before_metadata = self._metadata_for_canvas(metadata, before_canvas)
+                after_metadata = self._metadata_for_canvas(metadata, canvas)
+                files = [
+                    {
+                        "live": source.relative_to(project_dir).as_posix(),
+                        "trash": destination.relative_to(project_dir).as_posix(),
+                        "required": True,
+                    }
+                    for source, destination in move_plan
+                ]
+                self._commit_original_media_transaction(
+                    project_id,
+                    "delete-output",
+                    asset_id,
+                    files,
+                    snapshot_filename,
+                    {
+                        "file_location": "live",
+                        "canvas": before_canvas,
+                        "history": self._histories.get(project_id, []),
+                        "media_index": old_media_index,
+                        "trash_index": old_trash_index,
+                        "project": before_metadata,
+                        "undo_snapshot": None,
+                    },
+                    {
+                        "file_location": "live" if referenced_after else "trash",
+                        "canvas": canvas,
+                        "history": history,
+                        "media_index": media_index,
+                        "trash_index": trash_index,
+                        "project": after_metadata,
+                        "undo_snapshot": undo_snapshot,
+                    },
+                )
+                self._canvases[project_id] = canvas
+                self._histories[project_id] = history
+                self._saved_revisions[project_id] = int(canvas["revision"])
+                result = copy.deepcopy(canvas)
+                result["logs"] = copy.deepcopy(history)
+                return {"canvas": result, "deleted": copy.deepcopy(trash_item)}
+
     def delete_generated_original(
         self,
         project_id: str,
         asset_id: str,
         *,
         base_revision: int,
+        output_index: int | None = None,
+        log_id: str | None = None,
+        output_id: str | None = None,
     ) -> Dict[str, Any]:
-        """Remove one generated original from a project without cascading outputs.
+        """Remove exactly one generated output occurrence.
 
-        The media bytes move into the project-owned seven-day trash area.  The
-        canvas and history are rewritten in the same store transaction so every
-        direct asset reference disappears together, while prompts, references,
-        settings, nodes, and downstream results remain available to the user.
+        The operation is fail-closed: callers must provide the complete stable
+        occurrence identity.  Project-wide asset deletion is a separate,
+        explicitly named destructive operation.
         """
+        project_id = _clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            raise ProjectStoreError("媒体资源标识无效")
+        identity_fields = (log_id, output_id, output_index)
+        if not all(value is not None for value in identity_fields):
+            raise InvalidMutation("删除当前原图需要完整的生成输出身份")
+        return self._delete_generated_output_occurrence(
+            project_id,
+            asset_id,
+            base_revision=base_revision,
+            log_id=str(log_id or ""),
+            output_id=str(output_id or ""),
+            output_index=int(output_index),
+        )
+
+    def delete_generated_original_project_wide(
+        self,
+        project_id: str,
+        asset_id: str,
+        *,
+        base_revision: int,
+    ) -> Dict[str, Any]:
+        """Delete one generated original and every direct project reference."""
         project_id = _clean_project_id(project_id)
         asset_id = str(asset_id or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
@@ -1367,8 +2456,12 @@ class ProjectStore:
                     raise ProjectNotFound("项目媒体不存在")
                 if not self._is_generated_original(original):
                     raise ProjectStoreError("只能删除项目生成原图")
-                if self._active_generation_references_asset(opened["canvas"], asset_id):
-                    raise ProjectStoreError("该原图正在被生成任务引用，请等待任务完成后再删除")
+                blocking_task_ids = self._active_generation_references_asset(opened["canvas"], asset_id)
+                if blocking_task_ids:
+                    raise ProjectStoreError(
+                        "该原图正在被生成任务引用，请等待任务完成后再删除："
+                        + "、".join(blocking_task_ids)
+                    )
 
                 project_dir = self._project_directory(project_id)
                 preview_root = self._safe_project_path(project_dir, "previews")
@@ -1468,11 +2561,21 @@ class ProjectStore:
                             history_producer_ids.add(result_node_id)
                     cleaned = self._remove_asset_references(record, asset_id) or {}
                     if owns_original:
-                        cleaned["status"] = "original_deleted"
-                        cleaned["originalDeleted"] = True
                         self._append_deleted_asset_tombstone(
                             cleaned, "deletedOutputTombstones", asset_id, original,
                         )
+                        remaining_outputs = self._collect_asset_ids(cleaned.get("outputs") or [])
+                        if remaining_outputs:
+                            cleaned.pop("originalDeleted", None)
+                            if cleaned.get("status") == "original_deleted":
+                                prior_status = str(record.get("status") or "").strip()
+                                cleaned["status"] = (
+                                    prior_status if prior_status and prior_status != "original_deleted"
+                                    else "succeeded"
+                                )
+                        else:
+                            cleaned["status"] = "original_deleted"
+                            cleaned["originalDeleted"] = True
                     else:
                         self._append_deleted_asset_tombstone(
                             cleaned, "deletedReferenceTombstones", asset_id, original,
@@ -1490,17 +2593,11 @@ class ProjectStore:
                     directly_references_original = asset_id in self._collect_asset_ids(node)
                     cleaned_node = self._remove_asset_references(node, asset_id) or {}
                     if owns_original:
-                        cleaned_node["needsRegeneration"] = True
-                        cleaned_node["generationState"] = "ready"
-                        cleaned_node["resultDeleted"] = True
-                        cleaned_node["pending"] = 0
-                        cleaned_node["running"] = False
-                        cleaned_node["queued"] = False
-                        for key in ("pendingTasks", "runFinishedAt", "runElapsedMs"):
-                            cleaned_node.pop(key, None)
                         self._append_deleted_asset_tombstone(
                             cleaned_node, "deletedOutputTombstones", asset_id, original,
                         )
+                        if not self._collect_asset_ids(cleaned_node.get("images") or []):
+                            self._reset_deleted_original_owner_state(cleaned_node)
                     elif directly_references_original:
                         self._append_deleted_asset_tombstone(
                             cleaned_node, "deletedInputTombstones", asset_id, original,
@@ -1557,14 +2654,290 @@ class ProjectStore:
                 result["logs"] = copy.deepcopy(cleaned_history)
                 return {"canvas": result, "deleted": copy.deepcopy(trash_item)}
 
+    def _restore_deleted_output_occurrence(
+        self,
+        project_id: str,
+        asset_id: str,
+        *,
+        base_revision: int,
+        deletion_id: str,
+    ) -> Dict[str, Any]:
+        project_id = _clean_project_id(project_id)
+        deletion_id = str(deletion_id or "").strip().lower()
+        if not self._DELETION_ID_PATTERN.fullmatch(deletion_id):
+            raise InvalidMutation("生成输出撤销身份无效")
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                opened = self.open_project(project_id)
+                current_revision = int(opened["canvas"].get("revision") or 0)
+                if int(base_revision) != current_revision:
+                    raise RevisionConflict(opened["canvas"])
+                self._cleanup_expired_deleted_media_locked(project_id)
+                trash_index = self._load_media_trash_index(project_id)
+                matches = [
+                    item for item in trash_index.get("items", [])
+                    if isinstance(item, dict)
+                    and str(item.get("deletion_id") or "") == deletion_id
+                ]
+                if len(matches) != 1:
+                    raise ProjectNotFound("项目回收区中不存在该生成输出")
+                item = matches[0]
+                if str(item.get("asset_id") or "") != asset_id:
+                    raise InvalidMutation("生成输出撤销身份与媒体资源不一致")
+                undo = item.get("undo")
+                if not isinstance(undo, dict) or str(undo.get("deletion_id") or "") != deletion_id:
+                    raise ProjectStoreError("该项目回收记录不可撤销")
+                snapshot_filename = str(undo.get("snapshot_filename") or "")
+                project_dir = self._project_directory(project_id)
+                undo_path = self._safe_project_path(
+                    project_dir,
+                    (Path("trash") / "undo" / snapshot_filename).as_posix(),
+                )
+                try:
+                    snapshot = _read_json(undo_path)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    raise ProjectStoreError("该项目回收记录不可撤销") from exc
+                if (
+                    str(snapshot.get("deletion_id") or "") != deletion_id
+                    or str(snapshot.get("asset_id") or "") != asset_id
+                    or self._valid_output_id(snapshot.get("output_id"))
+                    != self._valid_output_id(item.get("output_id"))
+                ):
+                    raise ProjectStoreError("该项目回收记录身份不一致")
+
+                log_id = str(snapshot.get("log_id") or "")
+                result_node_id = str(snapshot.get("result_node_id") or "")
+                output_id = self._valid_output_id(snapshot.get("output_id"))
+                try:
+                    output_index = int(snapshot.get("output_index"))
+                except (TypeError, ValueError) as exc:
+                    raise ProjectStoreError("该项目回收记录位置无效") from exc
+                history = copy.deepcopy(self._histories.get(project_id, []))
+                history_matches = [
+                    record for record in history
+                    if isinstance(record, dict) and str(record.get("id") or "") == log_id
+                ]
+                if len(history_matches) != 1:
+                    raise InvalidMutation("生成记录身份已变化，无法安全恢复")
+                target_record = history_matches[0]
+                tombstones = [
+                    tombstone for tombstone in target_record.get("deletedOutputTombstones") or []
+                    if isinstance(tombstone, dict)
+                    and str(tombstone.get("deletion_id") or "") == deletion_id
+                ]
+                if len(tombstones) != 1:
+                    raise InvalidMutation("生成输出撤销状态已变化")
+                history_output = snapshot.get("history_output")
+                if not isinstance(history_output, dict):
+                    raise ProjectStoreError("该项目回收记录缺少生成输出")
+                self._insert_output_occurrence(
+                    target_record,
+                    "outputs",
+                    history_output,
+                    output_id=output_id,
+                    output_index=output_index,
+                )
+                self._remove_output_occurrence_tombstone(target_record, deletion_id)
+                history_owner_state = snapshot.get("history_owner_state")
+                if isinstance(history_owner_state, dict):
+                    for key in ("status", "originalDeleted"):
+                        if key in history_owner_state:
+                            target_record[key] = copy.deepcopy(history_owner_state[key])
+                        else:
+                            target_record.pop(key, None)
+
+                canvas = copy.deepcopy(opened["canvas"])
+                canvas.pop("logs", None)
+                nodes = canvas.get("nodes") or []
+                if result_node_id:
+                    node_matches = [
+                        node for node in nodes
+                        if isinstance(node, dict) and str(node.get("id") or "") == result_node_id
+                    ]
+                    if len(node_matches) != 1:
+                        raise InvalidMutation("生成结果节点身份已变化，无法安全恢复")
+                    target_node = node_matches[0]
+                    node_tombstones = [
+                        tombstone for tombstone in target_node.get("deletedOutputTombstones") or []
+                        if isinstance(tombstone, dict)
+                        and str(tombstone.get("deletion_id") or "") == deletion_id
+                    ]
+                    if len(node_tombstones) != 1:
+                        raise InvalidMutation("生成结果节点撤销状态已变化")
+                    node_image = snapshot.get("node_image")
+                    if isinstance(node_image, dict):
+                        self._insert_output_occurrence(
+                            target_node,
+                            "images",
+                            node_image,
+                            output_id=output_id,
+                            output_index=output_index,
+                        )
+                    self._remove_output_occurrence_tombstone(target_node, deletion_id)
+                    node_owner_state = snapshot.get("node_owner_state")
+                    node_state_keys = (
+                        "needsRegeneration", "generationState", "resultDeleted", "pending",
+                        "running", "queued", "pendingTasks", "runFinishedAt", "runElapsedMs",
+                    )
+                    if isinstance(node_owner_state, dict):
+                        for key in node_state_keys:
+                            if key in node_owner_state:
+                                target_node[key] = copy.deepcopy(node_owner_state[key])
+                            else:
+                                target_node.pop(key, None)
+
+                media_retained = bool(item.get("media_retained"))
+                media_index = self._load_media_index(project_id)
+                old_media_index = copy.deepcopy(media_index)
+                old_trash_index = copy.deepcopy(trash_index)
+                media_was_live = asset_id in media_index.get("items", {})
+                move_plan: List[tuple[Path, Path]] = []
+                restored_record = {
+                    key: copy.deepcopy(value)
+                    for key, value in item.items()
+                    if key not in {
+                        "deletion_id", "output_id", "log_id", "result_node_id", "output_index",
+                        "deleted_at", "expires_at", "media_retained", "media_filename",
+                        "preview_filenames", "reason", "undo",
+                    }
+                }
+                restored_record["asset_id"] = asset_id
+                if media_retained and media_was_live:
+                    pass
+                else:
+                    if media_was_live:
+                        raise ProjectStoreError("项目媒体已恢复")
+                    physical_owner = item if not media_retained else next(
+                        (
+                            candidate for candidate in trash_index.get("items", [])
+                            if isinstance(candidate, dict)
+                            and str(candidate.get("asset_id") or "") == asset_id
+                            and not bool(candidate.get("media_retained"))
+                            and str(candidate.get("media_filename") or "").strip()
+                        ),
+                        None,
+                    )
+                    if not isinstance(physical_owner, dict):
+                        raise ProjectStoreError("共享项目媒体已丢失，无法安全恢复")
+                    media_filename = str(physical_owner.get("media_filename") or "")
+                    trash_media = self._safe_project_path(
+                        project_dir, (Path("trash") / "media" / media_filename).as_posix(),
+                    )
+                    live_media = self._safe_project_path(
+                        project_dir, (Path("media") / str(restored_record.get("filename") or "")).as_posix(),
+                    )
+                    if not trash_media.is_file():
+                        raise ProjectNotFound("项目回收区媒体不存在")
+                    move_plan.append((trash_media, live_media))
+                    for name in physical_owner.get("preview_filenames") or []:
+                        if not isinstance(name, str):
+                            continue
+                        move_plan.append((
+                            self._safe_project_path(project_dir, (Path("trash") / "previews" / name).as_posix()),
+                            self._safe_project_path(project_dir, (Path("previews") / name).as_posix()),
+                        ))
+                    physical_record = {
+                        key: copy.deepcopy(value)
+                        for key, value in physical_owner.items()
+                        if key not in {
+                            "deletion_id", "output_id", "log_id", "result_node_id", "output_index",
+                            "deleted_at", "expires_at", "media_retained", "media_filename",
+                            "preview_filenames", "reason", "undo",
+                        }
+                    }
+                    physical_record["asset_id"] = asset_id
+                    media_index["items"][asset_id] = physical_record
+                    restored_record = copy.deepcopy(physical_record)
+                    if physical_owner is not item:
+                        physical_owner["media_retained"] = True
+                        physical_owner["media_filename"] = ""
+                        physical_owner["preview_filenames"] = []
+
+                trash_index["items"] = [
+                    candidate for candidate in trash_index.get("items", [])
+                    if not (
+                        isinstance(candidate, dict)
+                        and str(candidate.get("deletion_id") or "") == deletion_id
+                    )
+                ]
+                canvas["revision"] = current_revision + 1
+                canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
+                before_canvas = copy.deepcopy(opened["canvas"])
+                before_canvas.pop("logs", None)
+                before_history = copy.deepcopy(self._histories.get(project_id, []))
+                metadata = _read_json(self._safe_project_path(project_dir, "project.json"))
+                before_metadata = self._metadata_for_canvas(metadata, before_canvas)
+                after_metadata = self._metadata_for_canvas(metadata, canvas)
+                files = [
+                    {
+                        "live": live.relative_to(project_dir).as_posix(),
+                        "trash": trash.relative_to(project_dir).as_posix(),
+                        "required": index == 0,
+                    }
+                    for index, (trash, live) in enumerate(move_plan)
+                ]
+                self._commit_original_media_transaction(
+                    project_id,
+                    "restore-output",
+                    asset_id,
+                    files,
+                    snapshot_filename,
+                    {
+                        "file_location": "live" if media_was_live else "trash",
+                        "canvas": before_canvas,
+                        "history": before_history,
+                        "media_index": old_media_index,
+                        "trash_index": old_trash_index,
+                        "project": before_metadata,
+                        "undo_snapshot": snapshot,
+                    },
+                    {
+                        "file_location": "live",
+                        "canvas": canvas,
+                        "history": history,
+                        "media_index": media_index,
+                        "trash_index": trash_index,
+                        "project": after_metadata,
+                        "undo_snapshot": None,
+                    },
+                )
+                self._canvases[project_id] = canvas
+                self._histories[project_id] = history
+                self._saved_revisions[project_id] = int(canvas["revision"])
+                result = copy.deepcopy(canvas)
+                result["logs"] = copy.deepcopy(history)
+                return {"canvas": result, "restored": restored_record, "deletion_id": deletion_id}
+
     def restore_deleted_original(
         self,
         project_id: str,
         asset_id: str,
         *,
         base_revision: int,
+        deletion_id: str | None = None,
     ) -> Dict[str, Any]:
-        """Restore one recently deleted generated original and its direct refs."""
+        """Restore exactly one generated output occurrence."""
+        project_id = _clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            raise ProjectStoreError("媒体资源标识无效")
+        if deletion_id is None:
+            raise InvalidMutation("恢复当前原图需要生成输出撤销身份")
+        return self._restore_deleted_output_occurrence(
+            project_id,
+            asset_id,
+            base_revision=base_revision,
+            deletion_id=deletion_id,
+        )
+
+    def restore_deleted_original_project_wide(
+        self,
+        project_id: str,
+        asset_id: str,
+        *,
+        base_revision: int,
+    ) -> Dict[str, Any]:
+        """Restore one explicitly project-wide generated-original deletion."""
         project_id = _clean_project_id(project_id)
         asset_id = str(asset_id or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
@@ -1712,6 +3085,13 @@ class ProjectStore:
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
                 result["logs"] = copy.deepcopy(history)
+                _diag_emit(
+                    "recovery.restored",
+                    project_id=project_id,
+                    asset_id=asset_id,
+                    revision=canvas["revision"],
+                    state="restored",
+                )
                 return {"canvas": result, "restored": copy.deepcopy(restored_record)}
 
     def purge_deleted_media(self, project_id: str, asset_id: str | None = None) -> int:
@@ -1736,9 +3116,8 @@ class ProjectStore:
                     if target_asset is not None and str(item.get("asset_id") or "") != target_asset:
                         remaining.append(item)
                         continue
-                    relative_names = [
-                        f"media/{item.get('media_filename')}",
-                    ]
+                    media_filename = str(item.get("media_filename") or "").strip()
+                    relative_names = [f"media/{media_filename}"] if media_filename else []
                     preview_filenames = item.get("preview_filenames") if isinstance(item.get("preview_filenames"), list) else []
                     relative_names.extend(f"previews/{name}" for name in preview_filenames if isinstance(name, str))
                     undo = item.get("undo")
@@ -1807,9 +3186,8 @@ class ProjectStore:
             preview_filenames = item.get("preview_filenames")
             if not isinstance(preview_filenames, list):
                 preview_filenames = []
-            relative_names = [
-                f"media/{item.get('media_filename')}",
-            ]
+            media_filename = str(item.get("media_filename") or "").strip()
+            relative_names = [f"media/{media_filename}"] if media_filename else []
             relative_names.extend(f"previews/{name}" for name in preview_filenames if isinstance(name, str))
             undo = item.get("undo")
             if isinstance(undo, dict) and isinstance(undo.get("snapshot_filename"), str):
@@ -1903,22 +3281,32 @@ class ProjectStore:
         )
 
     @classmethod
-    def _active_generation_references_asset(cls, canvas: Dict[str, Any], asset_id: str) -> bool:
+    def _active_generation_references_asset(cls, canvas: Dict[str, Any], asset_id: str) -> List[str]:
+        blocking_task_ids: List[str] = []
         for node in canvas.get("nodes") or []:
             if not isinstance(node, dict):
                 continue
             tasks = [task for task in node.get("pendingTasks") or [] if isinstance(task, dict)]
             if not tasks:
                 continue
+            legacy_task_ids = []
             for task in tasks:
                 explicit_ids = set()
+                has_reference_snapshot = False
                 for key in ("referenceAssetIds", "reference_asset_ids", "assetIds", "asset_ids"):
+                    if key in task:
+                        has_reference_snapshot = True
                     values = task.get(key)
                     if isinstance(values, list):
                         explicit_ids.update(str(value) for value in values if isinstance(value, str))
                 explicit_ids.update(cls._collect_asset_ids(task))
+                task_id = str(task.get("taskId") or task.get("task_id") or task.get("id") or "").strip()
+                if not task_id:
+                    task_id = f"node:{str(node.get('id') or '').strip() or 'unknown'}"
                 if asset_id in explicit_ids:
-                    return True
+                    blocking_task_ids.append(task_id)
+                elif not has_reference_snapshot:
+                    legacy_task_ids.append(task_id)
             node_references = cls._collect_asset_ids(
                 {
                     "runInputRefs": node.get("runInputRefs") or [],
@@ -1927,8 +3315,23 @@ class ProjectStore:
                 }
             )
             if asset_id in node_references:
-                return True
-        return False
+                blocking_task_ids.extend(legacy_task_ids)
+        return list(dict.fromkeys(blocking_task_ids))
+
+    @staticmethod
+    def _reset_deleted_original_owner_state(node: Dict[str, Any]) -> bool:
+        active_tasks = [task for task in node.get("pendingTasks") or [] if isinstance(task, dict)]
+        if active_tasks:
+            return False
+        node["needsRegeneration"] = True
+        node["generationState"] = "ready"
+        node["resultDeleted"] = True
+        node["pending"] = 0
+        node["running"] = False
+        node["queued"] = False
+        for key in ("pendingTasks", "runFinishedAt", "runElapsedMs"):
+            node.pop(key, None)
+        return True
 
     @classmethod
     def _restore_deleted_history_records(
@@ -2001,6 +3404,17 @@ class ProjectStore:
             restored_nodes.append(restored)
         return restored_nodes
 
+    @staticmethod
+    def _stable_list_item_identity(value: Any) -> tuple[tuple[str, str], ...] | None:
+        if not isinstance(value, dict):
+            return None
+        identity = tuple(
+            (key, str(value[key]))
+            for key in ("id", "taskId", "task_id", "nodeId", "node_id", "outputIndex", "output_index")
+            if value.get(key) not in (None, "")
+        )
+        return identity or None
+
     @classmethod
     def _merge_deleted_asset_references(cls, current: Any, snapshot: Any, asset_id: str) -> Any:
         """Merge only references removed by one original-delete operation.
@@ -2010,32 +3424,71 @@ class ProjectStore:
         contained the deleted project media ID.
         """
         if isinstance(snapshot, dict) and str(snapshot.get("asset_id") or "") == asset_id:
-            return copy.deepcopy(snapshot)
+            current_asset_id = str(current.get("asset_id") or "") if isinstance(current, dict) else ""
+            if current_asset_id not in ("", asset_id):
+                return copy.deepcopy(current)
+            restored = copy.deepcopy(snapshot)
+            if isinstance(current, dict):
+                restored.update(copy.deepcopy(current))
+            restored["asset_id"] = asset_id
+            return restored
+        if isinstance(snapshot, str) and snapshot == asset_id:
+            return snapshot if current in (None, "", asset_id) else copy.deepcopy(current)
         if isinstance(snapshot, list):
             result = copy.deepcopy(current) if isinstance(current, list) else []
             for snapshot_index, snapshot_item in enumerate(snapshot):
+                if isinstance(snapshot_item, str) and snapshot_item == asset_id:
+                    required_occurrences = sum(
+                        1 for item in snapshot[:snapshot_index + 1] if item == snapshot_item
+                    )
+                    if sum(1 for item in result if item == snapshot_item) < required_occurrences:
+                        result.insert(min(snapshot_index, len(result)), snapshot_item)
+                    continue
                 if asset_id not in cls._collect_asset_ids(snapshot_item):
                     continue
                 if isinstance(snapshot_item, dict) and str(snapshot_item.get("asset_id") or "") == asset_id:
-                    if any(
-                        isinstance(item, dict) and str(item.get("asset_id") or "") == asset_id
-                        for item in result
-                    ):
+                    direct_identity = cls._stable_list_item_identity(snapshot_item)
+                    direct_matches = [
+                        index for index, item in enumerate(result)
+                        if direct_identity is not None
+                        and cls._stable_list_item_identity(item) == direct_identity
+                    ]
+                    if len(direct_matches) == 1:
+                        match_index = direct_matches[0]
+                        current_item = result[match_index]
+                        current_asset_id = str(current_item.get("asset_id") or "") if isinstance(current_item, dict) else ""
+                        if current_asset_id not in ("", asset_id):
+                            continue
+                        restored_item = copy.deepcopy(snapshot_item)
+                        if isinstance(current_item, dict):
+                            restored_item.update(copy.deepcopy(current_item))
+                        restored_item["asset_id"] = asset_id
+                        result[match_index] = restored_item
+                        continue
+                    required_occurrences = sum(
+                        1 for item in snapshot[:snapshot_index + 1] if item == snapshot_item
+                    )
+                    if sum(1 for item in result if item == snapshot_item) >= required_occurrences:
                         continue
                     result.insert(min(snapshot_index, len(result)), copy.deepcopy(snapshot_item))
                     continue
-                stable_id = str(snapshot_item.get("id") or "") if isinstance(snapshot_item, dict) else ""
-                match_index = next(
-                    (
-                        index for index, item in enumerate(result)
-                        if stable_id and isinstance(item, dict) and str(item.get("id") or "") == stable_id
-                    ),
-                    None,
-                )
-                if match_index is None and snapshot_index < len(result):
-                    match_index = snapshot_index
+                stable_identity = cls._stable_list_item_identity(snapshot_item)
+                stable_matches = [
+                    index for index, item in enumerate(result)
+                    if stable_identity is not None
+                    and cls._stable_list_item_identity(item) == stable_identity
+                ]
+                match_index = stable_matches[0] if len(stable_matches) == 1 else None
                 if match_index is None:
-                    result.append(cls._merge_deleted_asset_references(None, snapshot_item, asset_id))
+                    snapshot_without_asset = cls._remove_asset_references(snapshot_item, asset_id)
+                    structural_matches = [
+                        index for index, item in enumerate(result)
+                        if item == snapshot_without_asset
+                    ]
+                    if structural_matches:
+                        match_index = structural_matches[0]
+                if match_index is None:
+                    result.append(copy.deepcopy(snapshot_item))
                 else:
                     result[match_index] = cls._merge_deleted_asset_references(
                         result[match_index], snapshot_item, asset_id,
@@ -2044,7 +3497,7 @@ class ProjectStore:
         if isinstance(snapshot, dict):
             result = copy.deepcopy(current) if isinstance(current, dict) else {}
             for key, snapshot_value in snapshot.items():
-                if asset_id not in cls._collect_asset_ids(snapshot_value):
+                if asset_id not in cls._collect_asset_ids({key: snapshot_value}):
                     continue
                 result[key] = cls._merge_deleted_asset_references(result.get(key), snapshot_value, asset_id)
             return result
@@ -2109,6 +3562,10 @@ class ProjectStore:
         for key, child in value.items():
             if key == "asset_id" and str(child or "") == asset_id:
                 continue
+            if key in cls._MEDIA_ASSET_ID_FIELDS and isinstance(child, str) and child == asset_id:
+                continue
+            if key in cls._MEDIA_ASSET_ID_LIST_FIELDS and isinstance(child, list):
+                child = [item for item in child if not (isinstance(item, str) and item == asset_id)]
             result = cls._remove_asset_references(child, asset_id) if isinstance(child, (dict, list)) else child
             if result is not None:
                 cleaned[key] = result
@@ -2127,7 +3584,7 @@ class ProjectStore:
     def _media_source(cls, source: Dict[str, Any]) -> Dict[str, Any]:
         cleaned = {
             key: str(source.get(key) or "")[:2048]
-            for key in ("locator", "name", "type")
+            for key in ("locator", "name", "type", "lifecycle")
             if source.get(key) not in (None, "")
         }
         if cleaned.get("locator"):
@@ -2187,6 +3644,46 @@ class ProjectStore:
         record["source"] = sources[0]
         return changed
 
+    def _set_generated_media_lifecycle(
+        self,
+        project_id: str,
+        asset_ids: Iterable[str],
+        lifecycle: str,
+    ) -> None:
+        lifecycle = str(lifecycle or "").strip()
+        if lifecycle not in {"transient", "failed", "succeeded"}:
+            raise ProjectStoreError("生成媒体生命周期无效")
+        index = self._load_media_index(project_id)
+        changed = False
+        for asset_id in sorted({str(item or "") for item in asset_ids if str(item or "")}):
+            record = index.get("items", {}).get(asset_id)
+            if not isinstance(record, dict):
+                raise ProjectStoreError(f"项目媒体不存在: {asset_id}")
+            sources = [
+                self._media_source(item)
+                for item in record.get("sources") or []
+                if isinstance(item, dict)
+            ]
+            if not sources and isinstance(record.get("source"), dict):
+                sources = [self._media_source(record["source"])]
+            source_changed = False
+            for source in sources:
+                if str(source.get("type") or "") == "online_generation":
+                    if source.get("lifecycle") != lifecycle:
+                        source["lifecycle"] = lifecycle
+                        source_changed = True
+            if not source_changed:
+                continue
+            record["sources"] = sources
+            record["source"] = sources[0]
+            changed = True
+        if changed:
+            _write_json_atomic(
+                self.root / project_id / "media" / "index.json",
+                index,
+                keep_backup=False,
+            )
+
     @classmethod
     def _new_media_record(
         cls,
@@ -2231,6 +3728,13 @@ class ProjectStore:
             self._schedule_snapshot(project_id)
             result = copy.deepcopy(canvas)
             result["logs"] = copy.deepcopy(history)
+            _diag_emit(
+                "deletion.completed",
+                project_id=project_id,
+                log_id=str(log_id),
+                revision=canvas["revision"],
+                state="deleted",
+            )
             return result
 
     def delete_history_record_with_media(
@@ -2291,8 +3795,12 @@ class ProjectStore:
                     original = media_index["items"].get(asset_id)
                     if not isinstance(original, dict) or not self._is_generated_original(original):
                         continue
-                    if self._active_generation_references_asset(opened["canvas"], asset_id):
-                        raise ProjectStoreError("该原图正在被生成任务引用，请等待任务完成后再删除")
+                    blocking_task_ids = self._active_generation_references_asset(opened["canvas"], asset_id)
+                    if blocking_task_ids:
+                        raise ProjectStoreError(
+                            "该原图正在被生成任务引用，请等待任务完成后再删除："
+                            + "、".join(blocking_task_ids)
+                        )
                     media_path = self._safe_project_path(
                         project_dir,
                         (Path("media") / str(original.get("filename") or "")).as_posix(),
@@ -2378,16 +3886,9 @@ class ProjectStore:
                         for asset_id in matching:
                             cleaned_node = self._remove_asset_references(cleaned_node, asset_id) or {}
                             self._append_deleted_asset_tombstone(cleaned_node, "deletedOutputTombstones" if owns_original else "deletedInputTombstones", asset_id, old_media_index.get("items", {}).get(asset_id, {}))
-                        if owns_original:
-                            cleaned_node["needsRegeneration"] = True
-                            cleaned_node["generationState"] = "ready"
-                            cleaned_node["resultDeleted"] = True
-                            cleaned_node["pending"] = 0
-                            cleaned_node["running"] = False
-                            cleaned_node["queued"] = False
-                            reset_node_ids.append(str(node.get("id") or ""))
-                            for key in ("pendingTasks", "runFinishedAt", "runElapsedMs"):
-                                cleaned_node.pop(key, None)
+                        if owns_original and not self._collect_asset_ids(cleaned_node.get("images") or []):
+                            if self._reset_deleted_original_owner_state(cleaned_node):
+                                reset_node_ids.append(str(node.get("id") or ""))
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(opened["canvas"])
@@ -2467,15 +3968,28 @@ class ProjectStore:
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
             if node is None or str(node.get("type") or "") not in {"image", "smart-image"}:
                 raise InvalidMutation("媒体生成任务必须绑定已保存的媒体节点")
-            if node.get("pendingTasks"):
-                raise InvalidMutation("该结果节点已有媒体生成任务正在运行")
-            tasks = [item for item in node.get("pendingTasks") or [] if str(item.get("taskId") or "") != task_id]
+            existing_tasks = list(node.get("pendingTasks") or [])
+            if not existing_tasks:
+                node["_generationBatchApplied"] = False
+            tasks = [item for item in existing_tasks if str(item.get("taskId") or "") != task_id]
             tasks.append(task)
             node["pendingTasks"] = tasks
-            node["pending"] = max(int(node.get("pending") or 0), int(task.get("count") or 1), len(tasks))
+            node["pending"] = max(len(tasks), sum(max(1, int(item.get("count") or 1)) for item in tasks))
             node["running"] = False
             node.pop("queued", None)
-            return self._commit_generation_canvas(project_id, canvas)
+            result = self._commit_generation_canvas(project_id, canvas)
+            _diag_emit(
+                "generation.started",
+                project_id=project_id,
+                task_id=task_id,
+                node_id=node_id,
+                provider_id=str(task.get("providerId") or ""),
+                model=str(task.get("model") or ""),
+                prompt=str(task.get("prompt") or ""),
+                media_kind=media_kind,
+                state="started",
+            )
+            return result
 
     def begin_image_generation(
         self,
@@ -2494,39 +4008,118 @@ class ProjectStore:
             media_kind="image",
         )
 
-    def fail_media_generation(
+    def _end_media_generation(
         self,
         project_id: str,
         result_node_id: str,
         task_id: str,
         history_record: Dict[str, Any],
+        *,
+        require_pending: bool,
     ) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         node_id = str(result_node_id or "").strip()
+        clean_task_id = str(task_id or "").strip()
         clean_history = copy.deepcopy(history_record)
         with self._lock:
             opened = self.open_project(project_id)["canvas"]
             canvas = copy.deepcopy(opened)
             canvas.pop("logs", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
+            history = copy.deepcopy(self._histories.get(project_id, []))
+            if require_pending:
+                prior = next(
+                    (
+                        item for item in history
+                        if str(item.get("task_id") or item.get("taskId") or "") == clean_task_id
+                    ),
+                    None,
+                )
+                pending_ids = {
+                    str(item.get("taskId") or "")
+                    for item in (node or {}).get("pendingTasks") or []
+                    if isinstance(item, dict)
+                }
+                if prior is not None:
+                    if str(prior.get("status") or "") != str(clean_history.get("status") or ""):
+                        raise InvalidMutation("生成任务已结束，无法写入另一个终态")
+                    if clean_task_id not in pending_ids:
+                        result = copy.deepcopy(opened)
+                        result["logs"] = history
+                        return result
+                    clean_history = copy.deepcopy(prior)
+                elif clean_task_id not in pending_ids:
+                    raise InvalidMutation("生成任务已结束，无法写入终态")
             if node is not None:
-                tasks = [item for item in node.get("pendingTasks") or [] if str(item.get("taskId") or "") != str(task_id or "")]
+                tasks = [item for item in node.get("pendingTasks") or [] if str(item.get("taskId") or "") != clean_task_id]
                 if tasks:
                     node["pendingTasks"] = tasks
                     node["pending"] = max(len(tasks), sum(max(1, int(item.get("count") or 1)) for item in tasks))
                 else:
                     node.pop("pendingTasks", None)
                     node["pending"] = 0
+                    node.pop("_generationBatchApplied", None)
                 node["running"] = False
                 node.pop("queued", None)
-            history = copy.deepcopy(self._histories.get(project_id, []))
             history_id = str(clean_history.get("id") or "") if isinstance(clean_history, dict) else ""
             if history_id:
                 history = [item for item in history if str(item.get("id") or "") != history_id]
             history.append(clean_history)
             self._histories[project_id] = history[-5000:]
             self._persist_history(project_id)
-            return self._commit_generation_canvas(project_id, canvas)
+            result = self._commit_generation_canvas(project_id, canvas)
+            status = str(clean_history.get("status") or "") if isinstance(clean_history, dict) else ""
+            if status == "succeeded":
+                _diag_emit(
+                    "generation.succeeded",
+                    project_id=project_id,
+                    task_id=clean_task_id,
+                    node_id=node_id,
+                    state="succeeded",
+                )
+            else:
+                _diag_emit(
+                    "generation.failed",
+                    project_id=project_id,
+                    task_id=clean_task_id,
+                    node_id=node_id,
+                    state=status or "failed",
+                )
+            return result
+
+    def fail_media_generation(
+        self,
+        project_id: str,
+        result_node_id: str,
+        task_id: str,
+        history_record: Dict[str, Any],
+        *,
+        require_pending: bool = False,
+    ) -> Dict[str, Any]:
+        return self._end_media_generation(
+            project_id,
+            result_node_id,
+            task_id,
+            history_record,
+            require_pending=require_pending,
+        )
+
+    def cancel_media_generation(
+        self,
+        project_id: str,
+        result_node_id: str,
+        task_id: str,
+        history_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        clean_history = copy.deepcopy(history_record)
+        clean_history["status"] = "cancelled"
+        return self._end_media_generation(
+            project_id,
+            result_node_id,
+            task_id,
+            clean_history,
+            require_pending=True,
+        )
 
     def fail_image_generation(
         self,
@@ -2534,9 +4127,27 @@ class ProjectStore:
         result_node_id: str,
         task_id: str,
         history_record: Dict[str, Any],
+        *,
+        require_pending: bool = False,
     ) -> Dict[str, Any]:
         """Backward-compatible image specialization of fail_media_generation."""
-        return self.fail_media_generation(project_id, result_node_id, task_id, history_record)
+        return self.fail_media_generation(
+            project_id,
+            result_node_id,
+            task_id,
+            history_record,
+            require_pending=require_pending,
+        )
+
+    def cancel_image_generation(
+        self,
+        project_id: str,
+        result_node_id: str,
+        task_id: str,
+        history_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Cancel one pending image task without touching overlapping tasks."""
+        return self.cancel_media_generation(project_id, result_node_id, task_id, history_record)
 
     def _commit_generation_canvas(self, project_id: str, canvas: Dict[str, Any]) -> Dict[str, Any]:
         canvas["revision"] = int(canvas.get("revision") or 0) + 1
@@ -2567,6 +4178,8 @@ class ProjectStore:
         history_record: Dict[str, Any],
         *,
         media_kind: str = "image",
+        task_id: str = "",
+        require_pending: bool = False,
     ) -> Dict[str, Any]:
         """Atomically attach generated project originals to a visible node and history.
 
@@ -2618,10 +4231,41 @@ class ProjectStore:
                     "created_at": _now_ms(),
                 }
                 nodes.append(node)
-            node["images"] = clean_media
+            pending_tasks = list(node.get("pendingTasks") or [])
+            completed_task_id = str(task_id or clean_history.get("task_id") or clean_history.get("taskId") or "").strip()
+            if not completed_task_id and len(pending_tasks) == 1:
+                completed_task_id = str(pending_tasks[0].get("taskId") or "").strip()
+            if require_pending and completed_task_id not in {
+                str(item.get("taskId") or "")
+                for item in pending_tasks
+                if isinstance(item, dict)
+            }:
+                raise InvalidMutation("生成任务已结束，无法写入结果")
+            batch_active = bool(pending_tasks) or "_generationBatchApplied" in node
+            batch_applied = bool(node.get("_generationBatchApplied"))
+            if batch_active and batch_applied:
+                merged_media = copy.deepcopy(node.get("images") or [])
+                seen_media = {
+                    str(item.get("asset_id") or item.get("url") or item.get("path") or "")
+                    for item in merged_media
+                    if isinstance(item, dict)
+                }
+                for item in clean_media:
+                    key = str(item.get("asset_id") or item.get("url") or item.get("path") or "") if isinstance(item, dict) else ""
+                    if key and key in seen_media:
+                        continue
+                    merged_media.append(copy.deepcopy(item))
+                    if key:
+                        seen_media.add(key)
+                node["images"] = merged_media
+            else:
+                node["images"] = clean_media
+                if batch_active:
+                    node["_generationBatchApplied"] = True
+            result_count = len(node.get("images") or [])
             node["title"] = (
-                "Videos" if len(clean_media) > 1 else "Video"
-            ) if media_kind == "video" else ("Group" if len(clean_media) > 1 else "Image")
+                "Videos" if result_count > 1 else "Video"
+            ) if media_kind == "video" else ("Group" if result_count > 1 else "Image")
             node["outputKind"] = media_kind
             # A successful regeneration supersedes the producer-only state left
             # by deleting its previous output.  Input tombstones are separate:
@@ -2634,16 +4278,47 @@ class ProjectStore:
                 "deletedOutputTombstones",
             ):
                 node.pop(key, None)
-            node["pending"] = 0
             node["running"] = False
-            node.pop("pendingTasks", None)
             node.pop("queued", None)
+            remaining_tasks = [
+                item for item in pending_tasks
+                if str(item.get("taskId") or "") != completed_task_id
+            ]
+            if remaining_tasks:
+                node["pendingTasks"] = remaining_tasks
+                node["pending"] = max(
+                    len(remaining_tasks),
+                    sum(max(1, int(item.get("count") or 1)) for item in remaining_tasks),
+                )
+            else:
+                node.pop("pendingTasks", None)
+                node["pending"] = 0
+                node.pop("_generationBatchApplied", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
+            history_id = str(clean_history.get("id") or "")
+            if history_id:
+                history = [item for item in history if str(item.get("id") or "") != history_id]
             history.append(clean_history)
             history = history[-5000:]
             self._histories[project_id] = history
+            self._ensure_output_occurrence_ids(canvas, history)
             self._persist_history(project_id)
-            return self._commit_generation_canvas(project_id, canvas)
+            result = self._commit_generation_canvas(project_id, canvas)
+            self._set_generated_media_lifecycle(
+                project_id,
+                generated_asset_ids,
+                "succeeded",
+            )
+            _diag_emit(
+                "generation.succeeded",
+                project_id=project_id,
+                task_id=completed_task_id,
+                node_id=node_id,
+                provider_id=str(clean_history.get("provider_id") or clean_history.get("providerId") or "") if isinstance(clean_history, dict) else "",
+                model=str(clean_history.get("model") or "") if isinstance(clean_history, dict) else "",
+                state="succeeded",
+            )
+            return result
 
     def complete_image_generation(
         self,
@@ -2651,6 +4326,9 @@ class ProjectStore:
         result_node_id: str,
         images: List[Dict[str, Any]],
         history_record: Dict[str, Any],
+        *,
+        task_id: str = "",
+        require_pending: bool = False,
     ) -> Dict[str, Any]:
         """Backward-compatible image specialization of complete_media_generation."""
         return self.complete_media_generation(
@@ -2659,6 +4337,8 @@ class ProjectStore:
             images,
             history_record,
             media_kind="image",
+            task_id=task_id,
+            require_pending=require_pending,
         )
 
     def apply_mutations(
@@ -2692,7 +4372,45 @@ class ProjectStore:
                             self.media_record(project_id, asset_id)
                         except ProjectStoreError as exc:
                             raise InvalidMutation(f"项目媒体不存在: {asset_id}") from exc
-                    incoming = copy.deepcopy(logs[-5000:])
+                    # Top-level task_id records are server-owned generation
+                    # terminal markers.  A canvas save may round-trip an
+                    # existing marker, but it may neither invent nor rewrite
+                    # one; otherwise a client could forge success and erase a
+                    # paid active task from pendingTasks/restart recovery.
+                    trusted_by_id = {
+                        str(item.get("id")): copy.deepcopy(item)
+                        for item in history
+                        if isinstance(item, dict)
+                        and str(item.get("id") or "")
+                        and str(item.get("task_id") or item.get("taskId") or "")
+                    }
+                    trusted_by_task = {
+                        str(item.get("task_id") or item.get("taskId")): copy.deepcopy(item)
+                        for item in history
+                        if isinstance(item, dict)
+                        and str(item.get("task_id") or item.get("taskId") or "")
+                    }
+                    active_generation_task_ids = {
+                        str(task.get("taskId") or task.get("task_id") or "")
+                        for node in canvas.get("nodes") or []
+                        if isinstance(node, dict) and str(node.get("type") or "") in {"image", "smart-image"}
+                        for task in node.get("pendingTasks") or []
+                        if isinstance(task, dict) and str(task.get("taskId") or task.get("task_id") or "")
+                    }
+                    incoming = []
+                    for item in copy.deepcopy(logs[-5000:]):
+                        if not isinstance(item, dict):
+                            incoming.append(item)
+                            continue
+                        item_id = str(item.get("id") or "")
+                        task_id = str(item.get("task_id") or item.get("taskId") or "")
+                        trusted = trusted_by_id.get(item_id) or trusted_by_task.get(task_id)
+                        if trusted is not None:
+                            incoming.append(trusted)
+                        elif task_id and task_id in active_generation_task_ids:
+                            continue
+                        else:
+                            incoming.append(item)
                     incoming_by_id = {
                         str(item.get("id")): item
                         for item in incoming
@@ -2724,11 +4442,30 @@ class ProjectStore:
                                 seen_ids.add(item_id)
                     history = merged[-5000:]
                 self._apply_mutation(canvas, normalized)
+            self._ensure_output_occurrence_ids(canvas, history)
             canvas["revision"] = int(canvas.get("revision") or 0) + 1
             canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
             self._canvases[project_id] = canvas
             self._histories[project_id] = history
             self._schedule_snapshot(project_id)
+            synced = any(
+                str(mutation.get("op") or "") == "set_canvas_meta" for mutation in items
+            )
+            _diag_emit(
+                "persistence.saved",
+                project_id=project_id,
+                revision=canvas["revision"],
+                ops=len(items),
+                state="saved",
+            )
+            if synced:
+                _diag_emit(
+                    "sync.applied",
+                    project_id=project_id,
+                    revision=canvas["revision"],
+                    merged=True,
+                    state="merged",
+                )
             return {
                 "project_id": project_id,
                 "canvas_id": canvas["id"],
@@ -2932,6 +4669,49 @@ class ProjectStore:
                     self.media_record(str(canvas.get("project_id") or ""), asset_id)
                 except ProjectStoreError as exc:
                     raise InvalidMutation(f"项目媒体不存在: {asset_id}") from exc
+            existing = next(
+                (item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == str(node.get("id") or "")),
+                None,
+            )
+            existing_tasks = existing.get("pendingTasks") if isinstance(existing, dict) else None
+            incoming_tasks = node.get("pendingTasks")
+            existing_type = str(existing.get("type") or "") if isinstance(existing, dict) else ""
+            incoming_type = str(node.get("type") or "")
+            server_owned_generation_node = existing_type in {"image", "smart-image"} or incoming_type in {"image", "smart-image"}
+            if server_owned_generation_node and (isinstance(existing_tasks, list) or isinstance(incoming_tasks, list)):
+                if existing_type in {"image", "smart-image"}:
+                    node["type"] = existing_type
+                terminal_task_ids = {
+                    str(record.get("task_id") or "")
+                    for record in self._histories.get(str(canvas.get("project_id") or ""), [])
+                    if isinstance(record, dict)
+                    and str(record.get("status") or "") in {"succeeded", "failed", "cancelled"}
+                    and str(record.get("task_id") or "")
+                }
+                # Online generation task identity is server-owned.  Ordinary
+                # canvas upserts may carry a stale copy of pendingTasks, but
+                # they may neither invent a task nor overwrite the registered
+                # request/count/route of an active paid task.  Only
+                # begin_media_generation and the terminal Store methods mutate
+                # this list.
+                active_tasks: List[Dict[str, Any]] = []
+                for task in existing_tasks or []:
+                    if not isinstance(task, dict):
+                        continue
+                    task_id = str(task.get("taskId") or task.get("task_id") or "")
+                    if not task_id or task_id in terminal_task_ids:
+                        continue
+                    active_tasks.append({**copy.deepcopy(task), "taskId": task_id})
+                if active_tasks:
+                    node["pendingTasks"] = active_tasks
+                    node["pending"] = max(
+                        len(active_tasks),
+                        sum(max(1, int(task.get("count") or 1)) if isinstance(task.get("count", 1), (int, float)) else 1 for task in active_tasks),
+                    )
+                else:
+                    node.pop("pendingTasks", None)
+                    submissions = node.get("generationSubmissions")
+                    node["pending"] = len(submissions) if isinstance(submissions, list) else 0
             canvas["nodes"] = self._upsert(canvas.get("nodes") or [], node)
         elif operation == "remove_node":
             node_id = str(mutation.get("node_id") or "")
@@ -3043,7 +4823,11 @@ class ProjectStore:
         asset_id = value.get("asset_id")
         if isinstance(asset_id, str) and asset_id.strip():
             result.add(asset_id.strip())
-        for child in value.values():
+        for key, child in value.items():
+            if key in cls._MEDIA_ASSET_ID_FIELDS and isinstance(child, str) and child.strip():
+                result.add(child.strip())
+            elif key in cls._MEDIA_ASSET_ID_LIST_FIELDS and isinstance(child, list):
+                result.update(item.strip() for item in child if isinstance(item, str) and item.strip())
             if isinstance(child, (dict, list)):
                 result.update(cls._collect_asset_ids(child))
         return result

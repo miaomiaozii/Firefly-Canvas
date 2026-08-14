@@ -129,6 +129,829 @@ class ProjectApiContractTests(unittest.TestCase):
         self.assertEqual(task["status"], "completed")
         self.assertEqual(task["media"]["sha256"], hashlib.sha256(b"imported-through-api").hexdigest())
 
+    def test_cleanup_preview_api_returns_read_only_candidates_for_a_closed_project(self):
+        project = self.store.create_project("已关闭项目")
+        candidate = self.store.import_media(
+            project["id"],
+            b"preview-candidate",
+            "failed.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        project_dir = self.store.root / project["id"]
+        before = {
+            path.relative_to(project_dir).as_posix(): (
+                path.stat().st_mtime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(project_dir.rglob("*"))
+        }
+
+        response = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()["preview"]
+        self.assertEqual(preview["project_id"], project["id"])
+        self.assertEqual(preview["candidate_count"], 1)
+        self.assertEqual(preview["candidates"][0]["asset_id"], candidate["asset_id"])
+        self.assertEqual(
+            preview["candidates"][0]["thumbnail_url"],
+            f"/api/project-library/{project['id']}/media/{candidate['asset_id']}",
+        )
+        after = {
+            path.relative_to(project_dir).as_posix(): (
+                path.stat().st_mtime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(project_dir.rglob("*"))
+        }
+        self.assertEqual(after, before)
+        self.assertEqual(list((project_dir / "previews").iterdir()), [])
+
+        thumbnail = self.client.get(preview["candidates"][0]["thumbnail_url"])
+        self.assertEqual(thumbnail.status_code, 200, thumbnail.text)
+        after_thumbnail = {
+            path.relative_to(project_dir).as_posix(): (
+                path.stat().st_mtime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in sorted(project_dir.rglob("*"))
+        }
+        self.assertEqual(after_thumbnail, before)
+
+    def test_cleanup_preview_api_does_not_prune_terminal_conversation_sidecars(self):
+        project = self.store.create_project("终态对话 sidecar")
+        request_id = "cleanup-terminal-sidecar"
+        self.store.apply_mutations(project["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "conversation",
+                "type": "smart-conversation",
+                "messages": [
+                    {
+                        "id": "user",
+                        "role": "user",
+                        "status": "completed",
+                        "request_id": request_id,
+                    },
+                    {
+                        "id": "assistant",
+                        "role": "assistant",
+                        "status": "completed",
+                        "request_id": request_id,
+                    },
+                ],
+            },
+        }], base_revision=0)
+        self.store.flush(project["id"])
+        sidecar_root = self.store.root / project["id"] / ".conversation-tasks"
+        sidecar_root.mkdir()
+        sidecar = sidecar_root / "terminal.json"
+        sidecar.write_text(json.dumps({
+            "project_id": project["id"],
+            "node_id": "conversation",
+            "request_id": request_id,
+            "state": "ready",
+            "ready": {
+                "user_message_id": "user",
+                "assistant": {"id": "assistant", "request_id": request_id},
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        before = (sidecar.read_bytes(), sidecar.stat().st_mtime_ns)
+
+        response = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(sidecar.is_file())
+        self.assertEqual((sidecar.read_bytes(), sidecar.stat().st_mtime_ns), before)
+
+    def test_cleanup_preview_api_rejects_active_image_generation_before_store_analysis(self):
+        project = self.store.create_project("生成中项目")
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS["cleanup-blocker"] = {
+                "id": "cleanup-blocker",
+                "type": "project-online-image",
+                "project_id": project["id"],
+                "status": "running",
+            }
+        try:
+            with patch.object(
+                self.store,
+                "preview_project_cleanup",
+                wraps=self.store.preview_project_cleanup,
+            ) as preview:
+                response = self.client.get(
+                    f"/api/project-library/{project['id']}/cleanup-preview"
+                )
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS.pop("cleanup-blocker", None)
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("图片正在生成", response.json()["detail"])
+        preview.assert_not_called()
+
+    def test_cleanup_preview_api_does_not_prune_expired_photoshop_state(self):
+        project = self.store.create_project("过期 Photoshop 状态")
+        request_id = "cleanup-expired-photoshop"
+        record = {
+            "request_id": request_id,
+            "project_id": project["id"],
+            "state": "pending",
+            "expires_at_ms": main.now_ms() - 1,
+        }
+        with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+            main.PHOTOSHOP_ROUND_TRIP_REQUESTS[request_id] = record.copy()
+        try:
+            response = self.client.get(
+                f"/api/project-library/{project['id']}/cleanup-preview"
+            )
+            with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+                after = main.PHOTOSHOP_ROUND_TRIP_REQUESTS.get(request_id)
+        finally:
+            with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+                main.PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(after, record)
+
+    def test_cleanup_preview_api_rechecks_runtime_owners_after_store_analysis(self):
+        project = self.store.create_project("分析期间出现 owner")
+        original_preview = self.store.preview_project_cleanup
+
+        def admit_owner_during_analysis(project_id):
+            result = original_preview(project_id)
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS["late-generation-owner"] = {
+                    "id": "late-generation-owner",
+                    "type": "project-online-image",
+                    "project_id": project_id,
+                    "status": "running",
+                }
+            return result
+
+        with patch.object(
+            self.store,
+            "preview_project_cleanup",
+            side_effect=admit_owner_during_analysis,
+        ):
+            try:
+                response = self.client.get(
+                    f"/api/project-library/{project['id']}/cleanup-preview"
+                )
+            finally:
+                with main.CANVAS_TASK_LOCK:
+                    main.CANVAS_TASKS.pop("late-generation-owner", None)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("生成", response.json()["detail"])
+
+    def test_cleanup_preview_api_rejects_pending_photoshop_round_trip(self):
+        project = self.store.create_project("Photoshop 往返中")
+        request_id = "cleanup-photoshop-blocker"
+        with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+            main.PHOTOSHOP_ROUND_TRIP_REQUESTS[request_id] = {
+                "request_id": request_id,
+                "project_id": project["id"],
+                "source_node_id": "source",
+                "source_media_id": "media",
+                "state": "pending",
+                "expires_at_ms": main.now_ms() + 60_000,
+            }
+        try:
+            response = self.client.get(
+                f"/api/project-library/{project['id']}/cleanup-preview"
+            )
+        finally:
+            with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+                main.PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("Photoshop", response.json()["detail"])
+
+    def test_cleanup_preview_api_rejects_each_existing_runtime_owner(self):
+        def assert_blocked(project_id, expected_detail):
+            response = self.client.get(
+                f"/api/project-library/{project_id}/cleanup-preview"
+            )
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn(expected_detail, response.json()["detail"])
+
+        importing = self.store.create_project("导入中项目")
+        with main.PROJECT_MEDIA_IMPORT_TASKS_LOCK:
+            main.PROJECT_MEDIA_IMPORT_TASKS["cleanup-import"] = {
+                "id": "cleanup-import",
+                "project_id": importing["id"],
+                "status": "pending",
+            }
+        try:
+            assert_blocked(importing["id"], "媒体正在导入")
+        finally:
+            with main.PROJECT_MEDIA_IMPORT_TASKS_LOCK:
+                main.PROJECT_MEDIA_IMPORT_TASKS.pop("cleanup-import", None)
+
+        pending_handoff = self.store.create_project("待处理生成 handoff")
+        pending_media = self.store.import_media(
+            pending_handoff["id"],
+            b"pending-generation-handoff",
+            "pending.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        with main.CANVAS_TASK_LOCK:
+            main.PROJECT_IMAGE_GENERATION_ORPHANS[pending_handoff["id"]] = {
+                pending_media["asset_id"]
+            }
+        try:
+            assert_blocked(pending_handoff["id"], "待处理")
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.PROJECT_IMAGE_GENERATION_ORPHANS.pop(pending_handoff["id"], None)
+
+        video = self.store.create_project("视频生成中项目")
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS["cleanup-video"] = {
+                "id": "cleanup-video",
+                "type": "project-online-video",
+                "project_id": video["id"],
+                "status": "running",
+            }
+        try:
+            assert_blocked(video["id"], "视频正在生成")
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS.pop("cleanup-video", None)
+
+        conversation = self.store.create_project("对话中项目")
+        self.store.apply_mutations(conversation["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "conversation",
+                "type": "smart-conversation",
+                "messages": [{"id": "user", "role": "user", "status": "pending"}],
+            },
+        }], base_revision=0)
+        assert_blocked(conversation["id"], "对话任务")
+
+        durable_agent = self.store.create_project("持久 Agent 执行中项目")
+        self.store.apply_mutations(durable_agent["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "durable-agent-task",
+                "type": "agent-task",
+                "status": "queued",
+            },
+        }], base_revision=0)
+        assert_blocked(durable_agent["id"], "Agent 任务")
+
+        agent = self.store.create_project("Agent 执行中项目")
+        with main.PROJECT_AGENT_TASKS_LOCK:
+            main.PROJECT_AGENT_TASKS["cleanup-agent"] = {
+                "id": "cleanup-agent",
+                "project_id": agent["id"],
+                "status": "running",
+            }
+        try:
+            assert_blocked(agent["id"], "Agent 任务")
+        finally:
+            with main.PROJECT_AGENT_TASKS_LOCK:
+                main.PROJECT_AGENT_TASKS.pop("cleanup-agent", None)
+
+    def test_cleanup_preview_api_rejects_an_export_in_progress(self):
+        project = self.store.create_project("导出中项目")
+        export_entered = threading.Event()
+        release_export = threading.Event()
+        export_result = []
+        original_export = self.store.export_fly_to
+
+        def blocked_export(project_id, path):
+            export_entered.set()
+            self.assertTrue(release_export.wait(2))
+            return original_export(project_id, path)
+
+        def run_export():
+            export_result.append(
+                self.client.get(f"/api/project-library/{project['id']}/export")
+            )
+
+        with patch.object(self.store, "export_fly_to", side_effect=blocked_export):
+            thread = threading.Thread(target=run_export)
+            thread.start()
+            self.assertTrue(export_entered.wait(1))
+            started = time.monotonic()
+            response = self.client.get(
+                f"/api/project-library/{project['id']}/cleanup-preview"
+            )
+            elapsed = time.monotonic() - started
+            release_export.set()
+            thread.join(3)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("正在导出", response.json()["detail"])
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(export_result[0].status_code, 200, export_result[0].text)
+
+    def test_cleanup_execute_api_permanently_deletes_confirmed_candidates(self):
+        project = self.store.create_project("API 永久清理")
+        candidate = self.store.import_media(
+            project["id"],
+            b"api-cleanup-candidate",
+            "candidate.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        owned = self.store.import_media(
+            project["id"],
+            b"api-owned-media",
+            "owned.png",
+            "image/png",
+            source_info={"locator": "https://example.test/owned.png", "type": "remote_url"},
+        )
+        preview = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        ).json()["preview"]
+        payload = {
+            "revision": preview["revision"],
+            "ownership_proof": preview["ownership_proof"],
+            "candidate_asset_ids": [item["asset_id"] for item in preview["candidates"]],
+        }
+        project_dir = self.store.root / project["id"]
+        files_before = {
+            path.relative_to(project_dir).as_posix(): path.read_bytes()
+            for path in sorted(project_dir.rglob("*"))
+            if path.is_file()
+        }
+
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/cleanup-execute",
+            json=payload,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["result"]
+        self.assertEqual(result["project_id"], project["id"])
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result["deleted"][0]["asset_id"], candidate["asset_id"])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(
+            self.client.get(
+                f"/api/project-library/{project['id']}/media/{candidate['asset_id']}"
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/project-library/{project['id']}/media/{owned['asset_id']}"
+            ).status_code,
+            200,
+        )
+        index = json.loads(
+            (project_dir / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(index["items"]), {owned["asset_id"]})
+        files_after = {
+            path.relative_to(project_dir).as_posix(): path.read_bytes()
+            for path in sorted(project_dir.rglob("*"))
+            if path.is_file()
+        }
+        self.assertEqual(
+            sorted(set(files_before) ^ set(files_after)),
+            [f"media/{candidate['asset_id']}.png"],
+        )
+        unchanged = set(files_before) & set(files_after)
+        self.assertTrue(all(
+            files_before[name] == files_after[name]
+            for name in unchanged
+            if name != "media/index.json"
+        ))
+        self.assertFalse((project_dir / "trash" / "original-media-transaction.json").exists())
+        again = self.client.post(
+            f"/api/project-library/{project['id']}/cleanup-execute",
+            json=payload,
+        )
+        self.assertEqual(again.status_code, 409, again.text)
+        self.assertIn("重新预览", again.json()["detail"])
+
+    def test_cleanup_execute_api_rejects_runtime_owner_before_store_analysis(self):
+        project = self.store.create_project("执行前 owner")
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS["cleanup-execute-blocker"] = {
+                "id": "cleanup-execute-blocker",
+                "type": "project-online-image",
+                "project_id": project["id"],
+                "status": "running",
+            }
+        try:
+            with patch.object(
+                self.store,
+                "execute_project_cleanup",
+                wraps=self.store.execute_project_cleanup,
+            ) as execute:
+                response = self.client.post(
+                    f"/api/project-library/{project['id']}/cleanup-execute",
+                    json={"revision": 0, "ownership_proof": "a" * 64, "candidate_asset_ids": []},
+                )
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS.pop("cleanup-execute-blocker", None)
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("图片正在生成", response.json()["detail"])
+        execute.assert_not_called()
+
+    def test_cleanup_execute_api_rechecks_runtime_owners_after_store_analysis(self):
+        project = self.store.create_project("执行期间 owner")
+        preview = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        ).json()["preview"]
+        original_execute = self.store.execute_project_cleanup
+
+        def admit_owner_during_execution(project_id, **kwargs):
+            result = original_execute(project_id, **kwargs)
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS["late-execute-owner"] = {
+                    "id": "late-execute-owner",
+                    "type": "project-online-image",
+                    "project_id": project_id,
+                    "status": "running",
+                }
+            return result
+
+        with patch.object(
+            self.store,
+            "execute_project_cleanup",
+            side_effect=admit_owner_during_execution,
+        ):
+            try:
+                response = self.client.post(
+                    f"/api/project-library/{project['id']}/cleanup-execute",
+                    json={
+                        "revision": preview["revision"],
+                        "ownership_proof": preview["ownership_proof"],
+                        "candidate_asset_ids": [],
+                    },
+                )
+            finally:
+                with main.CANVAS_TASK_LOCK:
+                    main.CANVAS_TASKS.pop("late-execute-owner", None)
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("图片正在生成", response.json()["detail"])
+
+    def test_cleanup_execute_api_rejects_drift_with_repreview_detail(self):
+        project = self.store.create_project("执行漂移")
+        candidate = self.store.import_media(
+            project["id"],
+            b"execute-drift",
+            "drift.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        preview = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        ).json()["preview"]
+        payload = {
+            "revision": preview["revision"],
+            "ownership_proof": preview["ownership_proof"],
+            "candidate_asset_ids": [item["asset_id"] for item in preview["candidates"]],
+        }
+        base_revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.store.apply_mutations(project["id"], [{
+            "op": "upsert_node",
+            "node": {"id": "drift", "type": "prompt", "x": 1, "y": 2},
+        }], base_revision=base_revision)
+
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/cleanup-execute",
+            json=payload,
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("重新预览", response.json()["detail"])
+        self.assertTrue(
+            (self.store.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file()
+        )
+        index = json.loads(
+            (self.store.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(candidate["asset_id"], index["items"])
+
+    def test_cleanup_execute_api_rejects_unbound_or_arbitrary_payloads(self):
+        project = self.store.create_project("无效执行负载")
+        candidate = self.store.import_media(
+            project["id"],
+            b"payload-guard",
+            "guard.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
+        endpoint = f"/api/project-library/{project['id']}/cleanup-execute"
+        # 从未预览过的候选不能直接提交。
+        unbound = self.client.post(endpoint, json={
+            "revision": 0, "ownership_proof": "b" * 64, "candidate_asset_ids": ["c" * 64],
+        })
+        self.assertEqual(unbound.status_code, 409, unbound.text)
+        self.assertIn("重新预览", unbound.json()["detail"])
+        # 任意路径、未知字段、缺失字段和类型错误一律 400。
+        invalid_payloads = [
+            {"revision": 0, "ownership_proof": "b" * 64, "candidate_asset_ids": ["../../outside.png"]},
+            {"revision": 0, "ownership_proof": "b" * 64, "candidate_asset_ids": [], "path": "C:/evil"},
+            {"revision": 0, "candidate_asset_ids": []},
+            {"revision": "0", "ownership_proof": 123, "candidate_asset_ids": "x"},
+            ["not", "an", "object"],
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                response = self.client.post(endpoint, json=payload)
+                self.assertEqual(response.status_code, 400, response.text)
+        missing = self.client.post("/api/project-library/nope/cleanup-execute", json={
+            "revision": 0, "ownership_proof": "b" * 64, "candidate_asset_ids": [],
+        })
+        self.assertEqual(missing.status_code, 404, missing.text)
+        self.assertTrue(
+            (self.store.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file()
+        )
+        index = json.loads(
+            (self.store.root / project["id"] / "media" / "index.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(candidate["asset_id"], index["items"])
+
+    def test_cleanup_execute_api_rejects_each_existing_runtime_owner(self):
+        def assert_blocked(project_id, expected_detail):
+            with patch.object(
+                self.store,
+                "execute_project_cleanup",
+                wraps=self.store.execute_project_cleanup,
+            ) as execute:
+                response = self.client.post(
+                    f"/api/project-library/{project_id}/cleanup-execute",
+                    json={"revision": 0, "ownership_proof": "a" * 64, "candidate_asset_ids": []},
+                )
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn(expected_detail, response.json()["detail"])
+            execute.assert_not_called()
+
+        importing = self.store.create_project("执行导入中")
+        with main.PROJECT_MEDIA_IMPORT_TASKS_LOCK:
+            main.PROJECT_MEDIA_IMPORT_TASKS["execute-import"] = {
+                "id": "execute-import",
+                "project_id": importing["id"],
+                "status": "pending",
+            }
+        try:
+            assert_blocked(importing["id"], "媒体正在导入")
+        finally:
+            with main.PROJECT_MEDIA_IMPORT_TASKS_LOCK:
+                main.PROJECT_MEDIA_IMPORT_TASKS.pop("execute-import", None)
+
+        image = self.store.create_project("执行图片生成中")
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS["execute-image"] = {
+                "id": "execute-image",
+                "type": "project-online-image",
+                "project_id": image["id"],
+                "status": "running",
+            }
+        try:
+            assert_blocked(image["id"], "图片正在生成")
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS.pop("execute-image", None)
+
+        video = self.store.create_project("执行视频生成中")
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS["execute-video"] = {
+                "id": "execute-video",
+                "type": "project-online-video",
+                "project_id": video["id"],
+                "status": "running",
+            }
+        try:
+            assert_blocked(video["id"], "视频正在生成")
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.CANVAS_TASKS.pop("execute-video", None)
+
+        handoff = self.store.create_project("执行 handoff 中")
+        with main.CANVAS_TASK_LOCK:
+            main.PROJECT_IMAGE_GENERATION_ORPHANS[handoff["id"]] = {"a" * 64}
+        try:
+            assert_blocked(handoff["id"], "待处理")
+        finally:
+            with main.CANVAS_TASK_LOCK:
+                main.PROJECT_IMAGE_GENERATION_ORPHANS.pop(handoff["id"], None)
+
+        conversation = self.store.create_project("执行对话中")
+        self.store.apply_mutations(conversation["id"], [{
+            "op": "upsert_node",
+            "node": {
+                "id": "conversation",
+                "type": "smart-conversation",
+                "messages": [{"id": "user", "role": "user", "status": "pending"}],
+            },
+        }], base_revision=0)
+        assert_blocked(conversation["id"], "对话任务")
+
+        agent = self.store.create_project("执行 Agent 中")
+        with main.PROJECT_AGENT_TASKS_LOCK:
+            main.PROJECT_AGENT_TASKS["execute-agent"] = {
+                "id": "execute-agent",
+                "project_id": agent["id"],
+                "status": "running",
+            }
+        try:
+            assert_blocked(agent["id"], "Agent 任务")
+        finally:
+            with main.PROJECT_AGENT_TASKS_LOCK:
+                main.PROJECT_AGENT_TASKS.pop("execute-agent", None)
+
+        photoshop = self.store.create_project("执行 PS 中")
+        with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+            main.PHOTOSHOP_ROUND_TRIP_REQUESTS["execute-ps"] = {
+                "request_id": "execute-ps",
+                "project_id": photoshop["id"],
+                "state": "pending",
+                "expires_at_ms": main.now_ms() + 60_000,
+            }
+        try:
+            assert_blocked(photoshop["id"], "Photoshop")
+        finally:
+            with main.PHOTOSHOP_ROUND_TRIP_LOCK:
+                main.PHOTOSHOP_ROUND_TRIP_REQUESTS.pop("execute-ps", None)
+
+    def test_cleanup_execute_api_requires_project_websocket_sessions_to_close(self):
+        project = self.store.create_project("执行中的项目")
+        candidate = self.store.import_media(
+            project["id"],
+            b"session-guard",
+            "session.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        preview = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        ).json()["preview"]
+        payload = {
+            "revision": preview["revision"],
+            "ownership_proof": preview["ownership_proof"],
+            "candidate_asset_ids": [item["asset_id"] for item in preview["candidates"]],
+        }
+        endpoint = f"/api/project-library/{project['id']}/cleanup-execute"
+
+        with self.client.websocket_connect(
+            f"/ws/stats?client_id=canvas_execute&project_id={project['id']}"
+        ) as socket:
+            socket.receive_json()
+            blocked = self.client.post(endpoint, json=payload)
+            self.assertEqual(blocked.status_code, 409, blocked.text)
+            self.assertIn("仍在打开", blocked.json()["detail"])
+        self.assertTrue(
+            (self.store.root / project["id"] / "media" / f"{candidate['asset_id']}.png").is_file()
+        )
+
+        released = self.client.post(endpoint, json=payload)
+        self.assertEqual(released.status_code, 200, released.text)
+        self.assertEqual(released.json()["result"]["deleted_count"], 1)
+
+    def test_cleanup_execute_api_rejects_an_export_in_progress(self):
+        project = self.store.create_project("执行导出中")
+        export_entered = threading.Event()
+        release_export = threading.Event()
+        export_result = []
+        original_export = self.store.export_fly_to
+
+        def blocked_export(project_id, path):
+            export_entered.set()
+            self.assertTrue(release_export.wait(2))
+            return original_export(project_id, path)
+
+        def run_export():
+            export_result.append(
+                self.client.get(f"/api/project-library/{project['id']}/export")
+            )
+
+        with patch.object(self.store, "export_fly_to", side_effect=blocked_export):
+            with patch.object(
+                self.store,
+                "execute_project_cleanup",
+                wraps=self.store.execute_project_cleanup,
+            ) as execute:
+                thread = threading.Thread(target=run_export)
+                thread.start()
+                self.assertTrue(export_entered.wait(1))
+                started = time.monotonic()
+                response = self.client.post(
+                    f"/api/project-library/{project['id']}/cleanup-execute",
+                    json={"revision": 0, "ownership_proof": "a" * 64, "candidate_asset_ids": []},
+                )
+                elapsed = time.monotonic() - started
+                release_export.set()
+                thread.join(3)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("正在导出", response.json()["detail"])
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(export_result[0].status_code, 200, export_result[0].text)
+        execute.assert_not_called()
+
+    def test_project_library_marks_cleanup_available_only_after_canvas_session_closes(self):
+        project = self.store.create_project("项目列表关闭状态")
+
+        with self.client.websocket_connect(
+            f"/ws/stats?client_id=canvas_list&project_id={project['id']}"
+        ) as socket:
+            socket.receive_json()
+            opened = self.client.get("/api/project-library").json()["projects"]
+            opened_project = next(item for item in opened if item["id"] == project["id"])
+            self.assertFalse(opened_project["cleanup_preview_available"])
+
+        closed = self.client.get("/api/project-library").json()["projects"]
+        closed_project = next(item for item in closed if item["id"] == project["id"])
+        self.assertTrue(closed_project["cleanup_preview_available"])
+
+    def test_cleanup_preview_api_requires_project_websocket_sessions_to_close(self):
+        project = self.store.create_project("打开中的项目")
+        endpoint = f"/api/project-library/{project['id']}/cleanup-preview"
+
+        with self.client.websocket_connect(
+            f"/ws/stats?client_id=canvas_cleanup&project_id={project['id']}"
+        ) as socket:
+            socket.receive_json()
+            blocked = self.client.get(endpoint)
+            self.assertEqual(blocked.status_code, 409, blocked.text)
+            self.assertIn("仍在打开", blocked.json()["detail"])
+
+        released = self.client.get(endpoint)
+        self.assertEqual(released.status_code, 200, released.text)
+
+    def test_duplicate_project_api_preserves_project_owned_media_and_scope(self):
+        source = self.store.create_project("API 原项目")
+        media = self.store.import_media(
+            source["id"],
+            b"unreferenced-project-media",
+            "owned.png",
+            "image/png",
+            source_info={"locator": "https://example.test/owned.png?credential=hidden", "type": "remote_url"},
+        )
+
+        response = self.client.post(f"/api/project-library/{source['id']}/duplicate")
+
+        self.assertEqual(response.status_code, 200)
+        duplicate = response.json()["project"]
+        self.assertNotEqual(duplicate["id"], source["id"])
+        self.assertEqual(duplicate["name"], "API 原项目 副本")
+        copied_media = self.client.get(f"/api/project-library/{duplicate['id']}/media").json()["items"]
+        self.assertEqual([item["asset_id"] for item in copied_media], [media["asset_id"]])
+        self.assertEqual(copied_media[0]["source"]["locator"], "https://example.test/owned.png")
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{duplicate['id']}/media/{media['asset_id']}").content,
+            b"unreferenced-project-media",
+        )
+        self.assertEqual(self.client.delete(f"/api/project-library/{duplicate['id']}").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/project-library/{source['id']}").status_code, 200)
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{source['id']}/media/{media['asset_id']}").content,
+            b"unreferenced-project-media",
+        )
+
+    def test_download_output_serves_project_media_as_an_attachment(self):
+        project = self.store.create_project("下载项目媒体")
+        media = self.store.import_media(project["id"], b"project-image", "generated.png", "image/png")
+        media_url = f"/api/project-library/{project['id']}/media/{media['asset_id']}"
+
+        response = self.client.get(
+            "/api/download-output",
+            params={"url": media_url, "name": "cat.png"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"project-image")
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertIn("attachment", response.headers["content-disposition"])
+        self.assertIn("cat.png", response.headers["content-disposition"])
+        preview_response = self.client.get(
+            "/api/download-output",
+            params={"url": f"{media_url}/preview?w=512", "name": "preview.png"},
+        )
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.content, b"project-image")
+        self.assertIn("attachment", preview_response.headers["content-disposition"])
+        self.assertIn("preview.png", preview_response.headers["content-disposition"])
+        self.assertEqual(
+            self.client.get(
+                "/api/download-output",
+                params={"url": f"{media_url}/thumbnail", "name": "thumbnail.png"},
+            ).status_code,
+            400,
+        )
+
     def test_unknown_project_and_invalid_mutation_are_rejected(self):
         self.assertEqual(self.client.get("/api/project-library/missing").status_code, 404)
         project = self.client.post("/api/project-library", json={"name": "边界"}).json()["project"]

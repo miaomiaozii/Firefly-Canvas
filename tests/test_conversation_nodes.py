@@ -370,6 +370,50 @@ class ConversationNodeApiContractTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail["code"], "project_media_handle_requires_project_task")
 
+    def test_project_scoped_canvas_llm_resolves_project_image_before_provider_boundary(self):
+        project, media, _conversation, _prompt = self._seed_conversation_canvas()
+        captured = {}
+
+        class FakeResponse:
+            content = b'{"choices":[{"message":{"content":"image readable"}}]}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "素材可读"}}]}
+
+        class FakeAsyncClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _traceback):
+                return False
+
+            async def post(self, _url, *, headers, json):
+                captured["json"] = json
+                return FakeResponse()
+
+        project_url = f"/api/project-library/{project['id']}/media/{media[0]['asset_id']}"
+        payload = main.CanvasLLMRequest(
+            project_id=project["id"],
+            message="读取项目图片",
+            provider="media-capable",
+            images=[project_url],
+        )
+        with patch.object(main, "get_api_provider", return_value={"id": "media-capable"}), \
+             patch.object(main, "resolve_chat_provider", return_value=("https://example.invalid/v1", {}, "media-model")), \
+             patch.object(main.httpx, "AsyncClient", FakeAsyncClient):
+            result = asyncio.run(main.canvas_llm(payload))
+
+        self.assertEqual(result["text"], "素材可读")
+        image_url = captured["json"]["messages"][-1]["content"][1]["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:image/png;base64,"))
+        self.assertEqual(base64.b64decode(image_url.split(",", 1)[1]), b"image-bytes")
+
     def test_project_media_handles_are_resolved_before_fake_http_provider_boundary(self):
         project, media, conversation, _prompt = self._seed_conversation_canvas()
         captured = {}

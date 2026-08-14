@@ -164,6 +164,52 @@ class ImageGenerationRoutingTests(unittest.TestCase):
         )
         self.assertEqual(one_k.model, "nano-banana-pro")
 
+    def test_pinned_banana_models_route_all_selected_resolution_tiers(self):
+        cases = (
+            ("nano-banana", ("nano-banana", "nano-banana-hd", "nano-banana-hd")),
+            ("nano-banana-pro", ("nano-banana-pro", "nano-banana-pro-2k", "nano-banana-pro-4k")),
+            ("nano-banana-2", ("nano-banana-2", "nano-banana-2-2k", "nano-banana-2-4k")),
+            ("gemini-3.1-flash-image-preview", (
+                "gemini-3.1-flash-image-preview",
+                "gemini-3.1-flash-image-preview-2k",
+                "gemini-3.1-flash-image-preview-4k",
+            )),
+            ("gemini-3.1-flash-lite-image", (
+                "gemini-3.1-flash-lite-image",
+                "gemini-3.1-flash-lite-image",
+                "gemini-3.1-flash-lite-image",
+            )),
+        )
+        tiers = (("1k", 1024), ("2k", 2048), ("4k", 4096))
+        for model, expected_models in cases:
+            available_models = list(dict.fromkeys((model, *expected_models)))
+            for (resolution, pixels), expected in zip(tiers, expected_models):
+                with self.subTest(model=model, resolution=resolution):
+                    providers = [{
+                        "id": "comfly",
+                        "name": "comfly",
+                        "enabled": True,
+                        "protocol": "openai",
+                        "image_models": [model],
+                        "image_model_capabilities": {model: {
+                            "sizes": ["1024x1024", "2048x2048", "4096x4096"],
+                            "aspect_ratios": ["1:1"],
+                            "resolutions": ["1k", "2k", "4k"],
+                            "max_reference_images": 20,
+                        }},
+                        "available_models": {"image_models": available_models},
+                    }]
+                    route = route_image_generation(
+                        ImageGenerationRequest(
+                            prompt="t", size=f"{pixels}x{pixels}", width=pixels, height=pixels,
+                            aspect_ratio="1:1", resolution=resolution,
+                        ),
+                        providers,
+                        provider_id="comfly",
+                        model=model,
+                    )
+                    self.assertEqual(route.model, expected)
+
     def test_pinned_model_without_variant_still_reports_incompatible_resolution(self):
         providers = [
             {

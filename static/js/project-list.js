@@ -9,6 +9,18 @@
   const importFile = document.getElementById('importFile');
   const trashPanel = document.getElementById('trashPanel');
   const trashGrid = document.getElementById('trashGrid');
+  const cleanupDialog = document.getElementById('cleanupPreviewDialog');
+  const cleanupProject = document.getElementById('cleanupPreviewProject');
+  const cleanupCount = document.getElementById('cleanupCandidateCount');
+  const cleanupTotalBytes = document.getElementById('cleanupTotalBytes');
+  const cleanupList = document.getElementById('cleanupCandidateList');
+  const cleanupError = document.getElementById('cleanupPreviewError');
+  const cleanupConfirmArea = document.getElementById('cleanupConfirmArea');
+  const cleanupConfirmNote = document.getElementById('cleanupConfirmNote');
+  const cleanupConfirmError = document.getElementById('cleanupConfirmError');
+  const cleanupConfirmButton = document.getElementById('confirmCleanup');
+  let cleanupConfirmProjectId = null;
+  let cleanupConfirmState = null;
   const tr = key => window.StudioI18n?.t?.(key) || key;
   grid.setAttribute('aria-label', tr('projectList.region'));
 
@@ -18,6 +30,136 @@
     location.href = `/static/smart-canvas.html?id=${canvasId}&project=${id}&project_mode=1`;
   }
   function showCreate(){ dialog.showModal(); nameInput.focus(); }
+  async function showCleanupPreview(project){
+    cleanupProject.textContent = project.name;
+    cleanupCount.textContent = '…';
+    cleanupTotalBytes.textContent = '';
+    cleanupError.textContent = '';
+    cleanupConfirmError.textContent = '';
+    cleanupList.replaceChildren();
+    cleanupConfirmProjectId = null;
+    cleanupConfirmState = null;
+    cleanupConfirmButton.hidden = true;
+    cleanupConfirmArea.hidden = true;
+    cleanupDialog.showModal();
+    try {
+      const response = await fetch(
+        `/api/project-library/${encodeURIComponent(project.id)}/cleanup-preview`,
+        {method:'GET'},
+      );
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(data.detail || tr('projectList.cleanupFailed'));
+      const preview = data.preview || {};
+      const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
+      cleanupCount.textContent = String(preview.candidate_count || 0);
+      cleanupTotalBytes.textContent = ` · ${Number(preview.total_bytes || 0).toLocaleString()} B`;
+      if(!candidates.length){
+        const empty = document.createElement('p');
+        empty.className = 'cleanup-empty';
+        empty.textContent = tr('projectList.cleanupEmpty');
+        cleanupList.appendChild(empty);
+      } else {
+        cleanupConfirmProjectId = project.id;
+        cleanupConfirmState = {
+          revision: Number(preview.revision || 0),
+          ownership_proof: String(preview.ownership_proof || ''),
+          candidate_asset_ids: candidates.map(item => String(item.asset_id || '')),
+        };
+        cleanupConfirmArea.hidden = false;
+        cleanupConfirmButton.hidden = false;
+        cleanupConfirmButton.disabled = false;
+      }
+      candidates.forEach(candidate => {
+        const item = document.createElement('article');
+        item.className = 'cleanup-candidate';
+        const thumbnail = document.createElement(candidate.kind === 'video' ? 'video' : 'img');
+        thumbnail.src = candidate.thumbnail_url;
+        thumbnail.setAttribute('aria-label', candidate.name || candidate.asset_id || '');
+        if(candidate.kind === 'video'){
+          thumbnail.preload = 'metadata';
+          thumbnail.muted = true;
+        } else {
+          thumbnail.alt = '';
+          thumbnail.loading = 'lazy';
+        }
+        const details = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = candidate.name || candidate.asset_id;
+        const source = document.createElement('span');
+        source.textContent = tr(`projectList.cleanupSource.${candidate.source_category}`);
+        const size = document.createElement('span');
+        size.textContent = `${Number(candidate.size || 0).toLocaleString()} B`;
+        details.append(name, source, size);
+        item.append(thumbnail, details);
+        cleanupList.appendChild(item);
+      });
+    } catch(error) {
+      cleanupCount.textContent = '0';
+      cleanupError.textContent = error.message || tr('projectList.cleanupFailed');
+      cleanupConfirmProjectId = null;
+      cleanupConfirmState = null;
+      cleanupConfirmButton.hidden = true;
+      cleanupConfirmArea.hidden = true;
+    }
+  }
+  cleanupConfirmButton.addEventListener('click', async () => {
+    const state = cleanupConfirmState;
+    const projectId = cleanupConfirmProjectId;
+    if(!state || !projectId){
+      cleanupConfirmError.textContent = tr('projectList.cleanupRepreview');
+      return;
+    }
+    cleanupConfirmButton.disabled = true;
+    cleanupConfirmButton.textContent = tr('projectList.cleanupConfirming');
+    cleanupConfirmError.textContent = '';
+    try {
+      const response = await fetch(
+        `/api/project-library/${encodeURIComponent(projectId)}/cleanup-execute`,
+        {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(state),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok){
+        const detail = String(data.detail || '');
+        const expired = detail.includes('重新预览');
+        cleanupConfirmError.textContent = expired
+          ? tr('projectList.cleanupRepreview')
+          : (detail || tr('projectList.cleanupConfirmFailed'));
+        // 确认已失效：保持禁用，用户必须重新预览。
+        cleanupConfirmButton.disabled = expired;
+        return;
+      }
+      const result = data.result || {};
+      if(result.complete){
+        cleanupConfirmProjectId = null;
+        cleanupConfirmState = null;
+        cleanupConfirmButton.hidden = true;
+        cleanupConfirmArea.hidden = true;
+        cleanupCount.textContent = '0';
+        cleanupTotalBytes.textContent = '';
+        cleanupList.replaceChildren();
+        const done = document.createElement('p');
+        done.className = 'cleanup-empty';
+        done.textContent = tr('projectList.cleanupDone')
+          .replace('{count}', String(result.deleted_count || 0))
+          .replace('{bytes}', Number(result.deleted_bytes || 0).toLocaleString());
+        cleanupList.appendChild(done);
+        await load();
+        return;
+      }
+      cleanupConfirmError.textContent = tr('projectList.cleanupPartial')
+        .replace('{count}', String(result.deleted_count || 0));
+      cleanupConfirmButton.disabled = false;
+    } catch(error) {
+      cleanupConfirmError.textContent = error.message || tr('projectList.cleanupConfirmFailed');
+      cleanupConfirmButton.disabled = false;
+    } finally {
+      if(!cleanupConfirmButton.hidden) cleanupConfirmButton.textContent = tr('projectList.cleanupConfirm');
+    }
+  });
   function render(projects){
     status.textContent = '';
     grid.replaceChildren();
@@ -26,14 +168,39 @@
       const card = document.createElement('article');
       card.className = 'project-card';
       const updated = project.updated_at ? new Date(project.updated_at).toLocaleString(window.StudioI18n?.lang?.() === 'en' ? 'en-US' : 'zh-CN') : tr('projectList.justCreated');
-      card.innerHTML = `<button class="project-open" type="button"><span class="canvas-badge"></span><h2></h2><time></time></button><div class="project-actions"><a class="project-action" download></a><button class="project-action danger" type="button"></button></div>`;
+      card.innerHTML = `<button class="project-open" type="button"><span class="canvas-badge"></span><h2></h2><time></time></button><div class="project-actions"><button class="project-action project-cleanup-preview" type="button"></button><button class="project-action project-duplicate" type="button"></button><a class="project-action" download></a><button class="project-action danger" type="button"></button></div>`;
       card.querySelector('.canvas-badge').textContent = tr('projectList.canvasBadge');
       card.querySelector('h2').textContent = project.name;
       card.querySelector('time').textContent = updated;
       card.querySelector('.project-open').addEventListener('click', () => openProject(project));
+      const cleanupButton = card.querySelector('.project-cleanup-preview');
+      if(project.cleanup_preview_available){
+        cleanupButton.textContent = tr('projectList.cleanupPreview');
+        cleanupButton.addEventListener('click', () => showCleanupPreview(project));
+      } else {
+        cleanupButton.remove();
+      }
       const exportLink = card.querySelector('a');
       exportLink.href = `/api/project-library/${encodeURIComponent(project.id)}/export`;
       exportLink.textContent = tr('projectList.export');
+      const duplicateButton = card.querySelector('.project-duplicate');
+      duplicateButton.textContent = tr('projectList.duplicate');
+      duplicateButton.addEventListener('click', async () => {
+        duplicateButton.disabled = true;
+        try {
+          const response = await fetch(`/api/project-library/${encodeURIComponent(project.id)}/duplicate`, {method:'POST'});
+          const data = await response.json().catch(() => ({}));
+          if(!response.ok){
+            status.textContent = data.detail || tr('projectList.duplicateFailed');
+            return;
+          }
+          await load();
+        } catch(error) {
+          status.textContent = tr('projectList.duplicateFailed');
+        } finally {
+          duplicateButton.disabled = false;
+        }
+      });
       const deleteButton = card.querySelector('.danger');
       deleteButton.textContent = tr('projectList.delete');
       deleteButton.addEventListener('click', async () => {
@@ -99,6 +266,7 @@
   document.getElementById('showCreate').addEventListener('click', showCreate);
   document.getElementById('emptyCreate').addEventListener('click', showCreate);
   document.getElementById('cancelCreate').addEventListener('click', () => dialog.close());
+  document.getElementById('closeCleanupPreview').addEventListener('click', () => cleanupDialog.close());
   document.getElementById('importProject').addEventListener('click', () => importFile.click());
   const showTrash = document.getElementById('showTrash');
   const closeTrash = document.getElementById('closeTrash');

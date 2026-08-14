@@ -102,6 +102,21 @@ class ConversationBrowserHarnessTests(unittest.TestCase):
         self.assertIn("fixture canvas", body)
         self.assertIn('/tests/conversation_browser_client.js', body)
 
+    def test_native_browser_server_can_disable_script_injection(self):
+        native_server = ConversationBrowserServer(self.store, FixtureApp(), client_script=None)
+        native_server.start()
+        try:
+            with urllib.request.urlopen(
+                f"{native_server.base_url}/static/smart-canvas.html?id=project-1",
+                timeout=3,
+            ) as response:
+                body = response.read().decode("utf-8")
+        finally:
+            native_server.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body, "<html><body><h1>fixture canvas</h1></body></html>")
+
     def test_static_path_cannot_escape_root(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(

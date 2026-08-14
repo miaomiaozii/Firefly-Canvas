@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title data-i18n="globalSettings.title">萤火画布 · 全局设置</title>
+  <script>
+    // The Smart Canvas settings panel owns its responsive width.  Opt out of
+    // the standalone page's desktop UI scale before theme.js initializes so
+    // embedded controls keep their intended readable size.
+    if (window.self !== window.top) document.documentElement.dataset.studioScale = 'off';
+  </script>
   <script src="/static/js/theme.js"></script>
   <script src="/static/js/i18n.js"></script>
   <script src="/static/js/global-preferences.js?v=2026.07.27.210000"></script>

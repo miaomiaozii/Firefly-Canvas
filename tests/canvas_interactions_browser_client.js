@@ -93,6 +93,37 @@
         const pushUndo = evalFn('pushUndo');
         const setViewport = evalFn('applyViewport');
 
+        // Ordinary multi-image nodes must preserve each image card's aspect ratio.
+        {
+            const node = evalCanvas()?.nodes?.find(item => item.id === 'seed-img-a');
+            if(node?.images?.[0]){
+                node.images = [node.images[0], {...node.images[0], name:'landscape-copy.png'}];
+                evalFn('render')?.();
+            }
+            const thumbsReady = await waitFor(() => {
+                const thumbs = [...document.querySelectorAll('.image-node[data-id="seed-img-a"] .thumb-grid .thumb-item')];
+                return thumbs.length === 2 && thumbs.every(item => item.querySelector('img')?.naturalWidth > 0);
+            });
+            const ratios = [...document.querySelectorAll('.image-node[data-id="seed-img-a"] .thumb-grid .thumb-item')].map(item => {
+                const image = item.querySelector('img');
+                const rect = item.getBoundingClientRect();
+                return {
+                    natural:image ? image.naturalWidth / image.naturalHeight : 0,
+                    card:rect.height ? rect.width / rect.height : 0,
+                };
+            });
+            assertion('ordinary multi-image cards preserve landscape aspect ratio', thumbsReady && ratios.every(({natural, card}) => natural > 1 && Math.abs(card - natural) < 0.08), JSON.stringify(ratios));
+            const outerRect = document.querySelector('.image-node[data-id="seed-img-a"]')?.getBoundingClientRect();
+            const gridRect = document.querySelector('.image-node[data-id="seed-img-a"] .thumb-grid')?.getBoundingClientRect();
+            const bottomGap = outerRect && gridRect ? outerRect.bottom - gridRect.bottom : Infinity;
+            assertion('ordinary multi-image outer frame fits image rows', bottomGap >= 0 && bottomGap <= 20, `outerH=${outerRect?.height} gridTop=${gridRect && outerRect ? gridRect.top - outerRect.top : 'n/a'} gridH=${gridRect?.height} bottomGap=${bottomGap}`);
+            if(node){
+                node.images = node.images.slice(0, 1);
+                evalFn('render')?.();
+                await sleep(80);
+            }
+        }
+
         // 1. box-select: ctrl+drag across seed-prompt and seed-img-a
         {
             const c = evalCanvas();
@@ -186,20 +217,46 @@
             const hasPasted = c?.nodes?.some(n => String(n.id).startsWith('prompt_') || String(n.id).startsWith('smart_'));
             assertion('redo re-deletes nodes', reDeleted && !hasPasted, `before=${beforeCount} after=${c?.nodes?.length} hasPasted=${hasPasted}`);
         }
-        // 5. group selected nodes
+        // 5. group landscape images without forcing their internal cards square
         {
             const c = evalCanvas();
-            const prompt = c.nodes.find(n => n.id === 'seed-prompt');
-            const img = c.nodes.find(n => n.type === 'smart-image' && String(n.id).startsWith('seed-'));
-            if(prompt && img){
-                eval('selectedIds.splice(0, selectedIds.length, ' + JSON.stringify(prompt.id) + ', ' + JSON.stringify(img.id) + ')');
-                eval('selectedId = ' + JSON.stringify(prompt.id));
+            const images = c.nodes.filter(n => n.type === 'smart-image' && String(n.id).startsWith('seed-'));
+            if(images.length === 2){
+                eval('selectedIds.splice(0, selectedIds.length, ' + images.map(node => JSON.stringify(node.id)).join(', ') + ')');
+                eval('selectedId = ' + JSON.stringify(images[0].id));
             }
             await sleep(80);
-            const grp = groupSelectedNodes();
-            const groupCount = (evalCanvas()?.nodes || []).filter(n => n.type === 'smart-group').length;
-            result.diagnostics.push(`group diag: grp=${typeof grp} count=${groupCount} selId=${eval('selectedId')} selIds=${JSON.stringify(eval('selectedIds'))}`);
+            groupSelectedNodes();
+            const group = (evalCanvas()?.nodes || []).find(n => n.type === 'smart-group');
+            const groupCount = group ? 1 : 0;
+            result.diagnostics.push(`group diag: count=${groupCount} selId=${eval('selectedId')} selIds=${JSON.stringify(eval('selectedIds'))}`);
             assertion('group creates smart-group node', groupCount > 0, `groups=${groupCount}`);
+            const thumbsReady = await waitFor(() => {
+                const thumbs = [...document.querySelectorAll('.smart-group-node .smart-group-thumb-grid .thumb-item')];
+                return thumbs.length === 2 && thumbs.every(item => item.querySelector('img')?.complete && item.querySelector('img')?.naturalWidth > 0);
+            });
+            assertion('group renders 2 landscape images', thumbsReady, document.querySelectorAll('.smart-group-node .thumb-item').length);
+            const ratios = [...document.querySelectorAll('.smart-group-node .smart-group-thumb-grid .thumb-item')].map(item => {
+                const image = item.querySelector('img');
+                const rect = item.getBoundingClientRect();
+                const imageRect = image?.getBoundingClientRect();
+                return {
+                    natural: image ? image.naturalWidth / image.naturalHeight : 0,
+                    card: rect.height ? rect.width / rect.height : 0,
+                    rendered: imageRect?.height ? imageRect.width / imageRect.height : 0,
+                    thumbW: item.style.getPropertyValue('--thumb-w'),
+                    thumbH: item.style.getPropertyValue('--thumb-h'),
+                };
+            });
+            const preservesLandscapeRatio = ratios.length === 2 && ratios.every(({natural, card}) => natural > 1 && Math.abs(card - natural) < 0.08);
+            assertion('group cards preserve landscape aspect ratio', preservesLandscapeRatio, JSON.stringify(ratios));
+            const groupNodeRect = document.querySelector('.smart-group-node')?.getBoundingClientRect();
+            const groupGridRect = document.querySelector('.smart-group-node .smart-group-thumb-grid')?.getBoundingClientRect();
+            const groupBottomGap = groupNodeRect && groupGridRect ? groupNodeRect.bottom - groupGridRect.bottom : Infinity;
+            assertion('group outer frame fits image rows', groupBottomGap >= 0 && groupBottomGap <= 24, `outerH=${groupNodeRect?.height} gridBottomGap=${groupBottomGap}`);
+            const gGrid = document.querySelector('.smart-group-node .thumb-grid');
+            const gItem = gGrid?.querySelector('.thumb-item');
+            result.diagnostics.push(`group frame diag: node=${groupNodeRect?.width}x${groupNodeRect?.height} gridStyleThumb=${gGrid?.style.getPropertyValue('--thumb-size')} itemInlineW=${gItem?.style.getPropertyValue('--thumb-w')} itemInlineH=${gItem?.style.getPropertyValue('--thumb-h')} itemOff=${gItem?.offsetWidth}x${gItem?.offsetHeight} gridH=${groupGridRect?.height}`);
         }
         // 6. zoom via wheel changes viewport scale
         {

@@ -23,12 +23,20 @@ VIEWPORTS = [(1424, 900)]
 
 def seed_store(store: ProjectStore) -> str:
     project = store.create_project('Canvas Interactions')
+    landscape = store.import_media(
+        project['id'],
+        harness.image_bytes('LANDSCAPE', (46, 92, 138)),
+        'landscape.png',
+        'image/png',
+        {'type': 'canvas-interactions-browser-fixture', 'name': 'landscape.png'},
+    )
+    image = {'asset_id': landscape['asset_id'], 'kind': 'image', 'name': 'landscape.png'}
     store.apply_mutations(
         project['id'],
         [
             {"op": "upsert_node", "node": {"id": "seed-prompt", "type": "smart-prompt", "x": 120, "y": 120, "w": 316, "h": 96, "text": 'interaction seed prompt'}},
-            {"op": "upsert_node", "node": {"id": "seed-img-a", "type": "smart-image", "x": 560, "y": 120, "w": 316, "h": 194, "images": []}},
-            {"op": "upsert_node", "node": {"id": "seed-img-b", "type": "smart-image", "x": 120, "y": 420, "w": 316, "h": 194, "images": []}},
+            {"op": "upsert_node", "node": {"id": "seed-img-a", "type": "smart-image", "x": 560, "y": 120, "w": 316, "h": 194, "images": [dict(image)]}},
+            {"op": "upsert_node", "node": {"id": "seed-img-b", "type": "smart-image", "x": 120, "y": 420, "w": 316, "h": 194, "images": [dict(image)]}},
             {"op": "upsert_edge", "edge": {"from": "seed-prompt", "to": "seed-img-a", "kind": "input"}},
         ],
         base_revision=0,
