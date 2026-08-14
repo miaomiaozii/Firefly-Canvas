@@ -6,12 +6,23 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PIL import Image, UnidentifiedImageError
-
 try:
     from tools.native_input_evidence import has_trusted_selector_owner_click
 except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from native_input_evidence import has_trusted_selector_owner_click
+
+try:
+    from tools.evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        validate_png as _validate_screenshot,
+    )
+except ModuleNotFoundError:  # Direct `python tools/...py` execution.
+    from evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        validate_png as _validate_screenshot,
+    )
 
 VIEWPORT = (1424, 900)
 REQUIRED_STEPS = (
@@ -44,45 +55,10 @@ REQUIRED_BOOLEANS = (
 )
 
 
-def _artifact(root: Path, relative: object, label: str) -> Path:
-    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
-        raise ValueError(f"{label} must be a non-empty relative path")
-    path = (root / relative).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise ValueError(f"{label} is outside the evidence root") from error
-    if not path.is_file():
-        raise ValueError(f"{label} is missing: {relative}")
-    return path
-
-
-def _json(path: Path, label: str) -> object:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"{label} is not valid UTF-8 JSON: {error}") from error
-
-
-def _screenshot(path: Path) -> dict:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            if image.format != "PNG" or image.size != VIEWPORT:
-                raise ValueError(f"screenshot {path.name} must be a 1424x900 PNG")
-            colors = image.convert("RGB").getcolors(maxcolors=2)
-            if colors is not None and len(colors) < 2:
-                raise ValueError(f"screenshot {path.name} is blank")
-            return {"path": str(path), "width": image.width, "height": image.height}
-    except (OSError, UnidentifiedImageError) as error:
-        raise ValueError(f"screenshot {path.name} is invalid: {error}") from error
-
-
 def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dict:
     root = artifact_root.resolve()
     manifest_path = root / "manifest.json"
-    manifest = _json(manifest_path, "manifest.json") if manifest_path.is_file() else None
+    manifest = _read_json(manifest_path, "manifest.json") if manifest_path.is_file() else None
     if not isinstance(manifest, dict) or (
         manifest.get("schema_version") != 1
         or manifest.get("journey") != "complete-generation-lifecycle"
@@ -172,7 +148,7 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
     if cancel_index >= retry_index or ordered_selectors[:retry_index].count("#smartLogToggle") < 2:
         raise ValueError("safe retry was not exercised after reopening the reloaded history UI")
 
-    requests = _json(_artifact(root, attempt.get("requests"), "requests"), "requests")
+    requests = _read_json(_artifact(root, attempt.get("requests"), "requests"), "requests")
     if not isinstance(requests, list):
         raise ValueError("request evidence is invalid")
     paths = {urlsplit(str(item.get("url") or "")).path for item in requests if int(item.get("status") or 0) in {200, 202, 404, 410}}
@@ -193,13 +169,13 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
         raise ValueError(f"request evidence does not cover the complete lifecycle: {missing_requests}")
     if lifecycle.get("download_request_path") not in paths:
         raise ValueError("request evidence does not bind download to the generated asset identity")
-    console = _json(_artifact(root, attempt.get("console_errors"), "console errors"), "console errors")
+    console = _read_json(_artifact(root, attempt.get("console_errors"), "console errors"), "console errors")
     if console != []:
         raise ValueError("browser console contains errors")
     screenshots = attempt.get("screenshots")
     if not isinstance(screenshots, list) or len(screenshots) < 6 or len(set(screenshots)) != len(screenshots):
         raise ValueError("at least six unique lifecycle screenshots are required")
-    evidence = [_screenshot(_artifact(root, item, "screenshot")) for item in screenshots]
+    evidence = [_validate_screenshot(_artifact(root, item, "screenshot"), VIEWPORT) for item in screenshots]
     return {
         "status": "validated",
         "root": str(root),
@@ -217,7 +193,7 @@ def failed_complete_generation_lifecycle_evidence(artifact_root: Path) -> dict:
     if not manifest_path.is_file():
         return result
     try:
-        manifest = _json(manifest_path, "manifest.json")
+        manifest = _read_json(manifest_path, "manifest.json")
     except ValueError as error:
         result["manifest_error"] = str(error)
         return result

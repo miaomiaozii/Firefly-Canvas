@@ -11,15 +11,27 @@ screenshot is a real non-blank PNG.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-from PIL import Image, UnidentifiedImageError
 
 try:
     from tools.native_input_evidence import has_trusted_selector_owner_click
 except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from native_input_evidence import has_trusted_selector_owner_click
+
+try:
+    from tools.evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        validate_png as _validate_screenshot,
+        validate_operations as _validate_operations,
+    )
+except ModuleNotFoundError:  # Direct `python tools/...py` execution.
+    from evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        validate_png as _validate_screenshot,
+        validate_operations as _validate_operations,
+    )
 
 
 VIEWPORT = (1440, 900)
@@ -29,63 +41,6 @@ REQUIRED_STEPS = (
     "edge-generation-succeeded",
 )
 EXPECTED_PROMPT = "edge compatibility generation"
-
-
-def _artifact(root: Path, relative: object, label: str) -> Path:
-    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
-        raise ValueError(f"{label} must be a non-empty relative path")
-    candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise ValueError(f"{label} is outside the evidence root: {relative!r}") from error
-    if not candidate.is_file():
-        raise ValueError(f"{label} is missing: {relative!r}")
-    return candidate
-
-
-def _read_json(path: Path, label: str) -> object:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"{label} is not valid UTF-8 JSON: {error}") from error
-
-
-def _validate_screenshot(path: Path) -> dict:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            if image.format != "PNG":
-                raise ValueError(f"screenshot {path.name} must be a PNG")
-            colors = image.convert("RGB").getcolors(maxcolors=256)
-    except (OSError, UnidentifiedImageError) as error:
-        raise ValueError(f"screenshot {path.name} is not a readable PNG: {error}") from error
-    if colors is not None and len(colors) <= 1:
-        raise ValueError(f"screenshot {path.name} must not be blank")
-    return {"path": str(path), "width": image.size[0], "height": image.size[1]}
-
-
-def _validate_operations(root: Path, relative: object) -> None:
-    operations_path = _artifact(root, relative, "edge compatibility operations")
-    try:
-        with operations_path.open(encoding="utf-8") as handle:
-            lines = [line for line in handle if line.strip()]
-            operations = [json.loads(line) for line in lines]
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"edge compatibility operations are invalid: {error}") from error
-    if not operations:
-        raise ValueError("edge compatibility operations must not be empty")
-    for operation in operations:
-        if not isinstance(operation, dict):
-            raise ValueError("edge compatibility operations must be objects")
-        action = operation.get("action")
-        if action in ("reload", "navigate"):
-            continue  # page navigation records, not native inputs
-        if operation.get("trusted") is not True:
-            raise ValueError("edge compatibility operations must be trusted native inputs")
-        if action == "click" and not has_trusted_selector_owner_click(operation):
-            raise ValueError("edge compatibility click operations must carry selector owner evidence")
 
 
 def validate_edge_compatibility_artifacts(artifact_root: Path) -> dict:
@@ -150,7 +105,12 @@ def validate_edge_compatibility_artifacts(artifact_root: Path) -> dict:
         _validate_screenshot(_artifact(root, relative, "edge compatibility screenshot"))
         for relative in screenshots
     ]
-    _validate_operations(root, attempt.get("operations"))
+    _validate_operations(
+        root,
+        attempt.get("operations"),
+        "edge compatibility",
+        "edge compatibility click operations must carry selector owner evidence",
+    )
     console_errors = _read_json(
         _artifact(root, attempt.get("console_errors"), "edge compatibility console errors"),
         "console errors",

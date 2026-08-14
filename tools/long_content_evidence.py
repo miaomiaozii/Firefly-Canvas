@@ -10,6 +10,11 @@ try:
 except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from native_input_evidence import has_trusted_selector_owner_click
 
+try:
+    from tools.evidence_common import read_json as load_json
+except ModuleNotFoundError:  # Direct `python tools/...py` execution.
+    from evidence_common import read_json as load_json
+
 EXPECTED_VIEWPORTS = {(1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600)}
 REQUIRED_FLAGS = (
     "prompt_same_dom",
@@ -25,10 +30,6 @@ REQUIRED_FLAGS = (
     "readonly_views_immutable",
 )
 GENERATION_MARKERS = ("/image-generation-tasks", "/api/generate", "/api/canvas-llm")
-
-
-def load_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def validate(root: Path) -> dict:

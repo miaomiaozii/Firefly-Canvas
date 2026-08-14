@@ -7,12 +7,25 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PIL import Image, UnidentifiedImageError
-
 try:
     from tools.native_input_evidence import has_trusted_selector_owner_click
 except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from native_input_evidence import has_trusted_selector_owner_click
+
+try:
+    from tools.evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        points_match as _points_match,
+        validate_png as _validate_screenshot,
+    )
+except ModuleNotFoundError:  # Direct `python tools/...py` execution.
+    from evidence_common import (
+        artifact_path as _artifact,
+        read_json as _read_json,
+        points_match as _points_match,
+        validate_png as _validate_screenshot,
+    )
 
 
 VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
@@ -29,60 +42,6 @@ REQUIRED_BOOLEANS = (
     "downstream_retained_after_restore",
     "unrelated_retained_after_restore",
 )
-
-
-def _artifact(root: Path, relative: object, label: str) -> Path:
-    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
-        raise ValueError(f"{label} must be a non-empty relative path")
-    candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise ValueError(f"{label} is outside the evidence root: {relative!r}") from error
-    if not candidate.is_file():
-        raise ValueError(f"{label} is missing: {relative!r}")
-    return candidate
-
-
-def _read_json(path: Path, label: str) -> object:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"{label} is not valid UTF-8 JSON: {error}") from error
-
-
-def _points_match(first: object, second: object) -> bool:
-    if not isinstance(first, dict) or not isinstance(second, dict):
-        return False
-    for axis in ("x", "y"):
-        first_value = first.get(axis)
-        second_value = second.get(axis)
-        if (
-            not isinstance(first_value, (int, float))
-            or isinstance(first_value, bool)
-            or not isinstance(second_value, (int, float))
-            or isinstance(second_value, bool)
-            or abs(float(first_value) - float(second_value)) > 1.5
-        ):
-            return False
-    return True
-
-
-def _validate_screenshot(path: Path, viewport: tuple[int, int]) -> dict:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            if image.format != "PNG" or image.size != viewport:
-                raise ValueError(
-                    f"screenshot {path.name} must be a {viewport[0]}x{viewport[1]} PNG"
-                )
-            colors = image.convert("RGB").getcolors(maxcolors=2)
-            if colors is not None and len(colors) < 2:
-                raise ValueError(f"screenshot {path.name} is blank")
-            return {"path": str(path), "width": image.width, "height": image.height}
-    except (OSError, UnidentifiedImageError) as error:
-        raise ValueError(f"screenshot {path.name} is not a decodable PNG: {error}") from error
 
 
 def _validate_lifecycle(lifecycle: object, viewport: tuple[int, int]) -> dict:

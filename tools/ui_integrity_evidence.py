@@ -19,6 +19,11 @@ try:
 except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from native_input_evidence import has_trusted_selector_owner_click
 
+try:
+    from tools.evidence_common import artifact_path, read_json as load_json
+except ModuleNotFoundError:  # Direct `python tools/...py` execution.
+    from evidence_common import artifact_path, read_json as load_json
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINES = ROOT / "tests" / "baselines" / "ui-integrity"
 EXPECTED_VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
@@ -86,10 +91,6 @@ EXPECTED_NODE_ACTION_IDS = (
 )
 
 
-def load_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -109,20 +110,6 @@ def sha256_bytes(value: bytes) -> str:
 
 def screenshot_key(viewport: tuple[int, int], scene: str) -> str:
     return f"{viewport[0]}x{viewport[1]}/{scene}.png"
-
-
-def artifact_path(root: Path, relative: object, label: str) -> Path:
-    resolved_root = root.resolve()
-    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
-        raise ValueError(f"{label} must be a non-empty relative path")
-    candidate = (resolved_root / relative).resolve()
-    try:
-        candidate.relative_to(resolved_root)
-    except ValueError as error:
-        raise ValueError(f"{label} is outside the evidence root") from error
-    if not candidate.is_file():
-        raise ValueError(f"{label} is missing: {relative}")
-    return candidate
 
 
 def _validate_selection_actions(geometry: list[dict]) -> None:
