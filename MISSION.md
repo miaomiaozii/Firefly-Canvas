@@ -69,6 +69,7 @@ Priority records both severity and frequency. S0 and S1 never become releasable 
 - The user accepts the initial visual baseline. Intentional visual changes update it with an explicit reason; failures never overwrite the accepted baseline silently.
 - Windows stable Chrome is the primary browser gate. Stable Edge runs in the release compatibility gate. Both use fixed DPR, fonts, light theme, and the five supported desktop window sizes; Firefox, Safari, phone, and touch are out of scope.
 - A retry may collect evidence but cannot erase the first failure. Any flaky release-critical journey blocks until its cause is removed or a deterministic replacement covers the behavior; unlimited green-seeking retries are forbidden.
+- The quality gate enforces the retry rule strictly with zero evidence retries (`allowed_evidence_retries = 0`, `first_failure_preserved = true`): any retry evidence fails its owning step and never converts a failure into success, so gate evidence must be a clean single-pass run. A retry may still collect diagnostic evidence outside the gate.
 
 ## Interface contract
 
