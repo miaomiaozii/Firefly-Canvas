@@ -2698,18 +2698,7 @@ class ProjectStore(ProjectDeletionMixin):
             batch_applied = bool(node.get("_generationBatchApplied"))
             if batch_active and batch_applied:
                 merged_media = copy.deepcopy(node.get("images") or [])
-                seen_media = {
-                    str(item.get("asset_id") or item.get("url") or item.get("path") or "")
-                    for item in merged_media
-                    if isinstance(item, dict)
-                }
-                for item in clean_media:
-                    key = str(item.get("asset_id") or item.get("url") or item.get("path") or "") if isinstance(item, dict) else ""
-                    if key and key in seen_media:
-                        continue
-                    merged_media.append(copy.deepcopy(item))
-                    if key:
-                        seen_media.add(key)
+                merged_media.extend(copy.deepcopy(clean_media))
                 node["images"] = merged_media
             else:
                 node["images"] = clean_media

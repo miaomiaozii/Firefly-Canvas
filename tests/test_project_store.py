@@ -1441,6 +1441,73 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(result_node["pending"], 0)
         self.assertEqual(result_node["title"], "Group")
 
+    def test_overlapping_generation_completions_keep_distinct_occurrences_for_shared_asset(self):
+        project = self.store.create_project("共享原件输出项")
+        shared = self.store.import_media(
+            project["id"],
+            b"identical-generated-bytes",
+            "shared.png",
+            "image/png",
+            {"type": "online_generation", "name": "shared.png"},
+        )
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "result", "type": "smart-image"}},
+        ])
+        started = self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "first", "count": 1}, base_revision=1,
+        )
+        self.store.begin_image_generation(
+            project["id"], "result", {"taskId": "second", "count": 1},
+            base_revision=int(started["revision"]),
+        )
+
+        for task_id in ("second", "first"):
+            self.store.complete_image_generation(
+                project["id"],
+                "result",
+                [{"asset_id": shared["asset_id"], "kind": "image"}],
+                {
+                    "id": f"generation-{task_id}",
+                    "task_id": task_id,
+                    "status": "succeeded",
+                    "outputs": [{"asset_id": shared["asset_id"], "kind": "image"}],
+                    "result_node_id": "result",
+                },
+                task_id=task_id,
+            )
+
+        completed = self.store.canvas(project["id"])
+        result_node = next(node for node in completed["nodes"] if node["id"] == "result")
+        node_output_ids = [image["output_id"] for image in result_node["images"]]
+        history_output_ids = [
+            record["outputs"][0]["output_id"]
+            for record in completed["logs"]
+        ]
+        self.assertEqual(
+            [image["asset_id"] for image in result_node["images"]],
+            [shared["asset_id"], shared["asset_id"]],
+        )
+        self.assertEqual(len(set(node_output_ids)), 2)
+        self.assertEqual(node_output_ids, history_output_ids)
+
+        selected_record = completed["logs"][0]
+        deleted = self.store.delete_generated_original(
+            project["id"],
+            shared["asset_id"],
+            base_revision=completed["revision"],
+            log_id=selected_record["id"],
+            output_id=selected_record["outputs"][0]["output_id"],
+            output_index=0,
+        )["canvas"]
+        remaining_node = next(node for node in deleted["nodes"] if node["id"] == "result")
+        remaining_records = [record for record in deleted["logs"] if record.get("outputs")]
+        self.assertEqual(len(remaining_node["images"]), 1)
+        self.assertEqual(len(remaining_records), 1)
+        self.assertEqual(
+            remaining_node["images"][0]["output_id"],
+            remaining_records[0]["outputs"][0]["output_id"],
+        )
+
     def test_invalid_batch_does_not_partially_change_history(self):
         project = self.store.create_project("事务边界")
         with self.assertRaises(InvalidMutation):
