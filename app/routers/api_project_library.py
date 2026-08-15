@@ -19,6 +19,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_MAX_TASKS_PER_PLAN, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectAgentExecuteRequest, ProjectAgentPlanRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_image_request, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, project_video_request, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds
+from app.project_activity import (
+    ProjectCleanupActive,
+    project_cleanup_lease,
+    project_owner_admission,
+)
 from app.project_sessions import project_has_open_session
 from firefly_projects import CleanupDrift
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_admit_execution_sync', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
@@ -802,8 +807,12 @@ def _agent_admit_execution_sync(project_id: str, node_id: str, payload_data: Map
             replacement_agent = copy.deepcopy(agent)
             replacement_agent['agent_plan'] = plan
             mutations.append({'op': 'upsert_node', 'node': replacement_agent})
-            _agent_apply_mutations(project_id, mutations)
-            _app_main.project_store_call('flush', project_id)
+            try:
+                with project_owner_admission(project_id):
+                    _agent_apply_mutations(project_id, mutations)
+                    _app_main.project_store_call('flush', project_id)
+            except ProjectCleanupActive as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RevisionConflict as exc:
             raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
         except ProjectNotFound as exc:
@@ -2640,9 +2649,10 @@ def project_has_active_export(project_id: str) -> bool:
 
 
 def _begin_project_export(project_id: str) -> None:
-    with PROJECT_EXPORTS_LOCK:
-        key = str(project_id)
-        PROJECT_ACTIVE_EXPORTS[key] = int(PROJECT_ACTIVE_EXPORTS.get(key, 0)) + 1
+    with project_owner_admission(project_id):
+        with PROJECT_EXPORTS_LOCK:
+            key = str(project_id)
+            PROJECT_ACTIVE_EXPORTS[key] = int(PROJECT_ACTIVE_EXPORTS.get(key, 0)) + 1
 
 
 def _finish_project_export(project_id: str, path: str = '') -> None:
@@ -2716,20 +2726,18 @@ def execute_project_cleanup_snapshot(project_id: str, confirmation: Dict[str, An
     ):
         raise ProjectCleanupConfirmationInvalid('永久清理确认包含无效候选')
     _assert_cleanup_owners_clear(project_id, action='执行')
-    with project_lifecycle_lock(project_id):
+    with project_cleanup_lease(project_id):
         _assert_cleanup_owners_clear(project_id, action='执行')
         with PROJECT_LIBRARY_SWITCH_LOCK:
             store = _app_main.FIREFLY_PROJECT_STORE
         if store is None:
             raise ProjectStoreError('项目库不可用')
-        result = store.execute_project_cleanup(
+        return store.execute_project_cleanup(
             project_id,
             revision=revision,
             ownership_proof=ownership_proof,
             candidate_asset_ids=candidate_asset_ids,
         )
-        _assert_cleanup_owners_clear(project_id, action='执行')
-        return result
 
 @router.get('/api/project-library/{project_id}/cleanup-preview')
 async def preview_firefly_project_cleanup(project_id: str, request: Request):
@@ -2766,7 +2774,7 @@ async def execute_firefly_project_cleanup(project_id: str, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except CleanupDrift as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ProjectMediaImportActive as exc:
+    except (ProjectMediaImportActive, ProjectCleanupActive) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -2792,10 +2800,10 @@ async def export_firefly_project(project_id: str, request: Request):
     ensure_same_origin_request(request)
     descriptor, path = tempfile.mkstemp(prefix='firefly-export-', suffix='.fly')
     os.close(descriptor)
-    _begin_project_export(project_id)
     try:
+        _begin_project_export(project_id)
         exported = await asyncio.to_thread(export_project_package, project_id, path)
-    except ProjectMediaImportActive as exc:
+    except (ProjectMediaImportActive, ProjectCleanupActive) as exc:
         _finish_project_export(project_id, path)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectNotFound as exc:
@@ -2951,13 +2959,16 @@ async def create_photoshop_round_trip(project_id: str, payload: PhotoshopRoundTr
         created_at_ms = _app_main.now_ms()
         request_id = uuid.uuid4().hex
         record = {'request_id': request_id, 'project_id': str(project_id), 'source_node_id': payload.source_node_id, 'source_media_id': payload.source_media_id, 'created_at': created_at_ms // 1000, 'expires_at': (created_at_ms + payload.ttl_seconds * 1000) // 1000, 'expires_at_ms': created_at_ms + payload.ttl_seconds * 1000, 'state': 'pending'}
-        with PHOTOSHOP_ROUND_TRIP_LOCK:
-            _photoshop_prune_requests_locked(created_at_ms)
-            PHOTOSHOP_ROUND_TRIP_REQUESTS[request_id] = copy.deepcopy(record)
+        with project_owner_admission(project_id):
+            with PHOTOSHOP_ROUND_TRIP_LOCK:
+                _photoshop_prune_requests_locked(created_at_ms)
+                PHOTOSHOP_ROUND_TRIP_REQUESTS[request_id] = copy.deepcopy(record)
         await manager.broadcast_photoshop_round_trip(_photoshop_public_request(record))
         return _photoshop_public_request(record)
     except HTTPException:
         raise
+    except ProjectCleanupActive as exc:
+        raise _photoshop_protocol_error(409, 'PROJECT_CLEANUP_ACTIVE', str(exc)) from exc
     except ProjectNotFound as exc:
         raise _photoshop_protocol_error(404, 'PROJECT_NOT_FOUND', str(exc)) from exc
     except ProjectStoreError as exc:

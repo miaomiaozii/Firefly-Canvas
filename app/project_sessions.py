@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 from typing import Dict
 
+from app.project_activity import project_owner_admission
+
 
 _lock = threading.Lock()
 _sessions: Dict[int, str] = {}
@@ -14,8 +16,9 @@ def register_project_session(token: object, project_id: str) -> None:
     clean_project_id = str(project_id or "").strip()
     if not clean_project_id:
         return
-    with _lock:
-        _sessions[id(token)] = clean_project_id
+    with project_owner_admission(clean_project_id):
+        with _lock:
+            _sessions[id(token)] = clean_project_id
 
 
 def unregister_project_session(token: object) -> None:

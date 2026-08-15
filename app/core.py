@@ -47,6 +47,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import List, Dict, Any, Mapping, Optional, Tuple
 from threading import Lock, RLock, Thread
+from app.project_activity import (
+    PROJECT_LIFECYCLE_LOCKS,
+    PROJECT_LIFECYCLE_LOCKS_GUARD,
+    project_lifecycle_lock,
+)
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
@@ -108,8 +113,6 @@ PROJECT_AGENT_EXECUTION_LOCKS_GUARD = Lock()
 PROJECT_AGENT_ADMISSION_LOCK = Lock()
 PROJECT_AGENT_MAX_PER_PROJECT = 8
 PROJECT_AGENT_MAX_TASKS_PER_PLAN = 8
-PROJECT_LIFECYCLE_LOCKS: Dict[str, Lock] = {}
-PROJECT_LIFECYCLE_LOCKS_GUARD = Lock()
 FLY_IMPORT_UPLOAD_LOCK = Lock()
 PHOTOSHOP_ROUND_TRIP_REQUESTS: Dict[str, Dict[str, Any]] = {}
 PHOTOSHOP_ROUND_TRIP_LOCK = RLock()
@@ -324,10 +327,6 @@ def _conversation_pending_task_keys_from_canvas(project_id: str, canvas: Optiona
 
 class ProjectMediaImportActive(RuntimeError):
     pass
-
-def project_lifecycle_lock(project_id: str) -> Lock:
-    with PROJECT_LIFECYCLE_LOCKS_GUARD:
-        return PROJECT_LIFECYCLE_LOCKS.setdefault(project_id, Lock())
 
 class LimitedFlyMultipartParser(MultiPartParser):
 

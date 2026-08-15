@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import main
+from app.project_sessions import register_project_session, unregister_project_session
 from firefly_projects import ProjectStore
 
 
@@ -540,6 +541,19 @@ class ProjectApiContractTests(unittest.TestCase):
 
     def test_cleanup_execute_api_rejects_runtime_owner_before_store_analysis(self):
         project = self.store.create_project("执行前 owner")
+        candidate = self.store.import_media(
+            project["id"],
+            b"preexisting-owner-candidate",
+            "preexisting-owner.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        preview = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        ).json()["preview"]
+        candidate_path = (
+            self.store.root / project["id"] / "media" / f"{candidate['asset_id']}.png"
+        )
         with main.CANVAS_TASK_LOCK:
             main.CANVAS_TASKS["cleanup-execute-blocker"] = {
                 "id": "cleanup-execute-blocker",
@@ -555,7 +569,11 @@ class ProjectApiContractTests(unittest.TestCase):
             ) as execute:
                 response = self.client.post(
                     f"/api/project-library/{project['id']}/cleanup-execute",
-                    json={"revision": 0, "ownership_proof": "a" * 64, "candidate_asset_ids": []},
+                    json={
+                        "revision": preview["revision"],
+                        "ownership_proof": preview["ownership_proof"],
+                        "candidate_asset_ids": [candidate["asset_id"]],
+                    },
                 )
         finally:
             with main.CANVAS_TASK_LOCK:
@@ -564,45 +582,71 @@ class ProjectApiContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("图片正在生成", response.json()["detail"])
         execute.assert_not_called()
+        self.assertTrue(candidate_path.is_file())
 
-    def test_cleanup_execute_api_rechecks_runtime_owners_after_store_analysis(self):
+    def test_cleanup_execute_lease_rejects_late_owner_without_partial_delete(self):
         project = self.store.create_project("执行期间 owner")
+        candidate = self.store.import_media(
+            project["id"],
+            b"late-owner-candidate",
+            "late-owner.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "transient"},
+        )
         preview = self.client.get(
             f"/api/project-library/{project['id']}/cleanup-preview"
         ).json()["preview"]
+        candidate_path = (
+            self.store.root / project["id"] / "media" / f"{candidate['asset_id']}.png"
+        )
+        execute_entered = threading.Event()
+        release_execute = threading.Event()
+        responses = []
         original_execute = self.store.execute_project_cleanup
 
-        def admit_owner_during_execution(project_id, **kwargs):
-            result = original_execute(project_id, **kwargs)
-            with main.CANVAS_TASK_LOCK:
-                main.CANVAS_TASKS["late-execute-owner"] = {
-                    "id": "late-execute-owner",
-                    "type": "project-online-image",
-                    "project_id": project_id,
-                    "status": "running",
-                }
-            return result
+        def blocked_execute(project_id, **kwargs):
+            execute_entered.set()
+            self.assertTrue(release_execute.wait(2))
+            return original_execute(project_id, **kwargs)
 
+        def run_cleanup():
+            responses.append(self.client.post(
+                f"/api/project-library/{project['id']}/cleanup-execute",
+                json={
+                    "revision": preview["revision"],
+                    "ownership_proof": preview["ownership_proof"],
+                    "candidate_asset_ids": [candidate["asset_id"]],
+                },
+            ))
+
+        session_token = object()
         with patch.object(
             self.store,
             "execute_project_cleanup",
-            side_effect=admit_owner_during_execution,
+            side_effect=blocked_execute,
         ):
+            thread = threading.Thread(target=run_cleanup)
+            thread.start()
+            self.assertTrue(execute_entered.wait(1))
             try:
-                response = self.client.post(
-                    f"/api/project-library/{project['id']}/cleanup-execute",
-                    json={
-                        "revision": preview["revision"],
-                        "ownership_proof": preview["ownership_proof"],
-                        "candidate_asset_ids": [],
-                    },
+                with self.assertRaisesRegex(RuntimeError, "永久清理"):
+                    register_project_session(session_token, project["id"])
+                export_response = self.client.get(
+                    f"/api/project-library/{project['id']}/export"
                 )
+                self.assertEqual(export_response.status_code, 409, export_response.text)
+                self.assertIn("永久清理", export_response.json()["detail"])
+                self.assertTrue(candidate_path.is_file())
             finally:
-                with main.CANVAS_TASK_LOCK:
-                    main.CANVAS_TASKS.pop("late-execute-owner", None)
+                unregister_project_session(session_token)
+                release_execute.set()
+                thread.join(3)
 
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertIn("图片正在生成", response.json()["detail"])
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(responses[0].status_code, 200, responses[0].text)
+        self.assertFalse(candidate_path.exists())
+        register_project_session(session_token, project["id"])
+        unregister_project_session(session_token)
 
     def test_cleanup_execute_api_rejects_drift_with_repreview_detail(self):
         project = self.store.create_project("执行漂移")
