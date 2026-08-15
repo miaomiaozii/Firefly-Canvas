@@ -636,6 +636,11 @@ class ProjectApiContractTests(unittest.TestCase):
                 )
                 self.assertEqual(export_response.status_code, 409, export_response.text)
                 self.assertIn("永久清理", export_response.json()["detail"])
+                download_response = self.client.get(
+                    f"/api/project-library/{project['id']}/media/{candidate['asset_id']}"
+                )
+                self.assertEqual(download_response.status_code, 409, download_response.text)
+                self.assertIn("永久清理", download_response.json()["detail"])
                 self.assertTrue(candidate_path.is_file())
             finally:
                 unregister_project_session(session_token)
@@ -995,6 +1000,87 @@ class ProjectApiContractTests(unittest.TestCase):
             ).status_code,
             400,
         )
+
+    def test_active_project_media_download_blocks_cleanup_until_response_finishes(self):
+        from starlette.responses import FileResponse
+
+        project = self.store.create_project("下载 owner")
+        media = self.store.import_media(
+            project["id"],
+            b"active-download-candidate",
+            "active-download.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        media_url = f"/api/project-library/{project['id']}/media/{media['asset_id']}"
+        candidate_path = (
+            self.store.root / project["id"] / "media" / f"{media['asset_id']}.png"
+        )
+        response_started = threading.Event()
+        allow_response = threading.Event()
+        responses = []
+        original_call = FileResponse.__call__
+
+        async def blocking_file_response(response, scope, receive, send):
+            response_started.set()
+            await asyncio.to_thread(allow_response.wait, 5)
+            return await original_call(response, scope, receive, send)
+
+        with patch.object(FileResponse, "__call__", blocking_file_response):
+            thread = threading.Thread(
+                target=lambda: responses.append(
+                    self.client.get(
+                        "/api/download-output",
+                        params={"url": media_url, "name": "active-download.png"},
+                    )
+                ),
+                daemon=True,
+            )
+            thread.start()
+            self.assertTrue(response_started.wait(5), "project media response did not start")
+            try:
+                blocked = self.client.get(
+                    f"/api/project-library/{project['id']}/cleanup-preview"
+                )
+                self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertIn("下载", blocked.json()["detail"])
+                self.assertTrue(candidate_path.is_file())
+            finally:
+                allow_response.set()
+                thread.join(5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(responses[0].status_code, 200, responses[0].text)
+        self.assertEqual(responses[0].content, b"active-download-candidate")
+        released = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        )
+        self.assertEqual(released.status_code, 200, released.text)
+
+    def test_failed_project_media_response_releases_download_owner(self):
+        from starlette.responses import FileResponse
+
+        project = self.store.create_project("下载异常释放")
+        media = self.store.import_media(
+            project["id"],
+            b"failed-download-candidate",
+            "failed-download.png",
+            "image/png",
+            source_info={"type": "online_generation", "lifecycle": "failed"},
+        )
+        media_url = f"/api/project-library/{project['id']}/media/{media['asset_id']}"
+
+        async def fail_file_response(_response, _scope, _receive, _send):
+            raise RuntimeError("simulated client disconnect")
+
+        with patch.object(FileResponse, "__call__", fail_file_response):
+            with self.assertRaisesRegex(RuntimeError, "simulated client disconnect"):
+                self.client.get(media_url)
+
+        released = self.client.get(
+            f"/api/project-library/{project['id']}/cleanup-preview"
+        )
+        self.assertEqual(released.status_code, 200, released.text)
 
     def test_unknown_project_and_invalid_mutation_are_rejected(self):
         self.assertEqual(self.client.get("/api/project-library/missing").status_code, 404)

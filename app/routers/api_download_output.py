@@ -8,6 +8,12 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from firefly_projects import ProjectNotFound
 from app.core import (FileResponse, HTTPException, Request, StreamingResponse, _os, _sys, content_type_for_path, filename_from_media_url, os, requests, rewrite_runninghub_file_url, sanitize_export_filename, urllib)
+from app.project_activity import (
+    ProjectCleanupActive,
+    assert_project_owner_admissible,
+    project_lifecycle_lock,
+)
+from app.project_downloads import ProjectMediaFileResponse
 _from_main_names = ['local_media_file_by_basename', 'output_file_from_url']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -21,12 +27,6 @@ router = APIRouter()
 @router.get('/api/download-output')
 def download_output(request: Request, url: str, name: str='', inline: bool=False):
     url = rewrite_runninghub_file_url(url)
-    path = _app_main.output_file_from_url(url)
-    if not path:
-        path = local_media_file_by_basename(filename_from_media_url(url, ''))
-    if path:
-        filename = sanitize_export_filename(os.path.basename(name) if name else os.path.basename(path), os.path.basename(path))
-        return FileResponse(path, media_type=content_type_for_path(path), filename=None if inline else filename)
     parsed = urllib.parse.urlparse(str(url or '').strip())
     segments = parsed.path.split('/')
     project_media_path = (
@@ -42,18 +42,29 @@ def download_output(request: Request, url: str, name: str='', inline: bool=False
         asset_id = urllib.parse.unquote(segments[5])
         if project_id and asset_id:
             try:
-                record = _app_main.project_store_call('media_record', project_id, asset_id)
+                assert_project_owner_admissible(project_id)
+                with project_lifecycle_lock(project_id):
+                    record = _app_main.project_store_call('media_record', project_id, asset_id)
+                    media_path = str(record.get('path') or '')
+                    if media_path:
+                        fallback = os.path.basename(media_path)
+                        filename = sanitize_export_filename(os.path.basename(name) if name else record.get('name') or fallback, fallback)
+                        return ProjectMediaFileResponse(
+                            media_path,
+                            project_id=project_id,
+                            media_type=record.get('mime_type') or content_type_for_path(media_path),
+                            filename=None if inline else filename,
+                        )
             except ProjectNotFound as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
-            media_path = str(record.get('path') or '')
-            if media_path:
-                fallback = os.path.basename(media_path)
-                filename = sanitize_export_filename(os.path.basename(name) if name else record.get('name') or fallback, fallback)
-                return FileResponse(
-                    media_path,
-                    media_type=record.get('mime_type') or content_type_for_path(media_path),
-                    filename=None if inline else filename,
-                )
+            except ProjectCleanupActive as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+    path = _app_main.output_file_from_url(url)
+    if not path:
+        path = local_media_file_by_basename(filename_from_media_url(url, ''))
+    if path:
+        filename = sanitize_export_filename(os.path.basename(name) if name else os.path.basename(path), os.path.basename(path))
+        return FileResponse(path, media_type=content_type_for_path(path), filename=None if inline else filename)
     if parsed.scheme not in ('http', 'https') or not parsed.netloc:
         raise HTTPException(status_code=400, detail='无效的下载地址')
     try:

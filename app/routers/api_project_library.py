@@ -21,9 +21,12 @@ from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS,
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds
 from app.project_activity import (
     ProjectCleanupActive,
+    assert_project_owner_admissible,
     project_cleanup_lease,
+    project_has_active_download,
     project_owner_admission,
 )
+from app.project_downloads import ProjectMediaFileResponse
 from app.project_sessions import project_has_open_session
 from firefly_projects import CleanupDrift
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_admit_execution_sync', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
@@ -2677,6 +2680,8 @@ def _assert_cleanup_owners_clear(project_id: str, *, action: str) -> None:
         raise ProjectMediaImportActive(f'项目正在导出，不能{action}永久清理')
     if project_has_open_session(project_id):
         raise ProjectMediaImportActive(f'项目仍在打开，不能{action}永久清理')
+    if project_has_active_download(project_id):
+        raise ProjectMediaImportActive(f'项目媒体正在下载，不能{action}永久清理')
     if project_has_active_media_import(project_id):
         raise ProjectMediaImportActive(f'项目仍有媒体正在导入，不能{action}永久清理')
     if project_has_active_image_generation(project_id):
@@ -2858,13 +2863,24 @@ async def trash_firefly_project(project_id: str, request: Request):
 
 @router.get('/api/project-library/{project_id}/media/{asset_id}')
 async def get_project_media(project_id: str, asset_id: str):
+    def build_response() -> ProjectMediaFileResponse:
+        with project_lifecycle_lock(project_id):
+            record = _app_main.project_store_call('media_record', project_id, asset_id)
+            return ProjectMediaFileResponse(
+                record['path'],
+                project_id=project_id,
+                media_type=record.get('mime_type') or 'application/octet-stream',
+            )
+
     try:
-        record = await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
+        assert_project_owner_admissible(project_id)
+        return await asyncio.to_thread(build_response)
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FileResponse(record['path'], media_type=record.get('mime_type') or 'application/octet-stream')
+    except ProjectCleanupActive as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 @router.get('/api/project-library/{project_id}')
 async def open_firefly_project(project_id: str):
