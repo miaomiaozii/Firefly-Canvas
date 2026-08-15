@@ -114,6 +114,12 @@ _API_KEY_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=\-]{8,}"),
 ]
+_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[_-]?key|wallet[_-]?api[_-]?key|access[_-]?key|"
+    r"secret[_-]?access[_-]?key|key|access[_-]?token|refresh[_-]?token|"
+    r"authorization|password|secret)\b(\s*[:=]\s*)"
+    r"(?:['\"][^'\"]*['\"]|[^\s,;]+)"
+)
 _WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*")
 _POSIX_ABS_PATH = re.compile(r"(?<![\w./\\])(?:/|\\\\)(?:[^/\s'\"]+[/\\]){2}[^\s'\"]*")
 
@@ -140,9 +146,20 @@ def _prompt_hash(prompt: str) -> str:
     return f"prompt_sha256:{digest}"
 
 
-def _redact_text(text: str) -> str:
+def _redact_text(text: str, sensitive_values: Any = ()) -> str:
+    values = sensitive_values if isinstance(sensitive_values, (list, tuple, set)) else (sensitive_values,)
+    for value in sorted(
+        {str(item) for item in values if item is not None and len(str(item)) >= 4},
+        key=len,
+        reverse=True,
+    ):
+        text = text.replace(value, REDACTED)
     for pattern in _API_KEY_PATTERNS:
         text = pattern.sub(REDACTED, text)
+    text = _CREDENTIAL_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        text,
+    )
 
     def _basename(match: "re.Match[str]") -> str:
         candidate = match.group(0).replace("\\", "/").rstrip("/")
@@ -186,7 +203,10 @@ def sanitize_field(key: str, value: Any) -> Any:
     return _redact_text(str(value))
 
 
-def exception_chain(exc: BaseException) -> List[Dict[str, str]]:
+def exception_chain(
+    exc: BaseException,
+    sensitive_values: Any = (),
+) -> List[Dict[str, str]]:
     """Collapse an exception chain into redacted type/message pairs."""
     chain: List[Dict[str, str]] = []
     seen = set()
@@ -197,7 +217,10 @@ def exception_chain(exc: BaseException) -> List[Dict[str, str]]:
             break
         seen.add(marker)
         raw = getattr(current, "message", None) or str(current)
-        chain.append({"type": type(current).__name__, "message": _redact_text(str(raw))})
+        chain.append({
+            "type": type(current).__name__,
+            "message": _redact_text(str(raw), sensitive_values),
+        })
         current = current.__cause__ or current.__context__
     return chain
 
@@ -215,8 +238,9 @@ def emit(event_name: str, level: Optional[str] = None, **fields: Any) -> bool:
         "level": level or STABLE_LEVELS[event_name],
     }
     exception = fields.pop("exception", None) or fields.pop("exc", None)
+    sensitive_values = fields.pop("sensitive_values", ())
     if exception is not None:
-        record["failure"] = exception_chain(exception)
+        record["failure"] = exception_chain(exception, sensitive_values)
     for key, value in fields.items():
         if value is None or key in {"exception", "exc"}:
             continue

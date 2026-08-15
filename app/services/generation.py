@@ -1138,6 +1138,41 @@ class _ProgressUpload:
         return getattr(self._stream, name)
 
 
+def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=False):
+    values = [str(prompt or '')]
+    provider_label = str(provider_id or 'comfly')
+    try:
+        provider_key = _svc._main('provider_env_key_value')(provider_label)
+    except Exception:
+        provider_key = ''
+    if provider_key:
+        values.append(str(provider_key))
+    try:
+        provider_getter = 'get_api_provider_exact' if preserve_model else 'get_api_provider'
+        provider = _svc._main(provider_getter)(provider_label)
+    except Exception:
+        provider = None
+    if isinstance(provider, dict):
+        for key in ('api_key', 'wallet_api_key', 'volcengine_secret_access_key'):
+            if provider.get(key):
+                values.append(str(provider[key]))
+        for use_wallet in (False, True):
+            try:
+                runninghub_key = _svc.runninghub_api_key(provider, use_wallet=use_wallet)
+            except Exception:
+                runninghub_key = ''
+            if runninghub_key:
+                values.append(str(runninghub_key))
+    for loader_name in ('volcengine_access_key_value', 'volcengine_secret_key_value'):
+        try:
+            loaded = _svc._main(loader_name)()
+        except Exception:
+            loaded = ''
+        if loaded:
+            values.append(str(loaded))
+    return values
+
+
 async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
     """Provider-boundary diagnostics span around the image generation pipeline.
 
@@ -1163,6 +1198,11 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             state='failed',
             duration_ms=int((time.monotonic() - started) * 1000),
             exception=sys.exc_info()[1],
+            sensitive_values=_provider_diagnostic_sensitive_values(
+                prompt,
+                provider_label,
+                preserve_model=preserve_model,
+            ),
         )
         raise
     _diag_emit(

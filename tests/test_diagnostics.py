@@ -145,6 +145,34 @@ class DiagnosticContractTests(unittest.TestCase):
         self.assertIn("secret.py", failure[0]["message"])
         self.assertIn("inner key problem", failure[1]["message"])
 
+    def test_exception_redacts_explicit_sensitive_values_and_semantic_credentials(self):
+        api_key = "AIzaSyEXAMPLE123456"
+        bearer_token = "live-token-abcdef123456"
+        prompt = "画一只带有金色光芒的萤火虫"
+        error = RuntimeError(
+            f"upstream rejected api_key={api_key} prompt={prompt} "
+            f"Authorization: Bearer {bearer_token} "
+            "at C:\\Users\\admin\\private\\provider.py:42"
+        )
+
+        emit(
+            "provider.failed",
+            provider_id="fake-provider",
+            exception=error,
+            sensitive_values=[api_key, prompt],
+        )
+
+        stream = (log_dir() / "diagnostics.jsonl").read_text(encoding="utf-8")
+        self.assertNotIn(api_key, stream)
+        self.assertNotIn(bearer_token, stream)
+        self.assertNotIn(prompt, stream)
+        self.assertNotIn("C:\\Users\\admin\\private", stream)
+        failure = read_events()[0]["failure"][0]
+        self.assertEqual(failure["type"], "RuntimeError")
+        self.assertIn("<redacted>", failure["message"])
+        self.assertIn("provider.py", failure["message"])
+        self.assertNotIn("sensitive_values", read_events()[0])
+
     def test_rotation_by_size_keeps_the_stream_bounded(self):
         original = firefly_diagnostics.DEFAULT_MAX_BYTES
         firefly_diagnostics.DEFAULT_MAX_BYTES = 1200
@@ -315,18 +343,43 @@ class ProviderSpanTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_span_emits_failure_with_redacted_chain(self):
         import app.services.generation as generation
 
-        async def boom(*args, **kwargs):
-            raise RuntimeError("provider exploded at C:\\Users\\admin\\provider.py:9")
+        prompt = "画一只带有金色光芒的萤火虫"
+        api_key = "AIzaSyEXAMPLE123456"
 
-        with patch.object(generation, "_generate_ai_image_impl", boom):
+        async def boom(*args, **kwargs):
+            raise RuntimeError(
+                f"provider exploded credential {api_key}; prompt was {prompt} "
+                "at C:\\Users\\admin\\provider.py:9"
+            )
+
+        def provider_lookup(name):
+            if name == "provider_env_key_value":
+                return lambda _provider_id: api_key
+            if name == "get_api_provider":
+                return lambda _provider_id: {"id": "fake-provider"}
+            raise KeyError(name)
+
+        with (
+            patch.object(generation, "_generate_ai_image_impl", boom),
+            patch.object(generation._svc, "_main", side_effect=provider_lookup),
+        ):
             with self.assertRaises(RuntimeError):
-                await generation.generate_ai_image("p", "1024x1024", "auto", "fake-model")
+                await generation.generate_ai_image(
+                    prompt,
+                    "1024x1024",
+                    "auto",
+                    "fake-model",
+                    provider_id="fake-provider",
+                )
         events = read_events()
         names = [item["event"] for item in events]
         self.assertEqual(names, ["provider.request", "provider.failed"])
         self.assertEqual(events[1]["state"], "failed")
         self.assertEqual(events[1]["failure"][0]["type"], "RuntimeError")
-        self.assertNotIn("C:\\Users", json.dumps(events[1]["failure"]))
+        failure_json = json.dumps(events[1]["failure"], ensure_ascii=False)
+        self.assertNotIn(api_key, failure_json)
+        self.assertNotIn(prompt, failure_json)
+        self.assertNotIn("C:\\Users", failure_json)
         self.assertIn("provider.py", events[1]["failure"][0]["message"])
 
 
