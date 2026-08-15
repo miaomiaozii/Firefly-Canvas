@@ -933,6 +933,41 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertEqual(restored_record["status"], "succeeded")
         self.assertNotIn("deletedOutputTombstones", restored_record)
 
+    def test_restore_preserves_tasks_started_after_output_deletion(self):
+        project, _other_project, original, _reference, _downstream_media, _other_media = self._seed_projects()
+        before_delete = self.store.canvas(project["id"])
+        output_id = before_delete["logs"][0]["outputs"][0]["output_id"]
+
+        deletion = self.store.delete_generated_original(
+            project["id"],
+            original["asset_id"],
+            base_revision=1,
+            log_id="history-original",
+            output_id=output_id,
+            output_index=0,
+        )
+        started = self.store.begin_image_generation(
+            project["id"],
+            "generator",
+            {"taskId": "task-started-after-delete", "count": 2},
+            base_revision=deletion["canvas"]["revision"],
+        )
+
+        restored = self.store.restore_deleted_original(
+            project["id"],
+            original["asset_id"],
+            base_revision=started["revision"],
+            deletion_id=deletion["deleted"]["deletion_id"],
+        )["canvas"]
+
+        generator = next(node for node in restored["nodes"] if node["id"] == "generator")
+        self.assertEqual(
+            [task["taskId"] for task in generator["pendingTasks"]],
+            ["task-started-after-delete"],
+        )
+        self.assertEqual(generator["pending"], 2)
+        self.assertEqual(generator["images"][0]["output_id"], output_id)
+
     def test_multi_output_delete_with_duplicate_asset_ids_removes_only_the_selected_output(self):
         project = self.store.create_project("重复引用四输出")
         media = [

@@ -510,6 +510,11 @@ class ProjectDeletionMixin:
                     )
                 ]
                 trash_index["items"].append(trash_item)
+                node_owner_state_after_delete = {
+                    key: copy.deepcopy(target_node[key])
+                    for key in node_state_keys
+                    if target_node is not None and key in target_node
+                }
                 undo_snapshot = {
                     "deletion_id": deletion_id,
                     "output_id": output_id,
@@ -521,6 +526,7 @@ class ProjectDeletionMixin:
                     "node_image": copy.deepcopy(selected_image),
                     "history_owner_state": history_owner_state,
                     "node_owner_state": node_owner_state,
+                    "node_owner_state_after_delete": node_owner_state_after_delete,
                 }
 
                 before_canvas = copy.deepcopy(opened["canvas"])
@@ -944,12 +950,42 @@ class ProjectDeletionMixin:
                         )
                     self._remove_output_occurrence_tombstone(target_node, deletion_id)
                     node_owner_state = snapshot.get("node_owner_state")
-                    node_state_keys = (
-                        "needsRegeneration", "generationState", "resultDeleted", "pending",
-                        "running", "queued", "pendingTasks", "runFinishedAt", "runElapsedMs",
+                    node_owner_state_after_delete = snapshot.get("node_owner_state_after_delete")
+                    deletion_marker_keys = (
+                        "needsRegeneration", "generationState", "resultDeleted",
                     )
+                    task_state_keys = (
+                        "pending", "running", "queued", "pendingTasks",
+                        "runFinishedAt", "runElapsedMs",
+                    )
+                    node_state_keys = deletion_marker_keys + task_state_keys
                     if isinstance(node_owner_state, dict):
-                        for key in node_state_keys:
+                        missing = object()
+
+                        def state_value(state: Dict[str, Any], key: str) -> Any:
+                            return state[key] if key in state else missing
+
+                        keys_to_restore = node_state_keys
+                        if isinstance(node_owner_state_after_delete, dict):
+                            task_state_changed = any(
+                                state_value(target_node, key)
+                                != state_value(node_owner_state_after_delete, key)
+                                for key in task_state_keys
+                            )
+                            unchanged_markers = tuple(
+                                key for key in deletion_marker_keys
+                                if state_value(target_node, key)
+                                == state_value(node_owner_state_after_delete, key)
+                            )
+                            keys_to_restore = unchanged_markers + (
+                                () if task_state_changed else task_state_keys
+                            )
+                        elif current_revision != int(undo.get("deleted_revision") or -1):
+                            # Older snapshots cannot support a three-way merge. Preserve
+                            # all owner state after any intervening project mutation.
+                            keys_to_restore = ()
+
+                        for key in keys_to_restore:
                             if key in node_owner_state:
                                 target_node[key] = copy.deepcopy(node_owner_state[key])
                             else:
