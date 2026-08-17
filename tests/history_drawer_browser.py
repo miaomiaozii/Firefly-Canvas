@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import http.server
 import json
-import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -26,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from firefly_projects import ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
+from tests.native_browser import NativeBrowser
 
 
 CLIENT_SCRIPT = ROOT / "tests" / "history_drawer_browser_client.js"
@@ -478,17 +477,7 @@ class HistoryBrowserServer:
             return self.results[start_count]
 
 
-def remove_profile(profile: Path):
-    for _attempt in range(20):
-        shutil.rmtree(profile, ignore_errors=True)
-        if not profile.exists():
-            return
-        time.sleep(0.15)
-
-
 def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int], fixture: dict[str, str]):
-    width, height = viewport
-    profile = Path(tempfile.mkdtemp(prefix="firefly-issue12-browser-profile-"))
     before = len(server.results)
     query = urllib.parse.urlencode(
         {
@@ -501,38 +490,16 @@ def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int
         }
     )
     url = f"{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
-    process = subprocess.Popen(
-        [
-            str(browser),
-            "--headless=new",
-            "--disable-gpu",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-extensions",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--hide-scrollbars",
-            f"--window-size={width},{height}",
-            f"--user-data-dir={profile}",
-            url,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=ROOT,
-    )
+    native_browser = NativeBrowser.launch(browser)
     try:
+        native_browser.set_environment(viewport)
+        native_browser.navigate(url)
         result = server.wait_for_result(before)
         if not result.get("pass"):
             raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
         return result
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-        remove_profile(profile)
+        native_browser.close()
 
 
 def main():

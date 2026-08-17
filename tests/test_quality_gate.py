@@ -15,11 +15,15 @@ from tests.long_content_fixture import write_long_content_runner
 from tests.project_linked_generation_fixture import write_project_linked_generation_runner
 from tests.ui_integrity_fixture import write_ui_integrity_runner, write_valid_ui_integrity_artifact
 from tools.native_input_evidence import selector_owner_click_evidence
-from tools.quality_gate import (    MODE_STEPS,
+from tools.quality_gate import (
+    MODE_STEPS,
     STEP_DEFINITIONS,
+    UNIT_CONTRACT_STEP_NAMES,
+    discover_unit_contract_modules,
     expected_native_focus,
     failed_native_browser_evidence,
     stop_leaked_children,
+    unit_contract_shards,
     wait_for_process_exit,
 )
 from tools.ui_integrity_evidence import accept_baseline
@@ -30,6 +34,79 @@ QUALITY_GATE = ROOT / "tools" / "quality_gate.py"
 
 
 class QualityGateTests(unittest.TestCase):
+    def test_trial_covers_every_discoverable_unit_contract_module_once(self):
+        modules = discover_unit_contract_modules(ROOT)
+        shards = unit_contract_shards(modules)
+        flattened = [module for name in UNIT_CONTRACT_STEP_NAMES for module in shards[name]]
+
+        self.assertEqual(sorted(flattened), list(modules))
+        self.assertEqual(len(flattened), len(set(flattened)))
+        self.assertIn("tests.test_quality_gate", shards["unit-contract-quality-gate"])
+        self.assertIn(
+            "tests.test_generation_log_reuse_ui",
+            shards["unit-contract-browser"],
+        )
+        for name in UNIT_CONTRACT_STEP_NAMES:
+            self.assertIn(name, STEP_DEFINITIONS)
+            self.assertNotIn(name, MODE_STEPS["fast"])
+            self.assertNotIn(name, MODE_STEPS["domain"])
+            self.assertIn(name, MODE_STEPS["trial"])
+            self.assertIn(name, MODE_STEPS["release"])
+        for duplicated_contract_step in (
+            "surface-contract",
+            "project-contract",
+            "provider-contract",
+        ):
+            self.assertNotIn(duplicated_contract_step, MODE_STEPS["trial"])
+            self.assertNotIn(duplicated_contract_step, MODE_STEPS["release"])
+
+    def test_failing_dynamic_unit_contract_blocks_trial_and_preserves_first_failure(self):
+        (self.fixture_root / "tests" / "test_dynamic_contract.py").write_text(
+            "import unittest\n"
+            "class DynamicContract(unittest.TestCase):\n"
+            "    def test_failure(self): self.fail('intentional unit shard failure')\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "unit-contract-remainder")
+        self.assertEqual(report["first_failure"]["status"], "failed")
+        self.assertIn(
+            "tests.test_dynamic_contract",
+            report["unit_contract_inventory"]["modules"],
+        )
+        shard = next(
+            step
+            for step in report["steps"]
+            if step["name"] == "unit-contract-remainder"
+        )
+        self.assertIn("tests.test_dynamic_contract", shard["command"])
+        self.assertIn("intentional unit shard failure", shard["stderr_tail"])
+
+    def test_unit_contract_shard_timeout_blocks_trial(self):
+        (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
+            "import time, unittest\n"
+            "class SlowQualityGateContract(unittest.TestCase):\n"
+            "    def test_slow(self): time.sleep(5)\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+
+        result = self.run_gate(
+            mode="trial",
+            FIREFLY_TEST_MODE="1",
+            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="1",
+        )
+
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
+        self.assertEqual(report["first_failure"]["status"], "timed-out")
+
     def test_ui_integrity_runs_only_in_trial_and_release(self):
         step = "ui-integrity-evidence"
         self.assertIn(step, STEP_DEFINITIONS)
@@ -1112,6 +1189,90 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(marker.exists())
 
+    def test_node_child_process_is_blocked_by_the_mandatory_preload(self):
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import subprocess\n"
+            "import unittest\n\n"
+            "class NodeBoundaryContract(unittest.TestCase):\n"
+            "    def test_child_process_is_denied(self):\n"
+            "        result = subprocess.run(\n"
+            "            ['node', '-e', \"require('node:child_process').spawnSync('cmd.exe')\"],\n"
+            "            capture_output=True,\n"
+            "            text=True,\n"
+            "            check=False,\n"
+            "        )\n"
+            "        self.assertNotEqual(result.returncode, 0)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertTrue(
+            any(
+                event.get("kind") == "subprocess-executable"
+                and str(event.get("target") or "").startswith("node:spawnSync:pid=")
+                for event in self.report()["guard_events"]
+            )
+        )
+
+    def test_trusted_node_cannot_remove_the_guard_with_custom_child_environment(self):
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import subprocess\n"
+            "import unittest\n\n"
+            "class NodeGuardEnvironmentContract(unittest.TestCase):\n"
+            "    def test_custom_environment_cannot_remove_the_preload(self):\n"
+            "        child_environment = {\n"
+            "            key: os.environ[key]\n"
+            "            for key in ('PATH', 'SYSTEMROOT', 'WINDIR')\n"
+            "            if key in os.environ\n"
+            "        }\n"
+            "        child_environment['NODE_OPTIONS'] = ''\n"
+            "        result = subprocess.run(\n"
+            "            ['node', '-e', \"require('node:child_process').spawnSync('cmd.exe')\"],\n"
+            "            env=child_environment,\n"
+            "            capture_output=True,\n"
+            "            text=True,\n"
+            "            check=False,\n"
+            "        )\n"
+            "        self.assertNotEqual(result.returncode, 0)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertTrue(
+            any(
+                event.get("kind") == "subprocess-executable"
+                and str(event.get("target") or "").startswith("node:spawnSync:pid=")
+                for event in self.report()["guard_events"]
+            )
+        )
+
+    def test_self_test_mode_denies_unrelated_subprocesses(self):
+        (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
+            "import subprocess\n"
+            "import sys\n"
+            "import unittest\n\n"
+            "class SelfTestBoundaryContract(unittest.TestCase):\n"
+            "    def test_unrelated_python_is_denied(self):\n"
+            "        subprocess.run([sys.executable, '-c', 'print(1)'], check=False)\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
+        self.assertIn(
+            {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()},
+            report["guard_events"],
+        )
+
     def test_javascript_syntax_uses_trusted_node_instead_of_path(self):
         fake_bin = Path(self.temp_dir.name) / "fake-bin"
         fake_bin.mkdir()
@@ -1214,11 +1375,34 @@ class QualityGateTests(unittest.TestCase):
         stop_process.assert_not_called()
         self.assertFalse(guard_events.exists())
 
+    def test_reused_child_pid_with_a_different_image_is_not_reported_as_a_leak(self):
+        guard_events = self.evidence_dir / "guard-events.jsonl"
+        guard_events.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            mock.patch("tools.quality_gate.wait_for_process_exit", return_value=False),
+            mock.patch(
+                "tools.quality_gate.process_matches_recorded_target",
+                return_value=False,
+            ),
+            mock.patch("tools.quality_gate.stop_process_id") as stop_process,
+        ):
+            stop_leaked_children(
+                [{"pid": 43210, "target": "git.exe"}],
+                guard_events,
+            )
+
+        stop_process.assert_not_called()
+        self.assertFalse(guard_events.exists())
+
     def test_persistent_child_after_grace_period_is_stopped_and_reported(self):
         guard_events = self.evidence_dir / "guard-events.jsonl"
         guard_events.parent.mkdir(parents=True, exist_ok=True)
         with (
             mock.patch("tools.quality_gate.wait_for_process_exit", return_value=False),
+            mock.patch(
+                "tools.quality_gate.process_matches_recorded_target",
+                return_value=True,
+            ),
             mock.patch("tools.quality_gate.stop_process_id") as stop_process,
         ):
             stop_leaked_children(
@@ -1450,14 +1634,13 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ["javascript-syntax", "surface-contract"]),
             "domain": (120, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "browser-tracer"]),
+            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "unit-contract-browser", "browser-tracer"]),
             "release": (
                 900,
                 [
                     "javascript-syntax",
-                    "surface-contract",
-                    "project-contract",
-                    "provider-contract",
+                    "unit-contract-quality-gate",
+                    "unit-contract-remainder",
                     "native-browser-evidence",
                     "project-linked-generation-evidence",
                     "generation-lifecycle-evidence",
@@ -1466,6 +1649,7 @@ class QualityGateTests(unittest.TestCase):
                     "long-content-evidence",
                     "ui-integrity-evidence",
                     "edge-compatibility",
+                    "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
                 ],
@@ -1547,8 +1731,19 @@ class QualityGateTests(unittest.TestCase):
             step for step in report["steps"] if step["name"] == "native-browser-evidence"
         )
         self.assertIs(native_step["parallel_group"], True)
-        contract_step = next(step for step in report["steps"] if step["name"] == "provider-contract")
-        self.assertNotIn("parallel_group", contract_step)
+        for name in UNIT_CONTRACT_STEP_NAMES:
+            contract_step = next(step for step in report["steps"] if step["name"] == name)
+            self.assertIs(contract_step["parallel_group"], True)
+        self.assertTrue(report["unit_contract_inventory"]["covered_in_mode"])
+        covered_modules = [
+            module
+            for name in UNIT_CONTRACT_STEP_NAMES
+            for module in report["unit_contract_inventory"]["shards"][name]
+        ]
+        self.assertEqual(
+            sorted(covered_modules),
+            report["unit_contract_inventory"]["modules"],
+        )
 
     def test_failed_non_critical_step_records_s2_finding_without_changing_verdict(self):
         (self.fixture_root / "static" / "js" / "smart-canvas.js").write_text(

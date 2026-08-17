@@ -1267,7 +1267,28 @@ def run_viewport(
             "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-preview=\"3\"]')?.getAttribute('aria-current')==='true' "
             "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"] .log-history-image')?.complete "
             "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"] .log-history-image')?.naturalWidth>0 "
-            "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery')?.scrollLeft>500",
+            "&& (()=>{const gallery=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery');"
+            "const selected=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]');"
+            "if(!gallery||!selected)return false;const outer=gallery.getBoundingClientRect();const inner=selected.getBoundingClientRect();"
+            "return Math.abs(inner.left-outer.left)<=2&&inner.right<=outer.right+2;})()",
+            timeout=10,
+        )
+        settle(browser)
+        browser.evaluate(
+            """(() => {
+              const gallery=document.querySelector('[data-canvas-log-id="integrity-success-one"] .log-output-gallery');
+              const selected=document.querySelector('[data-canvas-log-id="integrity-success-one"] [data-log-output-index="3"]');
+              if(gallery && selected){
+                gallery.style.scrollSnapType='none';
+                gallery.scrollLeft=selected.offsetLeft;
+              }
+            })()"""
+        )
+        browser.wait_for(
+            "(()=>{const gallery=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery');"
+            "const selected=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]');"
+            "if(!gallery||!selected)return false;const outer=gallery.getBoundingClientRect();const inner=selected.getBoundingClientRect();"
+            "return Math.abs(inner.left-outer.left)<=2&&inner.right<=outer.right+2;})()",
             timeout=10,
         )
         selected_preview_src = str(browser.evaluate(
@@ -1622,7 +1643,10 @@ def run_viewport(
         browser.wait_for("!document.querySelector('#smartLogLightbox')?.classList.contains('open')", timeout=10)
         if not browser.evaluate("document.querySelector('#smartLogModal')?.classList.contains('open')"):
             raise AssertionError("Escape closed generation history together with generation detail")
-        browser.native_click('[data-canvas-log-id="integrity-success-one"] [data-log-restore-original]')
+        browser.native_click(
+            '[data-canvas-log-id="integrity-success-one"] [data-log-restore-original]',
+            relative=(0.18, 0.5),
+        )
         try:
             browser.wait_for(
                 "smartLogEntryById('integrity-success-one')?.outputs?.length===8 "
@@ -1950,7 +1974,10 @@ def run_viewport(
                 and duplicate_after.get("restoreDeletionId")
             ):
                 raise AssertionError(f"duplicate occurrence deletion is not exact: {duplicate_after}")
-            browser.native_click('[data-canvas-log-id="integrity-duplicate-log"] [data-log-restore-original]')
+            browser.native_click(
+                '[data-canvas-log-id="integrity-duplicate-log"] [data-log-restore-original]',
+                relative=(0.18, 0.5),
+            )
             browser.wait_for(
                 "smartLogEntryById('integrity-duplicate-log')?.outputs?.length===4 "
                 "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "

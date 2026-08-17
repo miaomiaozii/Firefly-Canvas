@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import http.server
@@ -96,6 +97,78 @@ MODE_BUDGETS = {
     "release": 900,
 }
 
+UNIT_CONTRACT_STEP_NAMES = (
+    "unit-contract-quality-gate",
+    "unit-contract-remainder",
+    "unit-contract-browser",
+)
+UNIT_CONTRACT_PARALLEL_STEP_NAMES = UNIT_CONTRACT_STEP_NAMES
+
+
+def discover_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
+    tests_root = repo_root / "tests"
+    return tuple(
+        f"tests.{path.stem}"
+        for path in sorted(tests_root.glob("test*.py"))
+        if path.is_file()
+    )
+
+
+def unit_contract_shards(
+    modules: tuple[str, ...],
+) -> dict[str, tuple[str, ...]]:
+    quality_gate_module = "tests.test_quality_gate"
+    browser_module = "tests.test_generation_log_reuse_ui"
+    return {
+        "unit-contract-quality-gate": tuple(
+            module for module in modules if module == quality_gate_module
+        ),
+        "unit-contract-remainder": tuple(
+            module
+            for module in modules
+            if module not in {quality_gate_module, browser_module}
+        ),
+        "unit-contract-browser": tuple(
+            module for module in modules if module == browser_module
+        ),
+    }
+
+
+def executed_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
+    """Modules that actually run inside the isolated execution workspace.
+
+    The workspace copy only contains ``git ls-files`` output (tracked plus
+    untracked-but-not-ignored files), so the audit inventory must match that
+    set exactly. A plain filesystem glob would also list gitignored
+    ``tests/test*.py`` files and report them as covered even though they are
+    never executed.
+    """
+    discovered = discover_unit_contract_modules(repo_root)
+    try:
+        process = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return discovered
+    if process.returncode != 0:
+        return discovered
+    tracked_files = {
+        item.decode("utf-8", errors="surrogateescape")
+        for item in process.stdout.split(b"\0")
+        if item
+    }
+    return tuple(
+        module
+        for module in discovered
+        if f"tests/{module.split('.', 1)[1]}.py" in tracked_files
+    )
+
+
 STEP_DEFINITIONS = {
     "javascript-syntax": lambda python: [
         trusted_node_executable(),
@@ -124,6 +197,9 @@ STEP_DEFINITIONS = {
         "tests.test_provider_contract_families",
         "tests.test_provider_contract_template",
     ],
+    "unit-contract-quality-gate": lambda python: [python, "-m", "unittest", "-b"],
+    "unit-contract-remainder": lambda python: [python, "-m", "unittest", "-b"],
+    "unit-contract-browser": lambda python: [python, "-m", "unittest", "-b"],
     "native-browser-evidence": lambda python: [python, "tests/core_surface_browser.py"],
     "project-linked-generation-evidence": lambda python: [python, "tests/project_linked_generation_native_browser.py"],
     "generation-lifecycle-evidence": lambda python: [python, "tests/generation_lifecycle_browser.py"],
@@ -148,9 +224,8 @@ MODE_STEPS = {
     ),
     "trial": (
         "javascript-syntax",
-        "surface-contract",
-        "project-contract",
-        "provider-contract",
+        "unit-contract-quality-gate",
+        "unit-contract-remainder",
         "native-browser-evidence",
         "project-linked-generation-evidence",
         "generation-lifecycle-evidence",
@@ -158,13 +233,13 @@ MODE_STEPS = {
         "composer-flow-evidence",
         "long-content-evidence",
         "ui-integrity-evidence",
+        "unit-contract-browser",
         "browser-tracer",
     ),
     "release": (
         "javascript-syntax",
-        "surface-contract",
-        "project-contract",
-        "provider-contract",
+        "unit-contract-quality-gate",
+        "unit-contract-remainder",
         "native-browser-evidence",
         "project-linked-generation-evidence",
         "generation-lifecycle-evidence",
@@ -173,6 +248,7 @@ MODE_STEPS = {
         "long-content-evidence",
         "ui-integrity-evidence",
         "edge-compatibility",
+        "unit-contract-browser",
         "browser-tracer",
         "browser-harness-contract",
     ),
@@ -181,9 +257,8 @@ MODE_STEPS = {
 NATIVE_BROWSER_VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 NATIVE_BROWSER_FONTS = ("Inter", "JetBrains Mono", "Space Grotesk")
 
-# Browser evidence journeys produce their own artifact roots, take roughly a
-# minute each, and are independent of one another, so the gate runs them as one
-# parallel group (see _execution_groups).  Every other step stays sequential.
+# Browser evidence journeys and isolated unit/contract shards own independent
+# temporary state, so trial/release run them as one bounded parallel group.
 BROWSER_EVIDENCE_STEP_NAMES = frozenset(
     (
         "native-browser-evidence",
@@ -194,7 +269,11 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "long-content-evidence",
         "ui-integrity-evidence",
         "edge-compatibility",
+        "browser-tracer",
     )
+)
+PARALLEL_STEP_NAMES = BROWSER_EVIDENCE_STEP_NAMES | frozenset(
+    UNIT_CONTRACT_PARALLEL_STEP_NAMES
 )
 
 # Issue #39 severity policy: a failed critical release journey is always an S1
@@ -208,6 +287,7 @@ CRITICAL_JOURNEY_STEPS = frozenset(
         "project-linked-generation-evidence",
         "generation-lifecycle-evidence",
         "complete-generation-lifecycle-evidence",
+        *UNIT_CONTRACT_STEP_NAMES,
     )
 )
 
@@ -295,6 +375,7 @@ import os
 import socket
 import subprocess
 import sys
+import shutil
 
 _event_file = os.environ.get("FIREFLY_QUALITY_GATE_GUARD_EVENTS", "")
 _child_event_file = os.environ.get("FIREFLY_QUALITY_GATE_CHILD_EVENTS", "")
@@ -317,7 +398,17 @@ _allowed_paths = {
     if path
 }
 _python_paths = {os.path.normcase(os.path.realpath(sys.executable))}
-_browser_paths = _allowed_paths - _python_paths
+_tool_paths = {
+    os.path.normcase(os.path.realpath(path))
+    for path in json.loads(os.environ.get("FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES", "[]"))
+    if path
+}
+_browser_paths = _allowed_paths - _python_paths - _tool_paths
+_allow_nested_quality_gate = os.environ.get("FIREFLY_QUALITY_GATE_SELF_TEST") == "1"
+_nested_quality_gate_script = os.path.normcase(os.path.realpath(
+    os.environ.get("FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT", "")
+))
+_mandatory_node_options = os.environ.get("FIREFLY_QUALITY_GATE_NODE_OPTIONS", "")
 _guard_environment_names = {
     "FIREFLY_PROJECTS_ROOT",
     "FIREFLY_QUALITY_GATE",
@@ -327,7 +418,15 @@ _guard_environment_names = {
     "FIREFLY_QUALITY_GATE_CHILD_EVENTS",
     "FIREFLY_QUALITY_GATE_GUARD_EVENTS",
     "FIREFLY_QUALITY_GATE_RETRY_EVENTS",
+    "FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT",
+    "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES",
+    "FIREFLY_QUALITY_GATE_NODE_OPTIONS",
     "FIREFLY_RUNTIME_ROOT",
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_USE_ENV_PROXY",
     "FIREFLY_TEST_DISABLE_CLI_PROBES",
     "FIREFLY_TEST_MODE",
     "PYTHONPATH",
@@ -480,6 +579,10 @@ asyncio.BaseEventLoop.create_datagram_endpoint = _guarded_asyncio_create_datagra
 
 def _guarded_child_environment(environment):
     child_environment = dict(os.environ if environment is None else environment)
+    # The mandatory Node preload is only injected into trusted Node Popen calls
+    # (see _GuardedPopen). Ordinary children must never inherit NODE_OPTIONS,
+    # so browser journeys' internal Node helpers stay unguarded while repo
+    # tests that launch Node directly still get the forced preload.
     child_environment.pop("NODE_OPTIONS", None)
     for name in _guard_environment_names:
         value = os.environ.get(name)
@@ -497,14 +600,96 @@ class _GuardedPopen(_real_popen):
         executable = os.fsdecode(
             os.fspath(popen_kwargs.get("executable") or (command[0] if command else ""))
         )
-        normalized = os.path.normcase(os.path.realpath(executable)) if executable else ""
-        basename = os.path.basename(executable).lower()
+        resolved_executable = (
+            shutil.which(executable) if executable and not os.path.isabs(executable)
+            else executable
+        )
+        normalized = os.path.normcase(os.path.realpath(resolved_executable)) if resolved_executable else ""
+        basename = os.path.basename(resolved_executable or executable).lower()
+        command_arguments = tuple(_argument_text(argument) for argument in command[1:])
+        if _allow_nested_quality_gate:
+            nested_git_init = (
+                basename in {"git", "git.exe"}
+                and command_arguments == ("init", "--quiet")
+            )
+            nested_gate = (
+                normalized in _python_paths
+                and command_arguments
+                and os.path.normcase(
+                    os.path.realpath(
+                        command_arguments[0]
+                        if os.path.isabs(command_arguments[0])
+                        else os.path.join(
+                            os.fspath(popen_kwargs.get("cwd") or os.getcwd()),
+                            command_arguments[0],
+                        )
+                    )
+                )
+                == _nested_quality_gate_script
+            )
+            if nested_git_init or nested_gate:
+                if nested_gate:
+                    nested_environment = dict(popen_kwargs.get("env") or os.environ)
+                    for key in (
+                        "PYTHONPATH",
+                        "FIREFLY_QUALITY_GATE_SELF_TEST",
+                        "FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT",
+                        "FIREFLY_QUALITY_GATE_ALLOWED_EXECUTABLES",
+                        "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES",
+                        "FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES",
+                        "FIREFLY_QUALITY_GATE_CHILD_EVENTS",
+                        "FIREFLY_QUALITY_GATE_GUARD_EVENTS",
+                        "FIREFLY_QUALITY_GATE_RETRY_EVENTS",
+                        "FIREFLY_QUALITY_GATE_NODE_OPTIONS",
+                        "NODE_OPTIONS",
+                    ):
+                        nested_environment.pop(key, None)
+                    # The inner gate runs without the guard, so it must resolve
+                    # git/node through the guard's own trusted PATH instead of
+                    # anything the caller injected through the child env.
+                    nested_environment["PATH"] = os.environ.get("PATH", "")
+                    nested_environment["PATHEXT"] = os.environ.get("PATHEXT", "")
+                    popen_kwargs["env"] = nested_environment
+                super().__init__(args, *popen_args, **popen_kwargs)
+                _record_child(self.pid, basename or executable)
+                return
+            _record("subprocess-executable", basename or executable)
+            raise PermissionError(
+                f"quality gate self-test denied unrelated subprocess: {basename or executable}"
+            )
         if normalized in _blocked_paths or basename in _blocked_names:
             _record("provider-executable", basename or executable)
             raise PermissionError(f"quality gate denied provider executable: {basename or executable}")
         if popen_kwargs.get("shell") or normalized not in _allowed_paths:
             _record("subprocess-executable", basename or executable)
             raise PermissionError(f"quality gate denied subprocess executable: {basename or executable}")
+        if normalized in _tool_paths:
+            if not isinstance(args, (list, tuple)) or len(command) < 2:
+                _record("subprocess-executable", basename)
+                raise PermissionError(f"quality gate requires structured tool arguments: {basename}")
+            operation = command_arguments[0].lower()
+            allowed_git_arguments = {
+                ("init", "--quiet"),
+                ("status", "--porcelain=v1", "--untracked-files=all"),
+                ("ls-files", "--modified", "--deleted", "--others", "--exclude-standard", "-z"),
+                ("ls-files", "--cached", "--others", "--exclude-standard", "-z"),
+            }
+            if basename in {"git", "git.exe"} and command_arguments not in allowed_git_arguments:
+                _record("subprocess-executable", f"{basename} {' '.join(command_arguments)}")
+                raise PermissionError("quality gate denied git arguments")
+            if basename in {"node", "node.exe"} and not (
+                len(command_arguments) == 2
+                and operation in {"-e", "--check"}
+            ):
+                _record("subprocess-executable", f"{basename} {' '.join(command_arguments)}")
+                raise PermissionError("quality gate denied node arguments")
+            # Launch exactly the executable that was vetted. Popen otherwise
+            # resolves argv[0] through the child PATH and its cwd, which can
+            # differ from the path the allowlist check was performed on.
+            command = list(args)
+            command[0] = resolved_executable
+            popen_kwargs["executable"] = resolved_executable
+            args = command
         if normalized in _python_paths:
             unsafe_flags = {"S", "I", "E"}
             if any(
@@ -560,6 +745,12 @@ class _GuardedPopen(_real_popen):
             command[1:1] = [flag for flag in required_flags if flag not in command]
             args = command
         popen_kwargs["env"] = _guarded_child_environment(popen_kwargs.get("env"))
+        if normalized in _tool_paths and basename in {"node", "node.exe"}:
+            node_options = _mandatory_node_options
+            if node_options:
+                node_environment = dict(popen_kwargs["env"])
+                node_environment["NODE_OPTIONS"] = node_options
+                popen_kwargs["env"] = node_environment
         super().__init__(args, *popen_args, **popen_kwargs)
         _record_child(self.pid, basename or executable)
 subprocess.Popen = _GuardedPopen
@@ -579,6 +770,51 @@ for _process_api in (
 ):
     if hasattr(os, _process_api):
         setattr(os, _process_api, _deny_os_process)
+'''
+
+
+NODE_GUARD_SOURCE = r'''
+'use strict';
+const fs = require('node:fs');
+const eventFile = process.env.FIREFLY_QUALITY_GATE_GUARD_EVENTS || '';
+function record(kind, target) {
+  if (!eventFile) return;
+  try {
+    fs.appendFileSync(eventFile, JSON.stringify({kind, target: String(target)}) + '\n', {encoding: 'utf8', mode: 0o600});
+  } catch (_) {}
+}
+function denied(kind, target) {
+  record(kind, target);
+  const error = new Error(`quality gate denied Node boundary: ${target}`);
+  error.code = 'FIREFLY_QUALITY_GATE_DENIED';
+  throw error;
+}
+const childProcess = require('node:child_process');
+for (const name of ['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spawn', 'spawnSync']) {
+  childProcess[name] = (..._args) => denied(
+    'subprocess-executable',
+    `node:${name}:pid=${process.pid}:ppid=${process.ppid}`,
+  );
+}
+const net = require('node:net');
+net.connect = (..._args) => denied('network', 'node:net.connect');
+net.createConnection = (..._args) => denied('network', 'node:net.createConnection');
+const dgram = require('node:dgram');
+dgram.createSocket = (..._args) => denied('network', 'node:dgram.createSocket');
+const http = require('node:http');
+http.request = (..._args) => denied('network', 'node:http.request');
+http.get = (..._args) => denied('network', 'node:http.get');
+const https = require('node:https');
+https.request = (..._args) => denied('network', 'node:https.request');
+https.get = (..._args) => denied('network', 'node:https.get');
+if (typeof globalThis.fetch === 'function') {
+  globalThis.fetch = (..._args) => denied('network', 'node:fetch');
+}
+if (typeof globalThis.WebSocket === 'function') {
+  globalThis.WebSocket = class DeniedWebSocket {
+    constructor() { denied('network', 'node:WebSocket'); }
+  };
+}
 '''
 
 
@@ -751,6 +987,17 @@ def trusted_node_executable() -> str:
     return str(candidates[0])
 
 
+def trusted_tool_executable_paths() -> list[str]:
+    candidates = [trusted_node_executable(), shutil.which("git")]
+    return sorted(
+        {
+            str(Path(path).resolve())
+            for path in candidates
+            if path and Path(path).is_file()
+        }
+    )
+
+
 def git_state(repo_root: Path) -> dict:
     try:
         process = subprocess.run(
@@ -868,22 +1115,36 @@ def isolated_environment(
         textwrap.dedent(GUARD_SOURCE).lstrip(),
         encoding="utf-8",
     )
+    node_guard = guard_root / "node-guard.cjs"
+    node_guard.write_text(
+        textwrap.dedent(NODE_GUARD_SOURCE).lstrip(),
+        encoding="utf-8",
+    )
+    node_options = f"--require={node_guard}"
+    tool_executables = trusted_tool_executable_paths()
     environment.update(
         {
             "FIREFLY_TEST_MODE": "1",
             "FIREFLY_TEST_DISABLE_CLI_PROBES": "1",
             "FIREFLY_QUALITY_GATE": "1",
             "FIREFLY_QUALITY_GATE_ALLOWED_EXECUTABLES": json.dumps(
-                trusted_executable_paths()
+                trusted_executable_paths() + tool_executables
             ),
+            "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES": json.dumps(tool_executables),
             "FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES": json.dumps(blocked_executables),
             "FIREFLY_QUALITY_GATE_BROWSER_PROXY": browser_proxy_url,
+            "ALL_PROXY": browser_proxy_url,
+            "HTTP_PROXY": browser_proxy_url,
+            "HTTPS_PROXY": browser_proxy_url,
+            "NO_PROXY": "localhost,127.0.0.1,::1",
+            "NODE_USE_ENV_PROXY": "1",
             # Chrome 151 rejects remote debugging when USERPROFILE is synthetic,
             # even with an explicit temporary user-data-dir. Only the browser
             # subprocess receives this host identity; all writable roots stay temporary.
             "FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE": os.environ.get("USERPROFILE", ""),
             "FIREFLY_QUALITY_GATE_CHILD_EVENTS": str(child_events),
             "FIREFLY_QUALITY_GATE_GUARD_EVENTS": str(guard_events),
+            "FIREFLY_QUALITY_GATE_NODE_OPTIONS": node_options,
             "FIREFLY_QUALITY_GATE_RETRY_EVENTS": str(retry_events),
             "FIREFLY_RUNTIME_ROOT": str(runtime_root),
             "FIREFLY_PROJECTS_ROOT": str(projects_root),
@@ -1005,6 +1266,37 @@ def wait_for_process_exit(
     return True
 
 
+def process_matches_recorded_target(pid: int, target: str) -> bool:
+    target_name = Path(str(target or "")).name.lower()
+    if not target_name or target_name.startswith("pid "):
+        return True
+    if os.name == "nt":
+        system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
+        tasklist = system_root / "System32" / "tasklist.exe"
+        try:
+            result = subprocess.run(
+                [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        if result.returncode != 0:
+            return True
+        rows = [row for row in csv.reader(result.stdout.splitlines()) if row]
+        if not rows or rows[0][0].lower().startswith("info:"):
+            return False
+        return Path(rows[0][0]).name.lower() == target_name
+    proc_executable = Path(f"/proc/{pid}/exe")
+    try:
+        current_name = proc_executable.resolve(strict=True).name.lower()
+    except OSError:
+        return not Path("/proc").is_dir()
+    return current_name == target_name
+
+
 def stop_process_id(pid: int) -> None:
     if os.name == "nt":
         system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
@@ -1046,6 +1338,8 @@ def stop_leaked_children(events: list[dict], guard_events_file: Path) -> None:
         # grace so a natural shutdown tail is not misreported as a leak.
         grace = 8.0 if target.lower() in BROWSER_CHILD_TARGETS else 1.0
         if pid <= 0 or wait_for_process_exit(pid, timeout=grace):
+            continue
+        if not process_matches_recorded_target(pid, target):
             continue
         stop_process_id(pid)
         append_event(guard_events_file, "subprocess-leak", target)
@@ -1350,12 +1644,23 @@ def browser_step_spec(
     return None
 
 
+def unit_contract_step_command(
+    name: str,
+    python: str,
+    workspace_root: Path,
+) -> list[str]:
+    modules = discover_unit_contract_modules(workspace_root)
+    shard = unit_contract_shards(modules)[name]
+    if not shard:
+        return [python, "-c", f"print('empty unit/contract shard: {name}')"]
+    return [python, "-m", "unittest", "-b", *shard]
+
+
 def execution_groups(names: tuple[str, ...]) -> list[tuple[str, list[str]]]:
-    """Split a mode's step list into ("sequential", [name]) singletons and one
-    ("parallel", [...]) group per contiguous run of browser evidence steps."""
+    """Group adjacent isolated steps while keeping all others sequential."""
     groups: list[tuple[str, list[str]]] = []
     for name in names:
-        if name in BROWSER_EVIDENCE_STEP_NAMES:
+        if name in PARALLEL_STEP_NAMES:
             if groups and groups[-1][0] == "parallel":
                 groups[-1][1].append(name)
             else:
@@ -2455,6 +2760,12 @@ def main(argv: list[str] | None = None) -> int:
                     spec = browser_step_spec(name, sys.executable, evidence_dir)
                     if spec is not None:
                         return spec[0], spec
+                    if name in UNIT_CONTRACT_STEP_NAMES:
+                        return unit_contract_step_command(
+                            name,
+                            sys.executable,
+                            workspace_root,
+                        ), None
                     return STEP_DEFINITIONS[name](sys.executable), None
 
                 for group_kind, group_names in execution_groups(MODE_STEPS[args.mode]):
@@ -2546,11 +2857,9 @@ def main(argv: list[str] | None = None) -> int:
                             final_exit_code = 1
                             break
                         continue
-                    # Parallel group: every browser evidence step starts with the
-                    # same group remaining budget; the mode budget pays for the
-                    # group wall clock.  Guard/retry/child events cannot be
-                    # attributed to a single member, so they are conservatively
-                    # attached to every step in the group.
+                    # Parallel group: isolated unit shards and browser journeys
+                    # share one wall-clock deadline. Queued work recalculates its
+                    # timeout when a worker becomes available.
                     previous_guard_count = len(
                         read_guard_events(guard_events_file, sensitive_values)
                     )
@@ -2563,13 +2872,39 @@ def main(argv: list[str] | None = None) -> int:
                     specs = {}
                     commands = {}
                     for name in group_names:
-                        spec = browser_step_spec(name, sys.executable, evidence_dir)
-                        if spec is None:
-                            raise RuntimeError(
-                                f"parallel group member is not a browser evidence step: {name}"
-                            )
+                        command, spec = resolve_step_command(name)
                         specs[name] = spec
-                        commands[name] = spec[0]
+                        commands[name] = command
+
+                    def run_group_step(name):
+                        step_remaining = run_budget - (time.monotonic() - started)
+                        if step_remaining <= 0:
+                            return {
+                                "name": name,
+                                "command": commands[name],
+                                "command_text": command_text(commands[name]),
+                                "started_at": utc_now(),
+                                "duration_seconds": 0,
+                                "status": "timed-out",
+                                "exit_code": 124,
+                                "stdout_tail": "",
+                                "stderr_tail": "mode budget exhausted before parallel worker started",
+                            }
+                        step_environment = environment
+                        if name == "unit-contract-quality-gate":
+                            step_environment = dict(environment)
+                            step_environment["FIREFLY_QUALITY_GATE_SELF_TEST"] = "1"
+                            step_environment["FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT"] = str(
+                                (workspace_root / "tools" / "quality_gate.py").resolve()
+                            )
+                        return run_step(
+                            name,
+                            commands[name],
+                            workspace_root,
+                            step_environment,
+                            step_remaining,
+                            sensitive_values,
+                        )
 
                     def collect_group_step(name, future):
                         try:
@@ -2589,15 +2924,7 @@ def main(argv: list[str] | None = None) -> int:
 
                     with ThreadPoolExecutor(max_workers=parallel_workers) as pool:
                         futures = {
-                            name: pool.submit(
-                                run_step,
-                                name,
-                                commands[name],
-                                workspace_root,
-                                environment,
-                                remaining,
-                                sensitive_values,
-                            )
+                            name: pool.submit(run_group_step, name)
                             for name in group_names
                         }
                         group_steps = {
@@ -2620,29 +2947,43 @@ def main(argv: list[str] | None = None) -> int:
                     group_failed = False
                     for name in group_names:
                         step = group_steps[name]
-                        _command, artifact_root, browser_validator, failed_browser_evidence, browser_evidence_name = specs[name]
+                        spec = specs[name]
+                        step_retry_events = (
+                            group_retry_events
+                            if name in BROWSER_EVIDENCE_STEP_NAMES
+                            else []
+                        )
                         step["guard_events"] = group_guard_events
-                        step["retry_events"] = group_retry_events
+                        step["retry_events"] = step_retry_events
                         step["child_events"] = group_child_events
                         step["parallel_group"] = True
                         if (
-                            blocking_guard_events(group_guard_events) or group_retry_events
+                            blocking_guard_events(group_guard_events)
+                            or step_retry_events
                         ) and step["status"] == "passed":
                             step["status"] = "failed"
                             step["exit_code"] = 1
-                        if step["status"] == "passed":
-                            try:
-                                step["browser_evidence"] = browser_validator(artifact_root)
-                            except (OSError, ValueError) as error:
-                                step["status"] = "failed"
-                                step["exit_code"] = 1
-                                step["stderr_tail"] = redact_text(
-                                    f"{browser_evidence_name} evidence invalid: {error}",
-                                    sensitive_values,
-                                )
+                        if spec is not None:
+                            (
+                                _command,
+                                artifact_root,
+                                browser_validator,
+                                failed_browser_evidence,
+                                browser_evidence_name,
+                            ) = spec
+                            if step["status"] == "passed":
+                                try:
+                                    step["browser_evidence"] = browser_validator(artifact_root)
+                                except (OSError, ValueError) as error:
+                                    step["status"] = "failed"
+                                    step["exit_code"] = 1
+                                    step["stderr_tail"] = redact_text(
+                                        f"{browser_evidence_name} evidence invalid: {error}",
+                                        sensitive_values,
+                                    )
+                                    step["browser_evidence"] = failed_browser_evidence(artifact_root)
+                            else:
                                 step["browser_evidence"] = failed_browser_evidence(artifact_root)
-                        else:
-                            step["browser_evidence"] = failed_browser_evidence(artifact_root)
                         steps.append(step)
                         if step["status"] == "timed-out":
                             final_exit_code = 124
@@ -2695,6 +3036,8 @@ def main(argv: list[str] | None = None) -> int:
             "exit_code": 124,
             "message": "mode budget was exceeded during quality gate finalization",
         }
+    unit_contract_modules = executed_unit_contract_modules(repo_root)
+    unit_contract_inventory = unit_contract_shards(unit_contract_modules)
     report = {
         "schema_version": 1,
         "mode": args.mode,
@@ -2707,6 +3050,14 @@ def main(argv: list[str] | None = None) -> int:
         "final_exit_code": final_exit_code,
         "evidence_dir": str(evidence_dir),
         "steps": steps,
+        "unit_contract_inventory": {
+            "modules": list(unit_contract_modules),
+            "shards": {
+                name: list(unit_contract_inventory[name])
+                for name in UNIT_CONTRACT_STEP_NAMES
+            },
+            "covered_in_mode": args.mode in {"trial", "release"},
+        },
         "browser_evidence": next(
             (step.get("browser_evidence") for step in steps if step.get("browser_evidence") is not None),
             None,
