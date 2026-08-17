@@ -1423,36 +1423,6 @@ class ProjectDeletionMixin:
         except (OSError, ValueError, json.JSONDecodeError):
             return {"items": []}
 
-    @classmethod
-    def _safe_project_path(cls, project_dir: Path, relative_name: Any) -> Path:
-        if not isinstance(relative_name, str) or not relative_name.strip():
-            raise _store.ProjectStoreError("项目媒体路径无效")
-        relative = Path(relative_name)
-        if relative.is_absolute() or relative.drive or any(part == ".." for part in relative.parts):
-            raise _store.ProjectStoreError("项目媒体路径越界")
-        project_dir = Path(project_dir)
-        if cls._is_path_redirect(project_dir):
-            raise _store.ProjectStoreError("项目目录不能是符号链接或重解析路径")
-        try:
-            resolved_root = project_dir.resolve(strict=True)
-        except (OSError, FileNotFoundError) as exc:
-            raise _store.ProjectStoreError("项目目录路径无效") from exc
-        current = project_dir
-        for part in relative.parts:
-            if part in {"", "."}:
-                continue
-            current = current / part
-            if cls._is_path_redirect(current):
-                raise _store.ProjectStoreError("项目路径不能经过符号链接或重解析点")
-        try:
-            candidate = (project_dir / relative).resolve(strict=False)
-            if os.path.commonpath(
-                [os.path.normcase(str(resolved_root)), os.path.normcase(str(candidate))]
-            ) != os.path.normcase(str(resolved_root)):
-                raise _store.ProjectStoreError("项目媒体路径越界")
-        except (OSError, ValueError) as exc:
-            raise _store.ProjectStoreError("项目媒体路径无效") from exc
-        return candidate
 
     @classmethod
     def _merge_deleted_asset_references(cls, current: Any, snapshot: Any, asset_id: str) -> Any:
