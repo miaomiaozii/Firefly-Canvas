@@ -173,6 +173,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         self._timers: Dict[str, threading.Timer] = {}
         self._saved_revisions: Dict[str, int] = {}
         self._project_operations: Dict[str, threading.RLock] = {}
+        self._generation_written_assets: Dict[str, set] = {}
         self._fly_import_lock = threading.Lock()
         self._recover_original_media_transactions()
         self._cleanup_orphan_media_imports()
@@ -2219,6 +2220,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         media_kind: str = "image",
         task_id: str = "",
         require_pending: bool = False,
+        partial: bool = False,
     ) -> Dict[str, Any]:
         """Atomically attach generated project originals to a visible node and history.
 
@@ -2280,16 +2282,43 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 if isinstance(item, dict)
             }:
                 raise InvalidMutation("生成任务已结束，无法写入结果")
+            history_id = str(clean_history.get("id") or "") if isinstance(clean_history, dict) else ""
             batch_active = bool(pending_tasks) or "_generationBatchApplied" in node
             batch_applied = bool(node.get("_generationBatchApplied"))
+            merge_ledger = self._generation_written_assets.setdefault(history_id, set()) if history_id else None
             if batch_active and batch_applied:
                 merged_media = copy.deepcopy(node.get("images") or [])
-                merged_media.extend(copy.deepcopy(clean_media))
+                for item in clean_media:
+                    asset_id = str(item.get("asset_id") or "")
+                    # 同一 history id 下 partial 逐张写回 + final 再次携带全量，按已写入
+                    # 资产去重，避免节点出现重复图；不同 history id（共享原件的独立
+                    # occurrence）各自成账，不受影响。
+                    if merge_ledger is not None and asset_id and asset_id in merge_ledger:
+                        continue
+                    merged_media.append(copy.deepcopy(item))
+                    if merge_ledger is not None and asset_id:
+                        merge_ledger.add(asset_id)
+                node["images"] = merged_media
+            elif partial:
+                # 逐张写回必须累加：直接赋值会把上一次 partial 的图覆盖掉（用户
+                # 反馈“8 张并发最终只剩 1 张”的根因）。同样按 ledger 去重。
+                merged_media = copy.deepcopy(node.get("images") or [])
+                for item in clean_media:
+                    asset_id = str(item.get("asset_id") or "")
+                    if merge_ledger is not None and asset_id and asset_id in merge_ledger:
+                        continue
+                    merged_media.append(copy.deepcopy(item))
+                    if merge_ledger is not None and asset_id:
+                        merge_ledger.add(asset_id)
                 node["images"] = merged_media
             else:
                 node["images"] = clean_media
                 if batch_active:
                     node["_generationBatchApplied"] = True
+                if merge_ledger is not None:
+                    merge_ledger.update(
+                        str(item.get("asset_id") or "") for item in clean_media
+                    )
             result_count = len(node.get("images") or [])
             node["title"] = (
                 "Videos" if result_count > 1 else "Video"
@@ -2308,27 +2337,44 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 node.pop(key, None)
             node["running"] = False
             node.pop("queued", None)
-            remaining_tasks = [
-                item for item in pending_tasks
-                if str(item.get("taskId") or "") != completed_task_id
-            ]
-            if remaining_tasks:
-                node["pendingTasks"] = remaining_tasks
+            if partial:
+                # 增量写回（逐张归档）：图片已落到节点上，但任务还在跑，
+                # 保留 pendingTasks/pending 让前端继续显示剩余占位与进度。
+                if not completed_task_id and len(pending_tasks) == 1:
+                    completed_task_id = str(pending_tasks[0].get("taskId") or "").strip()
+                node["pendingTasks"] = list(pending_tasks)
                 node["pending"] = max(
-                    len(remaining_tasks),
-                    sum(max(1, int(item.get("count") or 1)) for item in remaining_tasks),
+                    len(pending_tasks),
+                    sum(max(1, int(item.get("count") or 1)) for item in pending_tasks),
                 )
             else:
-                node.pop("pendingTasks", None)
-                node["pending"] = 0
-                node.pop("_generationBatchApplied", None)
+                remaining_tasks = [
+                    item for item in pending_tasks
+                    if str(item.get("taskId") or "") != completed_task_id
+                ]
+                if remaining_tasks:
+                    node["pendingTasks"] = remaining_tasks
+                    node["pending"] = max(
+                        len(remaining_tasks),
+                        sum(max(1, int(item.get("count") or 1)) for item in remaining_tasks),
+                    )
+                else:
+                    node.pop("pendingTasks", None)
+                    node["pending"] = 0
+                    node.pop("_generationBatchApplied", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
-            history_id = str(clean_history.get("id") or "")
             if history_id:
                 history = [item for item in history if str(item.get("id") or "") != history_id]
             history.append(clean_history)
             history = history[-5000:]
             self._histories[project_id] = history
+            # prune merge ledger 到仍存活的 history id，避免无限增长。
+            live_ids = {str(item.get("id") or "") for item in history}
+            self._generation_written_assets = {
+                key: value
+                for key, value in self._generation_written_assets.items()
+                if key in live_ids
+            }
             self._ensure_output_occurrence_ids(canvas, history)
             self._persist_history(project_id)
             result = self._commit_generation_canvas(project_id, canvas)
@@ -2357,6 +2403,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         *,
         task_id: str = "",
         require_pending: bool = False,
+        partial: bool = False,
     ) -> Dict[str, Any]:
         """Backward-compatible image specialization of complete_media_generation."""
         return self.complete_media_generation(
@@ -2367,6 +2414,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             media_kind="image",
             task_id=task_id,
             require_pending=require_pending,
+            partial=partial,
         )
 
     def apply_mutations(

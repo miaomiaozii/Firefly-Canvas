@@ -44,6 +44,23 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 app.add_exception_handler(JimengPendingError, jimeng_pending_exception_handler)
 
+DIAGNOSTICS_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'canvas-diagnostics.log')
+
+@app.post('/api/canvas-diagnostics')
+async def canvas_diagnostics(request: Request):
+    ensure_same_origin_request(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        line = json.dumps(body, ensure_ascii=False)
+        with open(DIAGNOSTICS_LOG, 'a', encoding='utf-8') as handle:
+            handle.write(line + '\n')
+    except Exception:
+        pass
+    return {'ok': True}
+
 async def project_local_edit_online_adapter(request: Dict[str, Any]) -> bytes:
     """Run local-edit generation through the normal routed online boundary.
 
@@ -750,6 +767,15 @@ async def jimeng_pending_exception_handler(request: Request, exc: JimengPendingE
 
 
 
+
+
+@app.middleware("http")
+async def no_cache_static_assets(request: Request, call_next):
+    # 前端迭代频繁，静态资源一律 no-cache，避免浏览器缓存旧 JS/CSS（画布 UI 反复出旧布局的根因）。
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.middleware("http")

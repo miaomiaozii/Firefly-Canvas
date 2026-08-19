@@ -1229,9 +1229,9 @@ def _provider_generation_semaphore(provider_id: str) -> 'asyncio.Semaphore':
         entry = _PROVIDER_GENERATION_SEMAPHORES.get(provider_id)
         if entry is None or entry[0] is not loop:
             try:
-                max_concurrency = max(1, int(os.environ.get('FIREFLY_PROVIDER_GENERATION_MAX_CONCURRENCY', '3') or '3'))
+                max_concurrency = max(1, int(os.environ.get('FIREFLY_PROVIDER_GENERATION_MAX_CONCURRENCY', '8') or '8'))
             except (TypeError, ValueError):
-                max_concurrency = 3
+                max_concurrency = 8
             entry = (loop, asyncio.Semaphore(max_concurrency))
             _PROVIDER_GENERATION_SEMAPHORES[provider_id] = entry
         return entry[1]
@@ -1691,12 +1691,23 @@ async def archive_project_generated_image(project_id: str, image_data: Dict[str,
             filename = generated_image_filename(index, mime_type)
             record = await asyncio.to_thread(_svc._main('project_store_call'), 'import_media_file', project_id, local_path, filename, mime_type, {**source_info, 'name': filename, 'locator': value})
         elif value.startswith(('http://', 'https://')):
-            timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
+            # 回传图通常几 MB，正常网络数秒内完成；read 超时收紧到 90s，避免慢 CDN
+            # 时单张图挂住 5 分钟导致整批任务「写入画布」阶段十几分钟不推进。
+            timeout = httpx.Timeout(connect=20.0, read=90.0, write=60.0, pool=20.0)
             descriptor, temporary_name = tempfile.mkstemp(prefix='firefly-generated-', suffix='.tmp')
             os.close(descriptor)
             temporary_path = Path(temporary_name)
             try:
-                await _download_generation_asset(value, temporary_path, timeout)
+                download_attempts = max(1, int(os.environ.get('FIREFLY_GENERATION_DOWNLOAD_RETRY_ATTEMPTS', '3') or '3'))
+                for attempt in range(download_attempts):
+                    try:
+                        await _download_generation_asset(value, temporary_path, timeout)
+                        break
+                    except ProjectStoreError:
+                        if attempt + 1 >= download_attempts:
+                            raise
+                        log_net_error(f'在线生图结果下载失败，重试 attempt={attempt + 1}', sys.exc_info()[1])
+                        await asyncio.sleep(min(8.0, 1.5 * (attempt + 1)))
                 width, height, mime_type = validate_generated_image(temporary_path)
                 filename = generated_image_filename(index, mime_type)
                 record = await asyncio.to_thread(_svc._main('project_store_call'), 'import_media_file', project_id, temporary_path, filename, mime_type, {**source_info, 'name': filename, 'locator': value})
@@ -1786,6 +1797,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         executed_prompt = apply_angle_preset(payload.prompt, payload.angle_preset)
         image_parameters = {'width': request_snapshot.width, 'height': request_snapshot.height, 'aspect_ratio': request_snapshot.aspect_ratio, 'resolution': request_snapshot.resolution, 'media_type': request_snapshot.media_type}
         scope_token = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)
+        progress_history_id = f'generation-{uuid.uuid4().hex}'
         try:
             for _ in range(payload.n):
                 image_data, raw = await _svc._main('generate_ai_image')(executed_prompt, payload.size, payload.quality, route.model, references, route.provider_id, preserve_model=True, image_parameters=image_parameters)
@@ -1796,14 +1808,44 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 if not candidates:
                     candidates = [image_data]
                 for candidate in candidates:
-                    generated_items.append(await archive_project_generated_image(project_id, candidate, len(generated_items)))
+                    item = await archive_project_generated_image(project_id, candidate, len(generated_items))
+                    generated_items.append(item)
+                    # 逐张增量写回：生成一张就落到画布一张，避免全部生成完才一次性写入。
+                    # 增量记录沿用同一 history id，最终 succeeded 记录会覆盖它。
+                    progress_timestamp = _svc._main('now_ms')()
+                    progress_record = {
+                        'id': progress_history_id,
+                        'type': 'online-image',
+                        'status': 'running',
+                        'prompt': payload.prompt,
+                        'executed_prompt': executed_prompt,
+                        'angle_preset': payload.angle_preset,
+                        'created_at': started_at,
+                        'createdAt': started_at,
+                        'completed_at': progress_timestamp,
+                        'runMs': max(0, progress_timestamp - started_at),
+                        'routing_mode': payload.routing_mode,
+                        'requested_provider_id': payload.provider_id,
+                        'requested_model': payload.model,
+                        'actual_provider_id': route.provider_id,
+                        'actual_provider_name': route.provider_name,
+                        'actual_model': route.model,
+                        'model': route.model,
+                        'route_reason': route.reason,
+                        'params': request_snapshot.to_dict(),
+                        'outputs': [{'asset_id': produced['asset_id'], 'kind': 'image'} for produced in generated_items],
+                        'result_node_id': payload.result_node_id,
+                    }
+                    progress_canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_image_generation', project_id, payload.result_node_id, [item], progress_record, task_id=task_id, partial=True)
+                    await asyncio.to_thread(_svc._main('project_store_call'), 'flush', project_id)
+                    await _svc._main('manager').broadcast_canvas_updated(project_id, int(progress_canvas.get('updated_at') or progress_timestamp))
         finally:
             PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope_token)
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回图片')
         timestamp = _svc._main('now_ms')()
-        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
-        canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record)
+        history_record = {'id': progress_history_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        canvas = await asyncio.to_thread(_svc._main('project_store_call'), 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record, task_id=task_id)
         await asyncio.to_thread(_svc._main('project_store_call'), 'flush', project_id)
         base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
         image_items = [{**item, 'url': base + urllib.parse.quote(item['asset_id'], safe='')} for item in generated_items]

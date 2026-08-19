@@ -24,9 +24,9 @@ from app.routers import api_project_library
 from firefly_projects import ProjectStore
 
 
-def tiny_png_base64():
+def tiny_png_base64(color=(38, 190, 133)):
     buffer = io.BytesIO()
-    Image.new("RGB", (3, 2), (38, 190, 133)).save(buffer, format="PNG")
+    Image.new("RGB", (3, 2), color).save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
@@ -1150,6 +1150,99 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(terminal_history["outputs"][0]["output_id"], node["images"][0]["output_id"])
         self.assertNotIn("pendingTasks", node)
         self.assertEqual(len([item for item in canvas["logs"] if item.get("task_id") == task_id]), 1)
+
+    def test_partial_completion_stages_images_while_keeping_pending_placeholder_state(self):
+        project = self.store.create_project("增量写回占位状态")
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result-node", "type": "smart-image", "images": []}}],
+            base_revision=0,
+        )
+        task_id = "project_img_partial_stage"
+        request_payload = {"prompt": "partial staging", "routing_mode": "auto", "n": 4, "media_type": "image", "result_node_id": "result-node", "base_revision": 1, "idempotency_key": "partial-stage"}
+        self.store.begin_image_generation(
+            project["id"],
+            "result-node",
+            {"taskId": task_id, "kind": "image", "count": 4, "idempotencyKey": "partial-stage", "requestPayload": request_payload},
+            base_revision=1,
+        )
+        first = self.store.import_media(project["id"], base64.b64decode(tiny_png_base64()), "first.png", "image/png")
+        second = self.store.import_media(project["id"], base64.b64decode(tiny_png_base64((216, 90, 58))), "second.png", "image/png")
+
+        def progress_record(outputs):
+            return {"id": "generation-partial", "task_id": task_id, "idempotency_key": "partial-stage", "type": "online-image", "status": "running", "prompt": "partial staging", "request_payload": request_payload, "outputs": outputs, "result_node_id": "result-node"}
+
+        self.store.complete_image_generation(
+            project["id"],
+            "result-node",
+            [{"asset_id": first["asset_id"], "kind": "image"}],
+            progress_record([{"asset_id": first["asset_id"], "kind": "image"}]),
+            task_id=task_id,
+            partial=True,
+        )
+        canvas = self.store.open_project(project["id"])["canvas"]
+        node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
+        self.assertEqual([item["asset_id"] for item in node["images"]], [first["asset_id"]])
+        self.assertFalse(node.get("running"))
+        self.assertEqual([item.get("taskId") for item in node.get("pendingTasks", [])], [task_id])
+        self.assertGreaterEqual(node.get("pending", 0), 3)
+        running_logs = [item for item in canvas["logs"] if item.get("id") == "generation-partial"]
+        self.assertEqual(len(running_logs), 1)
+        self.assertEqual(running_logs[0]["status"], "running")
+
+        self.store.complete_image_generation(
+            project["id"],
+            "result-node",
+            [{"asset_id": second["asset_id"], "kind": "image"}],
+            progress_record([{"asset_id": first["asset_id"], "kind": "image"}, {"asset_id": second["asset_id"], "kind": "image"}]),
+            task_id=task_id,
+            partial=True,
+        )
+        canvas = self.store.open_project(project["id"])["canvas"]
+        node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
+        self.assertEqual([item["asset_id"] for item in node["images"]], [first["asset_id"], second["asset_id"]])
+        self.assertIn("pendingTasks", node)
+
+        terminal = {"id": "generation-partial", "task_id": task_id, "idempotency_key": "partial-stage", "type": "online-image", "status": "succeeded", "prompt": "partial staging", "request_payload": request_payload, "outputs": [{"asset_id": first["asset_id"], "kind": "image"}, {"asset_id": second["asset_id"], "kind": "image"}], "result_node_id": "result-node"}
+        self.store.complete_image_generation(
+            project["id"],
+            "result-node",
+            [{"asset_id": first["asset_id"], "kind": "image"}, {"asset_id": second["asset_id"], "kind": "image"}],
+            terminal,
+            task_id=task_id,
+        )
+        canvas = self.store.open_project(project["id"])["canvas"]
+        node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
+        self.assertNotIn("pendingTasks", node)
+        self.assertEqual(node.get("pending", 0), 0)
+        self.assertEqual(
+            [item["asset_id"] for item in node["images"]],
+            [first["asset_id"], second["asset_id"]],
+        )
+        self.assertNotIn("_generationBatchApplied", node)
+        final_logs = [item for item in canvas["logs"] if item.get("id") == "generation-partial"]
+        self.assertEqual(len(final_logs), 1)
+        self.assertEqual(final_logs[0]["status"], "succeeded")
+        self.assertEqual(len(final_logs[0]["outputs"]), 2)
+
+    def test_partial_completion_requires_pending_guard_like_terminal_completion(self):
+        project = self.store.create_project("增量写回需 pending 守卫")
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result-node", "type": "smart-image", "images": []}}],
+            base_revision=0,
+        )
+        media = self.store.import_media(project["id"], base64.b64decode(tiny_png_base64()), "stray.png", "image/png")
+        with self.assertRaisesRegex(Exception, "生成任务已结束"):
+            self.store.complete_image_generation(
+                project["id"],
+                "result-node",
+                [{"asset_id": media["asset_id"], "kind": "image"}],
+                {"id": "generation-stray", "type": "online-image", "status": "running", "outputs": [], "result_node_id": "result-node"},
+                task_id="project_img_stray_partial",
+                partial=True,
+                require_pending=True,
+            )
 
     def test_retrying_a_failed_task_uses_one_new_identity_and_one_new_adapter_call(self):
         project = self.store.create_project("失败重试幂等")

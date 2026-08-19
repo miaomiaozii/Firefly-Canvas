@@ -385,13 +385,17 @@ class ProjectDeletionMixin:
                 )
                 selected_image = None
                 if target_node is not None:
-                    selected_image = self._pop_output_occurrence(
-                        target_node,
-                        "images",
-                        asset_id=asset_id,
-                        output_id=output_id,
-                        expected_index=None,
-                    )
+                    try:
+                        selected_image = self._pop_output_occurrence(
+                            target_node,
+                            "images",
+                            asset_id=asset_id,
+                            output_id=output_id,
+                            expected_index=None,
+                        )
+                    except _store.InvalidMutation:
+                        # target_node.images 可能没有该 output_id，忽略
+                        pass
 
                 deletion_id = f"deletion-{uuid.uuid4().hex}"
                 self._append_output_occurrence_tombstone(

@@ -5585,13 +5585,38 @@ def validate_generated_video(source) -> Tuple[int, int, str]:
         return (0, 0, 'video/x-msvideo')
     raise ProjectStoreError('在线模型返回的内容不是有效视频或不支持的视频格式')
 
+async def _resolve_generation_host(hostname: str, port: int, attempts: int = 2, timeout: float = 8.0):
+    """带超时地解析在线生成结果的主机名。
+
+    socket.getaddrinfo 是同步阻塞调用，放到 to_thread 里在 DNS 故障/黑洞时
+    线程会无限挂起（asyncio.wait_for 取消不了线程），曾导致项目生图任务
+    在 saving 阶段卡死到 1800s 超时。改用 loop.getaddrinfo 之后 wait_for
+    能可靠超时，并对瞬态 DNS 故障做有限重试。
+    """
+    loop = asyncio.get_running_loop()
+    last_error: BaseException = OSError('host resolution failed')
+    for _ in range(max(1, attempts)):
+        try:
+            return await asyncio.wait_for(
+                loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM),
+                timeout=timeout,
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            last_error = exc
+            await asyncio.sleep(0.4)
+    raise last_error
+
+
 async def ensure_public_generation_target(value: str, media_label: str='图片') -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     parsed = urllib.parse.urlsplit(str(value or ''))
     if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password:
         raise ProjectStoreError(f'在线模型返回了不安全的{media_label}地址')
     try:
-        addresses = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or (443 if parsed.scheme == 'https' else 80), type=socket.SOCK_STREAM)
-    except OSError as exc:
+        addresses = await _resolve_generation_host(
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == 'https' else 80),
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
         raise ProjectStoreError(f'在线模型返回的{media_label}地址无法解析') from exc
     resolved = {item[4][0].split('%', 1)[0] for item in addresses if item[4]}
     if not resolved or any((not ipaddress.ip_address(address).is_global for address in resolved)):

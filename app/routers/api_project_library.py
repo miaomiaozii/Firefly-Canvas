@@ -926,6 +926,18 @@ def update_project_image_task_progress(task_id: str, phase: str, **details):
         previous = task.get('progress') if isinstance(task.get('progress'), dict) else {}
         previous_index = int(previous.get('phase_index') or 0)
         if phase_index < previous_index:
+            # 单相前进只约束“阶段”本身；candidate_phases 是各候选的并发实时状态，
+            # 一张已完成（completed=6）后其他候选仍在推进，若这里直接 return，
+            # 后续候选的阶段更新会被全部丢弃，前端每格进度就不动了。
+            for key in ('bytes_done', 'bytes_total', 'current', 'total'):
+                if details.get(key) is not None:
+                    previous[key] = max(0, int(details[key]))
+            if details.get('candidate_phases') is not None:
+                previous['candidate_phases'] = [str(item) for item in details['candidate_phases']][:32]
+            if details.get('failed'):
+                previous['failed'] = True
+            task['progress'] = previous
+            task['updated_at'] = time.time()
             return
         started_at = int(previous.get('started_at') or round(float(task.get('created_at') or time.time()) * 1000))
         progress = {
@@ -937,10 +949,20 @@ def update_project_image_task_progress(task_id: str, phase: str, **details):
             'phase_started_at': int(previous.get('phase_started_at') or now) if phase_index == previous_index else now,
             'elapsed_ms': max(0, now - started_at),
         }
-        for key in ('bytes_done', 'bytes_total'):
+        for key in ('bytes_done', 'bytes_total', 'current', 'total'):
             if details.get(key) is not None:
                 progress[key] = max(0, int(details[key]))
+            elif key in previous:
+                # 重建时继承上一版细节：不带 candidate_phases/字节的 update（如
+                # 参考图上传进度）不能把已写入的每格阶段抹掉。
+                progress[key] = previous[key]
+        if details.get('candidate_phases') is not None:
+            progress['candidate_phases'] = [str(phase) for phase in details['candidate_phases']][:32]
+        elif previous.get('candidate_phases') is not None:
+            progress['candidate_phases'] = list(previous['candidate_phases'])
         if details.get('failed'):
+            progress['failed'] = True
+        elif previous.get('failed'):
             progress['failed'] = True
         task['progress'] = progress
         task['updated_at'] = time.time()
@@ -1183,6 +1205,14 @@ class ImageGenerationTaskTimeout(Exception):
     """任务级硬超时：provider 挂起时终止任务并落 timeout 终态。"""
 
 
+class _CandidateWriteFailure(Exception):
+    """候选在写回阶段（下载/归档）失败，区别于 provider 生成失败。"""
+
+    def __init__(self, cause):
+        super().__init__(str(getattr(cause, 'detail', None) or cause or '未知错误'))
+        self.cause = cause
+
+
 async def run_project_image_task(task_id: str, project_id: str, payload: ProjectImageGenerationRequest, request_snapshot: ImageGenerationRequest, route, registered_revision: int):
     started_at = _app_main.now_ms()
     generated_items = []
@@ -1204,15 +1234,35 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         scope_token = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)
         def progress_callback(phase, **details):
             update_project_image_task_progress(task_id, phase, **details)
+        # 每张候选各自的状态（前端按格显示真实进度）：同一任务级 phase 单调前进，
+        # candidate_phases 通过 details 携带，每次更新时重新计算“最高阶段”作为任务级 phase。
+        candidate_phases = ['queued'] * payload.n
+        candidate_lock = asyncio.Lock()
+
+        async def set_candidate_phase(index, phase):
+            if not (isinstance(index, int) and 0 <= index < len(candidate_phases)):
+                return
+            async with candidate_lock:
+                candidate_phases[index] = phase
+                # 任务级 phase 取“最慢”的非 completed 候选：一张完成后 top 若直接取
+                # max，completed(6) 会压过其他仍在生成的候选，任务面板会提前显示
+                # “已完成”，与仍在转的「生成中」胶囊矛盾。
+                active_phases = [p for p in candidate_phases if p != 'completed'] or ['queued']
+                top_phase = max(active_phases, key=lambda name: PROJECT_IMAGE_PROGRESS_PHASES.get(name, (0, ''))[0])
+                update_project_image_task_progress(task_id, top_phase, candidate_phases=list(candidate_phases))
         try:
             # #41: count=8 连发——受控并发（每 provider 信号量 + 429 退避，见
             # run_provider_generation_with_backoff）+ 任务级硬超时。顺序串行会让用户
             # 看到「间隔很久一张一张传」；无 deadline 则 provider 挂起时任务永远
             # running、前端永远收不到终态。
             timeout_seconds = image_generation_task_timeout_seconds()
+            # partial 逐张写回共用的 history id：running 进度记录与最终 succeeded 记录同 id 覆盖。
+            progress_history_id = f'generation-{uuid.uuid4().hex}'
 
-            async def generate_one_candidate():
+            async def generate_one_candidate(candidate_index):
+                candidate_start = _app_main.now_ms()
                 raise_if_project_image_task_cancelled(task_id)
+                await set_candidate_phase(candidate_index, 'uploading' if references else 'provider_generating')
                 image_data, raw = await _app_main.run_provider_generation_with_backoff(
                     route.provider_id,
                     _app_main.generate_ai_image,
@@ -1233,22 +1283,101 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     candidates = []
                 if not candidates:
                     candidates = [image_data]
+                provider_elapsed = _app_main.now_ms() - candidate_start
+                await set_candidate_phase(candidate_index, 'receiving')
                 update_project_image_task_progress(task_id, 'saving')
                 for candidate in candidates:
                     raise_if_project_image_task_cancelled(task_id)
-                    generated_items.append(await archive_project_generated_image(project_id, candidate, len(generated_items)))
+                    await set_candidate_phase(candidate_index, 'saving')
+                    archive_start = _app_main.now_ms()
+                    try:
+                        item = await archive_project_generated_image(project_id, candidate, len(generated_items))
+                    except BaseException as exc:
+                        raise _CandidateWriteFailure(exc) from exc
+                    print(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}', file=_sys.stderr, flush=True)
+                    generated_items.append(item)
+                    update_project_image_task_progress(task_id, 'saving', current=len(generated_items), total=payload.n)
+                    # 逐张写回：图片一归档就落到节点上（保留 pendingTasks 让前端继续显示剩余占位），
+                    # 前端可在任务运行中逐个看到已完成的结果；单张失败不中断整体任务（final 会带上全量）。
+                    partial_start = _app_main.now_ms()
+                    partial_timestamp = partial_start
+                    partial_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'running', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'updated_at': partial_timestamp, 'completed_at': partial_timestamp, 'runMs': max(0, partial_timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'}], 'result_node_id': payload.result_node_id}
+                    partial_canvas = None
+                    try:
+                        partial_canvas = await asyncio.to_thread(
+                            _app_main.project_store_call,
+                            'complete_image_generation',
+                            project_id,
+                            payload.result_node_id,
+                            [item],
+                            partial_record,
+                            task_id=task_id,
+                            require_pending=True,
+                            partial=True,
+                        )
+                    except Exception:
+                        # 单张 partial 写回失败不中断任务：final complete 仍会携带全量
+                        # media（store 层按 history id 去重合并，不会重复）。
+                        pass
+                    print(f'[gen-task {task_id[:8]}] partial complete={_app_main.now_ms() - partial_start}ms', file=_sys.stderr, flush=True)
+                    if partial_canvas is not None:
+                        try:
+                            flush_start = _app_main.now_ms()
+                            await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+                            await manager.broadcast_canvas_updated(project_id, int(partial_canvas.get('updated_at') or partial_timestamp))
+                            print(f'[gen-task {task_id[:8]}] flush+broadcast={_app_main.now_ms() - flush_start}ms', file=_sys.stderr, flush=True)
+                        except Exception:
+                            pass
+                await set_candidate_phase(candidate_index, 'completed')
             try:
-                await asyncio.wait_for(asyncio.gather(*(generate_one_candidate() for _ in range(payload.n))), timeout=timeout_seconds)
+                candidate_results = await asyncio.wait_for(
+                    asyncio.gather(*(generate_one_candidate(i) for i in range(payload.n)), return_exceptions=True),
+                    timeout=timeout_seconds,
+                )
             except (TimeoutError, asyncio.TimeoutError):
                 raise ImageGenerationTaskTimeout(f'生成任务执行超时（{timeout_seconds:g}s），已终止') from None
+            # 候选级隔离：个别候选失败不再拖垮整批。只对写回失败（下载/归档）补偿重试，
+            # provider 生成失败不补偿（退避重试已在适配器内做完），避免把测试/上游的
+            # 一次性失败（fail_then_succeed）错误地“救活”成成功。
+            candidate_failures = [(index, result) for index, result in enumerate(candidate_results) if isinstance(result, BaseException)]
+            hard_failures = [(index, failure) for index, failure in candidate_failures if not isinstance(failure, _CandidateWriteFailure)]
+            retryable = [(index, failure) for index, failure in candidate_failures if isinstance(failure, _CandidateWriteFailure)]
+            if retryable and not project_image_task_cancel_requested(task_id):
+                for index, failure in retryable:
+                    print(f'[gen-task {task_id[:8]}] candidate #{index} write-back failed ({type(failure).__name__}: {str(failure)[:140]}), compensating', file=_sys.stderr, flush=True)
+                retry_results = await asyncio.gather(
+                    *(generate_one_candidate(index) for index, _ in retryable[:4]),
+                    return_exceptions=True,
+                )
+                for (index, _), result in zip(retryable[:4], retry_results):
+                    if isinstance(result, BaseException):
+                        hard_failures.append((index, result))
+            candidate_failures = hard_failures
+            if candidate_failures:
+                def _unwrap(failure):
+                    return failure.cause if isinstance(failure, _CandidateWriteFailure) else failure
+                if not generated_items:
+                    raise _unwrap(candidate_failures[0][1])
+                failure_text = '；'.join(dict.fromkeys(str(getattr(_unwrap(failure), 'detail', None) or _unwrap(failure) or '未知错误')[:160] for _, failure in candidate_failures))
+                raise ProjectStoreError(f'{len(candidate_failures)} 张图片写回失败（{len(generated_items)}/{payload.n} 已写回画布）：{failure_text}')
         finally:
             PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope_token)
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回图片')
         timestamp = _app_main.now_ms()
-        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
         raise_if_project_image_task_cancelled(task_id)
-        canvas = await asyncio.to_thread(_app_main.project_store_call, 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record, task_id=task_id, require_pending=True)
+        canvas = None
+        last_complete_error = None
+        for complete_attempt in range(3):
+            try:
+                canvas = await asyncio.to_thread(_app_main.project_store_call, 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record, task_id=task_id, require_pending=True)
+                break
+            except Exception as exc:
+                last_complete_error = exc
+                await asyncio.sleep(min(2.0, 0.4 * (complete_attempt + 1)))
+        if canvas is None:
+            raise last_complete_error
         base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
         image_items = [{**item, 'url': base + urllib.parse.quote(item['asset_id'], safe='')} for item in generated_items]
         result = {'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'images': [item['url'] for item in image_items], 'image_items': image_items, 'provider_id': route.provider_id, 'provider_name': route.provider_name, 'model': route.model, 'route': route.to_dict(), 'history_id': history_record['id'], 'history_recorded': True, 'history_record': history_record, 'project_id': project_id, 'project_revision': canvas['revision'], 'registered_revision': registered_revision, 'result_node_id': payload.result_node_id, 'final_node': next((item for item in canvas.get('nodes') or [] if item.get('id') == payload.result_node_id), None)}
@@ -1276,6 +1405,8 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
         await cleanup_project_generation_orphans(project_id)
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         if project_image_task_cancel_requested(task_id):
             with CANVAS_TASK_LOCK:
                 orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
@@ -1289,7 +1420,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             failure_progress = copy.deepcopy((CANVAS_TASKS.get(task_id) or {}).get('progress') or {})
         failure_result = None
         resolved_status = 'timeout' if isinstance(exc, ImageGenerationTaskTimeout) else 'failed'
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
+        # 取回兑底：已归档成功的图写进失败记录 outputs，客户端可凭 task_id 重新取回。
+        failed_outputs = [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items]
+        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail)}
         try:
             failed_canvas = await asyncio.to_thread(
                 _app_main.project_store_call,
@@ -1522,7 +1655,9 @@ def reserve_project_image_task(project_id: str, task_id: str, payload: ProjectIm
             if len(project_active) >= PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT:
                 raise HTTPException(status_code=429, detail='当前项目同时最多运行 8 个在线生图任务')
             CANVAS_TASKS[task_id] = {'id': task_id, 'type': 'project-online-image', 'project_id': project_id, 'result_node_id': payload.result_node_id, 'status': 'registering', 'created_at': time.time(), 'updated_at': time.time(), 'result': None, 'error': '', 'provider_id': route.provider_id, 'model': route.model, 'route': route.to_dict(), 'request_payload': payload.model_dump(), 'idempotency_key': idempotency_key}
-    update_project_image_task_progress(task_id, 'queued')
+    # 初始就把每张候选的「排队」阶段写入进度，前端首屏即可让每个占位格显示
+    # 各自的阶段标签（此前只有编号，用户看不出逐格进度）。
+    update_project_image_task_progress(task_id, 'queued', candidate_phases=['queued'] * int(payload.n))
     return None
 
 
@@ -1892,7 +2027,7 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
                     })
 
     try:
-        task_record = {'taskId': task_id, 'kind': 'image', 'count': payload.n, 'providerId': route.provider_id, 'model': route.model, 'prompt': payload.prompt, 'referenceAssetIds': list(payload.reference_asset_ids), 'idempotencyKey': stable_idempotency_key, 'requestPayload': copy.deepcopy(durable_request_payload), 'route': route.to_dict(), 'createdAt': time.time()}
+        task_record = {'taskId': task_id, 'kind': 'image', 'count': payload.n, 'providerId': route.provider_id, 'model': route.model, 'prompt': payload.prompt, 'size': payload.size, 'referenceAssetIds': list(payload.reference_asset_ids), 'idempotencyKey': stable_idempotency_key, 'requestPayload': copy.deepcopy(durable_request_payload), 'route': route.to_dict(), 'createdAt': time.time()}
         try:
             registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=payload.base_revision)
         except RevisionConflict as conflict:
@@ -1902,6 +2037,7 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
                 raise
             registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=latest_revision)
         await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+        print(f'[gen-task {task_id[:8]}] register payload.size={payload.size!r} record_size={task_record.get("size")!r} rp_size={task_record.get("requestPayload", {}).get("size")!r}', file=_sys.stderr, flush=True)
     except RevisionConflict as exc:
         await compensate_registration_failure(str(exc))
         await cleanup_project_generation_orphans(project_id)
@@ -3479,6 +3615,12 @@ async def delete_project_generated_original(project_id: str, payload: ProjectOri
         )
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+    except InvalidMutation as exc:
+        try:
+            canvas_data = _app_main.project_store_call('open_project', project_id)['canvas']
+        except Exception:
+            canvas_data = None
+        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': canvas_data}) from exc
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
