@@ -15814,10 +15814,10 @@ function renderInputThumbsRow(node){
             : '';
         const sourceUrl = img.originalLocalUrl || img.url || '';
         const key = inputRefKey(img);
-        const isBlocked = isInputRefBlocked(node, img);
-        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-toggle-blocked-reference="${escapeHtml(key)}" title="${escapeHtml(isBlocked ? '恢复此参考图' : '屏蔽此参考图')}" aria-label="${escapeHtml(isBlocked ? '恢复此参考图' : '屏蔽此参考图')}">×</button>`;
+        const isUpstream = !manualRefKeys.has(key);
+        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-remove-reference="${escapeHtml(key)}" title="${escapeHtml(isUpstream ? '断开此参考图连线' : '删除参考图')}" aria-label="${escapeHtml(isUpstream ? '断开此参考图连线' : '删除参考图')}">×</button>`;
         const tooltip = [img.name || tr('smart.inputNum').replace('{n}', String(i + 1)), title, markerHint].filter(Boolean).join(' · ');
-        return `<div class="input-thumb ${isSelf ? 'input-self' : ''} ${manualRefKeys.has(key) ? 'input-manual-ref' : ''} ${isBlocked ? 'input-blocked' : ''}" draggable="false" data-thumb-index="${i}" data-reference-marker="${referenceMarker || ''}" data-node-id="${escapeHtml(img.nodeId || '')}" data-image-index="${img.imageIndex ?? ''}" data-url="${escapeHtml(img.url || '')}" data-source-url="${escapeHtml(sourceUrl)}" title="${escapeHtml(tooltip)}">${inner}<span class="input-thumb-label">${escapeHtml(label)}</span>${removeBtn}</div>`;
+        return `<div class="input-thumb ${isSelf ? 'input-self' : ''} ${manualRefKeys.has(key) ? 'input-manual-ref' : ''}" draggable="false" data-thumb-index="${i}" data-reference-marker="${referenceMarker || ''}" data-node-id="${escapeHtml(img.nodeId || '')}" data-image-index="${img.imageIndex ?? ''}" data-url="${escapeHtml(img.url || '')}" data-source-url="${escapeHtml(sourceUrl)}" title="${escapeHtml(tooltip)}">${inner}<span class="input-thumb-label">${escapeHtml(label)}</span>${removeBtn}</div>`;
     }).join('');
     inputThumbsRow.innerHTML = `<div class="input-thumb-list">${thumbsHtml}${dedup.length > 1 ? `<span class="input-thumb-count">${escapeHtml(tr('smart.inputCount').replace('{n}', String(dedup.length)))}</span>` : ''}</div><div class="input-thumb-actions">${addButton}</div>`;
     bindSmartPreviewImageFallbacks(inputThumbsRow);
@@ -15833,19 +15833,25 @@ function bindInputThumbReferenceActions(){
             toggleAssetMentionPickerFromThumbs();
         });
     });
-    inputThumbsRow?.querySelectorAll('[data-input-toggle-blocked-reference]').forEach(btn => {
+    inputThumbsRow?.querySelectorAll('[data-input-remove-reference]').forEach(btn => {
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
             const node = selectedNode();
             if(!node) return;
-            const key = btn.dataset.inputToggleBlockedReference || '';
+            const key = btn.dataset.inputRemoveReference || '';
             const thumbs = Array.from(inputThumbsRow.querySelectorAll('.input-thumb'));
-            const thumb = thumbs.find(el => el.querySelector(`[data-input-toggle-blocked-reference="${key}"]`));
+            const thumb = thumbs.find(el => el.querySelector(`[data-input-remove-reference="${key}"]`));
             if(!thumb) return;
-            const url = thumb.dataset.url || '';
-            const img = {url, nodeId: thumb.dataset.nodeId || '', imageIndex: thumb.dataset.imageIndex || ''};
-            toggleInputRefBlocked(node, img);
+            const nodeId = thumb.dataset.nodeId || '';
+            const isManual = thumb.classList.contains('input-manual-ref');
+            if(isManual){
+                removeManualReferenceFromSelectedNode(key);
+            } else if(nodeId && canvas){
+                // 断开上游节点的连线
+                canvas.connections = (canvas.connections || []).filter(c => !(c.from === nodeId && c.to === node.id && c.kind === 'input' && c.role === 'references'));
+                triggerSmartCanvasChanged();
+            }
         });
     });
 }
