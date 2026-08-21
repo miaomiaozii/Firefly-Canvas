@@ -1543,6 +1543,9 @@ const SMART_GROUP_LAYOUT = {
     SUMMARY_GAP: 8,         // summary 到内容的间距
 };
 
+// 批量生图独立节点的外框垂直 padding（加高外框，网格垂直居中，底边下移两倍边距）
+const BATCH_NODE_PADDING = SMART_GROUP_LAYOUT.PADDING * 4; // 64
+
 // 单图节点规范
 const SINGLE_IMAGE_LAYOUT = {
     MAX_WIDTH: 260,         // 单图最大宽度
@@ -2363,9 +2366,10 @@ function imageLayout(images, scale=1, node=null){
     const genAspect = node?._generationAspect;
     if(Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0){
         const genGrid = getBatchThumbGridSize(count);
-        const genPad = SMART_GROUP_LAYOUT.PADDING * 2;
-        const genBoxW = genGrid.gridW + genPad;
-        const genBoxH = genGrid.gridH + genPad;
+        const genPadW = SMART_GROUP_LAYOUT.PADDING * 2; // 水平 padding 保持 32
+        const genPadH = BATCH_NODE_PADDING;            // 垂直 padding 加高到 64
+        const genBoxW = genGrid.gridW + genPadW;
+        const genBoxH = genGrid.gridH + genPadH;
         const hasExplicit = Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40;
         // 尊重用户手动调整后的节点尺寸；无显式尺寸或与规范一致时使用网格规范
         const explicitMatches = !hasExplicit || (Math.abs(explicitW - genBoxW) <= 8 && Math.abs(explicitH - genBoxH) <= 8);
@@ -16696,10 +16700,12 @@ function pendingBoxSize(count, options={}){
     }
     
     // 批量：固定 4:3 缩略图网格（与生图历史一致）
-    // 独立生成节点没有 summary 行，box = 网格 + 四边等距 padding（与 imageLayout 一致）
+    // 独立生成节点没有 summary 行，box = 网格 + padding（与 imageLayout 一致）
+    // 水平 padding 32，垂直 padding 64（加高外框，网格垂直居中）
     const grid = getBatchThumbGridSize(c);
-    const pad = SMART_GROUP_LAYOUT.PADDING * 2;
-    return {w:grid.gridW + pad, h:grid.gridH + pad};
+    const padW = SMART_GROUP_LAYOUT.PADDING * 2;
+    const padH = BATCH_NODE_PADDING;
+    return {w:grid.gridW + padW, h:grid.gridH + padH};
 }
 function mentionTokenHtml(img){
     if(!img?.url) return '';
