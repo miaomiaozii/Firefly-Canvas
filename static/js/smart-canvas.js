@@ -1543,8 +1543,11 @@ const SMART_GROUP_LAYOUT = {
     SUMMARY_GAP: 8,         // summary 到内容的间距
 };
 
-// 批量生图独立节点的外框垂直 padding（加高外框，网格垂直居中，底边下移两倍边距）
-const BATCH_NODE_PADDING = SMART_GROUP_LAYOUT.PADDING * 4; // 64
+// 批量生图独立节点外框 padding 规范：占位 / 逐张写回 / 完成三阶段必须共用同一组值，
+// 保证外框尺寸恒定不跳变（水平每边 16px、垂直每边 32px，网格垂直居中留呼吸空间）。
+const BATCH_NODE_PAD_H = SMART_GROUP_LAYOUT.PADDING * 2; // 32
+const BATCH_NODE_PAD_V = SMART_GROUP_LAYOUT.PADDING * 4; // 64
+const BATCH_NODE_PADDING = BATCH_NODE_PAD_V; // 兼容旧引用
 
 // 单图节点规范
 const SINGLE_IMAGE_LAYOUT = {
@@ -2314,16 +2317,16 @@ function imageLayout(images, scale=1, node=null){
             return {cols:1, rows:1, width:memberSize.w, height:memberSize.h, thumb:memberSize.w, single:true, pendingLock:true};
         }
         
-        // 批量：固定 4:3 缩略图网格（独立生成卡片：四边等距，无 summary 行）
+        // 批量：固定 4:3 缩略图网格（独立生成卡片：无 summary 行）
+        // 与 pendingBoxSize / 完成阶段共用 BATCH_NODE_PAD_H/V，三阶段外框尺寸一致。
         if(total > 1){
             const grid = getBatchThumbGridSize(total);
-            const pad = SMART_GROUP_LAYOUT.PADDING * 2;
             return {
                 cols:grid.cols,
                 rows:grid.rows,
                 visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, grid.rows),
-                width:grid.gridW + pad,
-                height:grid.gridH + pad,
+                width:grid.gridW + BATCH_NODE_PAD_H,
+                height:grid.gridH + BATCH_NODE_PAD_V,
                 thumb:BATCH_THUMB.WIDTH,
                 gridHeight:grid.gridH,
                 pendingLock:true
@@ -2361,21 +2364,19 @@ function imageLayout(images, scale=1, node=null){
         const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
         return {cols, rows, visibleRows, width:Math.max(Math.round(226*s), cols * cell + PAD), height:gridHeight + PAD, thumb, gridHeight};
     }
-    // 批量生图节点（提交时固化了 _generationAspect）：完成阶段沿用批量缩略图网格规范，
-    // 保证占位 → 写回 → 完成三个阶段尺寸一致（136px 宽网格、四边等距、无 summary 行）。
+    // 批量生图节点（提交时固化了 _batchTotal / _generationAspect）：完成阶段强制使用
+    // 批量缩略图网格规范，且网格行列以提交时固化的 _batchTotal 为准（而非当前图片数）——
+    // 占位 → 逐张写回 → 完成三个阶段几何恒定；部分失败只留空格不改变框尺寸，
+    // 也不会因图片数与占位数不一致而溢出 / 浮出外框。
     const genAspect = node?._generationAspect;
-    if(Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0){
-        const genGrid = getBatchThumbGridSize(count);
-        const genPadW = SMART_GROUP_LAYOUT.PADDING * 2; // 水平 padding 保持 32
-        const genPadH = BATCH_NODE_PADDING;            // 垂直 padding 加高到 64
-        const genBoxW = genGrid.gridW + genPadW;
-        const genBoxH = genGrid.gridH + genPadH;
-        const hasExplicit = Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40;
-        // 尊重用户手动调整后的节点尺寸；无显式尺寸或与规范一致时使用网格规范
-        const explicitMatches = !hasExplicit || (Math.abs(explicitW - genBoxW) <= 8 && Math.abs(explicitH - genBoxH) <= 8);
-        if(explicitMatches){
-            return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH};
-        }
+    const batchTotal = Math.max(0, Math.min(8, Number(node?._batchTotal) || 0));
+    const isBatchGenNode = batchTotal > 1 || (Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0);
+    if(isBatchGenNode){
+        const gridCount = Math.max(2, batchTotal > 1 ? batchTotal : count);
+        const genGrid = getBatchThumbGridSize(gridCount);
+        const genBoxW = genGrid.gridW + BATCH_NODE_PAD_H;
+        const genBoxH = genGrid.gridH + BATCH_NODE_PAD_V;
+        return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH};
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
@@ -7275,13 +7276,16 @@ function updateNodeElementDuringResize(node){
         }
         const loadingGrid = body.querySelector('.loading-skeleton');
         if(loadingGrid){
-            const count = Math.max(1, Number(node.pending) || 1);
-            const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
-            const rows = Math.ceil(count / cols);
-            loadingGrid.style.width = `${layout.width}px`;
-            loadingGrid.style.height = `${layout.height}px`;
-            loadingGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-            loadingGrid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+            // 批量占位格必须与 generationPlaceholderHtml/imageLayout 保持同一套规范：
+            // 容器铺满 node-body（节点 16px padding 提供外边距），格子固定 136×102，
+            // 列/行由 _batchTotal 经 getBatchThumbGridSize 决定（此前用 sqrt+1fr 会在
+            // 图片写回触发本函数时把占位网格拉变形，导致格子越界/图片浮出框外）。
+            const count = Math.max(2, Math.min(8, Number(node._batchTotal) || Number(node.pending) || 2));
+            const batch = getBatchThumbGridSize(count);
+            loadingGrid.style.width = '100%';
+            loadingGrid.style.height = '100%';
+            loadingGrid.style.gridTemplateColumns = `repeat(${batch.cols}, ${BATCH_THUMB.WIDTH}px)`;
+            loadingGrid.style.gridTemplateRows = `repeat(${batch.rows}, ${BATCH_THUMB.HEIGHT}px)`;
         }
         const maxVisibleRows = isSmartGroupNode(node)
             ? (smartGroupCompactMembers(node).length ? Number(layout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS)
@@ -10384,19 +10388,12 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
         }
         return `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}">${index === completedCount ? copy : `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-idx">${index + 1}/${total}</span></span></div>`}</div>`;
     }).join('');
-    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:${layout.width}px;height:${layout.height}px;padding:16px;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>`;
+    // 容器铺满 node-body（width/height:100%）：节点自身的 16px padding 即外边距，
+    // 136×102 固定格在剩余区域内居中，与完成阶段 thumb-grid 的几何完全一致，
+    // 避免此前用 layout.width/height 直接定宽导致的溢出/双重 padding。
+    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:100%;height:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>`;
 }
 function nodeBodyHtml(node, layout){
-    try {
-        const probeTask = smartPendingTasks(node)[0] || {};
-        const probeDiag = {kind:'img-layout', at:Date.now(), nodeId: node?.id, branch:'nodeBodyHtml', hasFixed: Boolean(node && node._generationAspect), sizeText: String(probeTask.size || probeTask.requestPayload?.size || ''), pending: node?.pending, queued: Boolean(node?.queued), imgs: (node?.images || []).length, layoutW: layout?.width, layoutH: layout?.height, cols: layout?.cols || null, cellW: layout?.thumb || null, gridH: layout?.gridHeight || null, nodeW: node?.w, nodeH: node?.h};
-        console.log('[img-layout] nodeBody', JSON.stringify(probeDiag));
-        const probePrev = window.__layoutProbe && window.__layoutProbe[node?.id];
-        if(!probePrev || probePrev.layoutH !== probeDiag.layoutH || probePrev.pending !== probeDiag.pending || probePrev.imgs !== probeDiag.imgs || probePrev.queued !== probeDiag.queued){
-            (window.__layoutProbe = window.__layoutProbe || {})[node?.id] = {layoutH: probeDiag.layoutH, pending: probeDiag.pending, imgs: probeDiag.imgs, queued: probeDiag.queued};
-            fetch('/api/canvas-diagnostics', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(probeDiag)}).catch(()=>{});
-        }
-    } catch(_e) { try { console.warn('[img-layout] probe error', _e); } catch(_e2) {} }
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
     if(node.type === 'smart-group') return smartGroupBodyHtml(node);
     if(isSmartConversationNode(node)) return conversationNodeBodyHtml(node);
@@ -10433,13 +10430,19 @@ function nodeBodyHtml(node, layout){
         const maxHeight = Number(layout.gridHeight) || mediaGroupGridHeight(imgs, layout.cols, visibleRows, layout.thumb);
         // 固化比例（_generationAspect）存在时，缩略格尺寸锁定为 thumb×cellH，
         // 图在格内 contain 居中——行高不再由图片自身比例决定，卡片尺寸与占位阶段一致。
-        const fixedAspect = node?._generationAspect;
+        // 批量节点没有固化比例时（旧数据），按批量缩略格规范 4:3 兑底。
+        const fixedAspect = node?._generationAspect || (Number(node?._batchTotal) > 1 ? {w:BATCH_THUMB.ASPECT.w, h:BATCH_THUMB.ASPECT.h} : null);
         // 批量生图节点：固定 136×102（4:3）缩略格 + 9px 间距，与占位阶段/生图历史一致
         const isBatchSpec = Number(layout.thumb) === BATCH_THUMB.WIDTH && (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0);
         const fixedCellH = isBatchSpec ? BATCH_THUMB.HEIGHT : (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
         const thumbItemStyleFor = img => fixedCellH > 0 ? `--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px` : thumbItemStyle(img, layout.thumb);
         const gridGapStyle = isBatchSpec ? `; gap:${BATCH_THUMB.GAP}px` : '';
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
+        // 批量生图终态（未运行中）若只成功部分张数：补齐缺失的格子为虚线空位，
+        // 让网格几何与占位/生图阶段完全一致，避免 3/8 时只浮 3 张图、框内大片空白。
+        const batchSlots = !node.pending && Number(node?._batchTotal) > 1 ? Math.min(8, Number(node._batchTotal)) : 0;
+        const missingSlots = isBatchSpec && fixedCellH > 0 ? Math.max(0, batchSlots - imgs.length) : 0;
+        const emptySlotHtml = Array.from({length: missingSlots}).map(() => `<div class="thumb-empty-slot" style="--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px" aria-hidden="true"></div>`).join('');
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}${emptySlotHtml}</div>`;
     }
     if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`;
     return `<div class="node-drop" data-upload-action="files">
@@ -16700,12 +16703,9 @@ function pendingBoxSize(count, options={}){
     }
     
     // 批量：固定 4:3 缩略图网格（与生图历史一致）
-    // 独立生成节点没有 summary 行，box = 网格 + padding（与 imageLayout 一致）
-    // 水平 padding 32，垂直 padding 64（加高外框，网格垂直居中）
+    // 独立生成节点没有 summary 行，box = 网格 + padding（与 imageLayout 三阶段共用同一常量）
     const grid = getBatchThumbGridSize(c);
-    const padW = SMART_GROUP_LAYOUT.PADDING * 2;
-    const padH = BATCH_NODE_PADDING;
-    return {w:grid.gridW + padW, h:grid.gridH + padH};
+    return {w:grid.gridW + BATCH_NODE_PAD_H, h:grid.gridH + BATCH_NODE_PAD_V};
 }
 function mentionTokenHtml(img){
     if(!img?.url) return '';
@@ -19169,6 +19169,24 @@ async function runGeneration(){
     if(pendingHistoryLogId) runLog.pendingHistoryLogId = pendingHistoryLogId;
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
+        // 新一轮生成开始：框内已有上一轮残留图片（且没有仍在飞行的任务）时，
+        // 先把旧图归档到历史分组再清空，按本轮真实并发数(1-8)重建占位框。
+        // 否则旧图会占用占位格、写回的新图只能追加在旧图之后，8 并发时后半截图
+        // 写不进去、节点永远停在“生成中”。
+        const leftoverImages = (pendingNode.images || []).filter(img => img?.url);
+        if(leftoverImages.length && !priorPendingTasks.length){
+            const history = ensureHistoryGroupForNode(pendingNode);
+            history.images = cleanHistoryImages([...leftoverImages.map(img => ({...img})), ...(history.images || [])]);
+            history.title = '历史分组';
+            history.outputKind = mediaKindForUrls(history.images || [], 'image');
+            history.scale = MEDIA_GROUP_DEFAULT_SCALE;
+            delete history.w;
+            delete history.h;
+            pendingNode.images = [];
+            pendingNode.failedGenerationTasks = [];
+            pendingNode.recoveredGenerationTasks = [];
+            selectedImage = {nodeId:'', index:-1};
+        }
         const priorPendingCount = priorPendingTasks.reduce((total, task) => total + Math.max(1, Number(task?.count || 1)), 0);
         pendingNode.pending = Math.max(1, priorPendingCount + Math.max(1, Number(expectedCount) || 1));
         // 固化本批占位格总数：写回/完成阶段布局都以它为准，避免 node.pending 递减导致尺寸跳变

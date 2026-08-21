@@ -547,6 +547,7 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .theme-dark .thumb-grid { scrollbar-color:rgba(148,163,184,.38) transparent; }
 .theme-dark .thumb-grid::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); }
 .thumb-item { position:relative; width:var(--thumb-w, var(--thumb-size, 96px)); height:var(--thumb-h, var(--thumb-size, 96px)); display:flex; align-items:center; justify-content:center; justify-self:center; overflow:hidden; border:1px solid rgba(148,163,184,.38); border-radius:12px; background:var(--soft); transition:border-color .12s ease, box-shadow .14s ease; cursor:pointer; }
+.thumb-empty-slot { position:relative; width:var(--thumb-w, var(--thumb-size, 96px)); height:var(--thumb-h, var(--thumb-size, 96px)); justify-self:center; border:1px dashed color-mix(in srgb, var(--muted) 42%, transparent); border-radius:12px; background:transparent; pointer-events:none; }
 .thumb-item:hover { z-index:1; }
 .thumb-item.image-selected { z-index:2; }
 .thumb-item img { width:auto; height:auto; max-width:100%; max-height:100%; object-fit:contain; object-position:center; border-radius:0; background:var(--soft); display:block; }
@@ -623,6 +624,10 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .image-node.drop-target { outline:2px dashed var(--strong); outline-offset:4px; border-radius:16px; }
 .image-node.drag-out { opacity:.5; }
 .run-time-pill { position:absolute; right:41px; top:8px; z-index:7; height:26px; padding:0 8px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background:rgba(37,99,235,.92); color:#fff; font-size:10px; font-weight:800; font-variant-numeric:tabular-nums; box-shadow:0 8px 18px rgba(15,23,42,.18); pointer-events:none; }
+/* 批量占位节点与完成后的 group-node 保持同一套 16px 内边距，
+   让占位格/完成格距外框的边距一致（用户反馈的“生成前后边距变化”）。 */
+.image-node.node-pending:not(.smart-group-member-node) { box-sizing:border-box; padding:16px; }
+.image-node.node-pending:not(.smart-group-member-node) .node-body { height:100%; min-height:0; }
 .image-node.node-pending .node-body::after { content:""; position:absolute; inset:0; z-index:6; border:2px solid color-mix(in srgb, var(--accent) 72%, transparent); border-radius:12px; box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), inset 0 0 26px color-mix(in srgb, var(--accent) 10%, transparent); pointer-events:none; animation:smart-generation-pending 1.2s ease-in-out infinite; }
 .image-node.generation-result-enter .node-img,
 .image-node.generation-result-enter .media-video-card { animation:generation-result-enter .34s cubic-bezier(.2,.8,.2,1) both; }
