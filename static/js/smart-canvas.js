@@ -1526,6 +1526,137 @@ const MEDIA_GROUP_THUMB_BASE = 224;
 const MEDIA_GROUP_MAX_VISIBLE_ROWS = 3;
 // 智能分组卡片内的图片网格：超过这么多排就出现纵向滚动（区别于多图节点的 3 排）。
 const SMART_GROUP_MAX_VISIBLE_ROWS = 4;
+
+// ========== 批量生图缩略图规范（单一数据源） ==========
+// 参考生图历史面板：136px 宽、4:3 比例的卡片
+const BATCH_THUMB = {
+    ASPECT: {w:4, h:3},    // 4:3 横图
+    WIDTH: 136,             // 宽度（与生图历史一致）
+    HEIGHT: 102,            // 高度（136 × 3/4）
+    GAP: 9,                 // 网格间距（与生图历史一致）
+};
+
+// 组框布局规范（基于现有 CSS: .smart-group-node padding:16px）
+const SMART_GROUP_LAYOUT = {
+    PADDING: 16,            // 四边内边距
+    SUMMARY_H: 14,          // summary 行高度（图标+统计文字）
+    SUMMARY_GAP: 8,         // summary 到内容的间距
+};
+
+// 单图节点规范
+const SINGLE_IMAGE_LAYOUT = {
+    MAX_WIDTH: 260,         // 单图最大宽度
+    MAX_HEIGHT: 380,        // 单图最大高度
+    UNGROUP_GAP: 16,        // 解组后排列间距
+};
+
+// ========== 布局计算工具函数（单一数据源） ==========
+
+// 解析图片比例（优先级：_generationAspect → 首图真实比例 → 请求尺寸 → 1:1）
+function resolveImageAspect(node){
+    // 1. 提交生成时固化的比例
+    const fixed = node?._generationAspect;
+    if(fixed && Number(fixed.w) > 0 && Number(fixed.h) > 0){
+        return {w:Math.max(1, Number(fixed.w)), h:Math.max(1, Number(fixed.h))};
+    }
+    // 2. 已写回的首图真实宽高比
+    const firstDone = (node?.images || []).find(img => Number(img?.width) > 0 && Number(img?.height) > 0);
+    if(firstDone){
+        return {w:Math.max(1, Number(firstDone.width)), h:Math.max(1, Number(firstDone.height))};
+    }
+    // 3. 请求尺寸
+    const pendingTask0 = smartPendingTasks(node)[0] || {};
+    const sizeText = pendingTask0.size || pendingTask0.requestPayload?.size || pendingTask0.request_payload?.size || '';
+    return parseSizeAspect(String(sizeText));
+}
+
+// 计算批量缩略图网格尺寸（count > 1）
+function getBatchThumbGridSize(count){
+    const c = Math.max(2, Math.min(8, count));
+    // 优先选择能整除 count 的列数（4→2），避免网格出现空位；
+    // 8张=4×2, 6张=3×2, 4张=2×2, 2张=2×1；无整除列时就近取 sqrt 列数
+    let cols = null;
+    for(let cand = 4; cand >= 2; cand--){
+        if(c % cand === 0 && Math.ceil(c / cand) >= 2 && Math.ceil(c / cand) <= 4){
+            cols = cand;
+            break;
+        }
+    }
+    if(cols === null){
+        cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(c))));
+    }
+    const rows = Math.ceil(c / cols);
+    const w = BATCH_THUMB.WIDTH;
+    const h = BATCH_THUMB.HEIGHT;
+    const gap = BATCH_THUMB.GAP;
+    const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+    
+    const gridW = cols * w + (cols - 1) * gap;
+    const gridH = rows * h + (rows - 1) * gap;
+    
+    return {
+        cols,
+        rows,
+        gridW,
+        gridH,
+        boxW: gridW + pad,
+        boxH: SMART_GROUP_LAYOUT.SUMMARY_H + SMART_GROUP_LAYOUT.SUMMARY_GAP + gridH + pad
+    };
+}
+
+// 计算单图布局尺寸（原比例）
+function getSingleImageLayoutSize(aspect, maxWidth){
+    const maxW = maxWidth || SINGLE_IMAGE_LAYOUT.MAX_WIDTH;
+    const maxH = SINGLE_IMAGE_LAYOUT.MAX_HEIGHT;
+    const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+    
+    let imgW = maxW;
+    let imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
+    
+    // 高度超限，按高度反算
+    if(imgH > maxH){
+        imgH = maxH;
+        imgW = Math.round(imgH * aspect.w / Math.max(1, aspect.h));
+    }
+    
+    return {
+        imgW,
+        imgH,
+        // 独立节点（生成卡片等）：四边等距，无 summary 行
+        boxW: imgW + pad,
+        boxH: imgH + pad,
+        // 智能分组卡片：含顶部 summary 行
+        groupBoxW: imgW + pad,
+        groupBoxH: SMART_GROUP_LAYOUT.SUMMARY_H + SMART_GROUP_LAYOUT.SUMMARY_GAP + imgH + pad
+    };
+}
+
+// 解组后计算单图尺寸（参考批量缩略图宽度 136px）
+function getUngroupedImageSize(aspect){
+    const refW = BATCH_THUMB.WIDTH;
+    let imgW = refW;
+    let imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
+    
+    // 限制范围并保持比例
+    if(imgW > 260){
+        imgW = 260;
+        imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
+    }
+    if(imgH > 380){
+        imgH = 380;
+        imgW = Math.round(imgH * aspect.w / Math.max(1, aspect.h));
+    }
+    if(imgW < 80){
+        imgW = 80;
+        imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
+    }
+    if(imgH < 60){
+        imgH = 60;
+        imgW = Math.round(imgH * aspect.w / Math.max(1, aspect.h));
+    }
+    
+    return {w:imgW, h:imgH};
+}
 const EMPTY_UPLOAD_NODE_WIDTH = 316;
 const EMPTY_UPLOAD_NODE_HEIGHT = 194;
 const SMART_GROUP_DEFAULT_WIDTH = 340;
@@ -1683,89 +1814,66 @@ function smartGroupImageRefs(group){
     });
     return refs;
 }
+// 组框内“生成中”占位成员的额外高度（它们排在网格下方、统一尺寸），
+// 让组框高度从一开始就包住占位成员，避免成员漂在组框外。
+function smartGroupPendingMembersExtraHeight(node){
+    const pendingMembers = smartGroupMembers(node).filter(member => isSmartImageNode(member)
+        && !(member.images || []).some(img => img?.url)
+        && (member.pending || smartPendingTasks(member).length));
+    if(!pendingMembers.length) return 0;
+    let extra = 0;
+    pendingMembers.forEach(member => {
+        const memberLayout = imageLayout(member.images || [], 1, member);
+        extra += Math.max(40, Math.round(Number(memberLayout.height) || 102)) + 12;
+    });
+    return extra;
+}
 function smartGroupThumbLayout(node){
     const refs = smartGroupImageRefs(node).filter(ref => ref.item?.url);
     if(!refs.length) return null;
     const compactMembers = smartGroupCompactMembers(node);
     const count = refs.length + compactMembers.length;
-    const items = refs.map(ref => ref.item);
-    const explicitW = Number(node?.w);
-    const explicitH = Number(node?.h);
-    const hasExplicit = Number.isFinite(explicitW) && explicitW >= SMART_GROUP_MIN_WIDTH
-        && Number.isFinite(explicitH) && explicitH >= SMART_GROUP_MIN_HEIGHT;
-    const scale = mediaNodeDefaultScale({type:'smart-image', images:items, scale:node?.scale});
-    const summarySpace = 28;
-    const outerPad = 32;
+    const pendingExtra = smartGroupPendingMembersExtraHeight(node);
+    
+    // 单图：原比例布局
     if(count === 1){
-        if(hasExplicit){
-            return {
-                refs,
-                compactMembers,
-                cols:1,
-                rows:1,
-                visibleRows:1,
-                width:Math.round(explicitW),
-                height:Math.round(explicitH),
-                thumb:Math.round(96 * scale),
-                single:true,
-                innerW:Math.max(24, Math.round(explicitW - outerPad)),
-                innerH:Math.max(24, Math.round(explicitH - outerPad - summarySpace))
-            };
-        }
-        const single = singleImageLayout(refs[0].item, {}, scale);
+        // 从首图数据解析比例（node 是组框，没有 _generationAspect）
+        const img = refs[0].item;
+        const aspect = img.width && img.height
+            ? {w:Math.max(1, Number(img.width)), h:Math.max(1, Number(img.height))}
+            : BATCH_THUMB.ASPECT;
+        const layout = getSingleImageLayoutSize(aspect);
         return {
             refs,
             compactMembers,
-            ...single,
-            width:Math.max(SMART_GROUP_MIN_WIDTH, Math.round(single.width + outerPad)),
-            height:Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(single.height + outerPad + summarySpace)),
-            innerW:single.width,
-            innerH:single.height
+            cols:1,
+            rows:1,
+            visibleRows:1,
+            width:layout.groupBoxW,
+            height:layout.groupBoxH + pendingExtra,
+            thumb:layout.imgW,
+            single:true,
+            innerW:layout.imgW,
+            innerH:layout.imgH
         };
     }
-    const gap = 8;
+    
+    // 批量：固定 4:3 缩略图网格（与生图历史一致）
+    const grid = getBatchThumbGridSize(count);
     const maxVisibleRows = compactMembers.length ? count : SMART_GROUP_MAX_VISIBLE_ROWS;
-    if(hasExplicit){
-        const innerW = Math.max(72, explicitW - outerPad);
-        const fitted = groupImageGridLayout(count, innerW, Math.max(56, explicitH - outerPad - summarySpace), 100000, 0, gap, maxVisibleRows);
-        // 自动整理会把“贴合内容”的高度持久化成显式 w/h；再次渲染时若用高度约束拟合，
-        // 横图会被压小并在底部留下空白。这里按宽度取缩略图尺寸，网格高度按行自适应，
-        // 仅当用户真正把分组拉得更高时才保留显式高度。
-        const fittedThumb = Math.max(28, Math.floor((innerW - (fitted.cols - 1) * gap) / fitted.cols));
-        const gridHeight = compactMembers.length
-            ? (fitted.visibleRows * (fittedThumb + gap) - gap)
-            : mediaGroupGridHeight(items, fitted.cols, fitted.visibleRows, fittedThumb);
-        const contentHeight = gridHeight + outerPad + summarySpace;
-        const height = explicitH > contentHeight + 12 ? explicitH : contentHeight;
-        return {...fitted, refs, compactMembers, gridHeight, thumb:fittedThumb, width:Math.round(explicitW), height:Math.round(height)};
-    }
-    const thumb = Math.round(MEDIA_GROUP_THUMB_BASE * scale);
-    const cell = thumb + gap;
-    let cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
-    // 整除优先：8→4×2、6→3×2、9→3×3（至少两行，避免 4×1 过宽与 3×2+2 缺角）。
-    for(let candidate = 4; candidate >= 2; candidate--){
-        const candidateRows = Math.ceil(count / candidate);
-        if(count % candidate === 0 && candidateRows >= 2 && candidateRows <= maxVisibleRows){
-            cols = candidate;
-            break;
-        }
-    }
-    const rows = Math.ceil(count / cols);
-    const visibleRows = Math.min(maxVisibleRows, rows);
-    const gridW = cols * thumb + (cols - 1) * gap;
-    const gridH = !compactMembers.length && items.length
-        ? mediaGroupGridHeight(items, cols, visibleRows, thumb)
-        : (visibleRows * cell - gap);
+    const visibleRows = Math.min(maxVisibleRows, grid.rows);
+    
     return {
         refs,
         compactMembers,
-        cols,
-        rows,
+        cols:grid.cols,
+        rows:grid.rows,
         visibleRows,
-        thumb,
-        gridHeight:gridH,
-        width:Math.max(SMART_GROUP_MIN_WIDTH, Math.round(gridW + outerPad)),
-        height:Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(gridH + outerPad + summarySpace))
+        thumb:BATCH_THUMB.WIDTH,
+        thumbH:BATCH_THUMB.HEIGHT,
+        gridHeight:grid.gridH,
+        width:grid.boxW,
+        height:grid.boxH + pendingExtra
     };
 }
 const SMART_GROUP_ARRANGE_PADDING = 18;
@@ -1782,13 +1890,14 @@ function arrangeSmartGroupMembers(group, options={}){
         const layout = smartGroupThumbLayout(group);
         if(!layout) return true;
         const refs = layout.refs || [];
-        const thumb = Math.max(28, Math.round(Number(layout.thumb) || 96));
-        const gap = 8;
+        const thumb = layout.single ? Math.round(Number(layout.thumb) || BATCH_THUMB.WIDTH) : BATCH_THUMB.WIDTH;
+        const thumbH = layout.single ? Math.round(Number(layout.innerH) || BATCH_THUMB.HEIGHT) : BATCH_THUMB.HEIGHT;
+        const gap = BATCH_THUMB.GAP;
         const cols = Math.max(1, Number(layout.cols) || 1);
         const gridW = cols * thumb + Math.max(0, cols - 1) * gap;
         const contentW = Math.max(0, Math.round(Number(layout.width) || SMART_GROUP_DEFAULT_WIDTH) - 32);
-        const originX = (Number(group.x) || 0) + 16 + Math.max(0, Math.round((contentW - gridW) / 2));
-        const originY = (Number(group.y) || 0) + 16 + 28;
+        const originX = (Number(group.x) || 0) + SMART_GROUP_LAYOUT.PADDING + Math.max(0, Math.round((contentW - gridW) / 2));
+        const originY = (Number(group.y) || 0) + SMART_GROUP_LAYOUT.PADDING + SMART_GROUP_LAYOUT.SUMMARY_H + SMART_GROUP_LAYOUT.SUMMARY_GAP;
         group.w = Math.max(SMART_GROUP_MIN_WIDTH, Math.round(Number(layout.width) || SMART_GROUP_DEFAULT_WIDTH));
         group.h = Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(Number(layout.height) || SMART_GROUP_DEFAULT_HEIGHT));
         const ordered = compactMembers.slice().sort((a, b) => {
@@ -1802,34 +1911,32 @@ function arrangeSmartGroupMembers(group, options={}){
             const col = index % cols;
             const row = Math.floor(index / cols);
             member.x = Math.round(originX + col * (thumb + gap));
-            member.y = Math.round(originY + row * (thumb + gap));
+            member.y = Math.round(originY + row * (thumbH + gap));
             member.w = thumb;
-            member.h = thumb;
+            member.h = thumbH;
             member.scale = 1;
         });
         if(group._memberZoom !== undefined) group._memberZoom = 1;
-        // 生成中的智能图节点（还没产出 url 的占位成员）不参与缩略图网格，
-        // 否则组框高度不含它，占位格会超出组框底部（用户反馈“生成时组框包不住”）。
-        // 把这类成员排到网格下方，并把组框尺寸扩到包含它们。
+        // 生成中的占位成员排到网格下方，使用统一尺寸
         const pendingMembers = smartGroupMembers(group).filter(member => isSmartImageNode(member)
             && !(member.images || []).some(img => img?.url)
             && (member.pending || smartPendingTasks(member).length));
         if(pendingMembers.length){
             let cursorY = originY + Number(layout.gridHeight || 0) + 12;
             pendingMembers.forEach(member => {
-                const rect = nodeRect(member);
-                const memberW = Math.max(40, Math.round(Number(rect.width) || 120));
-                const memberH = Math.max(40, Math.round(Number(rect.height) || 120));
-                member.x = Math.round((Number(group.x) || 0) + 16 + Math.max(0, Math.round(((Number(group.w) || SMART_GROUP_DEFAULT_WIDTH) - 32 - memberW) / 2)));
+                // 统一尺寸：直接用 imageLayout（与渲染同一数据源），保证占位成员摆放尺寸与渲染结果一致
+                const memberLayout = imageLayout(member.images || [], 1, member);
+                const size = {w:Math.max(40, Math.round(Number(memberLayout.width) || 136)), h:Math.max(40, Math.round(Number(memberLayout.height) || 102))};
+                member.x = Math.round((Number(group.x) || 0) + SMART_GROUP_LAYOUT.PADDING + Math.max(0, Math.round(((Number(group.w) || SMART_GROUP_DEFAULT_WIDTH) - 32 - size.w) / 2)));
                 member.y = Math.round(cursorY);
-                member.w = memberW;
-                member.h = memberH;
+                member.w = size.w;
+                member.h = size.h;
                 member.scale = 1;
-                cursorY += memberH + 12;
+                cursorY += size.h + 12;
             });
             const neededW = Math.max(...pendingMembers.map(member => Math.round(Number(member.w) || 0) + 32), 0);
             if(neededW > (Number(group.w) || 0)) group.w = Math.max(SMART_GROUP_MIN_WIDTH, Math.round(neededW));
-            const neededBottom = cursorY - 12 + 18;
+            const neededBottom = cursorY - 12 + SMART_GROUP_LAYOUT.PADDING;
             if(neededBottom > (Number(group.y) || 0) + (Number(group.h) || 0)) group.h = Math.max(SMART_GROUP_MIN_HEIGHT, Math.round(neededBottom - (Number(group.y) || 0)));
         }
         if(options.syncDom) syncSmartGroupMemberElements(group);
@@ -2179,51 +2286,57 @@ function imageLayout(images, scale=1, node=null){
     const s = node?.type === 'smart-image' || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
     if(count === 0 || pending){
-        // 生成中（含逐张写回期间）：框尺寸锁定为「完成后的网格布局」尺寸，
-        // 占位格与最终缩略图共用同一套 cols/thumb 公式，任务结束 pending 清零时
-        // 卡片不会突然变高/变矮（用户反馈“占位图到写入图大小会变、组框没变”）。
-        const explicitW = Number(node?.w);
-        const explicitH = Number(node?.h);
-        const total = Math.max(1, Math.min(8, Number(node?.pending) || 1));
-        if(total > 1 && Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
-            const thumb = Math.round(MEDIA_GROUP_THUMB_BASE * s);
-            const fitted = groupImageGridLayout(total, explicitW, explicitH, thumb, 32, 8);
-            // 占位格比例优先级：提交时固化的 _generationAspect（所有阶段共用）>
-            // 已写回的首图真实宽高比 > 请求尺寸（task.size/requestPayload.size）。
-            const fixed = node?._generationAspect;
-            let aspect = (fixed && Number(fixed.w) > 0 && Number(fixed.h) > 0) ? {w:Math.max(1, Number(fixed.w)), h:Math.max(1, Number(fixed.h))} : null;
-            if(!aspect){
-                const firstDone = (node?.images || []).find(img => Number(img?.width) > 0 && Number(img?.height) > 0);
-                if(firstDone){
-                    aspect = {w:Math.max(1, Number(firstDone.width)), h:Math.max(1, Number(firstDone.height))};
-                }else{
-                    const pendingTask0 = smartPendingTasks(node)[0] || {};
-                    const sizeText = pendingTask0.size || pendingTask0.requestPayload?.size || pendingTask0.request_payload?.size || '';
-                    aspect = parseSizeAspect(String(sizeText));
-                }
+        // 生成中（含逐张写回期间）：使用统一布局计算，占位图与完成图尺寸一致。
+        // node.pending 会随任务完成递减，以提交时固化的 _batchTotal 为准，保证写回期间网格几何稳定。
+        const total = Math.max(1, Math.min(8, Number(node?._batchTotal) || Number(node?.pending) || count || 1));
+        const aspect = resolveImageAspect(node);
+        
+        // 智能分组框内的 pending 成员：使用与组网格一致的统一尺寸，组框包住成员
+        if(node?.id && smartGroupContainingNode(node.id)){
+            const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+            if(total > 1){
+                const memberGrid = getBatchThumbGridSize(total);
+                return {
+                    cols:memberGrid.cols,
+                    rows:memberGrid.rows,
+                    visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, memberGrid.rows),
+                    width:memberGrid.gridW + pad,
+                    height:memberGrid.gridH + pad,
+                    thumb:BATCH_THUMB.WIDTH,
+                    gridHeight:memberGrid.gridH,
+                    pendingLock:true
+                };
             }
-            try {
-                const diag = {kind:'img-layout', at:Date.now(), nodeId: node?.id, hasFixed: Boolean(fixed), sizeText: String(smartPendingTasks(node)[0]?.size || smartPendingTasks(node)[0]?.requestPayload?.size || ''), aspect, nodeW: node?.w, nodeH: node?.h, pending: node?.pending, imgs: (node?.images || []).length, pendingBranch: true};
-                console.log('[img-layout] pending', JSON.stringify(diag));
-                const diagPrev = window.__layoutDiag && window.__layoutDiag[node?.id];
-                if(!diagPrev || diagPrev.aspect !== JSON.stringify(diag.aspect) || diagPrev.imgs !== diag.imgs || diagPrev.pending !== diag.pending || diagPrev.nodeW !== diag.nodeW){
-                    (window.__layoutDiag = window.__layoutDiag || {})[node?.id] = {aspect: JSON.stringify(diag.aspect), imgs: diag.imgs, pending: diag.pending, nodeW: diag.nodeW};
-                    fetch('/api/canvas-diagnostics', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(diag)}).catch(()=>{});
-                }
-            } catch(_e) {}
-            const cellH = Math.round(fitted.thumb * aspect.h / Math.max(1, aspect.w));
-            const gridHeight = fitted.visibleRows * cellH + Math.max(0, fitted.visibleRows - 1) * 8;
-            return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:gridHeight + 32, thumb:fitted.thumb, gridHeight, pendingLock:true};
+            const memberSize = getUngroupedImageSize(aspect);
+            return {cols:1, rows:1, width:memberSize.w, height:memberSize.h, thumb:memberSize.w, single:true, pendingLock:true};
         }
-        const fallbackW = pending ? 260 * s : EMPTY_UPLOAD_NODE_WIDTH;
-        const fallbackH = pending ? 180 * s : EMPTY_UPLOAD_NODE_HEIGHT;
+        
+        // 批量：固定 4:3 缩略图网格（独立生成卡片：四边等距，无 summary 行）
+        if(total > 1){
+            const grid = getBatchThumbGridSize(total);
+            const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+            return {
+                cols:grid.cols,
+                rows:grid.rows,
+                visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, grid.rows),
+                width:grid.gridW + pad,
+                height:grid.gridH + pad,
+                thumb:BATCH_THUMB.WIDTH,
+                gridHeight:grid.gridH,
+                pendingLock:true
+            };
+        }
+        
+        // 单图：原比例布局
+        const layout = getSingleImageLayoutSize(aspect);
         return {
             cols:1,
             rows:1,
-            width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : fallbackW),
-            height:Math.round(Number.isFinite(explicitH) && explicitH > 24 ? explicitH : fallbackH),
-            thumb:Math.round(96*s),
-            single:true
+            width:layout.boxW,
+            height:layout.boxH,
+            thumb:layout.imgW,
+            single:true,
+            pendingLock:true
         };
     }
     if(count === 1) return singleImageLayout(images[0], node, s);
@@ -2244,6 +2357,21 @@ function imageLayout(images, scale=1, node=null){
         }
         const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
         return {cols, rows, visibleRows, width:Math.max(Math.round(226*s), cols * cell + PAD), height:gridHeight + PAD, thumb, gridHeight};
+    }
+    // 批量生图节点（提交时固化了 _generationAspect）：完成阶段沿用批量缩略图网格规范，
+    // 保证占位 → 写回 → 完成三个阶段尺寸一致（136px 宽网格、四边等距、无 summary 行）。
+    const genAspect = node?._generationAspect;
+    if(Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0){
+        const genGrid = getBatchThumbGridSize(count);
+        const genPad = SMART_GROUP_LAYOUT.PADDING * 2;
+        const genBoxW = genGrid.gridW + genPad;
+        const genBoxH = genGrid.gridH + genPad;
+        const hasExplicit = Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40;
+        // 尊重用户手动调整后的节点尺寸；无显式尺寸或与规范一致时使用网格规范
+        const explicitMatches = !hasExplicit || (Math.abs(explicitW - genBoxW) <= 8 && Math.abs(explicitH - genBoxH) <= 8);
+        if(explicitMatches){
+            return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH};
+        }
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
@@ -10137,12 +10265,14 @@ function smartGroupBodyHtml(node){
         }
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
         const visibleRows = Math.max(1, Math.min(groupMaxVisibleRows, Number(groupThumbLayout.visibleRows || groupThumbLayout.rows || 1)));
-        const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight) || (visibleRows * Number(groupThumbLayout.thumb || 96) + Math.max(0, visibleRows - 1) * 8));
+        const thumbW = BATCH_THUMB.WIDTH;
+        const thumbH = BATCH_THUMB.HEIGHT;
+        const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight));
         return `<div class="smart-group-card has-thumbs">
             <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-            <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${groupThumbLayout.thumb}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
+            <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${thumbW}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, groupThumbLayout.thumb)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>`;
+                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--thumb-w:${thumbW}px;--thumb-h:${thumbH}px">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>`;
             }).join('')}</div>
         </div>`;
     }
@@ -10227,8 +10357,11 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
         }
         return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="${escapeAttr(label)}">${copy}</div>`;
     }
-    const cols = total === 4 ? 2 : (total % 4 === 0 ? 4 : (total % 3 === 0 ? 3 : Math.min(4, Math.max(2, total))));
-    const rows = Math.ceil(total / cols);
+    // 与 pendingBoxSize/imageLayout 使用同一套网格规范（getBatchThumbGridSize），
+    // 占位格固定 136×102，不再用 1fr 拉伸，保证与完成阶段缩略图尺寸一致。
+    const grid = getBatchThumbGridSize(total);
+    const cols = grid.cols;
+    const rows = grid.rows;
     const completedCount = Math.min(total, (completedImgs || []).filter(Boolean).length);
     // 每张候选的真实阶段（后端 progress.candidate_phases）：按格显示各自进度。
     const phases = Array.isArray(candidatePhases) ? candidatePhases.map(phase => String(phase || '')) : [];
@@ -10247,7 +10380,7 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
         }
         return `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}">${index === completedCount ? copy : `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-idx">${index + 1}/${total}</span></span></div>`}</div>`;
     }).join('');
-    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, 1fr);grid-template-rows:repeat(${rows}, 1fr);width:${layout.width}px;height:${layout.height}px;padding:16px;box-sizing:border-box">${cells}</div>`;
+    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:${layout.width}px;height:${layout.height}px;padding:16px;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>`;
 }
 function nodeBodyHtml(node, layout){
     try {
@@ -10284,7 +10417,8 @@ function nodeBodyHtml(node, layout){
         return generationPlaceholderHtml(layout, 1, true, queuedProgress);
     }
     if(node.pending){
-        const count = Math.max(1, Number(node.pending) || 1);
+        // 以提交时固化的 _batchTotal 渲染占位格（写回期间格子数/几何不变），已写回的图按序填入
+        const count = Math.max(1, Math.min(8, Number(node?._batchTotal) || Number(node.pending) || 1));
         const progress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
         const completed = (imgs || []).slice(0, count);
         const candidatePhases = Array.isArray(progress?.candidate_phases) ? progress.candidate_phases : [];
@@ -10296,15 +10430,18 @@ function nodeBodyHtml(node, layout){
         // 固化比例（_generationAspect）存在时，缩略格尺寸锁定为 thumb×cellH，
         // 图在格内 contain 居中——行高不再由图片自身比例决定，卡片尺寸与占位阶段一致。
         const fixedAspect = node?._generationAspect;
-        const fixedCellH = (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
+        // 批量生图节点：固定 136×102（4:3）缩略格 + 9px 间距，与占位阶段/生图历史一致
+        const isBatchSpec = Number(layout.thumb) === BATCH_THUMB.WIDTH && (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0);
+        const fixedCellH = isBatchSpec ? BATCH_THUMB.HEIGHT : (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
         const thumbItemStyleFor = img => fixedCellH > 0 ? `--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px` : thumbItemStyle(img, layout.thumb);
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
+        const gridGapStyle = isBatchSpec ? `; gap:${BATCH_THUMB.GAP}px` : '';
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
     }
     if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`;
     return `<div class="node-drop" data-upload-action="files">
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
-        <span class="upload-node-sub">拖拽 / 粘贴 / 点击上传</span>
+        <span class="upload-node-sub">拖拽 / 粘贴 / 双击上传</span>
     </div>`;
 }
 function jimengPendingBodyHtml(node, layout){
@@ -16541,34 +16678,28 @@ function displayBoxFromNaturalSize(size){
     return {w:layout.width, h:layout.height};
 }
 function pendingBaseBoxSize(options={}){
-    const requestSize = explicitRequestOutputSizeForPending();
-    if(requestSize) return displayBoxFromNaturalSize(requestSize);
-    const sourceSize = pendingSourceBoxSize(options);
-    if(sourceSize?.display) return {w:sourceSize.w, h:sourceSize.h};
-    if(sourceSize) return displayBoxFromNaturalSize(sourceSize);
-    return displayBoxFromNaturalSize(expectedOutputSize());
+    // 使用统一的比例解析（_generationAspect → 首图 → 请求尺寸 → 1:1）
+    const node = options.node || options.sourceNode;
+    const aspect = resolveImageAspect(node);
+    const layout = getSingleImageLayoutSize(aspect);
+    return {w:layout.boxW, h:layout.boxH, display:true};
 }
 function pendingBoxSize(count, options={}){
-    const base = pendingBaseBoxSize(options);
-    const aspect = base.w / Math.max(1, base.h);
     const c = Math.max(1, Number(count) || 1);
+    const node = options.node || options.sourceNode;
+    const aspect = resolveImageAspect(node);
+    
+    // 单图：原比例布局
     if(c <= 1){
-        return {w:Math.round(base.w), h:Math.round(base.h)};
+        const layout = getSingleImageLayoutSize(aspect);
+        return {w:layout.boxW, h:layout.boxH};
     }
-    const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(c))));
-    const rows = Math.ceil(c / cols);
-    const cellMax = Math.max(96, Math.min(220, Math.max(base.w, base.h) * 0.42));
-    let cellW, cellH;
-    if(base.w >= base.h){
-        cellW = cellMax;
-        cellH = Math.max(40 * MEDIA_NODE_DEFAULT_SCALE, Math.round(cellMax / aspect));
-    } else {
-        cellH = cellMax;
-        cellW = Math.max(40 * MEDIA_NODE_DEFAULT_SCALE, Math.round(cellMax * aspect));
-    }
-    const w = cols * (cellW + 8) + 16;
-    const h = rows * (cellH + 8) + 16;
-    return {w, h};
+    
+    // 批量：固定 4:3 缩略图网格（与生图历史一致）
+    // 独立生成节点没有 summary 行，box = 网格 + 四边等距 padding（与 imageLayout 一致）
+    const grid = getBatchThumbGridSize(c);
+    const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+    return {w:grid.gridW + pad, h:grid.gridH + pad};
 }
 function mentionTokenHtml(img){
     if(!img?.url) return '';
@@ -17603,6 +17734,7 @@ function createPendingOutputFromSource(sourceNode, expectedCount, meta, options=
         title:'Image',
         images:[],
         pending:Math.max(1, Number(expectedCount) || 1),
+        _batchTotal:Math.max(1, Number(expectedCount) || 1),
         runStartedAt:nowMs(),
         runTimerHidden:false,
         w:pendingBox.w,
@@ -17784,6 +17916,12 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     delete pendingNode._selectAfterRunId;
     if(activeComposerSubject?.id && selectedId === activeComposerSubject.id) lastComposerNodeId = `${selectedId}:node`;
     selectedImage = {nodeId:'', index:-1};
+    // pending 节点完成时，如果节点在组框内，重新整理成员并计算组框高度
+    const group = smartGroupContainingNode(pendingNode.id);
+    if(group){
+        arrangeSmartGroupMembers(group, {skipUndo:true});
+        scheduleSave();
+    }
 }
 function restoreFromExtraction(node, extracted){
     if(!node || !extracted) return;
@@ -19027,12 +19165,16 @@ async function runGeneration(){
     if(!branchNode){
         const priorPendingCount = priorPendingTasks.reduce((total, task) => total + Math.max(1, Number(task?.count || 1)), 0);
         pendingNode.pending = Math.max(1, priorPendingCount + Math.max(1, Number(expectedCount) || 1));
+        // 固化本批占位格总数：写回/完成阶段布局都以它为准，避免 node.pending 递减导致尺寸跳变
+        pendingNode._batchTotal = pendingNode.pending;
         if(!priorPendingTasks.length) pendingNode._generationBatchApplied = false;
         pendingNode.runStartedAt = Number(pendingNode.runStartedAt || 0) || nowMs();
         delete pendingNode.runFinishedAt;
         delete pendingNode.runElapsedMs;
         pendingNode.runTimerHidden = false;
-        const pendingBox = pendingBoxSize(pendingNode.pending, {sourceNode:node, refs});
+        // 提交生成时就固化目标比例，pendingBoxSize 使用它计算占位图尺寸
+        pendingNode._generationAspect = parseSizeAspect(String(sizeForRun(settings) || ''));
+        const pendingBox = pendingBoxSize(pendingNode.pending, {node:pendingNode, sourceNode:node, refs});
         pendingNode.w = pendingBox.w;
         pendingNode.h = pendingBox.h;
         attachRunMeta(pendingNode, pendingMeta);
@@ -19117,6 +19259,7 @@ async function runGeneration(){
             // 提交时就固化目标比例：占位/逐张写入/完成三个阶段共用同一个格子比例，
             // 任何阶段都不再按真实图重算，彻底消除「上传方形、写入跳回」的跳变。
             pendingNode._generationAspect = parseSizeAspect(String(sizeForRun(settings) || ''));
+            // 节点尺寸已在上方 pendingBoxSize 处固化，这里不再重复设置
             ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'image'});
             pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
             pendingNode.runTimerHidden = false;
@@ -19937,8 +20080,16 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
         node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : 'Image');
         if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
         else node.scale = mediaNodeDefaultScale(node);
-        delete node.w;
-        delete node.h;
+        // 保留固化后的尺寸（占位图、写回、完成三个阶段统一），不再删除
+        // delete node.w;
+        // delete node.h;
+        // 批量生图完成时，如果节点在组框内，重新整理成员并计算组框尺寸
+        //（与 finalizePendingNode 保持一致，避免占位图→真实图切换时组框尺寸不匹配）
+        const group = smartGroupContainingNode(node.id);
+        if(group){
+            arrangeSmartGroupMembers(group, {skipUndo:true});
+            scheduleSave();
+        }
     }
 }
 async function resumeSmartPendingNode(node, logContext={}){
@@ -20121,6 +20272,8 @@ async function resumeSmartGenerationSubmission(node, submission){
         currentNode._generationAspect = parseSizeAspect(resumeSize);
         ensureSmartPendingHistoryLogs(currentNode, newTasks, {prompt:submission.prompt || payload.prompt || '', kind:'image'});
         currentNode.pending = Math.max(currentNode.pendingTasks.length, currentNode.pendingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0));
+        // 恢复提交：保持占位格总数固化（已有则保留，避免覆盖）
+        if(!Number(currentNode._batchTotal)) currentNode._batchTotal = currentNode.pending;
         currentNode.running = false;
         render();
         scheduleSave();
@@ -20216,17 +20369,36 @@ function ungroupNode(groupId){
         const groupImages = (group.images || []).filter(img => img?.url);
         let created = [];
         if(groupImages.length){
-            const layout = imageLayout(group.images || [], nodeScale(group), group);
-            const pad = 16, gap = 8;
-            const cell = Math.max(28, Math.round(layout.thumb || 96));
-            const cols = Math.max(1, layout.cols || 1);
+            const pad = SMART_GROUP_LAYOUT.PADDING;
+            const gap = SINGLE_IMAGE_LAYOUT.UNGROUP_GAP;
+            const count = groupImages.length;
+            // 列数与批量网格规范一致（getBatchThumbGridSize 单一数据源）
+            const cols = getBatchThumbGridSize(count).cols;
+            // 解组后每张图片恢复原比例，参考宽度 136px
+            const sizes = groupImages.map(img => {
+                // 从图片数据解析比例
+                const aspect = img.width && img.height
+                    ? {w:Math.max(1, Number(img.width)), h:Math.max(1, Number(img.height))}
+                    : BATCH_THUMB.ASPECT;
+                return getUngroupedImageSize(aspect);
+            });
+            // 每列最大宽 / 每行最大高作为步长，混比例图片也能整齐对齐
+            const colWidths = new Array(cols).fill(0);
+            const rowsCount = Math.ceil(count / cols);
+            const rowHeights = new Array(rowsCount).fill(0);
+            sizes.forEach((size, index) => {
+                const col = index % cols;
+                const row = Math.floor(index / cols);
+                colWidths[col] = Math.max(colWidths[col], size.w);
+                rowHeights[row] = Math.max(rowHeights[row], size.h);
+            });
             created = groupImages.map((img, index) => {
                 const col = index % cols;
                 const row = Math.floor(index / cols);
-                const size = thumbDisplaySize(img, cell);
-                const x = Math.round(Number(group.x || 0) + pad + col * (cell + gap) + Math.max(0, (cell - size.width) / 2));
-                const y = Math.round(Number(group.y || 0) + pad + row * (cell + gap) + Math.max(0, (cell - size.height) / 2));
-                const node = {id:uid('smart'), type:'smart-image', x, y, w:size.width, h:size.height, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
+                const size = sizes[index];
+                const x = Math.round(Number(group.x || 0) + pad + colWidths.slice(0, col).reduce((sum, w) => sum + w + gap, 0));
+                const y = Math.round(Number(group.y || 0) + pad + rowHeights.slice(0, row).reduce((sum, h) => sum + h + gap, 0));
+                const node = {id:uid('smart'), type:'smart-image', x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
                 inheritNodeMetaFromImage(node);
                 clearDetachedRunInputRefs(node);
                 return node;
