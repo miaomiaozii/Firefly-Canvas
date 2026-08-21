@@ -1544,10 +1544,12 @@ const SMART_GROUP_LAYOUT = {
 };
 
 // 批量生图独立节点外框 padding 规范：占位 / 逐张写回 / 完成三阶段必须共用同一组值，
-// 保证外框尺寸恒定不跳变（水平每边 16px、垂直每边 32px，网格垂直居中留呼吸空间）。
+// 保证外框尺寸恒定不跳变。PAD_H/V 是相对网格的外框增量：
+// 水平 = 节点左右 padding 16+16（网格横向铺满内容区）；
+// 垂直 = 节点上下 padding 16+16 + 网格上下居中 16+16（网格在内容区内上下留 16px）。
+// 最终视觉边距：左右 16px、上下 32px，三阶段一致。
 const BATCH_NODE_PAD_H = SMART_GROUP_LAYOUT.PADDING * 2; // 32
 const BATCH_NODE_PAD_V = SMART_GROUP_LAYOUT.PADDING * 4; // 64
-const BATCH_NODE_PADDING = BATCH_NODE_PAD_V; // 兼容旧引用
 
 // 单图节点规范
 const SINGLE_IMAGE_LAYOUT = {
@@ -2259,6 +2261,21 @@ function parseSizeAspect(sizeText){
     const ratio = text.match(/(\d+)\s*[:：]\s*(\d+)/);
     if(ratio) return {w:Math.max(1, Number(ratio[1])), h:Math.max(1, Number(ratio[2]))};
     return {w:1, h:1};
+}
+// imageLayout 对外框几何加锁（不尊重 node.w/h）的节点判定：
+// - pending/写回/排队分支：按任务固化的 _batchTotal 与原比例锁几何（三阶段一致）
+// - 批量完成分支：按 _batchTotal / _generationAspect 锁网格几何（防几何漂移，有意锁定）
+// 这类节点的 resize 手柄拖拽会被 imageLayout 静默拉回 → 不渲染手柄，避免用户误以为 bug
+function isLockedBatchGenNode(node){
+    if(!node || node.type !== 'smart-image' || node.smartGroupMember) return false;
+    if(node.id && smartGroupContainingNode(node.id)) return false;
+    const count = Array.isArray(node?.images) ? node.images.length : 0;
+    const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
+    if(count === 0 || pending) return true;
+    if(count === 1) return false; // singleImageLayout 尊重用户拉伸尺寸，手柄有效
+    const genAspect = node?._generationAspect || null;
+    const batchTotal = Math.max(0, Math.min(8, Number(node?._batchTotal) || 0));
+    return batchTotal > 1 || (Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0);
 }
 function imageLayout(images, scale=1, node=null){
     if(node?.type === 'smart-group'){
@@ -7271,8 +7288,11 @@ function updateNodeElementDuringResize(node){
     if(body){
         const loadingSingle = body.querySelector('.loading-cell.single');
         if(loadingSingle){
-            loadingSingle.style.width = `${layout.width}px`;
-            loadingSingle.style.height = `${layout.height}px`;
+            // 单图占位与批量分支同规范：铺满 node-body（width/height:100%），
+            // 节点 16px padding 即外边距；此前用 layout.width/height（=节点外框尺寸）
+            // 会让占位框贴住/越出外框、与 pending 呼吸边框错位。
+            loadingSingle.style.width = '100%';
+            loadingSingle.style.height = '100%';
         }
         const loadingGrid = body.querySelector('.loading-skeleton');
         if(loadingGrid){
@@ -10361,9 +10381,12 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     if(total === 1){
         if(completedImgs[0]){
             const first = imageForDisplay(completedImgs[0]);
-            if(first?.url) return `<div class="loading-cell single filled generation-filled-cell" style="width:${layout.width}px;height:${layout.height}px" data-image-index="0">${thumbMediaHtml(first)}</div>`;
+            if(first?.url) return `<div class="loading-cell single filled generation-filled-cell" style="width:100%;height:100%" data-image-index="0">${thumbMediaHtml(first)}</div>`;
         }
-        return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="${escapeAttr(label)}">${copy}</div>`;
+        // 单图占位与批量分支同规范：铺满 node-body（width/height:100%），
+        // 节点 16px padding 即外边距；此前用 layout.width/height（=节点外框尺寸）
+        // 会让占位框贴住/越出外框、与 pending 呼吸边框错位。
+        return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}" style="width:100%;height:100%" role="status" aria-label="${escapeAttr(label)}">${copy}</div>`;
     }
     // 与 pendingBoxSize/imageLayout 使用同一套网格规范（getBatchThumbGridSize），
     // 占位格固定 136×102，不再用 1fr 拉伸，保证与完成阶段缩略图尺寸一致。
@@ -10455,7 +10478,7 @@ function jimengPendingBodyHtml(node, layout){
     const jp = node.jimengPending || {};
     const querying = Boolean(jp.querying);
     const queueText = jimengQueueText(jp.queueInfo);
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:${layout.width}px;height:${layout.height}px">
+    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
         <div class="jimeng-pending-overlay">
             <div class="jimeng-pending-spinner"><i data-lucide="loader-2"></i></div>
             <div class="jimeng-pending-text">${escapeHtml(queueText)}</div>
@@ -10489,7 +10512,7 @@ function imageTaskRecoverBodyHtml(node, task, layout){
         + (Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks.filter(item => item.failed && item.recoverTaskId).length : 0);
     const title = querying ? '查询中' : '任务未丢失';
     const sub = failedCount > 1 ? `还有 ${failedCount} 个任务可查询` : `任务 ID：${task.recoverTaskId || ''}`;
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:${layout.width}px;height:${layout.height}px">
+    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
         <div class="jimeng-pending-overlay">
             <div class="jimeng-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
             <div class="jimeng-pending-text">${escapeHtml(title)}</div>
@@ -10776,7 +10799,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="拖动移出分组"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -10849,7 +10872,7 @@ function render(){
             ${runTimePillHtml(node)}
             <div class="node-body">${body}</div>
             <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
-            ${imgs.length || node.pending || isQueued || isPrompt || isLoop ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="输入"></div>
             <div class="node-port port-out" data-port="out" title="输出"></div>
         </div>`;
@@ -12881,6 +12904,17 @@ function deleteImage(id, imageIndex){
     if(!node || imageIndex < 0) return;
     pushUndo();
     node.images = (node.images || []).filter((_, index) => index !== imageIndex);
+    const batchTotal = Number(node?._batchTotal) || 0;
+    if(batchTotal > 0 && Number(node?.pending || 0) === 0){
+        // 用户手动删图：任务规模随之下调，外框/网格按剩余图片自适应（不留虚线空位）。
+        // 生成中（pending）不动——写回仍在飞，保留 _batchTotal 稳住网格几何。
+        if(node.images.length === 0){
+            node._batchTotal = 0;
+            delete node._generationAspect;
+        }else{
+            node._batchTotal = node.images.length;
+        }
+    }
     if(node.images.length <= 1) node.title = 'Image';
     if(selectedImage.nodeId === id) selectedImage = {nodeId:id, index:Math.min(selectedImage.index, node.images.length - 1)};
     if(selectedImage.index < 0) selectedImage = {nodeId:'', index:-1};
