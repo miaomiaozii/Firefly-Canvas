@@ -1542,6 +1542,41 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(opened["logs"], [{"id": "h1"}])
         self.assertEqual((self.root / imported["id"] / "media" / "asset-1.png").read_bytes(), b"synthetic-media")
 
+    def test_utf8_roundtrip_preserves_chinese_project_names(self):
+        """UTF-8 全链路回归（H35/H39 历史乱码排查，commit 93c6e7a 后续）。
+
+        覆盖 create_project → set_canvas_meta 改名 → flush 持久化 → .fly 导出 → 导入。
+        防止未来任何环节引入 GBK/latin-1 等编码回归。
+        """
+        # 1. 创建中文名项目
+        original = "H39重力理疗垫·终极版（测试）"
+        project = self.store.create_project(original)
+        self.assertEqual(project["name"], original)
+        # 2. 通过 set_canvas_meta mutation 改名
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        renamed = "改名后的测试·第二版"
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "set_canvas_meta", "title": renamed}],
+            base_revision=revision,
+        )
+        self.store.flush(project["id"])
+        # 3. 磁盘持久化字节级验证
+        metadata = json.loads((self.root / project["id"] / "project.json").read_bytes().decode("utf-8"))
+        canvas = json.loads((self.root / project["id"] / "canvas.json").read_bytes().decode("utf-8"))
+        self.assertEqual(metadata["name"], renamed)
+        self.assertEqual(canvas["title"], renamed)
+        # 4. .fly 导出 → 导入 roundtrip
+        export_path = self.root.parent / f"{project['id']}.fly"
+        self.store.export_fly_to(project["id"], export_path)
+        raw = export_path.read_bytes()
+        imported = self.store.import_fly(raw)
+        imported_meta = json.loads((self.root / imported["id"] / "project.json").read_bytes().decode("utf-8"))
+        imported_canvas = json.loads((self.root / imported["id"] / "canvas.json").read_bytes().decode("utf-8"))
+        self.assertEqual(imported_meta["name"], renamed)
+        self.assertEqual(imported_canvas["title"], renamed)
+        export_path.unlink(missing_ok=True)
+
     def test_parallel_fly_imports_serialize_space_check_and_extraction(self):
         first_entered = threading.Event()
         release_first = threading.Event()
