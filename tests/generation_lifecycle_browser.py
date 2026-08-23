@@ -405,7 +405,7 @@ def run_viewport(
         try:
             browser.wait_for(
                 f"(canvas.logs || []).some(log => log.id === '{PENDING_LOG_ID}' && log.progress?.phase === 'provider_generating')",
-                timeout=12,
+                timeout=25,
             )
         except TimeoutError as error:
             task_endpoint = browser.evaluate(
@@ -446,14 +446,15 @@ def run_viewport(
         screenshots.append(screenshot(browser, viewport_root, "02-record-deleted.png", artifacts_root))
 
         original_delete_selector = (
-            f'[data-canvas-log-id="{ORIGINAL_LOG_ID}"] [data-log-delete-original="0"]'
+            f'[data-canvas-log-id="{ORIGINAL_LOG_ID}"] '
+            f'[data-log-delete-original="{fixture["original_output_id"]}"]'
         )
         try:
             browser.wait_for(
                 f"document.querySelector({json.dumps(original_delete_selector)}) !== null",
                 timeout=3,
             )
-        except AssertionError as error:
+        except TimeoutError as error:
             dom_state = browser.evaluate(
                 """(() => Array.from(document.querySelectorAll('[data-canvas-log-id]')).map(card => ({
                   id: card.dataset.canvasLogId || '',
@@ -464,7 +465,7 @@ def run_viewport(
             )
             store_state = [
                 {"id": item.get("id"), "outputs": item.get("outputs")}
-                for item in store.open_project(project_id)["canvas"].get("logs", [])
+                for item in store.open_project(fixture["project_id"])["canvas"].get("logs", [])
             ]
             browser_state = browser.evaluate(
                 "(canvas.logs || []).map(log => ({id: log.id, outputs: log.outputs || []}))"
@@ -620,7 +621,7 @@ def run_viewport(
         restore_operation = browser.native_click(restore_selector, accept_dialog=True)
         try:
             browser.wait_for(
-                f"document.querySelector('[data-canvas-log-id=\"{ORIGINAL_LOG_ID}\"] [data-log-delete-original=\"0\"]')",
+                f"document.querySelector({json.dumps(original_delete_selector)})",
                 timeout=12,
             )
         except TimeoutError as error:

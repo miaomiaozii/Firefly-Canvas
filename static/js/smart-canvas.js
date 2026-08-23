@@ -129,7 +129,8 @@ const composerPromptView = {
     expandedExtra:0,
     scrollTop:0,
     restoreFlowScroll:false,
-    applyingScrollRestore:false
+    applyingScrollRestore:false,
+    expandedByNode:new Map() // 按节点 ID 保存展开状态，取消选择后重新选择同一节点时恢复
 };
 const promptNodeFlowView = {
     mode:'idle',
@@ -157,6 +158,11 @@ let debouncedSaveTimer = null;
 let contentDirty = false;
 let persistedCoreSnapshot = null;
 let persistedDurableSnapshot = null;
+// Empty-canvas guard (H39 incident): true only after loadCanvas has successfully
+// populated the canvas from the server. Until then an empty local node set is
+// dangerous (a failed load looks identical to "user deleted everything") and
+// must neither autosave an empty state nor claim force_empty on the server.
+let canvasLoadReady = false;
 // Conversation polling can receive responses out of order. Keep an explicit
 // accepted watermark independent of the snapshot shape so a stale response
 // cannot become authoritative even if another reload temporarily regresses
@@ -6552,6 +6558,10 @@ async function loadCanvas(){
         resumeSmartPendingTasks();
         resumeJimengPendingNodes();
         startCanvasMetaPoll();
+        // Mark the canvas as authoritatively loaded. From this point on an empty
+        // local node set is treated as a deliberate user action and autosave may
+        // commit it (with force_empty) instead of being treated as a load failure.
+        canvasLoadReady = true;
     } catch(e) { toast(tr('smart.toastCanvasFail')); }
 }
 async function loadAutosavePreferences(){
@@ -6709,10 +6719,16 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             return Number(result.revision || 0) >= Number(accepted.revision || 0);
         },
         send:async (baseRevision, mutations) => {
+            // Empty-canvas guard (H39 incident): declare force_empty only when the
+            // canvas was authoritatively loaded and the user has (deliberately)
+            // emptied it. A failed load leaves canvasLoadReady=false, so a bogus
+            // empty state is rejected server-side instead of wiping the canvas.
+            const localEmpty = (Array.isArray(nodes) ? nodes : []).length === 0;
+            const forceEmpty = canvasLoadReady && localEmpty;
             const response = await fetch(`/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/canvas`, {
                 method:'PATCH',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({mutations, client_id:smartClientId, base_revision:baseRevision}),
+                body:JSON.stringify({mutations, client_id:smartClientId, base_revision:baseRevision, force_empty:forceEmpty}),
             });
             if(response.status === 409){
                 const conflict = await response.json().catch(() => ({}));
@@ -6784,6 +6800,14 @@ async function saveCanvas({automatic=false}={}){
     }
     savePromptDraftForCurrent();
     canvas.nodes = nodes;
+    // Empty-canvas guard, layer 1 (H39 incident): if the canvas has not been
+    // authoritatively loaded yet and the local node set is empty, this is a
+    // dangerous empty state (a failed load looks like "everything deleted").
+    // Do not submit it; the server-side guard remains as the final backstop.
+    if(canvas.format === 'firefly-canvas-v1' && !canvasLoadReady && (Array.isArray(nodes) ? nodes : []).length === 0){
+        setProjectSaveState('error', tr('smart.projectLoadNotReady') || '画布尚未加载完成，已暂停空状态保存以防数据丢失');
+        return false;
+    }
     if(!isProjectCanvasData(canvas)){
         canvas.settings = settingsForStorage(canvasDefaultSmartSettings || initialSmartSettings);
         canvas.viewport = {...viewport};
@@ -7026,7 +7050,8 @@ function copySelectedNodes(){
     const copiedNodes = ids.map(id => nodes.find(n => n.id === id)).filter(Boolean);
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
-    const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
+    // 复制所有与选中节点相关的连线（包括与外部节点的连线），粘贴时保持连线不断
+    const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) || idSet.has(c.to));
     nodeClipboard = {
         nodes:JSON.parse(JSON.stringify(copiedNodes)),
         connections:JSON.parse(JSON.stringify(copiedConnections))
@@ -7051,16 +7076,18 @@ function pasteNodes(){
         idMap.set(n.id, copy.id);
         return copy;
     });
+    // inputNodeIds/sourceNodeId：选中集内的映射到新 ID，外部的保留原 ID（保持连线不断）
     copies.forEach(copy => {
         if(Array.isArray(copy.inputNodeIds)){
-            copy.inputNodeIds = copy.inputNodeIds.map(id => idMap.get(id)).filter(Boolean);
+            copy.inputNodeIds = copy.inputNodeIds.map(id => idMap.get(id) || id).filter(Boolean);
         }
-        if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || '';
+        if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || copy.sourceNodeId;
     });
+    // 连线：选中集内的端点映射到新 ID，外部的保留原 ID（保持连线不断）
     const newConnections = (nodeClipboard.connections || []).map(conn => ({
         ...conn,
-        from:idMap.get(conn.from),
-        to:idMap.get(conn.to)
+        from:idMap.get(conn.from) || conn.from,
+        to:idMap.get(conn.to) || conn.to
     })).filter(conn => conn.from && conn.to && conn.from !== conn.to);
     canvas.connections = [...(canvas.connections || []), ...newConnections];
     nodes.push(...copies);
@@ -10502,7 +10529,10 @@ function failedGenerationBodyHtml(node, tasks, layout){
             <span class="generation-failed-icon"><i data-lucide="alert-triangle"></i></span>
             <span class="generation-failed-title">生成失败${escapeHtml(recovered)}</span>
             <span class="generation-failed-error">${escapeHtml(error)}</span>
-            <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><i data-lucide="refresh-cw"></i><span>重新生成</span></button>
+            <div class="generation-failed-actions">
+                <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><i data-lucide="refresh-cw"></i><span>重新生成</span></button>
+                <button type="button" class="generation-failed-url" data-image-task-url="${escapeAttr(node.id)}"><i data-lucide="link"></i><span>手动填入 URL</span></button>
+            </div>
         </div>
     </div>`;
 }
@@ -11215,6 +11245,19 @@ function bindLoopNodeControls(el, node){
         bindScrollableText(text);
         text.onfocus = () => { activePromptEditor = text; };
         text.oninput = () => { syncPromptFieldsFromDom(); scheduleSave(); };
+        text.addEventListener('paste', e => {
+            e.preventDefault();
+            const textContent = e.clipboardData?.getData('text/plain') || '';
+            if(!textContent) return;
+            const sel = window.getSelection();
+            if(!sel.rangeCount) return;
+            const range = sel.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(document.createTextNode(textContent));
+            range.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        });
         text.addEventListener('click', e => {
             const remove = e.target.closest?.('.loop-smart-token-chip button');
             if(!remove) return;
@@ -12314,7 +12357,7 @@ function bindNodeEvents(){
             e.preventDefault();
             e.stopPropagation();
         }, true);
-        nodeDrop?.addEventListener('click', e => {
+        nodeDrop?.addEventListener('dblclick', e => {
             e.preventDefault(); e.stopPropagation();
             hideRunTimerForNode(nodes.find(n => n.id === id));
             selectedId = id;
@@ -12370,6 +12413,35 @@ function bindNodeEvents(){
             btn.addEventListener('click', e => {
                 e.preventDefault(); e.stopPropagation();
                 retryFailedGeneration(btn.dataset.imageTaskRetry);
+            });
+        });
+        el.querySelectorAll('[data-image-task-url]').forEach(btn => {
+            btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
+            btn.addEventListener('click', async e => {
+                e.preventDefault(); e.stopPropagation();
+                const nodeId = btn.dataset.imageTaskUrl;
+                const node = nodes.find(n => String(n.id || '') === String(nodeId));
+                if(!node) return;
+                const url = prompt('请输入图片 URL');
+                if(!url) return;
+                try{
+                    toast('正在下载图片...');
+                    const response = await fetch(url);
+                    if(!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
+                    const blob = await response.blob();
+                    const file = new File([blob], `image_${Date.now()}.png`, {type:'image/png'});
+                    toast('正在上传到画布...');
+                    const media = await uploadProjectMedia(file);
+                    // 使用 media 创建图片节点，完成该任务
+                    const images = [{id:media.id, url:media.url}];
+                    finalizeSmartPendingTask(node, null, images, 'image', 1);
+                    node.failedGenerationTasks = []; // 清除失败任务
+                    render();
+                    scheduleSave();
+                    toast('图片已成功写入画布');
+                }catch(err){
+                    toast(`操作失败：${err.message}`);
+                }
             });
         });
         el.querySelectorAll('[data-thumb-scroll]').forEach(scroller => {
@@ -15345,7 +15417,7 @@ function loadPromptDraft(subject){
         const hasToken = String(subject.promptDraftHtml || '').includes('mention-image-token');
         promptInput.innerHTML = hasToken
             ? subject.promptDraftHtml
-            : (promptHtmlWithMentionTokens(subject.runPrompt || subject.promptDraftText || '', subject.runPromptRefs || []) || subject.promptDraftHtml);
+            : (promptHtmlWithMentionTokens(subject.promptDraftText || subject.runPrompt || '', subject.runPromptRefs || []) || subject.promptDraftHtml);
     } else if(typeof subject?.runPrompt === 'string'){
         const rebuilt = promptHtmlWithMentionTokens(subject.runPrompt, subject.runPromptRefs || []);
         if(rebuilt) promptInput.innerHTML = rebuilt;
@@ -15744,8 +15816,10 @@ function collapseExpandedPrompt(){
     composerPromptView.mode = 'manual';
     composerPromptView.expandedExtra = 0;
     setPromptEditorHeight(composerPromptView.manualHeight);
-    syncComposerPromptViewControls();
+    // 清除节点的展开状态
     const node = activeComposerNode();
+    if(node) composerPromptView.expandedByNode.delete(node.id);
+    syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
         keepComposerReachableByPanningCanvas();
@@ -15765,8 +15839,10 @@ function expandPromptToContent(){
     }
     composerPromptView.mode = 'expanded';
     composerPromptView.expandedHeight = setPromptEditorHeight(Math.max(composerPromptView.manualHeight, natural));
-    syncComposerPromptViewControls();
+    // 保存展开状态到节点，取消选择后重新选择同一节点时恢复
     const node = activeComposerNode();
+    if(node) composerPromptView.expandedByNode.set(node.id, true);
+    syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
         keepComposerReachableByPanningCanvas();
@@ -15798,12 +15874,17 @@ function bindComposerPromptViewToNode(node){
         clearPromptFlowGeometry();
     }
     composerPromptView.nodeId = nodeId;
-    composerPromptView.mode = 'manual';
+    // 根据节点的展开状态恢复 mode，取消选择后重新选择同一节点时保持展开
+    composerPromptView.mode = node && composerPromptView.expandedByNode.get(nodeId) ? 'expanded' : 'manual';
     composerPromptView.returnMode = 'manual';
     composerPromptView.expandedExtra = 0;
     composerPromptView.restoreFlowScroll = false;
     composerPromptView.applyingScrollRestore = false;
     syncComposerPromptViewControls();
+    // 恢复展开状态时，更新提示词高度
+    if(composerPromptView.mode === 'expanded'){
+        requestAnimationFrame(refreshExpandedPromptHeight);
+    }
 }
 function positionComposerForNode(node){
     if(!node || !composer) return;
@@ -15882,7 +15963,7 @@ function updateComposer(){
         savePromptDraftForCurrent();
         composer.classList.remove('open');
         activeComposerSubject = null;
-        lastComposerNodeId = '';
+        lastComposerNodeId = ''; // 取消选择时清空，重新选择节点时 switchedNode=true，loadPromptDraft 恢复提示词
         setPromptInputLocked(false);
         if(!node) setPromptText('');
         return;
@@ -16027,8 +16108,9 @@ function bindInputThumbReferenceActions(){
                 removeManualReferenceFromSelectedNode(key);
             } else if(nodeId && canvas){
                 // 断开上游节点的连线
-                canvas.connections = (canvas.connections || []).filter(c => !(c.from === nodeId && c.to === node.id && c.kind === 'input' && c.role === 'references'));
-                triggerSmartCanvasChanged();
+                canvas.connections = (canvas.connections || []).filter(c => !(c.from === nodeId && c.to === node.id && c.kind === 'input'));
+                render();
+                scheduleSave();
             }
         });
     });
@@ -18468,9 +18550,9 @@ function promptDraftHtmlForNode(node){
     const draftHtml = String(node?.promptDraftHtml || '');
     if(draftHtml){
         if(draftHtml.includes('mention-image-token')) return draftHtml;
-        return promptHtmlWithMentionTokens(node.runPrompt || node.promptDraftText || '', node.runPromptRefs || []) || draftHtml;
+        return promptHtmlWithMentionTokens(node.promptDraftText || node.runPrompt || '', node.runPromptRefs || []) || draftHtml;
     }
-    const prompt = node?.runPrompt || node?.promptDraftText || '';
+    const prompt = node?.promptDraftText || node?.runPrompt || '';
     return promptHtmlWithMentionTokens(prompt, node?.runPromptRefs || []) || escapeHtml(prompt);
 }
 function loadNodePromptDraftToInput(node){
@@ -19400,6 +19482,7 @@ async function runGeneration(){
 async function runPromptLLMNode(nodeId){
     const node = nodes.find(n => n.id === nodeId);
     if(!node || node.type !== 'smart-prompt') return;
+    const projectId = canvas?.project_id || canvas?.project || canvasId || '';
     const message = promptNodeLLMInputText(node).trim();
     if(!message){ toast(tr('smart.promptLlmNeedText')); return; }
     const systemPrompt = (node.llmSystemPrompt || '').trim();
@@ -20212,17 +20295,63 @@ async function resumeSmartPendingNode(node, logContext={}){
                 scheduleSave();
                 return;
             }
+            // 区分服务商失败和网络问题
+            const isProviderFailure = e && e.message && (e.message.includes('failed') || e.message.includes('cancelled') || e.message.includes('timeout') || e.message.includes('sensitive') || e.message.includes('FAILURE'));
+            
+            if(isProviderFailure){
+                // 服务商失败（终态，不重试）
+                if(!e?.projectNodeApplied){
+                    const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
+                    node.pendingTasks = remainingTasks;
+                    node.pending = remainingTasks.length
+                        ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
+                        : 0;
+                    node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
+                    if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
+                        node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
+                    }
+                }
+                if(!node.pending && smartPendingTasks(node).length === 0){
+                    delete node.pendingTasks;
+                    node.running = false;
+                    if(!(node.images || []).length){
+                        delete node.w;
+                        delete node.h;
+                    }
+                }
+                if(!e?.smartGenerationLogged){
+                    logTaskFailure(e.message || tr('smart.errRunFailed'), task);
+                    if(e && typeof e === 'object') e.smartGenerationLogged = true;
+                }
+                toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
+                render();
+                scheduleSave();
+                return;
+            }
+            
+            // 网络问题，自动重试
+            task._retryCount = (task._retryCount || 0) + 1;
+            if(task._retryCount <= 3){
+                const delay = task._retryCount * 5000; // 5s, 10s, 15s
+                toast(`写入失败 (${task._retryCount}/3)，${delay/1000}s 后重试...`);
+                await sleep(delay);
+                // 图片回载后取消重试
+                if(activeSmartTaskPolls.has(task.taskId)){
+                    return; // 图片已回载，取消重试
+                }
+                return resumeSmartPendingNode(node, logContext);
+            }
+            
+            // 重试耗尽
             if(!e?.projectNodeApplied){
                 const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                 node.pendingTasks = remainingTasks;
                 node.pending = remainingTasks.length
                     ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
                     : 0;
-                if(!e?.imageTaskRecover && !e?.generationCancelled){
-                    node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
-                    if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                        node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
-                    }
+                node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
+                if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
+                    node.failedGenerationTasks.push({taskId:task.taskId, error:`网络中断，已重试 ${task._retryCount} 次`, at:nowMs(), retryable:true});
                 }
             }
             if(!node.pending && smartPendingTasks(node).length === 0){
@@ -20238,7 +20367,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 logTaskFailure(e.message || tr('smart.errRunFailed'), task);
                 if(e && typeof e === 'object') e.smartGenerationLogged = true;
             }
-            toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
+            toast('写入失败，已达最大重试次数');
             render();
             scheduleSave();
         }
@@ -20434,9 +20563,10 @@ function ungroupNode(groupId){
             const cols = getBatchThumbGridSize(count).cols;
             // 解组后每张图片恢复原比例，参考宽度 136px
             const sizes = groupImages.map(img => {
-                // 从图片数据解析比例
-                const aspect = img.width && img.height
-                    ? {w:Math.max(1, Number(img.width)), h:Math.max(1, Number(img.height))}
+                // 从图片数据解析比例（mediaLayoutSize 读 natural_w/width/w/layout_w/preview_w）
+                const layoutSize = mediaLayoutSize(img);
+                const aspect = layoutSize.width > 0 && layoutSize.height > 0
+                    ? {w:Math.max(1, Math.round(layoutSize.width)), h:Math.max(1, Math.round(layoutSize.height))}
                     : BATCH_THUMB.ASPECT;
                 return getUngroupedImageSize(aspect);
             });
@@ -21291,6 +21421,12 @@ shell.ondrop = async e => {
     await handleSmartImageDropPayload(payload, '', {point:p, forceNew:true});
 };
 window.addEventListener('paste', e => {
+    // Ctrl+C 节点后，Ctrl+V 优先粘贴节点（不管剪贴板里有什么）
+    if(nodeClipboard?.nodes?.length && !isEditableTarget(e.target)){
+        e.preventDefault();
+        pasteNodes();
+        return;
+    }
     const files = [...(e.clipboardData?.files || [])].filter(isSupportedUploadFile);
     if(files.length){
         lastImagePasteAt = Date.now();
@@ -21301,10 +21437,6 @@ window.addEventListener('paste', e => {
     if(!isEditableTarget(e.target) && pasteAssetsFromInbox()){
         e.preventDefault();
         return;
-    }
-    if(nodeClipboard?.nodes?.length && !isEditableTarget(e.target)){
-        e.preventDefault();
-        pasteNodes();
     }
 });
 window.addEventListener('keydown', e => {
@@ -21807,6 +21939,21 @@ promptInput.addEventListener('scroll', () => {
     if(composerPromptView.mode !== 'flow' && !composerPromptView.applyingScrollRestore){
         composerPromptView.restoreFlowScroll = false;
     }
+});
+promptInput.addEventListener('paste', e => {
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text/plain') || '';
+    if(!text) return;
+    const sel = window.getSelection();
+    if(!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(document.createTextNode(text));
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // 手动触发 input 事件，让浏览器撤销栈更新
+    promptInput.dispatchEvent(new Event('input', {bubbles:true}));
 });
 promptInput.addEventListener('input', maybeOpenMentionPicker);
 promptInput.addEventListener('input', () => {

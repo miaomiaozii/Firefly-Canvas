@@ -1197,6 +1197,7 @@ class CanvasMutationBatch(BaseModel):
     mutations: List[Dict[str, Any]] = Field(default_factory=list)
     client_id: str = ''
     base_revision: int = Field(ge=0)
+    force_empty: bool = False
 
 class ProjectLocalEditRequest(BaseModel):
     """Explicit local-edit node inputs and source-pixel selection contract."""

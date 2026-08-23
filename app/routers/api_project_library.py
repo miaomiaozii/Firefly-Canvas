@@ -138,9 +138,6 @@ class ProjectAgentExecuteRequest(BaseModel):
     plan_hash: str = Field(default='', max_length=128)
     tasks: List[Dict[str, Any]] = Field(default_factory=list)
 
-class FireflyProjectCreateRequest(BaseModel):
-    name: str = '新项目'
-
 class ProjectMediaImportRequest(BaseModel):
     source_url: str
     source_locator: str = ''
@@ -167,6 +164,9 @@ class CanvasMutationBatch(BaseModel):
     mutations: List[Dict[str, Any]] = Field(default_factory=list)
     client_id: str = ''
     base_revision: int = Field(ge=0)
+    # 显式允许"非空 -> 空"的清空操作（前端用户主动清空画布时置 true）。
+    # 缺省 false 时，服务端拒绝无标志的空画布覆盖，防止加载失败的空状态 autosave 擦除数据（H39 事故）。
+    force_empty: bool = False
 
 class ProjectLocalEditRequest(BaseModel):
     """Explicit local-edit node inputs and source-pixel selection contract."""
@@ -3433,7 +3433,7 @@ async def get_project_conversation_message_task(project_id: str, node_id: str, r
 @router.patch('/api/project-library/{project_id}/canvas')
 async def mutate_firefly_canvas(project_id: str, payload: CanvasMutationBatch):
     try:
-        result = await asyncio.to_thread(_app_main.project_store_call, 'apply_mutations', project_id, payload.mutations, base_revision=payload.base_revision)
+        result = await asyncio.to_thread(_app_main.project_store_call, 'apply_mutations', project_id, payload.mutations, base_revision=payload.base_revision, force_empty=bool(payload.force_empty))
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidMutation as exc:

@@ -104,7 +104,8 @@ class ProjectStoreEdgeCasesTests(unittest.TestCase):
             pid, [{"op": "upsert_node", "node": {"id": "n1", "type": "prompt", "text": "v1"}}], base_revision=0
         )
         rev = self.store.canvas(pid)["revision"]
-        self.store.apply_mutations(pid, [{"op": "remove_node", "node_id": "n1"}], base_revision=rev)
+        # 删除最后一个节点属于有意清空，需显式 force_empty=True（空画布覆盖防护）。
+        self.store.apply_mutations(pid, [{"op": "remove_node", "node_id": "n1"}], base_revision=rev, force_empty=True)
         rev = self.store.canvas(pid)["revision"]
         self.store.apply_mutations(
             pid, [{"op": "upsert_node", "node": {"id": "n1", "type": "prompt", "text": "v2"}}], base_revision=rev

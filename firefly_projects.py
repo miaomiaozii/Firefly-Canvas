@@ -46,8 +46,8 @@ class InvalidMutation(ProjectStoreError):
 
 
 class RevisionConflict(ProjectStoreError):
-    def __init__(self, canvas: Dict[str, Any]):
-        super().__init__("画布已在其他窗口更新")
+    def __init__(self, canvas: Dict[str, Any], message: str = "画布已在其他窗口更新"):
+        super().__init__(message)
         self.canvas = canvas
 
 
@@ -2423,6 +2423,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         mutations: Iterable[Dict[str, Any]],
         *,
         base_revision: int,
+        force_empty: bool = False,
     ) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         items = list(mutations)
@@ -2433,6 +2434,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             current_revision = int(canvas.get("revision") or 0)
             if int(base_revision) != current_revision:
                 raise RevisionConflict(canvas)
+            # Empty-canvas guard (H39 incident): reject a "non-empty -> empty"
+            # wipe unless the caller explicitly sets force_empty=True.  A tab
+            # that failed to load its canvas otherwise autosaves an empty
+            # node set and silently overwrites the server's real canvas.
+            original_node_count = len(canvas.get("nodes") or [])
             canvas.pop("logs", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
             for mutation in items:
@@ -2518,6 +2524,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                                 seen_ids.add(item_id)
                     history = merged[-5000:]
                 self._apply_mutation(canvas, normalized)
+            if not force_empty and original_node_count and not (canvas.get("nodes") or []):
+                # Re-open to hand back the un-mutated server canvas so the
+                # client can rebase onto the intact state instead of losing it.
+                raise RevisionConflict(
+                    self.open_project(project_id)["canvas"],
+                    "检测到空画布覆盖，已拒绝以防数据丢失",
+                )
             self._ensure_output_occurrence_ids(canvas, history)
             canvas["revision"] = int(canvas.get("revision") or 0) + 1
             canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)

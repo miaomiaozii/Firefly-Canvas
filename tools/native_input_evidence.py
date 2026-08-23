@@ -54,14 +54,17 @@ def has_trusted_selector_owner_click(
     report that their concrete event target remained within that owner.
     """
 
-    if not isinstance(operation, dict) or operation.get("action") != "click":
+    if not isinstance(operation, dict) or operation.get("action") not in ("click", "double_click"):
         return False
     observed_button = str(operation.get("button") or "")
     if button is not None and observed_button != button:
         return False
     if observed_button not in {"left", "right"}:
         return False
-    expected_type = "click" if observed_button == "left" else "contextmenu"
+    if operation.get("action") == "double_click":
+        expected_type = "dblclick"
+    else:
+        expected_type = "click" if observed_button == "left" else "contextmenu"
     if (
         operation.get("trusted") is not True
         or operation.get("observed_type") != expected_type

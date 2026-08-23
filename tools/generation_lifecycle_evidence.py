@@ -104,7 +104,7 @@ def _validate_operations(root: Path, attempt: dict, lifecycle: dict, viewport: t
         (
             "before-restart",
             3,
-            f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="0"]',
+            f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="{lifecycle["original_output_id"]}"]',
             True,
         ),
         ("after-restart", 1, "#smartLogToggle", False),

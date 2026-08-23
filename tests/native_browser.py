@@ -342,7 +342,7 @@ class NativeBrowser:
                 } : null;
               };
               window.__fireflyClearNativeOwner = () => { nativeOwner = null; };
-              for (const type of ['mousedown', 'mouseup', 'click', 'contextmenu', 'wheel', 'keydown', 'keyup', 'input', 'change']) {
+              for (const type of ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel', 'keydown', 'keyup', 'input', 'change']) {
                 addEventListener(type, event => {
                   const clickOwner = event.target instanceof Element
                     ? event.target.closest('button,a,[role="button"],input,label') || event.target
@@ -374,7 +374,7 @@ class NativeBrowser:
                       event.shiftKey ? 'Shift' : '',
                     ].filter(Boolean),
                   };
-                  if (type === 'mousedown' || type === 'mouseup' || type === 'click' || type === 'contextmenu') {
+                  if (type === 'mousedown' || type === 'mouseup' || type === 'click' || type === 'dblclick' || type === 'contextmenu') {
                     observation.button = Number(event.button);
                   }
                   if (type === 'wheel') {
@@ -638,9 +638,16 @@ class NativeBrowser:
         button: str = "left",
         accept_dialog: bool = False,
         blocked_selector: str | None = None,
+        click_count: int = 1,
     ) -> dict:
         if button not in {"left", "right"}:
             raise ValueError(f"unsupported native mouse button: {button}")
+        if click_count not in {1, 2}:
+            raise ValueError(f"unsupported native click count: {click_count}")
+        if click_count == 2 and button != "left":
+            raise ValueError("native double click only supports the left mouse button")
+        if click_count == 2 and accept_dialog:
+            raise ValueError("native double click cannot accept a dialog")
         expected_button = 0 if button == "left" else 2
         rx, ry = relative or (0.5, 0.5)
         for _attempt in range(3):
@@ -665,49 +672,62 @@ class NativeBrowser:
         )
         if not isinstance(owner_state, dict) or not int(owner_state.get("ownerInstance") or 0):
             raise RuntimeError(f"native click selector owner is unavailable: {selector}")
-        watermark = self._native_event_watermark()
+        observed_events = []
         try:
-            self.cdp.command(
-                "Input.dispatchMouseEvent",
-                {"type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": 1},
-            )
-            release = {"type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": 1}
-            if accept_dialog and hasattr(self.cdp, "command_accepting_dialog"):
-                self.cdp.command_accepting_dialog("Input.dispatchMouseEvent", release)
-            else:
-                self.cdp.command("Input.dispatchMouseEvent", release)
-            if accept_dialog and not hasattr(self.cdp, "command_accepting_dialog"):
-                dialog_deadline = time.monotonic() + 2
-                while True:
-                    try:
-                        self.cdp.command("Page.handleJavaScriptDialog", {"accept": True})
-                        break
-                    except RuntimeError as error:
-                        if "No dialog is showing" not in str(error) or time.monotonic() >= dialog_deadline:
-                            raise
-                        time.sleep(0.02)
-            pressed = self._native_event_after(
-                watermark,
-                "mousedown",
-                point=(x, y),
-                button=expected_button,
-                modifiers=(),
-            )
-            observed_release = self._native_event_after(
-                watermark,
-                "mouseup",
-                point=(x, y),
-                button=expected_button,
-                modifiers=(),
-            )
-            semantic_type = "click" if button == "left" else "contextmenu"
-            observed = self._native_event_after(
-                watermark,
-                semantic_type,
-                point=(x, y),
-                button=expected_button,
-                modifiers=(),
-            )
+            for current_count in range(1, click_count + 1):
+                watermark = self._native_event_watermark()
+                self.cdp.command(
+                    "Input.dispatchMouseEvent",
+                    {"type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": current_count},
+                )
+                release = {
+                    "type": "mouseReleased",
+                    "x": x,
+                    "y": y,
+                    "button": button,
+                    "clickCount": current_count,
+                }
+                if accept_dialog and hasattr(self.cdp, "command_accepting_dialog"):
+                    self.cdp.command_accepting_dialog("Input.dispatchMouseEvent", release)
+                else:
+                    self.cdp.command("Input.dispatchMouseEvent", release)
+                if accept_dialog and not hasattr(self.cdp, "command_accepting_dialog"):
+                    dialog_deadline = time.monotonic() + 2
+                    while True:
+                        try:
+                            self.cdp.command("Page.handleJavaScriptDialog", {"accept": True})
+                            break
+                        except RuntimeError as error:
+                            if "No dialog is showing" not in str(error) or time.monotonic() >= dialog_deadline:
+                                raise
+                            time.sleep(0.02)
+                pressed = self._native_event_after(
+                    watermark,
+                    "mousedown",
+                    point=(x, y),
+                    button=expected_button,
+                    modifiers=(),
+                )
+                observed_release = self._native_event_after(
+                    watermark,
+                    "mouseup",
+                    point=(x, y),
+                    button=expected_button,
+                    modifiers=(),
+                )
+                semantic_type = (
+                    "dblclick" if current_count == 2
+                    else "click" if button == "left"
+                    else "contextmenu"
+                )
+                observed = self._native_event_after(
+                    watermark,
+                    semantic_type,
+                    point=(x, y),
+                    button=expected_button,
+                    modifiers=(),
+                )
+                observed_events.extend((pressed, observed_release, observed))
         finally:
             try:
                 self.evaluate("window.__fireflyClearNativeOwner?.()")
@@ -718,7 +738,7 @@ class NativeBrowser:
             int(event.get("nativeOwnerInstance") or 0) == owner_instance
             and event.get("nativeOwnerConnected") is True
             and event.get("targetWithinNativeOwner") is True
-            for event in (pressed, observed_release, observed)
+            for event in observed_events
         )
         if not owner_chain_is_intact:
             raise RuntimeError(
@@ -728,9 +748,10 @@ class NativeBrowser:
             )
         return self._record(
             {
-                "action": "click",
+                "action": "double_click" if click_count == 2 else "click",
                 "selector": selector,
                 "button": button,
+                "click_count": click_count,
                 "observed_button": observed.get("button"),
                 "point": {"x": x, "y": y},
                 "hit": state.get("hit"),

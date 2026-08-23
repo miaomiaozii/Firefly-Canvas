@@ -364,9 +364,9 @@ class ProjectStoreContractTests(unittest.TestCase):
             },
         )
         self.store.flush(project["id"])
-        self.apply_mutations(project["id"], [
-            {"op": "remove_node", "node_id": "result-node"},
-        ])
+        # 删除最后一个节点属于有意清空，需显式 force_empty=True（空画布覆盖防护）。
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        self.store.apply_mutations(project["id"], [{"op": "remove_node", "node_id": "result-node"}], base_revision=revision, force_empty=True)
         revision = self.store.open_project(project["id"])["canvas"]["revision"]
         self.store.delete_history_record(
             project["id"],
@@ -1110,9 +1110,10 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.store.apply_mutations(project["id"], [
             {"op": "upsert_node", "node": {"id": "shared", "x": 1, "y": 1}},
         ], base_revision=0)
+        # 删除最后一个节点属于有意清空，需显式 force_empty=True（空画布覆盖防护）。
         self.store.apply_mutations(project["id"], [
             {"op": "remove_node", "node_id": "shared"},
-        ], base_revision=1)
+        ], base_revision=1, force_empty=True)
 
         with self.assertRaises(RevisionConflict):
             self.store.apply_mutations(project["id"], [

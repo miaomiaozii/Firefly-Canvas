@@ -300,7 +300,10 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
 
     def test_generation_has_persistent_pending_feedback_and_result_entry_effect(self):
         self.assertIn("const isPending = Boolean(node.pending || isQueued || isJimengPending);", self.source)
-        self.assertIn("function generationPlaceholderHtml(layout, count=1, queued=false, progress={}){", self.source)
+        # generationPlaceholderHtml was extended with completedImgs (progressive
+        # completion: show finished thumbs in placeholder slots) and
+        # candidatePhases (per-cell stage from backend progress.candidate_phases).
+        self.assertIn("function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[]){", self.source)
         self.assertIn("if(node.pending){", self.source)
         self.assertNotIn("if(node.pending && imgs.length === 0){", self.source)
         self.assertIn("generation-placeholder", self.source)

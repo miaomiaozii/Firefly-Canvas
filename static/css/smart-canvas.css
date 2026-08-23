@@ -748,7 +748,7 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .input-prompt-preview.has-text { display:flex; flex-direction:column; gap:4px; }
 .input-prompt-preview-label { color:var(--faint); font-size:var(--font-micro, 10px); font-weight:var(--weight-strong, 700); line-height:var(--line-compact, 1.3); }
 .input-prompt-preview-text { color:var(--muted); font-size:var(--font-body, 13px); line-height:var(--line-body, 1.5); max-height:148px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; scrollbar-width:thin; }
-.input-thumb-list { display:flex; align-items:center; gap:6px; min-width:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; padding:5px 0 0 5px; }
+.input-thumb-list { display:flex; align-items:center; gap:6px; min-width:0; overflow-x:hidden; overflow-y:hidden; scrollbar-width:none; padding:5px 0 0 5px; }
 .input-thumb-list.empty { flex:1 1 auto; min-height:42px; padding-top:0; }
 .input-thumb-actions { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px; }
 .input-thumb-actions .smart-pill { height:28px; white-space:nowrap; }

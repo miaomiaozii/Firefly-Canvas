@@ -31,7 +31,10 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("object-fit:cover", final_thumbnail_rules)
         self.assertIn('class="log-output-gallery"', SCRIPT)
         self.assertIn("const outputCards = outputs.map(item =>", SCRIPT)
-        self.assertIn("const selectedIndex = smartHistorySelectedImage?.logId === logId", SCRIPT)
+        # Selection is now an IIFE that keys on both logId and outputId so a
+        # specific output within a multi-output log can be addressed.
+        self.assertIn("const selectedIndex = (() => {", SCRIPT)
+        self.assertIn("smartHistorySelectedImage?.logId === logId && smartHistorySelectedImage?.outputId", SCRIPT)
         runner = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")
         self.assertIn("multiOutputIndependentDeleteRestore", runner)
         self.assertIn("rootScrollStable", runner)
@@ -68,8 +71,20 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertRegex(CANVAS_CSS, r"\.smart-log-detail-head h2\s*\{[^}]*color:var\(--designer-accent-strong\)")
 
     def test_canvas_assets_use_the_current_ui_cache_version(self):
-        self.assertIn('/static/css/smart-canvas.css?v=2026.08.13.10', CANVAS_HTML)
-        self.assertIn('/static/js/smart-canvas.js?v=2026.08.13.10', CANVAS_HTML)
+        # Both CSS and JS must carry a cache-busting ?v= parameter so browsers
+        # fetch fresh assets after updates. The exact value is intentionally
+        # version-independent: tools/restart-firefly.ps1 (Bump-AssetVersions)
+        # rewrites it on every restart, so pinning a literal value here would
+        # break on every dev restart. We only assert the parameter exists and
+        # that css/js share the same version (Bump-AssetVersions sets both).
+        css_match = re.search(r'smart-canvas\.css\?v=([A-Za-z0-9._-]+)', CANVAS_HTML)
+        js_match = re.search(r'smart-canvas\.js\?v=([A-Za-z0-9._-]+)', CANVAS_HTML)
+        self.assertIsNotNone(css_match, 'smart-canvas.css must have a ?v= cache-buster')
+        self.assertIsNotNone(js_match, 'smart-canvas.js must have a ?v= cache-buster')
+        self.assertEqual(
+            css_match.group(1), js_match.group(1),
+            'css and js cache-buster versions must match (Bump-AssetVersions sets both)',
+        )
 
     def test_multi_output_history_has_discoverable_previews_and_detail_switching(self):
         self.assertIn('class="log-output-preview-list"', SCRIPT)

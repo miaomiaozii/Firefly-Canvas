@@ -221,7 +221,63 @@ def run_image_organization(
     if not isinstance(ordinary_ratios, list) or len(ordinary_ratios) != 2:
         raise AssertionError(f"ordinary multi-image geometry is incomplete: {ordinary_ratios!r}")
 
-    browser.native_drag(multi_selector, dx=-48, dy=-24, relative=(0.03, 0.3))
+    # 浮动菜单由 positionSmartNodeFloatingMenus 动态定位（可能贴到节点左上角），
+    # 且节点 hover/selected 时 .floating-node-actions、.node-resize-handle 会拦截事件，
+    # 所以拖拽起点必须按当前几何探测，不能硬编码角落。
+    multi_drag_dx = -48
+    multi_drag_dy = -24
+    multi_drag_point = browser.evaluate(
+        f"""(() => {{
+          const element = document.querySelector({json.dumps(multi_selector)});
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          const hoverAction = element.querySelector('.floating-node-actions');
+          const hoverActionRect = hoverAction ? hoverAction.getBoundingClientRect() : null;
+          const floatingMenu = element.querySelector('.smart-node-floating-menu');
+          const floatingMenuRect = floatingMenu ? floatingMenu.getBoundingClientRect() : null;
+          const hoverBlocked = (x, y, r) => r && x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6;
+          for (const yFraction of [0.42, 0.62, 0.5, 0.3, 0.78]) {{
+            for (const xFraction of [0.5, 0.38, 0.62, 0.25, 0.75]) {{
+              const x = rect.left + rect.width * xFraction;
+              const y = rect.top + rect.height * yFraction;
+              const endX = x + {multi_drag_dx};
+              const endY = y + {multi_drag_dy};
+              if (endX < 0 || endX >= innerWidth || endY < 0 || endY >= innerHeight) continue;
+              if (hoverBlocked(x, y, hoverActionRect) || hoverBlocked(x, y, floatingMenuRect)) continue;
+              const hit = document.elementFromPoint(x, y);
+              const blocked = hit?.closest('.smart-node-floating-menu,.node-resize-handle,button,input,select,textarea,a');
+              if (blocked) continue;
+              if (hit === element || element.contains(hit)) {{
+                return {{xFraction, yFraction}};
+              }}
+            }}
+          }}
+          return null;
+        }})()"""
+    )
+    if not isinstance(multi_drag_point, dict):
+        multi_surface_state = browser.evaluate(
+            f"""(() => {{
+              const element = document.querySelector({json.dumps(multi_selector)});
+              const asRect = target => {{ const r = target?.getBoundingClientRect();
+                return r ? {{left:r.left, top:r.top, right:r.right, bottom:r.bottom}} : null; }};
+              return {{
+                node: asRect(element),
+                menu: asRect(element?.querySelector('.smart-node-floating-menu')),
+                hoverActions: asRect(element?.querySelector('.floating-node-actions')),
+                viewport: {{width: innerWidth, height: innerHeight}},
+              }};
+            }})()"""
+        )
+        raise AssertionError(
+            f"multi-image node has no unobscured native drag surface: {multi_surface_state!r}"
+        )
+    browser.native_drag(
+        multi_selector,
+        dx=multi_drag_dx,
+        dy=multi_drag_dy,
+        relative=(multi_drag_point["xFraction"], multi_drag_point["yFraction"]),
+    )
     blank_point = browser.evaluate(
         """(() => {
           const shell = document.querySelector('#shell').getBoundingClientRect();
@@ -291,6 +347,7 @@ def run_image_organization(
     browser.native_click(
         square_drop_selector,
         relative=(square_drop_point["xFraction"], square_drop_point["yFraction"]),
+        click_count=2,
     )
     browser.wait_for(f"document.querySelector({json.dumps(upload_selector)})")
     browser.native_upload(upload_selector, source_paths[2:])
@@ -307,11 +364,20 @@ def run_image_organization(
           const element = document.querySelector({json.dumps(square_selector)});
           if (!element) return null;
           const rect = element.getBoundingClientRect();
+          // 排除浮动菜单和悬浮操作条（它们 hover/selected 时会拦截点击）
+          const hoverAction = element.querySelector('.floating-node-actions');
+          const hoverActionRect = hoverAction ? hoverAction.getBoundingClientRect() : null;
+          const floatingMenu = element.querySelector('.smart-node-floating-menu');
+          const floatingMenuRect = floatingMenu ? floatingMenu.getBoundingClientRect() : null;
+          const hoverBlocked = (x, y, r) => r && x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6;
           for (const yFraction of [0.08, 0.18, 0.32, 0.5, 0.72]) {{
             for (const xFraction of [0.85, 0.72, 0.58, 0.42, 0.25]) {{
               const x = rect.left + rect.width * xFraction;
               const y = rect.top + rect.height * yFraction;
+              if (hoverBlocked(x, y, hoverActionRect) || hoverBlocked(x, y, floatingMenuRect)) continue;
               const hit = document.elementFromPoint(x, y);
+              const blocked = hit?.closest('.smart-node-floating-menu,.node-resize-handle,button,input,select,textarea,a');
+              if (blocked) continue;
               const dragX = [{square_drag_distance}, {-square_drag_distance}].find(delta =>
                 x + delta >= 0
                 && x + delta < innerWidth
@@ -400,9 +466,18 @@ def run_image_organization(
           const element = document.querySelector({json.dumps(group_selector)});
           const rect = element?.getBoundingClientRect();
           if (!rect) return null;
+          // 悬浮操作条(.floating-node-actions)默认 pointer-events:none，但鼠标 hover 节点后立即
+          // 变为 pointer-events:auto；elementFromPoint 探测时看不到它，真实点击却会被它拦截
+          // （点击落在 mini-x 上会直接删掉节点），所以按几何区域显式排除。
+          const hoverAction = element.querySelector('.floating-node-actions');
+          const hoverActionRect = hoverAction ? hoverAction.getBoundingClientRect() : null;
+          const hoverBlocked = (x, y) => hoverActionRect && x >= hoverActionRect.left - 6 && x <= hoverActionRect.right + 6 && y >= hoverActionRect.top - 6 && y <= hoverActionRect.bottom + 6;
           for (const yFraction of [0.08, 0.18, 0.5, 0.82, 0.94]) {{
             for (const xFraction of [0.96, 0.82, 0.5, 0.18, 0.04]) {{
-              const hit = document.elementFromPoint(rect.left + rect.width * xFraction, rect.top + rect.height * yFraction);
+              const x = rect.left + rect.width * xFraction;
+              const y = rect.top + rect.height * yFraction;
+              if (hoverBlocked(x, y)) continue;
+              const hit = document.elementFromPoint(x, y);
               const blocked = hit?.closest('.smart-node-floating-menu,.node-resize-handle,button,input,select,textarea,a');
               if ((hit === element || element.contains(hit)) && !blocked) return {{xFraction, yFraction}};
             }}
@@ -473,14 +548,17 @@ def run_image_organization(
           const element = document.querySelector({json.dumps(group_selector)});
           const thumbs = [...element.querySelectorAll('.thumb-item, .smart-group-single-thumb')];
           return (node.images || []).map((image, index) => {{
-            const rect = thumbs[index]?.getBoundingClientRect();
+            // 分组缩略格是固定 4:3 单元格（与生图历史/批量面板一致），图片在格内
+            // object-fit:contain 居中保比例；要验证“显示不改变源比例”必须量内部 img。
+            const rect = thumbs[index]?.querySelector('img')?.getBoundingClientRect();
             return {{asset_id:image.asset_id || '', name:image.name || '', display_ratio:rect ? rect.width / rect.height : 0}};
           }});
         }})()"""
     )
     group_size_before = browser.evaluate(
-        f"(() => {{ const r=document.querySelector({json.dumps(group_selector)}).getBoundingClientRect(); "
-        "return {width:r.width,height:r.height}; })()"
+        f"(() => {{ const el=document.querySelector({json.dumps(group_selector)}); const id=el?.dataset?.id; "
+        "const node=(nodes||[]).find(n=>n.id===id); "
+        "return node ? {width:node.w,height:node.h} : null; })()"
     )
     group_resize_layout = browser.evaluate(
         f"""(() => {{
@@ -488,12 +566,23 @@ def run_image_organization(
           const group = element.getBoundingClientRect();
           const composer = document.querySelector('#composer').getBoundingClientRect();
           const targetRight = Math.min(innerWidth - 18, composer.right + 34);
+          // 悬浮操作条(.floating-node-actions)和浮动菜单(.smart-node-floating-menu)默认
+          // pointer-events:none，但 hover/selected 后立即变为 pointer-events:auto；
+          // elementFromPoint 探测时看不到它们，真实 drag 却会被它们拦截，所以按几何区域显式排除。
+          const hoverAction = element.querySelector('.floating-node-actions');
+          const hoverActionRect = hoverAction ? hoverAction.getBoundingClientRect() : null;
+          const floatingMenu = element.querySelector('.smart-node-floating-menu');
+          const floatingMenuRect = floatingMenu ? floatingMenu.getBoundingClientRect() : null;
+          const hoverBlocked = (x, y, rect) => rect && x >= rect.left - 6 && x <= rect.right + 6 && y >= rect.top - 6 && y <= rect.bottom + 6;
           let dragPoint = null;
           for (const yFraction of [0.08, 0.18, 0.5, 0.82, 0.94]) {{
             for (const xFraction of [0.96, 0.82, 0.5, 0.18, 0.04]) {{
               const x = group.left + group.width * xFraction;
               const y = group.top + group.height * yFraction;
-              if (document.elementFromPoint(x, y) === element) {{
+              if (hoverBlocked(x, y, hoverActionRect) || hoverBlocked(x, y, floatingMenuRect)) continue;
+              const hit = document.elementFromPoint(x, y);
+              const blocked = hit?.closest('.smart-node-floating-menu,.node-resize-handle,button,input,select,textarea,a');
+              if ((hit === element || element.contains(hit)) && !blocked) {{
                 dragPoint = {{xFraction, yFraction}};
                 break;
               }}
@@ -534,6 +623,7 @@ def run_image_organization(
         raise AssertionError(
             f"native group drag failed after stable layout {group_resize_layout!r}"
         ) from error
+    
     resize_handle_evidence = browser.evaluate(
         f"""(() => {{
           const group = document.querySelector({json.dumps(group_selector)});
@@ -565,8 +655,9 @@ def run_image_organization(
         release_selector="#shell",
     )
     group_size_after = browser.evaluate(
-        f"(() => {{ const r=document.querySelector({json.dumps(group_selector)}).getBoundingClientRect(); "
-        "return {width:r.width,height:r.height}; })()"
+        f"(() => {{ const el=document.querySelector({json.dumps(group_selector)}); const id=el?.dataset?.id; "
+        "const node=(nodes||[]).find(n=>n.id===id); "
+        "return node ? {width:node.w,height:node.h} : null; })()"
     )
     organized_screenshot = browser.capture_screenshot(viewport_root / "03-image-organized.png")
 
