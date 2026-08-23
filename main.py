@@ -1604,6 +1604,12 @@ from app.routers import api_canvases as _r_api_canvases
 app.include_router(_r_api_canvases.router)
 from app.routers import api_chat as _r_api_chat
 app.include_router(_r_api_chat.router)
+from app.routers import api_excel_import as _r_api_excel_import
+app.include_router(_r_api_excel_import.router)
+from app.routers import api_excel_expand as _r_api_excel_expand
+app.include_router(_r_api_excel_expand.router)
+from app.routers import api_excel_collect as _r_api_excel_collect
+app.include_router(_r_api_excel_collect.router)
 from app.routers import api_cloud_video as _r_api_cloud_video
 app.include_router(_r_api_cloud_video.router)
 from app.routers import api_codex as _r_api_codex

@@ -1,6 +1,7 @@
 const params = new URLSearchParams(location.search);
 const canvasId = params.get('id') || '';
 const sourceProjectId = params.get('project') || '';
+window.canvasId = canvasId;
 const shell = document.getElementById('shell');
 const world = document.getElementById('world');
 const composer = document.getElementById('composer');
@@ -5939,6 +5940,10 @@ async function mergeReloadCanvasNow(){
         if(data && data.canvas) applyMergedServerCanvas(data.canvas);
     } catch(e) {}
 }
+
+// 导出刷新函数供外部模块调用
+window.refreshSmartCanvas = () => mergeReloadCanvasNow();
+
 function scheduleCanvasMergeReload(delay=200){
     clearTimeout(canvasSyncTimer);
     canvasSyncTimer = setTimeout(() => { mergeReloadCanvasNow(); }, delay);

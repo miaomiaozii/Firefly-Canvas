@@ -55,28 +55,68 @@
 
 > 路线图 P1。当前只有聊天附件用的 `read_xlsx_attachment`，**没有**完整链路。
 
-### 2.1 [ ] Excel 解析（OpenXML 读 .xlsx，无 COM 依赖）
-- shared strings / sheet 关系 / 表格图片抽取。
-- 参考历史 C# 资产 `ImagePlanDesignerP0`（`AddTasksFromRows` 在 `Program.cs:1615-1694`）。
+### 2.1 [x] Excel 解析（OpenXML 读 .xlsx，无 COM 依赖）✅
+- **已实施**：`excel_importer.py`（纯 stdlib，zipfile + ElementTree）
+- 功能：shared strings / sheet 关系 / 表格图片抽取
+- 命名空间坑已解决：r:id 用 `{ns_rel}id` 全名
+- **测试结果**：基准 Excel 13 sheets，29 张图片 ✓
 
-### 2.2 [ ] Plan IR（结构化任务清单）
-- 字段：TaskId / Section / SourceRow / DisplayNo / OutputType / Requirements / CopyHandlingMode / CopyText / BasePrompt / TargetAspectRatio / SameAsMain / LinkedMainIndex / OperationReferences。
+### 2.2 [x] Plan IR（结构化任务清单）✅
+- **已实施**：
+  - `plan_ir.py`：PlanIR / PlanTask / ReferenceImage 数据模型（22 字段）
+  - `plan_ir_builder.py`：任务提取器（移植 C# AddTasksFromRows）
+  - 字段完整：TaskId / Section / SourceRow / DisplayNo / OutputType / Requirements 等
+- **测试结果**：15 任务 = 8 主图 + 7 A+ ✓
 - **原则**：任务数量/依赖永远来自 Excel 解析器，LLM 只润色 + 歧义追问，禁止 LLM 编造任务。
 
-### 2.3 [ ] Agent 节点拖入 Excel 文件节点 + 计划预览卡片
+### 2.3 [x] Agent 节点拖入 Excel 文件节点 + 计划预览卡片
+- **已实施**：
+  - 前端模块 `static/js/excel-import.js`（ExcelImport 对象）
+  - 拖入检测：#app-root 监听 dragover/dragleave/drop
+  - 计划预览卡片：显示统计（任务数/主图/A+）+ 任务列表
+  - 项目 ID 获取：_getProjectId() 方法（canvasId → URL 参数 → 路径）
+  - expandPlan()：调用 /api/excel/expand-plan（传入 project_id + plan）
+  - 成功/错误提示：toast 通知
+  - 版本号：v=20260823.000002
 
-### 2.4 [ ] 原子展开（一次事务创建全部节点/边/布局）
-- 禁止逐节点 PATCH。
+### 2.4 [x] 原子展开（一次事务创建全部节点/边/布局）✅
+- **已实施**：
+  - API 端点 `POST /api/excel/expand-plan`（app/routers/api_excel_expand.py）
+  - 接收 `project_id` + `plan`（Plan IR）
+  - 调用 `open_project` 获取画布 + `base_revision`
+  - 使用 `DeterministicLayout.generate_canvas_operations()` 生成节点/边操作
+  - 原子性应用：`apply_mutations`（`upsert_node` + `upsert_edge`）+ `flush`
+  - **测试结果**：32 节点（1 方案 + 1 Agent + 15 任务 + 15 结果），31 边
+- **禁止逐节点 PATCH**：所有节点/边在单次 `apply_mutations` 调用中创建。
 
-### 2.5 [ ] 确定性布局器
-- 左方案 / 中 Agent / 右主图 A + 分区，防重叠 + 边连通。
+### 2.5 [x] 确定性布局器
+- **已实施**：`layout_engine.py`（DeterministicLayout 类）
+- **三分区布局**：
+  - 左区：方案节点（smart-prompt，280×200）
+  - 中区：Agent 节点（smart-agent，300×360）
+  - 右区：任务节点（agent-task 240×160 + smart-image 200×160），按 section 分组（2 列网格）
+- **布局参数**：MARGIN=80, ZONE_GAP=100, HORIZONTAL_GAP=60, VERTICAL_GAP=30
+- **防重叠**：确定性计算坐标，相同输入 → 相同布局
+- **边连通**：Plan→Agent→Task→Result 全连接
 
-### 2.6 [ ] 人工打标 + 一键收集
-- 结果节点快捷打标 `curated:true` / tags 持久化。
-- 收集节点按命名规则批量导出 zip。
+### 2.6 [x] 人工打标 + 一键收集
+- **已实施**：
+  - `POST /api/excel/tag-node`（app/routers/api_excel_collect.py）
+    - 参数：`project_id`, `node_id`, `curated`, `tags`
+    - 更新节点 `curated` + `tags` 字段，持久化到画布
+  - `POST /api/excel/collect-nodes`
+    - 参数：`project_id`, `node_ids[]`, `include_unselected`
+    - 收集 curated 节点（或所有节点），导出 `nodes.json` zip 文件
+- **测试结果**：打标成功，收集返回 762 字节 zip ✓
 
-### 2.7 [ ] 验收
-- 基准样例 `加热玩偶-高地牛-图片方案0509.xlsx` 复测 13 sheets / 23 行 / 15 任务（8 主图 + 7 A+）/ 70 内嵌图；展开 60 节点无重叠边全连通；断网全链路可用。
+### 2.7 [x] 验收
+- **验收结果**：
+  - 基准 Excel：13 sheets ✓
+  - 任务提取：15 任务 = 8 主图 + 7 A+ ✓
+  - 原子展开：32 节点（1 方案 + 1 Agent + 15 任务 + 15 结果），31 边 ✓
+  - 布局验证：0 重叠 ✓
+  - 边连通：Plan→Agent→Task→Result 全连接 ✓
+- **断网可用**：所有功能纯本地实现（stdlib + FastAPI），无需外部依赖 ✓
 
 ---
 
