@@ -45,3 +45,6 @@ app/data/
 .ua/
 NUL
 data/api_providers.json.bak-*
+*.pid
+data/server_*.log
+edge_state.json
