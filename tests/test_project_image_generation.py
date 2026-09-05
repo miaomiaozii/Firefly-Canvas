@@ -244,7 +244,14 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
 
         item = task["result"]["image_items"][0]
         asset_id = item["asset_id"]
-        self.assertEqual(task["result"]["history_record"]["outputs"], [{"asset_id": asset_id, "kind": "image"}])
+        outputs = task["result"]["history_record"]["outputs"]
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(outputs[0]["asset_id"], asset_id)
+        self.assertEqual(outputs[0]["kind"], "image")
+        # T4 修复：Store 分配的 canonical 生成输出身份（output_id/output_order）必须回写给调用方，
+        # 否则前端日志输出无 output_id、在画布历史里无法删除。
+        self.assertTrue(outputs[0].get("output_id"), "T4: outputs must carry canonical output_id")
+        self.assertIsNotNone(outputs[0].get("output_order"), "T4: outputs must carry output_order")
         media = self.client.get(f"/api/project-library/{project['id']}/media/{asset_id}")
         self.assertEqual(media.status_code, 200, media.text)
         self.assertEqual(media.content, provider_bytes)

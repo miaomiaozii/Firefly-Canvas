@@ -5827,7 +5827,9 @@ def project_canvas_video_payload(request: VideoGenerationRequest, provider_id: s
     image_refs = [AIReference(url=item['adapter_url'], name=item.get('name') or 'reference', kind='image', mime=item.get('mime') or '') for item in references if item.get('kind') == 'image']
     video_refs = [item['adapter_url'] for item in references if item.get('kind') == 'video']
     audio_refs = [item['adapter_url'] for item in references if item.get('kind') == 'audio']
-    return CanvasVideoRequest(prompt=request.prompt, provider_id=provider_id, model=model, duration=request.duration, width=request.width, height=request.height, aspect_ratio=request.aspect_ratio, resolution=request.resolution, size=request.size, quality=request.quality, media_type=request.media_type, images=image_refs, videos=video_refs, audios=audio_refs, enhance_prompt=request.enhance_prompt, enable_upsample=request.enable_upsample, watermark=request.watermark, seed=request.seed, camera_fixed=request.camera_fixed, return_last_frame=request.return_last_frame, generate_audio=request.generate_audio, multimodal=bool(video_refs or audio_refs or len(image_refs) > 1))
+    # T8 归一化把未指定的 size/aspect_ratio/resolution 置为 None（供路由识别「未指定」），
+    # 但 CanvasVideoRequest 这三个字段是 str 契约（空串=未指定，与归一化前行为一致）——None 会触发 pydantic 400。
+    return CanvasVideoRequest(prompt=request.prompt, provider_id=provider_id, model=model, duration=request.duration, width=request.width, height=request.height, aspect_ratio=request.aspect_ratio or '', resolution=request.resolution or '', size=request.size or '', quality=request.quality, media_type=request.media_type, images=image_refs, videos=video_refs, audios=audio_refs, enhance_prompt=request.enhance_prompt, enable_upsample=request.enable_upsample, watermark=request.watermark, seed=request.seed, camera_fixed=request.camera_fixed, return_last_frame=request.return_last_frame, generate_audio=request.generate_audio, multimodal=bool(video_refs or audio_refs or len(image_refs) > 1))
 
 def runninghub_configured_video_model_definition(provider: Mapping[str, Any], model: str) -> Optional[Dict[str, Any]]:
     cached = provider.get('_runninghub_video_model_definitions')
