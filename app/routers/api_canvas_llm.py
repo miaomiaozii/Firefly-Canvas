@@ -4,7 +4,8 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, unwrap_apimart_response)
+from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, text_from_responses, unwrap_apimart_response)
+from app.services.conversation import chat_request_latest, chat_text_from_raw
 _from_main_names = ['codex_chat_text', 'gemini_cli_chat_text', 'get_api_provider', 'is_image_reference_value', 'is_video_reference_value', 'media_reference_to_url', 'resolve_chat_provider', 'video_reference_to_frame_data_urls']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -114,16 +115,12 @@ async def canvas_llm(payload: CanvasLLMRequest):
     else:
         upstream_messages.append({'role': 'user', 'content': payload.message})
     raw = None
+    fmt = 'chat'
     try:
         async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            req_body = {'model': model, 'messages': upstream_messages}
-            if _is_apimart:
-                req_body['stream'] = False
-            response = await client.post(f'{chat_base}/chat/completions', headers=chat_hdrs, json=req_body)
-            response.raise_for_status()
-            if not response.content:
+            raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, stream=False, provider_cfg=_llm_provider)
+            if not raw:
                 raise HTTPException(status_code=502, detail='上游接口返回了空响应')
-            raw = response.json()
     except httpx.HTTPStatusError as exc:
         body = exc.response.text or ''
         friendly = friendly_chat_error_detail(body, model, _llm_provider)
@@ -135,7 +132,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'解析上游响应失败：{exc}') from exc
     try:
-        text = text_from_chat_response(raw).strip() if isinstance(raw, dict) else ''
+        text = chat_text_from_raw(raw, fmt).strip() if isinstance(raw, dict) else ''
         text = text or '接口返回了空回复。'
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'解析回复内容失败：{exc}') from exc

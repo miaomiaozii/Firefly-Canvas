@@ -253,7 +253,7 @@ VOLCENGINE_ARK_ASSET_HOST = 'open.volcengineapi.com'
 VOLCENGINE_ARK_ASSET_SERVICE = 'ark'
 VOLCENGINE_ARK_ASSET_REGION = 'cn-beijing'
 VOLCENGINE_ARK_ASSET_VERSION = '2024-01-01'
-CHAT_RATIO_SIZE_OPTIONS = {'1:1': ('1024x1024', '1536x1536', '2048x2048'), '2:3': ('720x1080', '1024x1536', '1365x2048'), '3:2': ('1080x720', '1536x1024', '2048x1365'), '3:4': ('1008x1344', '1536x2048', '2448x3264'), '4:3': ('1344x1008', '2048x1536', '3264x2448'), '9:16': ('720x1280', '1080x1920', '1440x2560'), '16:9': ('1280x720', '1920x1080', '2560x1440')}
+CHAT_RATIO_SIZE_OPTIONS = {'1:1': ('1024x1024', '1536x1536', '2048x2048'), '2:3': ('720x1080', '1024x1536', '1365x2048'), '3:2': ('1080x720', '1536x1024', '2048x1365'), '3:4': ('1008x1344', '1536x2048', '2448x3264'), '4:3': ('1344x1008', '2048x1536', '3264x2448'), '9:16': ('720x1280', '1080x1920', '1440x2560'), '16:9': ('1280x720', '1920x1080', '2560x1440'), '4:5': ('819x1024', '1216x1520', '1621x2048'), '5:4': ('1024x819', '1536x1228', '2048x1638'), '21:9': ('1344x576', '2048x878', '2752x1182')}
 GPT_IMAGE2_MAX_EDGE = 3840
 GPT_IMAGE2_MAX_PIXELS = 8294400
 GPT_IMAGE2_MIN_PIXELS = 655360
@@ -1550,11 +1550,20 @@ def selected_model(requested, fallback):
     return model
 
 def looks_like_vision_chat_model(model):
-    lc = str(model or '').strip().lower()
-    if not lc:
-        return False
-    vision_keys = ['vision', 'vl-', '-vl-', 'internvl', 'qvq', 'qwen-vl', 'doubao-vision', 'glm-4v', 'minicpm-v']
-    return any((key in lc for key in vision_keys))
+    """Check if a model supports vision (image input).
+
+    First checks model_specs.json, falls back to name-based detection.
+    """
+    try:
+        from app.services.model_specs import is_vision_model
+        return is_vision_model(model)
+    except ImportError:
+        # Fallback if model_specs service not available
+        lc = str(model or '').strip().lower()
+        if not lc:
+            return False
+        vision_keys = ['vision', 'vl-', '-vl-', 'internvl', 'qvq', 'qwen-vl', 'doubao-vision', 'glm-4v', 'minicpm-v', 'gpt-4o', 'gpt-4.1', 'gpt-5', 'claude', 'gemini']
+        return any((key in lc for key in vision_keys))
 
 def preferred_chat_model(provider):
     values = [str(item or '').strip() for item in provider.get('chat_models') or [CHAT_MODEL]]
@@ -1605,6 +1614,79 @@ def text_from_chat_response(data):
                 parts.append(item.get('text') or item.get('content') or '')
         return '\n'.join((part for part in parts if part))
     return str(content)
+
+def responses_input_from_messages(messages):
+    """将 OpenAI chat `messages` 转换为 Responses API 的 `input`。
+    - 字符串 content → 原样（Responses 支持 role+字符串 content）
+    - 数组 content：{type:image_url,image_url:{url}} → {type:input_image,image_url:url}
+    - 数组 content：{type:text,text} / 其它 → {type:input_text,text}
+    兼容 Responses API（OpenAI 及兼容中转统一使用）。"""
+    converted = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get('role') or 'user')
+        if role not in {'user', 'assistant', 'system', 'developer'}:
+            role = 'user'
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            converted.append({'role': role, 'content': content})
+            continue
+        if not isinstance(content, list):
+            converted.append({'role': role, 'content': str(content or '')})
+            continue
+        new_content = []
+        for part in content:
+            if isinstance(part, dict):
+                ptype = str(part.get('type') or '')
+                if ptype == 'image_url':
+                    img = part.get('image_url') or {}
+                    url = img.get('url') if isinstance(img, dict) else str(img or '')
+                    if url:
+                        new_content.append({'type': 'input_image', 'image_url': url})
+                elif 'text' in part:
+                    new_content.append({'type': 'input_text', 'text': str(part.get('text') or '')})
+                else:
+                    new_content.append(part)
+            else:
+                new_content.append(part)
+        converted.append({'role': role, 'content': new_content})
+    return converted
+
+def text_from_responses(data):
+    """从 Responses API 响应提取助手文本。
+    结构：output[] 中 type=message 的项，content[] 中 type=output_text 的 text。
+    也兼容部分中转直接返回 {output_text} 或扁平 {output:[{content:[{text}]}]}。"""
+    if not isinstance(data, dict):
+        return ''
+    parts = []
+    def collect(obj):
+        if isinstance(obj, str):
+            if obj.strip():
+                parts.append(obj)
+            return
+        if isinstance(obj, list):
+            for item in obj:
+                collect(item)
+            return
+        if not isinstance(obj, dict):
+            return
+        t = obj.get('text')
+        if isinstance(t, str) and t:
+            parts.append(t)
+            return
+        for key in ('output', 'content', 'message', 'choices'):
+            if key in obj:
+                collect(obj[key])
+    collect(data)
+    # 去重保持顺序
+    seen = set()
+    uniq = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return '\n'.join(uniq)
 
 def text_delta_from_chat_chunk(data):
     choices = data.get('choices') or []
@@ -4254,9 +4336,50 @@ def looks_like_gemini_image_model(model):
     value = str(model or '').strip().lower()
     return value.startswith('gemini-') and 'image' in value
 
+def model_spec_for(model_id):
+    """Look up a model in model_specs.json (single source of truth for adapted models).
+
+    Returns the spec dict or None. Never raises — import/load failures degrade
+    to None so routing falls back to legacy name heuristics.
+    """
+    try:
+        from app.services.model_specs import get_model_spec
+        return get_model_spec(model_id)
+    except Exception:
+        return None
+
+def route_image_from_spec(requested_model, size, spec):
+    """Build an image-route from a model_specs.json entry.
+
+    The spec's ``parameters`` keys decide the param style:
+      - aspect_ratio / image_size -> banana/gemini style (aspect_ratio + image_size)
+      - otherwise                 -> OpenAI style (rely on ``size`` sent downstream)
+    """
+    sp = (spec or {}).get('parameters', {}) or {}
+    if 'aspect_ratio' in sp or 'image_size' in sp:
+        return {
+            'requested_model': requested_model,
+            'model': requested_model,
+            'params': banana_image_request_params(size),
+            'family': 'spec-aspect',
+        }
+    return {
+        'requested_model': requested_model,
+        'model': requested_model,
+        'params': {},
+        'family': '',
+    }
+
 def route_openai_image_request(provider, model, size):
     requested_model = selected_model(model, IMAGE_MODEL)
     family = banana_model_family(requested_model)
+    # SPEC-FIRST: model_specs.json is the authoritative registry for adapted
+    # models. For models not already handled by name heuristics (banana/gemini),
+    # consult the spec so that "adding a model to the spec" is what adapts it.
+    if not family and not looks_like_gemini_image_model(requested_model):
+        spec = model_spec_for(requested_model)
+        if spec and spec.get('api_type') == 'images_generations':
+            return route_image_from_spec(requested_model, size, spec)
     params = {}
     routed_model = requested_model
     if family:
@@ -5101,6 +5224,17 @@ async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
     return (False, {'status': compat_probe.get('status') or task_probe.get('status') or 0, 'message': compat_probe.get('message') or task_probe.get('message') or '未检测到方舟/Ark 兼容入口', 'raw': {'task_probe': task_probe, 'openai_compat_probe': compat_probe.get('raw')}})
 
 def classify_upstream_model(mid):
+    # SPEC-FIRST: model_specs.json is the authoritative registry for media type.
+    # A model present in the spec is classified by the category it belongs to,
+    # so that "adding a model to the spec" is what defines how it's routed.
+    try:
+        from app.services.model_specs import get_model_category
+        kind = get_model_category(mid)
+        if kind:
+            return kind
+    except Exception:
+        pass
+    # FALLBACK: legacy keyword classification (models not yet in the spec)
     lc = str(mid or '').lower()
     video_keys = ['veo', 'sora', 'wan2', 'wanx', 'doubao-seedance', 'doubao-1', 'kling', 'hailuo', 'video', 't2v-', 'i2v-', 's2v']
     if any((k in lc for k in video_keys)):

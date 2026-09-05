@@ -40,6 +40,7 @@ Thumbs.db
 
 # 运行时数据（拆分后 app/data）
 app/data/
+!app/data/model_specs.json
 
 # 本地工具与临时文件
 .ua/

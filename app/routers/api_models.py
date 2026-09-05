@@ -39,7 +39,7 @@ _DEFAULT_VIDEO_MODELS = [
 ]
 
 _DEFAULT_CHAT_MODELS = ["gpt-4o-mini", "gemini-3.1-flash-image-preview-2k"]
-_DEFAULT_IMAGE_MODELS = ["nano-banana-pro"]
+_DEFAULT_IMAGE_MODELS = ["nano-banana-pro", "nano-banana-2"]
 
 @router.get('/api/models')
 async def ai_models():
@@ -47,4 +47,32 @@ async def ai_models():
         'chat_models': model_list("CHAT_MODELS", CHAT_MODEL, _DEFAULT_CHAT_MODELS),
         'image_models': model_list("IMAGE_MODELS", IMAGE_MODEL, _DEFAULT_IMAGE_MODELS),
         'video_models': model_list("VIDEO_MODELS", "veo3-fast", _DEFAULT_VIDEO_MODELS),
+    }
+
+
+@router.get('/api/model-specs')
+async def model_specs_endpoint():
+    """Serve model_specs.json as the authoritative model registry (single source of truth).
+
+    The frontend uses this to know:
+      - Which models are adapted (present in the spec)
+      - Their capabilities (supports_vision, async_mode)
+      - Their parameter options (size, aspect_ratio, quality, duration, ...)
+
+    Provider-specific discovered models are separate and merged in by the client
+    as needed; the spec is the base registry of what the app knows how to adapt.
+    """
+    from app.services import model_specs as ms
+    specs = ms.load_specs()
+    cats = {c: specs.get(c, {}) or {} for c in ('chat_models', 'image_models', 'video_models')}
+    return {
+        'schema_version': specs.get('_schema_version'),
+        'last_updated': specs.get('_last_updated'),
+        'chat_models': cats['chat_models'],
+        'image_models': cats['image_models'],
+        'video_models': cats['video_models'],
+        # Convenience ID lists for dropdowns / quick lookup
+        'chat_model_ids': list(cats['chat_models'].keys()),
+        'image_model_ids': list(cats['image_models'].keys()),
+        'video_model_ids': list(cats['video_models'].keys()),
     }

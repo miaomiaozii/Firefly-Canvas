@@ -1,0 +1,1612 @@
+{
+  "_schema_version": "1.0",
+  "_description": "Firefly-Canvas 模型参数规范。运行时读取此文件作为参数/能力的权威数据源（size/宽高比/vision/参数默认值）。新增模型优先在此添加条目。CLI 与 jimeng 官方为独立补充入口，不依赖本文件。",
+  "_last_updated": "2026-08-25",
+  "chat_models": {
+    "gpt-4o-mini": {
+      "display_name": "GPT-4o mini",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "default": null
+        }
+      },
+      "notes": "OpenAI Responses API 原生支持图片输入"
+    },
+    "gpt-4o": {
+      "display_name": "GPT-4o",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-4.1": {
+      "display_name": "GPT-4.1",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-4.1-mini": {
+      "display_name": "GPT-4.1 mini",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-5": {
+      "display_name": "GPT-5",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-5.4": {
+      "display_name": "GPT-5.4",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "claude-sonnet-4-5": {
+      "display_name": "Claude Sonnet 4.5",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            1
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "claude-opus-4-1": {
+      "display_name": "Claude Opus 4.1",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            1
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gemini-3.1-flash-image-preview-2k": {
+      "display_name": "Gemini 3.1 Flash Image 2K",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-5.6-luna": {
+      "display_name": "gpt-5.6-luna",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-5.6-sol": {
+      "display_name": "gpt-5.6-sol",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "gpt-5.6-terra": {
+      "display_name": "gpt-5.6-terra",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "claude-opus-4-20250514": {
+      "display_name": "claude-opus-4-20250514",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "claude-opus-4-8": {
+      "display_name": "claude-opus-4-8",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "qwen3-235b-a22b": {
+      "display_name": "qwen3-235b-a22b",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    },
+    "qwen3-coder-plus": {
+      "display_name": "qwen3-coder-plus",
+      "api_type": "responses",
+      "supports_vision": true,
+      "parameters": {
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "temperature": {
+          "type": "number",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1.0
+        }
+      }
+    }
+  },
+  "image_models": {
+    "nano-banana-pro": {
+      "display_name": "Nano Banana Pro",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "1:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "9:16",
+            "16:9",
+            "4:5",
+            "5:4",
+            "21:9"
+          ],
+          "default": "1:1"
+        },
+        "image_size": {
+          "type": "enum",
+          "options": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（支持图生图）。每项为 URL 或 b64_json"
+        }
+      },
+      "notes": "Nano-banana Pro，支持参考图输入"
+    },
+    "nano-banana-2": {
+      "display_name": "Nano Banana 2",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "4:3",
+            "3:4",
+            "16:9",
+            "9:16",
+            "2:3",
+            "3:2",
+            "1:1",
+            "4:5",
+            "5:4",
+            "21:9",
+            "1:4",
+            "4:1",
+            "8:1",
+            "1:8"
+          ],
+          "default": "1:1",
+          "note": "14 种宽高比（对应 Nano-banana-3.1-Flash 文档）。待验证：8:1 等是否真正生效"
+        },
+        "image_size": {
+          "type": "enum",
+          "options": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "已验证：512 不可用（路由到 nano-banana-pro-512 不存在）。后端会路由到 nano-banana-pro-{size}"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（支持图生图）。每项为 URL 或 b64_json"
+        }
+      },
+      "notes": "Nano-banana 2 (对应 Nano-banana-3.1-Flash)，支持参考图输入"
+    },
+    "gpt-image-2": {
+      "display_name": "GPT Image 2",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "description": "图片尺寸。任何满足约束的分辨率都可以：最大边长≤3840px、两边都是16的倍数、长宽比≤3:1、总像素655360-8294400",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ],
+          "default": "auto"
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（支持图生图）。每项为 base64 或 URL"
+        }
+      },
+      "notes": "OpenAI 原生生图模型。支持任意分辨率（满足约束），支持图生图"
+    },
+    "nano-banana-pro-2k": {
+      "display_name": "nano-banana-pro-2k",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Nano-banana，size 用 1K/2K/4K 档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "nano-banana-pro-4k": {
+      "display_name": "nano-banana-pro-4k",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Nano-banana，size 用 1K/2K/4K 档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "nano-banana-2-2k": {
+      "display_name": "nano-banana-2-2k",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Nano-banana，size 用 1K/2K/4K 档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "nano-banana-2-4k": {
+      "display_name": "nano-banana-2-4k",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Nano-banana，size 用 1K/2K/4K 档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "nano-banana-hd": {
+      "display_name": "nano-banana-hd",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Nano-banana，size 用 1K/2K/4K 档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gpt-image-2-all": {
+      "display_name": "gpt-image-2-all",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI 生图，任意满足约束的分辨率"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gpt-image-1.5-2025-12-16": {
+      "display_name": "gpt-image-1.5-2025-12-16",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI 生图，任意满足约束的分辨率"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gemini-3.1-flash-image-512px": {
+      "display_name": "gemini-3.1-flash-image-512px",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Gemini 图像生成，size 用档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gemini-3.1-flash-image-preview-512px": {
+      "display_name": "gemini-3.1-flash-image-preview-512px",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Gemini 图像生成，size 用档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gemini-3.1-flash-image-4k": {
+      "display_name": "gemini-3.1-flash-image-4k",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "Gemini 图像生成，size 用档位"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "flux-2-pro": {
+      "display_name": "flux-2-pro",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "flux-2-max": {
+      "display_name": "flux-2-max",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "gpt-4o-image": {
+      "display_name": "gpt-4o-image",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "seedream-v5-pro": {
+      "display_name": "seedream-v5-pro",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "qwen-image-max-2025-12-30": {
+      "display_name": "qwen-image-max-2025-12-30",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "qwen-image-edit-max-2026-01-16": {
+      "display_name": "qwen-image-edit-max-2026-01-16",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    },
+    "grok-imagine-image-2.0": {
+      "display_name": "grok-imagine-image-2.0",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "auto"
+          ],
+          "default": "1024x1024",
+          "note": "OpenAI-compatible size (WxH or auto)"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图）。每项为 URL 或 base64"
+        }
+      }
+    }
+  },
+  "video_models": {
+    "doubao-seedance-2-0-260128": {
+      "display_name": "Seedance 2.0",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            15
+          ],
+          "default": 5,
+          "unit": "seconds",
+          "description": "生成视频的持续时间（秒）。4-15s"
+        },
+        "ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "21:9",
+            "9:21",
+            "adaptive"
+          ],
+          "default": "16:9",
+          "description": "生成视频的宽高比例。adaptive: 根据上传图片比例自动选择"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "480p",
+            "720p",
+            "1080p"
+          ],
+          "default": "480p",
+          "description": "视频分辨率（小写）"
+        },
+        "watermark": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否添加水印（右下角'由人工智能生成'）"
+        },
+        "seed": {
+          "type": "integer",
+          "range": [
+            0,
+            2147483647
+          ],
+          "default": null,
+          "description": "随机种子，控制生成内容的随机性。不提供则自动生成"
+        },
+        "return_last_frame": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: 返回尾帧图像（PNG格式，无水印）"
+        },
+        "generate_audio": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否生成音频"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）。每项为直链或 asset://{素材id}"
+        },
+        "videos": {
+          "type": "array",
+          "description": "参考视频数组（多模态参考）。每项为直链或 asset://{素材id}"
+        },
+        "audios": {
+          "type": "array",
+          "description": "参考音频数组（多模态参考）"
+        },
+        "tools": {
+          "type": "array",
+          "description": "工具数组。支持: [{type: 'web_search'}]"
+        }
+      },
+      "notes": "即梦 Seedance 2.0 统一格式接口。支持文生视频、图生视频、多模态参考生视频"
+    },
+    "doubao-seedance-2-0-fast-260128": {
+      "display_name": "Seedance 2.0 Fast",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            15
+          ],
+          "default": 5,
+          "unit": "seconds"
+        },
+        "ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "21:9",
+            "9:21",
+            "adaptive"
+          ],
+          "default": "16:9"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "480p",
+            "720p",
+            "1080p"
+          ],
+          "default": "480p"
+        },
+        "watermark": {
+          "type": "boolean",
+          "default": false
+        },
+        "seed": {
+          "type": "integer",
+          "range": [
+            0,
+            2147483647
+          ],
+          "default": null
+        },
+        "return_last_frame": {
+          "type": "boolean",
+          "default": false
+        },
+        "generate_audio": {
+          "type": "boolean",
+          "default": false
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        },
+        "videos": {
+          "type": "array",
+          "description": "参考视频数组"
+        },
+        "audios": {
+          "type": "array",
+          "description": "参考音频数组"
+        },
+        "tools": {
+          "type": "array"
+        }
+      },
+      "notes": "即梦 Seedance 2.0 Fast 快速版"
+    },
+    "doubao-seedance-2.0-mini": {
+      "display_name": "Seedance 2.0 Mini",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            15
+          ],
+          "default": 5,
+          "unit": "seconds"
+        },
+        "ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "21:9",
+            "9:21",
+            "adaptive"
+          ],
+          "default": "16:9"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "480p",
+            "720p"
+          ],
+          "default": "480p"
+        },
+        "watermark": {
+          "type": "boolean",
+          "default": false
+        },
+        "seed": {
+          "type": "integer",
+          "default": null
+        },
+        "images": {
+          "type": "array"
+        },
+        "videos": {
+          "type": "array"
+        },
+        "audios": {
+          "type": "array"
+        }
+      },
+      "notes": "即梦 Seedance 2.0 Mini 轻量版"
+    },
+    "sora-2": {
+      "display_name": "sora-2",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "gpt-video-2": {
+      "display_name": "gpt-video-2",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "kling-video-v3": {
+      "display_name": "kling-video-v3",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "kling-video-v2-6": {
+      "display_name": "kling-video-v2-6",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "grok-video-3": {
+      "display_name": "grok-video-3",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "MiniMax-Hailuo-2.3": {
+      "display_name": "MiniMax-Hailuo-2.3",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "doubao-seedance-2.5": {
+      "display_name": "doubao-seedance-2.5",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "pixverse-video": {
+      "display_name": "pixverse-video",
+      "api_type": "openai_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "integer",
+          "range": [
+            4,
+            10
+          ],
+          "default": 4,
+          "unit": "seconds",
+          "note": ""
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p"
+        },
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "auto"
+          ],
+          "default": "16:9"
+        },
+        "images": {
+          "type": "array",
+          "description": "参考图数组（图生视频）"
+        }
+      }
+    },
+    "seedance2.0": {
+      "display_name": "即梦 Seedance 2.0",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {},
+      "notes": "即梦 CLI 模型 ID（app/core.py JIMENG_DEFAULT_VIDEO_MODELS），与 doubao-seedance-2-0-260128 同模型"
+    },
+    "seedance2.0fast": {
+      "display_name": "即梦 Seedance 2.0 Fast",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {},
+      "notes": "即梦 CLI 模型 ID，快速版，同 seedance2.0"
+    },
+    "seedance2.0_vip": {
+      "display_name": "即梦 Seedance 2.0 VIP",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {},
+      "notes": "即梦 CLI 模型 ID，1080P 档，同 seedance2.0"
+    },
+    "seedance2.0fast_vip": {
+      "display_name": "即梦 Seedance 2.0 Fast VIP",
+      "api_type": "jimeng_video",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {},
+      "notes": "即梦 CLI 模型 ID，快速 1080P 档，同 seedance2.0"
+    },
+    "veo3-fast": {
+      "display_name": "Veo 3 Fast",
+      "api_type": "v2_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "duration": {
+          "type": "enum",
+          "options": [
+            "5",
+            "8"
+          ],
+          "default": "8",
+          "unit": "seconds",
+          "description": "视频时长（秒）"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "720p",
+            "1080p"
+          ],
+          "default": "720p",
+          "description": "分辨率"
+        },
+        "generate_audio": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否生成音频"
+        }
+      },
+      "notes": "Google Veo 3 快速版，v2generations 端点；比例通过请求体 aspectRatio 传递（不在 parameters 登记）"
+    }
+  }
+}

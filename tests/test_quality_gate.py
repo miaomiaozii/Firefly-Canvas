@@ -14,7 +14,7 @@ from tests.generation_lifecycle_fixture import write_generation_lifecycle_runner
 from tests.long_content_fixture import write_long_content_runner
 from tests.project_linked_generation_fixture import write_project_linked_generation_runner
 from tests.ui_integrity_fixture import write_ui_integrity_runner, write_valid_ui_integrity_artifact
-from tools.native_input_evidence import selector_owner_click_evidence
+from tools.native_input_evidence import double_click_evidence, selector_owner_click_evidence
 from tools.quality_gate import (
     MODE_STEPS,
     STEP_DEFINITIONS,
@@ -286,12 +286,14 @@ class QualityGateTests(unittest.TestCase):
     def write_native_browser_fixture(self, *, complete=True, variant=None):
         left_click_evidence = repr(selector_owner_click_evidence())
         right_click_evidence = repr(selector_owner_click_evidence(button="right"))
+        double_click_evidence_value = repr(double_click_evidence())
         script = (
             "import argparse, hashlib, json, zipfile\n"
             "from pathlib import Path\n"
             "from PIL import Image, ImageDraw\n"
             f"CLICK_EVIDENCE_LEFT = {left_click_evidence}\n"
             f"CLICK_EVIDENCE_RIGHT = {right_click_evidence}\n"
+            f"DOUBLE_CLICK_EVIDENCE = {double_click_evidence_value}\n"
             "parser = argparse.ArgumentParser()\n"
             "parser.add_argument('--artifacts-dir', type=Path, required=True)\n"
             "root = parser.parse_args().artifacts_dir\n"
@@ -334,7 +336,7 @@ class QualityGateTests(unittest.TestCase):
                  "        {'sequence':3,'action':'drag','selector':'.image-node[data-id=multi-image]','release_selector':'.image-node[data-id=multi-image]','modifiers':[],'observed_modifiers':[],'observed_button':0,'observed_within_selector':True,'start':{'x':20,'y':20},'end':{'x':80,'y':60},'observed_point':{'x':80,'y':60},'hit':'div.image-node','observed_target':'div.image-node','observed_type':'mouseup','focus_after':'body','trusted':True,'unobscured':True},\n"
                  "        {'sequence':4,'action':'click','selector':'#shell','button':'right','observed_button':2,'point':{'x':10,'y':10},'observed_point':{'x':10,'y':10},'hit':'div#shell','observed_target':'div#shell','observed_type':'mouseup','focus_after':'body','trusted':True,'unobscured':True},\n"
                  "        {'sequence':5,'action':'click','selector':'#createMenu [data-create-type=\"image\"]','observed_button':0,'point':{'x':10,'y':10},'observed_point':{'x':10,'y':10},'hit':'button.create-card','observed_target':'button.create-card','observed_type':'mouseup','focus_after':'button.create-card','trusted':True,'unobscured':True},\n"
-                 "        {'sequence':6,'action':'click','selector':'.image-node[data-id=square-image] .node-drop','observed_button':0,'point':{'x':10,'y':10},'observed_point':{'x':10,'y':10},'hit':'div.node-drop','observed_target':'div.node-drop','observed_type':'mouseup','focus_after':'body','trusted':True,'unobscured':True},\n"
+                 "        {'sequence':6,'action':'double_click','selector':'.image-node[data-id=square-image] .node-drop','observed_button':0,'point':{'x':10,'y':10},'observed_point':{'x':10,'y':10},'hit':'div.node-drop','observed_target':'div.node-drop','observed_type':'dblclick','focus_after':'body','trusted':True,'unobscured':True},\n"
                  "        {'sequence':7,'action':'file-upload','selector':'body > input[type=\"file\"]:not(#fileInput)','files':organization_files[2:],'observed_target':'input','focus_after':'input','observed_type':'change','observed_modifiers':[],'trusted':True},\n"
                  "        {'sequence':8,'action':'drag','selector':'.image-node[data-id=square-image]','release_selector':'.image-node[data-id=square-image]','modifiers':[],'observed_modifiers':[],'observed_button':0,'observed_within_selector':True,'start':{'x':20,'y':20},'end':{'x':180,'y':100},'observed_point':{'x':180,'y':100},'hit':'div.image-node','observed_target':'div.image-node','observed_type':'mouseup','focus_after':'body','trusted':True,'unobscured':True},\n"
                  "        {'sequence':9,'action':'drag','selector':'#shell','release_selector':'#shell','modifiers':['Control'],'observed_modifiers':['Control'],'observed_button':0,'observed_within_selector':True,'start':{'x':10,'y':10},'end':{'x':400,'y':300},'observed_point':{'x':400,'y':300},'hit':'div#shell','observed_target':'div#shell','observed_type':'mouseup','focus_after':'div#shell','trusted':True,'unobscured':True},\n"
@@ -350,6 +352,7 @@ class QualityGateTests(unittest.TestCase):
                  "    ]\n"
                  "    for item in organization_operations:\n"
                  "        if item.get('action') == 'click': item.update(dict(CLICK_EVIDENCE_RIGHT if item.get('button') == 'right' else CLICK_EVIDENCE_LEFT))\n"
+                 "        elif item.get('action') == 'double_click': item.update(dict(DOUBLE_CLICK_EVIDENCE))\n"
                  "    (folder/'organization-operations.jsonl').write_text(''.join(json.dumps(item)+'\\n' for item in organization_operations), encoding='utf-8')\n"
                  "    (folder/'console-errors.json').write_text('[]\\n', encoding='utf-8')\n"
                  "    (folder/'requests.json').write_text('[]\\n', encoding='utf-8')\n"
@@ -1633,7 +1636,7 @@ class QualityGateTests(unittest.TestCase):
         self.write_native_browser_fixture()
         expected = {
             "fast": (30, ["javascript-syntax", "surface-contract"]),
-            "domain": (120, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
+            "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
             "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "unit-contract-browser", "browser-tracer"]),
             "release": (
                 900,

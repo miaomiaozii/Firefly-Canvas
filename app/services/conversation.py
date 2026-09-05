@@ -240,6 +240,44 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str, need_vision:
     hdrs = _svc._main('api_headers')(provider=api_provider, model=mdl)
     return (base, hdrs, mdl)
 
+async def chat_request_latest(client, chat_base, chat_hdrs, model, messages, *, stream=False, prefer_responses=True, provider_cfg=None):
+    """统一对话请求：优先 Responses API（新格式、支持更好），失败回退 chat/completions。
+    返回 (raw_dict, format) ，format 为 'responses' 或 'chat'。
+    文本提取：format=='responses' 用 text_from_responses，否则 text_from_chat_response。"""
+    apimart = bool(is_apimart_provider(provider_cfg or {}))
+    if prefer_responses:
+        try:
+            rs_body = {'model': model, 'input': responses_input_from_messages(messages)}
+            if stream:
+                rs_body['stream'] = True
+            elif apimart:
+                rs_body['stream'] = False
+            rs_url = f'{chat_base}/responses'
+            response = await _svc._main('post_openai_responses')(client, rs_url, chat_hdrs, rs_body)
+            if response.status_code < 400:
+                try:
+                    raw = response.json()
+                except ValueError:
+                    raw = {}
+                return (raw, 'responses')
+        except Exception:
+            pass
+    req_body = {'model': model, 'messages': messages}
+    if stream:
+        req_body['stream'] = True
+    elif apimart:
+        req_body['stream'] = False
+    response = await client.post(f'{chat_base}/chat/completions', headers=chat_hdrs, json=req_body)
+    response.raise_for_status()
+    raw = response.json()
+    return (raw, 'chat')
+
+def chat_text_from_raw(raw, fmt):
+    """根据格式选择正确的文本提取器。"""
+    if fmt == 'responses':
+        return text_from_responses(raw)
+    return text_from_chat_response(raw)
+
 async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output_last_message=True):
     exe = _svc._main('codex_cli_executable')()
     if not exe:
@@ -380,17 +418,11 @@ async def decide_chat_agent_action(payload, conversation, refs):
     upstream_messages.append({'role': 'user', 'content': f"""当前用户输入：{payload.message}\n用户设置的系统提示词：{custom_system_prompt or '无'}\n本次上传参考图数量：{len(refs)}\n对话中是否已有上一张生成图：{('是' if has_previous_image else '否')}\n请返回 JSON，例如 {{"action":"generate_image","prompt":"...","reply":"..."}}"""})
     try:
         async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            req_body = {'model': model, 'messages': upstream_messages}
-            if is_apimart_provider(provider_cfg):
-                req_body['stream'] = False
-            response = await client.post(f'{chat_base}/chat/completions', headers=chat_hdrs, json=req_body)
-            response.raise_for_status()
-            raw = response.json()
-            decision = parse_agent_decision(text_from_chat_response(raw), payload.message, refs, has_previous_image)
+            raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, provider_cfg=provider_cfg)
+            decision = parse_agent_decision(chat_text_from_raw(raw, fmt), payload.message, refs, has_previous_image)
             decision['router_model'] = model
             return decision
-    except Exception as exc:
-        print(f'[chat-agent] intent router fallback: {exc}')
+    except Exception:
         fallback['router_model'] = model
         return fallback
 
@@ -415,20 +447,16 @@ async def build_chat_text_reply(payload, conversation):
             upstream_messages.append(msg)
     try:
         async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            req_body = {'model': model, 'messages': upstream_messages}
-            if is_apimart:
-                req_body['stream'] = False
-            response = await client.post(f'{chat_base}/chat/completions', headers=chat_hdrs, json=req_body)
-            response.raise_for_status()
-            raw = response.json()
+            raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, provider_cfg=provider_cfg)
     except httpx.HTTPStatusError as exc:
         body = exc.response.text or ''
         friendly = friendly_chat_error_detail(body, model, provider_cfg)
         raise HTTPException(status_code=exc.response.status_code, detail=friendly or f'上游接口错误：{body}') from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f'请求上游接口失败：{exc}') from exc
-    raw_data = unwrap_apimart_response(raw) if isinstance(raw, dict) else raw
-    return {'id': uuid.uuid4().hex, 'role': 'assistant', 'content': text_from_chat_response(raw).strip() or '接口返回了空回复。', 'created_at': _svc._main('now_ms')(), 'model': model, 'raw_usage': raw_data.get('usage') if isinstance(raw_data, dict) else None}
+    raw_data = raw if isinstance(raw, dict) else {}
+    content = chat_text_from_raw(raw, fmt).strip()
+    return {'id': uuid.uuid4().hex, 'role': 'assistant', 'content': content or '接口返回了空回复。', 'created_at': _svc._main('now_ms')(), 'model': model, 'raw_usage': raw_data.get('usage') if isinstance(raw_data, dict) else None}
 
 async def persist_project_conversation_pending(project_id: str, node_id: str, user_message: Dict[str, Any], *, node_adapter: Optional[Dict[str, str]]=None, enforce_admission: bool=False) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     request_id = str(user_message.get('request_id') or '')

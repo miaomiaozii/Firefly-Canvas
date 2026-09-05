@@ -42,6 +42,39 @@ def selector_owner_click_evidence(
     }
 
 
+def double_click_evidence(
+    owner: str = "button.fixture",
+    *,
+    instance: int = 1,
+    button: str = "left",
+) -> dict:
+    """Build deterministic raw evidence for a double-click fixture."""
+
+    if button not in {"left", "right"}:
+        raise ValueError(f"unsupported fixture mouse button: {button}")
+    return {
+        "button": button,
+        "observed_type": "dblclick",
+        "observed_release_type": "mouseup",
+        "trusted": True,
+        "native_owner": owner,
+        "native_owner_instance": instance,
+        "observed_within_owner": True,
+        "observed_start_owner": owner,
+        "observed_start_owner_instance": instance,
+        "observed_start_owner_connected": True,
+        "observed_start_within_owner": True,
+        "observed_release_owner": owner,
+        "observed_release_owner_instance": instance,
+        "observed_release_owner_connected": True,
+        "observed_release_within_owner": True,
+        "observed_owner": owner,
+        "observed_owner_instance": instance,
+        "observed_owner_connected": True,
+        "observed_semantic_within_owner": True,
+    }
+
+
 def has_trusted_selector_owner_click(
     operation: object,
     *,

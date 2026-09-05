@@ -84,7 +84,7 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
             _operation(
                 "before-restart",
                 3,
-                '[data-canvas-log-id="history-original"] [data-log-delete-original="0"]',
+                f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="{lifecycle["original_output_id"]}"]',
                 True,
             ),
             _operation("after-restart", 1, "#smartLogToggle", False),
