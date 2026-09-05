@@ -9,6 +9,7 @@
         "smart.projectDirty": { zh: "有未保存修改", en: "Unsaved changes" },
         "smart.saveNow": { zh: "保存", en: "Save" },
         "smart.saveNowShortcut": { zh: "保存项目（Ctrl+S）", en: "Save project (Ctrl+S)" },
+        "smart.arrangeSelected": { zh: "整理选中", en: "Arrange" },
         "smart.projectConflict": { zh: "已载入其他窗口的新版本", en: "Loaded a newer version from another window" },
         "smart.projectSaveFailed": { zh: "保存失败", en: "Save failed" },
         "smart.engineApi": { zh: "API生成", en: "API" },
@@ -334,6 +335,15 @@
         "smart.shortcutCreateMenu": { zh: "打开快捷菜单", en: "Open the quick create menu" },
         "smart.shortcutPan": { zh: "拖动画布", en: "Drag to pan the canvas" },
         "smart.shortcutZoom": { zh: "缩放画布或预览图片", en: "Zoom canvas or preview image" },
-        "smart.shortcutDelete": { zh: "删除选中节点", en: "Delete selected nodes" }
+        "smart.shortcutDelete": { zh: "删除选中节点", en: "Delete selected nodes" },
+        "smart.deleteRefCheckFailedTitle": { zh: "⚠️ 无法检查图片引用", en: "⚠️ Unable to check image references" },
+        "smart.deleteRefCheckFailedDesc": { zh: "无法确定该图片是否被其他节点引用，删除可能导致引用该图片的节点显示异常。", en: "It is unclear whether this image is referenced by other nodes. Deleting it may cause nodes referencing it to display incorrectly." },
+        "smart.deleteReferredTitle": { zh: "⚠️ 该图片被 {n} 个节点引用", en: "⚠️ This image is referenced by {n} node(s)" },
+        "smart.deleteReferredDesc": { zh: "删除后，这些节点将无法正常显示该图片：", en: "After deletion, these nodes will no longer be able to display this image:" },
+        "smart.deleteJump": { zh: "跳转", en: "Jump to" },
+        "smart.deleteConfirmAnyway": { zh: "仍然删除", en: "Delete anyway" },
+        "smart.assetDeleted": { zh: "该资源已删除", en: "Resource already deleted" },
+        "smart.deleteFailed": { zh: "删除失败", en: "Delete failed" },
+        "smart.deleteConflict": { zh: "画布已被其他窗口修改，已同步最新状态，请重试", en: "Canvas was modified in another window. State synced, please retry." }
     });
 })();

@@ -17,7 +17,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_MAX_TASKS_PER_PLAN, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectAgentExecuteRequest, ProjectAgentPlanRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_image_request, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, project_video_request, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
+from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_MAX_TASKS_PER_PLAN, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectAgentExecuteRequest, ProjectAgentPlanRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds
 from app.project_activity import (
     ProjectCleanupActive,
@@ -211,6 +211,24 @@ class ProjectOriginalProjectWideRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
 
+def _normalize_generation_size_params(payload: Any, *, code: str, message: str) -> tuple:
+    """Normalize empty size/resolution/aspect_ratio strings to None so they're treated
+    as "not specified" rather than invalid values. The frontend sends empty strings for
+    size/resolution/aspect_ratio when outpainting (扩图), and the routing logic only
+    accepts None as "unspecified"."""
+    size = (payload.size or '').strip() or None
+    width, height = (payload.width, payload.height)
+    parsed_width, parsed_height = parse_size_pair(size or '')
+    if width is None:
+        width = parsed_width or None
+    if height is None:
+        height = parsed_height or None
+    if parsed_width and width != parsed_width or (parsed_height and height != parsed_height):
+        raise HTTPException(status_code=400, detail={'code': code, 'message': message, 'incompatible_parameters': ['size', 'width', 'height']})
+    aspect_ratio = (payload.aspect_ratio or '').strip() or None
+    resolution = (payload.resolution or '').strip() or None
+    return (size, width, height, aspect_ratio, resolution)
+
 def project_image_request(payload: ProjectImageGenerationRequest) -> ImageGenerationRequest:
     if payload.media_type != 'image':
         raise HTTPException(status_code=400, detail={'code': 'unsupported_media_type', 'message': '图片生成任务的媒体类型必须是 image', 'incompatible_parameters': ['media_type']})
@@ -222,15 +240,10 @@ def project_image_request(payload: ProjectImageGenerationRequest) -> ImageGenera
         raise HTTPException(status_code=400, detail='单次生图数量必须在 1 到 8 之间')
     if len(payload.reference_asset_ids) > ONLINE_IMAGE_REFERENCE_MAX:
         raise HTTPException(status_code=400, detail={'code': 'no_compatible_image_model', 'message': '参考图片数量超过应用安全上限', 'incompatible_parameters': ['reference_count']})
-    width, height = (payload.width, payload.height)
-    parsed_width, parsed_height = parse_size_pair(payload.size)
-    if width is None:
-        width = parsed_width or None
-    if height is None:
-        height = parsed_height or None
-    if parsed_width and width != parsed_width or (parsed_height and height != parsed_height):
-        raise HTTPException(status_code=400, detail={'code': 'inconsistent_image_dimensions', 'message': 'size 与 width/height 不一致', 'incompatible_parameters': ['size', 'width', 'height']})
-    return ImageGenerationRequest(prompt=payload.prompt, size=payload.size, width=width, height=height, aspect_ratio=payload.aspect_ratio, resolution=payload.resolution, reference_asset_ids=tuple(payload.reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n)
+    size, width, height, aspect_ratio, resolution = _normalize_generation_size_params(
+        payload, code='inconsistent_image_dimensions', message='size 与 width/height 不一致'
+    )
+    return ImageGenerationRequest(prompt=payload.prompt, size=size, width=width, height=height, aspect_ratio=aspect_ratio, resolution=resolution, reference_asset_ids=tuple(payload.reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n)
 
 def project_video_request(payload: ProjectVideoGenerationRequest) -> VideoGenerationRequest:
     if payload.media_type != 'video':
@@ -245,15 +258,10 @@ def project_video_request(payload: ProjectVideoGenerationRequest) -> VideoGenera
     for parameter, asset_ids in reference_groups:
         if len(asset_ids) > ONLINE_VIDEO_REFERENCE_MAX:
             raise HTTPException(status_code=400, detail={'code': 'no_compatible_video_model', 'message': '参考素材数量超过应用安全上限', 'incompatible_parameters': [parameter]})
-    width, height = (payload.width, payload.height)
-    parsed_width, parsed_height = parse_size_pair(payload.size)
-    if width is None:
-        width = parsed_width or None
-    if height is None:
-        height = parsed_height or None
-    if parsed_width and width != parsed_width or (parsed_height and height != parsed_height):
-        raise HTTPException(status_code=400, detail={'code': 'inconsistent_video_dimensions', 'message': 'size 与 width/height 不一致', 'incompatible_parameters': ['size', 'width', 'height']})
-    return VideoGenerationRequest(prompt=payload.prompt, size=payload.size, width=width, height=height, aspect_ratio=payload.aspect_ratio, resolution=payload.resolution, duration=payload.duration, image_reference_asset_ids=tuple(payload.image_reference_asset_ids), video_reference_asset_ids=tuple(payload.video_reference_asset_ids), audio_reference_asset_ids=tuple(payload.audio_reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n, seed=payload.seed, enhance_prompt=payload.enhance_prompt, enable_upsample=payload.enable_upsample, watermark=payload.watermark, camera_fixed=payload.camera_fixed, return_last_frame=payload.return_last_frame, generate_audio=payload.generate_audio)
+    size, width, height, aspect_ratio, resolution = _normalize_generation_size_params(
+        payload, code='inconsistent_video_dimensions', message='size 与 width/height 不一致'
+    )
+    return VideoGenerationRequest(prompt=payload.prompt, size=size, width=width, height=height, aspect_ratio=aspect_ratio, resolution=resolution, duration=payload.duration, image_reference_asset_ids=tuple(payload.image_reference_asset_ids), video_reference_asset_ids=tuple(payload.video_reference_asset_ids), audio_reference_asset_ids=tuple(payload.audio_reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n, seed=payload.seed, enhance_prompt=payload.enhance_prompt, enable_upsample=payload.enable_upsample, watermark=payload.watermark, camera_fixed=payload.camera_fixed, return_last_frame=payload.return_last_frame, generate_audio=payload.generate_audio)
 
 def project_image_references(project_id: str, asset_ids: List[str]) -> List[Dict[str, Any]]:
     references = []
@@ -3017,6 +3025,69 @@ async def get_project_media(project_id: str, asset_id: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ProjectCleanupActive as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@router.get('/api/project-library/{project_id}/media/{asset_id}/references')
+async def get_project_media_references(project_id: str, asset_id: str):
+    """列出直接引用该媒体资源的画布节点（与删除清理使用同一引用收集规则）。"""
+    try:
+        assert_project_owner_admissible(project_id)
+        def build_references() -> List[Dict[str, Any]]:
+            project_data = _app_main.project_store_call('open_project', project_id)
+            if not project_data:
+                return []
+            canvas_data = project_data.get('canvas') or {}
+            references = []
+            seen = set()
+            for node in canvas_data.get('nodes') or []:
+                if asset_id not in ProjectStore._collect_asset_ids(node):
+                    continue
+                node_id = str(node.get('id') or '')
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+                references.append({
+                    'node_id': node_id,
+                    'node_type': str(node.get('type') or node.get('kind') or ''),
+                    'node_title': str(node.get('title') or node.get('label') or ''),
+                })
+            return references
+        return {'references': await asyncio.to_thread(build_references)}
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+class ProjectMediaDeleteRequest(BaseModel):
+    """用户主动删除资源库媒体（硬删除 + 清理项目内直接引用，见 ADR 0015）。"""
+    base_revision: int = Field(default=0, ge=0)
+
+@router.delete('/api/project-library/{project_id}/media/{asset_id}')
+async def delete_project_media(
+    project_id: str,
+    asset_id: str,
+    payload: ProjectMediaDeleteRequest = ProjectMediaDeleteRequest(),
+) -> JSONResponse:
+    """删除项目媒体资源：硬删除文件并清理项目内全部直接引用。"""
+    try:
+        assert_project_owner_admissible(project_id)
+        result = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'delete_project_media_asset',
+            project_id,
+            asset_id,
+            base_revision=int(payload.base_revision or 0),
+        )
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProjectCleanupActive as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    canvas = result.get('canvas') or {}
+    await _app_main.manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
+    return JSONResponse({'ok': True, 'canvas': canvas, 'deleted': result.get('deleted')})
 
 @router.get('/api/project-library/{project_id}')
 async def open_firefly_project(project_id: str):

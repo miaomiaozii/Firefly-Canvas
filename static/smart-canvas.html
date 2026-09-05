@@ -24,7 +24,7 @@
     <script src="/static/js/i18n.js?v=2026.07.17.1784537905"></script>
     <script src="/static/js/global-preferences.js?v=2026.07.27.210000"></script>
     <link rel="stylesheet" href="/static/css/studio-foundation.css?v=2026.08.05.1">
-    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260823.014128.4300">
+    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260827.003312.3694">
     <link rel="stylesheet" href="/static/css/excel-import.css?v=20260823.000002">
 </head>
 <body>
@@ -81,8 +81,12 @@
             <button id="smartLogToggle" class="smart-log-toggle" type="button" onclick="openSmartCanvasLog()" title="生成历史" aria-label="生成历史" data-i18n-title="canvas.generationLogs"><i data-lucide="list-todo"></i><span data-i18n="canvas.generationLogs">生成历史</span></button>
             <button id="assetToggle" class="asset-toggle" type="button" aria-label="资产库" title="资产库"><i data-lucide="library"></i><span data-i18n="smart.assetLibrary">资产库</span></button>
             <button id="smartSaveButton" class="smart-save" type="button" aria-label="保存" aria-keyshortcuts="Control+S" data-i18n-title="smart.saveNowShortcut" title="保存项目（Ctrl+S）"><i data-lucide="save"></i><span data-i18n="smart.saveNow">保存</span></button>
+            <button id="smartArrangeBtn" class="smart-arrange" type="button" title="整理选中节点" aria-label="整理选中节点"><i data-lucide="layout-grid"></i><span data-i18n="smart.arrangeSelected">整理选中</span></button>
         </nav>
-        <div id="smartTitle" class="smart-title" data-i18n="smart.title">核心画布</div>
+        <div id="smartTitle" class="smart-title" title="重命名画布项目" aria-label="重命名画布项目">
+            <span id="smartTitleText" class="smart-title-text" data-i18n="smart.title">核心画布</span>
+            <button id="smartTitleEdit" class="smart-title-edit" type="button" title="重命名画布项目" aria-label="重命名画布项目"><i data-lucide="pencil"></i></button>
+        </div>
         <div id="projectSaveState" class="project-save-state" hidden aria-live="polite"></div>
         <section id="canvasEmptyState" class="canvas-empty-state" aria-labelledby="canvasEmptyTitle" hidden>
             <div class="canvas-empty-card">
@@ -185,7 +189,6 @@
             <div id="promptTemplateCats" class="prompt-template-cats"></div>
             <div id="promptTemplateBody" class="prompt-template-body"></div>
         </div>
-        <button id="smartArrangeBtn" class="minimap-arrange-btn" type="button" title="整理选中节点" aria-label="整理选中节点"><i data-lucide="layout-grid"></i><span>整理选中</span></button>
         <div id="minimap" class="smart-minimap" aria-hidden="true">
             <div id="minimapContent" class="smart-minimap-content">
                 <div id="minimapViewport" class="smart-minimap-viewport"></div>
@@ -476,7 +479,7 @@
     </div>
     <script src="/static/js/outpaint-ratios.js?v=2026.07.17.1784537034"></script>
     <script src="/static/js/project-canvas-mutations.js"></script>
-    <script src="/static/js/smart-canvas.js?v=20260823.014128.4300"></script>
+    <script src="/static/js/smart-canvas.js?v=20260827.003312.3694"></script>
     <script src="/static/js/excel-import.js?v=20260823.000002"></script>
 </body>
 </html>

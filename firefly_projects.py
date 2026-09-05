@@ -1445,6 +1445,34 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 records.append(record)
             return sorted(records, key=lambda item: (int(item.get("created_at") or 0), str(item.get("asset_id") or "")), reverse=True)
 
+    def delete_media(self, project_id: str, asset_id: str, delete_file: bool = True) -> Dict[str, Any]:
+        """删除项目媒体资源。delete_file=True 同时删除物理文件。"""
+        project_id = _clean_project_id(project_id)
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", str(asset_id or "")):
+            raise ProjectStoreError("媒体资源标识无效")
+        with self._lock:
+            # 检查项目是否存在
+            project_dir = self._project_directory(project_id)
+            metadata_path = self._safe_project_path(project_dir, "project.json")
+            if not metadata_path.is_file():
+                raise ProjectNotFound("项目不存在")
+            
+            # 直接加载媒体索引，避免 open_project 的副作用
+            media_root = (self.root / project_id / "media").resolve()
+            index = self._load_media_index(project_id)
+            record = index["items"].get(asset_id)
+            if not isinstance(record, dict):
+                raise ProjectNotFound("项目媒体不存在")
+            # 删除物理文件
+            if delete_file:
+                path = (media_root / str(record.get("filename") or "")).resolve()
+                if os.path.commonpath([str(media_root), str(path)]) == str(media_root) and path.is_file():
+                    path.unlink(missing_ok=True)
+            # 从索引中移除
+            del index["items"][asset_id]
+            _write_json_atomic(media_root / "index.json", index, keep_backup=False)
+            return {"deleted": asset_id}
+
     @classmethod
     def _is_generated_original(cls, record: Dict[str, Any]) -> bool:
         sources = []
@@ -2376,6 +2404,28 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 if key in live_ids
             }
             self._ensure_output_occurrence_ids(canvas, history)
+            # Bug fix (T4): 回写 Store 分配的 output_id/output_order 到调用方的
+            # history_record（任务结果会把它返回给前端合并进 canvas.logs）。
+            # 此前任务结果携带的是 deepcopy 前的无 ID 副本，导致刚生成的图
+            # 在画布历史里无法删除（output_id 为空），刷新后才会恢复。
+            if history_id and isinstance(history_record, dict):
+                caller_outputs = history_record.get("outputs")
+                if isinstance(caller_outputs, list):
+                    for output_index, canonical_item in enumerate(
+                        clean_history.get("outputs") or []
+                    ):
+                        if (
+                            output_index < len(caller_outputs)
+                            and isinstance(caller_outputs[output_index], dict)
+                            and isinstance(canonical_item, dict)
+                        ):
+                            caller_output = caller_outputs[output_index]
+                            # 只回填缺失的 ID：partial 逐张写回已固化过的 ID
+                            # 不能覆盖（final 写回按位置重算会与节点镜像错位）。
+                            if not caller_output.get("output_id") and canonical_item.get("output_id"):
+                                caller_output["output_id"] = canonical_item["output_id"]
+                            if caller_output.get("output_order") is None and canonical_item.get("output_order") is not None:
+                                caller_output["output_order"] = canonical_item["output_order"]
             self._persist_history(project_id)
             result = self._commit_generation_canvas(project_id, canvas)
             self._set_generated_media_lifecycle(

@@ -225,7 +225,7 @@
                         const node = findNode('edit-node');
                         const os = node.outpaintSize || {};
                         assertion('outpaintSize matches', os.width === pix.w, JSON.stringify(os) + ' vs ' + pix.w);
-                        assertion('outpaint prompt draft set', (node.promptDraftText || '').includes('Remove white area and fill the scene'), String(node.promptDraftText));
+                        assertion('outpaint prompt draft set', (node.promptDraftText || '').includes('Remove red area and fill the scene'), String(node.promptDraftText));
                     } catch(e){ result.errors.push('outpaint fetch: ' + e.message); }
                 }
             }

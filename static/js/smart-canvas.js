@@ -28,6 +28,67 @@ const inputPromptPreview = document.getElementById('inputPromptPreview');
 const minimap = document.getElementById('minimap');
 const minimapContent = document.getElementById('minimapContent');
 const smartArrangeBtn = document.getElementById('smartArrangeBtn');
+const smartTitle = document.getElementById('smartTitle');
+let smartTitleText = document.getElementById('smartTitleText');
+const smartTitleEdit = document.getElementById('smartTitleEdit');
+function setSmartTitleText(text){
+    const label = String(text || '').trim() || tr('smart.title');
+    if(smartTitleText) smartTitleText.textContent = label;
+    return label;
+}
+let smartTitleEditing = false;
+function openSmartTitleEdit(){
+    if(smartTitleEditing || !smartTitle || !smartTitleText) return;
+    smartTitleEditing = true;
+    const current = String(canvas?.title || '').trim() || tr('smart.title');
+    const input = document.createElement('input');
+    input.id = 'smartTitleInput';
+    input.type = 'text';
+    input.value = current;
+    input.maxLength = 60;
+    input.setAttribute('aria-label', tr('smart.title'));
+    smartTitleText.replaceWith(input);
+    const finish = (save) => {
+        if(!smartTitleEditing) return;
+        smartTitleEditing = false;
+        const next = document.createElement('span');
+        next.id = 'smartTitleText';
+        next.className = 'smart-title-text';
+        next.setAttribute('data-i18n', 'smart.title');
+        input.replaceWith(next);
+        // 更新全局引用：否则第二次重命名时 replaceWith 作用于已脱离文档的旧节点，输入框永远无法打开
+        smartTitleText = next;
+        if(save){
+            const value = input.value.trim();
+            if(value && canvas && value !== canvas.title){
+                canvas.title = value;
+                setSmartTitleText(value);
+                document.title = value;
+                scheduleSave();
+            } else if(value){
+                setSmartTitleText(value);
+            }
+        } else {
+            setSmartTitleText(canvas?.title);
+        }
+    };
+    input.addEventListener('keydown', event => {
+        if(event.key === 'Enter'){ event.preventDefault(); finish(true); }
+        else if(event.key === 'Escape'){ event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('pointerdown', event => event.stopPropagation());
+    input.addEventListener('mousedown', event => event.stopPropagation());
+    input.addEventListener('keydown', event => event.stopPropagation());
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+function setupSmartTitleEdit(){
+    smartTitleEdit?.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openSmartTitleEdit(); });
+    smartTitleEdit?.addEventListener('pointerdown', event => event.stopPropagation());
+    smartTitleEdit?.addEventListener('mousedown', event => event.stopPropagation());
+    smartTitle?.addEventListener('click', event => { if(!event.target.closest?.('#smartTitleEdit')) openSmartTitleEdit(); });
+    smartTitle?.addEventListener('dblclick', event => { event.preventDefault(); openSmartTitleEdit(); });
+}
 const imageEditModal = document.getElementById('imageEditModal');
 const smartLogModal = document.getElementById('smartLogModal');
 const smartLogList = document.getElementById('smartLogList');
@@ -175,6 +236,9 @@ const agentTaskPolls = new Map();
 let activeProjectMediaImports = 0;
 const projectMediaImportWaiters = [];
 let apiProviders = [];
+// model_specs.json is the authoritative registry of adapted models + their
+// parameter options. Loaded via /api/model-specs; drives model lists & params.
+let modelSpecs = {chat_models:{}, image_models:{}, video_models:{}, chat_model_ids:[], image_model_ids:[], video_model_ids:[], schema_version:null, last_updated:null};
 let assetLibrary = {categories:[]};
 let projectMediaLibrary = {items:[]};
 let assetLibraryOpen = false;
@@ -1304,23 +1368,18 @@ function withOutpaintDisplaySettings(node, baseSettings){
     const size = validOutpaintSize(node);
     if(!size) return baseSettings;
     const engine = normalizeSmartOnlineEngine(baseSettings?.engine);
+    // 扩图时不设置 resolution:'custom'，保留用户选择的分辨率预设（4K/2K/1K）
+    // 只传递比例（如 4:3），让 API 根据比例 + 分辨率自动计算尺寸
     const next = {
         ...baseSettings,
-        resolution:'custom',
         ratio:'custom',
         customRatio:size.aspectRatio,
-        customWidth:size.width,
-        customHeight:size.height,
-        customSize:`${size.width}x${size.height}`,
         outpaintResolutionLocked:true
     };
     if(isApiLikeEngine(engine)) next.apiKind = 'image';
     if(engine === 'modelscope'){
-        next.msResolution = 'custom';
-        next.msRatio = '';
-        next.msCustomWidth = size.width;
-        next.msCustomHeight = size.height;
-        next.msCustomSize = `${size.width}x${size.height}`;
+        next.msRatio = 'custom';
+        next.msCustomRatio = size.aspectRatio;
     }
     return next;
 }
@@ -1489,7 +1548,7 @@ function syncSelectionUi(){
     if(smartSelectionUiImage.nodeId) touchedIds.add(smartSelectionUiImage.nodeId);
     if(selectedImage.nodeId) touchedIds.add(selectedImage.nodeId);
     world.classList.toggle('smart-multi-selected', ids.length > 1);
-    smartArrangeBtn?.classList.toggle('visible', ids.length > 0);
+    if(smartArrangeBtn) smartArrangeBtn.disabled = ids.length < 2;
     smartNodeElementsByIds(touchedIds).forEach(el => {
         const id = el.dataset.id || '';
         el.classList.toggle('selected', isNodeSelected(id));
@@ -2733,7 +2792,7 @@ function frameSmartCanvasContentIfNeeded(){
 }
 function renderMinimap(){
     if(!minimapContent || !minimapViewport) return;
-    smartArrangeBtn?.classList.toggle('visible', selectedNodeIds().length > 0);
+    if(smartArrangeBtn) smartArrangeBtn.disabled = selectedNodeIds().length < 2;
     const width = minimapContent.clientWidth || 170;
     const height = minimapContent.clientHeight || 108;
     const viewW = shell.clientWidth / viewport.scale;
@@ -3072,7 +3131,7 @@ function resolveChatProviderId(providerId=''){
 }
 function providerChatModels(providerId){
     const provider = chatApiProviders().find(p => p.id === providerId);
-    return orderedProviderModels(provider, 'chat_models', 'chat');
+    return mergeSpecModels('chat', orderedProviderModels(provider, 'chat_models', 'chat'), provider);
 }
 function resolveChatModel(model='', providerId=''){
     const models = providerChatModels(resolveChatProviderId(providerId));
@@ -3103,7 +3162,7 @@ function videoProviderPlatform(providerId){
 }
 function providerImageModels(providerId){
     const provider = providerId === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === providerId);
-    return orderedProviderModels(provider, 'image_models', 'image');
+    return mergeSpecModels('image', orderedProviderModels(provider, 'image_models', 'image'), provider);
 }
 // 即梦图生图（挂了参考图）不支持 3.0/3.1，此时从模型下拉里隐藏它们。
 const JIMENG_IMAGE2IMAGE_UNSUPPORTED = ['3.0', '3.1'];
@@ -3219,7 +3278,7 @@ function providerVideoModels(providerId){
     if(providerId === 'volcengine') return volcengineVideoModels();
     const provider = videoApiProviders().find(p => p.id === providerId);
     const models = provider?.video_models || DEFAULT_VIDEO_MODELS;
-    return orderedProviderModels(provider, 'video_models', 'video');
+    return mergeSpecModels('video', orderedProviderModels(provider, 'video_models', 'video'), provider);
 }
 function volcengineVideoModels(){
     const provider = (apiProviders || []).find(p => p.id === 'volcengine');
@@ -3976,6 +4035,9 @@ function renderSizePickerControl(prefix='', includeSource=false){
             ${scope === 'custom' ? `<div class="size-picker-pane size-picker-custom">
                 <div class="size-custom-box">
                     <div class="size-custom-title">自定义分辨率</div>
+                    <div class="size-custom-presets">
+                        ${['1k','2k','4k'].map(value => `<button type="button" class="size-custom-preset-btn ${value === currentRes ? 'active' : ''}" data-smart-param="${resKey}" data-smart-value="${value}">${value.toUpperCase()}</button>`).join('')}
+                    </div>
                     <div class="size-custom-row"><input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度"><span>×</span><input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度"></div>
                 </div>
             </div>` : ''}
@@ -4715,6 +4777,11 @@ async function loadConfig(){
     try {
         const cfg = await fetch('/api/config').then(r => r.json());
         apiProviders = Array.isArray(cfg.api_providers) ? cfg.api_providers : [];
+        // 加载 model_specs.json（模型能力/参数的权威来源）。失败不阻塞，UI 回退 provider 配置。
+        try {
+            const spec = await fetch('/api/model-specs').then(r => r.ok ? r.json() : null);
+            if(spec && typeof spec === 'object'){ modelSpecs = Object.assign({}, modelSpecs, spec); }
+        } catch(_){}
         // 提供商配置已就绪即先渲染参数面板。
         sanitizeSmartApiSelection(settings);
         updateProviderModels();
@@ -4724,6 +4791,38 @@ async function loadConfig(){
     } catch(e) {
         toast(tr('smart.toastApiSettingsFail'));
     }
+}
+
+// 从 model_specs.json 取某类别的适配模型 ID 列表。
+function specModelIds(kind){
+    const map = {chat:'chat_model_ids', image:'image_model_ids', video:'video_model_ids'};
+    const arr = modelSpecs?.[map[kind]];
+    return Array.isArray(arr) ? arr : [];
+}
+// 取某模型在 spec 中的定义（参数选项/能力）。未适配返回 null。
+function specModelSpec(kind, modelId){
+    const map = {chat:'chat_models', image:'image_models', video:'video_models'};
+    const obj = modelSpecs?.[map[kind]];
+    if(!obj || !modelId) return null;
+    return obj[modelId] || null;
+}
+// 判断是否为通用 OpenAI 兼容 provider（非 codex/jimeng/runninghub/volcengine/gemini-cli 专属）。
+// spec 模型是针对这类网关的；provider 专属入口沿用各自的模型来源。
+function isGenericOpenAIProvider(provider){
+    if(!provider) return false;
+    const proto = String(provider.protocol || 'openai').toLowerCase();
+    const id = String(provider.id || '').toLowerCase();
+    const specific = ['codex','jimeng','runninghub','volcengine','gemini-cli'];
+    return !specific.includes(proto) && !specific.includes(id);
+}
+// 将 spec 的适配模型合并进 provider 模型列表（additive：保留原序，补入缺失的 spec 模型）。
+function mergeSpecModels(kind, providerModels, provider){
+    const base = [...new Set((providerModels || []).filter(Boolean))];
+    if(!isGenericOpenAIProvider(provider)) return base;
+    for(const id of specModelIds(kind)){
+        if(id && !base.some(m => String(m).toLowerCase() === String(id).toLowerCase())) base.push(id);
+    }
+    return base;
 }
 async function refreshSmartConfigFromSettings(){
     await loadConfig();
@@ -5915,8 +6014,7 @@ function applyMergedServerCanvas(serverCanvas){
     if(serverRev > 0) canvas.revision = Math.max(serverRev, Number(canvas.revision || 0));
     if(canvas.title !== serverCanvas.title && serverCanvas.title){
         canvas.title = serverCanvas.title;
-        const titleEl = document.getElementById('smartTitle');
-        if(titleEl) titleEl.textContent = canvas.title;
+        setSmartTitleText(canvas.title);
     }
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
@@ -6115,7 +6213,7 @@ function renderAssetLibrary(){
             ${assetThumbHtml(item)}
             <div class="asset-meta">
                 <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || 'asset')}</span>
-                ${projectMode ? `<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button>`
+                ${projectMode ? `<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
                     : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`}
@@ -6366,6 +6464,171 @@ function bindAssetItemEvents(){
             }
         };
     });
+    assetGrid.querySelectorAll('[data-delete-project-asset]').forEach(btn => {
+        btn.onclick = async e => {
+            e.preventDefault(); e.stopPropagation();
+            const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+            const assetId = btn.dataset.deleteProjectAsset;
+            if(!projectId || !assetId) return;
+            btn.disabled = true;
+            try {
+                // 先检查引用
+                let references = [];
+                let refCheckFailed = false;
+                try {
+                    const refRes = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}/references`);
+                    const refData = await refRes.json();
+                    references = refData.references || [];
+                } catch(refErr) {
+                    refCheckFailed = true;
+                    references = [];
+                }
+                
+                if(references.length > 0 || refCheckFailed){
+                    // 有引用或检查失败，显示警告对话框
+                    const confirmed = await showAssetDeleteWarningDialog(assetId, references, refCheckFailed);
+                    if(!confirmed){
+                        btn.disabled = false;
+                        return;
+                    }
+                }
+                
+                // 执行删除（携带画布版本：服务端清理引用会 bump revision，冲突时返回 409 + 最新画布）
+                const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+                });
+                if(!res.ok){
+                    const err = await res.json().catch(() => ({}));
+                    // 404表示已删除，静默刷新即可
+                    if(res.status === 404){
+                        toast(tr('smart.assetDeleted'));
+                        removeProjectMediaFromCache(assetId);
+                        if(assetLibraryIsProject()) renderAssetLibrary();
+                        btn.disabled = false;
+                        return;
+                    }
+                    // 画布版本冲突：同步服务端最新画布（引用已被清理）后提示重试
+                    if(res.status === 409 && err?.detail?.canvas){
+                        canvas = hydrateProjectMediaReferences(err.detail.canvas);
+                        if(Array.isArray(canvas.nodes)){
+                            nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+                            canvas.nodes = nodes;
+                        }
+                        canvas.updated_at = Number(canvas.updated_at || 0);
+                        canvas.revision = Number(canvas.revision || 0);
+                        render();
+                        toast(tr('smart.deleteConflict'));
+                        btn.disabled = false;
+                        return;
+                    }
+                    const msg = typeof err.detail === 'string' ? err.detail : tr('smart.deleteFailed');
+                    throw new Error(msg);
+                }
+                // 服务端已清理项目内引用：用返回的最新画布同步前端节点，避免下次保存回写旧引用
+                const delData = await res.json().catch(() => ({}));
+                if(delData?.canvas){
+                    canvas = hydrateProjectMediaReferences(delData.canvas);
+                    if(Array.isArray(canvas.nodes)){
+                        nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+                        canvas.nodes = nodes;
+                    }
+                    canvas.updated_at = Number(canvas.updated_at || 0);
+                    canvas.revision = Number(canvas.revision || 0);
+                    render();
+                }
+                // 刷新资产库
+                removeProjectMediaFromCache(assetId);
+                if(assetLibraryIsProject()) renderAssetLibrary();
+            } catch(err){
+                btn.disabled = false;
+                toast(err.message || tr('smart.deleteFailed'));
+            }
+        };
+    });
+}
+
+function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
+    return new Promise(resolve => {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'asset-delete-warning-backdrop';
+        const title = checkFailed ? tr('smart.deleteRefCheckFailedTitle') : tr('smart.deleteReferredTitle').replace('{n}', String(references.length));
+        const desc = checkFailed ? tr('smart.deleteRefCheckFailedDesc') : tr('smart.deleteReferredDesc');
+        backdrop.innerHTML = `
+            <div class="asset-delete-warning-dialog">
+                <h3>${title}</h3>
+                <p>${desc}</p>
+                ${!checkFailed && references.length > 0 ? `
+                <div class="asset-delete-warning-list">
+                    ${references.map(ref => `
+                        <div class="asset-delete-warning-item">
+                            <span class="asset-delete-warning-label">${escapeHtml(ref.node_title || ref.node_id)}</span>
+                            <button class="asset-delete-warning-jump" data-node-id="${escapeHtml(ref.node_id)}">${tr('smart.deleteJump')}</button>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                <div class="asset-delete-warning-actions">
+                    <button class="asset-delete-warning-cancel">${tr('common.cancel')}</button>
+                    <button class="asset-delete-warning-confirm">${tr('smart.deleteConfirmAnyway')}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(backdrop);
+        
+        // 绑定跳转按钮
+        backdrop.querySelectorAll('[data-node-id]').forEach(btn => {
+            btn.onclick = () => {
+                const nodeId = btn.dataset.nodeId;
+                // 跳转到指定节点
+                focusAndSelectNode(nodeId);
+                backdrop.remove();
+                resolve(false); // 跳转后不删除
+            };
+        });
+        
+        // 绑定取消按钮
+        backdrop.querySelector('.asset-delete-warning-cancel').onclick = () => {
+            backdrop.remove();
+            resolve(false);
+        };
+        
+        // 绑定确认按钮
+        backdrop.querySelector('.asset-delete-warning-confirm').onclick = () => {
+            backdrop.remove();
+            resolve(true);
+        };
+        
+        // 点击背景关闭
+        backdrop.onclick = (e) => {
+            if(e.target === backdrop){
+                backdrop.remove();
+                resolve(false);
+            }
+        };
+    });
+}
+
+function removeProjectMediaFromCache(assetId){
+    if(!assetId) return;
+    projectMediaLibrary.items = (projectMediaLibrary.items || []).filter(item => item.asset_id !== assetId);
+}
+function focusAndSelectNode(nodeId){
+    // 滚动到节点并选中
+    const node = (canvas?.nodes || []).find(n => n.id === nodeId);
+    if(!node) return;
+    // 设置选中状态（清掉多选残留，保持单节点选中语义）
+    selectedIds = [];
+    selectedId = nodeId;
+    selectedImage = {nodeId:'', index:-1};
+    // 渲染并滚动到节点
+    render();
+    const nodeEl = document.querySelector(`[data-node-id="${nodeId}"]`);
+    if(nodeEl){
+        nodeEl.scrollIntoView({behavior: 'smooth', block: 'center'});
+        nodeEl.classList.add('node-selected-pulse');
+        setTimeout(() => nodeEl.classList.remove('node-selected-pulse'), 2000);
+    }
 }
 async function copyProjectMediaToGlobal(item){
     const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
@@ -6505,7 +6768,7 @@ async function loadCanvas(){
         }
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
         document.title = canvas.title || tr('canvas.smartCanvas');
-        document.getElementById('smartTitle').textContent = canvas.title || tr('canvas.smartCanvas');
+        setSmartTitleText(canvas.title || tr('canvas.smartCanvas'));
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
         canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
         migrateSmartGroupImageMembers();
@@ -15014,10 +15277,6 @@ function beginCropDrag(event, mode){
     if(!cropState) return;
     event.preventDefault(); event.stopPropagation();
     if(imageEditMode === 'outpaint' && mode === 'move') return;
-    if(imageEditMode === 'outpaint' && String(mode || '').startsWith('outpaint-') && outpaintAspectPreset !== 'free'){
-        outpaintAspectPreset = 'free';
-        syncOutpaintRatioButtons();
-    }
     cropDrag = {mode, sx:event.clientX, sy:event.clientY, start:{...cropState}};
 }
 function resizeOutpaintFromDrag(dx, dy){
@@ -15030,12 +15289,38 @@ function resizeOutpaintFromDrag(dx, dy){
     else if(cropDrag.mode === 'outpaint-bottom') growY = dy;
     else if(cropDrag.mode === 'outpaint-corner'){ growX = dx; growY = dy; }
     const {w, h} = cropBounds();
-    const nextW = Math.max(w, start.w + growX * 2);
-    const nextH = Math.max(h, start.h + growY * 2);
+    let nextW = Math.max(w, start.w + growX * 2);
+    let nextH = Math.max(h, start.h + growY * 2);
+    
+    // 如果选择了预设比例，保持该比例
+    if(outpaintAspectPreset && outpaintAspectPreset !== 'free' && outpaintAspectPreset !== 'source'){
+        const parsed = window.OutpaintRatios?.parsePreset(outpaintAspectPreset);
+        if(parsed){
+            // 保持中心点，按预设比例调整
+            const centerX = start.x + start.w / 2;
+            const centerY = start.y + start.h / 2;
+            // 以较大的增长方向为准，按预设比例计算另一个方向
+            if(nextW / nextH > parsed.width / parsed.height){
+                // 宽度增长更多，按预设比例调整高度
+                nextH = nextW * parsed.height / parsed.width;
+            } else {
+                // 高度增长更多，按预设比例调整宽度
+                nextW = nextH * parsed.width / parsed.height;
+            }
+            // 确保不小于原图尺寸
+            nextW = Math.max(w, nextW);
+            nextH = Math.max(h, nextH);
+            // 重新计算位置，保持中心
+            cropState.x = centerX - nextW / 2;
+            cropState.y = centerY - nextH / 2;
+        }
+    } else {
+        cropState.x = start.x + Math.round((nextW - start.w) / 2);
+        cropState.y = start.y + Math.round((nextH - start.h) / 2);
+    }
+    
     cropState.w = nextW;
     cropState.h = nextH;
-    cropState.x = start.x + Math.round((nextW - start.w) / 2);
-    cropState.y = start.y + Math.round((nextH - start.h) / 2);
     clampOutpaint();
 }
 function clampAspectCropToBounds(anchorX, anchorY, movingX, movingY, ratio, handle){
@@ -15131,7 +15416,8 @@ async function uploadImageBlobs(blobs){
 function replaceEditedImage(file, extra={}){
     const {node, index} = currentEditImage();
     if(!node || !file) return false;
-    node.images[index] = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || mediaKindForItem(file), natural_w:0, natural_h:0, ...extra};
+    const assetId = file.asset_id || extra.asset_id || (node.images[index] || {}).asset_id || '';
+    node.images[index] = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
     if((node.images || []).length === 1){ delete node.w; delete node.h; }
     selectedId = node.id; selectedImage = {nodeId:node.id, index};
     return true;
@@ -15182,15 +15468,29 @@ async function applyImageOutpaint(){
     const canvasEl = document.createElement('canvas');
     canvasEl.width = outW; canvasEl.height = outH;
     const ctx = canvasEl.getContext('2d');
-    ctx.fillStyle = '#ffffff';
+    // 使用高饱和红色填充扩图区域：相比白色，红色在真实场景中极少出现，
+    // 提示词 "remove the red background/area" 更稳定地被模型识别并移除。
+    ctx.fillStyle = '#ff0044';
     ctx.fillRect(0, 0, outW, outH);
     ctx.drawImage(img, dx, dy, img.naturalWidth, img.naturalHeight);
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_outpaint.png`) : null;
-    if(file && replaceEditedImage(file)){
+    // 添加时间戳确保每次上传都有唯一文件名，避免浏览器缓存旧版本（无红底）的图片
+    const timestamp = Date.now();
+    const file = blob ? await uploadCroppedBlob(blob, `${base}_outpaint_${timestamp}.png`) : null;
+    if(!file) return;
+    // 把扩图底图（红底+原图合成图）归档为项目媒体，拿到 asset_id。
+    // 保存时节点媒体若只有原始 URL 而没有 asset_id，后端会报"项目节点只能引用项目媒体资源ID"。
+    // 保留 file.url 用于即时显示，asset_id 用于持久化（存储时 mediaItemForStorage 会去掉 url）。
+    const owned = await importProjectMediaReference(file).catch(() => null);
+    const assetId = owned?.asset_id || '';
+    // 传递合成图的自然尺寸，让预览能正确显示扩图后的比例
+    const extra = {natural_w:outW, natural_h:outH};
+    if(assetId) extra.asset_id = assetId;
+    if(replaceEditedImage(file, extra)){
+        // 生图时 buildPromptRequest 会把 node.images[0]（合成图）作为参考图发给模型。
         applyOutpaintSizeToSmartParams(outW, outH);
-        setPromptDraftForNode(node, 'Remove white area and fill the scene');
+        setPromptDraftForNode(node, 'Remove red area and fill the scene');
         promptInput.dataset.preserveDraftOnce = '1';
         closeImageEditor();
         render();
@@ -17774,6 +18074,20 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
         .filter(img => !blockedRefs.has(inputRefKey(img)));
     const defaultRefs = uniqueReferenceImages(filteredDefaultImages);
     const refs = defaultRefs.map((img, index) => ({...img, role:`image_${index + 1}`}));
+    // 扩图修复：扩图激活时，必须把扩图底图（红底+原图合成图，即节点当前图）作为参考图发给模型，
+    // 否则模型只拿到提示词而没有底图，会凭空生成全新图而不是扩展原图（"扩图不生效"根因）。
+    // 注意：不能把原始 URL 存到节点顶层字段（会触发"只能引用项目媒体资源ID"校验），
+    // 直接取 node.images[0]，生成时 importProjectMediaReference 会把它归档为项目媒体。
+    if(validOutpaintSize(node)){
+        const selfImg = (node.images || []).find(img => img?.url);
+        if(selfImg?.url && !refs.some(ref => ref.url === selfImg.url)){
+            if(refs.length >= SMART_REFERENCE_IMAGE_MAX){
+                // 扩图底图是必需参考，默认参考图是可选的：让出最后一位，保持不超过安全上限
+                refs.pop();
+            }
+            refs.push({url:selfImg.url, asset_id:selfImg.asset_id || '', name:selfImg.name || '扩图底图', kind:selfImg.kind || 'image', nodeId:node.id, imageIndex:0, selfReference:true, role:`image_${refs.length + 1}`});
+        }
+    }
     let hasMentionToken = false;
     const refMap = new Map();
     refs.forEach((img, index) => refMap.set(img.url, index + 1));
@@ -19237,14 +19551,11 @@ async function runGeneration(){
     }
     const outpaintSize = validOutpaintSize(node);
     if(outpaintSize && isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
+        // 扩图时只设置比例，不设置自定义分辨率（保留用户选择的 4K/2K/1K）
         settings = {
             ...settings,
-            resolution:'custom',
             ratio:'custom',
-            customRatio:outpaintSize.aspectRatio,
-            customWidth:outpaintSize.width,
-            customHeight:outpaintSize.height,
-            customSize:`${outpaintSize.width}x${outpaintSize.height}`
+            customRatio:outpaintSize.aspectRatio
         };
     }
     const meta = snapshotRunMeta(prompt, node.id, request.displayPrompt, refs);
@@ -19318,7 +19629,12 @@ async function runGeneration(){
         delete pendingNode.runElapsedMs;
         pendingNode.runTimerHidden = false;
         // 提交生成时就固化目标比例，pendingBoxSize 使用它计算占位图尺寸
-        pendingNode._generationAspect = parseSizeAspect(String(sizeForRun(settings) || ''));
+        // 扩图激活时，使用扩图的比例（sizeForRun 返回空字符串）
+        const outpaintForAspect = validOutpaintSize(node);
+        const aspectForRun = outpaintForAspect 
+            ? {w: outpaintForAspect.width, h: outpaintForAspect.height}
+            : parseSizeAspect(String(sizeForRun(settings) || ''));
+        pendingNode._generationAspect = aspectForRun || parseSizeAspect('1:1');
         const pendingBox = pendingBoxSize(pendingNode.pending, {node:pendingNode, sourceNode:node, refs});
         pendingNode.w = pendingBox.w;
         pendingNode.h = pendingBox.h;
@@ -19403,7 +19719,11 @@ async function runGeneration(){
             pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
             // 提交时就固化目标比例：占位/逐张写入/完成三个阶段共用同一个格子比例，
             // 任何阶段都不再按真实图重算，彻底消除「上传方形、写入跳回」的跳变。
-            pendingNode._generationAspect = parseSizeAspect(String(sizeForRun(settings) || ''));
+            // 扩图激活时，使用扩图的比例
+            const outpaintForWriteback = validOutpaintSize(node);
+            pendingNode._generationAspect = outpaintForWriteback 
+                ? {w: outpaintForAspect2.width, h: outpaintForAspect2.height}
+                : parseSizeAspect(String(sizeForRun(settings) || '')) || parseSizeAspect('1:1');
             // 节点尺寸已在上方 pendingBoxSize 处固化，这里不再重复设置
             ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'image'});
             pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
@@ -19603,7 +19923,9 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
     }
     if(canvas?.format === 'firefly-canvas-v1'){
         if(!resultNode?.id) throw new Error('项目生图缺少结果节点');
-        const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);
+        const outpaintSize = validOutpaintSize(resultNode);
+        const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);
+        // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution
         const size = usesExplicitResolution ? sizeForRun(runSettings) : '';
         const parsed = usesExplicitResolution ? parseSizeValue(size) : null;
         if(usesExplicitResolution && !parsed) throw new Error('生图尺寸无效');
@@ -20091,6 +20413,8 @@ async function pollSmartCanvasTask(taskId){
                 const cancelledResult = absorbProjectGenerationResult(task.result || {}, taskId);
                 const error = new Error(task.error || '任务已取消');
                 error.generationCancelled = true;
+                // 服务端终态：前端必须按服务商失败处理，不能当网络错误重试
+                error.providerFailure = true;
                 if(cancelledResult?.history_recorded) error.smartGenerationLogged = true;
                 if(cancelledResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
@@ -20102,6 +20426,10 @@ async function pollSmartCanvasTask(taskId){
                 const error = recoverTaskId
                     ? new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind:task.kind || 'image', message:task.error || tr('smart.errRunFailed')})
                     : new Error(task.error || tr('smart.errRunFailed'));
+                // 服务端终态失败：前端必须直接进入 failedGenerationTasks，
+                // 不能按关键词误判成网络错误做 3 轮无效重试（用户反馈的
+                // “失败取回机制不生效”根因之一）。
+                error.providerFailure = true;
                 if(failureResult?.history_recorded) error.smartGenerationLogged = true;
                 if(failureResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
@@ -20113,6 +20441,7 @@ async function pollSmartCanvasTask(taskId){
                 if(!timeoutResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunTimeout'));
                 const error = new Error(task.error || tr('smart.errRunTimeout'));
                 error.generationTimedOut = true;
+                error.providerFailure = true;
                 if(timeoutResult?.history_recorded) error.smartGenerationLogged = true;
                 if(timeoutResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
@@ -20300,21 +20629,27 @@ async function resumeSmartPendingNode(node, logContext={}){
                 scheduleSave();
                 return;
             }
-            // 区分服务商失败和网络问题
-            const isProviderFailure = e && e.message && (e.message.includes('failed') || e.message.includes('cancelled') || e.message.includes('timeout') || e.message.includes('sensitive') || e.message.includes('FAILURE'));
+            // 区分服务商失败和网络问题：服务端终态失败带 providerFailure 标记；
+            // 其余情况再按错误文本关键词兜底判断。
+            const isProviderFailure = e && (e.providerFailure || (e.message && (e.message.includes('failed') || e.message.includes('cancelled') || e.message.includes('timeout') || e.message.includes('sensitive') || e.message.includes('FAILURE'))));
             
             if(isProviderFailure){
-                // 服务商失败（终态，不重试）
+                // 服务商失败（终态）：无论节点状态是否已被服务端同步，都必须登记
+                // failedGenerationTasks，让节点显示"重试/取回"UI。
+                // （后端 fail_image_generation 已把任务从 pendingTasks 移除并同步节点，
+                //  若像旧逻辑那样用 projectNodeApplied 作守卫，失败任务会被静默吞掉，
+                //  用户永远看不到重试入口——即"失败取回机制不生效"的根因。）
+                node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
+                if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
+                    node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
+                }
                 if(!e?.projectNodeApplied){
+                    // 服务端未同步节点状态时，前端负责清理该任务的 pending
                     const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                     node.pendingTasks = remainingTasks;
                     node.pending = remainingTasks.length
                         ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
                         : 0;
-                    node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
-                    if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                        node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
-                    }
                 }
                 if(!node.pending && smartPendingTasks(node).length === 0){
                     delete node.pendingTasks;
@@ -20384,6 +20719,16 @@ async function resumeSmartPendingNode(node, logContext={}){
 async function retryFailedGeneration(nodeId){
     const node = nodes.find(item => String(item.id || '') === String(nodeId));
     if(!node) return;
+    // 防连点：重试在途时不重复提交（会生成新的幂等键并重复计费）
+    if(node._retryInFlight) return;
+    node._retryInFlight = true;
+    try{
+        await retryFailedGenerationInner(node);
+    } finally {
+        node._retryInFlight = false;
+    }
+}
+async function retryFailedGenerationInner(node){
     const failedTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks.slice() : [];
     if(failedTasks.length){
         // 1) 先尝试取回失败任务里已归档成功的图（服务端兑底 outputs）
@@ -20409,10 +20754,13 @@ async function retryFailedGeneration(nodeId){
             }
         }
     }
-    // 2) 无已归档结果 → 用原请求重新生成
+    // 2) 无已归档结果 → 用原请求重新生成。
+    // 显式重试是用户主动的新尝试：换新的幂等键，避免服务端按幂等重放
+    // 同一个已失败的任务（那样重试永远返回旧失败，取回机制无法生效）。
     node.failedGenerationTasks = [];
     const submission = smartGenerationSubmissions(node).find(item => item && item.requestPayload);
     if(submission){
+        submission.idempotencyKey = `regen-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         await resumeSmartGenerationSubmission(node, submission);
         render();
         return;
@@ -22432,6 +22780,7 @@ window.addEventListener('studio-lang-change', () => {
     render();
 });
 setupSmartSettingsOverlay();
+setupSmartTitleEdit();
 smartEdgeReveal?.addEventListener('click', jumpToSmartEdgeRevealNode);
 shell?.addEventListener('pointerdown', () => {
     if(smartEdgeReveal?.classList.contains('visible')) hideSmartEdgeReveal();

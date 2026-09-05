@@ -5168,50 +5168,6 @@ def apply_agnes_model_defaults(base_url, grouped, ids):
 def require_online_image_project_media_scope(payload: OnlineImageRequest) -> None:
     require_project_media_values_scope([str(getattr(ref, 'url', '') or '').strip() for ref in payload.reference_images or [] if str(getattr(ref, 'url', '') or '').strip()])
 
-def project_image_request(payload: ProjectImageGenerationRequest) -> ImageGenerationRequest:
-    if payload.media_type != 'image':
-        raise HTTPException(status_code=400, detail={'code': 'unsupported_media_type', 'message': '图片生成任务的媒体类型必须是 image', 'incompatible_parameters': ['media_type']})
-    if payload.routing_mode not in {'auto', 'manual'}:
-        raise HTTPException(status_code=400, detail='路由模式必须是 auto 或 manual')
-    if payload.routing_mode == 'manual' and (not (payload.provider_id or payload.model)):
-        raise HTTPException(status_code=400, detail='手动路由至少需要固定服务商或模型')
-    if payload.n < 1 or payload.n > 8:
-        raise HTTPException(status_code=400, detail='单次生图数量必须在 1 到 8 之间')
-    if len(payload.reference_asset_ids) > ONLINE_IMAGE_REFERENCE_MAX:
-        raise HTTPException(status_code=400, detail={'code': 'no_compatible_image_model', 'message': '参考图片数量超过应用安全上限', 'incompatible_parameters': ['reference_count']})
-    width, height = (payload.width, payload.height)
-    parsed_width, parsed_height = parse_size_pair(payload.size)
-    if width is None:
-        width = parsed_width or None
-    if height is None:
-        height = parsed_height or None
-    if parsed_width and width != parsed_width or (parsed_height and height != parsed_height):
-        raise HTTPException(status_code=400, detail={'code': 'inconsistent_image_dimensions', 'message': 'size 与 width/height 不一致', 'incompatible_parameters': ['size', 'width', 'height']})
-    return ImageGenerationRequest(prompt=payload.prompt, size=payload.size, width=width, height=height, aspect_ratio=payload.aspect_ratio, resolution=payload.resolution, reference_asset_ids=tuple(payload.reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n)
-
-def project_video_request(payload: ProjectVideoGenerationRequest) -> VideoGenerationRequest:
-    if payload.media_type != 'video':
-        raise HTTPException(status_code=400, detail={'code': 'unsupported_media_type', 'message': '视频生成任务的媒体类型必须是 video', 'incompatible_parameters': ['media_type']})
-    if payload.routing_mode not in {'auto', 'manual'}:
-        raise HTTPException(status_code=400, detail='路由模式必须是 auto 或 manual')
-    if payload.routing_mode == 'manual' and (not (payload.provider_id or payload.model)):
-        raise HTTPException(status_code=400, detail='手动路由至少需要固定服务商或模型')
-    if payload.n < 1 or payload.n > 4:
-        raise HTTPException(status_code=400, detail='单次视频数量必须在 1 到 4 之间')
-    reference_groups = (('image_reference_count', payload.image_reference_asset_ids), ('video_reference_count', payload.video_reference_asset_ids), ('audio_reference_count', payload.audio_reference_asset_ids))
-    for parameter, asset_ids in reference_groups:
-        if len(asset_ids) > ONLINE_VIDEO_REFERENCE_MAX:
-            raise HTTPException(status_code=400, detail={'code': 'no_compatible_video_model', 'message': '参考素材数量超过应用安全上限', 'incompatible_parameters': [parameter]})
-    width, height = (payload.width, payload.height)
-    parsed_width, parsed_height = parse_size_pair(payload.size)
-    if width is None:
-        width = parsed_width or None
-    if height is None:
-        height = parsed_height or None
-    if parsed_width and width != parsed_width or (parsed_height and height != parsed_height):
-        raise HTTPException(status_code=400, detail={'code': 'inconsistent_video_dimensions', 'message': 'size 与 width/height 不一致', 'incompatible_parameters': ['size', 'width', 'height']})
-    return VideoGenerationRequest(prompt=payload.prompt, size=payload.size, width=width, height=height, aspect_ratio=payload.aspect_ratio, resolution=payload.resolution, duration=payload.duration, image_reference_asset_ids=tuple(payload.image_reference_asset_ids), video_reference_asset_ids=tuple(payload.video_reference_asset_ids), audio_reference_asset_ids=tuple(payload.audio_reference_asset_ids), media_type=payload.media_type, quality=payload.quality, count=payload.n, seed=payload.seed, enhance_prompt=payload.enhance_prompt, enable_upsample=payload.enable_upsample, watermark=payload.watermark, camera_fixed=payload.camera_fixed, return_last_frame=payload.return_last_frame, generate_audio=payload.generate_audio)
-
 def project_agent_execution_lock(project_id: str, node_id: str) -> Lock:
     key = (str(project_id), str(node_id))
     with PROJECT_AGENT_EXECUTION_LOCKS_GUARD:

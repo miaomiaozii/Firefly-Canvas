@@ -373,7 +373,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertNotIn("identity.includes('comfly')", self.source)
         self.assertNotIn("identity.includes('ai.comfly.org')", self.source)
         self.assertIn("settingsSnapshot.resolution = '';", self.source)
-        self.assertIn("const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);", self.source)
+        self.assertIn("const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);", self.source)
         self.assertIn("resolution:usesExplicitResolution ? (runSettings.resolution || '') : ''", self.source)
         self.assertIn(".size-picker-popover.resolution-free", self.styles)
 
