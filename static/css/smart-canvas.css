@@ -3351,3 +3351,37 @@ button.prompt-flow-context-image { cursor:pointer; }
 .node-selected-pulse {
     animation:node-selected-pulse-anim 1s ease-in-out 2;
 }
+
+/* ── 资源库批量清理 + 回收区入口（issue #56）────────────────── */
+.asset-batch-bar {
+    display:flex; align-items:center; gap:8px;
+    padding:6px 10px; margin:0 10px 6px;
+    border:1px solid rgba(100,116,139,.25); border-radius:8px;
+    background:rgba(100,116,139,.06); font-size:12px;
+}
+.asset-batch-selectall { display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; color:#334155; }
+.theme-dark .asset-batch-selectall { color:#cbd5e1; }
+.asset-batch-check { width:15px; height:15px; margin:0; cursor:pointer; flex-shrink:0; }
+.asset-item:has(.asset-batch-check) { cursor:pointer; }
+.asset-batch-count { flex:1; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.asset-mini-btn.active { background:rgba(59,130,246,.14); color:#2563eb; border-color:rgba(59,130,246,.4); }
+.theme-dark .asset-mini-btn.active { color:#93c5fd; }
+.asset-mini-btn.danger { color:#dc2626; }
+.asset-mini-btn.danger:hover { background:#fee2e2; border-color:#fecaca; color:#b91c1c; }
+.theme-dark .asset-mini-btn.danger { color:#fca5a5; }
+.theme-dark .asset-mini-btn.danger:hover { background:rgba(248,113,113,.16); border-color:rgba(248,113,113,.35); color:#f87171; }
+.asset-dialog-btn.danger { background:#dc2626; color:#fff; }
+.asset-dialog-btn.danger:hover { background:#b91c1c; }
+.asset-dialog-btn.danger:disabled { opacity:.5; cursor:not-allowed; }
+.smart-trash-dialog { width:min(560px, calc(100vw - 40px)); max-height:min(72vh, 640px); display:flex; flex-direction:column; }
+.smart-trash-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:4px 2px; }
+.smart-trash-empty { padding:28px 12px; text-align:center; color:#94a3b8; font-size:13px; }
+.smart-trash-item {
+    display:flex; align-items:center; gap:10px;
+    padding:8px 10px; border:1px solid rgba(100,116,139,.18); border-radius:8px;
+}
+.smart-trash-icon { width:18px; height:18px; color:#64748b; flex-shrink:0; }
+.smart-trash-meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.smart-trash-name { font-size:13px; color:#1f2937; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.theme-dark .smart-trash-name { color:#e5e7eb; }
+.smart-trash-sub { font-size:11px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

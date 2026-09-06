@@ -1623,5 +1623,106 @@ class ProjectApiContractTests(unittest.TestCase):
         self.assertIn("20GB", rejected_while_streaming.json()["detail"])
 
 
+class MediaCleanupEndpointTests(unittest.TestCase):
+    """issue #56：未使用媒体检测 / 回收区端点契约。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0.05)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        self.client = TestClient(
+            main.app,
+            base_url="http://127.0.0.1",
+            headers={"origin": "http://127.0.0.1"},
+        )
+
+    def tearDown(self):
+        self.client.close()
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp_dir.cleanup()
+
+    def _project(self, name="清理项目"):
+        return self.client.post("/api/project-library", json={"name": name}).json()["project"]
+
+    def _import(self, project_id, data, name, mime="image/png"):
+        return self.store.import_media(project_id, data, name, mime)
+
+    def _patch_canvas(self, project_id, mutations, base_revision):
+        return self.client.patch(
+            f"/api/project-library/{project_id}/canvas",
+            json={"mutations": mutations, "base_revision": base_revision},
+        )
+
+    def test_media_unused_lists_only_unreferenced_assets(self):
+        project = self._project()
+        used = self._import(project["id"], b"used-bytes", "used.png")
+        unused = self._import(project["id"], b"unused-bytes", "unused.png")
+        # 画布节点引用 used（嵌套 asset_id），不引用 unused
+        changed = self._patch_canvas(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "smart-image", "images": [{"asset_id": used["asset_id"], "url": ""}]}},
+        ], 0)
+        self.assertEqual(changed.status_code, 200)
+
+        response = self.client.get(f"/api/project-library/{project['id']}/media/unused")
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual([item["asset_id"] for item in items], [unused["asset_id"]])
+        self.assertEqual(items[0]["kind"], "image")
+        self.assertEqual(items[0]["name"], "unused.png")
+
+    def test_media_unused_empty_when_all_referenced(self):
+        project = self._project()
+        a = self._import(project["id"], b"a-bytes", "a.png")
+        b = self._import(project["id"], b"b-bytes", "b.png")
+        # 两个节点分别引用 a / b，含 T3 风格的局部编辑引用字段
+        changed = self._patch_canvas(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "smart-image", "images": [{"asset_id": a["asset_id"]}]}},
+            {"op": "upsert_node", "node": {"id": "n2", "type": "smart-local-edit", "input_asset_id": b["asset_id"]}},
+        ], 0)
+        self.assertEqual(changed.status_code, 200)
+        items = self.client.get(f"/api/project-library/{project['id']}/media/unused").json()["items"]
+        self.assertEqual(items, [])
+
+    def test_media_unused_excludes_hard_deleted_asset(self):
+        project = self._project()
+        orphan = self._import(project["id"], b"orphan-bytes", "orphan.png")
+        revision = self.client.get(f"/api/project-library/{project['id']}").json()["canvas"]["revision"]
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/project-library/{project['id']}/media/{orphan['asset_id']}",
+            json={"base_revision": revision},
+        )
+        self.assertIn(deleted.status_code, (200, 404))
+        items = self.client.get(f"/api/project-library/{project['id']}/media/unused").json()["items"]
+        self.assertEqual(items, [])
+
+    def test_trash_media_and_unused_404_for_missing_project(self):
+        self.assertEqual(self.client.get("/api/project-library/nope/media/unused").status_code, 404)
+        self.assertEqual(self.client.get("/api/project-library/nope/trash/media").status_code, 404)
+
+    def test_trash_media_listing_shape_and_purge_by_asset(self):
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        far_future = 4102444800000  # 2100-01-01，不会被 7 天自动清理移除
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [
+                {"asset_id": "a1", "deletion_id": "d1", "deleted_at": 1, "expires_at": far_future, "name": "原图A"},
+                {"asset_id": "a2", "deletion_id": "d2", "deleted_at": 1, "expires_at": far_future, "name": "原图B"},
+            ]}),
+            encoding="utf-8",
+        )
+        listed = self.client.get(f"/api/project-library/{project['id']}/trash/media")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual([item["asset_id"] for item in listed.json()["items"]], ["a1", "a2"])
+
+        purged = self.client.delete(f"/api/project-library/{project['id']}/trash/media", params={"asset_id": "a1"})
+        self.assertEqual(purged.status_code, 200)
+        remaining = self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"]
+        self.assertEqual([item["asset_id"] for item in remaining], ["a2"])
+
+
 if __name__ == "__main__":
     unittest.main()

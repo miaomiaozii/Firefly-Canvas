@@ -211,7 +211,15 @@
                     <select id="assetCategorySelect" class="asset-category-select"></select>
                     <button id="assetAddCategoryBtn" class="asset-mini-btn" type="button" title="新建文件夹" data-i18n-title="smart.assetNewFolder"><i data-lucide="folder-plus"></i></button>
                     <button id="assetRenameCategoryBtn" class="asset-mini-btn" type="button" title="重命名文件夹" data-i18n-title="smart.assetRenameFolder"><i data-lucide="pencil"></i></button>
+                    <button id="assetBatchToggleBtn" class="asset-mini-btn" type="button" title="多选" data-i18n-title="smart.batchSelect" hidden><i data-lucide="list-checks"></i></button>
+                    <button id="assetDetectUnusedBtn" class="asset-mini-btn" type="button" title="检测未使用" data-i18n-title="smart.detectUnused" hidden><i data-lucide="search-x"></i></button>
                 </div>
+            </div>
+            <div id="assetBatchBar" class="asset-batch-bar" hidden>
+                <label class="asset-batch-selectall"><input type="checkbox" id="assetBatchSelectAll"><span data-i18n="smart.selectAll">全选</span></label>
+                <span id="assetBatchCount" class="asset-batch-count"></span>
+                <button id="assetBatchDeleteBtn" class="asset-mini-btn danger" type="button" title="批量删除" data-i18n-title="smart.batchDelete" disabled><i data-lucide="trash-2"></i></button>
+                <button id="assetBatchCloseBtn" class="asset-mini-btn" type="button" title="退出多选" data-i18n-title="common.cancel"><i data-lucide="x"></i></button>
             </div>
             <div id="assetDropZone" class="asset-drop-zone" data-i18n="smart.assetDropHint">把画布图片拖到这里保存到当前文件夹</div>
             <div id="assetGrid" class="asset-grid"></div>
@@ -223,6 +231,26 @@
                 <div class="asset-dialog-actions">
                     <button id="assetDialogCancel" class="asset-dialog-btn secondary" type="button" data-i18n="common.cancel">取消</button>
                     <button id="assetDialogOk" class="asset-dialog-btn primary" type="button" data-i18n="common.confirm">确定</button>
+                </div>
+            </div>
+        </div>
+        <div id="smartTrashBackdrop" class="asset-dialog-backdrop" hidden>
+            <div class="asset-dialog smart-trash-dialog">
+                <div class="asset-dialog-title"><i data-lucide="archive-restore"></i><span data-i18n="smart.trashTitle">项目回收区</span></div>
+                <div id="smartTrashList" class="smart-trash-list"></div>
+                <div class="asset-dialog-actions">
+                    <button id="smartTrashPurgeBtn" class="asset-dialog-btn danger" type="button" data-i18n="canvas.clearProjectTrash">清空回收区</button>
+                    <button id="smartTrashCloseBtn" class="asset-dialog-btn secondary" type="button" data-i18n="common.close">关闭</button>
+                </div>
+            </div>
+        </div>
+        <div id="smartUnusedBackdrop" class="asset-dialog-backdrop" hidden>
+            <div class="asset-dialog smart-trash-dialog">
+                <div class="asset-dialog-title"><i data-lucide="search-x"></i><span data-i18n="smart.unusedTitle">未使用媒体</span></div>
+                <div id="smartUnusedList" class="smart-trash-list"></div>
+                <div class="asset-dialog-actions">
+                    <button id="smartUnusedCleanBtn" class="asset-dialog-btn danger" type="button" data-i18n="smart.unusedClean">清理全部</button>
+                    <button id="smartUnusedCloseBtn" class="asset-dialog-btn secondary" type="button" data-i18n="common.close">关闭</button>
                 </div>
             </div>
         </div>
@@ -239,6 +267,7 @@
                         <div class="log-hint" data-i18n="canvas.generationLogsHint">查看原图与提示词；拖动图片，或一键送回画布</div>
                     </div>
                     <div class="log-head-actions">
+                        <button id="smartTrashOpenBtn" class="preview-icon-btn" type="button" onclick="openSmartTrashPanel()" title="回收区" data-i18n-title="smart.trashOpen" aria-label="回收区" aria-busy="false" hidden><i data-lucide="archive-restore" class="w-4 h-4"></i></button>
                         <button id="smartHistoryPurgeTrash" class="preview-icon-btn danger" type="button" onclick="purgeSmartProjectMediaTrash()" title="清空回收区" data-i18n-title="canvas.clearProjectTrash" aria-label="清空回收区" aria-busy="false" hidden><i data-lucide="archive-x" class="w-4 h-4"></i></button>
                         <button id="smartHistoryCollapse" class="preview-icon-btn" type="button" onclick="toggleSmartHistoryDrawerCollapsed()" title="折叠" aria-label="折叠"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
                         <button class="preview-icon-btn" type="button" onclick="closeSmartCanvasLog()" title="关闭" aria-label="关闭生成历史" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>

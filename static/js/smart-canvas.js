@@ -6208,12 +6208,16 @@ function renderAssetLibrary(){
     const items = smartClass ? itemsForAssetSmartClass(activeAssetCategoryId) : (cat?.items || []);
     if(assetAddCategoryBtn) assetAddCategoryBtn.disabled = Boolean(smartClass) || projectMode;
     if(assetRenameCategoryBtn) assetRenameCategoryBtn.disabled = projectMode || !cat || Boolean(smartClass) || (localMode && (cat.id === '__root__' || !cat.id));
+    if(assetBatchToggleBtn) assetBatchToggleBtn.hidden = !projectMode || Boolean(smartClass);
+    if(assetDetectUnusedBtn) assetDetectUnusedBtn.hidden = !projectMode || Boolean(smartClass);
+    if(!projectMode) setAssetBatchMode(false);
+    updateAssetBatchBar();
     assetGrid.innerHTML = items.length ? items.map(item => `
         <div class="asset-item" draggable="true" data-asset-id="${escapeHtml(item.id)}" data-url="${escapeHtml(item.url)}" data-name="${escapeHtml(item.name || 'asset')}" data-kind="${escapeHtml(assetMediaKind(item))}">
             ${assetThumbHtml(item)}
             <div class="asset-meta">
                 <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || 'asset')}</span>
-                ${projectMode ? `<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
+                ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="选择">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
                     : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`}
@@ -6417,6 +6421,15 @@ function bindAssetItemEvents(){
             e.dataTransfer.setData('text/plain', el.dataset.url || '');
         });
     });
+    // 批量多选（issue #56）：勾选框控制选择，不重渲染整个网格
+    assetGrid.querySelectorAll('[data-batch-asset]').forEach(chk => {
+        chk.onclick = e => {
+            e.preventDefault(); e.stopPropagation();
+            if(chk.checked) assetBatchSelected.add(chk.dataset.batchAsset);
+            else assetBatchSelected.delete(chk.dataset.batchAsset);
+            updateAssetBatchBar();
+        };
+    });
     assetGrid.querySelectorAll('[data-rename-asset]').forEach(btn => {
         btn.onclick = async e => {
             e.preventDefault(); e.stopPropagation();
@@ -6548,6 +6561,372 @@ function bindAssetItemEvents(){
         };
     });
 }
+
+// ─── 资源库批量清理 + 回收区入口 + 未使用检测（issue #56）────────────
+
+function smartProjectId(){
+    return canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+}
+// 用服务端返回的画布同步前端节点（删除/恢复等破坏性操作后的标准同步模板，
+// 与 data-delete-project-asset 的 409/200 同步逻辑一致）
+function syncProjectCanvasFromResponse(canvasData){
+    if(!canvasData) return 0;
+    canvas = hydrateProjectMediaReferences(canvasData);
+    if(Array.isArray(canvas.nodes)){
+        nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+        canvas.nodes = nodes;
+    }
+    canvas.updated_at = Number(canvas.updated_at || 0);
+    canvas.revision = Number(canvas.revision || 0);
+    render();
+    return Number(canvas.revision || 0);
+}
+
+// ── 片②：资产库多选批量删除 ───────────────────────────────
+const assetBatchToggleBtn = document.getElementById('assetBatchToggleBtn');
+const assetBatchBar = document.getElementById('assetBatchBar');
+const assetBatchSelectAll = document.getElementById('assetBatchSelectAll');
+const assetBatchCount = document.getElementById('assetBatchCount');
+const assetBatchDeleteBtn = document.getElementById('assetBatchDeleteBtn');
+const assetBatchCloseBtn = document.getElementById('assetBatchCloseBtn');
+let assetBatchMode = false;
+let assetBatchBusy = false;
+const assetBatchSelected = new Set();
+
+function currentBatchAssetIds(){
+    if(!assetGrid) return [];
+    return [...assetGrid.querySelectorAll('[data-batch-asset]')].map(el => el.dataset.batchAsset);
+}
+function updateAssetBatchBar(){
+    if(!assetBatchBar) return;
+    assetBatchBar.hidden = !assetBatchMode;
+    if(assetBatchToggleBtn) assetBatchToggleBtn.classList.toggle('active', assetBatchMode);
+    const ids = currentBatchAssetIds();
+    if(assetBatchSelectAll) assetBatchSelectAll.checked = ids.length > 0 && ids.every(id => assetBatchSelected.has(id));
+    if(assetBatchCount) assetBatchCount.textContent = assetBatchSelected.size > 0
+        ? tr('smart.batchSelected').replace('{n}', String(assetBatchSelected.size))
+        : tr('smart.batchSelectHint');
+    if(assetBatchDeleteBtn) assetBatchDeleteBtn.disabled = assetBatchSelected.size === 0 || assetBatchBusy;
+}
+function setAssetBatchMode(on){
+    if(on === assetBatchMode) return;
+    assetBatchMode = on;
+    if(!on) assetBatchSelected.clear();
+    updateAssetBatchBar();
+    if(assetGrid) renderAssetLibrary();
+}
+if(assetBatchToggleBtn) assetBatchToggleBtn.onclick = () => setAssetBatchMode(!assetBatchMode);
+if(assetBatchCloseBtn) assetBatchCloseBtn.onclick = () => setAssetBatchMode(false);
+if(assetBatchSelectAll) assetBatchSelectAll.onchange = () => {
+    currentBatchAssetIds().forEach(id => {
+        if(assetBatchSelectAll.checked) assetBatchSelected.add(id);
+        else assetBatchSelected.delete(id);
+    });
+    updateAssetBatchBar();
+    renderAssetLibrary();
+};
+
+// 批量删除：逐个走 ADR 0015 删除流（硬删 + 引用清理 + 墓碑），
+// 删除前汇总引用节点数提示；每次删除用最新画布版本避免 409 连锁
+async function smartAssetBatchDelete(){
+    if(assetBatchBusy || !assetBatchMode) return;
+    const projectId = smartProjectId();
+    const ids = [...assetBatchSelected];
+    if(!projectId || !ids.length) return;
+    assetBatchBusy = true;
+    updateAssetBatchBar();
+    // 1) 汇总引用
+    let totalRefs = 0;
+    let refCheckFailed = false;
+    for(const assetId of ids){
+        try {
+            const refRes = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}/references`);
+            const refData = await refRes.json().catch(() => ({}));
+            totalRefs += (refData.references || []).length;
+        } catch(_){ refCheckFailed = true; }
+    }
+    const message = (totalRefs > 0 || refCheckFailed)
+        ? tr('smart.batchDeleteRefsConfirm').replace('{n}', String(ids.length)).replace('{r}', String(totalRefs))
+        : tr('smart.batchDeleteConfirm').replace('{n}', String(ids.length));
+    if(!confirm(message)){
+        assetBatchBusy = false;
+        updateAssetBatchBar();
+        return;
+    }
+    // 2) 逐个删除（携带画布版本：服务端清理引用会 bump revision，冲突时用返回画布继续）
+    let okCount = 0;
+    let failCount = 0;
+    for(const assetId of ids){
+        try {
+            const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+            });
+            const data = await res.json().catch(() => ({}));
+            const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
+            if(res.ok || res.status === 404){
+                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+                okCount += 1;
+            } else if(res.status === 409 && nextCanvas){
+                syncProjectCanvasFromResponse(nextCanvas);
+                okCount += 1;
+            } else {
+                failCount += 1;
+            }
+        } catch(_){ failCount += 1; }
+        assetBatchSelected.delete(assetId);
+        removeProjectMediaFromCache(assetId);
+        updateAssetBatchBar();
+    }
+    // 3) 刷新 + 汇总提示
+    if(assetLibraryIsProject()) renderAssetLibrary();
+    renderSmartCanvasLog();
+    refreshSmartProjectMediaTrashButton();
+    if(assetBatchSelected.size === 0) setAssetBatchMode(false);
+    assetBatchBusy = false;
+    updateAssetBatchBar();
+    if(failCount > 0) toast(tr('smart.batchDeletePartial').replace('{ok}', String(okCount)).replace('{fail}', String(failCount)));
+    else toast(tr('smart.batchDeleteDone').replace('{n}', String(okCount)));
+}
+if(assetBatchDeleteBtn) assetBatchDeleteBtn.onclick = () => void smartAssetBatchDelete();
+
+// ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
+const smartTrashBackdrop = document.getElementById('smartTrashBackdrop');
+const smartTrashList = document.getElementById('smartTrashList');
+const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
+const smartTrashPurgeBtn = document.getElementById('smartTrashPurgeBtn');
+const smartTrashCloseBtn = document.getElementById('smartTrashCloseBtn');
+
+function formatTrashTime(ms){
+    const value = Number(ms || 0);
+    if(!value) return '';
+    const d = new Date(value);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function trashDaysLeft(expiresAt){
+    const left = Number(expiresAt || 0) - Date.now();
+    if(left <= 0) return 0;
+    return Math.ceil(left / 86400000);
+}
+async function openSmartTrashPanel(){
+    if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
+    const projectId = smartProjectId();
+    if(!smartTrashBackdrop || !projectId) return;
+    smartTrashBackdrop.hidden = false;
+    smartTrashBackdrop.classList.add('open');
+    if(smartTrashList) smartTrashList.innerHTML = `<div class="smart-trash-empty">${escapeHtml(tr('smart.trashLoading'))}</div>`;
+    try {
+        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media`);
+        if(!response.ok) throw new Error('trash status unavailable');
+        const data = await response.json().catch(() => ({}));
+        renderSmartTrashItems(data.items || []);
+    } catch(_){
+        renderSmartTrashItems([]);
+        toast(tr('smart.trashLoadFailed'));
+    }
+}
+function renderSmartTrashItems(items){
+    if(!smartTrashList) return;
+    if(!Array.isArray(items) || !items.length){
+        smartTrashList.innerHTML = `<div class="smart-trash-empty">${escapeHtml(tr('smart.trashEmpty'))}</div>`;
+        if(smartTrashPurgeBtn) smartTrashPurgeBtn.disabled = true;
+        return;
+    }
+    if(smartTrashPurgeBtn) smartTrashPurgeBtn.disabled = false;
+    smartTrashList.innerHTML = items.map(item => {
+        const assetId = String(item?.asset_id || '');
+        const deletionId = String(item?.deletion_id || '');
+        const name = String(item?.name || item?.filename || assetId);
+        const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
+        const days = trashDaysLeft(item?.expires_at);
+        return `<div class="smart-trash-item" data-trash-asset="${escapeHtml(assetId)}" data-trash-deletion="${escapeHtml(deletionId)}">
+            <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+            <div class="smart-trash-meta">
+                <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+                <div class="smart-trash-sub">${escapeHtml(formatTrashTime(item?.deleted_at))}${days > 0 ? ` · ${escapeHtml(tr('smart.trashExpiresIn').replace('{n}', String(days)))}` : ''}</div>
+            </div>
+            <button class="asset-mini-btn" type="button" data-trash-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i></button>
+            <button class="asset-mini-btn danger" type="button" data-trash-forever title="${escapeHtml(tr('smart.trashDeleteForever'))}"><i data-lucide="trash-2"></i></button>
+        </div>`;
+    }).join('');
+    refreshIcons();
+    smartTrashList.querySelectorAll('[data-trash-restore]').forEach(btn => {
+        btn.onclick = () => void smartTrashRestoreItem(
+            btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '',
+            btn.closest('[data-trash-asset]')?.dataset?.trashDeletion || ''
+        );
+    });
+    smartTrashList.querySelectorAll('[data-trash-forever]').forEach(btn => {
+        btn.onclick = () => void smartTrashPurgeItem(btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '');
+    });
+}
+function closeSmartTrashPanel(){
+    if(!smartTrashBackdrop) return;
+    smartTrashBackdrop.classList.remove('open');
+    smartTrashBackdrop.hidden = true;
+}
+if(smartTrashCloseBtn) smartTrashCloseBtn.onclick = closeSmartTrashPanel;
+if(smartTrashBackdrop) smartTrashBackdrop.addEventListener('mousedown', e => { if(e.target === smartTrashBackdrop) closeSmartTrashPanel(); });
+if(smartTrashPurgeBtn) smartTrashPurgeBtn.onclick = () => {
+    purgeSmartProjectMediaTrash();
+    setTimeout(() => void openSmartTrashPanel(), 400);
+};
+// 单个恢复：走服务端 /original/restore（与画布内联恢复同一后端流）
+async function smartTrashRestoreItem(assetId, deletionId){
+    const projectId = smartProjectId();
+    if(!assetId || !projectId || smartTrashRestoring) return;
+    smartTrashRestoring = true;
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/restore`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                asset_id: assetId,
+                base_revision: Number(canvas?.revision || 0),
+                deletion_id: deletionId || ''
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if(res.status === 409 && data?.detail?.canvas){
+            syncProjectCanvasFromResponse(data.detail.canvas);
+        } else if(res.ok && data?.canvas){
+            syncProjectCanvasFromResponse(data.canvas);
+        } else if(!res.ok){
+            const msg = typeof data?.detail === 'string' ? data.detail : tr('smart.trashRestoreFailed');
+            throw new Error(msg);
+        }
+        toast(tr('canvas.originalRestored'));
+        renderSmartCanvasLog();
+        refreshSmartProjectMediaTrashButton();
+        await openSmartTrashPanel();
+    } catch(err){
+        toast(err?.message || tr('smart.trashRestoreFailed'));
+    } finally {
+        smartTrashRestoring = false;
+    }
+}
+let smartTrashRestoring = false;
+// 单个彻底删除：仅清回收区条目，不影响画布（资源早已从画布清除）
+async function smartTrashPurgeItem(assetId){
+    const projectId = smartProjectId();
+    if(!assetId || !projectId) return;
+    if(!confirm(tr('smart.trashForeverConfirm'))) return;
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media?asset_id=${encodeURIComponent(assetId)}`, {method: 'DELETE'});
+        if(!res.ok) throw new Error('purge failed');
+        toast(tr('smart.trashPurged'));
+        refreshSmartProjectMediaTrashButton();
+        await openSmartTrashPanel();
+    } catch(err){
+        toast(err?.message || tr('smart.trashPurgeFailed'));
+    }
+}
+
+// ── 片③：未使用媒体检测与一键清理 ─────────────────────────
+const smartUnusedBackdrop = document.getElementById('smartUnusedBackdrop');
+const smartUnusedList = document.getElementById('smartUnusedList');
+const smartUnusedCleanBtn = document.getElementById('smartUnusedCleanBtn');
+const smartUnusedCloseBtn = document.getElementById('smartUnusedCloseBtn');
+const assetDetectUnusedBtn = document.getElementById('assetDetectUnusedBtn');
+let smartUnusedBusy = false;
+
+function formatAssetSize(size){
+    const value = Number(size || 0);
+    if(!value) return '';
+    if(value > 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    if(value > 1024) return `${(value / 1024).toFixed(0)} KB`;
+    return `${value} B`;
+}
+async function openSmartUnusedPanel(){
+    if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
+    const projectId = smartProjectId();
+    if(!smartUnusedBackdrop || !projectId || smartUnusedBusy) return;
+    smartUnusedBusy = true;
+    smartUnusedBackdrop.hidden = false;
+    smartUnusedBackdrop.classList.add('open');
+    if(smartUnusedList) smartUnusedList.innerHTML = `<div class="smart-trash-empty">${escapeHtml(tr('smart.unusedDetecting'))}</div>`;
+    if(smartUnusedCleanBtn) smartUnusedCleanBtn.disabled = true;
+    let items = [];
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/unused`);
+        if(!res.ok) throw new Error('unused status unavailable');
+        const data = await res.json().catch(() => ({}));
+        items = data.items || [];
+    } catch(_){
+        items = [];
+        toast(tr('smart.unusedDetectFailed'));
+    }
+    if(!Array.isArray(items) || !items.length){
+        if(smartUnusedList) smartUnusedList.innerHTML = `<div class="smart-trash-empty">${escapeHtml(tr('smart.unusedEmpty'))}</div>`;
+    } else {
+        if(smartUnusedList) smartUnusedList.innerHTML = items.map(item => {
+            const assetId = String(item?.asset_id || '');
+            const name = String(item?.name || assetId);
+            const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
+            return `<div class="smart-trash-item" data-unused-asset="${escapeHtml(assetId)}">
+                <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+                <div class="smart-trash-meta">
+                    <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+                    <div class="smart-trash-sub">${escapeHtml(formatAssetSize(item?.size))}</div>
+                </div>
+            </div>`;
+        }).join('');
+        refreshIcons();
+        if(smartUnusedCleanBtn) smartUnusedCleanBtn.disabled = false;
+    }
+    smartUnusedBusy = false;
+}
+function closeSmartUnusedPanel(){
+    if(!smartUnusedBackdrop) return;
+    smartUnusedBackdrop.classList.remove('open');
+    smartUnusedBackdrop.hidden = true;
+}
+if(smartUnusedCloseBtn) smartUnusedCloseBtn.onclick = closeSmartUnusedPanel;
+if(smartUnusedBackdrop) smartUnusedBackdrop.addEventListener('mousedown', e => { if(e.target === smartUnusedBackdrop) closeSmartUnusedPanel(); });
+if(assetDetectUnusedBtn) assetDetectUnusedBtn.onclick = () => void openSmartUnusedPanel();
+
+// 一键清理：逐个走 ADR 0015 删除流（用户主动删除 = 硬删，不进回收区）
+async function smartUnusedCleanAll(){
+    if(smartUnusedBusy) return;
+    const projectId = smartProjectId();
+    const entries = smartUnusedList ? [...smartUnusedList.querySelectorAll('[data-unused-asset]')].map(el => el.dataset.unusedAsset).filter(Boolean) : [];
+    if(!projectId || !entries.length) return;
+    if(!confirm(tr('smart.unusedCleanConfirm').replace('{n}', String(entries.length)))) return;
+    smartUnusedBusy = true;
+    if(smartUnusedCleanBtn) smartUnusedCleanBtn.disabled = true;
+    let okCount = 0;
+    let failCount = 0;
+    for(const assetId of entries){
+        try {
+            const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+            });
+            const data = await res.json().catch(() => ({}));
+            const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
+            if(res.ok || res.status === 404){
+                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+                okCount += 1;
+            } else if(res.status === 409 && nextCanvas){
+                syncProjectCanvasFromResponse(nextCanvas);
+                okCount += 1;
+            } else {
+                failCount += 1;
+            }
+        } catch(_){ failCount += 1; }
+        removeProjectMediaFromCache(assetId);
+    }
+    if(assetLibraryIsProject()) renderAssetLibrary();
+    if(failCount > 0) toast(tr('smart.unusedCleanPartial').replace('{ok}', String(okCount)).replace('{fail}', String(failCount)));
+    else toast(tr('smart.unusedCleanDone').replace('{n}', String(okCount)));
+    smartUnusedBusy = false;
+    await openSmartUnusedPanel();
+}
+if(smartUnusedCleanBtn) smartUnusedCleanBtn.onclick = () => void smartUnusedCleanAll();
+
 
 function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
     return new Promise(resolve => {
@@ -9448,6 +9827,7 @@ async function refreshSmartProjectMediaTrashButton(){
     const refreshVersion = ++smartProjectMediaTrashRefreshVersion;
     if(!canvas || canvas.format !== 'firefly-canvas-v1'){
         smartHistoryPurgeTrash.hidden = true;
+        if(smartTrashOpenBtn) smartTrashOpenBtn.hidden = true;
         return;
     }
     try {
@@ -9456,10 +9836,13 @@ async function refreshSmartProjectMediaTrashButton(){
         if(!response.ok) throw new Error('trash status unavailable');
         const data = await response.json().catch(() => ({}));
         if(refreshVersion !== smartProjectMediaTrashRefreshVersion || smartHistoryPurgeTrash.getAttribute('aria-busy') === 'true') return;
-        smartHistoryPurgeTrash.hidden = !Array.isArray(data.items) || !data.items.length;
+        const hasItems = Array.isArray(data.items) && data.items.length > 0;
+        smartHistoryPurgeTrash.hidden = !hasItems;
+        if(smartTrashOpenBtn) smartTrashOpenBtn.hidden = !hasItems;
     } catch(_) {
         if(refreshVersion !== smartProjectMediaTrashRefreshVersion || smartHistoryPurgeTrash.getAttribute('aria-busy') === 'true') return;
         smartHistoryPurgeTrash.hidden = true;
+        if(smartTrashOpenBtn) smartTrashOpenBtn.hidden = true;
     }
 }
 async function purgeSmartProjectMediaTrash(){
