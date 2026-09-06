@@ -10,7 +10,7 @@
 """
 import re
 from typing import List, Dict, Optional, Tuple, Any
-from plan_ir import PlanIR, PlanTask
+from plan_ir import PlanIR, PlanTask, ReferenceImage
 
 
 def build_plan_ir(
@@ -37,9 +37,10 @@ def build_plan_ir(
         total_rows += len(sheet.rows())
     plan.scanned_rows = total_rows
 
-    # 提取任务
-    tasks = extract_tasks(parse_result)
+    # 提取任务（参考图映射：drawing 锚点行号 → 任务行，issue #52）
+    tasks, unmapped_notes = extract_tasks(parse_result)
     plan.tasks = tasks
+    plan.notes = list(unmapped_notes)
 
     return plan
 
@@ -74,24 +75,59 @@ def is_task_sheet(sheet_name: str, rows: List[List[str]]) -> bool:
     return False
 
 
-def extract_tasks(parse_result: Dict[str, object]) -> List[PlanTask]:
-    """从解析结果提取任务列表（对应 C# AddTasksFromRows 的调用循环）。"""
+def extract_tasks(parse_result: Dict[str, object]) -> Tuple[List[PlanTask], List[str]]:
+    """从解析结果提取任务列表（对应 C# AddTasksFromRows 的调用循环）。
+
+    Returns:
+        (tasks, unmapped_notes)：未映射到任何任务行的参考图说明（C# 报告项）。
+    """
     tasks: List[PlanTask] = []
     sort_index = 0
     counters: Dict[str, int] = {}
+    unmapped_notes: List[str] = []
 
     for sheet_name, sheet_data in parse_result.get("sheets", {}).items():
         rows = sheet_data.rows()
         if not rows:
             continue
-        
+
         # 只处理任务 sheet
         if not is_task_sheet(sheet_name, rows):
             continue
-        
-        sort_index = add_tasks_from_rows(tasks, rows, sheet_name, counters, sort_index)
 
-    return tasks
+        # 参考图映射（issue #52 / C# AddOperationReferencesFromMappedCells）：
+        # 按 drawing 锚点行号把图片关联到任务行；锚点行号是原始 sheet 行号，
+        # 需通过 grid_row_numbers() 对齐到 rows() 过滤空行后的网格下标。
+        row_numbers = sheet_data.grid_row_numbers()
+        row_image_refs: Dict[int, List[Dict[str, Any]]] = {}
+        for anchor in getattr(sheet_data, "image_anchors", []) or []:
+            row_no = anchor.get("row")
+            if not row_no or row_no not in row_numbers:
+                continue
+            row_image_refs.setdefault(row_numbers.index(row_no), []).append(anchor)
+        for refs in row_image_refs.values():
+            refs.sort(key=lambda a: (a.get("col") is None, a.get("col") or 0))
+
+        sort_index = add_tasks_from_rows(tasks, rows, sheet_name, counters, sort_index, row_image_refs)
+
+        # 报告未映射到任务行的图片（C# 对未匹配行会打印警告）；
+        # asset_id 格式为「sheet!行号:rid」，取冒号后段才是 rid。
+        mapped_rids = {
+            ref.asset_id.rsplit(":", 1)[1]
+            for task in tasks
+            for ref in task.operation_references
+            if ref.asset_id.count(":") >= 1
+        }
+        for anchor in getattr(sheet_data, "image_anchors", []) or []:
+            rid = anchor.get("rid")
+            if rid in mapped_rids:
+                continue
+            if anchor.get("row") is None:
+                unmapped_notes.append(f"{sheet_name}: 图片 {rid} 使用绝对锚点，未关联到任务行")
+            else:
+                unmapped_notes.append(f"{sheet_name}: 图片 {rid} 位于行 {anchor['row']}，未匹配到任务行")
+
+    return tasks, unmapped_notes
 
 
 def add_tasks_from_rows(
@@ -100,9 +136,14 @@ def add_tasks_from_rows(
     sheet_name: str,
     counters: Dict[str, int],
     sort_index: int,
-    image_lookup: Optional[Dict[str, str]] = None,
+    image_lookup: Optional[Dict[int, List[Dict[str, Any]]]] = None,
 ) -> int:
-    """对应 C# AddTasksFromRows。"""
+    """对应 C# AddTasksFromRows。
+
+    image_lookup: 网格行下标（rows 的 0-based 下标）→ 该行图片锚点列表
+        （每项含 rid/row/col，row/col 为原始 1-based 行列）。用于把参考图
+        关联到任务（C# AddOperationReferencesFromMappedCells 的数据级等价物）。
+    """
     header_row = find_header_row(rows)
     if header_row < 0:
         # 无 header：兜底 unmapped rows
@@ -195,6 +236,17 @@ def add_tasks_from_rows(
             status="待处理",
             selected=True,
             last_failure_reason="",
+            # 参考图映射（issue #52）：anchor 行 = 本任务行时关联；
+            # asset_id 为「sheet!行号:rId」稳定标识（媒体字节在 parse_result.sheets
+            # 的 images[rid]，Phase 3 媒体管道落地后替换为真实资源 ID）。
+            operation_references=[
+                ReferenceImage(
+                    asset_id=f"{sheet_name}!{i + 1}:{anchor.get('rid')}",
+                    source=f"Excel 内嵌图（{sheet_name} 行 {anchor.get('row')} 列 {anchor.get('col')}）",
+                    url=None,
+                )
+                for anchor in (image_lookup or {}).get(i, [])
+            ],
         )
         # Copy handling
         if task.copy_text:
@@ -234,7 +286,7 @@ def find_header_row(rows: List[List[str]]) -> int:
 def map_headers(headers: List[str]) -> Dict[str, List[int]]:
     """映射 header 名称到列索引（对应 C# MapHeaders）。"""
     col_map: Dict[str, List[int]] = {
-        "name": [], "requirements": [], "outputType": [], "section": [],
+        "name": [], "requirements": [], "reference": [], "outputType": [], "section": [],
         "aspect": [], "prompt": [], "copy": [],
     }
     for idx, cell in enumerate(headers):
@@ -247,6 +299,9 @@ def map_headers(headers: List[str]) -> Dict[str, List[int]]:
         # requirements
         elif any(kw in cell_lower for kw in ["要求", "需求", "说明", "requirements", "备注", "内容"]):
             col_map["requirements"].append(idx)
+        # reference（参考图列：C# JoinReferenceTextNotes 的文本注记来源）
+        elif any(kw in cell_lower for kw in ["参考图", "参考", "reference", "示例图"]):
+            col_map["reference"].append(idx)
         # outputType
         elif any(kw in cell_lower for kw in ["类型", "output", "产出", "类别"]):
             col_map["outputType"].append(idx)
@@ -458,11 +513,15 @@ def join_reference_text_notes(
     row: List[str],
     headers: List[str],
     col_map: Dict[str, List[int]],
-    image_lookup: Optional[Dict[str, str]],
+    image_lookup: Optional[Dict[int, List[Dict[str, Any]]]],
 ) -> str:
-    """提取引用文本注释（对应 C# JoinReferenceTextNotes）。"""
-    # 简化：检查是否有图片引用相关的列
-    return ""
+    """提取引用文本注释（对应 C# JoinReferenceTextNotes）。
+
+    把「参考图」列里的单元格文本注记（如「参考竞品 A 的构图」）拼接进任务要求；
+    无参考列或单元格全空时返回空串。
+    """
+    parts = [row[idx].strip() for idx in col_map.get("reference", []) if idx < len(row) and row[idx].strip()]
+    return " ".join(parts)
 
 
 # ─── Naming & Display ─────────────────────────────────────────────────────────

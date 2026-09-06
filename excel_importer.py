@@ -37,6 +37,9 @@ class SheetData:
     name: str
     cells: List[CellData] = field(default_factory=list)
     images: Dict[str, bytes] = field(default_factory=dict)  # 图片引用 -> 图片字节
+    # 图片锚点：drawing 中每个图片的落点（1-based 行列；绝对锚点无行列时为 None）。
+    # 供 plan_ir_builder 按行号把参考图映射到任务（issue #52 / C# AddOperationReferencesFromMappedCells）。
+    image_anchors: List[Dict[str, Any]] = field(default_factory=list)
 
     def rows(self) -> List[List[str]]:
         """返回按行组织的单元格值（row-major），补齐为矩形网格。
@@ -52,6 +55,18 @@ class SheetData:
         for c in self.cells:
             grid[c.row - 1][c.col - 1] = c.value
         return [row for row in grid if any(cell for cell in row)]
+
+    def grid_row_numbers(self) -> List[int]:
+        """rows() 各网格行对应的原始 sheet 行号（1-based，升序）。
+
+        rows() 会过滤整行为空的行，原始行号随之丢失；此方法返回与 rows()
+        逐行对齐的原始行号列表，供图片锚点（原始行号）映射到网格行使用。
+        """
+        if not self.cells:
+            return []
+        present = {c.row for c in self.cells}
+        max_row = max(present)
+        return [row for row in range(1, max_row + 1) if row in present]
 
 
 class XlsxParser:
@@ -299,6 +314,18 @@ class XlsxParser:
         for anchor_tag in ["twoCellAnchor", "oneCellAnchor"]:
             anchors = root.findall(f".//{{{ns_xdr}}}{anchor_tag}")
             for anchor in anchors:
+                # 读取锚点起始单元格（xdr:from 的 col/row，0-based → 转 1-based）；
+                # 绝对锚点（absoluteAnchor）没有 from，行列保持 None（不参与行映射）。
+                anchor_row: Optional[int] = None
+                anchor_col: Optional[int] = None
+                from_elem = anchor.find(f"{{{ns_xdr}}}from")
+                if from_elem is not None:
+                    col_elem = from_elem.find(f"{{{ns_xdr}}}col")
+                    row_elem = from_elem.find(f"{{{ns_xdr}}}row")
+                    if col_elem is not None and col_elem.text:
+                        anchor_col = int(col_elem.text) + 1
+                    if row_elem is not None and row_elem.text:
+                        anchor_row = int(row_elem.text) + 1
                 # 查找 blip 元素 (a:blip)
                 for blip in anchor.iter(f"{{{ns_a}}}blip"):
                     # 获取图片引用 (r:embed)
@@ -311,6 +338,12 @@ class XlsxParser:
                     if image_data:
                         # 以 rId 作为 key 存储图片
                         sheet_data.images[embed_rid] = image_data
+                        # 保留锚点位置（issue #52）
+                        sheet_data.image_anchors.append({
+                            "rid": embed_rid,
+                            "row": anchor_row,
+                            "col": anchor_col,
+                        })
 
     def _resolve_image(
         self,

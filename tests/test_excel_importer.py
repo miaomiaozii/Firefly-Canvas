@@ -143,6 +143,28 @@ def make_xlsx_bytes(
     return buf.getvalue()
 
 
+    def test_image_anchor_preserved(self):
+        # issue #52：drawing 锚点行列必须保留（0-based → 1-based）
+        data = make_xlsx_bytes(
+            sheets={"S1": [["名称"], ["1、主图1"], ["占位行"], ["占位行2"]]},
+            with_image=True,
+        )
+        result = XlsxParser(data).parse()
+        sheet = result["sheets"]["S1"]
+        self.assertIn("rId10", sheet.images)
+        self.assertEqual(
+            sheet.image_anchors,
+            [{"rid": "rId10", "row": 3, "col": 2}],  # from col=1,row=2（0-based）
+        )
+
+    def test_grid_row_numbers_aligns_with_empty_filtering(self):
+        # rows() 过滤整行空行后，grid_row_numbers 给出保留行的原始行号
+        data = make_xlsx_bytes(sheets={"S1": [["名称", "要求"], [None, None], ["1、主图1", "白底"]]})
+        sheet = XlsxParser(data).parse()["sheets"]["S1"]
+        self.assertEqual(sheet.rows(), [["名称", "要求"], ["1、主图1", "白底"]])
+        self.assertEqual(sheet.grid_row_numbers(), [1, 3])
+
+
 class TestXlsxParser(unittest.TestCase):
     def test_shared_strings_and_numbers(self):
         shared = []
@@ -190,6 +212,27 @@ class TestXlsxParser(unittest.TestCase):
         images = result["sheets"]["S1"].images
         self.assertEqual(len(images), 1)
         self.assertEqual(next(iter(images.values())), b"\x89PNG-fake-image-bytes")
+
+    def test_image_anchor_preserved(self):
+        # issue #52：drawing 锚点行列必须保留（0-based → 1-based）
+        data = make_xlsx_bytes(
+            sheets={"S1": [["名称"], ["1、主图1"], ["占位行"], ["占位行2"]]},
+            with_image=True,
+        )
+        result = XlsxParser(data).parse()
+        sheet = result["sheets"]["S1"]
+        self.assertIn("rId10", sheet.images)
+        self.assertEqual(
+            sheet.image_anchors,
+            [{"rid": "rId10", "row": 3, "col": 2}],  # from col=1,row=2（0-based）
+        )
+
+    def test_grid_row_numbers_aligns_with_empty_filtering(self):
+        # rows() 过滤整行空行后，grid_row_numbers 给出保留行的原始行号
+        data = make_xlsx_bytes(sheets={"S1": [["名称", "要求"], [None, None], ["1、主图1", "白底"]]})
+        sheet = XlsxParser(data).parse()["sheets"]["S1"]
+        self.assertEqual(sheet.rows(), [["名称", "要求"], ["1、主图1", "白底"]])
+        self.assertEqual(sheet.grid_row_numbers(), [1, 3])
 
     def test_missing_shared_strings_ok(self):
         # 无 sharedStrings.xml（只有数字/内联）不应报错

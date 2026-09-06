@@ -17,11 +17,20 @@ from plan_ir_builder import (
 )
 
 
-def run_sheet(rows, sheet_name="图片方案0509"):
-    """对单个 sheet 的行运行主路径提取。"""
+def run_sheet(rows, sheet_name="图片方案0509", image_anchors=None):
+    """对单个 sheet 的行运行主路径提取；image_anchors 模拟 drawing 锚点行号映射。"""
     tasks = []
     counters = {}
-    add_tasks_from_rows(tasks, rows, sheet_name, counters, 0)
+    row_numbers = list(range(1, len(rows) + 1))
+    lookup = {}
+    for anchor in image_anchors or []:
+        row_no = anchor.get("row")
+        if not row_no or row_no not in row_numbers:
+            continue
+        lookup.setdefault(row_numbers.index(row_no), []).append(anchor)
+    for refs in lookup.values():
+        refs.sort(key=lambda a: (a.get("col") is None, a.get("col") or 0))
+    add_tasks_from_rows(tasks, rows, sheet_name, counters, 0, lookup)
     return tasks
 
 
@@ -92,8 +101,9 @@ class TestTaskExtraction(unittest.TestCase):
                 "图片方案B": _sheet("图片方案B", [["名称", "要求"], ["1、主图2", "x"]]),
             }
         }
-        tasks = extract_tasks(parse_result)
+        tasks, unmapped = extract_tasks(parse_result)
         self.assertEqual([t.task_id for t in tasks], ["excel_1", "excel_2", "excel_3"])
+        self.assertEqual(unmapped, [])
 
 
 class TestPromptInjectionDefense(unittest.TestCase):
@@ -144,14 +154,140 @@ class TestUnmappedFallback(unittest.TestCase):
         self.assertEqual(len(d["tasks"]), 2)
 
 
-def _sheet(name, rows):
-    """构造与 XlsxParser 输出同构的 SheetData 桩。"""
+def _sheet(name, rows, image_anchors=None):
+    """构造与 XlsxParser 输出同构的 SheetData 桩。
+
+    image_anchors: 可选，[{rid, row, col}]（1-based 行列；row=None 为绝对锚点），
+    模拟 excel_importer 保留的 drawing 锚点（issue #52）。
+    """
     class _Sheet:
         def __init__(self, rows_):
             self._rows = rows_
+            self.image_anchors = list(image_anchors or [])
         def rows(self):
             return [list(r) for r in self._rows]
+        def grid_row_numbers(self):
+            return list(range(1, len(self._rows) + 1))
     return _Sheet(rows)
+
+
+class TestReferenceImageMapping(unittest.TestCase):
+    """参考图映射（issue #52 / C# AddOperationReferencesFromMappedCells 数据级等价物）。"""
+
+    def test_anchor_row_maps_to_task(self):
+        rows = [
+            ["名称", "要求", "类型"],
+            ["1、主图1", "白底产品图", "主图"],
+            ["2、主图2", "场景图", "主图"],
+        ]
+        anchors = [{"rid": "rId10", "row": 2, "col": 4}, {"rid": "rId11", "row": 3, "col": 4}]
+        tasks = run_sheet(rows, image_anchors=anchors)
+        self.assertEqual(len(tasks), 2)
+        refs1 = tasks[0].operation_references
+        self.assertEqual(len(refs1), 1)
+        self.assertEqual(refs1[0].asset_id, "图片方案0509!2:rId10")
+        self.assertIn("行 2", refs1[0].source)
+        self.assertIsNone(refs1[0].url)
+        self.assertEqual(tasks[1].operation_references[0].asset_id, "图片方案0509!3:rId11")
+
+    def test_same_row_multiple_anchors_sorted_by_col(self):
+        rows = [
+            ["名称", "要求"],
+            ["1、主图1", "白底图"],
+        ]
+        anchors = [
+            {"rid": "rId2", "row": 2, "col": 6},
+            {"rid": "rId1", "row": 2, "col": 2},
+        ]
+        tasks = run_sheet(rows, image_anchors=anchors)
+        asset_ids = [r.asset_id for r in tasks[0].operation_references]
+        self.assertEqual(asset_ids, ["图片方案0509!2:rId1", "图片方案0509!2:rId2"])
+
+    def test_no_images_no_references(self):
+        rows = [
+            ["名称", "要求"],
+            ["1、主图1", "白底图"],
+        ]
+        tasks = run_sheet(rows)
+        self.assertEqual(tasks[0].operation_references, [])
+
+    def test_unmapped_and_absolute_anchors_reported(self):
+        parse_result = {
+            "sheets": {
+                "图片方案A": _sheet(
+                    "图片方案A",
+                    [["名称", "要求"], ["1、主图1", "白底图"], ["2、主图2", "场景图"]],
+                    image_anchors=[
+                        {"rid": "rId1", "row": 1, "col": 4},   # header 行 → 未映射
+                        {"rid": "rId2", "row": 2, "col": 4},   # 任务行 → 已映射
+                        {"rid": "rId3", "row": None, "col": None},  # 绝对锚点
+                    ],
+                )
+            }
+        }
+        tasks, unmapped = extract_tasks(parse_result)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(
+            [r.asset_id for r in tasks[0].operation_references],
+            ["图片方案A!2:rId2"],
+        )
+        self.assertEqual(len(unmapped), 2)
+        self.assertIn("rId1", unmapped[0])
+        self.assertIn("行 1", unmapped[0])
+        self.assertIn("rId3", unmapped[1])
+        self.assertIn("绝对锚点", unmapped[1])
+
+    def test_mapped_images_not_reported_unmapped(self):
+        parse_result = {
+            "sheets": {
+                "图片方案A": _sheet(
+                    "图片方案A",
+                    [["名称", "要求"], ["1、主图1", "白底图"]],
+                    image_anchors=[{"rid": "rId1", "row": 2, "col": 4}],
+                )
+            }
+        }
+        tasks, unmapped = extract_tasks(parse_result)
+        self.assertEqual(len(tasks[0].operation_references), 1)
+        self.assertEqual(unmapped, [])
+
+    def test_plan_notes_carry_unmapped(self):
+        plan = build_plan_ir(
+            "test.xlsx",
+            {
+                "sheets": {
+                    "图片方案A": _sheet(
+                        "图片方案A",
+                        [["名称", "要求"], ["1、主图1", "白底图"]],
+                        image_anchors=[{"rid": "rId9", "row": 1, "col": 4}],
+                    )
+                }
+            },
+        )
+        self.assertEqual(len(plan.notes), 1)
+        self.assertIn("rId9", plan.notes[0])
+        d = plan.to_dict()
+        self.assertEqual(len(d["tasks"][0]["operation_references"]), 0)
+
+
+class TestReferenceTextNotes(unittest.TestCase):
+    def test_reference_column_joined_into_requirements(self):
+        rows = [
+            ["名称", "要求", "参考图"],
+            ["1、主图1", "白底产品图", "参考竞品 A 的构图"],
+        ]
+        tasks = run_sheet(rows)
+        self.assertEqual(len(tasks), 1)
+        self.assertIn("参考竞品 A 的构图", tasks[0].requirements)
+
+    def test_reference_column_empty_no_notes(self):
+        rows = [
+            ["名称", "要求", "参考图"],
+            ["1、主图1", "白底产品图", ""],
+        ]
+        tasks = run_sheet(rows)
+        self.assertNotIn("参考图", tasks[0].requirements)
+
 
 
 if __name__ == "__main__":
