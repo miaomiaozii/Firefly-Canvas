@@ -503,6 +503,14 @@ def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int
 
 
 def main():
+    # 固定 stdout/stderr 为 UTF-8：本 runner 的输出（含中文 DOM 断言文本）会被
+    # tests/test_generation_log_reuse_ui.py 以 UTF-8 解码；若按 locale（中文
+    # Windows 为 GBK/cp936）编码会与之不匹配（或遇到 GBK 无法编码的字符直接崩溃）。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     browser = find_browser()
     with tempfile.TemporaryDirectory(prefix="firefly-issue12-project-library-") as root:
         results = []

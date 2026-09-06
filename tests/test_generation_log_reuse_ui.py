@@ -37,6 +37,10 @@ class GenerationHistoryDrawerUiTests(unittest.TestCase):
             cwd=ROOT,
             capture_output=True,
             text=True,
+            # 子 runner 已把 stdout/stderr 固定为 UTF-8；这里也显式用 UTF-8 解码，
+            # 避免中文 locale（GBK/cp936）父进程按 locale 解码子进程 UTF-8 输出而崩溃
+            # （json.loads(stdout=None) 的根因）。
+            encoding="utf-8",
             timeout=90,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout or completed.stderr)
