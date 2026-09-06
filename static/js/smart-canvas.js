@@ -21215,6 +21215,54 @@ smartArrangeBtn?.addEventListener('click', e => {
     e.stopPropagation();
     arrangeSelectedSmartNodes();
 });
+
+// Excel 导出：选中节点输出媒体 → zip 下载（issue #53）
+async function exportSelectedSmartNodes(){
+    const ids = selectedNodeIds();
+    if(!ids || !ids.length){
+        toast(tr('smart.exportNoSelection'));
+        return;
+    }
+    const projectId = (typeof canvas !== 'undefined' && (canvas?.project_id || canvas?.project)) || sourceProjectId || canvasId || '';
+    if(!projectId){
+        toast(tr('smart.exportNoProject'));
+        return;
+    }
+    try{
+        const res = await fetch('/api/excel/export-zip', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({project_id: projectId, node_ids: ids}),
+        });
+        if(!res.ok){
+            let detail = res.status;
+            try{
+                const j = await res.json();
+                detail = j?.detail || j?.message || detail;
+            }catch(e){}
+            toast(`${tr('smart.exportFailed')}: ${detail}`);
+            return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `excel_export_${Date.now()}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }catch(err){
+        toast(`${tr('smart.exportFailed')}: ${err?.message || err}`);
+    }
+}
+const smartExcelExportBtn = document.getElementById('smartExcelExportBtn');
+smartExcelExportBtn?.addEventListener('mousedown', e => e.stopPropagation());
+smartExcelExportBtn?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    exportSelectedSmartNodes();
+});
 window.onmousemove = e => {
     lastMouseWorld = screenToWorld(e);
     if(smartMinimapDrag){

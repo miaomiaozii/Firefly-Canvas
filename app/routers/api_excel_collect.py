@@ -1,11 +1,14 @@
-"""Excel 导入结果收集 API：打标 + 批量导出。"""
+"""Excel 导入结果收集 API：打标 + 批量导出（zip / 指定目录，issue #53/#58）。"""
 
 import asyncio
 import os
+import re
 import sys
 import json
 import zipfile
 import io
+from pathlib import Path
+from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
@@ -13,6 +16,11 @@ from typing import Dict, List, Optional, Any
 from app.core import ProjectNotFound, RevisionConflict
 
 router = APIRouter()
+
+# 输出媒体字段（结果节点 smart-image 的 images 列表项 asset_id，含图片/视频）；
+# 兼容顶层输出字段作为兑底。
+_OUTPUT_ASSET_KEYS = ("output_asset_id", "model_result_asset_id")
+_UNSAFE_NAME_CHARS = re.compile(r'[\\/:*?"<>|\s]+')
 
 
 async def _open_project_canvas(project_id: str) -> Dict[str, Any]:
@@ -172,4 +180,210 @@ async def collect_nodes(payload: CollectNodesRequest) -> Response:
         content=buffer.read(),
         media_type='application/zip',
         headers={'Content-Disposition': 'attachment; filename=excel_import_results.zip'}
+    )
+
+
+# ─── #53/#58：导出选中节点输出媒体（zip / 指定目录）───────────────────────────
+
+
+class ExportZipRequest(BaseModel):
+    """导出请求。
+
+    export_dir（issue #58）：可选。为空 → 返回 zip 流给浏览器（默认，向后兼容）；
+    非空 → 写入服务器指定目录（必须位于项目库根之下，拒绝路径穿越）。
+    """
+    project_id: str
+    node_ids: List[str]
+    include_unselected: bool = False
+    export_dir: Optional[str] = None
+    filename: Optional[str] = None
+
+
+def _content_disposition(filename: str) -> str:
+    """构建 Content-Disposition；非 latin-1 文件名走 RFC 5987（filename*=UTF-8''）。
+
+    HTTP 头必须是 latin-1，CJK 文件名需 percent-encode，同时提供 ASCII 兑底名。
+    """
+    try:
+        filename.encode("latin-1")
+        return f"attachment; filename={filename}"
+    except UnicodeEncodeError:
+        quoted = quote(filename, safe="")
+        ascii_name = "excel_export.zip"
+        return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'' + quoted
+
+
+def _node_output_assets(node: Dict[str, Any]) -> List[Dict[str, str]]:
+    """收集节点输出媒体（asset_id + kind）。
+
+    结果节点（smart-image）的生成结果统一写入 images 列表（complete_media_generation，
+    图片与视频皆然，每项含 asset_id/kind）；顶层输出字段作为兑底。
+    """
+    out: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(asset_id: Any, kind: str) -> None:
+        aid = str(asset_id or "").strip()
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append({"asset_id": aid, "kind": kind or "image"})
+
+    for item in node.get("images") or []:
+        if isinstance(item, dict):
+            _add(item.get("asset_id"), str(item.get("kind") or ""))
+    for key in _OUTPUT_ASSET_KEYS:
+        if isinstance(node.get(key), str):
+            _add(node.get(key), "image")
+    return out
+
+
+def _export_base_name(node: Dict[str, Any], ordinal: int) -> str:
+    """导出文件基名：{task_id}_{section}_{no}，清洗非法字符。
+
+    任务标识取自展开计划时挂到节点的 excel_task 元数据（layout_engine：
+    excel_task_id/excel_section/excel_task_data.display_no），缺失时兑底 node id / 序号。
+    """
+    task_data = node.get("excel_task_data")
+    if not isinstance(task_data, dict):
+        task_data = {}
+    task_id = (
+        str(node.get("excel_task_id") or "").strip()
+        or str(task_data.get("task_id") or "").strip()
+        or str(node.get("id") or "").strip()
+        or "node"
+    )
+    section = (
+        str(node.get("excel_section") or "").strip()
+        or str(task_data.get("section") or "").strip()
+    )
+    no = task_data.get("display_no") or task_data.get("section_index") or ordinal
+    base = "_".join(p for p in (task_id, section, str(no)) if p)
+    base = _UNSAFE_NAME_CHARS.sub("_", base).strip("_")
+    return base or f"node_{ordinal}"
+
+
+def _default_projects_root() -> Path:
+    from firefly_projects import default_projects_root
+    return default_projects_root()
+
+
+def _resolve_export_dir(raw: str) -> Path:
+    """#58：校验导出目录（白名单 = 项目库根之下；拒绝穿越/绝对路径逃逸/空值）。"""
+    text = str(raw or "").strip().strip('"').strip("'")
+    if not text:
+        raise HTTPException(status_code=400, detail="导出目录不能为空")
+    store = getattr(_app_main, "FIREFLY_PROJECT_STORE", None)
+    root = Path(getattr(store, "root", None) or _default_projects_root()).resolve()
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        candidate = candidate.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"无效的导出目录: {exc}") from exc
+    if os.path.commonpath([str(root), str(candidate)]) != str(root):
+        raise HTTPException(
+            status_code=400,
+            detail=f"导出目录必须位于项目库根之下: {root}",
+        )
+    return candidate
+
+
+@router.post("/api/excel/export-zip")
+async def export_zip(payload: ExportZipRequest) -> Any:
+    """导出选中节点的全部输出媒体（图片/视频）。
+
+    - 文件以任务 ID 命名：{task_id}_{section}_{no}.{ext}（issue #53）
+    - export_dir 为空：返回 zip 流给浏览器（默认，向后兼容）
+    - export_dir 非空：写入服务器指定目录并返回 JSON（issue #58）
+    """
+    project_id = payload.project_id
+
+    canvas, _ = await _open_project_canvas(project_id)
+
+    selected = []
+    for node_id in payload.node_ids:
+        node = next((n for n in canvas.get("nodes", []) if n.get("id") == node_id), None)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
+        selected.append(node)
+
+    # 收集 (node, asset_id, kind) 并解析媒体文件；不存在的媒体（已删除等）跳过
+    entries = []  # [node, asset_id, kind, Path]
+    for ordinal, node in enumerate(selected, start=1):
+        for item in _node_output_assets(node):
+            try:
+                record = await asyncio.to_thread(
+                    _app_main.project_store_call, "media_record", project_id, item["asset_id"]
+                )
+            except Exception:
+                continue
+            path = Path(str(record.get("path") or ""))
+            if path.is_file():
+                entries.append([node, item["asset_id"], item.get("kind", "image"), path])
+
+    if not entries:
+        raise HTTPException(status_code=404, detail="选中节点没有可导出的输出媒体")
+
+    # 命名 + 去重
+    used_names = set()
+    manifest = []
+    for ordinal, (node, asset_id, kind, _path) in enumerate(entries, start=1):
+        ext = _path.suffix or (".mp4" if kind == "video" else ".png")
+        base = _export_base_name(node, ordinal)
+        name = f"{base}{ext}"
+        n = 2
+        while name in used_names:
+            name = f"{base}_{n}{ext}"
+            n += 1
+        used_names.add(name)
+        manifest.append({
+            "file": name,
+            "asset_id": asset_id,
+            "kind": kind,
+            "node_id": str(node.get("id") or ""),
+        })
+
+    if payload.export_dir:
+        # #58：写入服务器目录
+        out_dir = _resolve_export_dir(payload.export_dir)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            written = []
+            for (node, asset_id, kind, path), entry in zip(entries, manifest):
+                target = out_dir / entry["file"]
+                target.write_bytes(path.read_bytes())
+                written.append(str(target))
+        except HTTPException:
+            raise
+        except (OSError, PermissionError) as exc:
+            raise HTTPException(status_code=500, detail=f"导出目录写入失败: {exc}") from exc
+        return {
+            "success": True,
+            "mode": "dir",
+            "export_dir": str(out_dir),
+            "count": len(written),
+            "files": written,
+            "manifest": manifest,
+        }
+
+    # 默认：zip 流
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for (node, asset_id, kind, path), entry in zip(entries, manifest):
+            zipf.write(path, arcname=entry["file"])
+        zipf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        zipf.writestr("nodes.json", json.dumps(selected, ensure_ascii=False, indent=2))
+
+    buffer.seek(0)
+    stamp = int(_app_main.now_ms())
+    raw_name = str(payload.filename or f"excel_export_{stamp}").strip()
+    zip_filename = re.sub(r"\.{2,}", ".", _UNSAFE_NAME_CHARS.sub("_", raw_name)).strip("._") or "excel_export"
+    if not zip_filename.lower().endswith(".zip"):
+        zip_filename += ".zip"
+    disposition = _content_disposition(zip_filename)
+    return Response(
+        content=buffer.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": disposition},
     )
