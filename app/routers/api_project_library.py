@@ -3007,6 +3007,39 @@ async def trash_firefly_project(project_id: str, request: Request):
     except ProjectStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+@router.get('/api/project-library/{project_id}/media/unused')
+async def list_project_media_unused(project_id: str):
+    """检测项目内未被任何画布节点/历史引用的媒体资源（issue #56）。
+
+    引用规则与删除清理（_collect_asset_ids）和自动清理
+    （delete_media_if_unreferenced）一致；回收区（trash）内的
+    资源本就不在媒体索引中，不会被列出。
+    """
+    try:
+        assert_project_owner_admissible(project_id)
+        def build_unused() -> List[Dict[str, Any]]:
+            project_data = _app_main.project_store_call('open_project', project_id) or {}
+            referenced = ProjectStore._collect_asset_ids(project_data)
+            items = []
+            for record in _app_main.project_store_call('list_media', project_id) or []:
+                asset_id = str(record.get('asset_id') or '').strip()
+                if not asset_id or asset_id in referenced:
+                    continue
+                items.append({
+                    'asset_id': asset_id,
+                    'name': str(record.get('name') or record.get('filename') or ''),
+                    'kind': str(record.get('kind') or ''),
+                    'mime_type': str(record.get('mime_type') or ''),
+                    'size': record.get('size'),
+                    'created_at': record.get('created_at'),
+                })
+            return items
+        return {'items': await asyncio.to_thread(build_unused)}
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 @router.get('/api/project-library/{project_id}/media/{asset_id}')
 async def get_project_media(project_id: str, asset_id: str):
     def build_response() -> ProjectMediaFileResponse:
@@ -3058,6 +3091,7 @@ async def get_project_media_references(project_id: str, asset_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 class ProjectMediaDeleteRequest(BaseModel):
     """用户主动删除资源库媒体（硬删除 + 清理项目内直接引用，见 ADR 0015）。"""
