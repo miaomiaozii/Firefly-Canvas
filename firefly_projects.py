@@ -2133,6 +2133,40 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             media_kind="image",
         )
 
+    def attach_media_generation_provider_task(
+        self,
+        project_id: str,
+        task_id: str,
+        provider_task: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """把服务商侧任务标识（task_id/提交地址等）持久化到节点的 pendingTasks 条目。
+
+        用于服务重启后按 provider task id 重新轮询（避免重复计费，#82）。
+        只写元数据、不动媒体/历史；任务已结束（pendingTasks 无此 task）时返回 None。
+        """
+        project_id = _clean_project_id(project_id)
+        task_id = str(task_id or "").strip()
+        if not task_id or not isinstance(provider_task, dict) or not provider_task:
+            return None
+        with self._lock:
+            opened = self.open_project(project_id)["canvas"]
+            canvas = copy.deepcopy(opened)
+            canvas.pop("logs", None)
+            found = False
+            for node in canvas.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                for item in node.get("pendingTasks") or []:
+                    if isinstance(item, dict) and str(item.get("taskId") or "") == task_id:
+                        item["provider_task"] = copy.deepcopy(provider_task)
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                return None
+            return self._commit_generation_canvas(project_id, canvas)
+
     def _end_media_generation(
         self,
         project_id: str,

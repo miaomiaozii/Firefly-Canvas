@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import firefly_projects
-from firefly_projects import InvalidMutation, ProjectStore, ProjectStoreError, RevisionConflict
+from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
 
 
 def make_fly_package(
@@ -2305,6 +2305,59 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         # 恢复后再删除（幂等保护：重复恢复报错）
         with self.assertRaises(ProjectStoreError):
             self.store.restore_trash_media(project["id"], orphan["asset_id"], base_revision=revision + 1)
+
+
+    def test_archive_unreferenced_media_node_delete_cascade(self):
+        """#74/D1: 级联归档——节点/单图删除后无引用的媒体移入回收区（7 天可恢复）。"""
+        project = self.store.create_project("级联归档")
+        asset = self.store.import_media(project["id"], b"cascade-bytes", "cascade.png", "image/png")
+        result = self.store.archive_unreferenced_media(project["id"], asset["asset_id"], reason="node-delete")
+        self.assertEqual(result["archived"], asset["asset_id"])
+        self.assertFalse(result["file_missing"])
+        self.assertFalse(any(item["asset_id"] == asset["asset_id"] for item in self.store.list_media(project["id"])))
+        entry = next(item for item in self.store.list_deleted_media(project["id"]) if item["asset_id"] == asset["asset_id"])
+        self.assertEqual(entry["reason"], "node-delete")
+        self.assertGreater(entry["expires_at"], entry["deleted_at"])
+        self.assertFalse((self.root / project["id"] / "media" / asset["filename"]).is_file())
+        self.assertTrue((self.root / project["id"] / "trash" / "media" / asset["filename"]).is_file())
+        # 回收区条目可恢复（通用恢复端点同一路径）
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        restored = self.store.restore_trash_media(project["id"], asset["asset_id"], base_revision=revision)
+        self.assertEqual(restored["restored"], asset["asset_id"])
+        self.assertTrue(any(item["asset_id"] == asset["asset_id"] for item in self.store.list_media(project["id"])))
+
+    def test_archive_unreferenced_media_referenced_rejected(self):
+        """#74/D1: 仍被画布节点或历史记录引用 → 拒收（前端 409 后保留在库）。"""
+        project = self.store.create_project("归档引用检查")
+        node_ref = self.store.import_media(project["id"], b"nref-bytes", "nref.png", "image/png")
+        hist_ref = self.store.import_media(project["id"], b"href-bytes", "href.png", "image/png")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "image", "images": [{"asset_id": node_ref["asset_id"]}]}},
+            {"op": "set_canvas_meta", "logs": [{
+                "id": "log-1", "status": "succeeded",
+                "outputs": [{"asset_id": hist_ref["asset_id"], "kind": "image"}],
+            }]},
+        ])
+        with self.assertRaises(ProjectStoreError):
+            self.store.archive_unreferenced_media(project["id"], node_ref["asset_id"], reason="node-delete")
+        with self.assertRaises(ProjectStoreError):
+            self.store.archive_unreferenced_media(project["id"], hist_ref["asset_id"], reason="node-delete")
+        ids = [item["asset_id"] for item in self.store.list_media(project["id"])]
+        self.assertIn(node_ref["asset_id"], ids)
+        self.assertIn(hist_ref["asset_id"], ids)
+
+    def test_archive_unreferenced_media_boundaries(self):
+        """#74/D1: 非法标识/媒体不存在报错；文件缺失时仅清索引（归档成功）。"""
+        project = self.store.create_project("归档边界")
+        with self.assertRaises(ProjectStoreError):
+            self.store.archive_unreferenced_media(project["id"], "bad id!!", reason="node-delete")
+        with self.assertRaises(ProjectNotFound):
+            self.store.archive_unreferenced_media(project["id"], "no-such-asset", reason="node-delete")
+        asset = self.store.import_media(project["id"], b"ghost-bytes", "ghost.png", "image/png")
+        (self.root / project["id"] / "media" / asset["filename"]).unlink()
+        result = self.store.archive_unreferenced_media(project["id"], asset["asset_id"], reason="node-delete")
+        self.assertTrue(result["file_missing"])
+        self.assertFalse(any(item["asset_id"] == asset["asset_id"] for item in self.store.list_media(project["id"])))
 
 
 if __name__ == "__main__":

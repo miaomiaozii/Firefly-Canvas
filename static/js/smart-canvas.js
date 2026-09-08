@@ -6522,19 +6522,26 @@ function bindAssetItemEvents(){
         btn.onclick = async e => {
             e.preventDefault(); e.stopPropagation();
             btn.disabled = true;
-            await deleteLocalAssetFromPanel(btn.dataset.deleteLocalAsset || '');
+            try {
+                await deleteLocalAssetFromPanel(btn.dataset.deleteLocalAsset || '');
+            } finally {
+                btn.disabled = false;
+            }
         };
     });
     assetGrid.querySelectorAll('[data-delete-asset]').forEach(btn => {
         btn.onclick = async e => {
             e.preventDefault(); e.stopPropagation();
+            // #66: 全局库单删=硬删，先确认（声明不可恢复）。
+            if(!confirm(tr('smart.assetDeleteGlobalConfirm'))) return;
             btn.disabled = true;
             try {
                 const data = await fetch(`/api/asset-library/items/${encodeURIComponent(btn.dataset.deleteAsset)}`, {method:'DELETE'}).then(r => r.json());
                 setAssetLibraryFromResponse(data);
             } catch(err){
+                toast(err.message || tr('smart.assetDeleteFail'));
+            } finally {
                 btn.disabled = false;
-                toast(err.message || tr('smart.assetAddFail'));
             }
         };
     });
@@ -6561,7 +6568,18 @@ function bindAssetItemEvents(){
                 if(references.length > 0 || refCheckFailed){
                     // 有引用或检查失败，显示警告对话框
                     const confirmed = await showAssetDeleteWarningDialog(assetId, references, refCheckFailed);
+                    if(confirmed === 'wide'){
+                        // #70 (D4): 项目范围删原图入口——删原图+全部引用（后端 /original/delete-project-wide）
+                        await deleteProjectOriginalWide(assetId, btn);
+                        return;
+                    }
                     if(!confirmed){
+                        btn.disabled = false;
+                        return;
+                    }
+                } else {
+                    // #66: 无引用时硬删同样需要确认（声明不可恢复）
+                    if(!confirm(tr('smart.assetDeleteNoRefConfirm'))){
                         btn.disabled = false;
                         return;
                     }
@@ -7040,6 +7058,7 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
             <div class="asset-delete-warning-dialog">
                 <h3>${title}</h3>
                 <p>${desc}</p>
+                <p>${tr('smart.deleteIrrecoverable')}</p>
                 ${!checkFailed && references.length > 0 ? `
                 <div class="asset-delete-warning-list">
                     ${references.map(ref => `
@@ -7051,6 +7070,7 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
                 </div>` : ''}
                 <div class="asset-delete-warning-actions">
                     <button class="asset-delete-warning-cancel">${tr('common.cancel')}</button>
+                    ${!checkFailed && references.length > 1 ? `<button class="asset-delete-warning-wide" title="${escapeHtml(tr('smart.deleteProjectWideConfirm'))}">${tr('smart.deleteProjectWideButton')}</button>` : ''}
                     <button class="asset-delete-warning-confirm">${tr('smart.deleteConfirmAnyway')}</button>
                 </div>
             </div>
@@ -7074,10 +7094,21 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
             resolve(false);
         };
         
+        // #70 (D4): 项目范围删原图（仅多节点引用时显示）
+        const wideBtn = backdrop.querySelector('.asset-delete-warning-wide');
+        if(wideBtn){
+            wideBtn.onclick = () => {
+                if(confirm(tr('smart.deleteProjectWideConfirm'))){
+                    backdrop.remove();
+                    resolve('wide');
+                }
+            };
+        }
+        
         // 绑定确认按钮
         backdrop.querySelector('.asset-delete-warning-confirm').onclick = () => {
             backdrop.remove();
-            resolve(true);
+            resolve('delete');
         };
         
         // 点击背景关闭
@@ -7093,6 +7124,39 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
 function removeProjectMediaFromCache(assetId){
     if(!assetId) return;
     projectMediaLibrary.items = (projectMediaLibrary.items || []).filter(item => item.asset_id !== assetId);
+}
+
+// #74 (D1): 级联归档——节点/单图删除后，无其他引用的媒体移入回收区（7 天可恢复），
+// 替代「留在资源库变孤儿、等用户自己去未使用面板清理」。
+async function archiveProjectMediaAsset(assetId, reason){
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    if(!projectId || !assetId) return {ok:false};
+    const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}/archive`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({reason: reason || 'node-delete'})
+    });
+    if(!res.ok) return {ok:false, status:res.status};
+    return {ok:true};
+}
+async function cascadeArchiveDeletedMedia(images){
+    const assetIds = new Set();
+    (images || []).forEach(img => { const id = img?.asset_id || ''; if(id) assetIds.add(id); });
+    if(!assetIds.size) return;
+    const stillReferenced = new Set();
+    nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
+    const toArchive = [...assetIds].filter(id => !stillReferenced.has(id));
+    if(!toArchive.length) return;
+    await Promise.all(toArchive.map(async assetId => {
+        try {
+            const result = await archiveProjectMediaAsset(assetId, 'node-delete');
+            if(result.ok){
+                removeProjectMediaFromCache(assetId);
+                if(assetLibraryIsProject()) renderAssetLibrary();
+            }
+        } catch(err) { /* 服务端判定仍被引用（409）或其他失败：保留在库，不阻断删除 */ }
+    }));
+    refreshSmartProjectMediaTrashButton();
 }
 function focusAndSelectNode(nodeId){
     // 滚动到节点并选中
@@ -7195,6 +7259,8 @@ async function deleteLocalAssetFromPanel(itemId){
     const item = (activeAssetCategory()?.items || []).find(x => x.id === itemId)
         || (localAssetLibrary.items || []).find(x => x.id === itemId || x.file === itemId);
     if(!item) return;
+    // #66: 本地素材删=磁盘硬删，先确认（声明不可恢复）。
+    if(!confirm(tr('smart.localAssetDeleteConfirm'))) return;
     try {
         const data = await fetch('/api/local-assets/delete', {
             method:'POST',
@@ -7210,6 +7276,41 @@ async function deleteLocalAssetFromPanel(itemId){
         toast(data.deleted?.length ? tr('smart.localAssetDeleted') : tr('smart.localAssetNotFound'));
     } catch(err){
         toast(err.message || tr('smart.localAssetDeleteFail'));
+    }
+}
+// #70 (D4): 项目范围删原图——删除生成原图+项目中全部引用（节点/历史）。
+// 后端端点按 ADR-0014 早已存在，此前无前端入口；此处为统一删除对话框补充显式选项。
+async function deleteProjectOriginalWide(assetId, btn){
+    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+    if(!projectId || !assetId) return;
+    if(btn){ btn.disabled = true; btn.setAttribute('aria-busy','true'); }
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/delete-project-wide`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({asset_id: assetId, base_revision: Number(canvas?.revision || 0)})
+        });
+        const data = await res.json().catch(() => ({}));
+        if(!res.ok){
+            const detail = data.detail || {};
+            const message = (typeof detail === 'object' && detail.message) ? detail.message
+                : (typeof detail === 'string' ? detail : tr('smart.assetDeleteFail'));
+            // 409 冲突：先同步服务端最新画布再报错，避免画布状态过期连锁冲突
+            if(res.status === 409 && typeof detail === 'object' && detail.canvas) syncProjectCanvasFromResponse(detail.canvas);
+            toast(message);
+            return;
+        }
+        if(data.canvas) syncProjectCanvasFromResponse(data.canvas);
+        // 原图已硬删：清本地缓存 + 剔除含该媒体的 undo/redo 快照（P0-4 防护）
+        removeProjectMediaFromCache(assetId);
+        if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
+        if(assetLibraryIsProject()) renderAssetLibrary();
+        refreshSmartProjectMediaTrashButton();
+        toast(tr('smart.assetDeleted'));
+    } catch(err){
+        toast(err?.message || tr('smart.assetDeleteFail'));
+    } finally {
+        if(btn){ btn.disabled = false; btn.removeAttribute('aria-busy'); }
     }
 }
 function canvasImageDragPayload(node, index=0){
@@ -9610,10 +9711,13 @@ function mergeSmartActiveHistoryTaskLogs(serverLogs, activeTaskLogs){
         ...(activeTaskLogs || []).filter(item => !serverLogIds.has(String(item?.id || ''))),
     ]);
 }
+let smartLogDeletingBusy = false;
 async function deleteCanvasLogEntry(logId, deleteMedia=false){
     if(!canvas || !canvasId || !logId) return;
+    if(smartLogDeletingBusy) return;
     const confirmText = deleteMedia ? tr('canvas.deleteLogMediaConfirm') : tr('canvas.deleteLogConfirm');
     if(!confirm(confirmText)) return;
+    smartLogDeletingBusy = true;
     const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs, logId);
     try {
         if(debouncedSaveTimer){
@@ -9643,7 +9747,16 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             body:JSON.stringify(payload)
         });
         const data = await res.json().catch(() => ({}));
-        if(!res.ok) throw new Error(data.detail || tr('canvas.logDeleteFailed'));
+        if(!res.ok){
+            // #68: 409 = 画布版本冲突（revision 已被其他操作推进）——同步服务端最新画布后
+            // 停止本次删除，不让过期状态继续连锁冲突。
+            if(res.status === 409 && data.detail?.canvas){
+                syncProjectCanvasFromResponse(data.detail.canvas);
+                toast(typeof data.detail?.message === 'string' ? data.detail.message : tr('canvas.logDeleteConflict'));
+                return;
+            }
+            throw new Error(typeof data.detail === 'string' ? data.detail : tr('canvas.logDeleteFailed'));
+        }
         if(projectHistory && data.canvas) data.canvas = hydrateProjectMediaReferences(data.canvas);
         canvas.logs = mergeSmartActiveHistoryTaskLogs(
             data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId),
@@ -9671,6 +9784,8 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
         toast(notes.join(' · '));
     } catch(err) {
         toast(err?.message || tr('canvas.logDeleteFailed'));
+    } finally {
+        smartLogDeletingBusy = false;
     }
 }
 function captureSmartOriginalDeletionUiState(logId, outputId, outputIndex=-1){
@@ -9998,7 +10113,7 @@ async function purgeSmartProjectMediaTrash(){
         const projectId = canvas.project_id || canvas.project || canvasId;
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media`, {method:'DELETE'});
         const data = await response.json().catch(() => ({}));
-        if(!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : tr('canvas.originalDeleteFailed'));
+        if(!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : tr('smart.trashPurgeFailed'));
         // #73: 清空后回收区条目全部消失，恢复目标不复存在——清掉本项目所有
         // projectOriginalDelete 令牌。此前只清 undoStack，redoStack 里的残留令牌
         // 重做后按「撤销」会报误导错误。
@@ -10016,7 +10131,8 @@ async function purgeSmartProjectMediaTrash(){
         // #73: 面板打开时 await 重开（列表已空），不再 400ms 盲等显示旧列表。
         if(smartTrashBackdrop && !smartTrashBackdrop.hidden) await openSmartTrashPanel();
     } catch(err){
-        toast(err?.message || tr('canvas.originalDeleteFailed'));
+        // #69: 失败文案匹配「清空回收区」语义，而非「删原图失败」
+        toast(err?.message || tr('smart.trashPurgeFailed'));
     } finally {
         smartHistoryPurgeTrash.disabled = false;
         smartHistoryPurgeTrash.setAttribute('aria-busy', 'false');
@@ -10033,7 +10149,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const prompt = String(log.prompt || '').trim();
         const taskId = log.task_id || log.taskId || req.task_id || req.taskId || req.prompt_id || req.promptId || '';
         const backend = req.provider_id || req.providerId || req.backend || '';
-        const projectTask = String(taskId || '').startsWith('project_img_');
+        const projectTask = String(taskId || '').startsWith('project_img_') || String(taskId || '').startsWith('project_vid_');
         const sizeSummary = smartLogSizeSummary(log, outputs);
         const resolutionTier = smartLogResolutionTier(log, outputs);
         const imageOutputCount = smartLogImageOutputs(log).length;
@@ -10473,7 +10589,14 @@ function bindSmartHistoryWindow(){
             event.preventDefault();
             event.stopPropagation();
             const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            void controlProjectImageTask(logId, button.dataset.logRetryTask || '', 'retry', button);
+            const retryTaskId = button.dataset.logRetryTask || '';
+            if(String(retryTaskId).startsWith('project_vid_')){
+                // 视频暂无服务端重试路由：走节点级重新生成（重建提交）。
+                const nodeId = smartLogEntryById(logId)?.result_node_id || '';
+                void retryFailedGeneration(nodeId);
+                return;
+            }
+            void controlProjectImageTask(logId, retryTaskId, 'retry', button);
         };
     });
     smartLogList.querySelectorAll('[data-log-download-original]').forEach(button => {
@@ -10522,7 +10645,13 @@ function bindSmartHistoryWindow(){
         button.onclick = e => {
             e.stopPropagation();
             const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            deleteCanvasLogEntry(logId, button.dataset.logDelete === 'media');
+            if(!logId) return;
+            button.disabled = true;
+            button.setAttribute('aria-busy','true');
+            deleteCanvasLogEntry(logId, button.dataset.logDelete === 'media').finally(() => {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            });
         };
     });
     smartLogList.querySelectorAll('button').forEach(button => {
@@ -11203,13 +11332,58 @@ function localEditBodyHtml(node){
         ${node.output_asset_id ? `<div class="local-edit-status" role="status">已生成合成结果</div>` : '<div class="local-edit-status" role="status">等待输入</div>'}
     </div>`;
 }
-function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[]){
+function smartProjectTaskInfo(node){
+    // #81：节点上是否存在项目级生成任务（图片/视频）——供占位面板渲染取消按钮与已等待时长。
+    if(!node) return null;
+    for(const task of smartPendingTasks(node)){
+        const tid = String(task?.taskId || '');
+        if(tid.startsWith('project_img_') || tid.startsWith('project_vid_')){
+            return {
+                taskId:tid,
+                kind:tid.startsWith('project_vid_') ? 'video' : 'image',
+                startedAt:Number(task?.progress?.started_at) || Number(node?.runStartedAt) || Number(task?.createdAt) || 0
+            };
+        }
+    }
+    return null;
+}
+async function cancelNodeGenerationTask(nodeId, button=null){
+    const node = nodes.find(item => String(item?.id || '') === String(nodeId || ''));
+    const info = node ? smartProjectTaskInfo(node) : null;
+    if(!info?.taskId) return;
+    if(!window.confirm(tr('smart.nodeCancelConfirm'))) return;
+    if(button){ button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try {
+        await controlProjectImageTask('', info.taskId, 'cancel', button);
+    } catch(err){
+        if(button){ button.disabled = false; button.removeAttribute('aria-busy'); }
+        toast(err?.message || tr('smart.nodeCancelFailed'));
+    }
+}
+setInterval(() => {
+    // #81：轻量秒级刷新占位面板的「已等待」文案（只改文本节点，不触发画布重渲）。
+    document.querySelectorAll('[data-elapsed-since]').forEach(el => {
+        const since = Number(el.dataset.elapsedSince);
+        if(!since) return;
+        const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));
+        el.textContent = sec < 60 ? tr('canvas.taskElapsedSec').replace('{n}', String(sec)) : sec < 3600 ? tr('canvas.taskElapsedMin').replace('{n}', String(Math.floor(sec / 60))) : tr('canvas.taskElapsedHour').replace('{n}', String(Math.floor(sec / 3600)));
+    });
+}, 1000);
+function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[], taskInfo=null){
     // 占位数量按真实并发数渲染（上限 8），与 pendingBoxSize 的网格公式保持一致，
     // 避免「8 张并发只显示 4 个占位」以及框尺寸与网格不一致。
     const total = Math.max(1, Math.min(8, Number(count) || 1));
     const label = queued ? '排队中' : tr('canvas.generating');
     const normalizedProgress = Object.keys(progress || {}).length ? progress : {phase:queued ? 'queued' : 'provider_generating', label:queued ? '排队' : '模型生成', phase_index:queued ? 0 : 3, phase_count:6};
-    const copy = `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span></span>${generationStageProgressHtml(normalizedProgress)}</div>`;
+    // #81：项目级任务（图片/视频）在占位面板上直接提供取消按钮 + 已等待时长，
+    // 不必进生图历史抽屉找按钮；长视频渲染时不再「无限干等无任何反馈」。
+    let cancelBtnHtml = '';
+    let elapsedHtml = '';
+    if(taskInfo?.taskId){
+        cancelBtnHtml = `<button type="button" class="generation-cancel-btn" data-node-cancel-task="${escapeAttr(taskInfo.taskId)}" title="${escapeAttr(tr('smart.nodeCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('smart.nodeCancelTask'))}</span></button>`;
+        if(Number(taskInfo.startedAt) > 0) elapsedHtml = `<span class="generation-placeholder-elapsed" data-elapsed-since="${Number(taskInfo.startedAt)}"></span>`;
+    }
+    const copy = `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span>${elapsedHtml}</span>${generationStageProgressHtml(normalizedProgress)}${cancelBtnHtml}</div>`;
     if(total === 1){
         if(completedImgs[0]){
             const first = imageForDisplay(completedImgs[0]);
@@ -11270,7 +11444,7 @@ function nodeBodyHtml(node, layout){
     }
     if(node.queued && imgs.length === 0 && !node.pending){
         const queuedProgress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
-        return generationPlaceholderHtml(layout, 1, true, queuedProgress);
+        return generationPlaceholderHtml(layout, 1, true, queuedProgress, [], [], smartProjectTaskInfo(node));
     }
     if(node.pending){
         // 以提交时固化的 _batchTotal 渲染占位格（写回期间格子数/几何不变），已写回的图按序填入
@@ -11278,7 +11452,7 @@ function nodeBodyHtml(node, layout){
         const progress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
         const completed = (imgs || []).slice(0, count);
         const candidatePhases = Array.isArray(progress?.candidate_phases) ? progress.candidate_phases : [];
-        return generationPlaceholderHtml(layout, count, false, progress, completed, candidatePhases);
+        return generationPlaceholderHtml(layout, count, false, progress, completed, candidatePhases, smartProjectTaskInfo(node));
     }
     if(imgs.length > 1){
         const visibleRows = Math.max(1, Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, Number(layout.visibleRows || layout.rows || 1)));
@@ -13260,6 +13434,17 @@ function bindNodeEvents(){
                 deleteImage(id, Number(btn.dataset.imageIndex));
             });
         });
+        el.querySelectorAll('[data-node-cancel-task]').forEach(btn => {
+            btn.addEventListener('mousedown', e => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+            }, true);
+            btn.addEventListener('click', e => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                clearImageClickTimer();
+                suppressImageClickUntil = Date.now() + 260;
+                void cancelNodeGenerationTask(id, btn);
+            });
+        });
         el.querySelectorAll('.image-name-badge').forEach(badge => {
             const item = badge.closest('[data-image-index]');
             const targetNodeId = item?.dataset.refNodeId || id;
@@ -13561,6 +13746,7 @@ function deleteNode(id){
     nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
+    const removedNodes = nodes.filter(node => deleteIds.has(node.id));
     nodes = nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = nodes;
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
     nodes.forEach(node => {
@@ -13572,12 +13758,15 @@ function deleteNode(id){
     if(deleteIds.has(selectedImage.nodeId)) selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
+    // #74 (D1): 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
+    void cascadeArchiveDeletedMedia(removedNodes.flatMap(node => node.images || []));
 }
 function clearNodeMediaBeforeDelete(id){
     const node = nodes.find(n => n.id === id);
     if(!node || (node.type && node.type !== 'smart-image')) return false;
     const hadMedia = Boolean((node.images || []).length || node.pending);
     if(!hadMedia) return false;
+    const clearedImages = (node.images || []).slice();
     pushUndo();
     node.images = [];
     node.pending = 0;
@@ -13595,9 +13784,14 @@ function clearNodeMediaBeforeDelete(id){
     selectedIds = [];
     render();
     scheduleSave();
+    // #74 (D1): 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
+    void cascadeArchiveDeletedMedia(clearedImages);
     return true;
 }
 function deleteNodeFromButton(id){
+    // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
+    const buttonNode = nodes.find(n => n.id === id);
+    if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
     if(clearNodeMediaBeforeDelete(id)) return;
     deleteNode(id);
 }
@@ -13779,7 +13973,10 @@ function updateLoopInsertPreview(){
 function deleteImage(id, imageIndex){
     const node = nodes.find(n => n.id === id);
     if(!node || imageIndex < 0) return;
+    // #65: 生成中的节点禁止删单图（写回仍在飞，删图会破坏批次几何/引用）。
+    if(smartNodeInFlight(node)){ toast(tr('smart.nodeDeleteBusy')); return; }
     pushUndo();
+    const removedImage = (node.images || [])[imageIndex] || null;
     node.images = (node.images || []).filter((_, index) => index !== imageIndex);
     const batchTotal = Number(node?._batchTotal) || 0;
     if(batchTotal > 0 && Number(node?.pending || 0) === 0){
@@ -13797,6 +13994,8 @@ function deleteImage(id, imageIndex){
     if(selectedImage.index < 0) selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
+    // #74 (D1): 被删的单图若无其他引用 → 移入回收区。
+    void cascadeArchiveDeletedMedia(removedImage ? [removedImage] : []);
 }
 async function renameSmartNodeImage(nodeId, imageIndex){
     const node = nodes.find(n => n.id === nodeId);
@@ -20702,8 +20901,12 @@ function smartPendingTasks(node){
 }
 function projectImageTaskUrl(taskId){
     const projectId = canvas?.project_id || canvas?.project || canvasId;
-    if(canvas?.format === 'firefly-canvas-v1' && String(taskId || '').startsWith('project_img_')){
+    const tid = String(taskId || '');
+    if(canvas?.format === 'firefly-canvas-v1' && tid.startsWith('project_img_')){
         return `/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks/${encodeURIComponent(taskId)}`;
+    }
+    if(canvas?.format === 'firefly-canvas-v1' && tid.startsWith('project_vid_')){
+        return `/api/project-library/${encodeURIComponent(projectId)}/video-generation-tasks/${encodeURIComponent(taskId)}`;
     }
     return `/api/canvas-image-tasks/${encodeURIComponent(taskId)}`;
 }
@@ -22440,6 +22643,11 @@ window.addEventListener('keydown', e => {
     if((e.key === 'Delete' || e.key === 'Backspace') && (selectedId || selectedIds.length) && !isEditableTarget(e.target)){
         e.preventDefault();
         const ids = selectedIds.length ? selectedIds.slice() : [selectedId];
+        // #65: 选中项里有生成中的节点时禁止删除（先取消任务）。
+        if(ids.map(id => nodes.find(n => n.id === id)).some(node => node && smartNodeInFlight(node))){
+            toast(tr('smart.nodeDeleteBusy'));
+            return;
+        }
         pushUndo();
         ids.forEach(id => { undoSuppressed = true; deleteNode(id); undoSuppressed = false; });
         render();

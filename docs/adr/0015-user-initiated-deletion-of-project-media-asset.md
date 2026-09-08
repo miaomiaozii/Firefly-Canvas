@@ -26,3 +26,4 @@ date: 2026-08-27
 - 引用扫描统一使用 `ProjectStore._collect_asset_ids` 的收集规则（与清理同一规则），覆盖 T3 局部编辑节点（`original_asset_id` / `reference_asset_ids` / `localEditInputRoles` 内嵌引用）等全部真实引用字段。
 - 生成结果节点的全部图片被删除时回退到无结果状态（复用 `_reset_deleted_original_owner_state`）。
 - 资源库删除不提供撤销；这是用户确认引用警告后的显式终态操作。
+- 边界补充（ADR 0016 / D3，2026-09-08）：**系统发起**的回收（生成失败/取消/超时的孤儿媒体、节点删除后无引用的级联归档）默认进回收区（7 天可恢复）；**用户主动**的资源库删除维持硬删。

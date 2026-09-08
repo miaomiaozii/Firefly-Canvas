@@ -103,6 +103,20 @@ def image_generation_task_timeout_seconds() -> float:
         return max(0.1, float(raw))
     except (TypeError, ValueError):
         return 1800.0
+
+
+def video_generation_task_timeout_seconds() -> float:
+    """视频生成任务的硬超时（秒）。默认 3600s，env FIREFLY_VIDEO_GENERATION_TASK_TIMEOUT_SECONDS 可调。
+
+    与图片同一约束：provider 挂起时任务必须到 timeout 终态，不能让节点无限「生成中」。
+    视频渲染通常比图片慢（几十秒到十几分钟），默认给到 1 小时；
+    真正的 provider 侧轮询上限另由 VIDEO_POLL_TIMEOUT（默认 1800s）控制。
+    """
+    raw = os.environ.get('FIREFLY_VIDEO_GENERATION_TASK_TIMEOUT_SECONDS', '3600') or '3600'
+    try:
+        return max(0.1, float(raw))
+    except (TypeError, ValueError):
+        return 3600.0
 PROJECT_AGENT_TASKS: Dict[str, Dict[str, Any]] = {}
 PROJECT_AGENT_TASKS_LOCK = RLock()
 PROJECT_AGENT_FUTURES: Dict[str, Future] = {}

@@ -2,7 +2,9 @@
 
 日期：2026-08-30
 状态：只读审计结论，修复项已建 issue（#79-#83）。与 `docs/deletion-mechanism-review.md`（删除机制审计）互为补充。
-**第 1 期已完成（2026-08-31）**：#83（历史 outputs 累加合并）与 #79（孤儿进回收区 + 通用恢复端点）已落地，单测 792 OK + e2e 44/44 无回归。#80/#81/#82-a 待第 2 期。
+**第 1 期已完成（2026-08-31）**：#83（历史 outputs 累加合并）与 #79（孤儿进回收区 + 通用恢复端点）已落地，单测 792 OK + e2e 44/44 无回归。
+
+**第 2 期已完成（2026-09-08）**：#80（视频硬超时 `video_generation_task_timeout_seconds()` 默认 3600s + 取消路由 + 抽屉按钮前缀判定含 `project_vid_`）、#81（节点占位区取消按钮 + 已等待时长每秒刷新 + `smartProjectTaskInfo`）、#82-a（`attach_media_generation_provider_task` 持久化 provider 任务 ID + 重启 durable 任务按 ID `httpx` 重轮询恢复 `POST/GET /video-generation-tasks/{task_id}` + `_resume_project_video_generation`）全部落地；全量 **798 tests OK**，e2e **44/44 无回归**，validate-i18n.js 通过（1172 keys）。
 
 审计范围：任务生命周期（提交→运行→失败/取消/超时/重启恢复）在前后端的完整链路。
 
@@ -35,15 +37,15 @@
 - 不对称：失败路径反而把已归档图写进 outputs 可取回；取消路径直接抹掉。
 - 修复：cancelled 历史记录的 outputs 与失败路径对齐（写已归档项）；孤儿清理改为写入媒体回收区（7 天可恢复）而非静默硬删。
 
-### G2（P1）视频任务三无 —— issue #80
+### G2（P1）视频任务三无 —— issue #80 ✅ 已修复（第 2 期）
 - 无取消路由、无硬超时、抽屉按钮前缀判定排除视频。
 - 修复：视频补硬超时（与图片同机制）+ 取消路由（`cancel_requested` 标志同构）；前端按钮判定改为按任务类型而非 id 前缀。
 
-### G3（P1）30 分钟干等 —— issue #81
+### G3（P1）30 分钟干等 —— issue #81 ✅ 已修复（第 2 期）
 - 超时默认 1800s 偏长；节点本体无取消按钮（埋在历史抽屉）；无「已等待时长」反馈。
 - 修复：节点运行态加取消按钮（调用现有 cancel 路由）；运行态显示已用时长；评估默认超时下调（如 600s）或按服务商类型分档。
 
-### G4（P1）重启丢付费任务 —— issue #82
+### G4（P1）重启丢付费任务 —— issue #82 ✅ 已按方案 a 修复（第 2 期）
 - 服务端重启时 durable pending 任务一律 fail，错误文案要求「显式重试」（=重新付费）；provider 侧任务 ID 未持久化，无法免费重查结果。
 - 方案（待拍板）：
   - a：提交成功即持久化 provider 任务 ID，重启后先按 ID 重轮询，取不到再标记 fail；
@@ -66,7 +68,7 @@
 
 分期：
 - 第 1 期（bug 修复，并入删除修复第 1 期）：**#83（历史 outputs 累加合并）** ✅、#79（取消丢图，记录层由 #83 覆盖，剩余=孤儿清理进回收区）✅——均已完成（2026-08-31）：`_merge_generation_outputs`/`_node_owns_generated_output` helper、`complete_media_generation` 同 id 合并 + T4 回填改按 asset_id、`_end_media_generation` 终态合并（replaced_prior_id）、`trash_unreferenced_generation_media` + `restore_trash_media` + `POST /trash/media/restore`；新增 7 单测。
-- 第 2 期（功能补齐，未开始）：#80（视频取消/超时/按钮）、#81（节点取消按钮 + 时长反馈 + 超时评估）、#82-a（provider ID 持久化 + 重启重轮询 + ADR）。
+- 第 2 期（功能补齐）：**✅ 已完成（2026-09-08）**：#80 视频硬超时（`video_generation_task_timeout_seconds()`，env `FIREFLY_VIDEO_GENERATION_TASK_TIMEOUT_SECONDS`，默认 3600s）+ 取消路由（worker 开头检查 `cancel_requested`，取消时不再调 provider 避免重复计费）+ 抽屉按钮前缀判定含 `project_vid_`（视频重试走节点级重建提交）；#81 节点占位区「取消任务」按钮（`smartProjectTaskInfo` + `cancelNodeGenerationTask`）+ `data-elapsed-since` 每秒刷新已等待时长；#82-a `on_provider_task` 回调（`execute_canvas_video` 统一格式路径提交成功后 fire）→ `attach_media_generation_provider_task` 持久化到 canvas pendingTasks → 重启对账 `recover_project_video_task`（有 provider ID 的任务不再直接 fail，`GET /video-generation-tasks/{task_id}` 触发 `_resume_project_video_generation` 后台 httpx 重轮询；专属适配器无 ID 则显式失败提示）；更新 3 个过期断言（视频失败保留半成品、on_provider_task 参数、占位签名 taskInfo）。
 
 ## 5. 关联
 

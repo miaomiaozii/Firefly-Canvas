@@ -1723,6 +1723,49 @@ class MediaCleanupEndpointTests(unittest.TestCase):
         remaining = self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"]
         self.assertEqual([item["asset_id"] for item in remaining], ["a2"])
 
+    def test_archive_media_moves_unreferenced_to_trash(self):
+        project = self._project()
+        asset = self._import(project["id"], b"arc-bytes", "arc.png")
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/media/{asset['asset_id']}/archive",
+            json={"reason": "node-delete"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "archived": asset["asset_id"]})
+        unused = self.client.get(f"/api/project-library/{project['id']}/media/unused").json()["items"]
+        self.assertEqual([item["asset_id"] for item in unused], [])
+        trash = self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"]
+        self.assertEqual([item["asset_id"] for item in trash], [asset["asset_id"]])
+        self.assertEqual(trash[0]["reason"], "node-delete")
+
+    def test_archive_media_referenced_returns_409(self):
+        project = self._project()
+        asset = self._import(project["id"], b"arc-ref-bytes", "arc-ref.png")
+        changed = self._patch_canvas(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "smart-image", "images": [{"asset_id": asset["asset_id"]}]}},
+        ], 0)
+        self.assertEqual(changed.status_code, 200)
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/media/{asset['asset_id']}/archive",
+            json={"reason": "node-delete"},
+        )
+        self.assertEqual(response.status_code, 409)
+        # 仍保留在库（不出现在未使用列表，因为被节点引用）
+        unused = self.client.get(f"/api/project-library/{project['id']}/media/unused").json()["items"]
+        self.assertNotIn(asset["asset_id"], [item["asset_id"] for item in unused])
+        self.assertTrue((Path(self.temp_dir.name) / "projects" / project["id"] / "media").is_dir())
+
+    def test_archive_media_missing_project_or_asset_404(self):
+        self.assertEqual(
+            self.client.post("/api/project-library/nope/media/x/archive", json={}).status_code,
+            404,
+        )
+        project = self._project()
+        self.assertEqual(
+            self.client.post(f"/api/project-library/{project['id']}/media/nope/archive", json={}).status_code,
+            404,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

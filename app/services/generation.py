@@ -2522,7 +2522,7 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
             add('generate_audio')
     return incompatible
 
-async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[str, Any]):
+async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[str, Any], on_provider_task=None):
     incompatible = video_adapter_incompatible_parameters(payload, provider)
     if incompatible:
         raise HTTPException(status_code=400, detail={'code': 'unsupported_video_adapter_parameters', 'message': str(provider.get('name') or provider['id']) + ' 不支持请求的参数'})
@@ -2888,6 +2888,20 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
                 resp_text = (getattr(resp, 'text', '') or '')[:500]
                 raise HTTPException(status_code=502, detail=f'上游视频接口返回了网页 HTML，而不是 JSON（状态 {status_code}）。\n\n这通常表示 API 设置里的 Base URL 指到了第三方聚合平台的管理后台/网页入口，或该平台不支持当前视频接口路径。请确认 Base URL 是接口地址，例如以 /v1 结尾的 OpenAI 兼容地址，并确认该平台实际支持视频生成端点。\n\n原始响应：{resp_text}') from last_json_error
             task_id = extract_task_id(raw) or raw.get('task_id') or raw.get('id')
+            if task_id and on_provider_task is not None:
+                try:
+                    # #82：提交成功即持久化服务商任务标识，服务重启后可按 task_id 重轮询，避免重复计费。
+                    # 仅统一格式路径（APIMart/veo3/veo3.1/火山/玉玉/OpenAI 兼容）；专属适配器（可灵/即梦/RunningHub 等）后续补。
+                    await on_provider_task({
+                        'provider_id': str(provider.get('id') or ''),
+                        'provider_name': str(provider.get('name') or ''),
+                        'model': str(requested_model or ''),
+                        'task_id': str(task_id),
+                        'task_url': str(submit_url or ''),
+                        'submitted_at': int(time.time() * 1000),
+                    })
+                except Exception:
+                    pass  # 元数据持久化失败不阻断生成主流程
             result = raw
             if task_id and (not video_output_urls(raw)):
                 result = await wait_for_video_task(client, provider, task_id, submit_url)

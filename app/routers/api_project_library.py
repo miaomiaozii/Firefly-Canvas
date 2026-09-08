@@ -878,14 +878,14 @@ async def get_project_agent_task(project_id: str, node_id: str, task_id: str):
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-async def generate_project_video(request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+async def generate_project_video(request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None, on_provider_task=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Adapt project-owned references to the existing online video adapters."""
     legacy_payload = project_canvas_video_payload(request_snapshot, route.provider_id, route.model, references)
     requested_count = max(1, int(request_snapshot.count or 1))
     candidates = []
     raw_results = []
     for _ in range(requested_count):
-        result = await execute_canvas_video(legacy_payload, provider) if provider is not None else await _app_main.canvas_video(legacy_payload)
+        result = await _app_main.execute_canvas_video(legacy_payload, provider, on_provider_task=on_provider_task) if provider is not None else await _app_main.canvas_video(legacy_payload)
         videos = [str(value or '').strip() for value in result.get('videos') or [] if str(value or '').strip()]
         if not videos:
             raise ProjectStoreError('在线模型没有返回视频')
@@ -895,7 +895,7 @@ async def generate_project_video(request_snapshot: VideoGenerationRequest, route
     raw = raw_results[0] if requested_count == 1 else {'results': raw_results}
     return (candidates, raw)
 
-async def execute_project_video_generation(project_id: str, request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+async def execute_project_video_generation(project_id: str, request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None, on_provider_task=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Run one adapter call inside a task-owned project-media capability scope."""
     clean_project_id = str(project_id or '').strip()
     if not clean_project_id:
@@ -907,8 +907,8 @@ async def execute_project_video_generation(project_id: str, request_snapshot: Vi
             require_project_media_adapter_scope(adapter_url)
             project_media_adapter_path(adapter_url, item.get('kind') or '')
         if provider is None:
-            return await _app_main.generate_project_video(request_snapshot, route, references)
-        return await _app_main.generate_project_video(request_snapshot, route, references, provider=provider)
+            return await _app_main.generate_project_video(request_snapshot, route, references, on_provider_task=on_provider_task)
+        return await _app_main.generate_project_video(request_snapshot, route, references, provider=provider, on_provider_task=on_provider_task)
     finally:
         PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope_token)
 
@@ -1217,6 +1217,19 @@ class ImageGenerationTaskTimeout(Exception):
     """任务级硬超时：provider 挂起时终止任务并落 timeout 终态。"""
 
 
+class VideoGenerationTaskTimeout(Exception):
+    """视频任务级硬超时：与图片同一约束——provider 挂起必须到 timeout 终态（#80）。"""
+
+
+def project_video_task_cancel_requested(task_id: str) -> bool:
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        return bool(
+            isinstance(task, dict)
+            and (task.get('cancel_requested') or task.get('status') == 'cancelled')
+        )
+
+
 class _CandidateWriteFailure(Exception):
     """候选在写回阶段（下载/归档）失败，区别于 provider 生成失败。"""
 
@@ -1491,23 +1504,54 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             fail_project_image_task_progress(task_id)
         await cleanup_project_generation_orphans(project_id)
 
+def _build_video_history_record(task_id: str, payload: ProjectVideoGenerationRequest, request_snapshot: VideoGenerationRequest, route, references: Optional[List[Dict[str, Any]]], generated_items: List[Dict[str, Any]], started_at: int, completed_at: int, status: str, error: str = '') -> Dict[str, Any]:
+    record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': status, 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in (references or [])], 'outputs': [{'asset_id': item['asset_id'], 'kind': 'video'} for item in generated_items], 'result_node_id': payload.result_node_id}
+    if error:
+        record['error'] = str(error)
+    return record
+
 async def run_project_video_task(task_id: str, project_id: str, payload: ProjectVideoGenerationRequest, request_snapshot: VideoGenerationRequest, route, registered_revision: int, references: Optional[List[Dict[str, Any]]]=None, provider: Optional[Mapping[str, Any]]=None):
     started_at = _app_main.now_ms()
     generated_items = []
+    references_seen: List[Dict[str, Any]] = []
     preexisting_asset_ids = set()
     with CANVAS_TASK_LOCK:
+        current = CANVAS_TASKS.get(task_id)
+        if isinstance(current, dict) and (current.get('cancel_requested') or current.get('status') == 'cancelled'):
+            return  # 取消路由已写入 cancelled 终态；worker 不再调用 provider（避免重复计费）
         CANVAS_TASKS[task_id]['status'] = 'running'
         CANVAS_TASKS[task_id]['updated_at'] = time.time()
+
+    async def on_provider_task(info: Dict[str, Any]):
+        # #82：提交成功即持久化服务商任务标识（内存 + canvas pendingTasks），重启后可按 task_id 重轮询。
+        with CANVAS_TASK_LOCK:
+            task = CANVAS_TASKS.get(task_id)
+            if isinstance(task, dict):
+                task['provider_task'] = copy.deepcopy(info)
+        try:
+            await asyncio.to_thread(_app_main.project_store_call, 'attach_media_generation_provider_task', project_id, task_id, copy.deepcopy(info))
+        except Exception:
+            pass  # 元数据持久化失败不阻断生成主流程
+
     try:
         preexisting_asset_ids = {item.get('asset_id') for item in await asyncio.to_thread(_app_main.project_store_call, 'list_media', project_id) if item.get('asset_id')}
         references = copy.deepcopy(references) if references is not None else await asyncio.to_thread(project_video_all_references, project_id, payload)
-        candidates, raw = await _app_main.execute_project_video_generation(project_id, request_snapshot, route, references, provider)
+        references_seen = references
+        # #80：任务级硬超时——provider 挂起时必须到 timeout 终态，不能让节点无限「生成中」。
+        timeout_seconds = float(_app_main.video_generation_task_timeout_seconds())
+        try:
+            candidates, raw = await asyncio.wait_for(
+                _app_main.execute_project_video_generation(project_id, request_snapshot, route, references, provider, on_provider_task=on_provider_task),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise VideoGenerationTaskTimeout(f'视频生成任务超时：服务商 {int(timeout_seconds)} 秒内未返回结果') from None
         for candidate in candidates:
             generated_items.append(await archive_project_generated_video(project_id, candidate, len(generated_items)))
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回视频')
         completed_at = _app_main.now_ms()
-        history_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in references], 'outputs': [{'asset_id': item['asset_id'], 'kind': 'video'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        history_record = _build_video_history_record(task_id, payload, request_snapshot, route, references_seen, generated_items, started_at, completed_at, 'succeeded')
         canvas = await asyncio.to_thread(_app_main.project_store_call, 'complete_media_generation', project_id, payload.result_node_id, generated_items, history_record, media_kind='video', task_id=task_id, require_pending=True)
         await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
         base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
@@ -1518,9 +1562,12 @@ async def run_project_video_task(task_id: str, project_id: str, payload: Project
         await cleanup_project_generation_orphans(project_id)
         await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or completed_at))
     except Exception as exc:
+        # #80/#83：timeout 与 failed 分开落终态；已下载的视频写入终态 outputs（#83 语义），
+        # 不再以孤儿身份被清理（#79 改进后孤儿也进回收区，双保险）。
+        terminal_status = 'timeout' if isinstance(exc, VideoGenerationTaskTimeout) else 'failed'
         detail = getattr(exc, 'detail', None) or str(exc)
         failure_time = _app_main.now_ms()
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': 'failed', 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'outputs': [], 'result_node_id': payload.result_node_id, 'error': str(detail)}
+        failure_record = _build_video_history_record(task_id, payload, request_snapshot, route, references_seen, generated_items, started_at, failure_time, terminal_status, error=detail)
         failure_result = None
         try:
             failed_canvas = await asyncio.to_thread(_app_main.project_store_call, 'fail_media_generation', project_id, payload.result_node_id, task_id, failure_record)
@@ -1532,7 +1579,7 @@ async def run_project_video_task(task_id: str, project_id: str, payload: Project
         with CANVAS_TASK_LOCK:
             orphan_ids = PROJECT_VIDEO_GENERATION_ORPHANS.setdefault(project_id, set())
             orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
-            CANVAS_TASKS[task_id].update({'status': 'failed', 'error': str(detail), 'status_code': getattr(exc, 'status_code', 500), 'result': failure_result, 'updated_at': time.time()})
+            CANVAS_TASKS[task_id].update({'status': terminal_status, 'error': str(detail), 'status_code': getattr(exc, 'status_code', 500), 'result': failure_result, 'updated_at': time.time()})
         await cleanup_project_generation_orphans(project_id)
 
 async def shutdown_project_generation_tasks() -> None:
@@ -2127,7 +2174,7 @@ def reserve_project_video_task(project_id: str, task_id: str, payload: ProjectVi
                 raise HTTPException(status_code=429, detail='在线视频队列已满，请等待已有任务完成')
             if len(project_active) >= PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT:
                 raise HTTPException(status_code=429, detail='当前项目同时最多运行 8 个在线视频任务')
-            CANVAS_TASKS[task_id] = {'id': task_id, 'type': 'project-online-video', 'kind': 'video', 'project_id': project_id, 'result_node_id': payload.result_node_id, 'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(), 'result': None, 'error': '', 'provider_id': route.provider_id, 'model': route.model, 'route': route.to_dict()}
+            CANVAS_TASKS[task_id] = {'id': task_id, 'type': 'project-online-video', 'kind': 'video', 'project_id': project_id, 'result_node_id': payload.result_node_id, 'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(), 'result': None, 'error': '', 'provider_id': route.provider_id, 'model': route.model, 'route': route.to_dict(), 'request_payload': payload.model_dump()}
 
 @router.post('/api/project-library/{project_id}/video-generation-tasks')
 async def create_project_video_task(project_id: str, payload: ProjectVideoGenerationRequest, request: Request):
@@ -2150,7 +2197,7 @@ async def create_project_video_task(project_id: str, payload: ProjectVideoGenera
     task_id = f'project_vid_{uuid.uuid4().hex}'
     reserve_project_video_task(project_id, task_id, payload, route)
     try:
-        registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_media_generation', project_id, payload.result_node_id, {'taskId': task_id, 'kind': 'video', 'count': payload.n, 'providerId': route.provider_id, 'model': route.model, 'referenceAssetIds': list(dict.fromkeys([*payload.image_reference_asset_ids, *payload.video_reference_asset_ids, *payload.audio_reference_asset_ids]))}, base_revision=payload.base_revision, media_kind='video')
+        registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_media_generation', project_id, payload.result_node_id, {'taskId': task_id, 'kind': 'video', 'count': payload.n, 'providerId': route.provider_id, 'model': route.model, 'referenceAssetIds': list(dict.fromkeys([*payload.image_reference_asset_ids, *payload.video_reference_asset_ids, *payload.audio_reference_asset_ids])), 'requestPayload': payload.model_dump()}, base_revision=payload.base_revision, media_kind='video')
         await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
     except RevisionConflict as exc:
         with CANVAS_TASK_LOCK:
@@ -2182,6 +2229,296 @@ async def create_project_video_task(project_id: str, payload: ProjectVideoGenera
                 PROJECT_VIDEO_GENERATION_FUTURES.pop(task_id, None)
     future.add_done_callback(forget_project_video_future)
     return JSONResponse(status_code=202, content={'task_id': task_id, 'status': 'queued', 'kind': 'video', 'route': route.to_dict(), 'project_revision': registered_canvas['revision'], 'registered_node': next((item for item in registered_canvas.get('nodes') or [] if item.get('id') == payload.result_node_id), None)})
+
+class _VideoRouteView:
+    """重建 route 信息的最小视图（取消路由/重启重轮询共用；durable 记录里只存了 provider 三元组）。"""
+
+    def __init__(self, data: Mapping[str, Any]):
+        self.provider_id = str(data.get('provider_id') or '')
+        self.provider_name = str(data.get('provider_name') or '')
+        self.model = str(data.get('model') or '')
+        self.reason = str(data.get('reason') or '')
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {'provider_id': self.provider_id, 'provider_name': self.provider_name, 'model': self.model, 'reason': self.reason}
+
+
+def durable_project_video_task(canvas: Mapping[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
+    """在 canvas 中查找视频任务：先终态历史（durable commit 标记），再 pending 节点。
+
+    与图片同一约定：crash 在两次快照写之间时，不能把已付费成功合成成重启失败。
+    """
+    clean_task_id = str(task_id or '').strip()
+    for record in reversed(canvas.get('logs') or []):
+        if not isinstance(record, dict) or str(record.get('task_id') or record.get('taskId') or '') != clean_task_id:
+            continue
+        if str(record.get('type') or '') not in {'online-video', 'video'}:
+            continue
+        return {
+            'id': clean_task_id,
+            'task_id': clean_task_id,
+            'type': 'project-online-video',
+            'project_id': canvas.get('project_id') or canvas.get('project') or '',
+            'result_node_id': record.get('result_node_id') or '',
+            'status': record.get('status') or 'failed',
+            'provider_id': record.get('actual_provider_id') or '',
+            'model': record.get('actual_model') or record.get('model') or '',
+            'error': record.get('error') or '',
+            'history_record': copy.deepcopy(record),
+        }
+    for node in canvas.get('nodes') or []:
+        if not isinstance(node, dict):
+            continue
+        for pending in node.get('pendingTasks') or []:
+            if not isinstance(pending, dict) or str(pending.get('taskId') or '') != clean_task_id:
+                continue
+            if str(pending.get('kind') or 'video') != 'video':
+                continue
+            return {
+                'id': clean_task_id,
+                'task_id': clean_task_id,
+                'type': 'project-online-video',
+                'project_id': canvas.get('project_id') or canvas.get('project') or '',
+                'result_node_id': node.get('id') or '',
+                'status': 'pending',
+                'provider_id': pending.get('providerId') or '',
+                'model': pending.get('model') or '',
+                'request_payload': copy.deepcopy(pending.get('requestPayload') or {}),
+                'provider_task': copy.deepcopy(pending.get('provider_task') or {}),
+                'created_at': float(pending.get('createdAt') or pending.get('created_at') or time.time()),
+            }
+    return None
+
+
+async def _resume_project_video_generation(task_id: str, project_id: str, durable: Mapping[str, Any]) -> None:
+    """#82：重启后对已持久化 provider task id 的 pending 视频任务重新轮询（不再向服务商重复提交）。
+
+    成功→归档+complete；服务商侧失败/不存在/轮询超时→fail 终态（错误文案带 provider task id 供人工查询）。
+    """
+    provider_task = durable.get('provider_task') or {}
+    request_payload = copy.deepcopy(durable.get('request_payload') or {})
+    provider_id = str(provider_task.get('provider_id') or durable.get('provider_id') or '')
+    result_node_id = str(durable.get('result_node_id') or '')
+    try:
+        payload = ProjectVideoGenerationRequest(**request_payload) if request_payload else ProjectVideoGenerationRequest(prompt='（重启恢复的视频任务）', result_node_id=result_node_id, provider_id=provider_id, model=str(provider_task.get('model') or durable.get('model') or ''))
+        request_snapshot = project_video_request(payload)
+    except Exception as exc:
+        payload = None
+        request_snapshot = None
+    if payload is None:
+        try:
+            await asyncio.to_thread(_app_main.project_store_call, 'fail_media_generation', project_id, result_node_id, task_id, {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': 'failed', 'prompt': str(request_payload.get('prompt') or ''), 'created_at': _app_main.now_ms(), 'completed_at': _app_main.now_ms(), 'outputs': [], 'result_node_id': result_node_id, 'error': f'重启恢复失败：无法重建原任务参数：{exc}'})
+            await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+        except Exception:
+            pass
+        with CANVAS_TASK_LOCK:
+            current = CANVAS_TASKS.get(task_id)
+            if isinstance(current, dict):
+                current.update({'status': 'failed', 'error': '重启恢复失败：无法重建原任务参数', 'updated_at': time.time()})
+        return
+    with CANVAS_TASK_LOCK:
+        current = CANVAS_TASKS.get(task_id)
+        if isinstance(current, dict):
+            current.update({'status': 'running', 'resuming': True, 'updated_at': time.time()})
+    started_at = int(float(durable.get('created_at') or time.time()) * 1000)
+    try:
+        providers = await _app_main.load_api_providers()
+        provider = next((p for p in providers if str(p.get('id') or '') == provider_id), None)
+        if provider is None:
+            raise ProjectStoreError(f'重启恢复失败：服务商 {provider_id} 不在当前 API 设置中，请在 API 设置恢复该服务商后手动重试')
+        provider_task_id = str(provider_task.get('task_id') or '')
+        if not provider_task_id:
+            raise ProjectStoreError('重启恢复失败：没有记录到服务商任务 ID（专属适配器或提交前中断），无法重轮询，请手动重试')
+        async with httpx.AsyncClient(timeout=_app_main.VIDEO_POLL_TIMEOUT) as client:
+            raw = await _app_main.wait_for_video_task(client, provider, provider_task_id, str(provider_task.get('task_url') or ''))
+        urls = [str(url or '').strip() for url in _app_main.video_output_urls(raw) if str(url or '').strip()]
+        if not urls:
+            raise ProjectStoreError('重启恢复失败：服务商任务已完成但没有返回视频')
+        candidates = [{'type': 'url', 'value': url, 'mime_type': content_type_for_path(url)} for url in urls]
+        generated_items = []
+        for candidate in candidates:
+            generated_items.append(await archive_project_generated_video(project_id, candidate, len(generated_items)))
+        route = _VideoRouteView({'provider_id': provider_id, 'provider_name': str(provider.get('name') or provider_task.get('provider_name') or ''), 'model': str(provider_task.get('model') or payload.model or ''), 'reason': 'restart-resume'})
+        completed_at = _app_main.now_ms()
+        history_record = _build_video_history_record(task_id, payload, request_snapshot, route, [], generated_items, started_at, completed_at, 'succeeded')
+        canvas = await asyncio.to_thread(_app_main.project_store_call, 'complete_media_generation', project_id, payload.result_node_id, generated_items, history_record, media_kind='video', task_id=task_id, require_pending=True)
+        await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+        base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
+        video_items = [{**item, 'url': base + urllib.parse.quote(item['asset_id'], safe='')} for item in generated_items]
+        with CANVAS_TASK_LOCK:
+            current = CANVAS_TASKS.get(task_id)
+            if isinstance(current, dict):
+                current.update({'status': 'succeeded', 'result': {'prompt': payload.prompt, 'videos': [item['url'] for item in video_items], 'video_items': video_items, 'history_recorded': True, 'history_record': history_record, 'project_id': project_id, 'project_revision': canvas['revision'], 'result_node_id': payload.result_node_id}, 'error': '', 'updated_at': time.time()})
+        await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or completed_at))
+    except Exception as exc:
+        detail = str(getattr(exc, 'detail', None) or exc)
+        failure_time = _app_main.now_ms()
+        route = _VideoRouteView({'provider_id': provider_id, 'provider_name': str(provider_task.get('provider_name') or ''), 'model': str(provider_task.get('model') or ''), 'reason': 'restart-resume'})
+        failure_record = _build_video_history_record(task_id, payload, request_snapshot, route, [], [], started_at, failure_time, 'failed', error=f'重启恢复失败：{detail}')
+        try:
+            failed_canvas = await asyncio.to_thread(_app_main.project_store_call, 'fail_media_generation', project_id, result_node_id, task_id, failure_record)
+            await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+            await manager.broadcast_canvas_updated(project_id, int(failed_canvas.get('updated_at') or failure_time))
+        except Exception:
+            pass
+        with CANVAS_TASK_LOCK:
+            current = CANVAS_TASKS.get(task_id)
+            if isinstance(current, dict):
+                current.update({'status': 'failed', 'error': f'重启恢复失败：{detail}', 'updated_at': time.time()})
+
+
+def recover_project_video_task(project_id: str, task_id: str) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Registry 丢失后从 canvas 重建视频任务状态（与图片 recover 同构，#80/#82）。"""
+    with project_lifecycle_lock(project_id):
+        opened = _app_main.project_store_call('open_project', project_id)
+        canvas = opened.get('canvas') or {}
+        durable = durable_project_video_task(canvas, task_id)
+        if durable is None:
+            return {'canvas': canvas}, None
+        if durable.get('status') == 'pending' and not durable.get('provider_task'):
+            # 没有服务商任务 ID（提交前中断/专属适配器）：明确终止，提示重试（与图片同一文案口径）。
+            failure_time = _app_main.now_ms()
+            created_value = float(durable.get('created_at') or time.time())
+            created_at = int(created_value * 1000) if 0 < created_value < 10_000_000_000 else int(created_value or failure_time)
+            request_payload = durable.get('request_payload') or {}
+            failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': 'failed', 'prompt': str(request_payload.get('prompt') or ''), 'created_at': created_at, 'createdAt': created_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - created_at), 'provider_id': durable.get('provider_id') or '', 'model': durable.get('model') or '', 'outputs': [], 'result_node_id': durable.get('result_node_id') or '', 'error': '服务重启后无法确认视频任务状态；为避免重复计费，任务已终止，请显式重试'}
+            try:
+                _app_main.project_store_call('fail_media_generation', project_id, durable.get('result_node_id') or '', task_id, failure_record)
+                _app_main.project_store_call('flush', project_id)
+            except Exception:
+                pass
+            durable = {**durable, 'status': 'failed', 'error': failure_record['error'], 'history_record': failure_record}
+        return opened, durable
+
+
+def durable_project_video_result(project_id: str, canvas: Mapping[str, Any], durable: Mapping[str, Any]) -> Dict[str, Any]:
+    history_record = copy.deepcopy(durable.get('history_record') or {})
+    base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
+    video_items = [
+        {**copy.deepcopy(item), 'url': base + urllib.parse.quote(str(item.get('asset_id') or ''), safe='')}
+        for item in history_record.get('outputs') or []
+        if isinstance(item, dict) and item.get('asset_id')
+    ]
+    final_node = next((item for item in canvas.get('nodes') or [] if item.get('id') == durable.get('result_node_id')), None)
+    return {
+        'prompt': history_record.get('prompt') or '',
+        'videos': [item['url'] for item in video_items],
+        'video_items': video_items,
+        'media_items': video_items,
+        'history_recorded': bool(history_record),
+        'history_record': history_record,
+        'project_id': project_id,
+        'project_revision': int(canvas.get('revision') or 0),
+        'result_node_id': durable.get('result_node_id') or '',
+        'final_node': final_node,
+    }
+
+
+@router.get('/api/project-library/{project_id}/video-generation-tasks/{task_id}')
+async def get_project_video_task(project_id: str, task_id: str):
+    with CANVAS_TASK_LOCK:
+        current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
+    if current:
+        if current.get('type') != 'project-online-video' or str(current.get('project_id') or '') != str(project_id):
+            raise HTTPException(status_code=404, detail='项目生视频任务不存在')
+        current['task_id'] = str(task_id)
+        return current
+    try:
+        opened, durable = await asyncio.to_thread(recover_project_video_task, project_id, str(task_id))
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if durable is None:
+        raise HTTPException(status_code=404, detail='项目生视频任务不存在')
+    canvas = opened.get('canvas') or {}
+    result = durable_project_video_result(project_id, canvas, durable)
+    if durable.get('status') == 'pending' and durable.get('provider_task'):
+        # #82：有服务商任务 ID → 后台重轮询（不重复提交）。resuming 标志在锁内先置位，防并发 GET 双起重启。
+        with CANVAS_TASK_LOCK:
+            existing = CANVAS_TASKS.get(str(task_id))
+            if isinstance(existing, dict) and existing.get('resuming'):
+                return existing
+            entry = {
+                **copy.deepcopy(durable),
+                'project_id': project_id,
+                'status': 'running',
+                'resuming': True,
+                'result': None,
+                'updated_at': time.time(),
+            }
+            CANVAS_TASKS[str(task_id)] = entry
+        asyncio.get_running_loop().create_task(_resume_project_video_generation(str(task_id), str(project_id), copy.deepcopy(durable)))
+        with CANVAS_TASK_LOCK:
+            current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
+        current['task_id'] = str(task_id)
+        return current
+    with CANVAS_TASK_LOCK:
+        CANVAS_TASKS[str(task_id)] = {
+            **copy.deepcopy(durable),
+            'project_id': project_id,
+            'result': result,
+            'updated_at': time.time(),
+        }
+    await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
+    return {**durable, 'project_id': project_id, 'task_id': str(task_id), 'result': result}
+
+
+@router.post('/api/project-library/{project_id}/video-generation-tasks/{task_id}/cancel')
+async def cancel_project_video_task(project_id: str, task_id: str, request: Request):
+    """#80：视频任务取消（与图片同构）。立即写 cancelled 终态；worker 若已下载完成，store CAS 仲裁谁赢。"""
+    ensure_same_origin_request(request)
+    with CANVAS_TASK_LOCK:
+        current = CANVAS_TASKS.get(str(task_id))
+        if (
+            not isinstance(current, dict)
+            or current.get('type') != 'project-online-video'
+            or str(current.get('project_id') or '') != str(project_id)
+        ):
+            raise HTTPException(status_code=404, detail='项目生视频任务不存在')
+        if current.get('status') == 'cancelled':
+            return {'task_id': task_id, 'status': 'cancelled'}
+        if current.get('status') not in {'queued', 'running'}:
+            raise HTTPException(status_code=409, detail='任务已结束，无法取消')
+        current['cancel_requested'] = True
+        task = copy.deepcopy(current)
+    raw_payload = task.get('request_payload') or {}
+    try:
+        payload = ProjectVideoGenerationRequest(**raw_payload)
+    except Exception:
+        payload = ProjectVideoGenerationRequest(prompt='（任务已取消）', result_node_id=str(task.get('result_node_id') or 'x'), provider_id=str(task.get('provider_id') or ''), model=str(task.get('model') or ''))
+    route = _VideoRouteView({'provider_id': task.get('provider_id') or '', 'provider_name': '', 'model': task.get('model') or '', 'reason': ''})
+    completed_at = _app_main.now_ms()
+    created_at = round(float(task.get('created_at') or time.time()) * 1000)
+    history_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': 'cancelled', 'prompt': payload.prompt, 'created_at': created_at, 'createdAt': created_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - created_at), 'provider_id': route.provider_id, 'model': route.model, 'outputs': [], 'result_node_id': payload.result_node_id, 'error': '任务已取消'}
+    canvas = None
+    try:
+        canvas = await asyncio.to_thread(_app_main.project_store_call, 'cancel_media_generation', project_id, payload.result_node_id, task_id, history_record)
+        await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+    except Exception as exc:
+        status_code = 409 if isinstance(exc, (ProjectStoreError, InvalidMutation)) else 500
+        with CANVAS_TASK_LOCK:
+            current = CANVAS_TASKS.get(str(task_id))
+            if isinstance(current, dict):
+                current.update({'status': 'failed', 'error': f'取消结果持久化失败，任务已停止：{exc}', 'updated_at': time.time()})
+                current.pop('cancel_requested', None)
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    with CANVAS_TASK_LOCK:
+        current = CANVAS_TASKS.get(str(task_id))
+        if isinstance(current, dict):
+            current.update({'status': 'cancelled', 'error': '任务已取消', 'result': {'history_recorded': True, 'history_record': history_record, 'project_id': project_id, 'project_revision': (canvas or {}).get('revision'), 'result_node_id': payload.result_node_id}, 'updated_at': time.time()})
+            current.pop('cancel_requested', None)
+        future = PROJECT_VIDEO_GENERATION_FUTURES.get(str(task_id))
+    if future is not None:
+        future.cancel()
+    try:
+        await cleanup_project_generation_orphans(project_id)
+    except Exception:
+        pass
+    try:
+        await manager.broadcast_canvas_updated(project_id, int((canvas or {}).get('updated_at') or completed_at))
+    except Exception:
+        pass
+    return {'task_id': task_id, 'status': 'cancelled'}
+
 
 def project_canvas_video_payload(request: VideoGenerationRequest, provider_id: str, model: str, references: List[Dict[str, Any]]) -> CanvasVideoRequest:
     image_refs = [AIReference(url=item['adapter_url'], name=item.get('name') or 'reference', kind='image', mime=item.get('mime') or '') for item in references if item.get('kind') == 'image']
@@ -3046,6 +3383,31 @@ async def list_project_media_unused(project_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+class ProjectMediaArchiveRequest(BaseModel):
+    reason: str = Field(default='node-delete', max_length=64)
+
+@router.post('/api/project-library/{project_id}/media/{asset_id}/archive')
+async def archive_project_media_asset(project_id: str, asset_id: str, payload: ProjectMediaArchiveRequest):
+    """级联归档（issue #74 / D1）：节点/单图删除后，无引用的媒体移入回收区（7 天可恢复）。
+
+    仍被画布节点或历史记录引用 → 409（前端保留在库并继续）；项目不存在 → 404。
+    """
+    try:
+        assert_project_owner_admissible(project_id)
+        await asyncio.to_thread(
+            _app_main.project_store_call,
+            'archive_unreferenced_media',
+            project_id,
+            asset_id,
+            reason=str(payload.reason or 'node-delete')[:64] or 'node-delete',
+        )
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await manager.broadcast_canvas_updated(project_id, int(_app_main.now_ms()))
+    return {'ok': True, 'archived': asset_id}
 
 @router.get('/api/project-library/{project_id}/media/{asset_id}')
 async def get_project_media(project_id: str, asset_id: str):

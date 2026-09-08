@@ -472,35 +472,30 @@ class ProjectCleanupMixin:
         "reason", "undo", "deletion_id", "deleted_output_id", "name",
     })
 
-    def trash_unreferenced_generation_media(self, project_id: str, asset_id: str, reason: str = "generation-orphan") -> bool:
-        """系统回收（#79/D3）：生成孤儿媒体移入回收区（7 天可恢复），替代静默硬删。
+    def _archive_unreferenced_media_locked(self, project_id: str, asset_id: str, *, reason: str) -> Dict[str, Any]:
+        """把无引用的媒体移入回收区（trash/media，7 天可恢复）的共享实现。
 
-        引用检查与 delete_media_if_unreferenced 一致：被画布节点或历史记录引用时不处理。
-        回收区条目可被回收区面板列出/恢复/彻底删除（恢复走 restore_trash_media）。
+        调用方必须已持有 self._lock。仍被画布节点或历史记录引用时抛
+        ProjectStoreError；媒体不存在时抛 ProjectNotFound；文件缺失时仅清索引（归档成功）。
         """
-        project_id = _store._clean_project_id(project_id)
-        asset_id = str(asset_id or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
-            return False
-        with self._lock:
-            opened = self.open_project(project_id)["canvas"]
-            referenced = self._collect_asset_ids(opened.get("nodes") or [])
-            referenced.update(self._collect_asset_ids(self._histories.get(project_id, [])))
-            if asset_id in referenced:
-                return False
-            index = self._load_media_index(project_id)
-            record = index["items"].get(asset_id)
-            if not isinstance(record, dict):
-                return False
-            project_dir = self._project_directory(project_id)
-            media_root = (project_dir / "media").resolve()
-            path = (media_root / str(record.get("filename") or "")).resolve()
-            if os.path.commonpath([str(media_root), str(path)]) != str(media_root):
-                return False
-            if not path.is_file():
-                index["items"].pop(asset_id, None)
-                _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
-                return True
+        opened = self.open_project(project_id)["canvas"]
+        referenced = self._collect_asset_ids(opened.get("nodes") or [])
+        referenced.update(self._collect_asset_ids(self._histories.get(project_id, [])))
+        if asset_id in referenced:
+            raise _store.ProjectStoreError("媒体仍被画布节点或历史记录引用，无法归档")
+        index = self._load_media_index(project_id)
+        record = index["items"].get(asset_id)
+        if not isinstance(record, dict):
+            raise _store.ProjectNotFound("项目媒体不存在")
+        project_dir = self._project_directory(project_id)
+        media_root = (project_dir / "media").resolve()
+        path = (media_root / str(record.get("filename") or "")).resolve()
+        file_missing = False
+        if os.path.commonpath([str(media_root), str(path)]) != str(media_root):
+            raise _store.ProjectStoreError("媒体文件路径无效")
+        if not path.is_file():
+            file_missing = True
+        else:
             preview_root = (project_dir / "previews").resolve()
             preview_files = sorted(
                 (p for p in preview_root.glob(f"{asset_id}-*") if p.is_file()),
@@ -536,7 +531,40 @@ class ProjectCleanupMixin:
                 {"items": trash_index["items"]},
                 keep_backup=False,
             )
+        if file_missing:
+            index["items"].pop(asset_id, None)
+            _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
+        return {"archived": asset_id, "file_missing": file_missing}
+
+    def trash_unreferenced_generation_media(self, project_id: str, asset_id: str, reason: str = "generation-orphan") -> bool:
+        """系统回收（#79/D3）：生成孤儿媒体移入回收区（7 天可恢复），替代静默硬删。
+
+        引用检查与 delete_media_if_unreferenced 一致：被画布节点或历史记录引用时不处理。
+        回收区条目可被回收区面板列出/恢复/彻底删除（恢复走 restore_trash_media）。
+        """
+        project_id = _store._clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            return False
+        with self._lock:
+            try:
+                self._archive_unreferenced_media_locked(project_id, asset_id, reason=reason)
+            except (_store.ProjectStoreError, _store.ProjectNotFound):
+                return False
             return True
+
+    def archive_unreferenced_media(self, project_id: str, asset_id: str, *, reason: str = "node-delete") -> Dict[str, Any]:
+        """用户触发的级联归档（issue #74 / D1）：节点/单图删除后，无其他引用的媒体移入回收区。
+
+        仍被画布节点或历史记录引用时抛 ProjectStoreError（前端以 409 处理并保留在库）；
+        文件缺失时仅清索引，归档视为成功。回收区条目可恢复（restore_trash_media）。
+        """
+        project_id = _store._clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            raise _store.ProjectStoreError("媒体资源标识无效")
+        with self._lock:
+            return self._archive_unreferenced_media_locked(project_id, asset_id, reason=reason)
 
     def restore_trash_media(self, project_id: str, asset_id: str, *, base_revision: int) -> Dict[str, Any]:
         """通用回收区恢复：把回收区内的媒体移回 media/ 并重新注册到资源库。

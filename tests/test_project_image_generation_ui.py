@@ -303,7 +303,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         # generationPlaceholderHtml was extended with completedImgs (progressive
         # completion: show finished thumbs in placeholder slots) and
         # candidatePhases (per-cell stage from backend progress.candidate_phases).
-        self.assertIn("function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[]){", self.source)
+        self.assertIn("function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[], taskInfo=null){", self.source)
         self.assertIn("if(node.pending){", self.source)
         self.assertNotIn("if(node.pending && imgs.length === 0){", self.source)
         self.assertIn("generation-placeholder", self.source)

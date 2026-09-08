@@ -665,6 +665,10 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .generation-placeholder { position:relative; display:grid; place-items:center; overflow:hidden; isolation:isolate; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent); }
 .generation-placeholder::after { content:""; position:absolute; inset:-35%; z-index:0; background:radial-gradient(circle, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 66%); animation:generation-placeholder-breathe 1.8s ease-in-out infinite; }
 .generation-placeholder-panel { position:relative; z-index:2; width:min(224px, calc(100% - 24px)); display:grid; justify-items:center; gap:10px; }
+.generation-placeholder-elapsed { color:var(--muted, #94a3b8); font-size:11px; font-weight:600; white-space:nowrap; }
+.generation-cancel-btn { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; border:1px solid color-mix(in srgb, var(--line) 80%, transparent); background:color-mix(in srgb, var(--card) 90%, transparent); color:var(--text); font-size:11px; font-weight:700; cursor:pointer; backdrop-filter:blur(8px); }
+.generation-cancel-btn:hover { border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); color:var(--accent); }
+.generation-cancel-btn:disabled { opacity:.55; cursor:wait; }
 .generation-placeholder-copy { position:relative; z-index:2; min-height:34px; padding:0 13px; border:1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius:999px; display:inline-flex; align-items:center; gap:8px; background:color-mix(in srgb, var(--card) 88%, transparent); color:var(--text); box-shadow:0 10px 28px rgba(15,23,42,.12); backdrop-filter:blur(10px); font-size:11px; font-weight:800; letter-spacing:.02em; white-space:nowrap; }
 .generation-placeholder-spinner { width:14px; height:14px; border:2px solid color-mix(in srgb, var(--accent) 24%, transparent); border-top-color:var(--accent); border-radius:50%; animation:generation-placeholder-spin .8s linear infinite; }
 .generation-placeholder-idx{font-size:12px;font-weight:650;color:#94a7c9;}
@@ -3342,6 +3346,10 @@ button.prompt-flow-context-image { cursor:pointer; }
     background:#ef4444; color:white;
 }
 .asset-delete-warning-confirm:hover { background:#dc2626; }
+.asset-delete-warning-wide {
+    background:transparent; color:#dc2626; border:1px solid #ef4444 !important;
+}
+.asset-delete-warning-wide:hover { background:rgba(239,68,68,.08); }
 
 /* 节点选中脉冲动画 */
 @keyframes node-selected-pulse-anim {

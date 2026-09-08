@@ -863,7 +863,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
                 project["id"], request, route, own_references,
             ))
         self.assertEqual(candidates[0]["value"], "/output/result.mp4")
-        fake_generate.assert_awaited_once_with(request, route, own_references)
+        fake_generate.assert_awaited_once_with(request, route, own_references, on_provider_task=None)
 
         fake_generate.reset_mock()
         with patch.object(main, "generate_project_video", fake_generate), self.assertRaises(main.ProjectStoreError):
@@ -1387,7 +1387,10 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertEqual(opened["logs"][-1]["status"], "failed")
         self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
         self.assertGreater(opened["logs"][-1]["createdAt"], 0)
-        self.assertEqual(self.store.list_media(project["id"]), [])
+        # #83: 失败任务保留已下载成功的视频（被失败记录引用，重试可取回），不再静默硬删
+        partial_items = self.store.list_media(project["id"])
+        self.assertEqual(len(partial_items), 1)
+        self.assertEqual([output["asset_id"] for output in opened["logs"][-1]["outputs"]], [partial_items[0]["asset_id"]])
 
         recover_provider = AsyncMock(return_value=([{"type": "b64", "value": good, "mime_type": "video/mp4"}], {}))
         retry = self.payload(base_revision=opened["revision"])
@@ -1395,7 +1398,10 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertEqual(recovered["status"], "succeeded", recovered)
         reopened = self.store.open_project(project["id"])["canvas"]
         self.assertEqual([item["status"] for item in reopened["logs"]], ["failed", "succeeded"])
+        # 重试产生的视频与半成品字节相同（同 sha256 → 同 asset_id），媒体库仍为 1 条；
+        # 节点展示重试结果，失败任务保留的半成品由失败记录引用。
         self.assertEqual(len(self.store.list_media(project["id"])), 1)
+        self.assertEqual(self.store.list_media(project["id"])[0]["asset_id"], partial_items[0]["asset_id"])
 
     def test_two_video_tasks_complete_concurrently_without_losing_project_results(self):
         project = self.store.create_project("视频并发")
