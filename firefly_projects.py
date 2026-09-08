@@ -1504,6 +1504,62 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             )
         )
 
+    @staticmethod
+    def _merge_generation_outputs(
+        old_outputs: List[Dict[str, Any]],
+        new_outputs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """#83: 同一任务/记录的 outputs 累加合并，按 asset_id 去重。
+
+        partial 逐张写回与 final 全量写回（或失败/取消取回兜底）都携带各自已归档的
+        输出；整体替换会让历史记录永远只剩最后一次写入的图（用户反馈「4 张生 3 张卡 1 张，
+        历史里永远只有 1 张」）。保留先出现顺序（完成顺序），已带 output_id 的条目
+        不被覆盖（_ensure_output_occurrence_ids 会保留既有 ID）。
+        """
+        merged: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in list(old_outputs or []) + list(new_outputs or []):
+            if not isinstance(item, dict):
+                merged.append(copy.deepcopy(item))
+                continue
+            asset_id = str(item.get("asset_id") or "").strip()
+            if asset_id:
+                if asset_id in seen:
+                    continue
+                seen.add(asset_id)
+            merged.append(copy.deepcopy(item))
+        return merged
+
+    @classmethod
+    def _node_owns_generated_output(
+        cls,
+        node: Any,
+        asset_id: str,
+        history_producer_ids: set,
+    ) -> bool:
+        """#63: 「节点是否为该资产的生成输出所有者」统一判定（三条批量删除路径共用）。
+
+        前端 run 状态机给所有 smart-image 节点盖 runStartedAt 戳并 autosave 回写，
+        单凭 run 字段会把「拖入图片的普通节点」误判为生成节点（误写
+        deletedOutputTombstones + 回退节点状态）。归属需同时满足：节点展示该资产，且
+        ① history_producer_ids 命中（历史记录 result_node_id 指向该节点且 outputs 含该资产），或
+        ② 有 run 快照且 images 条目带生成输出身份 output_id（complete_media_generation 归档时固化）。
+        """
+        if not isinstance(node, dict):
+            return False
+        asset_id = str(asset_id or "").strip()
+        if not asset_id:
+            return False
+        if asset_id not in cls._collect_asset_ids(node.get("images") or []):
+            return False
+        node_id = str(node.get("id") or "").strip()
+        if node_id and node_id in history_producer_ids:
+            return True
+        return cls._has_explicit_generation_metadata(node) and any(
+            isinstance(image, dict) and str(image.get("output_id") or "").strip()
+            for image in node.get("images") or []
+        )
+
     @classmethod
     def _active_generation_references_asset(cls, canvas: Dict[str, Any], asset_id: str) -> List[str]:
         blocking_task_ids: List[str] = []
@@ -1947,9 +2003,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     matching = deleted_ids.intersection(self._collect_asset_ids(node))
                     cleaned_node = copy.deepcopy(node)
                     if matching:
-                        owns_original = bool(
-                            deleted_ids.intersection(self._collect_asset_ids(node.get("images") or []))
-                            and (str(node.get("id") or "") in history_producer_ids or self._has_explicit_generation_metadata(node))
+                        # #63: 统一归属判定（拖入图片节点带 runStartedAt 戳不再误判为生成节点）
+                        owns_original = any(
+                            self._node_owns_generated_output(node, asset_id, history_producer_ids)
+                            for asset_id in deleted_ids
                         )
                         for asset_id in matching:
                             cleaned_node = self._remove_asset_references(cleaned_node, asset_id) or {}
@@ -2095,6 +2152,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas.pop("logs", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
             history = copy.deepcopy(self._histories.get(project_id, []))
+            replaced_prior_id = ""
             if require_pending:
                 prior = next(
                     (
@@ -2109,13 +2167,34 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     if isinstance(item, dict)
                 }
                 if prior is not None:
-                    if str(prior.get("status") or "") != str(clean_history.get("status") or ""):
+                    prior_status = str(prior.get("status") or "")
+                    new_status = str(clean_history.get("status") or "")
+                    merged_terminal = None
+                    if prior_status == "running" and new_status in {"failed", "timeout", "cancelled"}:
+                        # #83/#79: 终态写入 running 进度记录（同 id）——新 id 写入会让 running
+                        # 记录永远留在历史里；取消记录的 outputs=[] 又会丢掉 partial 已归档的图。
+                        # 可变字段以终态记录为准，outputs 按 asset_id 累加合并（失败/取消取回兑底）。
+                        merged_terminal = copy.deepcopy(prior)
+                        for key, value in clean_history.items():
+                            if key != "outputs":
+                                merged_terminal[key] = copy.deepcopy(value)
+                        merged_terminal["outputs"] = self._merge_generation_outputs(
+                            merged_terminal.get("outputs") or [],
+                            clean_history.get("outputs") or [],
+                        )
+                        # 合并记录携带终态记录的新 id，旧 running 记录（progress id）需一并移除，
+                        # 否则历史里会留下两条同内容的记录。
+                        replaced_prior_id = str(prior.get("id") or "")
+                    elif prior_status != new_status:
                         raise InvalidMutation("生成任务已结束，无法写入另一个终态")
                     if clean_task_id not in pending_ids:
                         result = copy.deepcopy(opened)
                         result["logs"] = history
                         return result
-                    clean_history = copy.deepcopy(prior)
+                    if merged_terminal is not None:
+                        clean_history = merged_terminal
+                    else:
+                        clean_history = copy.deepcopy(prior)
                 elif clean_task_id not in pending_ids:
                     raise InvalidMutation("生成任务已结束，无法写入终态")
             if node is not None:
@@ -2130,10 +2209,14 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 node["running"] = False
                 node.pop("queued", None)
             history_id = str(clean_history.get("id") or "") if isinstance(clean_history, dict) else ""
-            if history_id:
-                history = [item for item in history if str(item.get("id") or "") != history_id]
+            replace_ids = {value for value in (history_id, replaced_prior_id) if value}
+            if replace_ids:
+                history = [item for item in history if str(item.get("id") or "") not in replace_ids]
             history.append(clean_history)
             self._histories[project_id] = history[-5000:]
+            # 终态记录（失败/取消取回兑底）的 outputs 也需要稳定的生成输出身份，
+            # 否则历史抽屉无法对取回的图做单张删除（T4 同源问题）。
+            self._ensure_output_occurrence_ids(canvas, history)
             self._persist_history(project_id)
             result = self._commit_generation_canvas(project_id, canvas)
             status = str(clean_history.get("status") or "") if isinstance(clean_history, dict) else ""
@@ -2391,9 +2474,31 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     node["pending"] = 0
                     node.pop("_generationBatchApplied", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
+            # #83: 同 id 的 partial 逐张写回 + final 全量写回是累加合并——整体替换会让
+            # 历史记录永远只剩最后一次写入的 outputs（节点 images 早已累加，两边会分裂）。
             if history_id:
-                history = [item for item in history if str(item.get("id") or "") != history_id]
-            history.append(clean_history)
+                existing_index = next(
+                    (
+                        index
+                        for index, item in enumerate(history)
+                        if isinstance(item, dict) and str(item.get("id") or "") == history_id
+                    ),
+                    None,
+                )
+                if existing_index is None:
+                    history.append(clean_history)
+                else:
+                    merged_record = copy.deepcopy(history[existing_index])
+                    for key, value in clean_history.items():
+                        if key != "outputs":
+                            merged_record[key] = copy.deepcopy(value)
+                    merged_record["outputs"] = self._merge_generation_outputs(
+                        merged_record.get("outputs") or [],
+                        clean_history.get("outputs") or [],
+                    )
+                    history[existing_index] = merged_record
+            else:
+                history.append(clean_history)
             history = history[-5000:]
             self._histories[project_id] = history
             # prune merge ledger 到仍存活的 history id，避免无限增长。
@@ -2408,24 +2513,36 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             # history_record（任务结果会把它返回给前端合并进 canvas.logs）。
             # 此前任务结果携带的是 deepcopy 前的无 ID 副本，导致刚生成的图
             # 在画布历史里无法删除（output_id 为空），刷新后才会恢复。
+            # #83: 累加合并后 canonical 记录的 outputs 顺序与调用方不一致（旧 partial
+            # 在前、本次新增在后、按 asset_id 去重），索引对齐会错位——改为按 asset_id 匹配回填。
             if history_id and isinstance(history_record, dict):
                 caller_outputs = history_record.get("outputs")
                 if isinstance(caller_outputs, list):
-                    for output_index, canonical_item in enumerate(
-                        clean_history.get("outputs") or []
-                    ):
-                        if (
-                            output_index < len(caller_outputs)
-                            and isinstance(caller_outputs[output_index], dict)
-                            and isinstance(canonical_item, dict)
-                        ):
-                            caller_output = caller_outputs[output_index]
-                            # 只回填缺失的 ID：partial 逐张写回已固化过的 ID
-                            # 不能覆盖（final 写回按位置重算会与节点镜像错位）。
-                            if not caller_output.get("output_id") and canonical_item.get("output_id"):
-                                caller_output["output_id"] = canonical_item["output_id"]
-                            if caller_output.get("output_order") is None and canonical_item.get("output_order") is not None:
-                                caller_output["output_order"] = canonical_item["output_order"]
+                    canonical_record = next(
+                        (
+                            item
+                            for item in history
+                            if isinstance(item, dict) and str(item.get("id") or "") == history_id
+                        ),
+                        None,
+                    )
+                    canonical_by_asset = {
+                        str(output.get("asset_id") or "").strip(): output
+                        for output in (canonical_record.get("outputs") or []) if isinstance(output, dict)
+                        if str(output.get("asset_id") or "").strip()
+                    } if isinstance(canonical_record, dict) else {}
+                    for caller_output in caller_outputs:
+                        if not isinstance(caller_output, dict):
+                            continue
+                        canonical_item = canonical_by_asset.get(str(caller_output.get("asset_id") or "").strip())
+                        if not isinstance(canonical_item, dict):
+                            continue
+                        # 只回填缺失的 ID：partial 逐张写回已固化过的 ID
+                        # 不能覆盖。
+                        if not caller_output.get("output_id") and canonical_item.get("output_id"):
+                            caller_output["output_id"] = canonical_item["output_id"]
+                        if caller_output.get("output_order") is None and canonical_item.get("output_order") is not None:
+                            caller_output["output_order"] = canonical_item["output_order"]
             self._persist_history(project_id)
             result = self._commit_generation_canvas(project_id, canvas)
             self._set_generated_media_lifecycle(

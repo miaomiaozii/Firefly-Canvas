@@ -388,7 +388,11 @@ async function performUndo(){
         redoStack.push(snapshotForUndo());
         if(redoStack.length > UNDO_LIMIT) redoStack.shift();
         undoSuppressed = true;
-        nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
+        // #62 B-5(L2): 兜底过滤——快照里引用的媒体若已被硬删（悬空 asset_id），
+        // 服务端 upsert 校验会 400「项目媒体不存在」，画布会进入持续保存失败死锁。
+        const restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
+        if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
         selectedId = snap.selectedId;
         selectedIds = snap.selectedIds;
@@ -413,7 +417,10 @@ async function performRedo(){
         pushUndo();
         redoPushing = false;
         undoSuppressed = true;
-        nodes = snap.nodes; if(canvas) canvas.nodes = nodes;
+        // #62 B-5(L2): 同 performUndo——过滤已硬删媒体的悬空引用，避免保存死锁。
+        const restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
+        if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
         selectedId = snap.selectedId;
         selectedIds = snap.selectedIds;
@@ -423,11 +430,65 @@ async function performRedo(){
         render();
         scheduleSave();
         undoSuppressed = false;
-        toast(tr('smart.toastUndone'));
+        toast(tr('smart.toastRedone'));
         syncUndoRedoButtons();
         return;
     }
     toast(tr('smart.toastNoRedo'));
+    syncUndoRedoButtons();
+}
+
+// #62 B-5(L2): 应用 undo/redo 快照前，剔除项目媒体已不存在（已硬删）的 image 引用。
+// 资源库未加载（空）时无法判定，跳过过滤——由保存 400 自愈（C-4）兑底。
+function filterDanglingProjectMediaImages(snapshotNodes){
+    const libraryItems = projectMediaLibrary?.items || [];
+    if(!Array.isArray(snapshotNodes) || !libraryItems.length) return {nodes: snapshotNodes, dropped: 0};
+    const liveAssets = new Set(libraryItems.map(item => String(item?.asset_id || '')).filter(Boolean));
+    let dropped = 0;
+    const nodes = snapshotNodes.map(node => {
+        if(!node || !Array.isArray(node.images)) return node;
+        const images = node.images.filter(image => {
+            const assetId = String(image?.asset_id || '');
+            return !assetId || liveAssets.has(assetId);
+        });
+        if(images.length === node.images.length) return node;
+        dropped += node.images.length - images.length;
+        return {...node, images};
+    });
+    return {nodes, dropped};
+}
+
+// #62 B-5(L1): 媒体硬删成功后，移除仍引用它的 undo/redo 快照（返回移除数量）。
+// 快照里的悬空引用会让下一次保存 400「项目媒体不存在」，画布进入持续保存失败死锁。
+function stripDeletedMediaFromUndoStacks(assetId){
+    if(!assetId) return 0;
+    let removed = 0;
+    const stripFrom = stack => {
+        for(let index = stack.length - 1; index >= 0; index--){
+            const snap = stack[index];
+            if(!snap || !Array.isArray(snap.nodes)) continue;
+            const hit = snap.nodes.some(node => Array.isArray(node?.images) && node.images.some(image => String(image?.asset_id || '') === assetId));
+            if(hit){ stack.splice(index, 1); removed += 1; }
+        }
+    };
+    stripFrom(undoStack);
+    stripFrom(redoStack);
+    if(removed) syncUndoRedoButtons();
+    return removed;
+}
+
+// #73: 清理与删除身份匹配的 projectOriginalDelete undo 令牌（彻底删除后恢复目标已不存在）。
+function removeProjectOriginalUndoTokens(assetId, deletionId, projectId){
+    if(!assetId) return;
+    const match = token => token && token.assetId === assetId
+        && (!deletionId || token.deletionId === deletionId)
+        && (token.projectId || projectId) === projectId;
+    for(let index = undoStack.length - 1; index >= 0; index--){
+        if(match(undoStack[index]?.projectOriginalDelete)) undoStack.splice(index, 1);
+    }
+    for(let index = redoStack.length - 1; index >= 0; index--){
+        if(match(redoStack[index]?.projectOriginalDelete)) redoStack.splice(index, 1);
+    }
     syncUndoRedoButtons();
 }
 let cropState = null;
@@ -6518,6 +6579,8 @@ function bindAssetItemEvents(){
                     if(res.status === 404){
                         toast(tr('smart.assetDeleted'));
                         removeProjectMediaFromCache(assetId);
+                        // #62 B-5(L1): 同批量删除——剔除引用该媒体的 undo/redo 快照。
+                        if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
                         if(assetLibraryIsProject()) renderAssetLibrary();
                         btn.disabled = false;
                         return;
@@ -6553,6 +6616,8 @@ function bindAssetItemEvents(){
                 }
                 // 刷新资产库
                 removeProjectMediaFromCache(assetId);
+                // #62 B-5(L1): 硬删成功后剔除引用该媒体的 undo/redo 快照，避免悬空引用导致保存死锁。
+                if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
                 if(assetLibraryIsProject()) renderAssetLibrary();
             } catch(err){
                 btn.disabled = false;
@@ -6665,18 +6730,26 @@ async function smartAssetBatchDelete(){
             });
             const data = await res.json().catch(() => ({}));
             const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
+            // #59: 409 = 画布版本冲突、服务端未执行删除——不能计成功，更不能从本地缓存
+            // 移除（此前误计 okCount 并移除，出现「已删除 n 个」假成功而资源下次重渲染复现）。
+            // 409 时先 hydrate 服务端返回的最新画布，用新版本继续处理剩余资产。
+            let deleted = false;
             if(res.ok || res.status === 404){
                 if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+                deleted = true;
+            } else if(res.status === 409){
+                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+            }
+            if(deleted){
                 okCount += 1;
-            } else if(res.status === 409 && nextCanvas){
-                syncProjectCanvasFromResponse(nextCanvas);
-                okCount += 1;
+                assetBatchSelected.delete(assetId);
+                removeProjectMediaFromCache(assetId);
+                // #62 B-5(L1): 硬删成功的媒体从 undo/redo 快照栈中剔除，避免悬空引用导致保存死锁。
+                if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
             } else {
                 failCount += 1;
             }
         } catch(_){ failCount += 1; }
-        assetBatchSelected.delete(assetId);
-        removeProjectMediaFromCache(assetId);
         updateAssetBatchBar();
     }
     // 3) 刷新 + 汇总提示
@@ -6770,33 +6843,45 @@ function closeSmartTrashPanel(){
 if(smartTrashCloseBtn) smartTrashCloseBtn.onclick = closeSmartTrashPanel;
 if(smartTrashBackdrop) smartTrashBackdrop.addEventListener('mousedown', e => { if(e.target === smartTrashBackdrop) closeSmartTrashPanel(); });
 if(smartTrashPurgeBtn) smartTrashPurgeBtn.onclick = () => {
-    purgeSmartProjectMediaTrash();
-    setTimeout(() => void openSmartTrashPanel(), 400);
+    // #73: 不再 400ms 盲等重开（面板会显示旧列表）——purgeSmartProjectMediaTrash
+    // 成功后自行 await 重开。
+    void purgeSmartProjectMediaTrash();
 };
-// 单个恢复：走服务端 /original/restore（与画布内联恢复同一后端流）
+// 单个恢复：有 deletion_id 走服务端 /original/restore（生成输出 occurrence 恢复，还原画布引用）；
+// 无 deletion_id（如生成孤儿回收，#79）走 /trash/media/restore（通用恢复，只移回资源库）。
 async function smartTrashRestoreItem(assetId, deletionId){
     const projectId = smartProjectId();
     if(!assetId || !projectId || smartTrashRestoring) return;
     smartTrashRestoring = true;
     try {
-        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/restore`, {
+        const restoreUrl = deletionId
+            ? `/api/project-library/${encodeURIComponent(projectId)}/original/restore`
+            : `/api/project-library/${encodeURIComponent(projectId)}/trash/media/restore`;
+        const res = await fetch(restoreUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 asset_id: assetId,
                 base_revision: Number(canvas?.revision || 0),
-                deletion_id: deletionId || ''
+                ...(deletionId ? {deletion_id: deletionId} : {})
             })
         });
         const data = await res.json().catch(() => ({}));
-        if(res.status === 409 && data?.detail?.canvas){
-            syncProjectCanvasFromResponse(data.detail.canvas);
-        } else if(res.ok && data?.canvas){
-            syncProjectCanvasFromResponse(data.canvas);
-        } else if(!res.ok){
+        // #61: 409 = 画布版本冲突、服务端未恢复——不能提示成功（此前无条件 toast「原图已恢复」）。
+        if(res.status === 409){
+            if(data?.detail?.canvas) syncProjectCanvasFromResponse(data.detail.canvas);
+            const msg = typeof data?.detail?.message === 'string' ? data.detail.message : tr('smart.projectConflict');
+            toast(msg);
+            renderSmartCanvasLog();
+            refreshSmartProjectMediaTrashButton();
+            await openSmartTrashPanel();
+            return;
+        }
+        if(!res.ok){
             const msg = typeof data?.detail === 'string' ? data.detail : tr('smart.trashRestoreFailed');
             throw new Error(msg);
         }
+        if(data?.canvas) syncProjectCanvasFromResponse(data.canvas);
         toast(tr('canvas.originalRestored'));
         renderSmartCanvasLog();
         refreshSmartProjectMediaTrashButton();
@@ -6809,18 +6894,25 @@ async function smartTrashRestoreItem(assetId, deletionId){
 }
 let smartTrashRestoring = false;
 // 单个彻底删除：仅清回收区条目，不影响画布（资源早已从画布清除）
+let smartTrashPurging = false;
 async function smartTrashPurgeItem(assetId){
     const projectId = smartProjectId();
-    if(!assetId || !projectId) return;
+    if(!assetId || !projectId || smartTrashPurging) return;
     if(!confirm(tr('smart.trashForeverConfirm'))) return;
+    smartTrashPurging = true;
     try {
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media?asset_id=${encodeURIComponent(assetId)}`, {method: 'DELETE'});
-        if(!res.ok) throw new Error('purge failed');
+        if(!res.ok) throw new Error(tr('smart.trashPurgeFailed'));
+        // #73: 条目被彻底删除后，对应的撤销令牌已失效——清掉匹配的 projectOriginalDelete
+        // 令牌，避免「撤销」尝试恢复已清除的资产而报误导错误（此前令牌留在栈里）。
+        removeProjectOriginalUndoTokens(assetId, '', projectId);
         toast(tr('smart.trashPurged'));
         refreshSmartProjectMediaTrashButton();
         await openSmartTrashPanel();
     } catch(err){
         toast(err?.message || tr('smart.trashPurgeFailed'));
+    } finally {
+        smartTrashPurging = false;
     }
 }
 
@@ -6907,19 +6999,29 @@ async function smartUnusedCleanAll(){
             });
             const data = await res.json().catch(() => ({}));
             const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
+            // #60: 同 #59——409 是服务端未执行删除，不计成功、不移除本地缓存。
+            let deleted = false;
             if(res.ok || res.status === 404){
                 if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+                deleted = true;
+            } else if(res.status === 409){
+                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
+            }
+            if(deleted){
                 okCount += 1;
-            } else if(res.status === 409 && nextCanvas){
-                syncProjectCanvasFromResponse(nextCanvas);
-                okCount += 1;
+                removeProjectMediaFromCache(assetId);
+                // #62 B-5(L1): 同批量删除——剔除悬空快照。
+                if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
             } else {
                 failCount += 1;
             }
         } catch(_){ failCount += 1; }
-        removeProjectMediaFromCache(assetId);
     }
     if(assetLibraryIsProject()) renderAssetLibrary();
+    // #60: 删除会影响历史引用的媒体时，同步刷新历史列表与回收区入口按钮（此前不刷新，
+    // 历史卡片/按钮状态滞后到下次手动打开面板）。
+    renderSmartCanvasLog();
+    refreshSmartProjectMediaTrashButton();
     if(failCount > 0) toast(tr('smart.unusedCleanPartial').replace('{ok}', String(okCount)).replace('{fail}', String(failCount)));
     else toast(tr('smart.unusedCleanDone').replace('{n}', String(okCount)));
     smartUnusedBusy = false;
@@ -7099,15 +7201,15 @@ async function deleteLocalAssetFromPanel(itemId){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({names:[item.file || item.id]})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '删除失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.localAssetDeleteFail'));
             return r.json();
         });
         const localData = await fetch('/api/local-assets').then(r => r.ok ? r.json() : {items:[], tree:null});
         setLocalAssetLibraryFromResponse(localData);
         renderAssetLibrary();
-        toast(data.deleted?.length ? '已删除本地素材' : '未找到要删除的本地素材');
+        toast(data.deleted?.length ? tr('smart.localAssetDeleted') : tr('smart.localAssetNotFound'));
     } catch(err){
-        toast(err.message || '删除失败');
+        toast(err.message || tr('smart.localAssetDeleteFail'));
     }
 }
 function canvasImageDragPayload(node, index=0){
@@ -7381,10 +7483,52 @@ async function saveCoreCanvasIncrementally(storageCanvas){
                 const conflict = await response.json().catch(() => ({}));
                 return {status:409, canvas:conflict?.detail?.canvas || null};
             }
+            if(response.status === 400){
+                // #62 C-4: InvalidMutation 类 400（如「项目媒体不存在」——undo/redo 复活的
+                // 悬空引用）重试多少次都不会成功——返回标记让调用方触发自愈
+                // （rebase 服务端画布），而不是无限重试进入错误状态。
+                const errBody = await response.json().catch(() => ({}));
+                const detail = typeof errBody?.detail === 'string' ? errBody.detail : '';
+                if(/项目媒体不存在|project media not found/i.test(detail)){
+                    return {status:400, invalidMutation:true, invalidMutationMessage:detail};
+                }
+            }
             if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.toastSaveFail')));
             return {status:response.status, ...(await response.json())};
         },
     });
+    // #62 C-4: 悬空媒体引用自愈——本地状态永远存不上时，放弃本次不可保存的修改，
+    // 以服务端画布为准 rebase（服务端画布不含悬空引用），一次性提示用户。
+    if(flushResult.response?.invalidMutation){
+        const projectId = canvas.project_id || canvas.project || canvasId;
+        try {
+            const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/canvas`);
+            if(res.ok){
+                const body = await res.json().catch(() => ({}));
+                const serverCanvas = body?.canvas || body;
+                if(serverCanvas && Array.isArray(serverCanvas.nodes)){
+                    canvas = {...serverCanvas};
+                    const restoredNodes = filterDanglingProjectMediaImages(
+                        (serverCanvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean)
+                    );
+                    nodes = restoredNodes.nodes;
+                    canvas.nodes = nodes;
+                    canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(serverCanvas.logs || []));
+                    canvas.connections = Array.isArray(serverCanvas.connections) ? serverCanvas.connections : [];
+                    persistedCoreSnapshot = projectCanvasSnapshot(serverCanvas);
+                    persistedDurableSnapshot = durableSnapshotForCanvas(serverCanvas);
+                    applyViewport();
+                    render();
+                    setProjectSaveState('saved', tr('smart.projectSaved'));
+                    toast(tr('smart.toastDanglingMediaDropped'));
+                    return {saved:true, hasLateChanges:false};
+                }
+            }
+        } catch(_){ /* 自愈失败落入下方错误路径 */ }
+        setProjectSaveState('error', tr('smart.projectConflict'));
+        toast(flushResult.response?.invalidMutationMessage || tr('smart.toastSaveFail'));
+        return {saved:false, hasLateChanges:false};
+    }
     if(!flushResult.saved){
         if(flushResult.response?.status >= 200 && flushResult.response?.status < 300){
             throw new Error('后台保存未在 2 秒内完成');
@@ -9433,11 +9577,11 @@ function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
         outputIndex:requestedOutput.outputIndex,
         outputId:String(requestedOutput.output_id || ''),
     };
-    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || '未记录';
+    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || tr('canvas.logUnrecorded');
     box.querySelector('.smart-log-detail-time').textContent = timestamp
         ? new Date(timestamp).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN')
-        : '未记录';
-    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || '未记录提示词');
+        : tr('canvas.logUnrecorded');
+    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || tr('canvas.logNoPrompt'));
     renderSmartLogDetailOutputs(box);
     box.classList.add('open');
     box.setAttribute('aria-hidden', 'false');
@@ -9854,13 +9998,23 @@ async function purgeSmartProjectMediaTrash(){
         const projectId = canvas.project_id || canvas.project || canvasId;
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media`, {method:'DELETE'});
         const data = await response.json().catch(() => ({}));
-        if(!response.ok) throw new Error(data.detail || tr('canvas.originalDeleteFailed'));
-        for(let index = undoStack.length - 1; index >= 0; index--){
-            const token = undoStack[index]?.projectOriginalDelete;
-            if(token && (token.projectId || projectId) === projectId) undoStack.splice(index, 1);
-        }
+        if(!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : tr('canvas.originalDeleteFailed'));
+        // #73: 清空后回收区条目全部消失，恢复目标不复存在——清掉本项目所有
+        // projectOriginalDelete 令牌。此前只清 undoStack，redoStack 里的残留令牌
+        // 重做后按「撤销」会报误导错误。
+        const clearTokens = stack => {
+            for(let index = stack.length - 1; index >= 0; index--){
+                const token = stack[index]?.projectOriginalDelete;
+                if(token && (token.projectId || projectId) === projectId) stack.splice(index, 1);
+            }
+        };
+        clearTokens(undoStack);
+        clearTokens(redoStack);
+        syncUndoRedoButtons();
         smartHistoryPurgeTrash.hidden = true;
         toast(tr('canvas.projectTrashCleared'));
+        // #73: 面板打开时 await 重开（列表已空），不再 400ms 盲等显示旧列表。
+        if(smartTrashBackdrop && !smartTrashBackdrop.hidden) await openSmartTrashPanel();
     } catch(err){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
     } finally {
@@ -9886,7 +10040,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const modelMeta = historyLogModelMeta(log);
         const subParts = [
             date,
-            `${window.StudioI18n?.lang() === 'en' ? 'outputs' : '输出'} ${outputs.length}`,
+            tr('canvas.logOutputsCount').replace('{n}', String(outputs.length)),
             sizeSummary,
             taskId ? `ID ${taskId}` : '',
             backend
@@ -9965,7 +10119,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
             <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
             <div class="log-main">
                 <div class="log-meta">
-                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? '已取消' : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
+                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? tr('canvas.logCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
                     <span class="log-chip">${escapeHtml(log.platform || log.actual_provider_name || '-')}</span>
                     ${modelMeta.label ? `<span class="log-chip model-chip" title="${escapeAttr(modelMeta.raw)}">${escapeHtml(modelMeta.label)}</span>` : ''}
                     ${resolutionTier ? `<span class="log-chip resolution-chip">${escapeHtml(resolutionTier)}</span>` : ''}
@@ -9976,8 +10130,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
                  ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><i data-lucide="book-open-text"></i></button>` : ''}
              </div>
              <div class="log-buttons">
-                  ${pending && projectTask ? `<button type="button" data-log-cancel-task="${escapeAttr(taskId)}" title="取消这个任务" aria-label="取消这个任务"><i data-lucide="square"></i><span>取消任务</span></button>` : ''}
-                  ${failed && projectTask ? `<button type="button" data-log-retry-task="${escapeAttr(taskId)}" title="重试这个任务" aria-label="重试这个任务"><i data-lucide="rotate-cw"></i><span>重试任务</span></button>` : ''}
+                  ${pending && projectTask ? `<button type="button" data-log-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.logCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.logCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('canvas.logCancelTask'))}</span></button>` : ''}
+                  ${failed && projectTask ? `<button type="button" data-log-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.logRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.logRetryTaskTitle'))}"><i data-lucide="rotate-cw"></i><span>${escapeHtml(tr('canvas.logRetryTask'))}</span></button>` : ''}
                   ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-log-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
                   ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-log-delete-original="${String(first.output_id || '').trim()}" data-log-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
                   ${!pending && deletedOriginalAssetId ? `<button type="button" data-log-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
@@ -13638,7 +13792,7 @@ function deleteImage(id, imageIndex){
             node._batchTotal = node.images.length;
         }
     }
-    if(node.images.length <= 1) node.title = 'Image';
+    if(node.images.length <= 1) node.title = tr('smart.nodeTitleImage');
     if(selectedImage.nodeId === id) selectedImage = {nodeId:id, index:Math.min(selectedImage.index, node.images.length - 1)};
     if(selectedImage.index < 0) selectedImage = {nodeId:'', index:-1};
     render();

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -464,4 +465,160 @@ class ProjectCleanupMixin:
                 path.unlink(missing_ok=True)
             _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
             return True
+
+    # 回收区条目中仅属于「删除时附加」的字段；恢复时剥离后剩余部分就是原媒体索引记录。
+    _TRASH_ONLY_FIELDS = frozenset({
+        "deleted_at", "expires_at", "media_filename", "preview_filenames",
+        "reason", "undo", "deletion_id", "deleted_output_id", "name",
+    })
+
+    def trash_unreferenced_generation_media(self, project_id: str, asset_id: str, reason: str = "generation-orphan") -> bool:
+        """系统回收（#79/D3）：生成孤儿媒体移入回收区（7 天可恢复），替代静默硬删。
+
+        引用检查与 delete_media_if_unreferenced 一致：被画布节点或历史记录引用时不处理。
+        回收区条目可被回收区面板列出/恢复/彻底删除（恢复走 restore_trash_media）。
+        """
+        project_id = _store._clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            return False
+        with self._lock:
+            opened = self.open_project(project_id)["canvas"]
+            referenced = self._collect_asset_ids(opened.get("nodes") or [])
+            referenced.update(self._collect_asset_ids(self._histories.get(project_id, [])))
+            if asset_id in referenced:
+                return False
+            index = self._load_media_index(project_id)
+            record = index["items"].get(asset_id)
+            if not isinstance(record, dict):
+                return False
+            project_dir = self._project_directory(project_id)
+            media_root = (project_dir / "media").resolve()
+            path = (media_root / str(record.get("filename") or "")).resolve()
+            if os.path.commonpath([str(media_root), str(path)]) != str(media_root):
+                return False
+            if not path.is_file():
+                index["items"].pop(asset_id, None)
+                _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
+                return True
+            preview_root = (project_dir / "previews").resolve()
+            preview_files = sorted(
+                (p for p in preview_root.glob(f"{asset_id}-*") if p.is_file()),
+                key=lambda p: p.name,
+            ) if preview_root.is_dir() else []
+            deleted_at = _store._now_ms()
+            item = copy.deepcopy(record)
+            item.update({
+                "asset_id": asset_id,
+                "deleted_at": deleted_at,
+                "expires_at": deleted_at + _store.MEDIA_TRASH_RETENTION_MS,
+                "media_filename": path.name,
+                "preview_filenames": [p.name for p in preview_files],
+                "reason": reason,
+            })
+            trash_media_root = self._safe_project_path(project_dir, (Path("trash") / "media").as_posix())
+            trash_preview_root = self._safe_project_path(project_dir, (Path("trash") / "previews").as_posix())
+            trash_media_root.mkdir(parents=True, exist_ok=True)
+            trash_preview_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(trash_media_root / path.name))
+            for preview in preview_files:
+                shutil.move(str(preview), str(trash_preview_root / preview.name))
+            trash_index = self._load_media_trash_index(project_id)
+            trash_index["items"] = [
+                candidate for candidate in trash_index.get("items", [])
+                if not (isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id)
+            ]
+            trash_index["items"].append(item)
+            index["items"].pop(asset_id, None)
+            _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
+            _store._write_json_atomic(
+                self._safe_project_path(project_dir, "trash/index.json"),
+                {"items": trash_index["items"]},
+                keep_backup=False,
+            )
+            return True
+
+    def restore_trash_media(self, project_id: str, asset_id: str, *, base_revision: int) -> Dict[str, Any]:
+        """通用回收区恢复：把回收区内的媒体移回 media/ 并重新注册到资源库。
+
+        与 restore_deleted_original（生成输出 occurrence 恢复，需 deletion_id + 撤销快照）
+        互补：不带撤销身份的回收条目（如生成孤儿回收）只恢复文件与索引，不恢复画布引用。
+        """
+        project_id = _store._clean_project_id(project_id)
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            raise _store.ProjectStoreError("媒体资源标识无效")
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                opened = self.open_project(project_id)["canvas"]
+                current_revision = int(opened.get("revision") or 0)
+                if int(base_revision) != current_revision:
+                    raise _store.RevisionConflict(opened)
+                self._cleanup_expired_deleted_media_locked(project_id)
+                trash_index = self._load_media_trash_index(project_id)
+                item = next(
+                    (
+                        candidate for candidate in trash_index.get("items", [])
+                        if isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id
+                    ),
+                    None,
+                )
+                if item is None:
+                    raise _store.ProjectNotFound("项目回收区中不存在该媒体")
+                referenced = self._collect_asset_ids(opened.get("nodes") or [])
+                referenced.update(self._collect_asset_ids(self._histories.get(project_id, [])))
+                if asset_id in referenced:
+                    raise _store.ProjectStoreError("该媒体已被画布引用，无需恢复")
+                index = self._load_media_index(project_id)
+                if asset_id in index["items"]:
+                    raise _store.ProjectStoreError("该媒体已存在，无需恢复")
+                media_filename = str(item.get("media_filename") or "").strip()
+                if not media_filename:
+                    raise _store.ProjectStoreError("该项目回收记录缺少媒体文件")
+                project_dir = self._project_directory(project_id)
+                trash_media_path = self._safe_project_path(
+                    project_dir,
+                    (Path("trash") / "media" / media_filename).as_posix(),
+                )
+                if not trash_media_path.is_file():
+                    raise _store.ProjectNotFound("回收区媒体文件不存在")
+                media_root = self._safe_project_path(project_dir, "media")
+                media_root.mkdir(parents=True, exist_ok=True)
+                preview_names = item.get("preview_filenames") if isinstance(item.get("preview_filenames"), list) else []
+                preview_root = project_dir / "previews"
+                restore_record = {
+                    key: value for key, value in item.items() if key not in self._TRASH_ONLY_FIELDS
+                }
+                restore_record["asset_id"] = asset_id
+                shutil.move(str(trash_media_path), str(media_root / media_filename))
+                for name in preview_names:
+                    if not isinstance(name, str) or not name:
+                        continue
+                    source = self._safe_project_path(
+                        project_dir,
+                        (Path("trash") / "previews" / name).as_posix(),
+                    )
+                    if source.is_file():
+                        preview_root.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(source), str(preview_root / name))
+                index["items"][asset_id] = restore_record
+                trash_index["items"] = [
+                    candidate for candidate in trash_index.get("items", [])
+                    if not (isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id)
+                ]
+                _store._write_json_atomic(media_root / "index.json", index, keep_backup=False)
+                _store._write_json_atomic(
+                    self._safe_project_path(project_dir, "trash/index.json"),
+                    {"items": trash_index["items"]},
+                    keep_backup=False,
+                )
+                canvas = copy.deepcopy(opened)
+                canvas.pop("logs", None)
+                canvas["revision"] = current_revision + 1
+                canvas["updated_at"] = max(_store._now_ms(), int(canvas.get("updated_at") or 0) + 1)
+                self._canvases[project_id] = canvas
+                self._schedule_snapshot(project_id)
+                result = copy.deepcopy(canvas)
+                result["logs"] = copy.deepcopy(self._histories.get(project_id, []))
+                return {"canvas": result, "restored": asset_id}
 

@@ -207,6 +207,10 @@ class ProjectOriginalRestoreRequest(BaseModel):
     base_revision: int = Field(ge=0)
     deletion_id: str = Field(min_length=1, max_length=200)
 
+class ProjectTrashRestoreRequest(BaseModel):
+    asset_id: str
+    base_revision: int = Field(ge=0)
+
 class ProjectOriginalProjectWideRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
@@ -1629,7 +1633,10 @@ async def cleanup_project_generation_orphans(project_id: str):
                 candidates = PROJECT_IMAGE_GENERATION_ORPHANS.pop(project_id, set()) | PROJECT_VIDEO_GENERATION_ORPHANS.pop(project_id, set())
             for asset_id in candidates:
                 try:
-                    _app_main.project_store_call('delete_media_if_unreferenced', project_id, asset_id)
+                    # #79/D3: 系统回收默认进回收区（7 天可恢复），不再静默硬删。
+                    # 记录层修复（#83）后，取消/失败的已归档图会被历史引用而留在资源库；
+                    # 这里只处理真正的孤儿（记录层故障/重启竞态），移入回收区供用户找回。
+                    _app_main.project_store_call('trash_unreferenced_generation_media', project_id, asset_id)
                 except Exception:
                     continue
     await asyncio.to_thread(cleanup)
@@ -3804,6 +3811,27 @@ async def list_project_media_trash(project_id: str):
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {'items': items}
+
+@router.post('/api/project-library/{project_id}/trash/media/restore')
+async def restore_project_trash_media(project_id: str, payload: ProjectTrashRestoreRequest):
+    """通用回收区恢复（无撤销身份的条目：只移回文件与资源库，不恢复画布引用）。"""
+    try:
+        result = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'restore_trash_media',
+            project_id,
+            payload.asset_id,
+            base_revision=payload.base_revision,
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    canvas = result['canvas']
+    await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
+    return {'ok': True, 'canvas': canvas, 'restored': result['restored']}
 
 @router.delete('/api/project-library/{project_id}/trash/media')
 async def purge_project_media_trash(project_id: str, asset_id: str | None=None):

@@ -763,12 +763,8 @@ class ProjectDeletionMixin:
 
                 nodes = []
                 for node in copy.deepcopy(opened["canvas"].get("nodes") or []):
-                    node_id = str(node.get("id") or "")
-                    displays_original = asset_id in self._collect_asset_ids(node.get("images") or [])
-                    owns_original = displays_original and (
-                        node_id in history_producer_ids
-                        or self._has_explicit_generation_metadata(node)
-                    )
+                    # #63: 统一归属判定（run 字段 + output_id 身份，避免拖入图节点误判）
+                    owns_original = self._node_owns_generated_output(node, asset_id, history_producer_ids)
                     directly_references_original = asset_id in self._collect_asset_ids(node)
                     cleaned_node = self._remove_asset_references(node, asset_id) or {}
                     if owns_original:
@@ -918,18 +914,11 @@ class ProjectDeletionMixin:
                     if asset_id not in self._collect_asset_ids(node):
                         nodes.append(node)
                         continue
-                    node_id = str(node.get("id") or "")
-                    displays_asset = asset_id in self._collect_asset_ids(node.get("images") or [])
-                # 普通引用节点（前端 run 状态机会给所有 smart-image 节点盖 runStartedAt 戳，
-                # 单凭 run 字段会把「拖入图片的节点」误判为生成节点）。生成输出归属需同时满足：
-                # 有 run 快照，且 images 条目带有生成输出身份（output_id，由 complete_media_generation 固化）。
-                    owns_generation = self._has_explicit_generation_metadata(node) and any(
-                        isinstance(img, dict) and img.get("output_id")
-                        for img in node.get("images") or []
-                    )
-                    owns_output = displays_asset and (
-                        node_id in history_producer_ids or owns_generation
-                    )
+                    # #63: 统一归属判定——普通引用节点（前端 run 状态机会给所有 smart-image 节点盖
+                    # runStartedAt 戳，单凭 run 字段会把「拖入图片的节点」误判为生成节点）。
+                    # 生成输出归属需同时满足：节点展示该资产，且 ① 历史记录 result_node_id 指向该
+                    # 节点，或 ② 有 run 快照且 images 条目带生成输出身份 output_id（归档时固化）。
+                    owns_output = self._node_owns_generated_output(node, asset_id, history_producer_ids)
                     cleaned_node = self._remove_asset_references(node, asset_id) or {}
                     if owns_output:
                         self._append_deleted_asset_tombstone(

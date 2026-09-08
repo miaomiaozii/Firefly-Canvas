@@ -2059,5 +2059,253 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertFalse(any(item["asset_id"] == trash_media["asset_id"] for item in remaining))
 
 
+class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
+    """#83 历史累加合并 / #79 孤儿回收区 / #63 统一归属判定。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name) / "projects"
+        self.store = ProjectStore(self.root, snapshot_delay=0)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def apply_mutations(self, project_id, mutations):
+        revision = self.store.open_project(project_id)["canvas"]["revision"]
+        return self.store.apply_mutations(project_id, mutations, base_revision=revision)
+
+    def _start_batch(self, project_id, node_id, task_id, count):
+        self.apply_mutations(project_id, [
+            {"op": "upsert_node", "node": {"id": node_id, "type": "smart-image"}},
+        ])
+        return self.store.begin_image_generation(
+            project_id, node_id, {"taskId": task_id, "count": count}, base_revision=1,
+        )
+
+    def _partial(self, project_id, node_id, task_id, history_id, media, index):
+        return self.store.complete_image_generation(
+            project_id, node_id,
+            [{"asset_id": media["asset_id"], "kind": "image"}],
+            {
+                "id": history_id,
+                "task_id": task_id,
+                "status": "running",
+                "outputs": [{"asset_id": media["asset_id"], "kind": "image"}],
+                "result_node_id": node_id,
+            },
+            task_id=task_id,
+            require_pending=True,
+            partial=True,
+        )
+
+    def test_partial_history_records_accumulate_outputs_instead_of_replacing(self):
+        """#83: 4 张生 3 张卡 1 张——历史记录必须保留全部 3 张完成图（此前永远只剩最后 1 张）。"""
+        project = self.store.create_project("partial 历史累加")
+        a = self.store.import_media(project["id"], b"img-a", "a.png", "image/png")
+        b = self.store.import_media(project["id"], b"img-b", "b.png", "image/png")
+        c = self.store.import_media(project["id"], b"img-c", "c.png", "image/png")
+        self._start_batch(project["id"], "result", "task-1", 4)
+        history_id = "generation-run-1"
+        for media in (a, b, c):
+            self._partial(project["id"], "result", "task-1", history_id, media, None)
+
+        opened = self.store.open_project(project["id"])["canvas"]
+        record = next(item for item in opened["logs"] if item["id"] == history_id)
+        self.assertEqual(
+            [output["asset_id"] for output in record["outputs"]],
+            [a["asset_id"], b["asset_id"], c["asset_id"]],
+        )
+        self.assertEqual(record["status"], "running")
+        node = next(item for item in opened["nodes"] if item["id"] == "result")
+        self.assertEqual(
+            [img["asset_id"] for img in node["images"]],
+            [a["asset_id"], b["asset_id"], c["asset_id"]],
+        )
+        # 剩余占位保留（任务未结束，pendingTasks 仍在）
+        self.assertTrue(any(t.get("taskId") == "task-1" for t in node["pendingTasks"]))
+
+    def test_final_completion_merges_with_partials_without_duplicates(self):
+        """#83: final 全量写回与 partial 累加合并后按 asset_id 去重，不产生重复图。"""
+        project = self.store.create_project("final 合并去重")
+        a = self.store.import_media(project["id"], b"img-a", "a.png", "image/png")
+        b = self.store.import_media(project["id"], b"img-b", "b.png", "image/png")
+        self._start_batch(project["id"], "result", "task-1", 2)
+        history_id = "generation-run-1"
+        self._partial(project["id"], "result", "task-1", history_id, a, None)
+        final = self.store.complete_image_generation(
+            project["id"], "result",
+            [
+                {"asset_id": a["asset_id"], "kind": "image"},
+                {"asset_id": b["asset_id"], "kind": "image"},
+            ],
+            {
+                "id": history_id,
+                "task_id": "task-1",
+                "status": "succeeded",
+                "outputs": [
+                    {"asset_id": a["asset_id"], "kind": "image"},
+                    {"asset_id": b["asset_id"], "kind": "image"},
+                ],
+                "result_node_id": "result",
+            },
+            task_id="task-1",
+            require_pending=True,
+        )
+        record = next(item for item in final["logs"] if item["id"] == history_id)
+        self.assertEqual(
+            [output["asset_id"] for output in record["outputs"]],
+            [a["asset_id"], b["asset_id"]],
+        )
+        self.assertEqual(record["status"], "succeeded")
+        node = next(item for item in final["nodes"] if item["id"] == "result")
+        self.assertEqual([img["asset_id"] for img in node["images"]], [a["asset_id"], b["asset_id"]])
+        self.assertNotIn("pendingTasks", node)
+        # T4 回填：调用方 record 的 outputs 必须拿到 store 分配的 output_id（按 asset_id 匹配）
+        self.assertTrue(record["outputs"][0].get("output_id"))
+
+    def test_cancel_terminal_merges_into_running_record_keeps_outputs(self):
+        """#83/#79: 取消记录的 outputs=[] 不得清掉 partial 已归档的图；历史只剩一条终态记录。"""
+        project = self.store.create_project("取消保留已归档图")
+        a = self.store.import_media(project["id"], b"img-a", "a.png", "image/png")
+        b = self.store.import_media(project["id"], b"img-b", "b.png", "image/png")
+        self._start_batch(project["id"], "result", "task-1", 4)
+        history_id = "generation-run-1"
+        self._partial(project["id"], "result", "task-1", history_id, a, None)
+        self._partial(project["id"], "result", "task-1", history_id, b, None)
+
+        cancelled = self.store.cancel_image_generation(
+            project["id"], "result", "task-1",
+            {"id": "generation-cancel-1", "task_id": "task-1", "outputs": [], "error": "任务已取消"},
+        )
+        task_records = [item for item in cancelled["logs"] if str(item.get("task_id") or "") == "task-1"]
+        self.assertEqual(len(task_records), 1)
+        record = task_records[0]
+        self.assertEqual(record["status"], "cancelled")
+        self.assertEqual(
+            [output["asset_id"] for output in record["outputs"]],
+            [a["asset_id"], b["asset_id"]],
+        )
+        self.assertNotIn(history_id, [item["id"] for item in cancelled["logs"]])
+        node = next(item for item in cancelled["nodes"] if item["id"] == "result")
+        self.assertNotIn("pendingTasks", node)
+        # 已归档图仍被历史记录引用 → 孤儿清理不会动它们
+        self.assertEqual(self.store.delete_media_if_unreferenced(project["id"], a["asset_id"]), False)
+
+    def test_failure_terminal_merges_salvage_outputs(self):
+        """#83/#79: 失败记录带取回兑底 outputs，与 partial 累加合并；节点 pending 清零。"""
+        project = self.store.create_project("失败取回合并")
+        a = self.store.import_media(project["id"], b"img-a", "a.png", "image/png")
+        b = self.store.import_media(project["id"], b"img-b", "b.png", "image/png")
+        self._start_batch(project["id"], "result", "task-1", 4)
+        history_id = "generation-run-1"
+        self._partial(project["id"], "result", "task-1", history_id, a, None)
+
+        failed = self.store.fail_image_generation(
+            project["id"], "result", "task-1",
+            {
+                "id": "generation-fail-1",
+                "task_id": "task-1",
+                "status": "timeout",
+                "outputs": [
+                    {"asset_id": a["asset_id"], "kind": "image"},
+                    {"asset_id": b["asset_id"], "kind": "image"},
+                ],
+                "error": "生成任务执行超时",
+            },
+            require_pending=True,
+        )
+        task_records = [item for item in failed["logs"] if str(item.get("task_id") or "") == "task-1"]
+        self.assertEqual(len(task_records), 1)
+        record = task_records[0]
+        self.assertEqual(record["status"], "timeout")
+        self.assertEqual(
+            [output["asset_id"] for output in record["outputs"]],
+            [a["asset_id"], b["asset_id"]],
+        )
+        self.assertTrue(record["outputs"][0].get("output_id"))
+
+    def test_dragged_in_node_with_run_stamp_is_not_output_owner(self):
+        """#63: 拖入图节点带 runStartedAt 戳（无 output_id、非 result_node）不得误判为生成节点。"""
+        project = self.store.create_project("拖入图节点归属")
+        original = self.store.import_media(
+            project["id"], b"gen-bytes", "gen.png", "image/png",
+            {"type": "online_generation", "name": "gen.png"},
+        )
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {
+                "id": "dragged", "type": "smart-image",
+                "runStartedAt": 1700000000000, "runElapsedMs": 42,
+                "images": [{"asset_id": original["asset_id"], "kind": "image"}],
+            }},
+            {"op": "set_canvas_meta", "logs": [{
+                "id": "log-gen", "status": "succeeded", "result_node_id": "some-other-node",
+                "outputs": [{"asset_id": original["asset_id"], "kind": "image"}],
+            }]},
+        ])
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        result = self.store.delete_history_record_with_media(project["id"], "log-gen", base_revision=revision)
+        node = next(item for item in result["canvas"]["nodes"] if item["id"] == "dragged")
+        tombstones = node.get("deletedInputTombstones") or []
+        self.assertTrue(any(str(t.get("deleted_asset_id") or "") == original["asset_id"] for t in tombstones))
+        self.assertNotIn("deletedOutputTombstones", node)
+        self.assertNotIn("resultDeleted", node)
+        self.assertNotIn("needsRegeneration", node)
+
+    def test_generated_output_node_with_output_id_is_output_owner(self):
+        """#63: 真正生成节点（images 带 output_id）仍判为输出所有者（不回归）。"""
+        project = self.store.create_project("生成节点归属")
+        original = self.store.import_media(
+            project["id"], b"gen-bytes-2", "gen2.png", "image/png",
+            {"type": "online_generation", "name": "gen2.png"},
+        )
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {
+                "id": "result", "type": "smart-image",
+                "runStartedAt": 1700000000000,
+                "images": [{"asset_id": original["asset_id"], "kind": "image", "output_id": "out-1"}],
+            }},
+            {"op": "set_canvas_meta", "logs": [{
+                "id": "log-gen", "status": "succeeded", "result_node_id": "result",
+                "outputs": [{"asset_id": original["asset_id"], "kind": "image", "output_id": "out-1"}],
+            }]},
+        ])
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        result = self.store.delete_history_record_with_media(project["id"], "log-gen", base_revision=revision)
+        node = next(item for item in result["canvas"]["nodes"] if item["id"] == "result")
+        tombstones = node.get("deletedOutputTombstones") or []
+        self.assertTrue(any(str(t.get("deleted_asset_id") or "") == original["asset_id"] for t in tombstones))
+
+    def test_orphan_generation_media_goes_to_trash_and_can_restore(self):
+        """#79: 无引用的生成孤儿移入回收区（7 天可恢复），不再静默硬删。"""
+        project = self.store.create_project("孤儿回收")
+        orphan = self.store.import_media(project["id"], b"orphan-bytes", "orphan.png", "image/png")
+        referenced = self.store.import_media(project["id"], b"ref-bytes", "ref.png", "image/png")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "type": "image", "images": [{"asset_id": referenced["asset_id"]}]}},
+        ])
+        # 被引用的不回收
+        self.assertFalse(self.store.trash_unreferenced_generation_media(project["id"], referenced["asset_id"]))
+        # 孤儿进回收区
+        self.assertTrue(self.store.trash_unreferenced_generation_media(project["id"], orphan["asset_id"]))
+        self.assertFalse(any(item["asset_id"] == orphan["asset_id"] for item in self.store.list_media(project["id"])))
+        items = self.store.list_deleted_media(project["id"])
+        entry = next(item for item in items if item["asset_id"] == orphan["asset_id"])
+        self.assertEqual(entry["reason"], "generation-orphan")
+        self.assertGreater(entry["expires_at"], entry["deleted_at"])
+        self.assertFalse((self.root / project["id"] / "media" / orphan["filename"]).is_file())
+        self.assertTrue((self.root / project["id"] / "trash" / "media" / orphan["filename"]).is_file())
+
+        # 通用恢复：文件移回 + 资源库重新注册
+        revision = self.store.open_project(project["id"])["canvas"]["revision"]
+        result = self.store.restore_trash_media(project["id"], orphan["asset_id"], base_revision=revision)
+        self.assertTrue((self.root / project["id"] / "media" / orphan["filename"]).is_file())
+        self.assertTrue(any(item["asset_id"] == orphan["asset_id"] for item in self.store.list_media(project["id"])))
+        self.assertFalse(any(item["asset_id"] == orphan["asset_id"] for item in self.store.list_deleted_media(project["id"])))
+        self.assertEqual(result["canvas"]["revision"], revision + 1)
+        # 恢复后再删除（幂等保护：重复恢复报错）
+        with self.assertRaises(ProjectStoreError):
+            self.store.restore_trash_media(project["id"], orphan["asset_id"], base_revision=revision + 1)
+
+
 if __name__ == "__main__":
     unittest.main()
