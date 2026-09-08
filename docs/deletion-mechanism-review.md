@@ -163,9 +163,9 @@
 |---|---|---|---|
 | 1（无争议修复） | B-1~B-5（P0 四 bug + 悬空引用双层防护 + busy 防护）；C-1（output_id 回移 + 单测）；C-4（保存 400 自愈）；D（i18n 补齐含 redo 文案） | 1 天 | ✅ **已完成（2026-08-31）**：#59/#60/#61/#62/#63/#72/#73 + #83（生成历史累加合并）+ #79（孤儿进回收区 + 通用恢复端点 `POST /trash/media/restore`）全部落地；新增 7 单测，全量 **792 tests OK**（基线 732），e2e **44/44 无回归**，validate-i18n.js 通过 |
 | 2（语义统一，依赖 D1-D4 拍板） | A-0~A-1（统一删除对话框 + 级联策略 + 节点删除统一 + 静默回收可见化 + project-wide 入口）；C-2（undo 令牌精确清理） | 1-2 天 | ✅ **已完成（2026-09-08）**：#74（D1 级联归档：`archive_unreferenced_media` + `POST /media/{asset_id}/archive` + 前端 `cascadeArchiveDeletedMedia` 于 deleteNode/clearNodeMediaBeforeDelete/deleteImage 三处调用，被引用 409 保留在库）、#65（生成中禁删：`smartNodeInFlight` 守护 × 按钮/Delete 键/单图三入口）、#66（全局库单删/项目库无引用单删/本地素材删三处确认对话框）、#67（警告对话框声明「永久删除、不进回收区、无法恢复」，确认钮改「永久删除」）、#68（历史删除 409 分支：同步服务端画布+busy 防连点）、#69（清空回收区失败文案改 `smart.trashPurgeFailed`）、#70（D4 project-wide 入口：多引用时对话框「删除原图及全部引用」按钮 + 二次确认 + 409 画布同步）。C-2 经联合审计 F3 修正定性（清空=全部令牌失效，清全部逻辑正确；单项 purge 令牌清理已随 #73 在第 1 期落地）。新增 6 单测（store 级 archive×3 + 路由级×3），全量 **798 tests OK**，e2e **44/44 无回归**，validate-i18n.js 通过（1172 keys）；ADR 0016 已写。生图流程第 2 期（#80/#81/#82-a）同批完成，见 docs/generation-flow-review.md |
-| 3（结构收敛） | C-3（前端 helper）；E-1/E-2（后端骨架 + ADR） | 1 天 | 全量单测 + 44/44 e2e；helper 覆盖的 5 条路径 409 注入测试（可扩 e2e 用 fetch wrapper 注入 409） |
+| 3（结构收敛） | C-3（前端 helper）；E-1/E-2（后端骨架 + ADR） | 1 天 | ✅ **已完成（2026-09-08）**：#76（C-3：`projectCanvasRequest` + `adoptServerCanvas` 统一「409+画布同步/重试」模板，迁移 7 条删除路径，删除死代码 `syncProjectCanvasFromResponse`）+ #75（P2-1/E-1：firefly_projects_deletion.py 新增 5 个共享 helper（`_validate_deletable_asset_id`/`_open_project_at_revision`/`_history_producer_ids_for_assets`/`_apply_history_record_asset_removal`/`_apply_node_asset_removal`），`delete_generated_original_project_wide`/`delete_project_media_asset`/`delete_history_record_with_media` 三路径改用，`_delete_generated_output_occurrence` 保留 occurrence 身份流不动）。**零行为变更**，唯一差异：资源库单删路径的 partial-status 恢复统一为项目范围版（pop originalDeleted + 回退 status，原仅置 original_deleted；可达状态下两者等价）。全量 **798 tests OK**，e2e **44/44 无回归**；契约测试 `test_history_is_sorted_newest_first_at_every_server_boundary` 同步更新为统一 helper 契约（merge 调用点 3+→2，排序语义由 `mergeSmartActiveHistoryTaskLogs` 内部 `sortSmartHistoryLogs` 保证） |
 
-每期独立提交、可独立验收；D1-D4 已全部拍板（见 §7），第 2 期已按拍板结果执行完毕。
+每期独立提交、可独立验收；D1-D4 已全部拍板（见 §7），三期均已完成（第 1 期 2026-08-31，第 2/3 期 2026-09-08）。
 
 ## 6. ADR / 文档影响
 

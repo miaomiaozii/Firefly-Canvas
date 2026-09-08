@@ -619,15 +619,10 @@ class ProjectDeletionMixin:
     ) -> Dict[str, Any]:
         """Delete one generated original and every direct project reference."""
         project_id = _store._clean_project_id(project_id)
-        asset_id = str(asset_id or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
-            raise _store.ProjectStoreError("媒体资源标识无效")
+        asset_id = self._validate_deletable_asset_id(asset_id)
         with self._project_operation_lock(project_id):
             with self._lock:
-                opened = self.open_project(project_id)
-                current_revision = int(opened["canvas"].get("revision") or 0)
-                if int(base_revision) != current_revision:
-                    raise _store.RevisionConflict(opened["canvas"])
+                opened, current_revision = self._open_project_at_revision(project_id, base_revision)
                 self._cleanup_expired_deleted_media_locked(project_id)
                 media_index = self._load_media_index(project_id)
                 original = media_index["items"].get(asset_id)
@@ -727,56 +722,22 @@ class ProjectDeletionMixin:
                 trash_index["items"].append(trash_item)
                 media_index["items"].pop(asset_id, None)
 
-                history_producer_ids = set()
+                history_producer_ids = self._history_producer_ids_for_assets(history, {asset_id})
                 cleaned_history: List[Dict[str, Any]] = []
                 for record in history:
                     if asset_id not in self._collect_asset_ids(record):
                         cleaned_history.append(record)
                         continue
                     owns_original = asset_id in self._collect_asset_ids(record.get("outputs") or [])
-                    if owns_original:
-                        result_node_id = str(record.get("result_node_id") or "").strip()
-                        if result_node_id:
-                            history_producer_ids.add(result_node_id)
-                    cleaned = self._remove_asset_references(record, asset_id) or {}
-                    if owns_original:
-                        self._append_deleted_asset_tombstone(
-                            cleaned, "deletedOutputTombstones", asset_id, original,
-                        )
-                        remaining_outputs = self._collect_asset_ids(cleaned.get("outputs") or [])
-                        if remaining_outputs:
-                            cleaned.pop("originalDeleted", None)
-                            if cleaned.get("status") == "original_deleted":
-                                prior_status = str(record.get("status") or "").strip()
-                                cleaned["status"] = (
-                                    prior_status if prior_status and prior_status != "original_deleted"
-                                    else "succeeded"
-                                )
-                        else:
-                            cleaned["status"] = "original_deleted"
-                            cleaned["originalDeleted"] = True
-                    else:
-                        self._append_deleted_asset_tombstone(
-                            cleaned, "deletedReferenceTombstones", asset_id, original,
-                        )
+                    cleaned = self._apply_history_record_asset_removal(
+                        record, asset_id, original, owns_output=owns_original,
+                    )
                     cleaned_history.append(cleaned)
 
                 nodes = []
-                for node in copy.deepcopy(opened["canvas"].get("nodes") or []):
+                for node in original_nodes:
                     # #63: 统一归属判定（run 字段 + output_id 身份，避免拖入图节点误判）
-                    owns_original = self._node_owns_generated_output(node, asset_id, history_producer_ids)
-                    directly_references_original = asset_id in self._collect_asset_ids(node)
-                    cleaned_node = self._remove_asset_references(node, asset_id) or {}
-                    if owns_original:
-                        self._append_deleted_asset_tombstone(
-                            cleaned_node, "deletedOutputTombstones", asset_id, original,
-                        )
-                        if not self._collect_asset_ids(cleaned_node.get("images") or []):
-                            self._reset_deleted_original_owner_state(cleaned_node)
-                    elif directly_references_original:
-                        self._append_deleted_asset_tombstone(
-                            cleaned_node, "deletedInputTombstones", asset_id, original,
-                        )
+                    cleaned_node, _reset = self._apply_node_asset_removal(node, asset_id, history_producer_ids, original)
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(opened["canvas"])
@@ -845,16 +806,11 @@ class ProjectDeletionMixin:
         matching tombstones so the UI can show the "upstream asset deleted" state.
         """
         project_id = _store._clean_project_id(project_id)
-        asset_id = str(asset_id or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
-            raise _store.ProjectStoreError("媒体资源标识无效")
+        asset_id = self._validate_deletable_asset_id(asset_id)
         with self._project_operation_lock(project_id):
             with self._lock:
-                opened = self.open_project(project_id)
+                opened, current_revision = self._open_project_at_revision(project_id, base_revision)
                 source_canvas = opened["canvas"]
-                current_revision = int(source_canvas.get("revision") or 0)
-                if int(base_revision) != current_revision:
-                    raise _store.RevisionConflict(source_canvas)
                 blocking_task_ids = self._active_generation_references_asset(source_canvas, asset_id)
                 if blocking_task_ids:
                     raise _store.ProjectStoreError(
@@ -882,12 +838,7 @@ class ProjectDeletionMixin:
                         ).unlink(missing_ok=True)
 
                 history = copy.deepcopy(self._histories.get(project_id, []))
-                history_producer_ids = set()
-                for record in history:
-                    if asset_id in self._collect_asset_ids(record.get("outputs") or []):
-                        result_node_id = str(record.get("result_node_id") or "").strip()
-                        if result_node_id:
-                            history_producer_ids.add(result_node_id)
+                history_producer_ids = self._history_producer_ids_for_assets(history, {asset_id})
 
                 cleaned_history: List[Dict[str, Any]] = []
                 for record in history:
@@ -895,41 +846,18 @@ class ProjectDeletionMixin:
                         cleaned_history.append(record)
                         continue
                     owns_output = asset_id in self._collect_asset_ids(record.get("outputs") or [])
-                    cleaned = self._remove_asset_references(record, asset_id) or {}
-                    if owns_output:
-                        self._append_deleted_asset_tombstone(
-                            cleaned, "deletedOutputTombstones", asset_id, original,
-                        )
-                        if not self._collect_asset_ids(cleaned.get("outputs") or []):
-                            cleaned["status"] = "original_deleted"
-                            cleaned["originalDeleted"] = True
-                    else:
-                        self._append_deleted_asset_tombstone(
-                            cleaned, "deletedReferenceTombstones", asset_id, original,
-                        )
+                    cleaned = self._apply_history_record_asset_removal(
+                        record, asset_id, original, owns_output=owns_output,
+                    )
                     cleaned_history.append(cleaned)
 
                 nodes = []
                 for node in copy.deepcopy(source_canvas.get("nodes") or []):
-                    if asset_id not in self._collect_asset_ids(node):
-                        nodes.append(node)
-                        continue
                     # #63: 统一归属判定——普通引用节点（前端 run 状态机会给所有 smart-image 节点盖
                     # runStartedAt 戳，单凭 run 字段会把「拖入图片的节点」误判为生成节点）。
                     # 生成输出归属需同时满足：节点展示该资产，且 ① 历史记录 result_node_id 指向该
                     # 节点，或 ② 有 run 快照且 images 条目带生成输出身份 output_id（归档时固化）。
-                    owns_output = self._node_owns_generated_output(node, asset_id, history_producer_ids)
-                    cleaned_node = self._remove_asset_references(node, asset_id) or {}
-                    if owns_output:
-                        self._append_deleted_asset_tombstone(
-                            cleaned_node, "deletedOutputTombstones", asset_id, original,
-                        )
-                        if not self._collect_asset_ids(cleaned_node.get("images") or []):
-                            self._reset_deleted_original_owner_state(cleaned_node)
-                    else:
-                        self._append_deleted_asset_tombstone(
-                            cleaned_node, "deletedInputTombstones", asset_id, original,
-                        )
+                    cleaned_node, _reset = self._apply_node_asset_removal(node, asset_id, history_producer_ids, original)
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(source_canvas)
@@ -1711,3 +1639,90 @@ class ProjectDeletionMixin:
             if result is not None:
                 cleaned[key] = result
         return cleaned
+    # ------------------------------------------------------------------
+    # #75 (P2-1)：项目级删除模板共享骨架。
+    # 三条删除路径（项目范围删原图 / 资源库资产硬删 / 历史记录删除）复用同一套
+    # “修订校验 -> 引用清理 + 墓碑 -> owner 状态回退”语义，见
+    # docs/adr/0016-canvas-deletion-unified-consequences-model.md。
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _validate_deletable_asset_id(asset_id: Any) -> str:
+        asset_id = str(asset_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+            raise _store.ProjectStoreError("媒体资源标识无效")
+        return asset_id
+
+    def _open_project_at_revision(self, project_id: str, base_revision: int):
+        opened = self.open_project(project_id)
+        current_revision = int(opened["canvas"].get("revision") or 0)
+        if int(base_revision) != current_revision:
+            raise _store.RevisionConflict(opened["canvas"])
+        return opened, current_revision
+
+    @classmethod
+    def _history_producer_ids_for_assets(cls, history: List[Dict[str, Any]], asset_ids: set) -> set:
+        """outputs 引用了 asset_ids 中任意资产的记录，其 result_node_id 集合。"""
+        producer_ids = set()
+        target_ids = set(asset_ids)
+        for record in history:
+            result_node_id = str(record.get("result_node_id") or "").strip()
+            if result_node_id and target_ids.intersection(cls._collect_asset_ids(record.get("outputs") or [])):
+                producer_ids.add(result_node_id)
+        return producer_ids
+
+    def _apply_history_record_asset_removal(
+        self,
+        record: Dict[str, Any],
+        asset_id: str,
+        original: Dict[str, Any],
+        *,
+        owns_output: bool,
+    ) -> Dict[str, Any]:
+        """从历史记录中移除 asset_id 并写入对应墓碑。
+
+        owns_output=True（记录 outputs 引用该资产）：写 deletedOutputTombstones，
+        outputs 清空时回退记录的 original-deleted 状态（与项目范围删除路径一致）；
+        owns_output=False：写 deletedReferenceTombstones。
+        """
+        cleaned = self._remove_asset_references(record, asset_id) or {}
+        if owns_output:
+            self._append_deleted_asset_tombstone(cleaned, "deletedOutputTombstones", asset_id, original)
+            remaining_outputs = self._collect_asset_ids(cleaned.get("outputs") or [])
+            if remaining_outputs:
+                cleaned.pop("originalDeleted", None)
+                if cleaned.get("status") == "original_deleted":
+                    prior_status = str(record.get("status") or "").strip()
+                    cleaned["status"] = (
+                        prior_status if prior_status and prior_status != "original_deleted"
+                        else "succeeded"
+                    )
+            else:
+                cleaned["status"] = "original_deleted"
+                cleaned["originalDeleted"] = True
+        else:
+            self._append_deleted_asset_tombstone(cleaned, "deletedReferenceTombstones", asset_id, original)
+        return cleaned
+
+    def _apply_node_asset_removal(
+        self,
+        node: Dict[str, Any],
+        asset_id: str,
+        history_producer_ids: set,
+        original: Dict[str, Any],
+    ):
+        """从画布节点中移除 asset_id 并写入对应墓碑。
+
+        返回 (cleaned_node, reset)。reset=True 表示删除后节点图片清空并回退了
+        owner 状态。节点不引用 asset_id 时原样返回（深拷贝）。
+        """
+        if asset_id not in self._collect_asset_ids(node):
+            return copy.deepcopy(node), False
+        cleaned_node = self._remove_asset_references(node, asset_id) or {}
+        if self._node_owns_generated_output(node, asset_id, history_producer_ids):
+            self._append_deleted_asset_tombstone(cleaned_node, "deletedOutputTombstones", asset_id, original)
+            if not self._collect_asset_ids(cleaned_node.get("images") or []):
+                return cleaned_node, bool(self._reset_deleted_original_owner_state(cleaned_node))
+        else:
+            self._append_deleted_asset_tombstone(cleaned_node, "deletedInputTombstones", asset_id, original)
+        return cleaned_node, False
+

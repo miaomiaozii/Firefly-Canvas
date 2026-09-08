@@ -318,7 +318,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         normalized = "canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));"
         merged = "canvas.logs = mergeSmartActiveHistoryTaskLogs("
         self.assertGreaterEqual(self.source.count(normalized), 4)
-        self.assertGreaterEqual(self.source.count(merged), 3)
+        # #76（P2-2）：项目画布变更的 409/成功模板统一走 adoptServerCanvas（内部经
+        # mergeSmartActiveHistoryTaskLogs 合并，该函数内部 sortSmartHistoryLogs），
+        # 因此直连调用点从 3+ 收敛为 2（deleteCanvasLogEntry 遗留路径 + 原图恢复）。
+        self.assertGreaterEqual(self.source.count(merged), 2)
+        self.assertIn("async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){", self.source)
+        self.assertIn("async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0} = {}){", self.source)
         self.assertIn("return sortSmartHistoryLogs([", self.source)
         self.assertIn("canvas.logs = sortSmartHistoryLogs(canvas.logs);", self.source)
 

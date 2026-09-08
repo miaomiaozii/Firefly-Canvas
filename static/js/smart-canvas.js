@@ -6586,56 +6586,26 @@ function bindAssetItemEvents(){
                 }
                 
                 // 执行删除（携带画布版本：服务端清理引用会 bump revision，冲突时返回 409 + 最新画布）
-                const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+                // #76 (C-3)：统一走 projectCanvasRequest——409 自动 rebase 到服务端最新画布
+                const delResult = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
                     method: 'DELETE',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+                    payload: () => JSON.stringify({base_revision: Number(canvas?.revision || 0)})
                 });
-                if(!res.ok){
-                    const err = await res.json().catch(() => ({}));
-                    // 404表示已删除，静默刷新即可
-                    if(res.status === 404){
-                        toast(tr('smart.assetDeleted'));
-                        removeProjectMediaFromCache(assetId);
-                        // #62 B-5(L1): 同批量删除——剔除引用该媒体的 undo/redo 快照。
-                        if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
-                        if(assetLibraryIsProject()) renderAssetLibrary();
+                if(!delResult.ok && delResult.status !== 404){
+                    // 409：helper 已 rebase 到最新画布，提示冲突即可
+                    if(delResult.canvasSynced){
                         btn.disabled = false;
+                        toast(delResult.message || tr('smart.deleteConflict'));
                         return;
                     }
-                    // 画布版本冲突：同步服务端最新画布（引用已被清理）后提示重试
-                    if(res.status === 409 && err?.detail?.canvas){
-                        canvas = hydrateProjectMediaReferences(err.detail.canvas);
-                        if(Array.isArray(canvas.nodes)){
-                            nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-                            canvas.nodes = nodes;
-                        }
-                        canvas.updated_at = Number(canvas.updated_at || 0);
-                        canvas.revision = Number(canvas.revision || 0);
-                        render();
-                        toast(tr('smart.deleteConflict'));
-                        btn.disabled = false;
-                        return;
-                    }
-                    const msg = typeof err.detail === 'string' ? err.detail : tr('smart.deleteFailed');
-                    throw new Error(msg);
+                    throw new Error(delResult.message || tr('smart.deleteFailed'));
                 }
-                // 服务端已清理项目内引用：用返回的最新画布同步前端节点，避免下次保存回写旧引用
-                const delData = await res.json().catch(() => ({}));
-                if(delData?.canvas){
-                    canvas = hydrateProjectMediaReferences(delData.canvas);
-                    if(Array.isArray(canvas.nodes)){
-                        nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-                        canvas.nodes = nodes;
-                    }
-                    canvas.updated_at = Number(canvas.updated_at || 0);
-                    canvas.revision = Number(canvas.revision || 0);
-                    render();
-                }
-                // 刷新资产库
+                // 200：服务端已清理项目内引用，用返回的最新画布同步前端节点；404：已删除，静默刷新
+                if(delResult.data?.canvas) await adoptServerCanvas(delResult.data.canvas);
                 removeProjectMediaFromCache(assetId);
-                // #62 B-5(L1): 硬删成功后剔除引用该媒体的 undo/redo 快照，避免悬空引用导致保存死锁。
+                // #62 B-5(L1): 硬删成功后剔除引用该媒体的 undo/redo 快照，防止删除的资产在下次保存时复活
                 if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
+                if(delResult.status === 404) toast(tr('smart.assetDeleted'));
                 if(assetLibraryIsProject()) renderAssetLibrary();
             } catch(err){
                 btn.disabled = false;
@@ -6650,19 +6620,57 @@ function bindAssetItemEvents(){
 function smartProjectId(){
     return canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
 }
-// 用服务端返回的画布同步前端节点（删除/恢复等破坏性操作后的标准同步模板，
-// 与 data-delete-project-asset 的 409/200 同步逻辑一致）
-function syncProjectCanvasFromResponse(canvasData){
-    if(!canvasData) return 0;
-    canvas = hydrateProjectMediaReferences(canvasData);
-    if(Array.isArray(canvas.nodes)){
-        nodes = canvas.nodes.map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.nodes = nodes;
-    }
-    canvas.updated_at = Number(canvas.updated_at || 0);
-    canvas.revision = Number(canvas.revision || 0);
+
+// C-3（#76）：「服务端画布 → 本地」统一水合：hydrate + 活动任务日志合并 + 节点 normalize +
+// materialize + 刷新 persistedCoreSnapshot/persistedDurableSnapshot + render。
+// 项目画布变更端点的 409 冲突恢复与成功响应统一走这里（此前 deleteSmartProjectOriginal
+// 一处两份、其他路径各写各的轻量版，已漂移）。
+async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){
+    if(!serverCanvasData) return Number(canvas?.revision || 0);
+    const nextCanvas = hydrateProjectMediaReferences(serverCanvasData);
+    canvas = nextCanvas;
+    canvas.logs = activeTaskLogs !== null
+        ? mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs)
+        : (canvas.logs || []);
+    canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
+    nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+    canvas.nodes = nodes;
+    canvas.updated_at = Number(canvas.updated_at || Date.now());
+    canvas.revision = Number(canvas.revision ?? 0);
+    const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
+    persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
+    persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
     render();
-    return Number(canvas.revision || 0);
+    if(settleMs > 0) await new Promise(resolve => setTimeout(resolve, settleMs));
+    return canvas.revision;
+}
+
+// C-3（#76）：项目画布变更端点统一请求 helper。
+// 409 + detail.canvas → 先 adoptServerCanvas rebase 到服务端最新画布（canvasSynced=true，
+// 不计为成功），调用方按自身语义继续；payload 可为函数（重试时重算 base_revision）。
+async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0} = {}){
+    let attempt = 0;
+    for(;;){
+        const res = await fetch(url, {
+            method,
+            headers:{'Content-Type':'application/json'},
+            body: typeof payload === 'function' ? payload() : (payload === undefined ? undefined : JSON.stringify(payload)),
+        });
+        const data = await res.json().catch(() => ({}));
+        if(res.status === 409 && data?.detail?.canvas){
+            await adoptServerCanvas(data.detail.canvas, {settleMs});
+            if(attempt < retries){ attempt++; continue; }
+            return {ok:false, status:409, canvasSynced:true, message: typeof data?.detail?.message === 'string' ? data.detail.message : '', data};
+        }
+        if(!res.ok){
+            const detail = data?.detail;
+            const message = (detail && typeof detail === 'object')
+                ? (typeof detail.message === 'string' ? detail.message : '')
+                : (typeof detail === 'string' ? detail : '');
+            return {ok:false, status:res.status, canvasSynced:false, message, data};
+        }
+        return {ok:true, status:res.status, canvasSynced:false, message:'', data};
+    }
 }
 
 // ── 片②：资产库多选批量删除 ───────────────────────────────
@@ -6741,28 +6749,20 @@ async function smartAssetBatchDelete(){
     let failCount = 0;
     for(const assetId of ids){
         try {
-            const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+            // #76 (C-3)：统一 helper——409 rebase 到最新画布后按新版本继续，不计成功
+            const delResult = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
                 method: 'DELETE',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+                payload: () => JSON.stringify({base_revision: Number(canvas?.revision || 0)})
             });
-            const data = await res.json().catch(() => ({}));
-            const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
-            // #59: 409 = 画布版本冲突、服务端未执行删除——不能计成功，更不能从本地缓存
-            // 移除（此前误计 okCount 并移除，出现「已删除 n 个」假成功而资源下次重渲染复现）。
-            // 409 时先 hydrate 服务端返回的最新画布，用新版本继续处理剩余资产。
-            let deleted = false;
-            if(res.ok || res.status === 404){
-                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
-                deleted = true;
-            } else if(res.status === 409){
-                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
-            }
+            if(delResult.ok && delResult.data?.canvas) await adoptServerCanvas(delResult.data.canvas);
+            // #59: 409 = 画布版本冲突，删除未执行，绝不能计成功，也不能从本地缓存移除资产
+            // （原「已删除 n 个」的 toast 会被假成功污染，资源下次渲染复现）
+            const deleted = delResult.ok || delResult.status === 404;
             if(deleted){
                 okCount += 1;
                 assetBatchSelected.delete(assetId);
                 removeProjectMediaFromCache(assetId);
-                // #62 B-5(L1): 硬删成功的媒体从 undo/redo 快照栈中剔除，避免悬空引用导致保存死锁。
+                // #62 B-5(L1): 硬删成功后剔除引用该媒体的 undo/redo 快照，防止删除的资产在下次保存时复活
                 if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
             } else {
                 failCount += 1;
@@ -6875,31 +6875,28 @@ async function smartTrashRestoreItem(assetId, deletionId){
         const restoreUrl = deletionId
             ? `/api/project-library/${encodeURIComponent(projectId)}/original/restore`
             : `/api/project-library/${encodeURIComponent(projectId)}/trash/media/restore`;
-        const res = await fetch(restoreUrl, {
+        // #76 (C-3)：统一 helper——409 自动 rebase 到最新画布（不计成功）
+        const res = await projectCanvasRequest(restoreUrl, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
+            payload: () => JSON.stringify({
                 asset_id: assetId,
                 base_revision: Number(canvas?.revision || 0),
                 ...(deletionId ? {deletion_id: deletionId} : {})
             })
         });
-        const data = await res.json().catch(() => ({}));
-        // #61: 409 = 画布版本冲突、服务端未恢复——不能提示成功（此前无条件 toast「原图已恢复」）。
-        if(res.status === 409){
-            if(data?.detail?.canvas) syncProjectCanvasFromResponse(data.detail.canvas);
-            const msg = typeof data?.detail?.message === 'string' ? data.detail.message : tr('smart.projectConflict');
+        // #61: 409 = 画布版本冲突，未恢复成功，不再误报「原图已恢复」
+        if(!res.ok){
+            const msg = res.status === 409
+                ? (res.message || tr('smart.projectConflict'))
+                : (res.message || tr('smart.trashRestoreFailed'));
+            if(res.status !== 409) throw new Error(msg);
             toast(msg);
             renderSmartCanvasLog();
             refreshSmartProjectMediaTrashButton();
             await openSmartTrashPanel();
             return;
         }
-        if(!res.ok){
-            const msg = typeof data?.detail === 'string' ? data.detail : tr('smart.trashRestoreFailed');
-            throw new Error(msg);
-        }
-        if(data?.canvas) syncProjectCanvasFromResponse(data.canvas);
+        if(res.data?.canvas) await adoptServerCanvas(res.data.canvas);
         toast(tr('canvas.originalRestored'));
         renderSmartCanvasLog();
         refreshSmartProjectMediaTrashButton();
@@ -7010,25 +7007,18 @@ async function smartUnusedCleanAll(){
     let failCount = 0;
     for(const assetId of entries){
         try {
-            const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
+            // #76 (C-3)：统一 helper——409 rebase 到最新画布后按新版本继续，不计成功
+            const delResult = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`, {
                 method: 'DELETE',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({base_revision: Number(canvas?.revision || 0)})
+                payload: () => JSON.stringify({base_revision: Number(canvas?.revision || 0)})
             });
-            const data = await res.json().catch(() => ({}));
-            const nextCanvas = res.status === 409 ? data?.detail?.canvas : (res.ok ? data?.canvas : null);
-            // #60: 同 #59——409 是服务端未执行删除，不计成功、不移除本地缓存。
-            let deleted = false;
-            if(res.ok || res.status === 404){
-                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
-                deleted = true;
-            } else if(res.status === 409){
-                if(nextCanvas) syncProjectCanvasFromResponse(nextCanvas);
-            }
+            if(delResult.ok && delResult.data?.canvas) await adoptServerCanvas(delResult.data.canvas);
+            // #60: 同 #59——409 是删除未执行，不计成功，不移除本地缓存。
+            const deleted = delResult.ok || delResult.status === 404;
             if(deleted){
                 okCount += 1;
                 removeProjectMediaFromCache(assetId);
-                // #62 B-5(L1): 同批量删除——剔除悬空快照。
+                // #62 B-5(L1): 同批量删除——剔除快照。
                 if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
             } else {
                 failCount += 1;
@@ -7285,22 +7275,16 @@ async function deleteProjectOriginalWide(assetId, btn){
     if(!projectId || !assetId) return;
     if(btn){ btn.disabled = true; btn.setAttribute('aria-busy','true'); }
     try {
-        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/delete-project-wide`, {
+        // #76 (C-3)：统一 helper——409 自动 rebase 到最新画布后再报错
+        const result = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/original/delete-project-wide`, {
             method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({asset_id: assetId, base_revision: Number(canvas?.revision || 0)})
+            payload: () => JSON.stringify({asset_id: assetId, base_revision: Number(canvas?.revision || 0)})
         });
-        const data = await res.json().catch(() => ({}));
-        if(!res.ok){
-            const detail = data.detail || {};
-            const message = (typeof detail === 'object' && detail.message) ? detail.message
-                : (typeof detail === 'string' ? detail : tr('smart.assetDeleteFail'));
-            // 409 冲突：先同步服务端最新画布再报错，避免画布状态过期连锁冲突
-            if(res.status === 409 && typeof detail === 'object' && detail.canvas) syncProjectCanvasFromResponse(detail.canvas);
-            toast(message);
+        if(!result.ok){
+            toast(result.message || tr('smart.assetDeleteFail'));
             return;
         }
-        if(data.canvas) syncProjectCanvasFromResponse(data.canvas);
+        if(result.data.canvas) await adoptServerCanvas(result.data.canvas);
         // 原图已硬删：清本地缓存 + 剔除含该媒体的 undo/redo 快照（P0-4 防护）
         removeProjectMediaFromCache(assetId);
         if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
@@ -9741,39 +9725,35 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             reset_referencing_nodes:deleteMedia,
             base_updated_at:Number(canvas.updated_at || 0)
         };
-        const res = await fetch(endpoint, {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify(payload)
-        });
-        const data = await res.json().catch(() => ({}));
-        if(!res.ok){
-            // #68: 409 = 画布版本冲突（revision 已被其他操作推进）——同步服务端最新画布后
-            // 停止本次删除，不让过期状态继续连锁冲突。
-            if(res.status === 409 && data.detail?.canvas){
-                syncProjectCanvasFromResponse(data.detail.canvas);
-                toast(typeof data.detail?.message === 'string' ? data.detail.message : tr('canvas.logDeleteConflict'));
+        // #76 (C-3)：统一 helper——409 自动 rebase 到最新画布
+        const result = await projectCanvasRequest(endpoint, {method:'POST', payload});
+        if(!result.ok){
+            // #68: 409 = 画布版本冲突（revision 已被其他操作推进）——rebase 后停止本次删除，
+            // 不让过期状态继续连锁冲突。
+            if(result.canvasSynced){
+                toast(result.message || tr('canvas.logDeleteConflict'));
                 return;
             }
-            throw new Error(typeof data.detail === 'string' ? data.detail : tr('canvas.logDeleteFailed'));
+            throw new Error(result.message || tr('canvas.logDeleteFailed'));
         }
-        if(projectHistory && data.canvas) data.canvas = hydrateProjectMediaReferences(data.canvas);
-        canvas.logs = mergeSmartActiveHistoryTaskLogs(
-            data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId),
-            activeTaskLogs,
-        );
-        if(data.canvas?.nodes){
-            canvas.nodes = data.canvas.nodes;
-            canvas.connections = data.canvas.connections || [];
-            nodes = canvas.nodes;
-            render();
-        }
-        canvas.updated_at = Number(data.canvas?.updated_at || canvas.updated_at || Date.now());
-        canvas.revision = Number(data.canvas?.revision ?? canvas.revision ?? 0);
-        if(projectHistory){
-            const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-            persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
-            persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
+        const data = result.data;
+        if(projectHistory && data.canvas){
+            // 重型水合：合并活动任务日志 + materialize + 刷新 persisted 快照（与删原图流一致）
+            await adoptServerCanvas(data.canvas, {activeTaskLogs});
+        } else {
+            // 遗留 canvas 路径：本地合并删除结果
+            canvas.logs = mergeSmartActiveHistoryTaskLogs(
+                data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId),
+                activeTaskLogs,
+            );
+            if(data.canvas?.nodes){
+                canvas.nodes = data.canvas.nodes;
+                canvas.connections = data.canvas.connections || [];
+                nodes = canvas.nodes;
+                render();
+            }
+            canvas.updated_at = Number(data.canvas?.updated_at || canvas.updated_at || Date.now());
+            canvas.revision = Number(data.canvas?.revision ?? canvas.revision ?? 0);
         }
         renderSmartCanvasLog();
         if(projectHistory && deleteMedia) refreshSmartProjectMediaTrashButton();
@@ -9923,51 +9903,20 @@ async function deleteSmartProjectOriginal(logId, outputIndex){
             output_id:outputId,
             output_index:Number(currentIndex),
         });
-        let res, data;
-        let maxRetries = 3;
-        let retryCount = 0;
-        do {
-            res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/delete`, {
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:deletePayload(),
-            });
-            data = await res.json().catch(() => ({}));
-            // Bug fix: 409 Conflict (revision mismatch) — 自动更新 canvas revision 并重试
-            if(res.status === 409 && data?.detail?.canvas){
-                const serverCanvas = hydrateProjectMediaReferences(data.detail.canvas);
-                canvas = serverCanvas;
-                canvas.logs = mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs);
-                canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-                nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-                canvas.nodes = nodes;
-                canvas.updated_at = Number(canvas.updated_at || Date.now());
-                canvas.revision = Number(canvas.revision ?? 0);
-                const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-                persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
-                persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
-                render();
-                await new Promise(resolve => setTimeout(resolve, 100)); // 等待 100ms 让 revision 稳定
-                retryCount++;
-            } else {
-                break;
-            }
-        } while(retryCount < maxRetries);
-        if(!res.ok) throw new Error(data.detail?.message || data.detail || tr('canvas.originalDeleteFailed'));
+        // #76 (C-3)：统一 helper——409 时 adoptServerCanvas rebase 到最新画布并自动重试 ×3
+        // （payload 闭包每次重算 base_revision；100ms 等待 revision 稳定）
+        const result = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/original/delete`, {
+            method:'POST',
+            payload:deletePayload,
+            retries:3,
+            settleMs:100,
+        });
+        if(!result.ok) throw new Error(result.message || tr('canvas.originalDeleteFailed'));
+        const data = result.data;
         const deletionId = String(data.deleted?.deletion_id || '');
         if(!deletionId) throw new Error(tr('canvas.originalDeleteFailed'));
         pushUndo({projectOriginalDelete:{assetId, outputId, deletionId, logId, projectId}});
-        canvas = data.canvas || canvas;
-        canvas = hydrateProjectMediaReferences(canvas);
-        canvas.logs = mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs);
-        canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-        nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.nodes = nodes;
-        canvas.updated_at = Number(canvas.updated_at || Date.now());
-        canvas.revision = Number(canvas.revision ?? 0);
-        const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-        persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
-        persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
+        await adoptServerCanvas(data.canvas || canvas, {activeTaskLogs});
         reconcileSmartOriginalDeletionUi(logId, outputId, deletionUiState);
         render();
         renderSmartCanvasLog();

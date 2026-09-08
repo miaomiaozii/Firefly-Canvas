@@ -1873,10 +1873,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         log_id = str(log_id or "").strip()
         with self._project_operation_lock(project_id):
             with self._lock:
-                opened = self.open_project(project_id)
-                current_revision = int(opened["canvas"].get("revision") or 0)
-                if int(base_revision) != current_revision:
-                    raise RevisionConflict(opened["canvas"])
+                opened, current_revision = self._open_project_at_revision(project_id, base_revision)
                 history = copy.deepcopy(self._histories.get(project_id, []))
                 target = next((item for item in history if str(item.get("id") or "") == log_id), None)
                 if not isinstance(target, dict):
@@ -1976,12 +1973,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     "nodes": [node for node in original_nodes if deleted_ids.intersection(self._collect_asset_ids(node))],
                     "history": [record for record in old_history if deleted_ids.intersection(self._collect_asset_ids(record)) or str(record.get("id") or "") == log_id],
                 }
-                history_producer_ids = {
-                    str(record.get("result_node_id") or "").strip()
-                    for record in old_history
-                    if str(record.get("result_node_id") or "").strip()
-                    and deleted_ids.intersection(self._collect_asset_ids(record.get("outputs") or []))
-                }
+                history_producer_ids = self._history_producer_ids_for_assets(old_history, deleted_ids)
 
                 cleaned_history = []
                 for record in old_history:
@@ -1993,8 +1985,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                         continue
                     cleaned = copy.deepcopy(record)
                     for asset_id in matching:
-                        cleaned = self._remove_asset_references(cleaned, asset_id) or {}
-                        self._append_deleted_asset_tombstone(cleaned, "deletedReferenceTombstones", asset_id, old_media_index.get("items", {}).get(asset_id, {}))
+                        cleaned = self._apply_history_record_asset_removal(
+                            cleaned, asset_id, old_media_index.get("items", {}).get(asset_id, {}), owns_output=False,
+                        )
                     cleaned_history.append(cleaned)
 
                 nodes = []
