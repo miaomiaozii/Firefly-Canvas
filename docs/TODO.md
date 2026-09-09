@@ -46,8 +46,8 @@
 - **验证**：domain 质量门 6/6 步骤通过（129.6s，commit 93c6e7a）。
 
 ### 1.4 [ ] 清理重复定义 / 死代码（S2 维护性）
-- `FireflyProjectCreateRequest` 在 `app/core.py:1163` 和 `app/routers/api_project_library.py:141` 重复定义，合并到一处。
-- 收敛 `main.py:1671` 的巨型 import（675 个符号）—— 随 core.py 拆分一并处理。
+- **2026-09-10 复核更新**：请求模型重复定义不止 1 处——`app/core.py` 有 **65 个**类被 `app/routers/*.py` 本地同名类 shadow（clean-room W1 拆分时机械复制未清 core 副本；api_project_library 14 个、api_asset_library 10 个、api_local_assets 7 个等），core 版全部是死代码。收敛工作暂缓，待专门排期（先清完再评估 core.py 拆分收益）。
+- 收敛 `main.py:1677` 的巨型 import（单行 17,468 字符 / ~675 符号 re-export core；main.py 仍 1731 行）—— 随 core.py 拆分一并处理。
 
 ---
 
@@ -145,12 +145,12 @@
 ---
 
 ## 架构治理（穿插进行，不阻塞功能）
-- [ ] 拆分 `app/core.py` 上帝模块（6154 行 / 483 顶层符号）——按 provider/领域归并，收敛 main.py 巨型 import。
-- [ ] 前端 `smart-canvas.js` 内部函数分组注释 + 逐步收敛 110 个模块级共享 `let`（不物理拆分）。
+- [ ] 拆分 `app/core.py` 上帝模块（2026-09-10 复核：6261 行 / 74 个顶层类）——按 provider/领域归并，收敛 main.py 巨型 import。注意：`app/services/_base.py` 的 `_svc._main('...')` 动态绑定机制是巨型 import 的根因，拆分需连带设计。
+- [ ] 前端 `smart-canvas.js` 内部函数分组注释 + 逐步收敛模块级共享声明（2026-09-10 实测：378 个模块级声明，其中 let 185 个；不物理拆分，W2 已评估）。
 
 ---
 
 ## 当前工作树提醒（勿乱动）
-- 既有 WIP（smart-canvas.js / smart-canvas.css / smart-canvas.html）是用户/前会话未提交工作，**绝不提交或还原**。
+- 2026-09-10 起：此前 WIP（#84-#89 UI 批次 + 星标持久化）已由用户全部提交（7bfd80f / c58bc0b / 0f9f6cf）；工作树保持干净，新改动随各自 issue 提交。
 - `backend.log` 勿提交；`restart.bat` / `tools/restart-firefly.ps1` / `tools/recover_h39_canvas.py` 入库前先问用户。
 - 改磁盘 canvas.json 后必须重启服务器（ProjectStore 内存缓存）。
