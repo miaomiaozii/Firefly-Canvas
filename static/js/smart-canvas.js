@@ -8962,7 +8962,7 @@ function renderSmartMarkedPanel(){
         <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
             <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
             <span class="smart-marked-name" title="${escapeAttr(item.name || item.asset_id)}">${escapeHtml(item.name || item.asset_id)}</span>
-            <button class="mini-x smart-marked-download" type="button" title="下载" data-i="${i}"><i data-lucide="download"></i></button>
+            <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><i data-lucide="download"></i></button>
             <button class="mini-x smart-marked-unmark" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
         </div>`).join('');
     list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
@@ -11937,14 +11937,14 @@ function smartNodeToolbarHtml(node){
     const gridLabel = imageCount > 1 ? '宫格拼接' : '宫格切分';
     const actions = [
         {key:'preview', icon:'eye', label:'预览', enabled:kind === 'image' || kind === 'video'},
-        {key:'detail', icon:'info', label:'详情', enabled:kind === 'image'},
+        {key:'detail', icon:'info', label:tr('smart.nodeDetail'), enabled:kind === 'image'},
         {key:'crop', icon:'crop', label:'裁剪', enabled:canEditImage},
         {key:'outpaint', icon:'expand', label:'扩图', enabled:canEditImage},
         {key:'mask', icon:'brush', label:'遮罩', enabled:canEditImage},
         {key:'brush', icon:'paintbrush', label:'画笔', enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
         {key:'send-ps', icon:'send', label:'发送到 PS', enabled:canEditImage || Boolean(source?.asset_id)},
-        {key:'download', icon:'download', label:'下载', enabled:true}
+        {key:'download', icon:'download', label:tr('smart.nodeDownload'), enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
         <button type="button" data-smart-node-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
@@ -19917,10 +19917,13 @@ function demoteHistoryGroupNode(group){
     if(!group) return;
     delete group.historyFor;
     delete group.isHistoryGroup;
-    if(group.title === '历史分组' || group.title === '候选池'){
+    // #91：身份判定用 titleTouched 标志而不是比对中文标题——当前画布节点无用户重命名入口，
+    // 候选池标题永远由系统设置，titleTouched 恒缺失（视为未改名）；未来加重命名入口时置 true 即可保留用户标题。
+    if(!group.titleTouched){
         const count = (group.images || []).length;
         group.title = count > 1 ? 'Group' : count === 1 ? 'Image' : tr('smart.createImportNode');
     }
+    delete group.titleTouched;
 }
 // #85：候选池摆放位置——生图框右侧列（x = 右缘 + 80，顶边对齐），
 // 与现有节点碰撞时同列下移，仍放不下才回退到节点下方（旧版摆放）。
@@ -19978,7 +19981,7 @@ function ensureHistoryGroupForNode(node){
             type:'smart-image',
             x:pos.x,
             y:pos.y,
-            title:'候选池',
+            title:tr('smart.historyGroupTitle'),
             images:[],
             historyFor:node.id,
             isHistoryGroup:true,
@@ -19988,7 +19991,7 @@ function ensureHistoryGroupForNode(node){
         nodes.push(group);
     }
     group.type = 'smart-image';
-    group.title = '候选池';
+    group.title = tr('smart.historyGroupTitle');
     group.isHistoryGroup = true;
     group.historyFor = node.id;
     if(!Number.isFinite(Number(group.scale))) group.scale = MEDIA_GROUP_DEFAULT_SCALE;
@@ -20008,7 +20011,7 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
     if(history){
         const archived = cleanHistoryImages([...existing, ...(history.images || [])]);
         history.images = archived;
-        history.title = '候选池';
+        history.title = tr('smart.historyGroupTitle');
         history.outputKind = kind;
         history.scale = MEDIA_GROUP_DEFAULT_SCALE;
         delete history.w;
@@ -20064,7 +20067,7 @@ function appendLoopOutputsToNode(node, additions, kind='image', ctx=smartLoopCon
         if(existing.length){
             const history = ensureHistoryGroupForNode(node);
             history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-            history.title = '候选池';
+            history.title = tr('smart.historyGroupTitle');
             history.outputKind = kind;
             history.scale = MEDIA_GROUP_DEFAULT_SCALE;
             delete history.w;
@@ -20321,7 +20324,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                     previousHistory:previousHistorySnapshot
                 };
                 history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-                history.title = '候选池';
+                history.title = tr('smart.historyGroupTitle');
                 history.outputKind = 'image';
                 history.scale = MEDIA_GROUP_DEFAULT_SCALE;
                 delete history.w;
@@ -20818,7 +20821,7 @@ async function runGeneration(){
         if(leftoverImages.length && !priorPendingTasks.length){
             const history = ensureHistoryGroupForNode(pendingNode);
             history.images = cleanHistoryImages([...leftoverImages.map(img => ({...img})), ...(history.images || [])]);
-            history.title = '候选池';
+            history.title = tr('smart.historyGroupTitle');
             history.outputKind = mediaKindForUrls(history.images || [], 'image');
             history.scale = MEDIA_GROUP_DEFAULT_SCALE;
             delete history.w;
