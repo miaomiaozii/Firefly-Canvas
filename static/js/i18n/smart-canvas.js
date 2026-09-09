@@ -223,7 +223,6 @@
         "smart.inputSelf": { zh: "自身，默认参与编辑", en: "Self, always used for edit" },
         "smart.inputUpstream": { zh: "上游输入", en: "Upstream input" },
         "smart.inputUpstreamWorkflow": { zh: "上游工作流输入", en: "Upstream workflow input" },
-        "smart.panoramaHint": { zh: "全景模式：宽幅高容差画布，参考图自动居中", en: "Panorama: wide canvas, references centered" },
         "smart.toastSaveFail": { zh: "保存失败，请重试", en: "Save failed, please retry" },
         "smart.imageModeTitle": { zh: "图片模式", en: "Image mode" },
         "smart.imageModeEdit": { zh: "编辑", en: "Edit" },

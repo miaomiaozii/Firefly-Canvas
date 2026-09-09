@@ -533,17 +533,6 @@ let previewCompareDrag = false;
 let previewComparePos = 50;
 let imageEditPanDrag = null;
 let previewNavState = {nodeId:'', index:0, count:0};
-let panoramaState = {
-    enabled:false,
-    ratio:'wide',
-    customW:16,
-    customH:9,
-    fov:75,
-    yaw:0,
-    pitch:0,
-    drag:null
-};
-window.__smartCanvasPanoramaState = panoramaState;
 let viewport = {x:0, y:0, scale:1};
 const PROJECT_VIEWPORT_STORAGE_PREFIX = 'firefly_canvas_viewport_v1:';
 function isProjectCanvasData(source=canvas){
@@ -14575,7 +14564,6 @@ function setImageEditMode(mode, userTouched=false){
     const zoomLabel = document.getElementById('imageEditZoomLabel');
     const cancelBtn = document.getElementById('imageEditCancelBtn');
     const isPreview = imageEditMode === 'preview';
-    if(!isPreview && panoramaState.enabled) disposePanoramaPreview();
     cropCanvasEl.style.display = isPreview ? 'none' : '';
     previewStageEl.style.display = isPreview ? 'inline-flex' : 'none';
     editStageEl?.classList.toggle('preview-mode', isPreview);
@@ -14610,8 +14598,6 @@ function setImageEditMode(mode, userTouched=false){
     syncImageResizeControls();
     const applyBtn = document.getElementById('imageEditApplyBtn');
     document.getElementById('compareToggleBtn').style.display = isPreview && !isVideoPreview ? 'inline-flex' : 'none';
-    document.getElementById('panoramaToggleBtn')?.style.setProperty('display', 'none');
-    document.getElementById('panoramaExportBtn')?.style.setProperty('display', 'none');
     document.getElementById('compareThumbs').style.display = 'none';
     if(isPreview){
         document.getElementById('imageEditTitle').textContent = isVideoPreview ? '预览视频' : tr('smart.previewImage');
@@ -14677,7 +14663,7 @@ function zoomPanAroundPoint(zoom, pan, factor, rect, clientX, clientY, {min=0.05
 function applyPreviewTransform(){
     const frame = document.getElementById('previewFrame');
     if(frame){
-        frame.style.transform = panoramaState.enabled ? '' : `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`;
+        frame.style.transform = `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`;
     }
     updateZoomLabel();
 }
@@ -14687,20 +14673,6 @@ function resetPreviewTransform(){
     previewComparePos = 50;
     document.getElementById('previewStage')?.style.setProperty('--compare-pos', `${previewComparePos}%`);
     applyPreviewTransform();
-}
-function resizePanoramaViewer(){}
-function refreshPanoramaControls(){}
-function resetPanoramaView(){
-    panoramaState.fov = 75;
-    panoramaState.yaw = 0;
-    panoramaState.pitch = 0;
-}
-function disposePanoramaPreview(){
-    panoramaState.enabled = false;
-    panoramaState.drag = null;
-}
-function applyPanoramaRatio(value){
-    panoramaState.ratio = String(value || 'wide');
 }
 function setPreviewComparePos(clientX){
     const frame = document.getElementById('previewFrame');
@@ -14713,10 +14685,6 @@ function setPreviewComparePos(clientX){
 }
 function syncPreviewFrameSize(){
     const frame = document.getElementById('previewFrame');
-    if(panoramaState.enabled){
-        resizePanoramaViewer();
-        return;
-    }
     const currentImg = document.getElementById('previewCurrentImage');
     const currentVideo = document.getElementById('previewCurrentVideo');
     const compareImg = document.getElementById('previewCompareImage');
@@ -14799,28 +14767,9 @@ function refreshComparePanel(){
     const compareHandle = document.getElementById('previewCompareHandle');
     const thumbsEl = document.getElementById('compareThumbs');
     const toggle = document.getElementById('compareToggleBtn');
-    const panoramaToggle = document.getElementById('panoramaToggleBtn');
     const editing = currentEditImage();
     const curUrl = editing.image?.url || '';
     const isVideoPreview = mediaKindForItem(editing.image || {}) === 'video';
-    const isPreviewMode = imageEditMode === 'preview';
-    if(panoramaToggle){
-        panoramaToggle.style.display = isPreviewMode && !isVideoPreview ? 'inline-flex' : 'none';
-        panoramaToggle.classList.toggle('active', panoramaState.enabled);
-    }
-    if(!isPreviewMode && panoramaState.enabled) disposePanoramaPreview();
-    if(panoramaState.enabled && isPreviewMode && !isVideoPreview){
-        currentImg.onload = null;
-        currentImg.onerror = null;
-        currentImg.style.display = 'none';
-        stage?.classList.remove('compare-on');
-        if(compareLayer) compareLayer.style.display = 'none';
-        if(compareHandle) compareHandle.style.display = 'none';
-        if(thumbsEl){ thumbsEl.style.display = 'none'; thumbsEl.innerHTML = ''; }
-        if(toggle) toggle.classList.remove('active');
-        updatePreviewMetaHint(tr('smart.panoramaHint'));
-        return;
-    }
     const onCurrentLoaded = () => {
         if(currentImg.dataset.previewQuick !== '1') rememberPreviewImageResolution();
         syncPreviewFrameSize();
@@ -14854,7 +14803,6 @@ function refreshComparePanel(){
             toggle.classList.remove('active');
             toggle.title = tr('smart.compareEmpty');
         }
-        if(panoramaToggle) panoramaToggle.style.display = 'none';
         updatePreviewMetaHint(editing.node?.runPrompt ? `${tr('smart.runPromptPrefix')}${editing.node.runPrompt.slice(0, 60)}` : '');
         return;
     }
@@ -15698,10 +15646,6 @@ function syncImageEditOverflow(){
 }
 function resetImageEditZoom(){
     if(imageEditMode === 'preview'){
-        if(panoramaState.enabled){
-            resetPanoramaView();
-            return;
-        }
         resetPreviewTransform();
         return;
     }
@@ -15712,10 +15656,6 @@ function resetImageEditZoom(){
 function updateZoomLabel(){
     const el = document.getElementById('imageEditZoomLabel');
     if(!el) return;
-    if(imageEditMode === 'preview' && panoramaState.enabled){
-        el.textContent = Math.round((75 / Math.max(1, panoramaState.fov)) * 100) + '%';
-        return;
-    }
     el.textContent = Math.round((imageEditMode === 'preview' ? previewZoom : imageEditZoom) * 100) + '%';
 }
 function syncGridCustomCursor(){
@@ -16077,7 +16017,6 @@ function openImageEditor(nodeId, imageIndex=0){
     imageEditModal.classList.add('open');
     previewCompareOn = false;
     previewCompareIndex = -1;
-    disposePanoramaPreview();
     resetPreviewTransform();
     if(kind === 'video'){
         img.onload = null;
@@ -16113,7 +16052,7 @@ function openImageEditor(nodeId, imageIndex=0){
         updateZoomLabel(); syncImageResizeControls(); resizeEditDrawCanvas(); resetEditDrawingHistory(); clearEditDrawing(true); resetCropBox();
         if(!imageEditModeTouched) setImageEditMode('preview');
         else refreshComparePanel();
-        if(!panoramaState.enabled) updatePreviewMetaHint();
+        updatePreviewMetaHint();
         syncImageEditOverflow(); refreshIcons();
     };
     img.onerror = () => {
@@ -16164,7 +16103,6 @@ function closeImageEditor(){
     imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5; imageEditModeTouched = false;
     cropAspectPreset = 'free'; cropAspectRatio = null; syncCropRatioButtons();
     outpaintAspectPreset = 'free'; syncOutpaintRatioButtons();
-    disposePanoramaPreview();
     previewPanDrag = null; previewCompareDrag = false; imageEditPanDrag = null; resetPreviewTransform();
     document.getElementById('imageEditStage')?.classList.remove('overflow-x', 'overflow-y', 'preview-mode');
     const cropCanvasEl = document.getElementById('cropCanvas');
@@ -22044,15 +21982,6 @@ window.onmousemove = e => {
         setPreviewComparePos(e.clientX);
         return;
     }
-    if(panoramaState.drag){
-        e.preventDefault();
-        const dx = e.clientX - panoramaState.drag.clientX;
-        const dy = e.clientY - panoramaState.drag.clientY;
-        panoramaState.yaw = panoramaState.drag.yaw - dx * 0.18;
-        panoramaState.pitch = Math.max(-85, Math.min(85, panoramaState.drag.pitch + dy * 0.18));
-        document.getElementById('previewStage')?.classList.add('panning');
-        return;
-    }
     if(previewPanDrag){
         const stage = document.getElementById('previewStage');
         previewPan = {
@@ -22297,10 +22226,6 @@ window.onmouseup = e => {
     if(promptResizeState){ promptResizeState = null; }
     if(selectionState) finishSelection(e);
     if(previewCompareDrag) previewCompareDrag = false;
-    if(panoramaState.drag){
-        panoramaState.drag = null;
-        document.getElementById('previewStage')?.classList.remove('panning');
-    }
     if(previewPanDrag){
         previewPanDrag = null;
         document.getElementById('previewStage')?.classList.remove('panning');
@@ -23269,7 +23194,7 @@ imageEditModal.addEventListener('mousedown', event => {
     event.stopPropagation();
 });
 imageEditModal.addEventListener('mousemove', event => {
-    if(previewPanDrag || previewCompareDrag || panoramaState.drag || imageEditPanDrag || cropDrag) return;
+    if(previewPanDrag || previewCompareDrag || imageEditPanDrag || cropDrag) return;
     event.stopPropagation();
 });
 imageEditModal.addEventListener('click', event => {
@@ -23286,16 +23211,6 @@ document.getElementById('previewStage').addEventListener('mousedown', event => {
     if(event.target.closest('video')) return;
     event.preventDefault();
     event.stopPropagation();
-    if(panoramaState.enabled){
-        panoramaState.drag = {
-            clientX:event.clientX,
-            clientY:event.clientY,
-            yaw:panoramaState.yaw,
-            pitch:panoramaState.pitch
-        };
-        document.getElementById('previewStage')?.classList.add('panning');
-        return;
-    }
     previewPanDrag = {clientX:event.clientX, clientY:event.clientY, startX:previewPan.x, startY:previewPan.y};
 });
 document.getElementById('imageEditStage').addEventListener('mousedown', event => {
@@ -23387,34 +23302,12 @@ document.getElementById('editTextCanvas')?.addEventListener('dblclick', event =>
 ['imageResizeScaleRange','imageResizeScaleInput'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', event => setImageResizeScale(event.target.value));
 });
-document.querySelectorAll('[data-panorama-ratio]').forEach(btn => {
-    btn.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        applyPanoramaRatio(btn.dataset.panoramaRatio || 'wide');
-    });
-});
-['panoramaRatioW','panoramaRatioH'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', () => {
-        panoramaState.ratio = 'custom';
-        panoramaState.customW = Math.max(1, Math.min(999, Number(document.getElementById('panoramaRatioW')?.value || 16)));
-        panoramaState.customH = Math.max(1, Math.min(999, Number(document.getElementById('panoramaRatioH')?.value || 9)));
-        refreshPanoramaControls();
-        resizePanoramaViewer();
-    });
-});
 document.getElementById('imageEditStage').addEventListener('wheel', event => {
     if(!cropState) return;
     event.preventDefault();
     event.stopPropagation();
     if(imageEditMode === 'preview'){
         if(seekPreviewVideoFrames(event.deltaY > 0 ? 1 : -1)) return;
-        if(panoramaState.enabled){
-            const factor = event.deltaY < 0 ? 0.92 : 1 / 0.92;
-            panoramaState.fov = Math.max(35, Math.min(100, panoramaState.fov * factor));
-            updateZoomLabel();
-            return;
-        }
         const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
         const frame = document.getElementById('previewFrame');
         const next = zoomPanAroundPoint(
@@ -23464,7 +23357,6 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
 }, {passive:false});
 window.addEventListener('resize', () => {
     if(cropState) syncImageEditOverflow();
-    if(panoramaState.enabled) resizePanoramaViewer();
     if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     const repositionComposer = () => {
         const active = activeComposerNode();
