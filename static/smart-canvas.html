@@ -18,14 +18,14 @@
             } catch(e) {}
         })();
     </script>
-    <script src="/static/vendor/js/lucide.js?v=20260908.092503.1514"></script>
-    <script src="/static/js/theme.js?v=20260908.092503.1514"></script>
-    <script src="/static/js/touch-mouse.js?v=20260908.092503.1514"></script>
-    <script src="/static/js/i18n.js?v=20260908.092503.1514"></script>
-    <script src="/static/js/global-preferences.js?v=20260908.092503.1514"></script>
-    <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20260908.092503.1514">
-    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260908.092503.1514">
-    <link rel="stylesheet" href="/static/css/excel-import.css?v=20260908.092503.1514">
+    <script src="/static/vendor/js/lucide.js?v=20260909.112056.4622"></script>
+    <script src="/static/js/theme.js?v=20260909.112056.4622"></script>
+    <script src="/static/js/touch-mouse.js?v=20260909.112056.4622"></script>
+    <script src="/static/js/i18n.js?v=20260909.112056.4622"></script>
+    <script src="/static/js/global-preferences.js?v=20260909.112056.4622"></script>
+    <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20260909.112056.4622">
+    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260909.112056.4622">
+    <link rel="stylesheet" href="/static/css/excel-import.css?v=20260909.112056.4622">
 </head>
 <body>
     <div id="shell" class="shell">
@@ -83,8 +83,18 @@
             <button id="smartSaveButton" class="smart-save" type="button" aria-label="保存" aria-keyshortcuts="Control+S" data-i18n-title="smart.saveNowShortcut" title="保存项目（Ctrl+S）"><i data-lucide="save"></i><span data-i18n="smart.saveNow">保存</span></button>
             <button id="smartArrangeBtn" class="smart-arrange" type="button" title="整理选中节点" aria-label="整理选中节点"><i data-lucide="layout-grid"></i><span data-i18n="smart.arrangeSelected">整理选中</span></button>
             <button id="smartExcelExportBtn" class="smart-arrange" type="button" title="导出选中节点的输出媒体（zip，按任务 ID 命名）" aria-label="导出选中节点的输出媒体"><i data-lucide="download"></i><span data-i18n="smart.exportSelected">导出选中结果</span></button>
-            <button id="smartExcelExportBtn" class="smart-arrange" type="button" title="导出选中节点结果" aria-label="导出选中节点结果"><i data-lucide="download"></i><span data-i18n="smart.exportSelected">导出结果</span></button>
+            <button id="smartMarkedToggle" class="smart-arrange" type="button" title="已标记图片" aria-label="已标记图片"><i data-lucide="star"></i><span data-i18n="smart.markedImages">已标记</span><b id="smartMarkedCount" class="smart-marked-count" hidden>0</b></button>
         </nav>
+        <div id="smartMarkedPanel" class="smart-marked-panel" hidden>
+            <div class="smart-marked-head">
+                <span class="smart-marked-title"><i data-lucide="star"></i><span data-i18n="smart.markedImages">已标记图片</span></span>
+                <div class="smart-marked-head-actions">
+                    <button id="smartMarkedDownloadAll" class="smart-marked-download-all" type="button" title="一键下载全部已标记图片（zip）" aria-label="下载全部已标记图片"><i data-lucide="download"></i><span data-i18n="smart.markedDownloadAll">全部下载</span></button>
+                    <button id="smartMarkedClose" class="smart-marked-close" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+                </div>
+            </div>
+            <div id="smartMarkedList" class="smart-marked-list"></div>
+        </div>
         <div id="smartTitle" class="smart-title" title="重命名画布项目" aria-label="重命名画布项目">
             <span id="smartTitleText" class="smart-title-text" data-i18n="smart.title">核心画布</span>
             <button id="smartTitleEdit" class="smart-title-edit" type="button" title="重命名画布项目" aria-label="重命名画布项目"><i data-lucide="pencil"></i></button>
@@ -508,9 +518,9 @@
         <div id="toast" class="toast"></div>
         <div id="mentionPreview" class="mention-preview"><img alt="preview"></div>
     </div>
-    <script src="/static/js/outpaint-ratios.js?v=20260908.092503.1514"></script>
+    <script src="/static/js/outpaint-ratios.js?v=20260909.112056.4622"></script>
     <script src="/static/js/project-canvas-mutations.js"></script>
-    <script src="/static/js/smart-canvas.js?v=20260908.092503.1514"></script>
-    <script src="/static/js/excel-import.js?v=20260908.092503.1514"></script>
+    <script src="/static/js/smart-canvas.js?v=20260909.112056.4622"></script>
+    <script src="/static/js/excel-import.js?v=20260909.112056.4622"></script>
 </body>
 </html>

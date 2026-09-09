@@ -1766,6 +1766,46 @@ class MediaCleanupEndpointTests(unittest.TestCase):
             404,
         )
 
+    def test_trash_media_preview_falls_back_to_original_and_404(self):
+        # issue #86：回收区预览端点——无预览图回退原文件；条目/项目不存在 404。
+        project = self._project()
+        asset = self._import(project["id"], b"prev-bytes", "prev.png")
+        archived = self.client.post(
+            f"/api/project-library/{project['id']}/media/{asset['asset_id']}/archive",
+            json={"reason": "node-delete"},
+        )
+        self.assertEqual(archived.status_code, 200)
+        preview_url = f"/api/project-library/{project['id']}/trash/media/{asset['asset_id']}/preview"
+        response = self.client.get(preview_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"prev-bytes")
+        self.assertIn("image/png", response.headers["content-type"])
+        self.assertEqual(
+            self.client.get("/api/project-library/nope/trash/media/x/preview").status_code, 404)
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{project['id']}/trash/media/nope/preview").status_code, 404)
+
+    def test_trash_media_preview_prefers_preview_file(self):
+        # issue #86：有条目且存在预览图时返回预览（而非原文件）。
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        (trash_dir / "previews").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "previews" / "p2-preview.webp").write_bytes(b"preview-bytes")
+        (trash_dir / "media").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "media" / "p2-original.jpg").write_bytes(b"original-bytes")
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [{
+                "asset_id": "p2", "deletion_id": "d2", "deleted_at": 1,
+                "expires_at": 4102444800000, "name": "P2", "mime_type": "image/jpeg",
+                "media_filename": "p2-original.jpg", "preview_filenames": ["p2-preview.webp"],
+            }]}),
+            encoding="utf-8",
+        )
+        response = self.client.get(f"/api/project-library/{project['id']}/trash/media/p2/preview")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"preview-bytes")
+        self.assertIn("image/webp", response.headers["content-type"])
+
 
 if __name__ == "__main__":
     unittest.main()

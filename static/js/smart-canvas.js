@@ -1677,6 +1677,9 @@ const SMART_GROUP_LAYOUT = {
 // 最终视觉边距：左右 16px、上下 32px，三阶段一致。
 const BATCH_NODE_PAD_H = SMART_GROUP_LAYOUT.PADDING * 2; // 32
 const BATCH_NODE_PAD_V = SMART_GROUP_LAYOUT.PADDING * 4; // 64
+// #84：批量 pending 节点底部状态条高度（40px 条 + 8px 间隙），只加在 pending 阶段，
+// 完成时回到完成态几何（gridH + PAD_V），状态条消失即「生成完成」的视觉信号。
+const BATCH_STATUSBAR_H = 48;
 
 // 单图节点规范
 const SINGLE_IMAGE_LAYOUT = {
@@ -2463,6 +2466,7 @@ function imageLayout(images, scale=1, node=null){
         
         // 批量：固定 4:3 缩略图网格（独立生成卡片：无 summary 行）
         // 与 pendingBoxSize / 完成阶段共用 BATCH_NODE_PAD_H/V，三阶段外框尺寸一致。
+        // #84：pending 阶段额外加高 BATCH_STATUSBAR_H，容纳节点底部状态条（完成态不加）。
         if(total > 1){
             const grid = getBatchThumbGridSize(total);
             return {
@@ -2470,7 +2474,7 @@ function imageLayout(images, scale=1, node=null){
                 rows:grid.rows,
                 visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, grid.rows),
                 width:grid.gridW + BATCH_NODE_PAD_H,
-                height:grid.gridH + BATCH_NODE_PAD_V,
+                height:grid.gridH + BATCH_NODE_PAD_V + BATCH_STATUSBAR_H,
                 thumb:BATCH_THUMB.WIDTH,
                 gridHeight:grid.gridH,
                 pendingLock:true
@@ -6826,14 +6830,20 @@ function renderSmartTrashItems(items){
         return;
     }
     if(smartTrashPurgeBtn) smartTrashPurgeBtn.disabled = false;
+    const projectId = smartProjectId() || '';
     smartTrashList.innerHTML = items.map(item => {
         const assetId = String(item?.asset_id || '');
         const deletionId = String(item?.deletion_id || '');
         const name = String(item?.name || item?.filename || assetId);
         const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
         const days = trashDaysLeft(item?.expires_at);
+        // #86：回收区条目带缩略图（第一张预览图，无预览回退原文件），点缩略图可放大预览。
+        const thumbUrl = projectId && assetId ? `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview` : '';
         return `<div class="smart-trash-item" data-trash-asset="${escapeHtml(assetId)}" data-trash-deletion="${escapeHtml(deletionId)}">
-            <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+            <div class="smart-trash-thumb-wrap" data-trash-preview="${escapeHtml(assetId)}" title="${escapeHtml(tr('smart.trashPreview'))}">
+                ${thumbUrl ? `<img class="smart-trash-thumb" loading="lazy" src="${escapeAttr(thumbUrl)}" alt="${escapeHtml(name)}">` : ''}
+                <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+            </div>
             <div class="smart-trash-meta">
                 <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
                 <div class="smart-trash-sub">${escapeHtml(formatTrashTime(item?.deleted_at))}${days > 0 ? ` · ${escapeHtml(tr('smart.trashExpiresIn').replace('{n}', String(days)))}` : ''}</div>
@@ -6852,6 +6862,120 @@ function renderSmartTrashItems(items){
     smartTrashList.querySelectorAll('[data-trash-forever]').forEach(btn => {
         btn.onclick = () => void smartTrashPurgeItem(btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '');
     });
+    // #86：缩略图加载失败回退到图标；点缩略图打开大图预览（滚轮缩放 + 拖拽 + 恢复）。
+    const byAsset = new Map(items.map(item => [String(item?.asset_id || ''), item]));
+    smartTrashList.querySelectorAll('.smart-trash-thumb').forEach(img => {
+        img.addEventListener('error', () => img.closest('.smart-trash-thumb-wrap')?.classList.add('no-thumb'), {once:true});
+    });
+    smartTrashList.querySelectorAll('[data-trash-preview]').forEach(el => {
+        el.onclick = () => openTrashMediaPreview(byAsset.get(el.dataset.trashPreview) || {});
+    });
+}
+// 通用图片大图查看器（滚轮缩放 + 拖拽平移 + 双击复位）：#86 回收站预览使用，
+// 后续其他预览入口可复用（#87 统一详情面板）。
+function setupSimpleImageStage(stage){
+    if(!stage) return null;
+    const frame = stage.querySelector('.preview-frame');
+    const label = stage.querySelector('[data-simple-zoom-label]');
+    const view = {scale:1, panX:0, panY:0, drag:null};
+    const apply = () => {
+        if(!frame) return;
+        frame.style.transform = `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`;
+        if(label) label.textContent = `${Math.round(view.scale * 100)}%`;
+    };
+    const zoomAt = (factor, clientX, clientY) => {
+        const rect = stage.getBoundingClientRect();
+        const cx = clientX - rect.left - rect.width / 2;
+        const cy = clientY - rect.top - rect.height / 2;
+        const next = Math.min(8, Math.max(0.2, view.scale * factor));
+        const k = next / view.scale;
+        view.panX = cx - (cx - view.panX) * k;
+        view.panY = cy - (cy - view.panY) * k;
+        view.scale = next;
+        apply();
+    };
+    stage.addEventListener('wheel', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
+    }, {passive:false});
+    stage.addEventListener('pointerdown', event => {
+        if(event.button !== 0) return;
+        event.stopPropagation();
+        stage.setPointerCapture?.(event.pointerId);
+        view.drag = {pointerId:event.pointerId, clientX:event.clientX, clientY:event.clientY, startX:view.panX, startY:view.panY};
+    });
+    stage.addEventListener('pointermove', event => {
+        const drag = view.drag;
+        if(!drag || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        view.panX = drag.startX + event.clientX - drag.clientX;
+        view.panY = drag.startY + event.clientY - drag.clientY;
+        apply();
+    });
+    const finish = event => { if(view.drag && view.drag.pointerId === event.pointerId) view.drag = null; };
+    stage.addEventListener('pointerup', finish);
+    stage.addEventListener('pointercancel', finish);
+    stage.addEventListener('dblclick', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        view.scale = 1; view.panX = 0; view.panY = 0;
+        apply();
+    });
+    return {apply, reset(){ view.scale = 1; view.panX = 0; view.panY = 0; apply(); }};
+}
+// #86：回收区大图预览（缩略图点击），带「恢复」快捷按钮。
+function openTrashMediaPreview(item){
+    const projectId = smartProjectId();
+    const assetId = String(item?.asset_id || '');
+    if(!projectId || !assetId) return;
+    let box = document.getElementById('smartTrashPreview');
+    if(!box){
+        box = document.createElement('div');
+        box.id = 'smartTrashPreview';
+        box.className = 'smart-trash-preview-backdrop';
+        box.setAttribute('aria-hidden', 'true');
+        box.hidden = true;
+        box.innerHTML = `<div class="smart-trash-preview" role="dialog" aria-modal="true" aria-label="${escapeAttr(tr('smart.trashPreview'))}">
+            <div class="preview-stage smart-trash-preview-stage" style="cursor:grab">
+                <div class="preview-frame"><img alt="" draggable="false"></div>
+                <div class="smart-trash-preview-zoom"><output data-simple-zoom-label aria-live="polite">100%</output></div>
+            </div>
+            <div class="smart-trash-preview-bar">
+                <span class="smart-trash-preview-name"></span>
+                <button class="asset-mini-btn" type="button" data-trash-preview-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span></button>
+                <button class="asset-mini-btn" type="button" data-trash-preview-close title="${escapeHtml(tr('common.close') || '关闭')}"><i data-lucide="x"></i><span>${escapeHtml(tr('common.close') || '关闭')}</span></button>
+            </div>
+        </div>`;
+        document.body.appendChild(box);
+        box.addEventListener('click', event => {
+            if(event.target === box || event.target.closest('[data-trash-preview-close]')) closeTrashMediaPreview();
+        });
+        document.addEventListener('keydown', event => {
+            if(event.key === 'Escape' && !box.hidden) closeTrashMediaPreview();
+        });
+        setupSimpleImageStage(box.querySelector('.smart-trash-preview-stage'));
+    }
+    const img = box.querySelector('img');
+    img.src = `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview`;
+    box.querySelector('.smart-trash-preview-name').textContent = String(item?.name || item?.filename || assetId);
+    const restoreBtn = box.querySelector('[data-trash-preview-restore]');
+    restoreBtn.onclick = () => {
+        void smartTrashRestoreItem(assetId, String(item?.deletion_id || ''));
+        closeTrashMediaPreview();
+    };
+    box.hidden = false;
+    box.setAttribute('aria-hidden', 'false');
+    refreshIcons();
+}
+function closeTrashMediaPreview(){
+    const box = document.getElementById('smartTrashPreview');
+    if(!box) return;
+    box.hidden = true;
+    box.setAttribute('aria-hidden', 'true');
+    const img = box.querySelector('img');
+    if(img) img.removeAttribute('src');
 }
 function closeSmartTrashPanel(){
     if(!smartTrashBackdrop) return;
@@ -7135,6 +7259,14 @@ async function cascadeArchiveDeletedMedia(images){
     if(!assetIds.size) return;
     const stillReferenced = new Set();
     nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
+    // #88：生成历史（canvas.logs）引用的原图不在节点集合里——仅删画布图时也要豁免，
+    // 否则会把历史里还挂着的原图归档进回收区，历史缩略图 404。
+    (Array.isArray(canvas?.logs) ? canvas.logs : []).forEach(log => {
+        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
+            const id = String(output?.asset_id || '');
+            if(id) stillReferenced.add(id);
+        });
+    });
     const toArchive = [...assetIds].filter(id => !stillReferenced.has(id));
     if(!toArchive.length) return;
     await Promise.all(toArchive.map(async assetId => {
@@ -8074,6 +8206,9 @@ function renderConnections(){
     const items = [];
     conns.forEach(conn => {
         const kind = conn.kind || 'flow';
+        // #85：候选池不再绘制 history 连线（数据关联保留在 canvas.connections 与 historyFor 字段，
+        // 级联删除/撤销/保存恢复均不受影响）。
+        if(kind === 'history') return;
         const fromScope = kind === 'history' ? '' : smartGroupScopeId(conn.from);
         const toScope = kind === 'history' ? '' : smartGroupScopeId(conn.to);
         // 同一分组内部的连线（成员↔成员、成员↔分组本体）属于内部关系，入组后隐藏，保持整洁。
@@ -8672,6 +8807,93 @@ function previewDownloadGroupItems(){
             const colDiff = Number(ga.col ?? a.__index) - Number(gb.col ?? b.__index);
             return colDiff || a.__index - b.__index;
         });
+}
+// #89 已标记图片：canvas.markedAssetIds 随画布 JSON 持久化（canvasForStorage 原样保留顶层字段）。
+function getMarkedAssetIds(){
+    if(!canvas) return [];
+    if(!Array.isArray(canvas.markedAssetIds)) canvas.markedAssetIds = [];
+    return canvas.markedAssetIds;
+}
+function updateSmartMarkedBadge(){
+    const badge = document.getElementById('smartMarkedCount');
+    if(!badge) return;
+    const count = getMarkedAssetIds().length;
+    badge.hidden = count === 0;
+    badge.textContent = String(count);
+}
+function imageMarkButtonHtml(item, index){
+    const assetId = String(item?.asset_id || '');
+    if(!assetId) return '';
+    const marked = getMarkedAssetIds().includes(assetId);
+    return `<button class="mini-x image-mark${marked ? ' image-marked' : ''}" type="button" data-image-index="${index}" title="${escapeHtml(tr(marked ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`;
+}
+function setMarkedImage(assetId, marked){
+    if(!assetId) return;
+    const ids = getMarkedAssetIds();
+    const at = ids.indexOf(assetId);
+    if(marked && at < 0) ids.push(assetId);
+    if(!marked && at >= 0) ids.splice(at, 1);
+    render();
+    scheduleSave();
+    renderSmartMarkedPanel();
+}
+function toggleMarkedImage(node, imageIndex){
+    const raw = node?.images?.[imageIndex];
+    const item = imageForDisplay(raw) || raw;
+    const assetId = String(raw?.asset_id || item?.asset_id || '');
+    if(!assetId){ toast(tr('smart.markUnavailable')); return; }
+    setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
+}
+// asset_id → 可用文件（含 url）：先查生成历史输出，再查节点图片；文件已删的自动跳过。
+function markedImageItems(){
+    const found = new Map();
+    (Array.isArray(canvas?.logs) ? canvas.logs : []).forEach(log => {
+        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
+            const id = String(output?.asset_id || '');
+            if(id && output?.url && !found.has(id)) found.set(id, output);
+        });
+    });
+    nodes.forEach(node => (node.images || []).forEach(img => {
+        const id = String(img?.asset_id || '');
+        if(id && img?.url && !found.has(id)) found.set(id, img);
+    }));
+    return getMarkedAssetIds().map(id => found.get(id)).filter(item => item?.url);
+}
+function renderSmartMarkedPanel(){
+    const count = getMarkedAssetIds().length;
+    const badge = document.getElementById('smartMarkedCount');
+    if(badge){ badge.hidden = count === 0; badge.textContent = String(count); }
+    const list = document.getElementById('smartMarkedList');
+    if(!list) return;
+    const items = markedImageItems();
+    if(!items.length){
+        list.innerHTML = `<div class="smart-marked-empty">${tr('smart.markedEmpty')}</div>`;
+        if(window.lucide) lucide.createIcons();
+        return;
+    }
+    list.innerHTML = items.map((item, i) => `
+        <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
+            <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
+            <span class="smart-marked-name" title="${escapeAttr(item.name || item.asset_id)}">${escapeHtml(item.name || item.asset_id)}</span>
+            <button class="mini-x smart-marked-download" type="button" title="下载" data-i="${i}"><i data-lucide="download"></i></button>
+            <button class="mini-x smart-marked-unmark" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
+        </div>`).join('');
+    list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
+        e.preventDefault(); e.stopPropagation();
+        downloadPreviewFile(items[Number(btn.dataset.i)]);
+    }));
+    list.querySelectorAll('.smart-marked-unmark').forEach(btn => btn.addEventListener('click', e => {
+        e.preventDefault(); e.stopPropagation();
+        setMarkedImage(btn.dataset.assetId, false);
+    }));
+    if(window.lucide) lucide.createIcons();
+}
+function toggleSmartMarkedPanel(open){
+    const panel = document.getElementById('smartMarkedPanel');
+    if(!panel) return;
+    const next = open ?? panel.hidden;
+    panel.hidden = !next;
+    if(next) renderSmartMarkedPanel();
 }
 // 把一组图片打包成 zip 下载（预览“下载全部”和分组小菜单“批量下载”共用）。
 async function zipDownloadImageItems(title, items){
@@ -9573,7 +9795,8 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
     deleteOriginal.dataset.assetId = String(item.asset_id || '');
     deleteOriginal.title = `${tr('canvas.deleteSelectedOriginal')} · ${position}`;
     deleteOriginal.setAttribute('aria-label', deleteOriginal.title);
-    deleteOriginal.hidden = !item.asset_id || canvas?.format !== 'firefly-canvas-v1';
+    // #87：「删除当前原图」需要 log 墓碑上下文，无 log（简化形态）时隐藏。
+    deleteOriginal.hidden = !item.asset_id || !smartLogEntryById(smartLogDetailSession?.logId) || canvas?.format !== 'firefly-canvas-v1';
     deleteOriginal.onclick = event => {
         event.preventDefault();
         void deleteSmartProjectOriginal(smartLogDetailSession.logId, item.outputIndex);
@@ -9667,6 +9890,15 @@ function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
         ? new Date(timestamp).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN')
         : tr('canvas.logUnrecorded');
     box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || tr('canvas.logNoPrompt'));
+    // #87：无 log（手动导入图等）→ 同一面板的简化形态：隐藏模型/时间/提示词行，
+    // 不是另一套 UI；「删除当前原图」需要 log 墓碑上下文，无 log 时隐藏。
+    const hasLogContext = Boolean(log);
+    box.querySelector('.smart-log-detail-meta').style.display = hasLogContext ? '' : 'none';
+    box.querySelector('.smart-log-detail-prompt-wrap').style.display = hasLogContext ? '' : 'none';
+    if(!hasLogContext){
+        const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
+        if(deleteOriginal) deleteOriginal.hidden = true;
+    }
     renderSmartLogDetailOutputs(box);
     box.classList.add('open');
     box.setAttribute('aria-hidden', 'false');
@@ -9679,6 +9911,47 @@ function openSmartLogLightbox(url, kind='image', context={}){
 }
 function smartLogPreviewNode(url, kind='image', context={}){
     openSmartLogDetail({url, kind, ...context});
+}
+// #87：画布图片「详情」入口——统一打开「生成详情」面板（与生图历史抽屉同一组件，
+// 以后改详情 UI 只改一处）；能匹配到生成历史时展示完整元数据，
+// 匹配不到（手动导入等）则同一组件的简化形态（隐藏模型/时间/提示词行）。
+function openSmartImageDetail(nodeId, imageIndex=0){
+    const node = nodes.find(n => n.id === nodeId);
+    const source = node?.images?.[imageIndex];
+    const item = imageForDisplay(source) || source;
+    if(!item?.url) return;
+    const kind = mediaKindForItem(item);
+    if(kind !== 'image'){
+        window.open(displayMediaUrl({url:item.url}), '_blank');
+        return;
+    }
+    const ctx = smartLogContextForImage(node, imageIndex);
+    openSmartLogDetail({
+        url:item.url,
+        kind:'image',
+        logId:ctx?.logId || '',
+        outputIndex:ctx?.outputIndex ?? 0
+    });
+}
+// 查找图片对应的生成历史条目（asset_id 优先，url 兜底），返回 {logId, outputIndex} 或 null。
+function smartLogContextForImage(node, imageIndex){
+    const source = node?.images?.[imageIndex];
+    const item = imageForDisplay(source) || source;
+    const assetId = String(source?.asset_id || item?.asset_id || '');
+    const url = String(item?.url || source?.url || '');
+    if(!assetId && !url) return null;
+    const logs = Array.isArray(canvas?.logs) ? canvas.logs : [];
+    for(const log of logs){
+        if(!log || typeof log !== 'object' || !String(log?.id || '')) continue;
+        const outputs = smartLogImageOutputs(log);
+        const outputIndex = outputs.findIndex(output => {
+            if(assetId && String(output?.asset_id || '') === assetId) return true;
+            if(!assetId && url && String(output?.url || '') === url) return true;
+            return false;
+        });
+        if(outputIndex >= 0) return {logId:String(log.id || ''), outputIndex};
+    }
+    return null;
 }
 function smartActiveHistoryTaskLogs(logs, excludedLogId=''){
     return (logs || []).filter(item =>
@@ -9874,7 +10147,7 @@ async function settleProjectCanvasBeforeOriginalMutation(){
     while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
     return await saveProjectCanvasUntilSettled();
 }
-async function deleteSmartProjectOriginal(logId, outputIndex){
+async function deleteSmartProjectOriginal(logId, outputIndex, options = {}){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
     const log = smartLogEntryById(logId);
     // Bug fix: 实时查找 output_id 在 log.outputs 中的当前位置，而不是使用缓存的 outputIndex
@@ -9886,7 +10159,7 @@ async function deleteSmartProjectOriginal(logId, outputIndex){
         toast(tr('canvas.originalDeleteUnavailable'));
         return;
     }
-    if(!confirm(tr('canvas.deleteOriginalConfirm'))) return;
+    if(!options.skipConfirm && !confirm(tr('canvas.deleteOriginalConfirm'))) return;
     // Bug fix: 实时查找当前 outputIndex（基于 output_id），避免从生图节点再次生图后 outputIndex 失效
     const currentIndex = allOutputs.find(o => String(o.output_id || '') === outputId)?.outputIndex ?? Number(outputIndex);
     const deletionUiState = captureSmartOriginalDeletionUiState(logId, outputId, currentIndex);
@@ -11201,7 +11474,7 @@ function smartGroupBodyHtml(node){
             const canDelete = ref.nodeId === node.id;
             return `<div class="smart-group-card has-thumbs">
                 <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-                <div class="image-wrap smart-group-single-thumb ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>
+                <div class="image-wrap smart-group-single-thumb ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>
             </div>`;
         }
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
@@ -11213,7 +11486,7 @@ function smartGroupBodyHtml(node){
             <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
             <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${thumbW}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--thumb-w:${thumbW}px;--thumb-h:${thumbH}px">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}</div>`;
+                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--thumb-w:${thumbW}px;--thumb-h:${thumbH}px">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
             }).join('')}</div>
         </div>`;
     }
@@ -11351,7 +11624,6 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     const grid = getBatchThumbGridSize(total);
     const cols = grid.cols;
     const rows = grid.rows;
-    const completedCount = Math.min(total, (completedImgs || []).filter(Boolean).length);
     // 每张候选的真实阶段（后端 progress.candidate_phases）：按格显示各自进度。
     const phases = Array.isArray(candidatePhases) ? candidatePhases.map(phase => String(phase || '')) : [];
     const cells = Array.from({length:total}).map((_, index) => {
@@ -11367,12 +11639,17 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
             const stageSegments = GENERATION_PROGRESS_PHASES.map(([key, title], stageIdx) => `<span class="cell-stage-seg${stageIdx < stageIndex ? ' done' : stageIdx === stageIndex ? ' active' : ''}" title="${escapeAttr(title)}"></span>`).join('');
             return `<div class="loading-cell generation-placeholder cell-with-stage" role="status" aria-label="${escapeAttr(stageLabel)}"><div class="generation-placeholder-panel cell-stage-panel"><span class="cell-stage-label">${escapeHtml(stageLabel)}</span><span class="cell-stage-track" aria-hidden="true">${stageSegments}</span></div></div>`;
         }
-        return `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}">${index === completedCount ? copy : `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-idx">${index + 1}/${total}</span></span></div>`}</div>`;
+        // #84：空格不再塞完整状态面板（会溢出 136×102 格子），统一只显示序号；
+        // 状态面板整体移到节点底部状态条（见下方 .pending-batch-stack）。
+        return `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}"><div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-idx">${index + 1}/${total}</span></span></div></div>`;
     }).join('');
-    // 容器铺满 node-body（width/height:100%）：节点自身的 16px padding 即外边距，
-    // 136×102 固定格在剩余区域内居中，与完成阶段 thumb-grid 的几何完全一致，
-    // 避免此前用 layout.width/height 直接定宽导致的溢出/双重 padding。
-    return `<div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:100%;height:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>`;
+    // #84：网格 + 底部整宽状态条（spinner + 生成中/已等待 + 阶段进度 + 取消按钮一行横排）。
+    // 此前状态面板竖排塞进单个 136×102 缩略格（高约 108px > 格高 102px），
+    // 导致文字裁切、取消按钮被切、右上计时徽标与状态格重叠。
+    const statusbar = `<div class="batch-statusbar" role="status" aria-label="${escapeAttr(label)}"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span class="batch-statusbar-label">${escapeHtml(label)}${elapsedHtml}</span><span class="batch-statusbar-stage">${generationStageProgressHtml(normalizedProgress)}</span>${cancelBtnHtml}</div>`;
+    // 网格区 = node-body 高度减去状态条（flex 布局自动分配），136×102 固定格在剩余区域居中，
+    // 与完成阶段 thumb-grid 的几何一致。
+    return `<div class="pending-batch-stack"><div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>${statusbar}</div>`;
 }
 function nodeBodyHtml(node, layout){
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
@@ -11423,9 +11700,9 @@ function nodeBodyHtml(node, layout){
         const batchSlots = !node.pending && Number(node?._batchTotal) > 1 ? Math.min(8, Number(node._batchTotal)) : 0;
         const missingSlots = isBatchSpec && fixedCellH > 0 ? Math.max(0, batchSlots - imgs.length) : 0;
         const emptySlotHtml = Array.from({length: missingSlots}).map(() => `<div class="thumb-empty-slot" style="--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px" aria-hidden="true"></div>`).join('');
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`).join('')}${emptySlotHtml}</div>`;
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
     }
-    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button></div>`;
+    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
     return `<div class="node-drop" data-upload-action="files">
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
@@ -11507,6 +11784,7 @@ function smartNodeToolbarHtml(node){
     const gridLabel = imageCount > 1 ? '宫格拼接' : '宫格切分';
     const actions = [
         {key:'preview', icon:'eye', label:'预览', enabled:kind === 'image' || kind === 'video'},
+        {key:'detail', icon:'info', label:'详情', enabled:kind === 'image'},
         {key:'crop', icon:'crop', label:'裁剪', enabled:canEditImage},
         {key:'outpaint', icon:'expand', label:'扩图', enabled:canEditImage},
         {key:'mask', icon:'brush', label:'遮罩', enabled:canEditImage},
@@ -11582,6 +11860,11 @@ function runSmartNodeToolbarAction(nodeId, action){
     }
     if(action === 'preview'){
         openImagePreview(nodeId, index);
+        return;
+    }
+    if(action === 'detail'){
+        // #87：画布缩略图「详情」统一走「生成详情」面板（与生图历史抽屉同一组件）。
+        openSmartImageDetail(nodeId, index);
         return;
     }
     const modeMap = {crop:'crop', outpaint:'outpaint', mask:'mask', brush:'brush', grid:'grid'};
@@ -11847,6 +12130,7 @@ function render(){
     measureSmartNodeImages();
     scheduleSmartNodeFloatingMenuPosition();
     refreshRunTimerPills();
+    updateSmartMarkedBadge();
 }
 function measureSmartNodeImages(){
     world.querySelectorAll('.image-node img,.image-node video').forEach(imgEl => {
@@ -13386,6 +13670,16 @@ function bindNodeEvents(){
                 deleteImage(id, Number(btn.dataset.imageIndex));
             });
         });
+        // #89：图片星标（标记/取消），分组内图片用 ref 节点定位。
+        el.querySelectorAll('.image-mark').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.preventDefault(); e.stopPropagation();
+                const item = btn.closest('[data-image-index]');
+                const targetNodeId = item?.dataset.refNodeId || id;
+                const imageIndex = Number(item?.dataset.refImageIndex ?? item?.dataset.imageIndex ?? 0);
+                toggleMarkedImage(nodes.find(n => n.id === targetNodeId), imageIndex);
+            });
+        });
         el.querySelectorAll('[data-node-cancel-task]').forEach(btn => {
             btn.addEventListener('mousedown', e => {
                 e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
@@ -13922,11 +14216,54 @@ function updateLoopInsertPreview(){
     if(changed) scheduleConnectionLayerRefresh();
     return next;
 }
-function deleteImage(id, imageIndex){
+// #88：删除范围三选一对话框（仅删画布图 / 画布+历史原图 / 取消），Promise 返回 'canvas'|'both'|'cancel'。
+function confirmCanvasImageDeleteScope(){
+    return new Promise(resolve => {
+        const existing = document.getElementById('smartImageDeleteScopeBackdrop');
+        if(existing) existing.remove();
+        const backdrop = document.createElement('div');
+        backdrop.id = 'smartImageDeleteScopeBackdrop';
+        backdrop.className = 'asset-delete-warning-backdrop';
+        const finish = choice => {
+            backdrop.remove();
+            document.removeEventListener('keydown', onKey, true);
+            resolve(choice);
+        };
+        const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); finish('cancel'); } };
+        backdrop.innerHTML = `
+            <div class="asset-delete-warning-dialog" role="dialog" aria-modal="true">
+                <h3>${tr('smart.imageDeleteScopeTitle')}</h3>
+                <p>${tr('smart.imageDeleteScopeDesc')}</p>
+                <div class="asset-delete-warning-actions">
+                    <button class="asset-delete-warning-cancel" data-scope="cancel">${tr('smart.imageDeleteScopeCancel')}</button>
+                    <button class="asset-delete-warning-cancel" data-scope="canvas">${tr('smart.imageDeleteScopeCanvasOnly')}</button>
+                    <button class="asset-delete-warning-confirm" data-scope="both">${tr('smart.imageDeleteScopeBoth')}</button>
+                </div>
+            </div>`;
+        document.addEventListener('keydown', onKey, true);
+        backdrop.addEventListener('click', e => {
+            if(e.target === backdrop){ finish('cancel'); return; }
+            const scope = e.target.closest('[data-scope]')?.dataset.scope;
+            if(scope) finish(scope);
+        });
+        document.body.appendChild(backdrop);
+    });
+}
+async function deleteImage(id, imageIndex){
     const node = nodes.find(n => n.id === id);
     if(!node || imageIndex < 0) return;
     // #65: 生成中的节点禁止删单图（写回仍在飞，删图会破坏批次几何/引用）。
     if(smartNodeInFlight(node)){ toast(tr('smart.nodeDeleteBusy')); return; }
+    // #88 删除双向：该图同时是某条生成历史的「当前原图」时，先问删除范围；
+    // 无历史关联维持原静默删除。选「画布+历史原图」走项目级删除链路
+    //（墓碑+回收区 7 天可恢复+undo 令牌），不再级联归档。
+    const logCtx = smartLogContextForImage(node, imageIndex);
+    let alsoDeleteOriginal = false;
+    if(logCtx){
+        const choice = await confirmCanvasImageDeleteScope();
+        if(choice === 'cancel') return;
+        alsoDeleteOriginal = choice === 'both';
+    }
     pushUndo();
     const removedImage = (node.images || [])[imageIndex] || null;
     node.images = (node.images || []).filter((_, index) => index !== imageIndex);
@@ -13946,8 +14283,12 @@ function deleteImage(id, imageIndex){
     if(selectedImage.index < 0) selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
-    // #74 (D1): 被删的单图若无其他引用 → 移入回收区。
-    void cascadeArchiveDeletedMedia(removedImage ? [removedImage] : []);
+    if(alsoDeleteOriginal){
+        void deleteSmartProjectOriginal(logCtx.logId, logCtx.outputIndex, {skipConfirm:true});
+    } else if(removedImage){
+        // #74 (D1): 被删的单图若无其他引用 → 移入回收区。
+        void cascadeArchiveDeletedMedia([removedImage]);
+    }
 }
 async function renameSmartNodeImage(nodeId, imageIndex){
     const node = nodes.find(n => n.id === nodeId);
@@ -17814,7 +18155,7 @@ function pendingBoxSize(count, options={}){
     // 批量：固定 4:3 缩略图网格（与生图历史一致）
     // 独立生成节点没有 summary 行，box = 网格 + padding（与 imageLayout 三阶段共用同一常量）
     const grid = getBatchThumbGridSize(c);
-    return {w:grid.gridW + BATCH_NODE_PAD_H, h:grid.gridH + BATCH_NODE_PAD_V};
+    return {w:grid.gridW + BATCH_NODE_PAD_H, h:grid.gridH + BATCH_NODE_PAD_V + BATCH_STATUSBAR_H};
 }
 function mentionTokenHtml(img){
     if(!img?.url) return '';
@@ -19417,30 +19758,48 @@ function cleanHistoryImages(images=[]){
             return true;
         });
 }
-function hasHistoryConnection(nodeId, groupId){
-    return Boolean(nodeId && groupId && (canvas?.connections || []).some(conn => conn.from === nodeId && conn.to === groupId && (conn.kind || 'flow') === 'history'));
-}
 function demoteHistoryGroupNode(group){
     if(!group) return;
     delete group.historyFor;
     delete group.isHistoryGroup;
-    if(group.title === '历史分组'){
+    if(group.title === '历史分组' || group.title === '候选池'){
         const count = (group.images || []).length;
         group.title = count > 1 ? 'Group' : count === 1 ? 'Image' : tr('smart.createImportNode');
     }
 }
+// #85：候选池摆放位置——生图框右侧列（x = 右缘 + 80，顶边对齐），
+// 与现有节点碰撞时同列下移，仍放不下才回退到节点下方（旧版摆放）。
+// 新建时池内还没有图，调用方用 estW/estH 估计尺寸参与碰撞检测。
+function candidatePoolPosition(node, estW, estH){
+    const r = nodeRect(node);
+    const x = Math.round((Number(node.x) || 0) + r.width + 80);
+    let y = Math.round(Number(node.y) || 0);
+    const overlapsAny = (px, py) => nodes.some(n => {
+        if(!n || n.id === node.id) return false;
+        if(n.isHistoryGroup && n.historyFor === node.id) return false;
+        const nr = nodeRect(n);
+        return px < nr.x + nr.width && px + estW > nr.x && py < nr.y + nr.height && py + estH > nr.y;
+    });
+    for(let i = 0; i < 8; i++){
+        if(!overlapsAny(x, y)) break;
+        const blocker = nodes.find(n => {
+            if(!n || n.id === node.id) return false;
+            if(n.isHistoryGroup && n.historyFor === node.id) return false;
+            const nr = nodeRect(n);
+            return y < nr.y + nr.height && y + estH > nr.y && x < nr.x + nr.width && x + estW > nr.x;
+        });
+        if(!blocker) break;
+        const br = nodeRect(blocker);
+        y = Math.round((Number(blocker.y) || 0) + br.height + 24);
+    }
+    if(!overlapsAny(x, y)) return {x, y};
+    return {x:Math.round((Number(node.x) || 0) + Math.max(0, (r.width - estW) / 2)), y:Math.round((Number(node.y) || 0) + r.height + 56)};
+}
 function historyGroupForNode(node){
     if(!node?.id) return null;
-    let matched = null;
-    nodes.forEach(n => {
-        if(!isHistoryGroupNode(n) || n.historyFor !== node.id) return;
-        if(hasHistoryConnection(node.id, n.id)){
-            if(!matched) matched = n;
-        } else {
-            demoteHistoryGroupNode(n);
-        }
-    });
-    return matched;
+    // #85：候选池不再绘制 history 连线（视觉上无连线），关联唯一以 historyFor 字段为准；
+    // 级联删除/撤销/保存恢复均依赖 historyFor，不依赖连线。
+    return nodes.find(n => isHistoryGroupNode(n) && n.historyFor === node.id) || null;
 }
 function positionHistoryGroupForNode(node, group){
     if(!node || !group) return;
@@ -19454,12 +19813,17 @@ function ensureHistoryGroupForNode(node){
     let group = historyGroupForNode(node);
     if(!group){
         const r = nodeRect(node);
+        // #85：候选池固定摆在生图框右侧列（碰撞时同列下移/回退下方）；
+        // 新建时池内还没图，用「至少一行缩略格」估计尺寸参与碰撞检测。
+        const estW = Math.max(316, Math.round(r.width || 0));
+        const estH = 200;
+        const pos = candidatePoolPosition(node, estW, estH);
         group = {
             id:uid('smart'),
             type:'smart-image',
-            x:Math.round(Number(node.x || 0)),
-            y:Math.round(Number(node.y || 0) + r.height + 56),
-            title:'历史分组',
+            x:pos.x,
+            y:pos.y,
+            title:'候选池',
             images:[],
             historyFor:node.id,
             isHistoryGroup:true,
@@ -19469,11 +19833,12 @@ function ensureHistoryGroupForNode(node){
         nodes.push(group);
     }
     group.type = 'smart-image';
-    group.title = '历史分组';
+    group.title = '候选池';
     group.isHistoryGroup = true;
     group.historyFor = node.id;
     if(!Number.isFinite(Number(group.scale))) group.scale = MEDIA_GROUP_DEFAULT_SCALE;
-    addConnection(node.id, group.id, 'history');
+    // #85：不再绘制 history 连线（含线上的 X 与端点圆点）；数据关联走 historyFor，
+    // 删生图框级联删池、撤销/重做、保存恢复全部照旧。
     positionHistoryGroupForNode(node, group);
     return group;
 }
@@ -19488,7 +19853,7 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
     if(history){
         const archived = cleanHistoryImages([...existing, ...(history.images || [])]);
         history.images = archived;
-        history.title = '历史分组';
+        history.title = '候选池';
         history.outputKind = kind;
         history.scale = MEDIA_GROUP_DEFAULT_SCALE;
         delete history.w;
@@ -19532,6 +19897,7 @@ function appendOutputsToNode(node, additions, kind='image', options={}){
     if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
     return next;
 }
+
 function appendLoopOutputsToNode(node, additions, kind='image', ctx=smartLoopContext){
     if(!node || !additions?.length) return [];
     const runState = ctx?.runState;
@@ -19543,7 +19909,7 @@ function appendLoopOutputsToNode(node, additions, kind='image', ctx=smartLoopCon
         if(existing.length){
             const history = ensureHistoryGroupForNode(node);
             history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-            history.title = '历史分组';
+            history.title = '候选池';
             history.outputKind = kind;
             history.scale = MEDIA_GROUP_DEFAULT_SCALE;
             delete history.w;
@@ -19800,7 +20166,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                     previousHistory:previousHistorySnapshot
                 };
                 history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-                history.title = '历史分组';
+                history.title = '候选池';
                 history.outputKind = 'image';
                 history.scale = MEDIA_GROUP_DEFAULT_SCALE;
                 delete history.w;
@@ -20290,14 +20656,14 @@ async function runGeneration(){
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
         // 新一轮生成开始：框内已有上一轮残留图片（且没有仍在飞行的任务）时，
-        // 先把旧图归档到历史分组再清空，按本轮真实并发数(1-8)重建占位框。
+        // 先把旧图归档到候选池再清空，按本轮真实并发数(1-8)重建占位框。
         // 否则旧图会占用占位格、写回的新图只能追加在旧图之后，8 并发时后半截图
         // 写不进去、节点永远停在“生成中”。
         const leftoverImages = (pendingNode.images || []).filter(img => img?.url);
         if(leftoverImages.length && !priorPendingTasks.length){
             const history = ensureHistoryGroupForNode(pendingNode);
             history.images = cleanHistoryImages([...leftoverImages.map(img => ({...img})), ...(history.images || [])]);
-            history.title = '历史分组';
+            history.title = '候选池';
             history.outputKind = mediaKindForUrls(history.images || [], 'image');
             history.scale = MEDIA_GROUP_DEFAULT_SCALE;
             delete history.w;
@@ -21954,6 +22320,25 @@ smartExcelExportBtn?.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
     exportSelectedSmartNodes();
+});
+// #89：已标记图片面板（工具栏星标钮）。
+document.getElementById('smartMarkedToggle')?.addEventListener('mousedown', e => e.stopPropagation());
+document.getElementById('smartMarkedToggle')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSmartMarkedPanel();
+});
+document.getElementById('smartMarkedClose')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSmartMarkedPanel(false);
+});
+document.getElementById('smartMarkedDownloadAll')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items = markedImageItems();
+    if(!items.length){ toast(tr('smart.markedEmpty')); return; }
+    void zipDownloadImageItems('marked-images', items);
 });
 window.onmousemove = e => {
     lastMouseWorld = screenToWorld(e);

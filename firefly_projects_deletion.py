@@ -1424,6 +1424,48 @@ class ProjectDeletionMixin:
             self._cleanup_expired_deleted_media_locked(project_id)
             return copy.deepcopy(self._load_media_trash_index(project_id).get("items", []))
 
+    def trash_media_preview_path(self, project_id: str, asset_id: str) -> Dict[str, Any]:
+        """#86：回收区条目的预览文件（第一张预览图，无预览回退原文件）。
+
+        返回 {path, media_type, is_original}；条目不存在/文件缺失抛 ProjectNotFound。
+        """
+        project_id = _store._clean_project_id(project_id)
+        asset_id = self._validate_deletable_asset_id(asset_id)
+        with self._lock:
+            self.open_project(project_id)
+            self._cleanup_expired_deleted_media_locked(project_id)
+            index = self._load_media_trash_index(project_id)
+            item = next(
+                (
+                    candidate
+                    for candidate in index.get("items", [])
+                    if isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id
+                ),
+                None,
+            )
+            if item is None:
+                raise _store.ProjectNotFound("回收区条目不存在或已清理")
+            project_dir = self._project_directory(project_id)
+            preview_names = item.get("preview_filenames")
+            if not isinstance(preview_names, list):
+                preview_names = []
+            preview_name = next((name for name in preview_names if isinstance(name, str) and name.strip()), None)
+            if preview_name:
+                relative = (Path("trash") / "previews" / preview_name).as_posix()
+                media_type = _store.mimetypes.guess_type(preview_name)[0] or "image/webp"
+                is_original = False
+            else:
+                media_filename = str(item.get("media_filename") or "").strip()
+                if not media_filename:
+                    raise _store.ProjectNotFound("回收区条目缺少预览文件")
+                relative = (Path("trash") / "media" / media_filename).as_posix()
+                media_type = str(item.get("mime_type") or "") or "application/octet-stream"
+                is_original = True
+            path = self._safe_project_path(project_dir, relative)
+            if not path.is_file():
+                raise _store.ProjectNotFound("回收区预览文件不存在")
+            return {"path": str(path), "media_type": media_type, "is_original": is_original}
+
     def _cleanup_expired_deleted_media_locked(self, project_id: str, now: int | None = None) -> int:
         try:
             project_dir = self._project_directory(project_id)

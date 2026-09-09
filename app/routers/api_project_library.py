@@ -4174,6 +4174,26 @@ async def list_project_media_trash(project_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {'items': items}
 
+@router.get('/api/project-library/{project_id}/trash/media/{asset_id}/preview')
+async def get_project_trash_media_preview(project_id: str, asset_id: str):
+    """#86：回收区条目预览（第一张预览图，无预览回退原文件）。"""
+    def build_response() -> ProjectMediaFileResponse:
+        with project_lifecycle_lock(project_id):
+            record = _app_main.project_store_call('trash_media_preview_path', project_id, asset_id)
+            return ProjectMediaFileResponse(
+                record['path'],
+                project_id=project_id,
+                media_type=record.get('media_type') or 'application/octet-stream',
+            )
+
+    try:
+        assert_project_owner_admissible(project_id)
+        return await asyncio.to_thread(build_response)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 @router.post('/api/project-library/{project_id}/trash/media/restore')
 async def restore_project_trash_media(project_id: str, payload: ProjectTrashRestoreRequest):
     """通用回收区恢复（无撤销身份的条目：只移回文件与资源库，不恢复画布引用）。"""
