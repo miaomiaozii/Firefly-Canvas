@@ -62,6 +62,8 @@ class UiIntegrityContractTests(unittest.TestCase):
         )
 
     def test_selection_menu_is_hidden_from_keyboard_and_clamped_to_the_viewport(self):
+        # 字符串快照断言：钉的是浮动工具排的可见性/定位契约（选择器与函数名）而非实现细节，
+        # 重构改名时需同步更新本测试（#93）。
         self.assertRegex(
             STYLES,
             r"\.smart-node-floating-menu\s*\{[^}]*visibility:hidden",
@@ -73,7 +75,6 @@ class UiIntegrityContractTests(unittest.TestCase):
         self.assertIn("function positionSmartNodeFloatingMenus()", SCRIPT)
         self.assertIn("function scheduleSmartNodeFloatingMenuPosition()", SCRIPT)
         self.assertIn("scheduleSmartNodeFloatingMenuPosition();", SCRIPT)
-        self.assertIn("smartNodeActionIds", SCRIPT)
 
     def test_native_evidence_fails_closed_on_every_selection_action_and_embedded_scale(self):
         for marker in (

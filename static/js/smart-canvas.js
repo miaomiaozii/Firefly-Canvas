@@ -1346,15 +1346,8 @@ function isSmartRunnableNode(node){
 function isHistoryGroupNode(node){
     return Boolean(isSmartImageNode(node) && (node.isHistoryGroup || node.historyFor));
 }
-function normalizeSmartImageMode(mode){
-    return 'self';
-}
 function smartImageMode(node){
     return 'self';
-}
-function setSmartImageMode(node, mode){
-    if(!isSmartImageNode(node)) return;
-    delete node.imageMode;
 }
 function smartImageUsesWorkflowInput(node, ctx=smartLoopContext){
     return Boolean(isSmartImageNode(node) && ctx?.forceWorkflow);
@@ -1795,8 +1788,6 @@ function getUngroupedImageSize(aspect){
     
     return {w:imgW, h:imgH};
 }
-const EMPTY_UPLOAD_NODE_WIDTH = 316;
-const EMPTY_UPLOAD_NODE_HEIGHT = 194;
 const SMART_GROUP_DEFAULT_WIDTH = 340;
 const SMART_GROUP_DEFAULT_HEIGHT = 286;
 const SMART_GROUP_LEGACY_HEIGHT = 220;
@@ -2355,34 +2346,6 @@ function conversationNodeLayoutSize(node){
 }
 // 智能分组的图片网格布局：跟多图节点一致，但可见排数上限为 4（超过出现滚动），且缩略图无放大上限
 //（用户拉大分组时图片随之变大，不再封顶在原始尺寸）。
-function smartGroupImageGridLayout(node){
-    const images = (node?.images || []).filter(img => img?.url);
-    const count = images.length;
-    const s = mediaNodeDefaultScale(node);
-    if(count === 1){
-        const single = singleImageLayout(images[0], node, s);
-        const explicitW = Number(node?.w), explicitH = Number(node?.h);
-        const hasExplicit = Number.isFinite(explicitW) && explicitW > 24 && Number.isFinite(explicitH) && explicitH > 24;
-        // 容器有 16px 内边距（PAD=32）；无显式尺寸时把外框放大 PAD，以包住图片，避免“分组比图片还小”。
-        return hasExplicit ? single : {...single, width:single.width + 32, height:single.height + 32};
-    }
-    const baseThumb = Math.round(MEDIA_GROUP_THUMB_BASE * s);
-    const cell = baseThumb + 8;
-    const PAD = 32;
-    const explicitW = Number(node?.w);
-    const explicitH = Number(node?.h);
-    const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
-    const rows = Math.ceil(count / cols);
-    const visibleRows = Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, rows);
-    if(Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
-        // 用户拉伸过分组：按显式尺寸拟合，maxThumb 给一个极大值以解除“放大不超过原始”的限制。
-        const fitted = groupImageGridLayout(count, explicitW, explicitH, 100000, PAD, 8, SMART_GROUP_MAX_VISIBLE_ROWS);
-        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:fitted.visibleRows * (fitted.thumb + 8) - 8 + PAD, thumb:fitted.thumb};
-    }
-    const width = Math.max(Math.round(226 * s), cols * cell + PAD);
-    const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, baseThumb);
-    return {cols, rows, visibleRows, width, height:gridHeight + PAD, thumb:baseThumb, gridHeight};
-}
 function parseSizeAspect(sizeText){
     // 解析 sizeForRun 输出的尺寸串（如 1024x768 / 1024×768）或比例串（4:3）。
     const text = String(sizeText || '').trim();
@@ -2686,12 +2649,6 @@ function arrangeSelectedSmartNodes(){
     toast('已整理选中节点');
 }
 let smartNodeMenuPositionFrame = 0;
-function smartNodeActionIds(node){
-    if(!node) return [];
-    return isSmartGroupNode(node)
-        ? ['arrange','preview','grid','download','ungroup']
-        : ['preview','crop','outpaint','mask','brush','grid','send-ps','download'];
-}
 function positionSmartNodeFloatingMenus(){
     smartNodeMenuPositionFrame = 0;
     if(!world || !shell) return;
@@ -3123,9 +3080,6 @@ function selectedRunningHubRef(sourceSettings=settings){
 function rhEntryFields(entry){
     return Array.isArray(entry?.fields) ? entry.fields : [];
 }
-function rhCurrentKind(sourceSettings=settings){
-    return selectedRunningHubRef(sourceSettings)?.kind || 'app';
-}
 function runningHubSelectedModel(sourceSettings=settings){
     const ref = selectedRunningHubRef(sourceSettings);
     return ref?.kind === 'model' ? ref.id : '';
@@ -3467,12 +3421,6 @@ function renderVideoToggleControl(key, label){
     const on = !!settings[key];
     return `<button type="button" class="setting-check ${on ? 'active' : ''}" data-toggle-param="${escapeHtml(key)}"><span class="check-box"></span><span>${escapeHtml(label)}</span></button>`;
 }
-function renderTempShUploadControl(){
-    return `<button type="button" class="smart-pill cloud-upload-pill" data-temp-sh-upload-video title="上传当前输入图片或视频到云端直链"><i data-lucide="upload-cloud"></i><span>上传云端</span></button>`;
-}
-function renderManualVideoUrlControl(){
-    return `<button type="button" class="smart-pill manual-video-url-pill" data-manual-video-url title="手动输入媒体 URL"><i data-lucide="link"></i><span>输入网址</span></button>`;
-}
 // 可信素材模式：打开后可选择素材来源——素材库认证链接 / 自行上传云端 / 自行输入网址。
 function renderVideoTrustedAssetControl(){
     const on = !!settings.videoTrustedAsset;
@@ -3485,9 +3433,6 @@ function renderVideoTrustedAssetControl(){
         <button type="button" class="smart-pill trusted-src-pill ${src === 'manual' ? 'active' : ''}" data-trusted-source="manual" title="手动输入媒体 URL 或 asset:// 地址"><i data-lucide="link"></i><span>输入网址</span></button>
     </div>`;
     return html;
-}
-function optionHtml(value, label, selected){
-    return `<option value="${escapeHtml(value)}" ${String(value) === String(selected) ? 'selected' : ''}>${escapeHtml(label ?? value)}</option>`;
 }
 function parseSizeValue(value){
     const match = String(value || '').trim().match(/^(\d+)\s*[xX*]\s*(\d+)$/);
@@ -3825,22 +3770,6 @@ function renderMsParams(){
         ${renderSizePickerControl('ms', false)}
     `;
 }
-function renderSizeControls(prefix='', includeSource=false){
-    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
-    const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    const ratios = [
-        ['square','1:1'], ['portrait','2:3'], ['landscape','3:2'], ['portrait43','3:4'], ['landscape43','4:3'], ['story','9:16'], ['wide','16:9'], ['ultrawide','21:9'], ['ultratall','9:21'],
-        ...(includeSource ? [['source', tr('canvas.adaptiveRatio') || '适配比例']] : []),
-        ['custom', tr('canvas.custom') || '自定义']
-    ];
-    const resolutionOptions = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
-    return `<select data-param="${resKey}">
-            ${resolutionOptions.map(v => optionHtml(v, v === 'auto' ? '自动' : (v === 'custom' ? (tr('canvas.custom') || '自定义') : v.toUpperCase()), settings[resKey] || (prefix ? '1k' : defaultSmartApiResolution(settings.model)))).join('')}
-        </select>
-        <select data-param="${ratioKey}" ${settings[resKey] === 'custom' || settings[resKey] === 'auto' ? 'disabled' : ''}>
-            ${ratios.map(([v,l]) => `<option value="${escapeHtml(v)}" ${v === (settings[ratioKey] || 'square') ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
-        </select>`;
-}
 function ratioLabel(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
@@ -3898,17 +3827,6 @@ function resolutionLabel(prefix=''){
     const value = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
     if(value === 'auto') return '自动';
     return value === 'custom' ? (settings[sizeKey] || tr('smart.custom')) : value.toUpperCase();
-}
-function ratioIconClass(value){
-    if(value === 'portrait') return 'r-portrait';
-    if(value === 'portrait43') return 'r-portrait43';
-    if(value === 'landscape') return 'r-landscape';
-    if(value === 'landscape43') return 'r-landscape43';
-    if(value === 'wide' || value === 'ultrawide') return 'r-wide';
-    if(value === 'story' || value === 'ultratall') return 'r-story';
-    if(value === 'source') return 'r-source';
-    if(value === 'custom') return 'r-custom';
-    return '';
 }
 function videoAspectIconClass(value){
     if(value === '16:9' || value === '21:9') return 'r-wide';
@@ -3988,40 +3906,6 @@ function renderMsCustomModelPill(){
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.msCustomModel'))}</div>
             ${searchableModelOptions(models, 'msCustomModel', settings.msCustomModel, tr('smart.noMsModel'))}
-        </div>
-    </div>`;
-}
-function renderRatioControl(prefix='', includeSource=false){
-    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
-    const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    const ratios = [
-        ['square','1:1'], ['portrait','2:3'], ['landscape','3:2'], ['portrait43','3:4'], ['landscape43','4:3'],
-        ['story','9:16'], ['wide','16:9'], ['ultrawide','21:9'], ['ultratall','9:21'],
-        ...(includeSource ? [['source', tr('smart.imageRatio')]] : []),
-        ['custom', tr('smart.custom')]
-    ];
-    return `<div class="smart-control ratio-control">
-        <button class="smart-pill" type="button"><i data-lucide="scan"></i><span>${escapeHtml(ratioLabel(prefix))}</span></button>
-        <div class="smart-popover">
-            <div class="smart-popover-title">${escapeHtml(tr('smart.ratio'))}</div>
-            <div class="ratio-grid">
-                ${ratios.map(([value, label]) => `<button type="button" class="ratio-option ${value === (settings[ratioKey] || 'square') ? 'active' : ''}" data-smart-param="${ratioKey}" data-smart-value="${escapeHtml(value)}"><span class="ratio-icon ${ratioIconClass(value)}"></span><span>${escapeHtml(label)}</span></button>`).join('')}
-            </div>
-        </div>
-    </div>`;
-}
-function renderResolutionControl(prefix=''){
-    const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    const options = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k','custom'] : ['1k','2k','4k','custom'];
-    const current = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
-    const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
-    return `<div class="smart-control resolution-control">
-        <button class="smart-pill" type="button"><i data-lucide="monitor"></i><span>${escapeHtml(resolutionLabel(prefix))}</span></button>
-        <div class="smart-popover compact-popover">
-            <div class="smart-popover-title">${escapeHtml(tr('smart.resolution'))}</div>
-            <div class="seg-row">
-                ${options.map(value => `<button type="button" class="${value === current ? 'active' : ''}" data-smart-param="${resKey}" data-smart-value="${value}" ${value === 'auto' && !allowAuto ? 'disabled' : ''}>${value === 'auto' ? '自动' : (value === 'custom' ? escapeHtml(tr('smart.custom')) : value.toUpperCase())}</button>`).join('')}
-            </div>
         </div>
     </div>`;
 }
@@ -4116,31 +4000,6 @@ function renderSizePickerControl(prefix='', includeSource=false){
         </div>
     </div>`;
 }
-function renderInlineCustomRatioFields(prefix=''){
-    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
-    if(settings[ratioKey] === 'source') return '';
-    if(settings[ratioKey] !== 'custom') return '';
-    const wKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
-    const hKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
-    return `<div class="inline-fields">
-        <span class="inline-label">${escapeHtml(tr('smart.ratio'))}</span>
-        <input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="W">
-        <span class="inline-divider">:</span>
-        <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="H">
-    </div>`;
-}
-function renderInlineCustomSizeFields(prefix=''){
-    const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    if(settings[resKey] !== 'custom') return '';
-    const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
-    const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
-    return `<div class="inline-fields">
-        <span class="inline-label">${escapeHtml(tr('smart.size'))}</span>
-        <input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="${escapeHtml(tr('smart.width'))}">
-        <span class="inline-divider">×</span>
-        <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="${escapeHtml(tr('smart.height'))}">
-    </div>`;
-}
 function renderQualityControl(){
     const value = settings.quality || 'auto';
     const labels = {auto:tr('smart.qualityAuto'), low:tr('smart.qualityLow'), medium:tr('smart.qualityMid'), high:tr('smart.qualityHigh')};
@@ -4165,26 +4024,6 @@ function renderCountVisualControl(){
             </div>
         </div>
     </div>`;
-}
-function renderCountControl(){
-    return `<select data-param="count">${[1,2,3,4,5,6,7,8].map(n => optionHtml(n, `${n} 张`, Number(settings.count || 1))).join('')}</select>`;
-}
-function renderCustomRatioControls(prefix=''){
-    const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
-    if(settings[ratioKey] !== 'custom' && settings[ratioKey] !== 'source') return '';
-    const wKey = prefix ? `${prefix}CustomRatioWidth` : 'customRatioWidth';
-    const hKey = prefix ? `${prefix}CustomRatioHeight` : 'customRatioHeight';
-    const disabled = settings[ratioKey] === 'source' ? 'disabled' : '';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="比例宽" ${disabled}>
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="比例高" ${disabled}>`;
-}
-function renderCustomSizeControls(prefix=''){
-    const resKey = prefix ? `${prefix}Resolution` : 'resolution';
-    if(settings[resKey] !== 'custom') return '';
-    const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
-    const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
-    return `<input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度">
-            <input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度">`;
 }
 const RH_KNOWN_FIELD_OPTIONS = {
     aspectRatio:['1:1','16:9','9:16','4:3','3:4','4:5','5:4','3:2','2:3','21:9','9:21'],
@@ -4290,14 +4129,6 @@ function rhParamValue(field, media=null, sourceSettings=settings, fields=null, r
     }
     if(rhFieldRole(field) === 'prompt') return param?.value ?? (media?.prompt || rhDefaultValue(field));
     return param?.value ?? rhDefaultValue(field);
-}
-function rhUserParamValue(field){
-    settings.rhParams = settings.rhParams || {};
-    const key = rhParamKey(field.nodeId, field.fieldName);
-    return settings.rhParams[key]?.value ?? '';
-}
-function rhPromptPlaceholder(field){
-    return rhDefaultValue(field) || field?.label || field?.fieldName || tr('smart.promptPlaceholder');
 }
 function rhDefaultPromptSuggestion(){
     if(settings.engine !== 'runninghub') return '';
@@ -4498,9 +4329,6 @@ async function uploadCurrentSmartVideosToCloud(){
     } finally {
         if(btn) btn.disabled = false;
     }
-}
-function rhRequiredLabel(field){
-    return field?.label || field?.fieldName || `#${field?.nodeId || ''}`;
 }
 async function rhUploadValueIfNeeded(value, sourceSettings=settings){
     const text = String(value || '').trim();
@@ -4872,12 +4700,6 @@ function specModelIds(kind){
     return Array.isArray(arr) ? arr : [];
 }
 // 取某模型在 spec 中的定义（参数选项/能力）。未适配返回 null。
-function specModelSpec(kind, modelId){
-    const map = {chat:'chat_models', image:'image_models', video:'video_models'};
-    const obj = modelSpecs?.[map[kind]];
-    if(!obj || !modelId) return null;
-    return obj[modelId] || null;
-}
 // 判断是否为通用 OpenAI 兼容 provider（非 codex/jimeng/runninghub/volcengine/gemini-cli 专属）。
 // spec 模型是针对这类网关的；provider 专属入口沿用各自的模型来源。
 function isGenericOpenAIProvider(provider){
@@ -5104,19 +4926,6 @@ function createPromptPresetFromNode(node, {openPanel=true, openTemplatePanel=fal
         openPromptTemplatePanel(node?.id || '', promptTemplateSelectedId);
     }
     return preset;
-}
-function createPromptPresetFromComposer(){
-    const text = promptPlainText();
-    if(!text){ toast(tr('smart.promptPresetEmpty')); return null; }
-    const preset = {id:uid('preset'), name:defaultPromptPresetName(text), text, category:'mine', createdAt:Date.now(), updatedAt:Date.now()};
-    promptPresets.unshift(preset);
-    savePromptPresets();
-    savePromptDraftForCurrent();
-    scheduleSave();
-    return preset;
-}
-function savePromptNodeAsPreset(node){
-    createPromptPresetFromNode(node);
 }
 function renderPromptPresetPanel(selectedId='', message=''){
     if(!promptPresetSelect) return;
@@ -7437,11 +7246,6 @@ async function deleteProjectOriginalWide(assetId, btn){
         if(btn){ btn.disabled = false; btn.removeAttribute('aria-busy'); }
     }
 }
-function canvasImageDragPayload(node, index=0){
-    const img = node?.images?.[index];
-    if(!img?.url) return null;
-    return {url:img.url, name:img.name || node.title || 'image', asset_id:img.asset_id || '', mime_type:img.mime_type || ''};
-}
 // 迁移旧数据：早期把图片节点作为成员（items[]）放进分组的画布，统一把这些图片吸收进 group.images，
 // 让它们显示为卡片内的缩略图网格（新模型）。一次性、幂等。
 function migrateSmartGroupImageMembers(){
@@ -7915,9 +7719,6 @@ function flushPendingCanvasSaveOnExit(){
     clearTimeout(debouncedSaveTimer);
     debouncedSaveTimer = null;
     void saveCanvas({automatic:false});
-}
-function imageMetaFromNode(node){
-    return {};
 }
 function applyNodeMetaToImage(image, node){
     return stripImageGenerationMeta(image);
@@ -8637,19 +8438,6 @@ function singleMediaHtml(img, w, h){
 function smartNodeHasLiveMedia(node){
     return Boolean(!node?.pending && (node?.images || []).some(img => img?.url));
 }
-function mediaSignaturePartFromElement(itemEl){
-    if(itemEl?.dataset?.mediaSignature) return itemEl.dataset.mediaSignature;
-    const media = itemEl?.querySelector?.('video,audio,img');
-    if(media){
-        const tag = media.tagName.toLowerCase();
-        const kind = tag === 'video' ? 'video' : tag === 'audio' ? 'audio' : 'image';
-        const url = media.dataset?.url || media.dataset?.originalSrc || media.getAttribute('src') || '';
-        return `${kind}:${url}`;
-    }
-    const audioThumb = itemEl?.querySelector?.('.audio-thumb[data-media-url]');
-    if(audioThumb) return `audio:${audioThumb.dataset.mediaUrl || ''}`;
-    return '';
-}
 function captureMediaPlaybackState(media){
     if(!media) return null;
     return {
@@ -9015,10 +8803,6 @@ async function downloadPreviewGroup(){
     const group = previewNavState.groupId ? nodes.find(n => n.id === previewNavState.groupId) : null;
     const owner = group || nodes.find(n => n.id === previewNavState.nodeId);
     return zipDownloadImageItems(owner?.title, previewDownloadGroupItems());
-}
-function downloadSmartGroupImages(group){
-    if(!isSmartGroupNode(group)) return;
-    return zipDownloadImageItems(group?.title, smartGroupImageRefs(group).map(r => r.item));
 }
 function smartRunPlatformLabel(run){
     const s = run?.settings || {};
@@ -10042,9 +9826,6 @@ function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
     selectSmartLogDetailOutput(requestedIndex);
     refreshIcons(box);
     requestAnimationFrame(() => box.querySelector('.smart-log-lightbox-close')?.focus({preventScroll:true}));
-}
-function openSmartLogLightbox(url, kind='image', context={}){
-    openSmartLogDetail({url, kind, ...context});
 }
 function smartLogPreviewNode(url, kind='image', context={}){
     openSmartLogDetail({url, kind, ...context});
@@ -14195,9 +13976,6 @@ function deleteNodeFromButton(id){
     if(clearNodeMediaBeforeDelete(id)) return;
     deleteNode(id);
 }
-function disconnectConnection(index){
-    disconnectConnections([index]);
-}
 // 断开一条或多条连线（合并到分组的连线会一次性断开其下所有成员连线）。spec 可为索引数组或逗号分隔字符串。
 function disconnectConnections(spec){
     if(!canvas || !Array.isArray(canvas.connections)) return;
@@ -14910,24 +14688,8 @@ function resetPreviewTransform(){
     document.getElementById('previewStage')?.style.setProperty('--compare-pos', `${previewComparePos}%`);
     applyPreviewTransform();
 }
-function panoramaRatioValue(){ return {w:16, h:9}; }
-function panoramaResolutionValue(){ return {w:1536, h:864}; }
-function panoramaSource(){ return ''; }
-function panoramaFallbackSource(){ return ''; }
-function isLikelyPanoramaImage(){ return false; }
-function ensurePanoramaRenderer(){ return Promise.resolve(false); }
-function applyPanoramaTexture(){ return false; }
-function drawPanoramaFrame(){ return false; }
-function renderPanoramaFrame(){}
-function startPanoramaLoop(){}
-function stopPanoramaLoop(){}
 function resizePanoramaViewer(){}
-function disposePanoramaTexture(){}
-function loadPanoramaTexture(){}
 function refreshPanoramaControls(){}
-function setPanoramaEnabled(){ panoramaState.enabled = false; return false; }
-function togglePanoramaPreview(){ return false; }
-function exportPanoramaFrame(){ return false; }
 function resetPanoramaView(){
     panoramaState.fov = 75;
     panoramaState.yaw = 0;
@@ -15625,17 +15387,6 @@ function currentGridJoinItems(){
 }
 // 从分组小菜单打开“宫格拼接”：锚定在分组第一张图片（保证编辑器有真实底图，不出现破图/尺寸异常），
 // 但把拼接数据源切换到整个分组（gridJoinGroupId）。
-function openGroupGridJoin(group){
-    if(!isSmartGroupNode(group)) return;
-    const refs = smartGroupImageRefs(group).filter(r => mediaKindForItem(r.item) === 'image');
-    if(refs.length <= 1){ toast('分组至少需要 2 张图片才能宫格拼接'); return; }
-    const first = refs[0];
-    openImageEditor(first.nodeId, first.index);
-    if(!imageEditModal.classList.contains('open')) return;
-    gridJoinGroupId = group.id;
-    setImageEditMode('grid', true);
-    setGridOperationMode('join');
-}
 function canGridJoinCurrentNode(){
     return currentGridJoinItems().length > 1;
 }
@@ -16292,30 +16043,7 @@ function openImagePreview(nodeId, imageIndex=0){
     setImageEditMode('preview');
 }
 // 双击组内图片时按整组预览；非分组成员退回单节点预览。
-function openImagePreviewSmart(nodeId, imageIndex=0){
-    const group = smartGroupContainingNode(nodeId);
-    if(group){
-        openGroupImagePreview(group, nodeId, imageIndex);
-        return;
-    }
-    openImagePreview(nodeId, imageIndex);
-}
 // 打开整组图片预览：以被双击图片为起点，左右切换遍历分组内所有图片。
-function openGroupImagePreview(group, startNodeId, startIndex=0){
-    if(!isSmartGroupNode(group)){ openImagePreview(startNodeId, startIndex); return; }
-    const refs = smartGroupImageRefs(group);
-    if(refs.length <= 1){ openImagePreview(startNodeId, startIndex); return; }
-    const seq = refs.map(r => ({nodeId:r.nodeId, index:r.index}));
-    let pos = seq.findIndex(s => s.nodeId === startNodeId && Number(s.index) === Number(startIndex));
-    if(pos < 0) pos = 0;
-    openImagePreview(seq[pos].nodeId, seq[pos].index);
-    if(!imageEditModal.classList.contains('open')) return;
-    previewNavState.groupId = group.id;
-    previewNavState.seq = seq;
-    previewNavState.seqPos = pos;
-    // 恢复分组上下文后重算导航/下载全部按钮（openImageEditor 已把 previewNavState 重置成单节点态）。
-    setImageEditMode('preview');
-}
 function openImageEditor(nodeId, imageIndex=0){
     const node = nodes.find(n => n.id === nodeId);
     const image = imageForDisplay(node?.images?.[imageIndex]);
@@ -16875,9 +16603,6 @@ function applyImageEdit(){
 }
 let lastComposerNodeId = '';
 let activeComposerSubject = null;
-function currentComposerSubject(){
-    return selectedNode();
-}
 function savePromptDraftForCurrent(){
     if(promptInput?.dataset?.promptLocked === '1') return;
     const subject = activeComposerNode();
@@ -17720,30 +17445,6 @@ function clearInputThumbDropMarkers(){
             el.classList.remove('drop-before', 'drop-after', 'dragging');
         });
 }
-function bindInputThumbVideoActions(){
-    inputThumbsRow?.querySelectorAll('[data-manual-video-url]').forEach(btn => {
-        btn.onclick = async event => {
-            event.preventDefault();
-            event.stopPropagation();
-            try {
-                await setCurrentSmartManualVideoUrl();
-            } catch(e) {
-                toast((e.message || '设置视频网址失败').slice(0, 180));
-            }
-        };
-    });
-    inputThumbsRow?.querySelectorAll('[data-temp-sh-upload-video]').forEach(btn => {
-        btn.onclick = async event => {
-            event.preventDefault();
-            event.stopPropagation();
-            try {
-                await uploadCurrentSmartVideosToCloud();
-            } catch(e) {
-                toast((e.message || '云端上传失败').slice(0, 180));
-            }
-        };
-    });
-}
 function movedBeforeAfterIds(ids, movedId, targetId, placement='before'){
     const list = (ids || []).filter(Boolean);
     const from = list.indexOf(movedId);
@@ -18027,9 +17728,6 @@ function hasSmartImageDropData(dataTransfer){
 function hasSmartAssetDrag(dataTransfer){
     return smartDropDataTypes(dataTransfer).includes('application/x-smart-asset');
 }
-function hasMediaDrawerDrag(dataTransfer){
-    return smartDropDataTypes(dataTransfer).includes('application/x-smart-asset');
-}
 function hasSmartInputThumbDrag(dataTransfer){
     return smartDropDataTypes(dataTransfer).includes('application/x-smart-input-thumb');
 }
@@ -18236,65 +17934,6 @@ function aspectRatioForRun(sourceSettings=settings){
         return '';
     }
     return presets[ratio] || '1:1';
-}
-function expectedOutputSize(){
-    if(settings.engine === 'runninghub') return {w:1024, h:1024};
-    const sizeStr = settings.engine === 'modelscope'
-        ? apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '')
-        : sizeForRun();
-    const parsed = parseSizeValue(sizeStr);
-    if(parsed){
-        return {w: Number(parsed.width) || 1024, h: Number(parsed.height) || 1024};
-    }
-    return {w:1024, h:1024};
-}
-function explicitRequestOutputSizeForPending(){
-    if(isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
-        const parsed = parseSizeValue(sizeForRun());
-        if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
-    }
-    if(settings.engine === 'modelscope'){
-        const sizeStr = apiImageSize(settings.msRatio || 'square', settings.msResolution || '1k', settings.msCustomRatio || '', settings.msCustomSize || '');
-        const parsed = parseSizeValue(sizeStr);
-        if(parsed) return {w:Number(parsed.width) || 1024, h:Number(parsed.height) || 1024};
-    }
-    return null;
-}
-function pendingSizeFromImageRef(img){
-    const w = Number(img?.natural_w || img?.width || 0);
-    const h = Number(img?.natural_h || img?.height || 0);
-    return w > 0 && h > 0 ? {w, h} : null;
-}
-function pendingSourceBoxSize(options={}){
-    const sourceNode = options.sourceNode || null;
-    if(sourceNode && (sourceNode.images || []).length){
-        const rect = nodeRect(sourceNode);
-        if(rect.width > 24 && rect.height > 24) return {w:Math.round(rect.width), h:Math.round(rect.height), display:true};
-    }
-    const ref = (options.refs || []).find(img => img?.url);
-    const refSize = pendingSizeFromImageRef(ref);
-    if(refSize) return refSize;
-    const refNode = ref?.nodeId ? nodes.find(n => n.id === ref.nodeId) : null;
-    if(refNode){
-        const rect = nodeRect(refNode);
-        if(rect.width > 24 && rect.height > 24) return {w:Math.round(rect.width), h:Math.round(rect.height), display:true};
-    }
-    return null;
-}
-function displayBoxFromNaturalSize(size){
-    const layout = singleImageLayout(
-        {natural_w:size?.w || size?.width || 1024, natural_h:size?.h || size?.height || 1024},
-        {type:'smart-image', images:[{}]},
-        MEDIA_NODE_DEFAULT_SCALE
-    );
-    return {w:layout.width, h:layout.height};
-}
-function pendingBaseBoxSize(options={}){
-    // 使用统一的比例解析（_generationAspect → 首图 → 请求尺寸 → 1:1）
-    const node = options.node || options.sourceNode;
-    const aspect = resolveImageAspect(node);
-    const layout = getSingleImageLayoutSize(aspect);
-    return {w:layout.boxW, h:layout.boxH, display:true};
 }
 function pendingBoxSize(count, options={}){
     const c = Math.max(1, Number(count) || 1);
@@ -18517,22 +18156,8 @@ function imagesForNode(node){
     }
     return (node?.images || []).map((img, index) => ({...imageForDisplay(img), nodeId:node.id, imageIndex:index}));
 }
-function nodeHasReferenceContent(node){
-    return imagesForNode(node).some(img => img?.url);
-}
 function isSelfReferenceForNode(node, img){
     return Boolean(node?.id && img?.nodeId === node.id);
-}
-function candidateInputImagesFor(node, consume=false, ctx=smartLoopContext){
-    const inputs = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))
-        .filter(img => img?.url);
-    if(!inputs.length) return [];
-    if(smartImageUsesWorkflowInput(node, ctx)) return inputs;
-    if(nodeHasReferenceContent(node)) return [];
-    return inputs;
-}
-function defaultInputImagesFor(node, consume=false, ctx=smartLoopContext){
-    return candidateInputImagesFor(node, consume, ctx);
 }
 function splitSmartPromptItems(text){
     const trimmed = String(text || '').trim();
@@ -18567,10 +18192,6 @@ function setSmartLoopPromptFieldValues(node, values){
     const fields = (values || []).map(text => String(text || '').trim());
     node.variablePrompts = fields.length ? fields : [''];
     node.variablePrompt = fields.filter(Boolean).join('\n');
-}
-function smartLoopPromptFieldText(node, fieldIndex){
-    const values = smartLoopPromptFieldValues(node);
-    return values[fieldIndex] || '';
 }
 function smartLoopSelectedLocalPrompt(node, ctx=smartLoopContext){
     const values = smartLoopActivePromptFieldValues(node);
@@ -18712,26 +18333,6 @@ function manualReferenceImagesFor(node){
         manualAdded:true
     }));
 }
-function isInputRefBlocked(node, img){
-    if(!node || !img?.url) return false;
-    return blockedInputRefKeys(node).has(inputRefKey(img));
-}
-function activeInputImagesFor(node, consume=false, ctx=smartLoopContext){
-    return inputImagesFor(node, consume, ctx).filter(img => img?.url && !isInputRefBlocked(node, img));
-}
-function toggleInputRefBlocked(node, img){
-    if(!node || !img?.url) return;
-    const key = inputRefKey(img);
-    if(!key) return;
-    pushUndo();
-    const blocked = blockedInputRefKeys(node);
-    if(blocked.has(key)) blocked.delete(key);
-    else blocked.add(key);
-    node.blockedInputRefs = [...blocked];
-    if(!node.blockedInputRefs.length) delete node.blockedInputRefs;
-    renderInputThumbsRow(node);
-    scheduleSave();
-}
 function defaultReferenceImagesFor(node, consume=false, ctx=smartLoopContext){
     if(!node) return [];
     const upstream = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))
@@ -18745,33 +18346,6 @@ function lineConnectionsFor(node){
         if(!conn?.from || !conn?.to || conn.from === conn.to) return false;
         return ['input', 'flow'].includes(conn.kind || 'flow');
     });
-}
-function connectedLineNodeIds(node){
-    if(!node) return [];
-    const conns = lineConnectionsFor(node);
-    const upstream = [];
-    const downstream = [];
-    const seenUp = new Set([node.id]);
-    const seenDown = new Set([node.id]);
-    const walkUp = id => {
-        conns.filter(conn => conn.to === id).forEach(conn => {
-            if(seenUp.has(conn.from)) return;
-            seenUp.add(conn.from);
-            walkUp(conn.from);
-            upstream.push(conn.from);
-        });
-    };
-    const walkDown = id => {
-        conns.filter(conn => conn.from === id).forEach(conn => {
-            if(seenDown.has(conn.to)) return;
-            seenDown.add(conn.to);
-            downstream.push(conn.to);
-            walkDown(conn.to);
-        });
-    };
-    walkUp(node.id);
-    walkDown(node.id);
-    return [...upstream, node.id, ...downstream];
 }
 function upstreamLineNodeIds(node){
     if(!node) return [];
@@ -18869,12 +18443,6 @@ function assetMentionCandidateImages(categoryId=''){
         asset_uris:assetRegisteredUris(item),
         mentionId:`asset_${index}_${Math.random().toString(36).slice(2, 7)}`
     }));
-}
-function mentionCandidateImages(node, source=mentionSource){
-    return source === 'asset' ? assetMentionCandidateImages(mentionAssetCategoryId) : inputMentionCandidateImages(node);
-}
-function referenceImagesFor(node){
-    return defaultReferenceImagesFor(node);
 }
 function closeMentionPicker(){
     mentionPicker.classList.remove('open');
@@ -19006,17 +18574,6 @@ function showMentionPicker(){
     placeMentionPickerInPromptRow();
     mentionSource = hasInput ? 'input' : 'asset';
     renderMentionPicker(mentionSource);
-}
-function setPromptCaretToEnd(){
-    if(!promptInput) return;
-    promptInput.focus();
-    const range = document.createRange();
-    range.selectNodeContents(promptInput);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    mentionRange = range.cloneRange();
 }
 function promptRangeIsUsable(range){
     const container = range?.commonAncestorContainer;
@@ -19327,9 +18884,6 @@ function outgoingConnectionsFor(node, kinds=['input']){
     const allowed = new Set(kinds);
     return (canvas?.connections || []).filter(conn => conn.from === node.id && allowed.has(conn.kind || 'flow'));
 }
-function outgoingInputConnectionsFor(node){
-    return outgoingConnectionsFor(node, ['input']);
-}
 function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
     const sourceRect = nodeRect(sourceNode);
     const x = (sourceRect.x || 0) + sourceRect.width + 80;
@@ -19374,37 +18928,6 @@ function createPendingOutputFromSource(sourceNode, expectedCount, meta, options=
     attachRunMeta(output, options.stripInputMeta ? stripRunInputMeta(meta) : meta);
     selectedId = sourceNode.id;
     selectedImage = {nodeId:'', index:-1};
-    return output;
-}
-function createParallelLoopOutputNode(templateNode, sourceNode, roundIndex, roundOffset=0){
-    const rect = nodeRect(templateNode);
-    const output = cloneSmartNode(templateNode, 0, 0);
-    output.id = uid('smart');
-    output.type = 'smart-image';
-    output.x = (Number(templateNode.x) || 0) + (Number(rect.width) || 260) + 80;
-    output.y = (Number(templateNode.y) || 0) + roundOffset * ((Number(rect.height) || 180) + 28);
-    output.title = `Image ${roundIndex}`;
-    output.images = [];
-    output.pending = 0;
-    output.running = false;
-    output.created_at = Date.now();
-    delete output.w;
-    delete output.h;
-    delete output.historyFor;
-    delete output.isHistoryGroup;
-    delete output.sourceNodeId;
-    delete output.runAt;
-    delete output.runPrompt;
-    delete output.runModelPrompt;
-    delete output.runPromptRefs;
-    delete output.runInputRefs;
-    // 克隆自模板节点会带上 inputNodeIds（含上游提示词节点），而生成出的输出槽并未真正
-    // 连线到这些上游；若不清空，节点即便没有任何连线也会一直显示"上游输入xxxx"。
-    output.inputNodeIds = [];
-    delete output.blockedInputRefs;
-    delete output.manualInputRefs;
-    nodes.push(output);
-    connectInputNode(sourceNode.id, output.id);
     return output;
 }
 function loopOutputSlotsForRoot(rootNode){
@@ -19484,33 +19007,6 @@ function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
         const runPath = smartCascadePathForCtx(options.ctx || options.runState);
         if(runPath?.states) runPath.states[`${rootNode.id}->${output.id}`] = 'wait';
     return output;
-}
-function extractCurrentImagesToSource(node, meta=null){
-    const imgs = (node.images || []).slice();
-    if(!imgs.length) return null;
-    const r = nodeRect(node);
-    const newX = (node.x || 0) - Math.max(280, r.width + 60);
-    const source = {
-        id: uid('smart'),
-        type: 'smart-image',
-        x: newX,
-        y: node.y || 0,
-        title: imgs.length > 1 ? 'Group' : 'Image',
-        // 抽出到上游源节点的图片只保留"原始素材"语义：清空 runPrompt / runSettings /
-        // sourceNodeId / runAt / promptDraftHtml / promptDraftText 等"生成"相关字段，
-        // 避免上游图片继承下游输出的提示词信息
-        images: imgs.map(img => stripImageGenerationMeta({...img})),
-        created_at: Date.now()
-    };
-    if(Number.isFinite(Number(node.w))) source.w = node.w;
-    if(Number.isFinite(Number(node.h))) source.h = node.h;
-    if(Number.isFinite(Number(node.scale))) source.scale = node.scale;
-    nodes.push(source);
-    connectInputNode(source.id, node.id);
-    node.images = [];
-    delete node.w;
-    delete node.h;
-    return source;
 }
 function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(!pendingNode) return;
@@ -19853,15 +19349,6 @@ function cascadeConnectionKeys(){
     });
     return keys;
 }
-function coolRunButton(ms=2000){
-    if(!runBtn) return 0;
-    const token = ++runBtnCooldownToken;
-    syncRunButtonState();
-    setTimeout(() => {
-        if(token === runBtnCooldownToken) syncRunButtonState();
-    }, ms);
-    return token;
-}
 function coolNodeRunningState(node, ms=2000){
     if(!node) return 0;
     const token = ++smartRunStateToken;
@@ -20085,11 +19572,6 @@ function promptDraftHtmlForNode(node){
     }
     const prompt = node?.promptDraftText || node?.runPrompt || '';
     return promptHtmlWithMentionTokens(prompt, node?.runPromptRefs || []) || escapeHtml(prompt);
-}
-function loadNodePromptDraftToInput(node){
-    const html = promptDraftHtmlForNode(node);
-    if(html) promptInput.innerHTML = html;
-    else setPromptText('');
 }
 // Local ComfyUI task transport and workflow parameter serialization were removed.
 
@@ -22259,9 +21741,6 @@ function smartGroupTargetForDraggedNode(draggedNode){
     if(!groups.length) return null;
     groups.sort((a, b) => (nodes.indexOf(b.group) - nodes.indexOf(a.group)));
     return groups[0].group;
-}
-function addDraggedNodeToSmartGroup(draggedNode, group){
-    return addDraggedNodesToSmartGroup(draggedNode ? [draggedNode] : [], group);
 }
 // 把一个或多个被拖动的节点批量加入目标分组（支持多选拖入）。入组后只整理一次并选中目标分组。
 function addDraggedNodesToSmartGroup(draggedNodes, group){
