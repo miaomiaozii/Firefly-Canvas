@@ -1316,6 +1316,42 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             result["path"] = str(path)
             return result
 
+    PHOTOSHOP_ROUND_TRIP_FILENAME = "photoshop-round-trips.json"
+
+    def load_photoshop_round_trips(self, project_id: str) -> Dict[str, Dict[str, Any]]:
+        """读取项目持久化的 Photoshop 往返请求表（issue #95）。
+
+        文件不存在返回空表；文件损坏时隔离为 ``.corrupt-<ts>`` 并返回空表。
+        该文件是服务端状态表（非用户内容），不纳入 .bak 轮转。
+        """
+        project_id = _clean_project_id(project_id)
+        path = self.root / project_id / "photoshop-round-trips.json"
+        try:
+            table = _read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            if path.exists():
+                try:
+                    path.replace(self.root / project_id / f"photoshop-round-trips.json.corrupt-{_now_ms()}")
+                except OSError:
+                    pass
+            return {}
+        requests = table.get("requests") if isinstance(table, dict) else None
+        if not isinstance(requests, dict):
+            return {}
+        return {str(key): value for key, value in requests.items() if isinstance(value, dict) and str(key)}
+
+    def save_photoshop_round_trips(self, project_id: str, requests: Dict[str, Dict[str, Any]]) -> None:
+        """持久化项目 Photoshop 往返请求表（issue #95）；空表直接删文件。"""
+        project_id = _clean_project_id(project_id)
+        path = self.root / project_id / "photoshop-round-trips.json"
+        if not requests:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        _write_json_atomic(path, {"version": 1, "requests": requests}, keep_backup=False)
+
     def complete_photoshop_round_trip(
         self,
         project_id: str,

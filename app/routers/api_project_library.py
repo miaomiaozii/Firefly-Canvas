@@ -3505,18 +3505,26 @@ async def open_firefly_project(project_id: str):
 
 def _photoshop_prune_requests_locked(now: Optional[int]=None) -> None:
     now_value = int(now if now is not None else _app_main.now_ms())
+    changed_projects = set()
     for request_id, record in list(PHOTOSHOP_ROUND_TRIP_REQUESTS.items()):
         expires_at = int(record.get('expires_at_ms') or 0)
         if record.get('state') == 'pending' and now_value >= expires_at:
             record['state'] = 'expired'
+            changed_projects.add(str(record.get('project_id') or ''))
         terminal_at = int(record.get('returned_at') or 0) * 1000 or expires_at
         if record.get('state') in {'returned', 'expired'} and now_value - terminal_at > PHOTOSHOP_ROUND_TRIP_RETENTION_MS:
             PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
-    if len(PHOTOSHOP_ROUND_TRIP_REQUESTS) <= PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS:
-        return
-    terminal = sorted(((int(record.get('returned_at') or 0) * 1000 or int(record.get('expires_at_ms') or 0), request_id) for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items() if record.get('state') in {'returned', 'expired'}))
-    for _, request_id in terminal[:max(0, len(PHOTOSHOP_ROUND_TRIP_REQUESTS) - PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS)]:
-        PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+            changed_projects.add(str(record.get('project_id') or ''))
+    overflow = max(0, len(PHOTOSHOP_ROUND_TRIP_REQUESTS) - PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS)
+    if overflow > 0:
+        terminal = sorted(((int(record.get('returned_at') or 0) * 1000 or int(record.get('expires_at_ms') or 0), request_id) for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items() if record.get('state') in {'returned', 'expired'}))
+        for _, request_id in terminal[:overflow]:
+            removed = PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+            if removed:
+                changed_projects.add(str(removed.get('project_id') or ''))
+    # issue #95：状态变化后同步落盘，避免重启后状态回退。
+    for project_id in sorted(p for p in changed_projects if p):
+        _app_main._photoshop_persist_table_locked(project_id)
 
 def _photoshop_request_snapshot(request_id: str) -> Optional[Dict[str, Any]]:
     with PHOTOSHOP_ROUND_TRIP_LOCK:
@@ -3547,6 +3555,8 @@ def _photoshop_mark_returned(request_id: str, committed: Dict[str, Any]) -> Dict
         if not current:
             raise _photoshop_protocol_error(404, 'REQUEST_NOT_FOUND', 'Photoshop 往返请求不存在')
         current.update({'state': 'returned', 'returned_at': _app_main.now_ms() // 1000, 'result_node_id': committed['result_node']['id'], 'result_media_id': committed['media']['asset_id']})
+        # issue #95：终态落盘，重启后 PS 端重试会得到明确的 DUPLICATE_RETURN 而不是 404。
+        _app_main._photoshop_persist_table_locked(str(current.get('project_id') or ''))
         return _photoshop_public_request(current)
 
 def _photoshop_reset_processing(request_id: str) -> None:
@@ -3591,6 +3601,8 @@ async def create_photoshop_round_trip(project_id: str, payload: PhotoshopRoundTr
             with PHOTOSHOP_ROUND_TRIP_LOCK:
                 _photoshop_prune_requests_locked(created_at_ms)
                 PHOTOSHOP_ROUND_TRIP_REQUESTS[request_id] = copy.deepcopy(record)
+                # issue #95：新建请求立即落盘，服务重启后 PS 端仍可继续取回/返回。
+                _app_main._photoshop_persist_table_locked(project_id)
         await manager.broadcast_photoshop_round_trip(_photoshop_public_request(record))
         return _photoshop_public_request(record)
     except HTTPException:
@@ -3658,6 +3670,7 @@ async def return_photoshop_round_trip(project_id: str, request_id: str, payload:
             raise _photoshop_protocol_error(409, 'DUPLICATE_RETURN', 'Photoshop 往返请求已经消费')
         if now >= int(record.get('expires_at_ms') or 0):
             record['state'] = 'expired'
+            _app_main._photoshop_persist_table_locked(str(record.get('project_id') or ''))
             raise _photoshop_protocol_error(410, 'REQUEST_EXPIRED', 'Photoshop 往返请求已过期')
     name = _photoshop_validate_display_name(payload.name)
     mime_type = _photoshop_validate_media_type(payload.mime_type)
@@ -3672,6 +3685,7 @@ async def return_photoshop_round_trip(project_id: str, request_id: str, payload:
             raise _photoshop_protocol_error(409, 'DUPLICATE_RETURN', 'Photoshop 往返请求已经消费')
         if _app_main.now_ms() >= int(record.get('expires_at_ms') or 0):
             record['state'] = 'expired'
+            _app_main._photoshop_persist_table_locked(str(record.get('project_id') or ''))
             raise _photoshop_protocol_error(410, 'REQUEST_EXPIRED', 'Photoshop 往返请求已过期')
         record['state'] = 'processing'
     encoded = str(payload.bytes_base64 or payload.data or '').strip()
@@ -3703,6 +3717,7 @@ async def return_photoshop_round_trip(project_id: str, request_id: str, payload:
         if not current or _app_main.now_ms() >= int(current.get('expires_at_ms') or 0):
             if current:
                 current['state'] = 'expired'
+                _app_main._photoshop_persist_table_locked(str(current.get('project_id') or ''))
             raise _photoshop_protocol_error(410, 'REQUEST_EXPIRED', 'Photoshop 往返请求已过期')
     commit_task = asyncio.create_task(asyncio.to_thread(_app_main.project_store_call, 'complete_photoshop_round_trip', project_id, str(record['source_node_id']), str(record['source_media_id']), request_id, content, name, mime_type))
     try:

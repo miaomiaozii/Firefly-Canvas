@@ -579,6 +579,13 @@ async def startup_event():
             print(f"Agent 任务恢复提交: {recovered}")
     except Exception as exc:
         print(f"Agent 任务恢复失败: {exc}")
+    # issue #95：启动对账 Photoshop 往返请求表（持久化 + 崩溃状态修复）。
+    try:
+        recovered_tables = await asyncio.to_thread(_photoshop_recover_round_trips)
+        if recovered_tables:
+            print(f"Photoshop 往返请求表对账: {recovered_tables} 个项目表")
+    except Exception as exc:
+        print(f"Photoshop 往返请求表对账失败: {exc}")
 
 async def shutdown_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
@@ -1069,22 +1076,128 @@ def recover_project_agent_tasks() -> int:
 
 def _photoshop_prune_requests_locked(now: Optional[int] = None) -> None:
     now_value = int(now if now is not None else now_ms())
+    changed_projects = set()
     for request_id, record in list(PHOTOSHOP_ROUND_TRIP_REQUESTS.items()):
         expires_at = int(record.get("expires_at_ms") or 0)
         if record.get("state") == "pending" and now_value >= expires_at:
             record["state"] = "expired"
+            changed_projects.add(str(record.get("project_id") or ""))
         terminal_at = int(record.get("returned_at") or 0) * 1000 or expires_at
         if record.get("state") in {"returned", "expired"} and now_value - terminal_at > PHOTOSHOP_ROUND_TRIP_RETENTION_MS:
             PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
-    if len(PHOTOSHOP_ROUND_TRIP_REQUESTS) <= PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS:
+            changed_projects.add(str(record.get("project_id") or ""))
+    overflow = max(0, len(PHOTOSHOP_ROUND_TRIP_REQUESTS) - PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS)
+    if overflow > 0:
+        terminal = sorted(
+            ((int(record.get("returned_at") or 0) * 1000 or int(record.get("expires_at_ms") or 0), request_id)
+             for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items()
+             if record.get("state") in {"returned", "expired"}),
+        )
+        for _, request_id in terminal[:overflow]:
+            removed = PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+            if removed:
+                changed_projects.add(str(removed.get("project_id") or ""))
+    # issue #95：状态变化（过期/清除/容量淘汰）后同步落盘，避免重启后状态回退。
+    for project_id in sorted(p for p in changed_projects if p):
+        _photoshop_persist_table_locked(project_id)
+
+
+def _photoshop_persist_table_locked(project_id: str) -> None:
+    """把项目的当前往返请求表落盘（issue #95）。调用方必须持有 PHOTOSHOP_ROUND_TRIP_LOCK。"""
+    with PROJECT_LIBRARY_SWITCH_LOCK:
+        store = FIREFLY_PROJECT_STORE
+    if store is None:
         return
-    terminal = sorted(
-        ((int(record.get("returned_at") or 0) * 1000 or int(record.get("expires_at_ms") or 0), request_id)
-         for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items()
-         if record.get("state") in {"returned", "expired"}),
-    )
-    for _, request_id in terminal[:max(0, len(PHOTOSHOP_ROUND_TRIP_REQUESTS) - PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS)]:
-        PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
+    table = {
+        request_id: copy.deepcopy(record)
+        for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items()
+        if str(record.get("project_id")) == str(project_id)
+    }
+    try:
+        store.save_photoshop_round_trips(str(project_id), table)
+    except (OSError, ValueError, ProjectStoreError) as exc:
+        print(f"Photoshop 往返请求表落盘失败: {exc}")
+
+
+def _photoshop_recover_round_trips() -> int:
+    """启动对账（issue #95）：把各项目的往返请求表加载回内存并修复状态。
+
+    - 未过期 pending：原样恢复（PS 端可继续调 return）；
+    - processing（进程在提交中途崩溃）：若画布已存在该 request_id 的结果节点
+      → 补记 returned（提交成功但状态未及更新）；否则回退 pending 允许 PS 端重试；
+    - 超龄 pending 标记 expired；超保留期的终态丢弃。
+    返回有落盘修正的项目表数量。
+    """
+    with PROJECT_LIBRARY_SWITCH_LOCK:
+        store = FIREFLY_PROJECT_STORE
+    if store is None:
+        return 0
+    now_value = now_ms()
+    recovered = 0
+    with PHOTOSHOP_ROUND_TRIP_LOCK:
+        for project in store.list_projects():
+            project_id = str(project.get("id") or "")
+            if not project_id:
+                continue
+            try:
+                table = store.load_photoshop_round_trips(project_id)
+            except (OSError, ValueError) as exc:
+                print(f"项目 {project_id} 往返请求表加载失败: {exc}")
+                continue
+            if not table:
+                continue
+            # 直接读画布文件（不走 open_project）：避免启动时预热全部画布缓存、
+            # 也避免触发画布损坏自动重写副作用。
+            committed_by_request: Dict[str, Dict[str, Any]] = {}
+            try:
+                canvas = json.loads((store.root / project_id / "canvas.json").read_text(encoding="utf-8"))
+                for node in canvas.get("nodes") or []:
+                    if isinstance(node, dict) and str(node.get("type") or "") == "ps_edit_result" and node.get("request_id"):
+                        committed_by_request[str(node["request_id"])] = node
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+            keep: Dict[str, Dict[str, Any]] = {}
+            dirty = False
+            for request_id, raw_record in table.items():
+                record = copy.deepcopy(raw_record)
+                record["project_id"] = project_id
+                record["request_id"] = request_id
+                state = record.get("state")
+                if state == "processing":
+                    node = committed_by_request.get(request_id)
+                    if node is not None:
+                        image = next((im for im in node.get("images") or [] if isinstance(im, dict) and im.get("asset_id")), None)
+                        record.update({
+                            "state": "returned",
+                            "returned_at": now_value // 1000,
+                            "result_node_id": str(node.get("id") or ""),
+                            "result_media_id": str(image.get("asset_id") or "") if image else "",
+                        })
+                    else:
+                        record["state"] = "pending"
+                    state = record["state"]
+                    dirty = True
+                if state == "pending" and now_value >= int(record.get("expires_at_ms") or 0):
+                    record["state"] = "expired"
+                    state = "expired"
+                    dirty = True
+                if state == "returned":
+                    terminal_at = int(record.get("returned_at") or 0) * 1000 or int(record.get("expires_at_ms") or 0)
+                else:
+                    terminal_at = int(record.get("expires_at_ms") or 0)
+                if state in {"returned", "expired"} and now_value - terminal_at > PHOTOSHOP_ROUND_TRIP_RETENTION_MS:
+                    dirty = True
+                    continue
+                if state != raw_record.get("state"):
+                    dirty = True
+                keep[request_id] = record
+            if dirty or len(keep) != len(table):
+                store.save_photoshop_round_trips(project_id, keep)
+            PHOTOSHOP_ROUND_TRIP_REQUESTS.update({key: copy.deepcopy(value) for key, value in keep.items()})
+            if dirty or len(keep) != len(table):
+                recovered += 1
+        _photoshop_prune_requests_locked(now_value)
+    return recovered
 
 
 def project_conversation_durable_path(project_id: str, node_id: str, request_id: str) -> Path:

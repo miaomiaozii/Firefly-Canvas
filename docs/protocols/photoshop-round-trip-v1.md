@@ -60,9 +60,17 @@ An accepted return stores a new project media original, creates a new
 marks the request `returned`. The source node and media are never overwritten.
 Any failure in those four protocol checks leaves media, nodes, edges, and request
 consumption unchanged. The prototype verified this final state and rejection
-behaviour; crash-safe atomic persistence and rollback remain production
-implementation work, not a conclusion of this protocol prototype. Production
-must also perform final path-containment checks before mutating project state;
+behaviour. Crash-safe atomic persistence and rollback were implemented in
+production (issue #95): the request table is persisted per project as
+`photoshop-round-trips.json` on every state transition (create / returned /
+expired / pruned), and a startup reconciliation reloads the tables, expires
+stale pendings, and repairs a `processing` request that crashed mid-commit
+(backfilled to `returned` when the committed result node already carries the
+request id, otherwise dropped back to `pending` so the connector can retry).
+A restart therefore never loses an in-flight round trip: a later `return`
+either completes normally or fails with an explicit `REQUEST_EXPIRED` /
+`DUPLICATE_RETURN` / `REQUEST_NOT_FOUND`. Production also performs final
+path-containment checks before mutating project state;
 the prototype proved only that its server-selected successful paths stayed in
 the project and connector-supplied traversal names were rejected earlier.
 

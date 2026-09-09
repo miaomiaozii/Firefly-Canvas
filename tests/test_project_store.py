@@ -2115,6 +2115,30 @@ class ProjectStoreContractTests(unittest.TestCase):
         finally:
             restarted.close()
 
+    def test_photoshop_round_trip_table_save_load_roundtrip(self):
+        """issue #95：往返请求表落盘/读取/空表删文件。"""
+        project = self.store.create_project("PS 表")
+        table = {"req-1": {"request_id": "req-1", "project_id": project["id"], "state": "pending"}}
+        self.store.save_photoshop_round_trips(project["id"], table)
+        path = self.root / project["id"] / "photoshop-round-trips.json"
+        self.assertTrue(path.exists())
+        self.assertEqual(self.store.load_photoshop_round_trips(project["id"]), table)
+        self.store.save_photoshop_round_trips(project["id"], {})
+        self.assertFalse(path.exists())
+        self.assertEqual(self.store.load_photoshop_round_trips(project["id"]), {})
+
+    def test_photoshop_round_trip_table_corrupt_is_quarantined(self):
+        """issue #95：损坏的表文件被隔离为 .corrupt-<ts>，读取返回空表。"""
+        project = self.store.create_project("PS 表损坏")
+        path = self.root / project["id"] / "photoshop-round-trips.json"
+        path.write_text("{broken", encoding="utf-8")
+        self.assertEqual(self.store.load_photoshop_round_trips(project["id"]), {})
+        self.assertFalse(path.exists())
+        self.assertTrue(any(
+            p.name.startswith("photoshop-round-trips.json.corrupt-")
+            for p in (self.root / project["id"]).iterdir()
+        ))
+
     def test_background_snapshot_is_throttled_and_finishes_within_contract(self):
         delayed = ProjectStore(self.root, snapshot_delay=0.15)
         try:
