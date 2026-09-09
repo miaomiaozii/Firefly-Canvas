@@ -44,6 +44,7 @@ app/data/
 
 # 本地工具与临时文件
 .ua/
+tmp/
 NUL
 data/api_providers.json.bak-*
 *.pid
