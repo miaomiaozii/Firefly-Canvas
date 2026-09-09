@@ -52,15 +52,15 @@ html[data-studio-scale="off"].studio-scale-managed .preview-modal {
 .smart-save:disabled { opacity:.58; cursor:wait; }
 .smart-save[data-state="dirty"] { box-shadow:0 0 0 2px color-mix(in srgb, var(--strong) 28%, transparent), 0 16px 40px var(--shadow); }
 .smart-save i,.smart-save svg { width:16px; height:16px; }
-.smart-title { position:absolute; left:22px; top:72px; z-index:10; max-width:min(420px, calc(100vw - 140px)); color:var(--muted); font-size:13px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:auto; cursor:default; display:inline-flex; align-items:center; gap:6px; }
+.smart-title { position:absolute; left:22px; top:72px; z-index:10; max-width:min(420px, calc(100vw - 140px)); color:var(--muted); font-size:13px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:auto; cursor:default; display:inline-flex; flex-wrap:wrap; align-items:center; gap:0 6px; }
 .smart-title .smart-title-text { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .smart-title-edit { pointer-events:auto; width:20px; height:20px; border-radius:6px; border:1px solid transparent; background:transparent; color:var(--muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; opacity:0; transform:translateX(-2px); transition:opacity .14s ease, background .14s ease, color .14s ease, transform .14s ease; flex:0 0 auto; }
 .smart-title:hover .smart-title-edit, .smart-title-edit:focus-visible { opacity:1; transform:translateX(0); }
 .smart-title-edit:hover { background:var(--soft); color:var(--strong); border-color:var(--line); }
 .smart-title-edit i, .smart-title-edit svg { width:12px; height:12px; }
 #smartTitleInput { width:260px; max-width:calc(100vw - 60px); height:26px; padding:0 8px; border-radius:8px; border:1px solid var(--designer-accent); background:var(--card); color:var(--text); font-size:12px; font-weight:800; outline:none; box-shadow:0 6px 18px var(--shadow); }
-/* #89 返工：保存状态收进 .smart-title flex 行内（标题后、长标题时 ellipsis 让位），不再绝对定位到屏幕右侧 */
-.project-save-state { position:static; flex:0 0 auto; margin-left:6px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; white-space:nowrap; }
+/* #89 第四轮：保存状态放标题正下方（两行布局，左对齐，纯文本无盒子） */
+.project-save-state { position:static; flex:0 0 100%; margin-left:0; margin-top:2px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; white-space:nowrap; }
 .project-save-state[data-state="saved"] { color:#16945f; }
 .project-save-state[data-state="error"] { color:#dc3545; }
  .smart-log-toggle,.smart-shortcut-toggle { position:absolute; top:22px; z-index:56; width:96px; height:40px; padding:0 15px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; transition:transform .14s ease, border-color .14s ease; }
@@ -1695,6 +1695,9 @@ body {
     left:auto;
     right:auto;
     top:auto;
+    flex:0 0 100%;
+    margin-left:0;
+    margin-top:2px;
     color:var(--faint);
     font-size:10px;
     letter-spacing:.02em;
@@ -2464,6 +2467,9 @@ body {
     display:flex;
     align-items:center;
     gap:6px;
+    flex:0 0 100%;
+    margin-left:0;
+    margin-top:2px;
     font-size:var(--font-micro, 10px);
     letter-spacing:.04em;
 }
@@ -3437,8 +3443,9 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-marked-panel[hidden] { display:none; }
 .smart-marked-head { flex:none; display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); }
 .smart-marked-title { flex:1; min-width:0; font-size:12px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.smart-marked-all { flex:none; padding:5px 12px; border-radius:8px; border:none; background:var(--accent, #2563eb); color:#fff; font-size:11px; font-weight:650; cursor:pointer; }
-.smart-marked-all:hover { filter:brightness(1.08); }
+.smart-marked-download-all { flex:none; display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border-radius:8px; border:none; background:var(--accent, #2563eb); color:#fff; font-size:11px; font-weight:650; cursor:pointer; }
+.smart-marked-download-all:hover { filter:brightness(1.08); }
+.smart-marked-download-all i, .smart-marked-download-all svg { width:12px; height:12px; }
 .smart-marked-close { flex:none; width:22px; height:22px; border-radius:7px; border:none; background:transparent; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
 .smart-marked-close:hover { background:var(--soft); color:var(--text); }
 .smart-marked-close i, .smart-marked-close svg { width:13px; height:13px; }
@@ -3452,3 +3459,19 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-marked-item .smart-marked-unmark.image-marked { color:#b45309; background:#fef3c7; border-color:#fde68a; }
 .smart-marked-item .smart-marked-unmark.image-marked i { fill:#f59e0b; }
 .smart-marked-count { display:inline-block; min-width:14px; padding:0 4px; margin-left:2px; border-radius:7px; background:var(--accent, #2563eb); color:#fff; font-size:9px; font-weight:700; line-height:14px; text-align:center; }
+
+/* #89 第四轮：生成详情面板工具排（预览/裁剪/扩图/遮笔/画笔/缩放/宫格切分） */
+.smart-log-detail-modes { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px 4px; border-top:1px solid var(--line); }
+.smart-log-detail-modes button { display:inline-flex; align-items:center; gap:5px; padding:5px 9px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:11px; font-weight:700; line-height:1; cursor:pointer; }
+.smart-log-detail-modes button:hover:not(:disabled) { border-color:var(--strong); color:var(--strong); }
+.smart-log-detail-modes button:disabled { opacity:.45; cursor:not-allowed; }
+.smart-log-detail-modes i, .smart-log-detail-modes svg { width:13px; height:13px; flex:0 0 auto; }
+/* 生成详情面板星标（当前输出图） */
+.smart-log-detail-mark { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; margin:6px 14px 12px; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--muted); cursor:pointer; box-shadow:none; opacity:1; position:static; }
+.smart-log-detail-mark:hover:not(:disabled) { border-color:var(--strong); color:var(--strong); }
+.smart-log-detail-mark:disabled { opacity:.45; cursor:not-allowed; }
+.smart-log-detail-mark i, .smart-log-detail-mark svg { width:15px; height:15px; }
+/* 生图历史卡片星标（与「下载原图」并排） */
+.log-media-mark { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--muted); cursor:pointer; flex:0 0 auto; }
+.log-media-mark:hover { border-color:var(--strong); color:var(--strong); }
+.log-media-mark i, .log-media-mark svg { width:14px; height:14px; }

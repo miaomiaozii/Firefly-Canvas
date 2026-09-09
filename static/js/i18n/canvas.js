@@ -168,6 +168,7 @@
         "canvas.modeMask": { zh: "遮罩", en: "Mask" },
         "canvas.modeBrush": { zh: "画笔", en: "Brush" },
         "canvas.modeGrid": { zh: "宫格切分", en: "Grid Split" },
+        "canvas.modeResize": { zh: "缩放", en: "Resize" },
         "canvas.brushSize": { zh: "笔刷", en: "Brush" },
         "canvas.clear": { zh: "清空", en: "Clear" },
         "canvas.maskHint": { zh: "白色区域为要编辑的遮罩", en: "White areas mark the region to edit" },

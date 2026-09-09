@@ -2503,11 +2503,13 @@ function imageLayout(images, scale=1, node=null){
     if(grid){
         const cols = Math.max(1, Number(grid.cols || 1));
         const rows = Math.max(1, Number(grid.rows || 1));
-        const visibleRows = Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, rows);
+        // 第四轮：自然模式显示全部行——框高=内容高，不再有「3 排+滚动」的丑滚条。
+        const visibleRows = rows;
         if(Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
+            // 第四轮：显式尺寸完全尊重用户拖拽（不弹回），全部行 fit 进显式框。
             const fittedThumb = Math.max(28, Math.floor(Math.min((explicitW - PAD - (cols - 1) * 8) / cols, (explicitH - PAD - (visibleRows - 1) * 8) / visibleRows)));
             const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, fittedThumb);
-            return {cols, rows, visibleRows, width:Math.round(explicitW), height:gridHeight + PAD, thumb:fittedThumb, gridHeight};
+            return {cols, rows, visibleRows, width:Math.round(explicitW), height:Math.round(explicitH), thumb:fittedThumb, gridHeight};
         }
         const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
         return {cols, rows, visibleRows, width:Math.max(Math.round(226*s), cols * cell + PAD), height:gridHeight + PAD, thumb, gridHeight};
@@ -2528,9 +2530,10 @@ function imageLayout(images, scale=1, node=null){
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
-    const visibleRows = Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, rows);
+    // 第四轮：自然模式显示全部行——框贴合内容，不再 3 排封顶出滚条。
+    const visibleRows = rows;
     if(Number.isFinite(explicitW) && explicitW > 40 && Number.isFinite(explicitH) && explicitH > 40){
-        const fitted = groupImageGridLayout(count, explicitW, explicitH, thumb, PAD, 8);
+        const fitted = groupImageGridLayout(count, explicitW, explicitH, thumb, PAD, 8, Math.min(count, 8));
         // 完成阶段与占位阶段共用同一比例：提交时固化的 _generationAspect 优先（用户
         // 要求“第一次取到图就固定尺寸、后面不再跳变”）；旧任务无固化比例时按真实图。
         const fixed = node?._generationAspect;
@@ -2541,11 +2544,9 @@ function imageLayout(images, scale=1, node=null){
         }else{
             gridHeight = mediaGroupGridHeight(images, fitted.cols, fitted.visibleRows, fitted.thumb);
         }
-        // #89 返工：实际内容明显窄于旧宽框时（如竖图在很宽节点框内）收敛到内容宽，
-        // 否则图看起来“浮在框表面”；横向图按 fitted 充满宽度，不会触发收敛。
-        const colWidths = mediaGridColumnWidths(images, fitted.cols, fitted.thumb);
-        const contentWidth = colWidths.reduce((a, b) => a + b, 0) + Math.max(0, fitted.cols - 1) * 8 + PAD;
-        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:contentWidth + 8 < explicitW ? Math.round(contentWidth) : Math.round(explicitW), height:gridHeight + PAD, thumb:fitted.thumb, gridHeight, colWidths};
+        // #89 第四轮：显式框完全尊重用户拖拽（放大/缩小双向都不弹回）；格子尺寸由
+        // groupImageGridLayout 拟合进显式框，内容小于框时格子充满，更大时被框裁掉（无滚条）。
+        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:Math.round(explicitH), thumb:fitted.thumb, gridHeight};
     }
     // #89 返工：框宽收敛到实际格宽（竖图列窄于满宽列），图不再在框内居中漂浮。
     const colWidths = mediaGridColumnWidths(images, cols, thumb);
@@ -6645,6 +6646,7 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
+    rebuildMarkedAssetIdsFromNodes();
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
     const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
@@ -7494,6 +7496,7 @@ async function loadCanvas(){
         const hiddenCompletedTimers = hideCompletedRunTimers();
         const cleanedDetachedInputs = cleanupDetachedRunInputRefs();
         canvas.nodes = nodes;
+        rebuildMarkedAssetIdsFromNodes();
         if(isProjectCanvasData(canvas)){
             // Core project files never carry UI state. Keep the per-project
             // viewport in browser-local storage instead.
@@ -8852,9 +8855,74 @@ function setMarkedImage(assetId, marked){
     const at = ids.indexOf(assetId);
     if(marked && at < 0) ids.push(assetId);
     if(!marked && at >= 0) ids.splice(at, 1);
+    // #89 第四轮：节点级 flagged 才是持久载体——项目增量快照只抓 nodes/edges/title/icon/logs，
+    // canvas.markedAssetIds 顶层字段永不被保存；只有 upsert_node 携带的 images[].marked 能落盘。
+    nodes.forEach(node => (node.images || []).forEach(img => {
+        if(img && String(img.asset_id || '') === assetId){
+            if(marked) img.marked = true;
+            else delete img.marked;
+        }
+    }));
     render();
     scheduleSave();
     renderSmartMarkedPanel();
+    syncMarkedImageButtons();
+}
+// #89 第四轮：画布加载/远端 rebase 后，从节点 images[].marked 重建星标索引。
+function rebuildMarkedAssetIdsFromNodes(){
+    if(!canvas) return;
+    const found = new Set();
+    nodes.forEach(node => (node.images || []).forEach(img => {
+        if(img && img.marked && img.asset_id) found.add(String(img.asset_id));
+    }));
+    canvas.markedAssetIds = [...found];
+}
+// #89 第四轮：同步所有带 data-marked-asset 的星位按钮（画布缩略图/生图历史/生成详情/预览大图）。
+function syncMarkedImageButtons(){
+    const ids = getMarkedAssetIds();
+    document.querySelectorAll('[data-marked-asset]').forEach(el => {
+        const marked = ids.includes(String(el.dataset.markedAsset || ''));
+        el.classList.toggle('image-marked', marked);
+        if(el.dataset.markedTitle) el.title = marked ? tr('smart.unmarkImage') : tr('smart.markImage');
+    });
+    if(window.lucide) lucide.createIcons();
+}
+// #89 第四轮：生成详情/生图历史的 output 项 → 画布节点 {nodeId,index}（优先 asset_id 匹配，回退 url）。
+function smartLogDetailNodeImageRef(item){
+    const assetId = String(item?.asset_id || '');
+    const url = String(item?.url || '');
+    let ref = null;
+    let urlRef = null;
+    for(const node of nodes){
+        (node.images || []).forEach((img, index) => {
+            if(!img) return;
+            if(assetId && String(img.asset_id || '') === assetId) ref = {nodeId:node.id, index};
+            else if(urlRef === null && url && String(img.url || '') === url) urlRef = {nodeId:node.id, index};
+        });
+    }
+    return ref || urlRef;
+}
+// #89 第四轮：预览大图里的星标（对当前预览的节点图）。
+function toggleImagePreviewMark(){
+    const ref = selectedImage || {};
+    const node = nodes.find(n => n.id === ref.nodeId);
+    const raw = node?.images?.[Number(ref.index || 0)];
+    const item = imageForDisplay(raw) || raw;
+    const assetId = String(raw?.asset_id || item?.asset_id || '');
+    if(!assetId){ toast(tr('smart.markUnavailable')); return; }
+    setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
+}
+function updateImagePreviewMarkButton(){
+    const btn = document.getElementById('imagePreviewMarkBtn');
+    if(!btn) return;
+    const ref = selectedImage || {};
+    const node = nodes.find(n => n.id === ref.nodeId);
+    const raw = node?.images?.[Number(ref.index || 0)];
+    const item = imageForDisplay(raw) || raw;
+    const assetId = String(raw?.asset_id || item?.asset_id || '');
+    btn.dataset.markedAsset = assetId;
+    btn.hidden = !assetId || mediaKindForItem(item) !== 'image' || imageEditMode !== 'preview';
+    syncMarkedImageButtons();
 }
 function toggleMarkedImage(node, imageIndex){
     const raw = node?.images?.[imageIndex];
@@ -9752,6 +9820,16 @@ function ensureSmartLogDetail(){
             <header class="smart-log-detail-head"><h2 id="smartLogDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close') || '关闭')}" aria-label="${escapeAttr(tr('common.close') || '关闭')}"><i data-lucide="x"></i></button></header>
             <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
             <section class="smart-log-detail-outputs" aria-labelledby="smartLogDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartLogDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
+            <section class="smart-log-detail-modes" aria-label="${escapeAttr(tr('canvas.editImage'))}">
+                <button type="button" data-smart-log-detail-mode="preview"><i data-lucide="eye"></i><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="crop"><i data-lucide="crop"></i><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="outpaint"><i data-lucide="expand"></i><span>${escapeHtml(tr('canvas.modeOutpaint'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="mask"><i data-lucide="brush"></i><span>${escapeHtml(tr('canvas.modeMask'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="brush"><i data-lucide="paintbrush"></i><span>${escapeHtml(tr('canvas.modeBrush'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="resize"><i data-lucide="minimize-2"></i><span>${escapeHtml(tr('canvas.modeResize'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="grid"><i data-lucide="grid-3x3"></i><span>${escapeHtml(tr('canvas.modeGrid'))}</span></button>
+            </section>
+            <button type="button" class="smart-log-detail-mark image-mark" data-smart-log-detail-mark data-marked-asset="" data-marked-title="1" title="${escapeAttr(tr('smart.markImage'))}"><i data-lucide="star"></i></button>
             <section class="smart-log-detail-prompt-wrap"><h3>${escapeHtml(tr('smart.generationPromptDetail'))}</h3><div class="smart-log-detail-prompt" tabindex="0"></div></section>
             <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
         </aside>
@@ -9767,6 +9845,29 @@ function ensureSmartLogDetail(){
             event.stopPropagation();
             switchSmartLogDetailOutput(button.dataset.smartLogDetailOutputNav === 'previous' ? -1 : 1);
         });
+    });
+    // #89 第四轮：详情面板工具排——与预览大图同一套编辑器（openImageEditor + setImageEditMode）。
+    box.querySelectorAll('[data-smart-log-detail-mode]').forEach(button => {
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const outputs = smartLogDetailSession.outputs || [];
+            const item = outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex) || null;
+            if(!item?.url) return;
+            const ref = smartLogDetailNodeImageRef(item);
+            if(!ref){ toast(tr('smart.markNotOnCanvas')); return; }
+            openImageEditor(ref.nodeId, ref.index);
+            if(button.dataset.smartLogDetailMode !== 'preview') setImageEditMode(button.dataset.smartLogDetailMode, true);
+        });
+    });
+    box.querySelector('[data-smart-log-detail-mark]')?.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const outputs = smartLogDetailSession.outputs || [];
+        const item = outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex) || null;
+        const assetId = String(item?.asset_id || '');
+        if(!assetId){ toast(tr('smart.markUnavailable')); return; }
+        setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
     });
     return box;
 }
@@ -9820,6 +9921,23 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
         event.preventDefault();
         void deleteSmartProjectOriginal(smartLogDetailSession.logId, item.outputIndex);
     };
+    // #89 第四轮：工具排对视频隐藏；当前 output 不在画布节点上时禁用（提示后再点）。
+    const modesSection = box.querySelector('.smart-log-detail-modes');
+    if(modesSection){
+        const isVideo = String(item.kind || '').includes('video') || outputUrlLooksVideo(String(item.url || ''));
+        modesSection.style.display = isVideo ? 'none' : '';
+        const nodeRef = smartLogDetailNodeImageRef(item);
+        modesSection.querySelectorAll('[data-smart-log-detail-mode]').forEach(btn => {
+            btn.disabled = !nodeRef;
+        });
+    }
+    const markBtn = box.querySelector('[data-smart-log-detail-mark]');
+    if(markBtn){
+        markBtn.dataset.markedAsset = String(item.asset_id || '');
+        markBtn.disabled = !item.asset_id;
+        markBtn.hidden = String(item.kind || '').includes('video') || outputUrlLooksVideo(String(item.url || ''));
+        syncMarkedImageButtons();
+    }
     const copy2k = box.querySelector('.smart-log-detail-copy-2k');
     copy2k.dataset.outputIndex = String(item.outputIndex);
     copy2k.dataset.outputId = String(item.output_id || '');
@@ -10278,6 +10396,7 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
+    rebuildMarkedAssetIdsFromNodes();
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
     if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreLogId, '', restoreUiState);
@@ -10430,7 +10549,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
                     : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
                 const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
                 const actionsHtml = item.asset_id && canvas?.format === 'firefly-canvas-v1'
-                    ? `<button type="button" class="log-media-download-original" data-log-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button>`
+                    ? `<button type="button" class="log-media-download-original" data-log-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-log-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`
                     : '';
                 return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
             }).join('');
@@ -10851,6 +10970,16 @@ function bindSmartHistoryWindow(){
             const output = (smartLogEntryById(logId)?.outputs || [])[Number(button.dataset.logDownloadOriginal)];
             const item = smartLogOutputItem(output);
             if(item?.url) downloadPreviewFile(item);
+        };
+    });
+    // #89 第四轮：生图历史卡片上的星标。
+    smartLogList.querySelectorAll('[data-log-mark]').forEach(button => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const assetId = String(button.dataset.logMark || '');
+            if(!assetId) return;
+            setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
         };
     });
     smartLogList.querySelectorAll('[data-log-delete-original]').forEach(button => {
@@ -14698,6 +14827,7 @@ function setImageEditMode(mode, userTouched=false){
     document.getElementById('imageGridTools').classList.toggle('active', imageEditMode === 'grid');
     if(imageEditMode === 'grid' && gridOperationMode === 'join' && !canGridJoinCurrentNode()) gridOperationMode = 'split';
     syncGridOperationControls();
+    updateImagePreviewMarkButton();
     syncGridGapValue();
     syncImageResizeControls();
     const applyBtn = document.getElementById('imageEditApplyBtn');

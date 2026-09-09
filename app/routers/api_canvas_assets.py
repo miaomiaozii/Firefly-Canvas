@@ -181,6 +181,25 @@ async def check_canvas_assets(payload: CanvasAssetCheckRequest):
             result[text] = True
     return {'exists': result}
 
+def project_media_file_from_url(text):
+    """Resolve /api/project-library/{pid}/media/{asset_id}( /preview) URLs to the
+    original on-disk file via ProjectStore.media_record. These URLs are metadata
+    endpoints (they return JSON, not bytes), so the generic local/remote resolvers
+    cannot serve them — without this, zip downloads of project media 404."""
+    match = re.match(r'^/api/project-library/([^/]+)/media/([^/]+?)(?:/preview)?/?$', str(text or '').strip())
+    if not match:
+        return None
+    project_id = urllib.parse.unquote(match.group(1))
+    asset_id = urllib.parse.unquote(match.group(2))
+    try:
+        record = _app_main.project_store_call('media_record', project_id, asset_id)
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    path = str(record.get('path') or '').strip()
+    return path if path and os.path.isfile(path) else None
+
 @router.post('/api/canvas-assets/download')
 async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
     buffer = BytesIO()
@@ -198,6 +217,13 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
             if not text:
                 continue
             path = _app_main.output_file_from_url(text)
+            if not (path and os.path.isfile(path)):
+                # Project media URLs (canvas thumbnails / generation history / detail
+                # panel star-mark downloads) point at the metadata endpoint, not the
+                # bytes — resolve the original file through ProjectStore instead.
+                project_media_path = project_media_file_from_url(text)
+                if project_media_path:
+                    path = project_media_path
             content = None
             content_type = ''
             if path and os.path.isfile(path):

@@ -351,7 +351,7 @@
                         <button type="button" data-image-edit-mode="outpaint"><i data-lucide="expand" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeOutpaint">Expand</span></button>
                         <button type="button" data-image-edit-mode="mask"><i data-lucide="brush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeMask">遮罩</span></button>
                         <button type="button" data-image-edit-mode="brush"><i data-lucide="paintbrush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeBrush">画笔</span></button>
-                        <button type="button" data-image-edit-mode="resize"><i data-lucide="minimize-2" class="w-3.5 h-3.5"></i><span>缩放</span></button>
+                        <button type="button" data-image-edit-mode="resize"><i data-lucide="minimize-2" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeResize">缩放</span></button>
                         <button type="button" data-image-edit-mode="grid"><i data-lucide="grid-3x3" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeGrid">宫格切分</span></button>
                     </div>
                     <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
@@ -383,6 +383,7 @@
                     <button class="crop-ratio-btn" type="button" data-outpaint-ratio="9:21">9:21</button>
                 </div>
                 <div id="imagePreviewTools" class="image-edit-tools">
+                    <button id="imagePreviewMarkBtn" class="image-edit-btn secondary" type="button" onclick="toggleImagePreviewMark()" data-marked-asset="" data-marked-title="1" title="标记" hidden><i data-lucide="star" class="w-4 h-4"></i><span data-i18n="smart.markImage">标记</span></button>
                     <span id="previewMetaHint" class="image-edit-sub" style="margin-left:auto"></span>
                 </div>
                 <div id="imageMaskTools" class="image-edit-tools">
