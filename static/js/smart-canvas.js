@@ -7251,12 +7251,129 @@ function migrateSmartGroupImageMembers(){
     });
     return changed;
 }
+let canvasRecoveryBlocked = false;
+
+function smartRecoveryLabel(file){
+    if(file === 'canvas.json') return tr('smart.recoveryCanvas');
+    if(file === 'project.json') return tr('smart.recoveryProjectMeta');
+    const suffix = String(file || '').replace(/^.*\.(bak(?:-\d+)?)$/, '$1');
+    const index = suffix === 'bak' ? 1 : Number(suffix.replace(/^bak-/, '')) || 0;
+    return `${tr('smart.recoveryBackup')} ${index}`;
+}
+
+function smartRecoveryRow(entry){
+    const baseFile = String(entry.file || '').replace(/\.bak(?:-\d+)?$/, '');
+    const canRestore = !entry.primary && !!entry.exists && !!entry.valid;
+    const time = entry.mtime ? new Date(entry.mtime).toLocaleString() : '—';
+    const size = entry.exists ? `${(Number(entry.size || 0) / 1024).toFixed(1)} KB` : '—';
+    const status = !entry.exists ? tr('smart.recoveryMissing') : (entry.valid ? tr('smart.recoveryValid') : tr('smart.recoveryCorrupt'));
+    const badge = entry.exists && !entry.valid ? 'bad' : 'ok';
+    return `<div class="smart-recovery-row${entry.primary ? ' is-primary' : ''}${entry.exists && !entry.valid ? ' is-corrupt' : ''}">
+        <div class="smart-recovery-row-main">
+            <span class="smart-recovery-row-name">${escapeHtml(smartRecoveryLabel(entry.file))}</span>
+            <span class="smart-recovery-row-meta">${escapeHtml(time)} · ${size}</span>
+        </div>
+        <div class="smart-recovery-row-side">
+            <span class="smart-recovery-badge ${badge}">${escapeHtml(status)}</span>
+            ${canRestore ? `<button class="smart-recovery-btn small" type="button" data-recovery-file="${escapeAttr(baseFile)}" data-recovery-backup="${escapeAttr(entry.file)}">${escapeHtml(tr('smart.recoveryRestore'))}</button>` : ''}
+        </div>
+    </div>`;
+}
+
+function smartRecoveryRender(){
+    const list = document.getElementById('smartRecoveryList');
+    if(!list) return;
+    const entries = Array.isArray(window.__smartRecoveryEntries) ? window.__smartRecoveryEntries : [];
+    if(!entries.length){
+        list.innerHTML = `<div class="smart-recovery-empty">${escapeHtml(tr('smart.recoveryNone'))}</div><div class="smart-recovery-status" role="status"></div>`;
+        return;
+    }
+    list.innerHTML = entries.map(smartRecoveryRow).join('') + '<div class="smart-recovery-status" role="status"></div>';
+    list.querySelectorAll('[data-recovery-file]').forEach(btn => {
+        btn.addEventListener('click', () => void smartRecoveryRestore(btn.dataset.recoveryFile, btn.dataset.recoveryBackup));
+    });
+}
+
+function smartRecoveryStatus(text){
+    const list = document.getElementById('smartRecoveryList');
+    const line = list && list.querySelector('.smart-recovery-status');
+    if(line) line.textContent = text || '';
+}
+
+async function smartRecoveryRestore(file, backup){
+    smartRecoveryStatus('');
+    try {
+        const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}/recovery/restore`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file, backup}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if(!res.ok){
+            smartRecoveryStatus(String(data.detail || res.status));
+            return;
+        }
+        smartRecoveryStatus(tr('smart.recoveryRestored'));
+        setTimeout(() => location.reload(), 600);
+    } catch(error){
+        smartRecoveryStatus(String(error));
+    }
+}
+
+async function openCanvasRecoveryWizard(recovery){
+    canvasRecoveryBlocked = true;
+    window.__smartRecoveryEntries = [];
+    const modal = document.getElementById('smartRecoveryModal');
+    if(modal) modal.classList.add('open');
+    const hint = document.getElementById('smartRecoveryHint');
+    if(hint){
+        hint.textContent = recovery && recovery.restored_from
+            ? tr('smart.recoveryAutoRecovered').replace('{backup}', smartRecoveryLabel(recovery.restored_from))
+            : tr('smart.recoveryHint');
+    }
+    const retry = document.getElementById('smartRecoveryRetry');
+    if(retry && !retry.dataset.bound){
+        retry.dataset.bound = '1';
+        retry.addEventListener('click', () => void retryCanvasRecovery());
+    }
+    smartRecoveryStatus(tr('smart.recoveryLoading'));
+    smartRecoveryRender();
+    try {
+        const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}/recovery/backups`);
+        if(res.ok){
+            const data = await res.json();
+            window.__smartRecoveryEntries = Array.isArray(data.backups) ? data.backups : [];
+        }
+    } catch(error) { /* 旧格式画布没有备份：列表保持为空 */ }
+    smartRecoveryRender();
+}
+
+async function retryCanvasRecovery(){
+    const modal = document.getElementById('smartRecoveryModal');
+    if(modal) modal.classList.remove('open');
+    canvasRecoveryBlocked = false;
+    const loaded = await loadCanvas();
+    if(loaded){
+        syncApiKindToggleVisibility();
+        render();
+    }
+}
+
 async function loadCanvas(){
-    if(!canvasId) return;
+    if(!canvasId) return true;
     try {
         const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`);
-        if(!res.ok) return;
+        if(!res.ok){
+            // issue #94（ADR 0018）：文件损坏时不静默进空画布，否则自动保存会覆盖损坏文件。
+            void openCanvasRecoveryWizard();
+            return false;
+        }
         const data = await res.json();
+        if(data.canvas && data.canvas._recovery){
+            // issue #94（ADR 0018）：后端自动回退到了备份副本，必须让用户显式确认恢复目标。
+            void openCanvasRecoveryWizard(data.canvas._recovery);
+            return false;
+        }
         canvas = data.canvas;
         conversationCanvasLastAcceptedRevision = Number(canvas?.revision || 0);
         persistedCoreSnapshot = canvas.format === 'firefly-canvas-v1' ? projectCanvasSnapshot(canvasForStorage()) : null;
@@ -7330,7 +7447,12 @@ async function loadCanvas(){
         // local node set is treated as a deliberate user action and autosave may
         // commit it (with force_empty) instead of being treated as a load failure.
         canvasLoadReady = true;
-    } catch(e) { toast(tr('smart.toastCanvasFail')); }
+        return true;
+    } catch(e) {
+        toast(tr('smart.toastCanvasFail'));
+        void openCanvasRecoveryWizard();
+        return false;
+    }
 }
 async function loadAutosavePreferences(){
     try {
@@ -23467,7 +23589,9 @@ window.onload = async () => {
     connectAssetLibrarySyncSocket();
     await loadConfig();
     await loadAssetLibrary();
-    await loadCanvas();
-    syncApiKindToggleVisibility();
-    render();
+    const canvasLoaded = await loadCanvas();
+    if(canvasLoaded){
+        syncApiKindToggleVisibility();
+        render();
+    }
 };

@@ -262,7 +262,7 @@ class PhotoshopRoundTripApiTests(unittest.TestCase):
         disk_data = png((51, 52, 53, 255))
         original_write = project_module._write_json_atomic
 
-        def fail_history(path, value, *, keep_backup):
+        def fail_history(path, value, *, keep_backup, backup_count=1):
             if Path(path).name == "history.json":
                 raise RuntimeError("history failure")
             return original_write(path, value, keep_backup=keep_backup)

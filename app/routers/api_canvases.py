@@ -11,7 +11,7 @@ import hashlib
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, Optional, ProjectNotFound, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
+from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
 _from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'prune_generation_history_for_media', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -384,6 +384,34 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
 @router.get('/api/canvases/{canvas_id}')
 async def get_canvas(canvas_id: str):
     return {'canvas': load_canvas(canvas_id)}
+
+class CanvasRecoveryRestoreRequest(BaseModel):
+    file: str
+    backup: Optional[str] = None
+
+@router.get('/api/canvases/{canvas_id}/recovery/backups')
+async def list_canvas_recovery_backups(canvas_id: str):
+    """列出项目各可恢复文档的 primary 与备份副本（issue #94）。"""
+
+    def list_backups():
+        try:
+            return project_store_call('list_recovery_backups', canvas_id)
+        except ProjectNotFound:
+            raise HTTPException(status_code=404, detail='该画布没有可恢复的项目备份')
+    return {'backups': await asyncio.to_thread(list_backups)}
+
+@router.post('/api/canvases/{canvas_id}/recovery/restore')
+async def restore_canvas_from_backup(canvas_id: str, payload: CanvasRecoveryRestoreRequest):
+    """从备份副本恢复单个文档；损坏文件隔离为 .corrupt-<ms>（issue #94，ADR 0018）。"""
+
+    def restore():
+        try:
+            return project_store_call('restore_from_backup', canvas_id, payload.file, payload.backup)
+        except ProjectNotFound:
+            raise HTTPException(status_code=404, detail='项目不存在')
+        except ProjectStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {'restored': await asyncio.to_thread(restore)}
 
 @router.post('/api/canvases/{canvas_id}/touch')
 async def touch_canvas(canvas_id: str):

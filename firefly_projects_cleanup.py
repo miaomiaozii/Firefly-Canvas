@@ -87,19 +87,22 @@ class ProjectCleanupMixin:
                     ownership_documents["runtime/canvas.json"] = runtime_canvas
                 if runtime_history is not None:
                     ownership_documents["runtime/history.json"] = {"records": runtime_history}
-                backup_path = self._safe_project_path(project_dir, "canvas.json.bak")
                 undo_dir = self._safe_project_path(project_dir, "trash/undo")
                 try:
-                    if backup_path.exists():
-                        backup = _store._read_json(backup_path)
-                        if (
-                            not isinstance(backup, dict)
-                            or backup.get("format") != "firefly-canvas-v1"
-                            or backup.get("id") != project_id
-                            or backup.get("project_id") != project_id
-                        ):
-                            raise _store.ProjectStoreError("项目清理预览发现恢复数据所有权冲突")
-                        ownership_documents["canvas.json.bak"] = backup
+                    # ADR 0018 轮转备份：.bak/.bak-2/.bak-3 都可能被恢复链路读回，
+                    # 每个槽位引用的媒体都必须视为所有权方。
+                    for backup_name in ("canvas.json.bak", "canvas.json.bak-2", "canvas.json.bak-3"):
+                        backup_path = self._safe_project_path(project_dir, backup_name)
+                        if backup_path.exists():
+                            backup = _store._read_json(backup_path)
+                            if (
+                                not isinstance(backup, dict)
+                                or backup.get("format") != "firefly-canvas-v1"
+                                or backup.get("id") != project_id
+                                or backup.get("project_id") != project_id
+                            ):
+                                raise _store.ProjectStoreError("项目清理预览发现恢复数据所有权冲突")
+                            ownership_documents[backup_name] = backup
                     if undo_dir.exists():
                         if not undo_dir.is_dir():
                             raise _store.ProjectStoreError("项目清理预览无法验证撤销记录")

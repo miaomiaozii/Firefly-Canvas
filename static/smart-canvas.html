@@ -24,7 +24,7 @@
     <script src="/static/js/i18n.js?v=20260909.171427.1359"></script>
     <script src="/static/js/global-preferences.js?v=20260909.171427.1359"></script>
     <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20260909.171427.1359">
-    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260910.025401.9494">
+    <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20260910.035000.778">
     <link rel="stylesheet" href="/static/css/excel-import.css?v=20260909.171427.1359">
 </head>
 <body>
@@ -521,8 +521,21 @@
         <div id="mentionPreview" class="mention-preview"><img alt="preview"></div>
     </div>
     <script src="/static/js/outpaint-ratios.js?v=20260909.171427.1359"></script>
+    <div id="smartRecoveryModal" class="smart-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="smartRecoveryTitle" aria-hidden="true">
+        <div class="smart-recovery-panel" role="document">
+            <div class="smart-recovery-head">
+                <div id="smartRecoveryTitle" class="smart-recovery-title"><i data-lucide="file-warning"></i><span data-i18n="smart.recoveryTitle">画布加载失败</span></div>
+                <div id="smartRecoveryHint" class="smart-recovery-hint" data-i18n="smart.recoveryHint">画布文件可能已损坏。编辑器已暂停打开，以免覆盖损坏文件。</div>
+            </div>
+            <div id="smartRecoveryList" class="smart-recovery-list" aria-live="polite"></div>
+            <div class="smart-recovery-actions">
+                <button id="smartRecoveryRetry" class="smart-recovery-btn primary" type="button" data-i18n-title="smart.recoveryRetry"><span data-i18n="smart.recoveryRetry">重试加载</span></button>
+                <button type="button" class="smart-recovery-btn" onclick="backToProjectList()" data-i18n-title="canvas.backToList"><span data-i18n="canvas.backToList">返回项目列表</span></button>
+            </div>
+        </div>
+    </div>
     <script src="/static/js/project-canvas-mutations.js"></script>
-    <script src="/static/js/smart-canvas.js?v=20260910.025401.9494"></script>
+    <script src="/static/js/smart-canvas.js?v=20260910.035000.778"></script></script>
     <script src="/static/js/excel-import.js?v=20260909.171427.1359"></script>
 </body>
 </html>

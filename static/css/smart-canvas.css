@@ -3458,3 +3458,37 @@ button.prompt-flow-context-image { cursor:pointer; }
 .log-media-mark { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--muted); cursor:pointer; flex:0 0 auto; }
 .log-media-mark:hover { border-color:var(--strong); color:var(--strong); }
 .log-media-mark i, .log-media-mark svg { width:14px; height:14px; }
+
+/* ── 画布恢复向导（issue #94，ADR 0018） ───────────────────── */
+.smart-recovery-modal { position:absolute; inset:0; z-index:120; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(2,6,23,.58); backdrop-filter:blur(10px); opacity:0; visibility:hidden; pointer-events:none; transition:opacity .16s ease, visibility .16s ease; }
+.theme-dark .smart-recovery-modal { background:rgba(2,6,23,.72); }
+.smart-recovery-modal.open { opacity:1; visibility:visible; pointer-events:auto; }
+.smart-recovery-panel { width:520px; max-width:calc(100vw - 36px); max-height:min(560px, calc(100dvh - 48px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--line); border-radius:var(--radius-panel, 14px); background:var(--panel); color:var(--text); box-shadow:0 22px 58px var(--shadow); }
+.theme-dark .smart-recovery-panel { background:rgba(23,29,41,.97); }
+.smart-recovery-head { padding:16px 18px 12px; border-bottom:1px solid var(--line); }
+.smart-recovery-title { display:flex; align-items:center; gap:8px; font-size:15px; font-weight:900; }
+.smart-recovery-title i,.smart-recovery-title svg { width:17px; height:17px; color:#f59e0b; }
+.smart-recovery-hint { margin-top:6px; font-size:12px; font-weight:640; color:var(--muted); line-height:1.5; }
+.smart-recovery-list { padding:12px 18px; overflow:auto; display:flex; flex-direction:column; gap:8px; scrollbar-width:thin; }
+.smart-recovery-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--soft); }
+.smart-recovery-row.is-primary { border-color:rgba(148,163,184,.55); }
+.smart-recovery-row.is-corrupt { border-color:rgba(239,68,68,.55); }
+.theme-dark .smart-recovery-row.is-corrupt { border-color:rgba(239,68,68,.55); }
+.smart-recovery-row-main { min-width:0; display:flex; flex-direction:column; gap:2px; }
+.smart-recovery-row-name { font-size:12.5px; font-weight:820; }
+.smart-recovery-row-meta { font-size:11px; font-weight:640; color:var(--muted); font-family:'JetBrains Mono',ui-monospace,monospace; }
+.smart-recovery-row-side { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+.smart-recovery-badge { font-size:10.5px; font-weight:850; padding:3px 8px; border-radius:999px; background:rgba(34,197,94,.14); color:#16a34a; }
+.theme-dark .smart-recovery-badge { color:#4ade80; }
+.smart-recovery-badge.bad { background:rgba(239,68,68,.14); color:#dc2626; }
+.theme-dark .smart-recovery-badge.bad { color:#f87171; }
+.smart-recovery-empty { padding:18px 8px 10px; text-align:center; color:var(--muted); font-size:12px; font-weight:700; }
+.smart-recovery-status { min-height:16px; padding:0 4px 2px; font-size:11.5px; font-weight:700; color:#dc2626; }
+.theme-dark .smart-recovery-status { color:#f87171; }
+.smart-recovery-actions { display:flex; gap:10px; padding:14px 18px 16px; border-top:1px solid var(--line); }
+.smart-recovery-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:12.5px; font-weight:850; cursor:pointer; }
+.smart-recovery-btn:hover { border-color:rgba(148,163,184,.6); }
+.smart-recovery-btn.primary { background:#2563eb; border-color:#2563eb; color:#fff; }
+.smart-recovery-btn.primary:hover { background:#1d4ed8; }
+.theme-dark .smart-recovery-btn { background:rgba(148,163,184,.12); }
+.smart-recovery-btn.small { padding:5px 10px; font-size:11.5px; border-radius:8px; }

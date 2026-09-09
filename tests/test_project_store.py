@@ -1945,7 +1945,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertLess(apply_seconds, 2.0)
         self.assertLess(open_seconds, 3.0)
 
-    def test_atomic_snapshot_keeps_one_backup_and_recovers_corrupt_primary(self):
+    def test_atomic_snapshot_rotates_backups_and_recovers_corrupt_primary(self):
         project = self.store.create_project("恢复测试")
         project_dir = self.root / project["id"]
         primary = project_dir / "canvas.json"
@@ -1960,9 +1960,10 @@ class ProjectStoreContractTests(unittest.TestCase):
         ])
         self.store.flush(project["id"])
 
+        # ADR 0018：create(r0) + 两次 flush 后轮转出 .bak(r1) 与 .bak-2(r0)。
         self.assertTrue(primary.exists())
         self.assertTrue(backup.exists())
-        self.assertEqual(len(list(project_dir.glob("canvas.json.bak*"))), 1)
+        self.assertEqual(sorted(p.name for p in project_dir.glob("canvas.json.bak*")), ["canvas.json.bak", "canvas.json.bak-2"])
         primary.write_text("{broken", encoding="utf-8")
 
         restarted = ProjectStore(self.root, snapshot_delay=0)
@@ -1972,6 +1973,147 @@ class ProjectStoreContractTests(unittest.TestCase):
             restarted.close()
         self.assertEqual([node["id"] for node in recovered["nodes"]], ["kept"])
         json.loads(primary.read_text(encoding="utf-8"))
+
+    def test_canvas_backup_rotation_keeps_three_newest_states(self):
+        project = self.store.create_project("轮转测试")
+        project_dir = self.root / project["id"]
+        for index in range(1, 5):
+            self.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": f"n{index}", "x": index, "y": index}},
+            ])
+            self.store.flush(project["id"])
+        files = {p.name: json.loads(p.read_text(encoding="utf-8")) for p in project_dir.glob("canvas.json.bak*")}
+        self.assertEqual(set(files), {"canvas.json.bak", "canvas.json.bak-2", "canvas.json.bak-3"})
+        self.assertEqual([node["id"] for node in files["canvas.json.bak"]["nodes"]], ["n1", "n2", "n3"])
+        self.assertEqual([node["id"] for node in files["canvas.json.bak-2"]["nodes"]], ["n1", "n2"])
+        self.assertEqual([node["id"] for node in files["canvas.json.bak-3"]["nodes"]], ["n1"])
+
+    def test_recovery_falls_back_through_rotated_backups(self):
+        project = self.store.create_project("回退链测试")
+        project_dir = self.root / project["id"]
+        for index in range(1, 5):
+            self.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": f"n{index}", "x": index, "y": index}},
+            ])
+            self.store.flush(project["id"])
+        (project_dir / "canvas.json.bak").write_text("{broken", encoding="utf-8")
+        (project_dir / "canvas.json").write_text("{broken", encoding="utf-8")
+        restarted = ProjectStore(self.root, snapshot_delay=0)
+        try:
+            recovered = restarted.open_project(project["id"])["canvas"]
+        finally:
+            restarted.close()
+        self.assertEqual([node["id"] for node in recovered["nodes"]], ["n1", "n2"])
+
+    def test_restore_from_backup_quarantines_corrupt_primary(self):
+        project = self.store.create_project("恢复入口测试")
+        project_dir = self.root / project["id"]
+        primary = project_dir / "canvas.json"
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "before", "x": 1, "y": 2}},
+        ])
+        self.store.flush(project["id"])
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "after", "x": 3, "y": 4}},
+        ])
+        self.store.flush(project["id"])
+        primary.write_text("{broken", encoding="utf-8")
+
+        entries = self.store.list_recovery_backups(project["id"])
+        by_file = {item["file"]: item for item in entries}
+        self.assertTrue(by_file["canvas.json"]["primary"])
+        self.assertTrue(by_file["canvas.json"]["exists"])
+        self.assertFalse(by_file["canvas.json"]["valid"])
+        self.assertTrue(by_file["canvas.json.bak"]["valid"])
+        self.assertTrue(by_file["project.json"]["primary"])
+        self.assertTrue(by_file["project.json"]["valid"])
+
+        result = self.store.restore_from_backup(project["id"], "canvas.json")
+        self.assertEqual(result["restored_from"], "canvas.json.bak")
+        self.assertTrue(result["quarantined"].startswith("canvas.json.corrupt-"))
+        recovered = self.store.open_project(project["id"])["canvas"]
+        self.assertEqual([node["id"] for node in recovered["nodes"]], ["before"])
+        self.assertEqual(json.loads(primary.read_text(encoding="utf-8"))["nodes"][0]["id"], "before")
+        self.assertEqual((project_dir / result["quarantined"]).read_text(encoding="utf-8"), "{broken")
+
+    def test_restore_from_backup_selects_explicit_slot_and_rejects_invalid(self):
+        project = self.store.create_project("显式槽位测试")
+        project_dir = self.root / project["id"]
+        for index in range(1, 5):
+            self.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": f"n{index}", "x": index, "y": index}},
+            ])
+            self.store.flush(project["id"])
+        (project_dir / "canvas.json").write_text("{broken", encoding="utf-8")
+        result = self.store.restore_from_backup(project["id"], "canvas.json", backup="canvas.json.bak-2")
+        self.assertEqual(result["restored_from"], "canvas.json.bak-2")
+        recovered = self.store.open_project(project["id"])["canvas"]
+        self.assertEqual([node["id"] for node in recovered["nodes"]], ["n1", "n2"])
+
+        with self.assertRaisesRegex(ProjectStoreError, "不支持恢复该文件"):
+            self.store.restore_from_backup(project["id"], "history.json")
+
+    def test_restore_from_backup_fails_without_any_valid_copy(self):
+        project = self.store.create_project("无备份测试")
+        project_dir = self.root / project["id"]
+        (project_dir / "canvas.json").write_text("{broken", encoding="utf-8")
+        for name in ("canvas.json.bak", "canvas.json.bak-2", "canvas.json.bak-3"):
+            (project_dir / name).write_text("{broken", encoding="utf-8")
+        with self.assertRaisesRegex(ProjectStoreError, "没有可读取的备份"):
+            self.store.restore_from_backup(project["id"], "canvas.json")
+
+    def test_metadata_corruption_recovers_from_single_backup(self):
+        project = self.store.create_project("元数据恢复")
+        project_dir = self.root / project["id"]
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "n1", "x": 1, "y": 2}},
+        ])
+        self.store.flush(project["id"])
+        metadata_path = project_dir / "project.json"
+        backup = json.loads((project_dir / "project.json.bak").read_text(encoding="utf-8"))
+        self.assertEqual(backup["id"], project["id"])
+        metadata_path.write_text("{broken", encoding="utf-8")
+        restarted = ProjectStore(self.root, snapshot_delay=0)
+        try:
+            opened = restarted.open_project(project["id"])
+        finally:
+            restarted.close()
+        self.assertEqual(opened["project"]["id"], project["id"])
+        json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    def test_open_project_reports_recovery_mark_until_next_flush(self):
+        """issue #94/ADR 0018：自动回退后 open_project 携带 _recovery 标记（不持久化），flush 后清除。"""
+        project = self.store.create_project("回退标记")
+        self.apply_mutations(project["id"], [{"op": "upsert_node", "node": {"id": "n1", "x": 1, "y": 2}}])
+        self.store.flush(project["id"])
+        canvas_path = self.root / project["id"] / "canvas.json"
+        canvas_path.write_text("{broken", encoding="utf-8")
+        restarted = ProjectStore(self.root, snapshot_delay=0)
+        try:
+            mark = restarted.open_project(project["id"])["canvas"].pop("_recovery", None)
+            self.assertIsNotNone(mark)
+            self.assertEqual(mark["file"], "canvas.json")
+            self.assertEqual(mark["restored_from"], "canvas.json.bak")
+            self.assertNotIn("_recovery", json.loads(canvas_path.read_text(encoding="utf-8")))
+            restarted.flush(project["id"])
+            self.assertNotIn("_recovery", restarted.open_project(project["id"])["canvas"])
+        finally:
+            restarted.close()
+
+    def test_restore_from_backup_clears_recovery_mark(self):
+        """issue #94/ADR 0018：从备份恢复成功后清除 _recovery 标记。"""
+        project = self.store.create_project("恢复清标记")
+        self.apply_mutations(project["id"], [{"op": "upsert_node", "node": {"id": "n1", "x": 1, "y": 2}}])
+        self.store.flush(project["id"])
+        canvas_path = self.root / project["id"] / "canvas.json"
+        canvas_path.write_text("{broken", encoding="utf-8")
+        restarted = ProjectStore(self.root, snapshot_delay=0)
+        try:
+            self.assertIn("_recovery", restarted.open_project(project["id"])["canvas"])
+            restarted.restore_from_backup(project["id"], "canvas.json", "canvas.json.bak")
+            self.assertNotIn("_recovery", restarted.open_project(project["id"])["canvas"])
+        finally:
+            restarted.close()
 
     def test_background_snapshot_is_throttled_and_finishes_within_contract(self):
         delayed = ProjectStore(self.root, snapshot_delay=0.15)

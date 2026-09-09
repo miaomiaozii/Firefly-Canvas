@@ -658,7 +658,8 @@ class ProjectHistoryContractTests(unittest.TestCase):
             self.assertNotIn(original["asset_id"], direct_asset_refs)
             with self.assertRaises(ProjectNotFound):
                 reopened.media_record(project["id"], original["asset_id"])
-            self.assertEqual(len(list(project_dir.glob("canvas.json.bak*"))), 1)
+            backup_count = len(list(project_dir.glob("canvas.json.bak*")))
+            self.assertTrue(1 <= backup_count <= 3, backup_count)
         finally:
             reopened.close()
 

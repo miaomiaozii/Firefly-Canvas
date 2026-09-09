@@ -93,7 +93,17 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return value
 
 
-def _write_json_atomic(path: Path, value: Dict[str, Any], *, keep_backup: bool) -> None:
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """Copy ``src`` to ``dst`` with a tmp+rename atomic commit (issue #94)."""
+    staging = dst.with_name(f".{dst.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(src, staging)
+        os.replace(staging, dst)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _write_json_atomic(path: Path, value: Dict[str, Any], *, keep_backup: bool, backup_count: int = 1) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -103,13 +113,18 @@ def _write_json_atomic(path: Path, value: Dict[str, Any], *, keep_backup: bool) 
             handle.flush()
             os.fsync(handle.fileno())
         if keep_backup and path.exists():
-            backup = path.with_name(path.name + ".bak")
-            backup_temp = path.with_name(f".{backup.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                shutil.copyfile(path, backup_temp)
-                os.replace(backup_temp, backup)
-            finally:
-                backup_temp.unlink(missing_ok=True)
+            # 轮转（issue #94）：.bak 为最新，.bak-2/.bak-3 … 更旧；左移时先处理最旧端。
+            count = max(1, int(backup_count))
+            def backup_name(index: int) -> Path:
+                return path.with_name(path.name + (".bak" if index == 1 else f".bak-{index}"))
+            for index in range(count, 1, -1):
+                src = backup_name(index - 1)
+                dst = backup_name(index)
+                if src.exists():
+                    _atomic_copy(src, dst)
+                elif dst.exists():
+                    dst.unlink()
+            _atomic_copy(path, backup_name(1))
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -169,6 +184,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         self.snapshot_delay = max(0.0, float(snapshot_delay))
         self._lock = threading.RLock()
         self._canvases: Dict[str, Dict[str, Any]] = {}
+        self._recovery_marks: Dict[str, Dict[str, Any]] = {}
         self._histories: Dict[str, List[Dict[str, Any]]] = {}
         self._timers: Dict[str, threading.Timer] = {}
         self._saved_revisions: Dict[str, int] = {}
@@ -196,6 +212,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         persisted.pop("viewport", None)
         persisted.pop("settings", None)
         persisted.pop("logs", None)
+        persisted.pop("_recovery", None)
         return persisted
 
     @staticmethod
@@ -448,13 +465,14 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas_path,
             persisted_canvas,
             keep_backup=state_name == "after",
+            backup_count=3,
         )
         if checkpoints:
             self._original_transaction_checkpoint("after_canvas")
         _write_json_atomic(history_path, {"records": history}, keep_backup=False)
         if checkpoints:
             self._original_transaction_checkpoint("after_history")
-        _write_json_atomic(metadata_path, metadata, keep_backup=False)
+        _write_json_atomic(metadata_path, metadata, keep_backup=True, backup_count=1)
         if checkpoints:
             self._original_transaction_checkpoint("after_project")
 
@@ -468,15 +486,22 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         if checkpoints:
             self._original_transaction_checkpoint("after_undo_snapshot")
         # ``canvas.json`` is only one member of this project-wide transaction.
-        # Once every companion file has reached the selected state, make the
-        # single ADR-0010 backup represent that same committed state.  Leaving
-        # the pre-transaction canvas in ``.bak`` would resurrect references to
-        # media that the post-transaction indexes and history have deleted.
+        # Once every companion file has reached the selected state, make every
+        # ADR-0010/0018 backup slot represent that same committed state.
+        # Leaving the pre-transaction canvas in any slot would resurrect
+        # references to media that the post-transaction indexes and history
+        # have deleted.
         _write_json_atomic(
             canvas_backup_path,
             persisted_canvas,
             keep_backup=False,
         )
+        for rotated_name in ("canvas.json.bak-2", "canvas.json.bak-3"):
+            _write_json_atomic(
+                self._safe_project_path(project_dir, rotated_name),
+                persisted_canvas,
+                keep_backup=False,
+            )
 
     def _cleanup_orphan_media_imports(self) -> None:
         if not self.root.exists():
@@ -1103,7 +1128,21 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             metadata_path = self._safe_project_path(project_dir, "project.json")
             if not metadata_path.is_file():
                 raise ProjectNotFound("项目不存在")
-            metadata = _read_json(metadata_path)
+            try:
+                metadata = _read_json(metadata_path)
+            except (OSError, ValueError, json.JSONDecodeError) as metadata_error:
+                # 元数据损坏回退单份 .bak（issue #94，ADR 0018）。
+                backup_path = self._safe_project_path(project_dir, "project.json.bak")
+                try:
+                    metadata = _read_json(backup_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    raise ProjectStoreError("项目元数据文件和备份均不可读取") from metadata_error
+                _write_json_atomic(metadata_path, metadata, keep_backup=False)
+                self._recovery_marks.setdefault(project_id, {
+                    "file": "project.json",
+                    "restored_from": "project.json.bak",
+                    "at": _now_ms(),
+                })
             if metadata.get("id") != project_id or metadata.get("canvas_id") != project_id:
                 raise ProjectStoreError("项目与唯一画布标识不一致")
             canvas = self._canvases.get(project_id)
@@ -1118,6 +1157,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
             opened_canvas["logs"] = copy.deepcopy(history)
+            mark = self._recovery_marks.get(project_id)
+            if mark:
+                opened_canvas["_recovery"] = dict(mark)
             return {"project": self._project_record(metadata), "canvas": opened_canvas}
 
     def canvas(self, canvas_id: str) -> Dict[str, Any]:
@@ -1369,6 +1411,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             durable_paths = [
                 project_dir / "canvas.json",
                 project_dir / "canvas.json.bak",
+                project_dir / "canvas.json.bak-2",
+                project_dir / "canvas.json.bak-3",
                 project_dir / "history.json",
                 project_dir / "project.json",
             ]
@@ -2767,7 +2811,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             if canvas is None:
                 canvas = self.open_project(project_id)["canvas"]
             persisted_canvas = self._project_canvas_for_persistence(canvas)
-            _write_json_atomic(self.root / project_id / "canvas.json", persisted_canvas, keep_backup=True)
+            _write_json_atomic(self.root / project_id / "canvas.json", persisted_canvas, keep_backup=True, backup_count=3)
+            if self._recovery_marks.get(project_id, {}).get("file") == "canvas.json":
+                self._recovery_marks.pop(project_id, None)
             history = self._histories.get(project_id)
             if history is None:
                 history = self._load_history(project_id)
@@ -2777,9 +2823,131 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             metadata = _read_json(metadata_path)
             metadata["name"] = canvas.get("title") or metadata.get("name") or "未命名项目"
             metadata["updated_at"] = canvas["updated_at"]
-            _write_json_atomic(metadata_path, metadata, keep_backup=False)
+            _write_json_atomic(metadata_path, metadata, keep_backup=True, backup_count=1)
             self._saved_revisions[project_id] = int(canvas.get("revision") or 0)
             return {"project_id": project_id, "revision": canvas["revision"], "saved_at": canvas["updated_at"]}
+
+    # ── 文档恢复（issue #94，ADR 0018）──────────────────────────────────────
+
+    def _recovery_candidates(self, project_id: str, file: str) -> List[Tuple[str, Path, bool]]:
+        """[(name, path, valid)] for the rotated backups of ``file``."""
+        names = {
+            "canvas.json": ["canvas.json.bak", "canvas.json.bak-2", "canvas.json.bak-3"],
+            "project.json": ["project.json.bak"],
+        }[file]
+        project_dir = self.root / project_id
+        result: List[Tuple[str, Path, bool]] = []
+        for name in names:
+            candidate = self._safe_project_path(project_dir, name)
+            if candidate.is_file():
+                result.append((name, candidate, self._recovery_valid(file, candidate)))
+        return result
+
+    def _recovery_valid(self, file: str, path: Path) -> bool:
+        """A backup is usable when it parses as a JSON object with consistent ids."""
+        try:
+            data = _read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if file == "canvas.json":
+            return data.get("id") is not None and (
+                data.get("project_id") in (None, data.get("id"))
+            )
+        return data.get("id") is not None and data.get("canvas_id") is not None
+
+    def list_recovery_backups(self, project_id: str) -> List[Dict[str, Any]]:
+        """Enumerate the primary + rotated backup copies for each recoverable file."""
+        project_id = _clean_project_id(project_id)
+        with self._lock:
+            project_dir = self.root / project_id
+            if not (project_dir / "project.json").is_file() and not (project_dir / "canvas.json").is_file():
+                raise ProjectNotFound("项目不存在")
+            entries: List[Dict[str, Any]] = []
+            for relative in (
+                "project.json",
+                "project.json.bak",
+                "canvas.json",
+                "canvas.json.bak",
+                "canvas.json.bak-2",
+                "canvas.json.bak-3",
+            ):
+                path = self._safe_project_path(project_dir, relative)
+                info: Dict[str, Any] = {
+                    "file": relative,
+                    "primary": not relative.endswith((".bak", ".bak-2", ".bak-3")),
+                    "exists": False,
+                }
+                if path.is_file():
+                    stat = path.stat()
+                    info.update({
+                        "exists": True,
+                        "size": stat.st_size,
+                        "mtime": int(stat.st_mtime * 1000),
+                        "sha256": _file_sha256(path),
+                        "valid": self._recovery_valid(
+                            "canvas.json" if relative.startswith("canvas") else "project.json", path
+                        ),
+                    })
+                entries.append(info)
+            return entries
+
+    def restore_from_backup(
+        self,
+        project_id: str,
+        file: str,
+        backup: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Restore one recoverable document from a rotated backup copy.
+
+        The current primary is quarantined as ``<file>.corrupt-<ms>`` (never
+        overwritten) so a later investigation can still read it.
+        """
+        project_id = _clean_project_id(project_id)
+        if file not in ("canvas.json", "project.json"):
+            raise ProjectStoreError("不支持恢复该文件")
+        with self._lock:
+            project_dir = self.root / project_id
+            primary = self._safe_project_path(project_dir, file)
+            candidates = self._recovery_candidates(project_id, file)
+            if backup is not None:
+                matches = [item for item in candidates if item[0] == backup]
+                if not matches or not matches[0][2]:
+                    raise ProjectStoreError("所选备份不存在或不可读取")
+                chosen = matches[0]
+            else:
+                valid = [item for item in candidates if item[2]]
+                if not valid:
+                    raise ProjectStoreError("没有可读取的备份")
+                chosen = valid[0]
+            data = _read_json(chosen[1])
+            quarantined = None
+            if primary.is_file():
+                quarantine_path = self._safe_project_path(
+                    project_dir, f"{file}.corrupt-{_now_ms()}"
+                )
+                os.replace(primary, quarantine_path)
+                quarantined = quarantine_path.name
+            _write_json_atomic(
+                primary,
+                self._project_canvas_for_persistence(data) if file == "canvas.json" else data,
+                keep_backup=False,
+            )
+            # 清内存缓存，让下一次读取从磁盘拿到恢复后的内容。
+            if file == "canvas.json":
+                self._canvases.pop(project_id, None)
+                self._saved_revisions.pop(project_id, None)
+            mark = self._recovery_marks.get(project_id)
+            if mark and mark.get("file") == file:
+                self._recovery_marks.pop(project_id, None)
+            return {
+                "project_id": project_id,
+                "file": file,
+                "restored_from": chosen[0],
+                "quarantined": quarantined,
+                "size": primary.stat().st_size,
+            }
 
     def save_status(self, project_id: str) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
@@ -2883,15 +3051,30 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
     def _load_canvas_with_recovery(self, project_id: str) -> Dict[str, Any]:
         project_dir = self._project_directory(project_id)
         primary = self._safe_project_path(project_dir, "canvas.json")
-        backup = self._safe_project_path(project_dir, "canvas.json.bak")
         try:
             canvas = _read_json(primary)
         except (OSError, ValueError, json.JSONDecodeError) as primary_error:
-            try:
-                canvas = _read_json(backup)
-            except (OSError, ValueError, json.JSONDecodeError) as backup_error:
-                raise ProjectStoreError("画布文件和备份均不可读取") from backup_error
+            # 回退链 .bak → .bak-2 → .bak-3（issue #94，ADR 0018 轮转备份）。
+            canvas = None
+            restored_name = None
+            for name in ("canvas.json.bak", "canvas.json.bak-2", "canvas.json.bak-3"):
+                candidate = self._safe_project_path(project_dir, name)
+                try:
+                    canvas = _read_json(candidate)
+                    restored_name = name
+                    break
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+            if canvas is None:
+                raise ProjectStoreError("画布文件和备份均不可读取") from primary_error
             _write_json_atomic(primary, self._project_canvas_for_persistence(canvas), keep_backup=False)
+            # 记录自动回退（issue #94，ADR 0018）：前端据此打开恢复向导，
+            # 让用户显式确认恢复目标，而不是静默使用旧状态。
+            self._recovery_marks[project_id] = {
+                "file": "canvas.json",
+                "restored_from": restored_name,
+                "at": _now_ms(),
+            }
         if canvas.get("project_id") != project_id or canvas.get("id") != project_id:
             raise ProjectStoreError("画布不属于请求的项目")
         legacy_logs = canvas.pop("logs", None)
@@ -2903,7 +3086,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             # boundary was tightened. Keep both recovery copies canonical.
             canonical = self._project_canvas_for_persistence(canvas)
             _write_json_atomic(primary, canonical, keep_backup=False)
-            _write_json_atomic(backup, canonical, keep_backup=False)
+            _write_json_atomic(
+                self._safe_project_path(project_dir, "canvas.json.bak"),
+                canonical,
+                keep_backup=False,
+            )
         if isinstance(legacy_logs, list) and project_id not in self._histories:
             self._histories[project_id] = copy.deepcopy(legacy_logs[-5000:])
         return canvas
