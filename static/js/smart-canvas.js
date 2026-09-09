@@ -10175,7 +10175,10 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const promptPreview = prompt
             ? `<button class="log-prompt-preview long-content-trigger" type="button" data-long-content-open="history-prompt" aria-haspopup="dialog" title="${escapeAttr(tr('smart.historyPromptFull'))}" aria-label="${escapeAttr(tr('smart.historyPromptFull'))}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span><i data-lucide="book-open-text"></i></button>`
             : `<div class="log-prompt-preview is-empty">${escapeHtml(tr('canvas.noPromptMeta'))}</div>`;
-        const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length;
+        // 只要记录上仍存活原图就保留「彻底删除记录和原图」按钮：单张原图删除（occurrence 删除）
+        // 会给记录写入 deletedOutputTombstones 并出现「恢复原图」按钮，此时不能连带隐藏彻底删除
+        // （否则剩余原图无法从该卡片删除）；仅当全部原图已删（outputs 为空）时才隐藏。
+        const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length || outputs.length > 0;
         const deleteOriginalLabel = outputs.length > 1
             ? tr('canvas.deleteSelectedOriginal')
             : tr('canvas.deleteOriginal');

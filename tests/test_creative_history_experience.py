@@ -154,7 +154,7 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertRegex(CANVAS_CSS, r"\.smart-log-detail-output-strip::\-webkit-scrollbar\s*\{[^}]*display:none")
 
     def test_multi_output_delete_targets_only_the_selected_original_and_reconciles_ui(self):
-        self.assertIn("const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length", SCRIPT)
+        self.assertIn("const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length || outputs.length > 0", SCRIPT)
         self.assertIn("destructiveRecordDelete ? `<button", SCRIPT)
         self.assertIn("function reconcileSmartOriginalDeletionUi(", SCRIPT)
         self.assertIn("reconcileSmartOriginalDeletionUi(logId, outputId, deletionUiState);", SCRIPT)
