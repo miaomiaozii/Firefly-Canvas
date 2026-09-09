@@ -98,8 +98,9 @@
         <div id="smartTitle" class="smart-title" title="重命名画布项目" aria-label="重命名画布项目">
             <span id="smartTitleText" class="smart-title-text" data-i18n="smart.title">核心画布</span>
             <button id="smartTitleEdit" class="smart-title-edit" type="button" title="重命名画布项目" aria-label="重命名画布项目"><i data-lucide="pencil"></i></button>
+            <!-- #89 返工：保存状态收进标题 flex 行（此前绝对定位到屏幕最右，宽屏时看不见） -->
+            <div id="projectSaveState" class="project-save-state" hidden aria-live="polite"></div>
         </div>
-        <div id="projectSaveState" class="project-save-state" hidden aria-live="polite"></div>
         <section id="canvasEmptyState" class="canvas-empty-state" aria-labelledby="canvasEmptyTitle" hidden>
             <div class="canvas-empty-card">
                 <div class="canvas-empty-icon"><i data-lucide="sparkles"></i></div>

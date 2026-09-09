@@ -53,13 +53,14 @@ html[data-studio-scale="off"].studio-scale-managed .preview-modal {
 .smart-save[data-state="dirty"] { box-shadow:0 0 0 2px color-mix(in srgb, var(--strong) 28%, transparent), 0 16px 40px var(--shadow); }
 .smart-save i,.smart-save svg { width:16px; height:16px; }
 .smart-title { position:absolute; left:22px; top:72px; z-index:10; max-width:min(420px, calc(100vw - 140px)); color:var(--muted); font-size:13px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:auto; cursor:default; display:inline-flex; align-items:center; gap:6px; }
-.smart-title .smart-title-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.smart-title .smart-title-text { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .smart-title-edit { pointer-events:auto; width:20px; height:20px; border-radius:6px; border:1px solid transparent; background:transparent; color:var(--muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; opacity:0; transform:translateX(-2px); transition:opacity .14s ease, background .14s ease, color .14s ease, transform .14s ease; flex:0 0 auto; }
 .smart-title:hover .smart-title-edit, .smart-title-edit:focus-visible { opacity:1; transform:translateX(0); }
 .smart-title-edit:hover { background:var(--soft); color:var(--strong); border-color:var(--line); }
 .smart-title-edit i, .smart-title-edit svg { width:12px; height:12px; }
 #smartTitleInput { width:260px; max-width:calc(100vw - 60px); height:26px; padding:0 8px; border-radius:8px; border:1px solid var(--designer-accent); background:var(--card); color:var(--text); font-size:12px; font-weight:800; outline:none; box-shadow:0 6px 18px var(--shadow); }
-.project-save-state { position:absolute; left:auto; right:22px; top:72px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; }
+/* #89 返工：保存状态收进 .smart-title flex 行内（标题后、长标题时 ellipsis 让位），不再绝对定位到屏幕右侧 */
+.project-save-state { position:static; flex:0 0 auto; margin-left:6px; z-index:10; color:var(--muted); font-size:11px; font-weight:700; pointer-events:none; white-space:nowrap; }
 .project-save-state[data-state="saved"] { color:#16945f; }
 .project-save-state[data-state="error"] { color:#dc3545; }
  .smart-log-toggle,.smart-shortcut-toggle { position:absolute; top:22px; z-index:56; width:96px; height:40px; padding:0 15px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; transition:transform .14s ease, border-color .14s ease; }
@@ -701,10 +702,15 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .batch-statusbar { flex:none; display:flex; align-items:center; gap:10px; width:100%; box-sizing:border-box; height:40px; padding:0 10px; border:1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); border-radius:12px; background:color-mix(in srgb, var(--card) 92%, transparent); box-shadow:0 10px 28px rgba(15,23,42,.12); backdrop-filter:blur(10px); }
 .batch-statusbar .generation-placeholder-spinner { flex:none; }
 .batch-statusbar-label { flex:none; display:inline-flex; align-items:center; gap:6px; color:var(--text); font-size:11px; font-weight:800; letter-spacing:.02em; white-space:nowrap; }
-.batch-statusbar-stage { flex:1 1 auto; min-width:0; display:flex; align-items:center; }
-.batch-statusbar-stage .generation-stage-progress { display:flex; align-items:center; gap:10px; width:100%; }
-.batch-statusbar-stage .generation-stage-copy { flex:none; display:inline-flex; align-items:center; gap:6px; min-width:0; }
-.batch-statusbar-stage .generation-stage-track { flex:1 1 auto; min-width:56px; max-width:168px; }
+.batch-statusbar-stage { flex:1 1 auto; min-width:0; display:flex; align-items:center; overflow:hidden; }
+/* #89 返工：2 列节点框宽仅约 295px，状态条只保留阶段名（ellipsis）；
+   耗时/6 段进度/阶段标签不再重复展示（各格 cell-stage 已有各自阶段）。 */
+.batch-statusbar-stage .generation-stage-progress { display:flex; align-items:center; gap:6px; min-width:0; }
+.batch-statusbar-stage .generation-stage-copy { flex:none; display:inline-flex; align-items:center; min-width:0; }
+.batch-statusbar-stage .generation-stage-copy strong { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.batch-statusbar-stage .generation-stage-copy span,
+.batch-statusbar-stage .generation-stage-track,
+.batch-statusbar-stage .generation-stage-labels { display:none; }
 .batch-statusbar .generation-cancel-btn { flex:none; }
 @keyframes generation-placeholder-spin { to { transform:rotate(360deg); } }
 @keyframes generation-placeholder-breathe { 0%,100% { opacity:.42; transform:scale(.9); } 50% { opacity:1; transform:scale(1.08); } }
@@ -1687,8 +1693,8 @@ body {
 }
 .project-save-state {
     left:auto;
-    right:24px;
-    top:76px;
+    right:auto;
+    top:auto;
     color:var(--faint);
     font-size:10px;
     letter-spacing:.02em;
@@ -1935,7 +1941,7 @@ body {
 
 @media (max-width:900px) {
     .smart-title { left:16px; top:62px; }
-    .project-save-state { left:auto; right:16px; top:62px; }
+    .project-save-state { left:auto; right:auto; top:auto; }
     .composer { width:min(568px, calc(100vw - 24px)); }
     .log-modal { left:12px; right:12px; bottom:12px; height:min(286px, 38vh); }
     .smart-minimap { right:12px; bottom:12px; width:148px; height:98px; }
@@ -2453,8 +2459,8 @@ body {
 .smart-title::before { content:"CANVAS / "; }
 .project-save-state {
     left:auto;
-    right:22px;
-    top:74px;
+    right:auto;
+    top:auto;
     display:flex;
     align-items:center;
     gap:6px;
@@ -2542,7 +2548,7 @@ body { color:var(--text); background:var(--page); }
 
 .smart-title { left:20px; top:72px; color:var(--text); font-size:10px; letter-spacing:.14em; }
 .smart-title::before { content:none; }
-.project-save-state { left:auto; right:20px; top:72px; color:var(--faint); font-size:10px; }
+.project-save-state { left:auto; right:auto; top:auto; color:var(--faint); font-size:10px; }
 .project-save-state[data-state="saved"],
 .project-save-state[data-state="error"] { color:var(--muted); }
 
@@ -2783,7 +2789,7 @@ body.prompt-flow-active #world > :not(#composer) { visibility:hidden; pointer-ev
     .smart-top-left > button span { display:none; }
     .smart-top-left > button { width:30px; min-width:30px; padding:0; justify-content:center; }
     .smart-title { left:16px; top:64px; max-width:calc(100vw - 196px); }
-    .project-save-state { left:auto; right:16px; top:64px; max-width:calc(100vw - 196px); }
+    .project-save-state { left:auto; right:auto; top:auto; max-width:calc(100vw - 196px); }
     .composer { width:fit-content; min-width:700px; max-width:min(720px, calc(100vw - 24px)); }
     .asset-panel { left:12px; right:12px; width:auto; }
     .smart-minimap { right:12px; top:62px; bottom:auto; width:156px; height:100px; }

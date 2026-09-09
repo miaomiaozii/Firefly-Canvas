@@ -2541,11 +2541,17 @@ function imageLayout(images, scale=1, node=null){
         }else{
             gridHeight = mediaGroupGridHeight(images, fitted.cols, fitted.visibleRows, fitted.thumb);
         }
-        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:Math.round(explicitW), height:gridHeight + PAD, thumb:fitted.thumb, gridHeight};
+        // #89 返工：实际内容明显窄于旧宽框时（如竖图在很宽节点框内）收敛到内容宽，
+        // 否则图看起来“浮在框表面”；横向图按 fitted 充满宽度，不会触发收敛。
+        const colWidths = mediaGridColumnWidths(images, fitted.cols, fitted.thumb);
+        const contentWidth = colWidths.reduce((a, b) => a + b, 0) + Math.max(0, fitted.cols - 1) * 8 + PAD;
+        return {cols:fitted.cols, rows:fitted.rows, visibleRows:fitted.visibleRows, width:contentWidth + 8 < explicitW ? Math.round(contentWidth) : Math.round(explicitW), height:gridHeight + PAD, thumb:fitted.thumb, gridHeight, colWidths};
     }
-    const width = Math.max(Math.round(226*s), cols * cell + PAD);
+    // #89 返工：框宽收敛到实际格宽（竖图列窄于满宽列），图不再在框内居中漂浮。
+    const colWidths = mediaGridColumnWidths(images, cols, thumb);
+    const width = Math.max(Math.round(226*s), colWidths.reduce((a, b) => a + b, 0) + (cols - 1) * 8 + PAD);
     const gridHeight = mediaGroupGridHeight(images, cols, visibleRows, thumb);
-    return {cols, rows, visibleRows, width, height:gridHeight + PAD, thumb, gridHeight};
+    return {cols, rows, visibleRows, width, height:gridHeight + PAD, thumb, gridHeight, colWidths};
 }
 function smartLoopCount(node){
     return Math.max(1, Math.min(100, Number(node?.count || 1) || 1));
@@ -8560,6 +8566,19 @@ function thumbDisplaySize(img, maxSize){
         height:Math.max(28, Math.round(h * fit))
     };
 }
+// #89 返工：多图网格每列的实际宽度（行主序 i%cols）。contain 压缩的竖图列窄于
+// limit 盒，框宽若按每列满宽计算，图就会“浮”在过宽列中央。
+function mediaGridColumnWidths(images, cols, thumb){
+    const columnCount = Math.max(1, Number(cols) || 1);
+    const widths = Array.from({length: columnCount}, () => 0);
+    (images || []).forEach((img, i) => {
+        if(!img) return;
+        const w = thumbDisplaySize(img, thumb).width;
+        const c = i % columnCount;
+        if(c < widths.length && w > widths[c]) widths[c] = w;
+    });
+    return widths;
+}
 function mediaGroupGridHeight(images, cols, visibleRows, thumb){
     const columnCount = Math.max(1, Number(cols) || 1);
     const rowCount = Math.max(1, Number(visibleRows) || 1);
@@ -11646,7 +11665,9 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     // #84：网格 + 底部整宽状态条（spinner + 生成中/已等待 + 阶段进度 + 取消按钮一行横排）。
     // 此前状态面板竖排塞进单个 136×102 缩略格（高约 108px > 格高 102px），
     // 导致文字裁切、取消按钮被切、右上计时徽标与状态格重叠。
-    const statusbar = `<div class="batch-statusbar" role="status" aria-label="${escapeAttr(label)}"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span class="batch-statusbar-label">${escapeHtml(label)}${elapsedHtml}</span><span class="batch-statusbar-stage">${generationStageProgressHtml(normalizedProgress)}</span>${cancelBtnHtml}</div>`;
+    // #89 返工：状态条不再重复「已等待 Ns」——节点右上角计时徽标（run-time-pill）已实时显示同一计时，
+    // 重复展示会挤掉阶段名（2 列节点框宽仅约 295px）。
+    const statusbar = `<div class="batch-statusbar" role="status" aria-label="${escapeAttr(label)}"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span class="batch-statusbar-label">${escapeHtml(label)}</span><span class="batch-statusbar-stage">${generationStageProgressHtml(normalizedProgress)}</span>${cancelBtnHtml}</div>`;
     // 网格区 = node-body 高度减去状态条（flex 布局自动分配），136×102 固定格在剩余区域居中，
     // 与完成阶段 thumb-grid 的几何一致。
     return `<div class="pending-batch-stack"><div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>${statusbar}</div>`;
@@ -11695,12 +11716,15 @@ function nodeBodyHtml(node, layout){
         const fixedCellH = isBatchSpec ? BATCH_THUMB.HEIGHT : (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
         const thumbItemStyleFor = img => fixedCellH > 0 ? `--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px` : thumbItemStyle(img, layout.thumb);
         const gridGapStyle = isBatchSpec ? `; gap:${BATCH_THUMB.GAP}px` : '';
+        // #89 返工：自然比例路径列宽=实际格宽（与 imageLayout 收敛后的框宽一致），
+        // 批量/固化比例路径保持 repeat(--thumb-cols, --thumb-size) 不变。
+        const gridColStyle = (fixedCellH > 0 || !Array.isArray(layout.colWidths) || layout.colWidths.length !== layout.cols) ? '' : `grid-template-columns:${layout.colWidths.map(w => `${Math.round(w)}px`).join(' ')};`;
         // 批量生图终态（未运行中）若只成功部分张数：补齐缺失的格子为虚线空位，
         // 让网格几何与占位/生图阶段完全一致，避免 3/8 时只浮 3 张图、框内大片空白。
         const batchSlots = !node.pending && Number(node?._batchTotal) > 1 ? Math.min(8, Number(node._batchTotal)) : 0;
         const missingSlots = isBatchSpec && fixedCellH > 0 ? Math.max(0, batchSlots - imgs.length) : 0;
         const emptySlotHtml = Array.from({length: missingSlots}).map(() => `<div class="thumb-empty-slot" style="--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px" aria-hidden="true"></div>`).join('');
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="${gridColStyle}--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
     }
     if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
     return `<div class="node-drop" data-upload-action="files">
@@ -13763,7 +13787,8 @@ function bindNodeEvents(){
                 selectedId = id;
                 selectedIds = [];
                 selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
-                openImagePreviewSmart(target.targetNodeId, target.imageIndex);
+                /* #87：双击/快拍打开「生成详情」（无 log 为简化形态）；「预览图片」编辑器入口保留在节点工具栏 */
+                openSmartImageDetail(target.targetNodeId, target.imageIndex);
             }, true);
             item.addEventListener('click', e => {
                 if(e.target.closest('video,audio')) return;
@@ -13787,7 +13812,7 @@ function bindNodeEvents(){
                     selectedId = id;
                     selectedIds = [];
                     selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
-                    openImagePreviewSmart(target.targetNodeId, target.imageIndex);
+                    openSmartImageDetail(target.targetNodeId, target.imageIndex);
                     return;
                 }
                 clearImageClickTimer();
@@ -13819,7 +13844,7 @@ function bindNodeEvents(){
             selectedId = id;
             selectedIds = [];
             selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
-            openImagePreviewSmart(target.targetNodeId, target.imageIndex);
+            openSmartImageDetail(target.targetNodeId, target.imageIndex);
         }, true);
         });
         el.querySelectorAll('.thumb-item,.smart-group-single-thumb').forEach(item => {
