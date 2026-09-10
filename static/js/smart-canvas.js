@@ -621,7 +621,7 @@ let settings = {
     promptH:84
 };
 const MS_GEN_MODELS = {
-    custom: { label:tr('smart.custom') || '自定义', modelId:'', acceptsImage:true }
+    custom: { label:tr('smart.custom'), modelId:'', acceptsImage:true }
 };
 const SIZE_MAP = {
     square: {'1k':'1024x1024','2k':'2048x2048','4k':'4096x4096'},
@@ -1058,11 +1058,11 @@ async function importProjectMediaReference(item){
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({source_url:sourceUrl, source_locator:sourceLocator, name:item.name || item.filename || '', mime_type:item.mime || item.mime_type || '', expected_kind:expectedKind}),
         }).then(async response => {
-            if(!response.ok) throw new Error(await responseErrorMessage(response, '项目媒体归档失败'));
+            if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.mediaArchiveFailed')));
             const data = await response.json();
             if(data.media) return data.media;
             const taskId = data.task?.id;
-            if(!taskId) throw new Error('媒体导入任务响应无效');
+            if(!taskId) throw new Error(tr('smart.mediaImportBadResponse'));
             setProjectSaveState('importing', tr('smart.projectImporting'));
             const deadline = Date.now() + 10 * 60 * 1000;
             let pollDelay = 150;
@@ -1070,12 +1070,12 @@ async function importProjectMediaReference(item){
                 await new Promise(resolve => setTimeout(resolve, pollDelay));
                 pollDelay = Math.min(1500, Math.round(pollDelay * 1.5));
                 const statusResponse = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/import/${encodeURIComponent(taskId)}`);
-                if(!statusResponse.ok) throw new Error(await responseErrorMessage(statusResponse, '媒体导入状态读取失败'));
+                if(!statusResponse.ok) throw new Error(await responseErrorMessage(statusResponse, tr('smart.mediaImportStatusFailed')));
                 const status = (await statusResponse.json()).task || {};
                 if(status.status === 'completed' && status.media) return status.media;
-                if(status.status === 'failed') throw new Error(status.error || '项目媒体归档失败');
+                if(status.status === 'failed') throw new Error(status.error || tr('smart.mediaArchiveFailed'));
             }
-            throw new Error('项目媒体归档超时');
+            throw new Error(tr('smart.mediaArchiveTimeout'));
         }).catch(error => {
             projectMediaImportCache.delete(cacheKey);
             throw error;
@@ -1198,7 +1198,7 @@ function canvasForStorage(){
     clean.logs = mediaReferencesForStorage((clean.logs || []).filter(log => log?.status !== 'pending'));
     return clean;
 }
-function apiErrorMessage(data, fallback='请求失败'){
+function apiErrorMessage(data, fallback=tr('chat.requestFailed')){
     if(!data) return fallback;
     if(typeof data === 'string') return data || fallback;
     const detail = data.detail ?? data.error ?? data.message;
@@ -1219,7 +1219,7 @@ function apiErrorMessage(data, fallback='请求失败'){
         return fallback;
     }
 }
-async function responseErrorMessage(response, fallback='请求失败'){
+async function responseErrorMessage(response, fallback=tr('chat.requestFailed')){
     try {
         const data = await response.clone().json();
         return apiErrorMessage(data, fallback);
@@ -2635,7 +2635,7 @@ function arrangeSelectedSmartNodes(){
     pushUndo();
     if(!arrangeSmartIdsByConnections(ids)) return;
     render();
-    toast('已整理选中节点');
+    toast(tr('smart.arrangedSelected'));
 }
 let smartNodeMenuPositionFrame = 0;
 function positionSmartNodeFloatingMenus(){
@@ -2899,8 +2899,8 @@ function requestSmartEdgeReveal(node){
     }
     smartEdgeRevealNodeId = live.id;
     if(smartEdgeRevealLabel){
-        const kind = isVideo ? '视频' : isAudio ? '音频' : '图片';
-        smartEdgeRevealLabel.textContent = count > 1 ? `新${kind}已生成 ×${count}` : `新${kind}已生成`;
+        const kind = isVideo ? tr('smart.kindVideo') : isAudio ? tr('smart.kindAudio') : tr('smart.kindImage');
+        smartEdgeRevealLabel.textContent = count > 1 ? trf('smart.edgeRevealNewMultiple', {k: kind, n: count}) : trf('smart.edgeRevealNewOne', {k: kind});
     }
     smartEdgeReveal.style.left = `${placement.left}px`;
     smartEdgeReveal.style.top = `${placement.top}px`;
@@ -3417,9 +3417,9 @@ function renderVideoTrustedAssetControl(){
     if(!on) return html;
     const src = ['library','cloud','manual'].includes(settings.videoTrustedSource) ? settings.videoTrustedSource : 'library';
     html += `<div class="trusted-source-row">
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'library' ? 'active' : ''}" data-trusted-source="library" title="使用素材库中已注册的认证素材链接（asset://）"><i data-lucide="library"></i><span>素材库链接</span></button>
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'cloud' ? 'active' : ''}" data-trusted-source="cloud" title="把当前输入图片/视频上传到云端直链"><i data-lucide="upload-cloud"></i><span>上传云端</span></button>
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'manual' ? 'active' : ''}" data-trusted-source="manual" title="手动输入媒体 URL 或 asset:// 地址"><i data-lucide="link"></i><span>输入网址</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'library' ? 'active' : ''}" data-trusted-source="library" title="${escapeHtml(tr('smart.trustedSrcLibrary'))}"><i data-lucide="library"></i><span>${escapeHtml(tr('smart.trustedSrcLibraryLabel'))}</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'cloud' ? 'active' : ''}" data-trusted-source="cloud" title="${escapeHtml(tr('smart.trustedSrcCloud'))}"><i data-lucide="upload-cloud"></i><span>${escapeHtml(tr('smart.trustedSrcCloudLabel'))}</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'manual' ? 'active' : ''}" data-trusted-source="manual" title="${escapeHtml(tr('smart.trustedSrcManual'))}"><i data-lucide="link"></i><span>${escapeHtml(tr('smart.trustedSrcManualLabel'))}</span></button>
     </div>`;
     return html;
 }
@@ -3692,7 +3692,7 @@ function renderRunningHubParams(){
         ${renderRhConfigControl(ref)}
         ${renderRhPaymentControl()}
         ${renderRhMachineControl()}
-        <div class="rh-mini-summary">${escapeHtml(mediaFields)} 素材 · ${escapeHtml(promptFields)} 提示词</div>
+        <div class="rh-mini-summary">${escapeHtml(trf('smart.rhFieldsSummary', {m: mediaFields, p: promptFields}))}</div>
         ${fields.length ? fields.filter(f => !['image','video','audio','prompt'].includes(rhFieldRole(f))).map(renderRhSettingField).join('') : `<div class="muted-note">${escapeHtml(tr('smart.rhNeedFields'))}</div>`}
     `;
 }
@@ -3716,7 +3716,7 @@ function renderRhConfigControl(ref){
             <div class="smart-popover-title">${escapeHtml(tr('smart.rhConfig'))}</div>
             ${modelSearchInputHtml('rhConfigKey', models.length + apps.length)}
             <div class="model-list rh-config-list" data-model-options="rhConfigKey">
-                ${groupHtml('model', models, '模型 API')}${groupHtml('app', apps, 'AI 应用')}
+                ${groupHtml('model', models, tr('smart.rhModelApi'))}${groupHtml('app', apps, tr('smart.rhApp'))}
                 <div class="model-search-empty" data-model-search-empty hidden>${escapeHtml(tr('smart.modelSearchEmpty'))}</div>
             </div>
         </div>
@@ -3814,7 +3814,7 @@ function resolutionLabel(prefix=''){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const sizeKey = prefix ? `${prefix}CustomSize` : 'customSize';
     const value = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
-    if(value === 'auto') return '自动';
+    if(value === 'auto') return tr('smart.sizeAuto');
     return value === 'custom' ? (settings[sizeKey] || tr('smart.custom')) : value.toUpperCase();
 }
 function videoAspectIconClass(value){
@@ -3844,16 +3844,16 @@ function renderImageRoutingControl(){
 }
 function renderAnglePresetControl(){
     const options = [
-        ['none','无角度预设'], ['front','正面'], ['front-three-quarter','前侧 3/4'],
-        ['side','正侧面'], ['rear-three-quarter','后侧 3/4'], ['rear','背面'],
-        ['top','俯视'], ['low','低机位仰视']
+        ['none', tr('smart.angleNone')], ['front', tr('smart.angleFront')], ['front-three-quarter', tr('smart.angleFrontQuarter')],
+        ['side', tr('smart.angleSide')], ['rear-three-quarter', tr('smart.angleRearQuarter')], ['rear', tr('smart.angleRear')],
+        ['top', tr('smart.angleTop')], ['low', tr('smart.angleLow')]
     ];
     const value = options.some(([key]) => key === settings.anglePreset) ? settings.anglePreset : 'none';
     const label = Object.fromEntries(options)[value];
     return `<div class="smart-control angle-preset-control">
         <button class="smart-pill" type="button"><i data-lucide="orbit"></i><span>${escapeHtml(label)}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
         <div class="smart-popover compact-popover">
-            <div class="smart-popover-title">角度参考（提示词预设）</div>
+            <div class="smart-popover-title">${escapeHtml(tr('smart.angleTitle'))}</div>
             <div class="model-list">
                 ${options.map(([key,text]) => `<button type="button" class="direct-option ${key === value ? 'active' : ''}" data-smart-param="anglePreset" data-smart-value="${escapeHtml(key)}"><span>${escapeHtml(text)}</span></button>`).join('')}
             </div>
@@ -3913,16 +3913,16 @@ function sizePickerDefaultResolution(prefix=''){
 function sizePickerLabel(prefix=''){
     if(!prefix && !apiImageUsesExplicitResolution(settings)) return ratioLabel(prefix);
     const scope = sizePickerScope(prefix);
-    if(scope === 'auto') return '自动';
+    if(scope === 'auto') return tr('smart.sizeAuto');
     if(scope === 'custom'){
         const resKey = prefix ? `${prefix}Resolution` : 'resolution';
         const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
         const resText = resolutionLabel(prefix);
         const ratioText = ratioLabel(prefix);
-        if(settings[resKey] === 'custom' && settings[ratioKey] === 'custom') return `自定义 · ${resText} · ${ratioText}`;
-        if(settings[resKey] === 'custom') return `自定义 · ${resText}`;
-        if(settings[ratioKey] === 'custom') return `自定义 · ${ratioText} · ${resText}`;
-        return `自定义 · ${resText}`;
+        if(settings[resKey] === 'custom' && settings[ratioKey] === 'custom') return trf('smart.sizeCustomComboResRatio', {res: resText, ratio: ratioText});
+        if(settings[resKey] === 'custom') return trf('smart.sizeCustomComboRes', {res: resText});
+        if(settings[ratioKey] === 'custom') return trf('smart.sizeCustomComboRatio', {ratio: ratioText, res: resText});
+        return trf('smart.sizeCustomComboRes', {res: resText});
     }
     return `${ratioLabel(prefix)} · ${resolutionLabel(prefix)}`;
 }
@@ -3938,15 +3938,15 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const currentCustomRatio = settings[customRatioKey] || (currentRatio === 'source' ? sourceImageRatioLabel(prefix) : '');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     const ratios = [
-        ['square','1:1','正方形'], ['portrait','2:3','竖图'], ['landscape','3:2','横图'], ['portrait43','3:4','竖图'], ['landscape43','4:3','横图'],
-        ['story','9:16','竖屏'], ['wide','16:9','宽屏'], ['ultrawide','21:9','超宽'], ['ultratall','9:21','超竖'],
-        ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || '原图', '适配输入']] : [])
+        ['square','1:1',tr('smart.sizeRatioSquare')], ['portrait','2:3',tr('smart.sizeRatioPortrait')], ['landscape','3:2',tr('smart.sizeRatioLandscape')], ['portrait43','3:4',tr('smart.sizeRatioPortrait')], ['landscape43','4:3',tr('smart.sizeRatioLandscape')],
+        ['story','9:16',tr('smart.sizeRatioStory')], ['wide','16:9',tr('smart.sizeRatioWide')], ['ultrawide','21:9',tr('smart.sizeRatioUltrawide')], ['ultratall','9:21',tr('smart.sizeRatioUltratall')],
+        ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || tr('smart.sizeRatioSource'), tr('smart.sizeRatioSourceAdaptive')]] : [])
     ];
     if(!prefix && !apiImageUsesExplicitResolution(settings)){
         return `<div class="smart-control size-picker-control resolution-free">
-            <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">画幅</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(ratioLabel(prefix))}</span></span></button>
+            <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeAspect'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(ratioLabel(prefix))}</span></span></button>
             <div class="smart-popover size-picker-popover resolution-free">
-                <div class="smart-popover-title">画幅比例</div>
+                <div class="smart-popover-title">${escapeHtml(tr('smart.sizeTitleAspect'))}</div>
                 <div class="size-picker-pane size-picker-preset resolution-free">
                     <div class="size-picker-list">
                         ${ratios.map(([value, label, sub]) => `<button type="button" class="size-picker-option ${value === currentRatio ? 'active' : ''}" data-smart-param="${ratioKey}" data-smart-value="${escapeHtml(value)}"><span>${escapeHtml(label)}</span><small>${escapeHtml(sub)}</small></button>`).join('')}
@@ -3958,17 +3958,17 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
     const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
     return `<div class="smart-control size-picker-control ${scope === 'auto' ? 'auto-mode' : ''} ${scope === 'custom' ? 'custom-mode' : ''}">
-        <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">尺寸</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(sizePickerLabel(prefix))}</span></span></button>
+        <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeSize'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(sizePickerLabel(prefix))}</span></span></button>
         <div class="smart-popover size-picker-popover">
             <div class="size-picker-head">
-                <div class="smart-popover-title">尺寸选择</div>
+                <div class="smart-popover-title">${escapeHtml(tr('smart.sizeTitlePicker'))}</div>
                 <div class="size-picker-scope">
-                    <button type="button" class="${scope === 'auto' ? 'active' : ''}" data-size-scope="auto" data-size-prefix="${escapeHtml(prefix)}" ${allowAuto ? '' : 'disabled'}>自动</button>
-                    <button type="button" class="${scope === 'preset' ? 'active' : ''}" data-size-scope="preset" data-size-prefix="${escapeHtml(prefix)}">系统参数</button>
-                    <button type="button" class="${scope === 'custom' ? 'active' : ''}" data-size-scope="custom" data-size-prefix="${escapeHtml(prefix)}">自定义</button>
+                    <button type="button" class="${scope === 'auto' ? 'active' : ''}" data-size-scope="auto" data-size-prefix="${escapeHtml(prefix)}" ${allowAuto ? '' : 'disabled'}>${escapeHtml(tr('smart.sizeAuto'))}</button>
+                    <button type="button" class="${scope === 'preset' ? 'active' : ''}" data-size-scope="preset" data-size-prefix="${escapeHtml(prefix)}">${escapeHtml(tr('smart.sizeScopeSystem'))}</button>
+                    <button type="button" class="${scope === 'custom' ? 'active' : ''}" data-size-scope="custom" data-size-prefix="${escapeHtml(prefix)}">${escapeHtml(tr('smart.custom'))}</button>
                 </div>
             </div>
-            ${scope === 'auto' ? `<div class="size-picker-pane size-picker-auto"><div class="size-picker-note"><strong>自动尺寸</strong><span>使用模型默认尺寸，或由支持自动尺寸的模型自行决定。</span></div></div>` : ''}
+            ${scope === 'auto' ? `<div class="size-picker-pane size-picker-auto"><div class="size-picker-note"><strong>${escapeHtml(tr('smart.sizeAutoTitle'))}</strong><span>${escapeHtml(tr('smart.sizeAutoNote'))}</span></div></div>` : ''}
             ${scope === 'preset' ? `<div class="size-picker-pane size-picker-preset">
                 <div class="size-picker-list">
                     ${ratios.map(([value, label, sub]) => `<button type="button" class="size-picker-option ${value === currentRatio ? 'active' : ''}" data-smart-param="${ratioKey}" data-smart-value="${escapeHtml(value)}"><span>${escapeHtml(label)}</span><small>${escapeHtml(sub)}</small></button>`).join('')}
@@ -3979,11 +3979,11 @@ function renderSizePickerControl(prefix='', includeSource=false){
             </div>` : ''}
             ${scope === 'custom' ? `<div class="size-picker-pane size-picker-custom">
                 <div class="size-custom-box">
-                    <div class="size-custom-title">自定义分辨率</div>
+                    <div class="size-custom-title">${escapeHtml(tr('smart.sizeCustomTitle'))}</div>
                     <div class="size-custom-presets">
                         ${['1k','2k','4k'].map(value => `<button type="button" class="size-custom-preset-btn ${value === currentRes ? 'active' : ''}" data-smart-param="${resKey}" data-smart-value="${value}">${value.toUpperCase()}</button>`).join('')}
                     </div>
-                    <div class="size-custom-row"><input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="宽度"><span>×</span><input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="高度"></div>
+                    <div class="size-custom-row"><input type="number" data-param="${wKey}" value="${escapeHtml(settings[wKey] || '')}" placeholder="${escapeHtml(tr('canvas.width'))}"><span>×</span><input type="number" data-param="${hKey}" value="${escapeHtml(settings[hKey] || '')}" placeholder="${escapeHtml(tr('canvas.height'))}"></div>
                 </div>
             </div>` : ''}
         </div>
@@ -4005,7 +4005,7 @@ function renderQualityControl(){
 function renderCountVisualControl(){
     const value = Number(settings.count || 1);
     return `<div class="smart-control count-control">
-        <button class="smart-pill" type="button"><i data-lucide="copy"></i><span>${value}${tr('smart.countUnit') ? ' ' + escapeHtml(tr('smart.countUnit')) : ''}</span></button>
+        <button class="smart-pill" type="button"><i data-lucide="copy"></i><span>${value}${window.StudioI18n?.lang?.() !== 'en' ? ' ' + escapeHtml(tr('smart.countUnit')) : ''}</span></button>
         <div class="smart-popover compact-popover" style="min-width:170px">
             <div class="smart-popover-title">${escapeHtml(tr('smart.count'))}</div>
             <div class="count-grid">
@@ -4220,7 +4220,7 @@ function splitManualMediaUrls(text){
 async function uploadMediaRefToCloud(ref){
     const kind = mediaKindForItem(ref);
     const sourceUrl = mediaRefSourceUrl(ref);
-    if(!sourceUrl) throw new Error('没有可上传的媒体');
+    if(!sourceUrl) throw new Error(tr('smart.noMediaToUpload'));
     const existing = tempShUploadedUrlFor(sourceUrl);
     if(existing && existing !== sourceUrl) return existing;
     if(/^https?:\/\//i.test(sourceUrl)) return sourceUrl;
@@ -4229,10 +4229,10 @@ async function uploadMediaRefToCloud(ref){
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({url:sourceUrl, service:'auto'})
     });
-    if(!response.ok) throw new Error(await smartResponseErrorMessage(response, '云端上传失败'));
+    if(!response.ok) throw new Error(await smartResponseErrorMessage(response, tr('smart.cloudUploadFailed')));
     const data = await response.json();
     const uploadedUrl = data.url || '';
-    if(!uploadedUrl) throw new Error('云端没有返回链接');
+    if(!uploadedUrl) throw new Error(tr('smart.cloudNoUrl'));
     transientSmartCloudLinks = [
         ...(transientSmartCloudLinks || []).filter(item => item?.source !== sourceUrl),
         {source:sourceUrl, url:uploadedUrl, expires:data.expires || '3 days', kind}
@@ -4257,9 +4257,9 @@ async function setCurrentSmartManualVideoUrl(){
     const linkedUrls = currentSmartMediaLinks(node);
     const currentLinks = linkedUrls.length ? linkedUrls : (firstAny ? [tempShUploadedUrlFor(mediaRefSourceUrl(firstAny))] : []);
     const value = await openAssetNameDialog({
-        title:refs.length > 1 ? `输入 ${refs.length} 个媒体网址 / 火山素材 URI` : '输入媒体网址 / 火山素材 URI',
+        title:refs.length > 1 ? trf('smart.mediaUrlDialogTitleMultiple', {n: refs.length}) : tr('smart.mediaUrlDialogTitle'),
         value:currentLinks.filter(isRemoteVideoReferenceUrl).join('\n'),
-        placeholder:refs.length > 1 ? '每行一个链接，按图1/图2顺序对应' : 'https://example.com/media 或 asset://asset-xxx',
+        placeholder:refs.length > 1 ? tr('smart.mediaUrlPlaceholderMultiple') : tr('smart.mediaUrlPlaceholderSingle'),
         cancelValue:null,
         multiline:refs.length > 1
     });
@@ -4270,12 +4270,12 @@ async function setCurrentSmartManualVideoUrl(){
         persistActiveSmartSettings();
         scheduleSave();
         render();
-        toast('已清除手动网址');
+        toast(tr('smart.manualUrlCleared'));
         return '';
     }
     const invalid = urls.find(url => !isRemoteVideoReferenceUrl(url));
     if(invalid){
-        toast('请输入 http/https 媒体网址或 asset:// 火山素材 URI');
+        toast(tr('smart.manualUrlInvalid'));
         return '';
     }
     clearManualSmartVideoUrl();
@@ -4287,7 +4287,7 @@ async function setCurrentSmartManualVideoUrl(){
     persistActiveSmartSettings();
     scheduleSave();
     render();
-    toast(`已设置 ${urls.length} 个媒体网址`);
+    toast(trf('smart.mediaUrlsSet', {n: urls.length}));
     return urls[0] || '';
 }
 async function uploadCurrentSmartVideosToCloud(){
@@ -4302,18 +4302,18 @@ async function uploadCurrentSmartVideosToCloud(){
         return uploaded !== sourceUrl || !isRemoteVideoReferenceUrl(sourceUrl);
     });
     if(!localRefs.length){
-        toast('当前输入图片或视频已是云端链接');
+        toast(tr('smart.inputAlreadyCloud'));
         return [];
     }
     const btn = dynamicParams?.querySelector('[data-trusted-source="cloud"]') || inputThumbsRow?.querySelector('[data-temp-sh-upload-video]');
     if(btn) btn.disabled = true;
-    toast(`正在上传 ${localRefs.length} 个媒体文件到云端...`);
+    toast(trf('smart.uploadingMedia', {n: localRefs.length}));
     try {
         const urls = [];
         for(const ref of localRefs){
             urls.push(await uploadMediaRefToCloud(ref));
         }
-        toast(`云端上传完成：${urls.length} 个媒体文件`);
+        toast(trf('smart.cloudUploadDone', {n: urls.length}));
         return urls;
     } finally {
         if(btn) btn.disabled = false;
@@ -4589,7 +4589,7 @@ function bindDynamicParams(){
                 if(src === 'cloud') await uploadCurrentSmartVideosToCloud();
                 else if(src === 'manual') await setCurrentSmartManualVideoUrl();
             } catch(e) {
-                toast((e.message || '操作失败').slice(0, 180));
+                toast((e.message || tr('smart.opFailed')).slice(0, 180));
             }
         };
     });
@@ -4771,7 +4771,7 @@ async function loadPromptTemplates(){
         if(!promptLibraries.length) {
             const fallback = await fetch('/api/smart-canvas/prompt-templates').then(r => r.ok ? r.json() : {templates:[]});
             builtinPromptTemplates = Array.isArray(fallback.templates) ? fallback.templates.filter(t => t?.id && t?.positive) : [];
-            promptLibraries = [{id:'system', name:'系统提示词库', readonly:true, items:builtinPromptTemplates}];
+            promptLibraries = [{id:'system', name:tr('smart.systemPromptLibrary'), readonly:true, items:builtinPromptTemplates}];
         } else {
             const system = promptLibraries.find(lib => lib.id === 'system') || promptLibraries[0];
             builtinPromptTemplates = Array.isArray(system?.items) ? system.items.filter(t => t?.id && t?.positive) : [];
@@ -4784,11 +4784,11 @@ async function loadPromptTemplates(){
     }
 }
 function activePromptLibrary(){
-    return promptLibraries.find(lib => lib.id === activePromptLibraryId) || promptLibraries[0] || {id:'system', name:'系统提示词库', readonly:true, items:builtinPromptTemplates};
+    return promptLibraries.find(lib => lib.id === activePromptLibraryId) || promptLibraries[0] || {id:'system', name:tr('smart.systemPromptLibrary'), readonly:true, items:builtinPromptTemplates};
 }
 function renderPromptLibrarySelect(){
     if(!promptTemplateLibrarySelect) return;
-    promptTemplateLibrarySelect.innerHTML = promptLibraries.map(lib => `<option value="${escapeAttr(lib.id)}" ${lib.id === activePromptLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || '提示词库')}</option>`).join('');
+    promptTemplateLibrarySelect.innerHTML = promptLibraries.map(lib => `<option value="${escapeAttr(lib.id)}" ${lib.id === activePromptLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || tr('smart.promptLibrary'))}</option>`).join('');
 }
 function promptTemplateItems(){
     const activeLibrary = activePromptLibrary();
@@ -5179,7 +5179,7 @@ function applyPromptTemplateToNode(mode='positive'){
 async function saveCurrentPromptAsTemplate(){
     const library = activePromptLibrary();
     // 系统库 readonly=false，也允许新增条目（走后端，与素材库管理同步）。
-    if(library.readonly){ toast('请选择可编辑的提示词库'); return; }
+    if(library.readonly){ toast(tr('smart.selectEditableLibrary')); return; }
     const text = promptTemplatePanel?.dataset.target === 'composer'
         ? promptPlainText()
         : String(nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId)?.text || '').trim();
@@ -5190,7 +5190,7 @@ async function saveCurrentPromptAsTemplate(){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({library_id:library.id, name:defaultPromptPresetName(text), category:promptTemplateCategory === 'all' ? 'custom' : promptTemplateCategory, positive:text, scene:'我的提示词预设'})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '保存失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.saveFailed'));
             return r.json();
         });
         promptLibraries = data.library?.libraries || promptLibraries;
@@ -5200,13 +5200,13 @@ async function saveCurrentPromptAsTemplate(){
         promptTemplateEditing = true;
         renderPromptTemplatePanel({preserveScroll:false});
     } catch(err) {
-        toast(err.message || '保存失败');
+        toast(err.message || tr('smart.saveFailed'));
     }
 }
 async function createBlankPromptTemplate(){
     const library = activePromptLibrary();
     // 系统库 readonly=false，也允许新建空白条目（走后端，与素材库管理同步）。
-    if(library.readonly){ toast('请选择可编辑的提示词库'); return; }
+    if(library.readonly){ toast(tr('smart.selectEditableLibrary')); return; }
     const category = promptTemplateCategory && promptTemplateCategory !== 'all' ? promptTemplateCategory : 'custom';
     try {
         const data = await fetch('/api/prompt-libraries/items', {
@@ -5214,7 +5214,7 @@ async function createBlankPromptTemplate(){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({library_id:library.id, name:tr('smart.tplNewTemplateName'), category, positive:'新提示词', scene:'我的提示词预设'})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '创建失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.createFailed'));
             return r.json();
         });
         promptLibraries = data.library?.libraries || promptLibraries;
@@ -5224,7 +5224,7 @@ async function createBlankPromptTemplate(){
         promptTemplateEditing = true;
         renderPromptTemplatePanel({preserveScroll:false});
     } catch(err) {
-        toast(err.message || '创建失败');
+        toast(err.message || tr('smart.createFailed'));
     }
 }
 async function savePromptTemplateEdit(){
@@ -5241,13 +5241,13 @@ async function savePromptTemplateEdit(){
                 headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({library_id:item.libraryId || activePromptLibrary().id, name, category, positive:text, scene:item.scene || '', negative:item.negative || ''})
             }).then(async r => {
-                if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '保存失败');
+                if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.saveFailed'));
                 return r.json();
             });
             promptLibraries = data.library?.libraries || promptLibraries;
             promptTemplateSelectedId = data.item?.id || item.id;
         } catch(err) {
-            toast(err.message || '保存失败');
+            toast(err.message || tr('smart.saveFailed'));
             return;
         }
     } else if(item.builtin){
@@ -5278,12 +5278,12 @@ async function deletePromptTemplate(){
     if(item.remote){
         try {
             const data = await fetch(`/api/prompt-libraries/items/${encodeURIComponent(item.id)}`, {method:'DELETE'}).then(async r => {
-                if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '删除失败');
+                if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.deleteFailed'));
                 return r.json();
             });
             promptLibraries = data.library?.libraries || promptLibraries;
         } catch(err) {
-            toast(err.message || '删除失败');
+            toast(err.message || tr('smart.deleteFailed'));
             return;
         }
     } else if(item.builtin){
@@ -5310,11 +5310,11 @@ async function createPromptTemplateGroup(){
             const data = await fetch('/api/prompt-libraries/categories', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({name:String(name).trim().slice(0, 24), library_id:lib.id})
-            }).then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '新增分组失败'); return r.json(); });
+            }).then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.addGroupFailed')); return r.json(); });
             promptLibraries = data.library?.libraries || promptLibraries;
             promptTemplateCategory = data.category?.id || promptTemplateCategory;
             renderPromptTemplatePanel({preserveScroll:false});
-        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || '新增分组失败'); }
+        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || tr('smart.addGroupFailed')); }
         return;
     }
     const group = {id:uid('tpl_group'), name:String(name).trim().slice(0, 24)};
@@ -5335,10 +5335,10 @@ async function renamePromptTemplateGroup(groupId){
             const data = await fetch(`/api/prompt-libraries/categories/${encodeURIComponent(groupId)}`, {
                 method:'PATCH', headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({name:String(name).trim().slice(0, 24), library_id:lib.id})
-            }).then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '重命名失败'); return r.json(); });
+            }).then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.renameFailed')); return r.json(); });
             promptLibraries = data.library?.libraries || promptLibraries;
             renderPromptTemplatePanel();
-        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || '重命名失败'); }
+        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || tr('smart.renameFailed')); }
         return;
     }
     group.name = String(name).trim().slice(0, 24);
@@ -5352,11 +5352,11 @@ async function deletePromptTemplateGroup(groupId){
         if(!window.confirm(tr('smart.tplDeleteGroupConfirm'))) return;
         try {
             const data = await fetch(`/api/prompt-libraries/categories/${encodeURIComponent(groupId)}`, {method:'DELETE'})
-                .then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '删除失败'); return r.json(); });
+                .then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.deleteFailed')); return r.json(); });
             promptLibraries = data.library?.libraries || promptLibraries;
             if(promptTemplateCategory === groupId) promptTemplateCategory = 'all';
             renderPromptTemplatePanel({preserveScroll:false});
-        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || '删除失败'); }
+        } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || tr('smart.deleteFailed')); }
         return;
     }
     if(!window.confirm(tr('smart.tplDeleteGroupConfirm'))) return;
@@ -5405,7 +5405,7 @@ function assetSmartClassEntries(){
                 const prev = groups.get(key) || {
                     id:assetSmartClassOptionId(entry),
                     dimension:String(entry.dimension || ''),
-                    label:String(entry.label || entry.dimension || '分类'),
+                    label:String(entry.label || entry.dimension || tr('smart.category')),
                     tag:String(entry.tag || ''),
                     count:0
                 };
@@ -5428,7 +5428,7 @@ function itemsForAssetSmartClass(optionId=''){
     });
 }
 function assetLibraries(){
-    return Array.isArray(assetLibrary.libraries) && assetLibrary.libraries.length ? assetLibrary.libraries : [{id:'default', name:'默认资产库', categories:assetLibrary.categories || []}];
+    return Array.isArray(assetLibrary.libraries) && assetLibrary.libraries.length ? assetLibrary.libraries : [{id:'default', name:tr('smart.defaultAssetLibrary'), categories:assetLibrary.categories || []}];
 }
 function projectMediaSourceLibrary(){
     const items = (projectMediaLibrary.items || []).map(item => ({
@@ -6052,7 +6052,7 @@ function renderAssetLibrary(){
     const libs = currentAssetSourceLibraries();
     if(!activeAssetLibraryId || !libs.some(lib => lib.id === activeAssetLibraryId)) activeAssetLibraryId = assetLibrary.active_library_id || assetLibraries()[0]?.id || LOCAL_ASSET_LIBRARY_ID;
     if(assetLibrarySelect){
-        assetLibrarySelect.innerHTML = libs.map(lib => `<option value="${escapeHtml(lib.id)}" ${lib.id === activeAssetLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || '资产库')}</option>`).join('');
+        assetLibrarySelect.innerHTML = libs.map(lib => `<option value="${escapeHtml(lib.id)}" ${lib.id === activeAssetLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || tr('smart.assetLibrary'))}</option>`).join('');
     }
     assetImageControls.style.display = 'block';
     const localMode = assetLibraryIsLocal();
@@ -6087,13 +6087,13 @@ function renderAssetLibrary(){
             ${assetThumbHtml(item)}
             <div class="asset-meta">
                 <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || 'asset')}</span>
-                ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="选择">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
+                ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="${escapeHtml(tr('smart.select'))}">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
                     : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`}
             </div>
         </div>
-    `).join('') : `<div class="asset-empty">${escapeHtml(projectMode ? tr('smart.projectMediaEmpty') : (localMode ? '暂无本地素材，拖入图片即可保存' : (smartClass ? '这个智能分类下暂无素材' : tr('smart.assetEmpty'))))}</div>`;
+    `).join('') : `<div class="asset-empty">${escapeHtml(projectMode ? tr('smart.projectMediaEmpty') : (localMode ? tr('smart.localAssetEmpty') : (smartClass ? tr('smart.smartClassEmpty') : tr('smart.assetEmpty'))))}</div>`;
     bindAssetItemEvents();
     bindSmartPreviewImageFallbacks(assetGrid);
     refreshIcons();
@@ -6228,7 +6228,7 @@ function beginAssetInlineRename(assetId){
                     headers:{'Content-Type':'application/json'},
                     body:JSON.stringify({path:item.file || item.id, name})
                 }).then(async r => {
-                    if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '重命名失败');
+                    if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.renameFailed'));
                     return r.json();
                 });
                 localAssetLibrary = {items:Array.isArray(data.items) ? data.items : localAssetLibrary.items, tree:data.tree || localAssetLibrary.tree};
@@ -6245,7 +6245,7 @@ function beginAssetInlineRename(assetId){
                 }
                 renderAssetLibrary();
                 render();
-                toast('已重命名本地素材，反推提示词和分类索引已同步');
+                toast(tr('smart.localAssetRenamedSynced'));
             } else {
                 const data = await fetch(`/api/asset-library/items/${encodeURIComponent(assetId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}).then(r => r.json());
                 setAssetLibraryFromResponse(data);
@@ -6751,7 +6751,7 @@ function openTrashMediaPreview(item){
             <div class="smart-trash-preview-bar">
                 <span class="smart-trash-preview-name"></span>
                 <button class="asset-mini-btn" type="button" data-trash-preview-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span></button>
-                <button class="asset-mini-btn" type="button" data-trash-preview-close title="${escapeHtml(tr('common.close') || '关闭')}"><i data-lucide="x"></i><span>${escapeHtml(tr('common.close') || '关闭')}</span></button>
+                <button class="asset-mini-btn" type="button" data-trash-preview-close title="${escapeHtml(tr('common.close'))}"><i data-lucide="x"></i><span>${escapeHtml(tr('common.close'))}</span></button>
             </div>
         </div>`;
         document.body.appendChild(box);
@@ -7157,7 +7157,7 @@ async function addFilesToLocalAssetLibrary(files=[]){
     const localData = await fetch('/api/local-assets').then(r => r.ok ? r.json() : {items:[], tree:null});
     setLocalAssetLibraryFromResponse(localData);
     renderAssetLibrary();
-    toast(`已保存 ${data.files?.length || 0} 个本地素材`);
+    toast(trf('smart.savedLocalAssets', {n: data.files?.length || 0}));
     return data.files || [];
 }
 async function addLocalPathsToLocalAssetLibrary(paths=[]){
@@ -7177,7 +7177,7 @@ async function addUrlItemsToLocalAssetLibrary(items=[]){
     });
     setLocalAssetLibraryFromResponse(data);
     renderAssetLibrary();
-    toast(`已保存 ${data.count || 0} 个本地素材`);
+    toast(trf('smart.savedLocalAssets', {n: data.count || 0}));
     return data.files || [];
 }
 async function addUrlToLocalAssetLibrary(url, name=''){
@@ -7379,7 +7379,7 @@ async function loadCanvas(){
         persistedCoreSnapshot = canvas.format === 'firefly-canvas-v1' ? projectCanvasSnapshot(canvasForStorage()) : null;
         if(canvas.format === 'firefly-canvas-v1'){
             const backLabel = document.querySelector('.smart-back span');
-            if(backLabel) backLabel.textContent = '返回项目列表';
+            if(backLabel) backLabel.textContent = tr('smart.backToProjects');
             setProjectSaveState('saved', tr('smart.projectSaved'));
         }
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
@@ -7575,7 +7575,7 @@ async function saveProjectCanvasUntilSettled({maxAttempts=4}={}){
 }
 function projectCanvasMutationClient(){
     const client = window.FireflyProjectCanvasMutations;
-    if(!client?.snapshotFromCanvas || !client?.mutationsFromCanvas) throw new Error('项目增量保存模块未加载');
+    if(!client?.snapshotFromCanvas || !client?.mutationsFromCanvas) throw new Error(tr('smart.incrementalModuleMissing'));
     return client;
 }
 function projectCanvasSnapshot(storageCanvas){
@@ -7595,7 +7595,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
     }
     setProjectSaveState('saving', tr('smart.projectSaving'));
     const mutationClient = window.FireflyProjectCanvasMutations;
-    if(!mutationClient?.flushProjectCanvasMutations) throw new Error('项目增量保存模块未加载');
+    if(!mutationClient?.flushProjectCanvasMutations) throw new Error(tr('smart.incrementalModuleMissing'));
     const flushResult = await mutationClient.flushProjectCanvasMutations({
         canvas:{...projectStorageCanvas, revision:canvas.revision ?? 0},
         baseline:persistedCoreSnapshot,
@@ -7604,7 +7604,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         confirmSaved:async accepted => {
             const projectId = canvas.project_id || canvas.project || canvasId;
             const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/flush`, {method:'POST'});
-            if(!response.ok) throw new Error(await responseErrorMessage(response, '项目画布落盘失败'));
+            if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.canvasFlushFailed')));
             const result = await response.json();
             return Number(result.revision || 0) >= Number(accepted.revision || 0);
         },
@@ -7672,7 +7672,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
     }
     if(!flushResult.saved){
         if(flushResult.response?.status >= 200 && flushResult.response?.status < 300){
-            throw new Error('后台保存未在 2 秒内完成');
+            throw new Error(tr('smart.backgroundSaveTimeout'));
         }
         if(flushResult.conflictLimitReached && flushResult.serverCanvas){
             const lateChangeSet = buildCoreMutations(canvasForStorage(), changeSet.next);
@@ -7693,8 +7693,8 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         }
         setProjectSaveState('error', tr('smart.projectConflict'));
         toast(flushResult.conflictLimitReached
-            ? '画布持续发生并发更新，本次修改仍保留在当前窗口，请稍后重试'
-            : '画布增量保存冲突');
+            ? tr('smart.canvasConflictDetailed')
+            : tr('smart.canvasConflict'));
         return {saved:false, hasLateChanges:false};
     }
     syncLiveProjectMediaReferences(storageCanvas, flushResult.canvas);
@@ -7737,7 +7737,7 @@ async function saveCanvas({automatic=false}={}){
     // dangerous empty state (a failed load looks like "everything deleted").
     // Do not submit it; the server-side guard remains as the final backstop.
     if(canvas.format === 'firefly-canvas-v1' && !canvasLoadReady && (Array.isArray(nodes) ? nodes : []).length === 0){
-        setProjectSaveState('error', tr('smart.projectLoadNotReady') || '画布尚未加载完成，已暂停空状态保存以防数据丢失');
+        setProjectSaveState('error', tr('smart.projectLoadNotReady'));
         return false;
     }
     if(!isProjectCanvasData(canvas)){
@@ -7985,7 +7985,7 @@ function copySelectedNodes(){
         nodes:JSON.parse(JSON.stringify(copiedNodes)),
         connections:JSON.parse(JSON.stringify(copiedConnections))
     };
-    toast(`已复制 ${copiedNodes.length} 个节点`);
+    toast(trf('smart.copiedNodes', {n: copiedNodes.length}));
 }
 function pasteNodes(){
     if(!canvas || !nodeClipboard?.nodes?.length || isEditableTarget(document.activeElement)) return;
@@ -8062,7 +8062,7 @@ function pasteAssetsFromInbox(){
     try { localStorage.removeItem(SMART_CANVAS_ASSET_INBOX_KEY); } catch(e){}
     render();
     scheduleSave();
-    toast(`已粘贴 ${created.length} 个素材到画布`);
+    toast(trf('smart.pastedAssets', {n: created.length}));
     return true;
 }
 function duplicateForAltDrag(node, preserveConnections=false){
@@ -8447,7 +8447,7 @@ function audioRefsOnly(refs){
 function thumbMediaHtml(img){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="media-thumb file-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="${escapeAttr(mediaKindForItem(img))}"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i><span>${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</span></div>`;
     if(isAudioMediaItem(img)) return `<div class="media-thumb audio-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="audio"><i data-lucide="file-audio"></i><span>${escapeHtml(img.name || 'Audio')}</span></div>`;
-    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="播放"><i data-lucide="play"></i></button>`}</div>`;
+    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
     return smartPreviewImgHtml(img, 512, 'draggable="false"');
 }
 function imageResolutionLabel(img){
@@ -8543,7 +8543,7 @@ function updateImageResolutionBadgeElement(itemEl, img){
 function singleMediaHtml(img, w, h){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i></div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
     if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="file-audio"></i></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
-    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="播放"><i data-lucide="play"></i></button>`}</div>`;
+    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
     return smartPreviewImgHtml(img, 768, `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
 }
 function smartNodeHasLiveMedia(node){
@@ -8896,7 +8896,7 @@ async function zipDownloadImageItems(title, items){
                 items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
             })
         });
-        if(!response.ok) throw new Error((await response.text()) || '批量下载失败');
+        if(!response.ok) throw new Error((await response.text()) || tr('smart.batchDownloadFailed'));
         const blob = await response.blob();
         const href = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -8907,7 +8907,7 @@ async function zipDownloadImageItems(title, items){
         link.remove();
         setTimeout(() => URL.revokeObjectURL(href), 1200);
     } catch(e) {
-        toast((e.message || '批量下载失败').slice(0, 160));
+        toast((e.message || tr('smart.batchDownloadFailed')).slice(0, 160));
     }
 }
 async function downloadPreviewGroup(){
@@ -9024,12 +9024,12 @@ function smartPendingHistoryTaskId(log){
     return String(request.task_id || request.taskId || '').trim();
 }
 const GENERATION_PROGRESS_PHASES = [
-    ['queued','排队'],
-    ['preparing_reference','准备参考图'],
-    ['uploading','上传'],
-    ['provider_generating','模型生成'],
-    ['receiving','接收结果'],
-    ['saving','写入画布']
+    ['queued', tr('smart.phaseQueued')],
+    ['preparing_reference', tr('smart.phasePreparingReference')],
+    ['uploading', tr('smart.phaseUploading')],
+    ['provider_generating', tr('smart.phaseProviderGenerating')],
+    ['receiving', tr('smart.phaseReceiving')],
+    ['saving', tr('smart.phaseSaving')]
 ];
 function generationProgressBytes(value){
     const bytes = Math.max(0, Number(value) || 0);
@@ -9043,8 +9043,8 @@ function generationStageProgressHtml(progress={}){
     const configuredIndex = Number(progress?.phase_index);
     const fallbackIndex = GENERATION_PROGRESS_PHASES.findIndex(item => item[0] === phase);
     const phaseIndex = Math.max(0, Math.min(5, Number.isFinite(configuredIndex) ? configuredIndex : Math.max(0, fallbackIndex)));
-    const phaseLabel = String(progress?.label || GENERATION_PROGRESS_PHASES[phaseIndex]?.[1] || '排队');
-    const label = failed ? `失败 · ${phaseLabel}` : phaseLabel;
+    const phaseLabel = String(progress?.label || GENERATION_PROGRESS_PHASES[phaseIndex]?.[1] || tr('smart.phaseQueued'));
+    const label = failed ? trf('smart.phaseFailed', {label: phaseLabel}) : phaseLabel;
     const startedAt = Number(progress?.started_at || 0);
     const elapsedMs = startedAt > 0 ? Math.max(Number(progress?.elapsed_ms || 0), Date.now() - startedAt) : Math.max(0, Number(progress?.elapsed_ms || 0));
     const elapsed = formatRunDuration(elapsedMs) || '0s';
@@ -9308,7 +9308,7 @@ function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
     node.runStatus = failed ? 'failed' : 'succeeded';
     scheduleSave();
     closeSmartCanvasLog();
-    toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : '已将失败记录发送到画布，可直接重新生成');
+    toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
     return node;
 }
 function setSmartLogDragState(active, card=null){
@@ -9538,9 +9538,9 @@ function smartLogSizeSummary(log, outputs=[]){
     const more = actualLabels.length > 3 ? ` +${actualLabels.length - 3}` : '';
     const actualLabel = `${actualText}${more}`;
     if(requestLabel && actualLabels.some(label => label !== requestLabel)){
-        return `请求 ${requestLabel} / 实际 ${actualLabel}`;
+        return trf('smart.requestActual', {r: requestLabel, a: actualLabel});
     }
-    return `实际 ${actualLabel}`;
+    return trf('smart.actualOnly', {a: actualLabel});
 }
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
 function cleanupSmartLogPreviewNode(){
@@ -9658,9 +9658,9 @@ function closeSmartLogLightbox(){
 }
 async function smartLogImage2kPngBlob(item){
     const sourceUrl = displayMediaUrl(item);
-    if(!sourceUrl) throw new Error('图片地址不可用');
+    if(!sourceUrl) throw new Error(tr('smart.imageUrlUnavailable'));
     const response = await fetch(sourceUrl, {credentials:'same-origin'});
-    if(!response.ok) throw new Error(`读取图片失败（${response.status}）`);
+    if(!response.ok) throw new Error(trf('smart.imageReadFailed', {code: response.status}));
     const sourceBlob = await response.blob();
     const bitmap = await createImageBitmap(sourceBlob);
     try {
@@ -9670,12 +9670,12 @@ async function smartLogImage2kPngBlob(item){
         canvas2k.width = Math.max(1, Math.round(bitmap.width * scale));
         canvas2k.height = Math.max(1, Math.round(bitmap.height * scale));
         const context = canvas2k.getContext('2d', {alpha:false});
-        if(!context) throw new Error('浏览器无法创建 2K 对图');
+        if(!context) throw new Error(tr('smart.cannotCreatePair'));
         context.fillStyle = '#ffffff';
         context.fillRect(0, 0, canvas2k.width, canvas2k.height);
         context.drawImage(bitmap, 0, 0, canvas2k.width, canvas2k.height);
         return await new Promise((resolve, reject) => canvas2k.toBlob(
-            blob => blob ? resolve(blob) : reject(new Error('2K PNG 导出失败')),
+            blob => blob ? resolve(blob) : reject(new Error(tr('smart.pairExportFailed'))),
             'image/png'
         ));
     } finally {
@@ -9683,9 +9683,9 @@ async function smartLogImage2kPngBlob(item){
     }
 }
 async function copySmartLogImage2k(item){
-    if(!item?.url) throw new Error('图片地址不可用');
+    if(!item?.url) throw new Error(tr('smart.imageUrlUnavailable'));
     if(typeof ClipboardItem !== 'function' || !navigator.clipboard?.write){
-        throw new Error('当前浏览器不支持复制图片，请使用下载');
+        throw new Error(tr('smart.copyImageUnsupported'));
     }
     const blob = await smartLogImage2kPngBlob(item);
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
@@ -9712,7 +9712,7 @@ function ensureSmartLogDetail(){
             <span class="smart-log-detail-preview-hint">${escapeHtml(tr('smart.generationDetailPreviewHint'))}</span>
         </div>
         <aside class="smart-log-detail-info">
-            <header class="smart-log-detail-head"><h2 id="smartLogDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close') || '关闭')}" aria-label="${escapeAttr(tr('common.close') || '关闭')}"><i data-lucide="x"></i></button></header>
+            <header class="smart-log-detail-head"><h2 id="smartLogDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button></header>
             <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
             <section class="smart-log-detail-outputs" aria-labelledby="smartLogDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartLogDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
             <section class="smart-log-detail-modes" aria-label="${escapeAttr(tr('canvas.editImage'))}">
@@ -9849,7 +9849,7 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
             await copySmartLogImage2k(item);
             toast(tr('smart.copy2kDone'));
         } catch(error){
-            toast(error?.message || '复制 2K 对图失败，请使用下载');
+            toast(error?.message || tr('smart.pairCopyFailed'));
         } finally {
             copy2k.disabled = false;
             copy2k.removeAttribute('aria-busy');
@@ -10634,15 +10634,15 @@ async function controlProjectImageTask(logId, taskId, action, button=null){
     try {
         const response = await fetch(`${projectImageTaskUrl(taskId)}/${action}`, {method:'POST'});
         const data = await response.json().catch(() => ({}));
-        if(!response.ok) throw new Error(apiErrorMessage(data, action === 'cancel' ? '取消任务失败' : '重试任务失败'));
+        if(!response.ok) throw new Error(apiErrorMessage(data, action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed')));
         if(action === 'cancel'){
             absorbProjectGenerationResult(data.result || {}, taskId);
-            toast('任务已取消');
+            toast(tr('smart.taskCancelled'));
             render();
             return;
         }
         const retryTaskId = String(data.task_id || '');
-        if(!retryTaskId) throw new Error('重试响应缺少任务 ID');
+        if(!retryTaskId) throw new Error(tr('smart.retryMissingTaskId'));
         const taskResult = {
             taskIds:[retryTaskId],
             count:Number(data.registered_node?.pendingTasks?.find(item => item?.taskId === retryTaskId)?.count || 1),
@@ -10657,7 +10657,7 @@ async function controlProjectImageTask(logId, taskId, action, button=null){
         await acceptProjectGenerationRegistration(taskResult);
         const nodeId = data.registered_node?.id || sourceLog?.result_node_id || sourceLog?.nodeId || '';
         const resultNode = nodes.find(node => String(node?.id || '') === String(nodeId));
-        if(!resultNode) throw new Error('重试任务缺少结果节点');
+        if(!resultNode) throw new Error(tr('smart.retryMissingResultNode'));
         const retryTask = smartPendingTasks(resultNode).find(item => item.taskId === retryTaskId);
         if(retryTask){
             retryTask.prompt = sourceLog?.prompt || retryTask.prompt || '';
@@ -10673,10 +10673,10 @@ async function controlProjectImageTask(logId, taskId, action, button=null){
             prompt:sourceLog?.prompt || ''
         });
         render();
-        toast('任务已重新排队');
+        toast(tr('smart.taskRequeued'));
         void resumeSmartPendingNode(resultNode, {taskIds:[retryTaskId]}).catch(() => {});
     } catch(error){
-        toast((error?.message || (action === 'cancel' ? '取消任务失败' : '重试任务失败')).slice(0, 160));
+        toast((error?.message || (action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed'))).slice(0, 160));
     } finally {
         if(button?.isConnected){
             button.disabled = false;
@@ -11012,7 +11012,7 @@ function updateSmartHistoryDrawerCollapseUi(){
     smartLogModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
     smartLogModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartLogModal.classList.contains('open')));
     if(smartHistoryCollapse){
-        smartHistoryCollapse.title = smartHistoryDrawerCollapsed ? '展开' : '折叠';
+        smartHistoryCollapse.title = smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
         smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
         smartHistoryCollapse.innerHTML = `<i data-lucide="${smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
         refreshIcons();
@@ -11195,83 +11195,83 @@ function conversationNodeBodyHtml(node){
     const panelId = `conversation-panel-${String(node.id || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
     const references = conversationConnectedReferences(node);
     const referenceHtml = references.length
-        ? `<div class="conversation-node-references" aria-label="直连参考素材">${references.map(conversationReferenceHtml).join('')}</div>`
+        ? `<div class="conversation-node-references" aria-label="${escapeHtml(tr('smart.directReferences'))}">${references.map(conversationReferenceHtml).join('')}</div>`
         : '';
     const messagesHtml = messages.length
         ? messages.map((message, index) => {
             const role = message.role === 'assistant' ? 'assistant' : 'user';
             const messageId = String(message.id || `${node.id}-${role}-${index}`);
             const status = String(message.status || 'completed');
-            const statusLabel = status === 'pending' ? '处理中…' : status === 'failed' ? '失败' : '';
-            const retryButton = status === 'failed' ? `<button type="button" class="conversation-node-message-retry" data-conversation-retry="${escapeHtml(messageId)}" title="重新发送这条消息">↻ 重试</button>` : '';
+            const statusLabel = status === 'pending' ? tr('smart.processing') : status === 'failed' ? tr('smart.failed') : '';
+            const retryButton = status === 'failed' ? `<button type="button" class="conversation-node-message-retry" data-conversation-retry="${escapeHtml(messageId)}" title="${escapeHtml(tr('smart.resendMessage'))}">↻ ${escapeHtml(tr('smart.retry'))}</button>` : '';
             return `<article class="conversation-node-message" data-role="${role}" data-status="${escapeHtml(status)}" data-message-id="${escapeHtml(messageId)}">
-                <div class="conversation-node-message-role">${role === 'assistant' ? '助手' : '你'}</div>
-                <div class="conversation-node-message-text" data-message-id="${escapeHtml(messageId)}" tabindex="0" aria-haspopup="menu" aria-label="对话消息；选中文字后按 Shift+F10 打开提取菜单">${escapeHtml(message.text || message.content || '')}</div>
+                <div class="conversation-node-message-role">${role === 'assistant' ? tr('smart.assistant') : tr('smart.you')}</div>
+                <div class="conversation-node-message-text" data-message-id="${escapeHtml(messageId)}" tabindex="0" aria-haspopup="menu" aria-label="${escapeHtml(tr('smart.conversationMessageAria'))}">${escapeHtml(message.text || message.content || '')}</div>
                 ${statusLabel ? `<div class="conversation-node-message-status" data-status="${escapeHtml(status)}" role="status">${escapeHtml(statusLabel)}</div>` : ''}
                 ${retryButton}
             </article>`;
         }).join('')
-        : '<div class="conversation-node-empty">发送第一条消息，开始项目内对话。</div>';
+        : '<div class="conversation-node-empty">' + escapeHtml(tr('smart.conversationEmpty')) + '</div>';
     return `<div class="conversation-node-card ${collapsed ? 'collapsed' : ''}">
         <div class="conversation-node-heading">
-            <div class="conversation-node-subtitle">项目内对话 · 不会自动变成提示词</div>
-            <button type="button" class="conversation-node-collapse conversation-node-control" data-conversation-collapse aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="${escapeHtml(panelId)}" aria-label="${collapsed ? '展开对话内容' : '折叠对话内容'}">${collapsed ? '展开' : '折叠'}</button>
+            <div class="conversation-node-subtitle">${escapeHtml(tr('smart.conversationSubtitle'))}</div>
+            <button type="button" class="conversation-node-collapse conversation-node-control" data-conversation-collapse aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="${escapeHtml(panelId)}" aria-label="${escapeHtml(collapsed ? tr('smart.conversationExpand') : tr('smart.conversationCollapse'))}">${collapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse')}</button>
         </div>
         <div class="conversation-node-panel" id="${escapeHtml(panelId)}" data-conversation-panel ${collapsed ? 'hidden' : ''}>
             ${referenceHtml}
             <div class="conversation-node-messages">${messagesHtml}</div>
             <div class="conversation-node-composer conversation-node-control">
-                <textarea data-conversation-input rows="2" placeholder="输入消息…"></textarea>
-                <button type="button" data-conversation-send ${hasPendingMessage ? 'disabled aria-disabled="true"' : ''}>发送</button>
+                <textarea data-conversation-input rows="2" placeholder="${escapeHtml(tr('smart.conversationInputPlaceholder'))}"></textarea>
+                <button type="button" data-conversation-send ${hasPendingMessage ? 'disabled aria-disabled="true"' : ''}>${escapeHtml(tr('smart.sendMessage'))}</button>
             </div>
         </div>
     </div>`;
 }
 function agentPlanStatusLabel(status){
-    return status === 'awaiting_confirmation' ? '等待确认' : status === 'planned' ? '已计划' : status === 'queued' ? '排队中' : status === 'running' ? '执行中' : status === 'succeeded' ? '已完成' : status === 'completed' ? '已完成' : status === 'failed' ? '执行失败' : status === 'uncertain' ? '状态未知，需重试' : status || '未计划';
+    return status === 'awaiting_confirmation' ? tr('smart.agentStatusAwaiting') : status === 'planned' ? tr('smart.agentStatusPlanned') : status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'completed' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.agentStatusFailed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusNotPlanned');
 }
 function agentNodeBodyHtml(node){
     const plan = node?.agent_plan && typeof node.agent_plan === 'object' ? node.agent_plan : null;
     const draft = node.agentTaskDraft && typeof node.agentTaskDraft === 'object' ? node.agentTaskDraft : {kind:'image', count:1, params:{}};
     const refs = conversationConnectedReferences(node);
     const refHtml = refs.length
-        ? `<div class="agent-node-refs" aria-label="Agent 直连输入">${refs.map(item => `<span class="agent-node-ref" data-agent-reference-kind="${escapeAttr(item.kind)}"><i data-lucide="${item.kind === 'video' ? 'film' : item.kind === 'audio' ? 'file-audio' : 'image'}"></i><span>${escapeHtml(item.name || item.asset_id)}</span></span>`).join('')}</div>`
-        : `<div class="agent-node-warning" role="status">只会读取直接连接的提示词和项目媒体。</div>`;
+        ? `<div class="agent-node-refs" aria-label="${escapeHtml(tr('smart.agentDirectInput'))}">${refs.map(item => `<span class="agent-node-ref" data-agent-reference-kind="${escapeAttr(item.kind)}"><i data-lucide="${item.kind === 'video' ? 'film' : item.kind === 'audio' ? 'file-audio' : 'image'}"></i><span>${escapeHtml(item.name || item.asset_id)}</span></span>`).join('')}</div>`
+        : `<div class="agent-node-warning" role="status">${escapeHtml(tr('smart.agentDirectInputNote'))}</div>`;
     const taskRows = (plan?.tasks || []).map((task, index) => `<article class="agent-plan-task" data-agent-plan-task="${escapeAttr(task.task_id || '')}">
-        <div class="agent-plan-task-title"><span>任务 ${index + 1} · ${escapeHtml(task.kind === 'video' ? '在线视频' : task.kind === 'prompt' ? '创建提示词节点' : '在线图片')}</span><span class="agent-plan-task-status" data-agent-task-status="${escapeAttr(task.task_id || '')}" data-status="${escapeAttr(task.status || '')}">${escapeHtml(agentPlanStatusLabel(task.status))}</span></div>
-        <div class="agent-plan-task-meta">模型类型：${escapeHtml(task.model_type || 'online')} · 数量：${Number(task.count || 1)} · 参数：${escapeHtml(JSON.stringify(task.params || {}))}</div>
-        <div class="agent-plan-task-meta">提示词：${escapeHtml(task.prompt || '')}</div>
+        <div class="agent-plan-task-title"><span>${escapeHtml(trf('smart.agentTaskLabel', {n: index + 1, k: task.kind === 'video' ? tr('smart.agentKindVideo') : task.kind === 'prompt' ? tr('smart.agentKindPrompt') : tr('smart.agentKindImage')}))}</span><span class="agent-plan-task-status" data-agent-task-status="${escapeAttr(task.task_id || '')}" data-status="${escapeAttr(task.status || '')}">${escapeHtml(agentPlanStatusLabel(task.status))}</span></div>
+        <div class="agent-plan-task-meta">${escapeHtml(trf('smart.agentTaskMeta', {t: task.model_type || 'online', c: Number(task.count || 1), p: JSON.stringify(task.params || {})}))}</div>
+        <div class="agent-plan-task-meta">${escapeHtml(trf('smart.agentTaskPrompt', {p: task.prompt || ''}))}</div>
     </article>`).join('');
-    const planPanel = plan ? `<section class="agent-node-plan" data-agent-plan-panel aria-label="Agent 执行计划">
-        <div class="agent-plan-task-title"><span>执行计划</span><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan.status))}</span></div>
-        <div class="agent-plan-task-meta" data-agent-plan-id>计划 ${escapeHtml(plan.plan_id || '')}</div>
-        ${taskRows || '<div class="agent-node-warning">计划没有可执行任务。</div>'}
+    const planPanel = plan ? `<section class="agent-node-plan" data-agent-plan-panel aria-label="${escapeHtml(tr('smart.agentPlanAria'))}">
+        <div class="agent-plan-task-title"><span>${escapeHtml(tr('smart.agentPlanTitle'))}</span><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan.status))}</span></div>
+        <div class="agent-plan-task-meta" data-agent-plan-id>${escapeHtml(trf('smart.agentPlanId', {id: plan.plan_id || ''}))}</div>
+        ${taskRows || '<div class="agent-node-warning">' + escapeHtml(tr('smart.agentPlanEmpty')) + '</div>'}
     </section>` : '<section class="agent-node-plan" data-agent-plan-panel hidden></section>';
     const canConfirm = Boolean(plan && plan.status === 'awaiting_confirmation');
     return `<div class="agent-node-card">
-        <div class="agent-node-heading"><div class="agent-node-subtitle">先计划后执行 · 提示词节点 / 在线图片 / 视频</div><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan?.status || ''))}</span></div>
-        <textarea class="agent-node-goal agent-node-control" data-agent-goal placeholder="描述 Agent 要完成的创作目标…">${escapeHtml(node.agentGoal || plan?.goal || '')}</textarea>
+        <div class="agent-node-heading"><div class="agent-node-subtitle">${escapeHtml(tr('smart.agentSubtitle'))}</div><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan?.status || ''))}</span></div>
+        <textarea class="agent-node-goal agent-node-control" data-agent-goal placeholder="${escapeHtml(tr('smart.agentGoalPlaceholder'))}">${escapeHtml(node.agentGoal || plan?.goal || '')}</textarea>
         ${refHtml}
         <div class="agent-node-drafts" data-agent-drafts>${(Array.isArray(node.agentTaskDrafts) && node.agentTaskDrafts.length ? node.agentTaskDrafts : [draft]).map((item, index) => `<div class="agent-node-draft agent-node-control" data-agent-draft-index="${index}">
             <div class="agent-node-controls agent-node-control">
-                <select data-agent-kind aria-label="Agent 任务类型"><option value="prompt" ${item.kind === 'prompt' ? 'selected' : ''}>创建提示词节点</option><option value="image" ${(item.kind || 'image') === 'image' ? 'selected' : ''}>在线图片</option><option value="video" ${item.kind === 'video' ? 'selected' : ''}>在线视频</option></select>
-                <input data-agent-count aria-label="Agent 任务数量" type="number" min="1" max="${item.kind === 'prompt' ? 1 : 8}" value="${Math.max(1, Math.min(item.kind === 'prompt' ? 1 : 8, Number(item.count) || 1))}">
-                <button type="button" class="agent-node-action agent-node-draft-remove" data-agent-draft-remove="${index}" title="删除此任务">移除</button>
+                <select data-agent-kind aria-label="${escapeHtml(tr('smart.agentTaskType'))}"><option value="prompt" ${item.kind === 'prompt' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindPrompt'))}</option><option value="image" ${(item.kind || 'image') === 'image' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindImage'))}</option><option value="video" ${item.kind === 'video' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindVideo'))}</option></select>
+                <input data-agent-count aria-label="${escapeHtml(tr('smart.agentTaskCountLabel'))}" type="number" min="1" max="${item.kind === 'prompt' ? 1 : 8}" value="${Math.max(1, Math.min(item.kind === 'prompt' ? 1 : 8, Number(item.count) || 1))}">
+                <button type="button" class="agent-node-action agent-node-draft-remove" data-agent-draft-remove="${index}" title="${escapeHtml(tr('smart.removeTask'))}">${escapeHtml(tr('smart.remove'))}</button>
             </div>
-            <input class="agent-node-control agent-node-draft-prompt" data-agent-draft-prompt="${index}" placeholder="此任务的提示词（可选，留空由 Agent 按目标生成）" value="${escapeAttr(item.prompt || '')}">
+            <input class="agent-node-control agent-node-draft-prompt" data-agent-draft-prompt="${index}" placeholder="${escapeHtml(tr('smart.agentTaskPromptPlaceholder'))}" value="${escapeAttr(item.prompt || '')}">
             <div class="agent-node-draft-deps agent-node-control">
-                <label>依赖任务</label>
-                <select data-agent-draft-deps="${index}" aria-label="Agent 任务依赖">
-                    <option value="" ${Array.isArray(item.dependencies) && item.dependencies.length ? '' : 'selected'}>无依赖</option>
-                    ${Array.from({length: index}, (_, prev) => `<option value="${prev}" ${Array.isArray(item.dependencies) && item.dependencies.includes(prev) ? 'selected' : ''}>任务 ${prev}</option>`).join('')}
+                <label>${escapeHtml(tr('smart.dependentTask'))}</label>
+                <select data-agent-draft-deps="${index}" aria-label="${escapeHtml(tr('smart.agentTaskDeps'))}">
+                    <option value="" ${Array.isArray(item.dependencies) && item.dependencies.length ? '' : 'selected'}>${escapeHtml(tr('smart.noDependency'))}</option>
+                    ${Array.from({length: index}, (_, prev) => `<option value="${prev}" ${Array.isArray(item.dependencies) && item.dependencies.includes(prev) ? 'selected' : ''}>${escapeHtml(trf('smart.taskLabel', {n: prev}))}</option>`).join('')}
                 </select>
             </div>
         </div>`).join('')}
         </div>
         <div class="agent-node-controls agent-node-control">
-            <button type="button" class="agent-node-action" data-agent-draft-add>+ 添加任务</button>
-            <button type="button" class="agent-node-action primary" data-agent-plan>生成计划</button>
-            <button type="button" class="agent-node-action" data-agent-confirm ${canConfirm ? '' : 'disabled'}>确认并执行</button>
+            <button type="button" class="agent-node-action" data-agent-draft-add>${escapeHtml(tr('smart.addTask'))}</button>
+            <button type="button" class="agent-node-action primary" data-agent-plan>${escapeHtml(tr('smart.generatePlan'))}</button>
+            <button type="button" class="agent-node-action" data-agent-confirm ${canConfirm ? '' : 'disabled'}>${escapeHtml(tr('smart.confirmAndRun'))}</button>
         </div>
         ${planPanel}
     </div>`;
@@ -11279,27 +11279,27 @@ function agentNodeBodyHtml(node){
 function agentTaskNodeBodyHtml(node){
     const taskId = String(node?.task_id || node?.id || '');
     const status = String(node?.status || 'planned');
-    const kind = node?.kind === 'video' ? '在线视频' : node?.kind === 'prompt' ? '创建提示词节点' : '在线图片';
+    const kind = node?.kind === 'video' ? tr('smart.agentKindVideo') : node?.kind === 'prompt' ? tr('smart.agentKindPrompt') : tr('smart.agentKindImage');
     const params = node?.params && typeof node.params === 'object' ? node.params : {};
     const paramsText = JSON.stringify(params, null, 0);
     const error = String(node?.error || '').trim();
     const resultNodeId = String(node?.result_node_id || '');
     const resultLink = resultNodeId
-        ? `<a class="agent-task-result-link" data-agent-result-link="${escapeAttr(resultNodeId)}" href="#${escapeAttr(resultNodeId)}">查看结果节点</a>`
-        : '<span class="agent-task-result-link muted">等待结果节点</span>';
+        ? `<a class="agent-task-result-link" data-agent-result-link="${escapeAttr(resultNodeId)}" href="#${escapeAttr(resultNodeId)}">${escapeHtml(tr('smart.viewResultNode'))}</a>`
+        : '<span class="agent-task-result-link muted">' + escapeHtml(tr('smart.waitingResultNode')) + '</span>';
     return `<div class="agent-task-card" data-agent-task-card="${escapeAttr(taskId)}">
         <div class="agent-task-heading">
-            <div><div class="agent-task-title">Agent 任务 · ${escapeHtml(kind)}</div><div class="agent-task-id">${escapeHtml(taskId)}</div></div>
+            <div><div class="agent-task-title">${escapeHtml(trf('smart.agentTaskTitle', {kind: kind}))}</div><div class="agent-task-id">${escapeHtml(taskId)}</div></div>
             <span class="agent-task-status" data-agent-task-status="${escapeAttr(taskId)}" data-status="${escapeAttr(status)}" role="status">${escapeHtml(agentTaskStatusText(status))}</span>
         </div>
-        <div class="agent-task-meta"><span>模型：${escapeHtml(node?.model_type || 'online')}</span><span>数量：${Math.max(1, Number(node?.count || 1))}</span></div>
+        <div class="agent-task-meta"><span>${escapeHtml(trf('smart.agentTaskModelCount', {m: node?.model_type || 'online', c: Math.max(1, Number(node?.count || 1))}))}</span></div>
         <div class="agent-task-prompt">${escapeHtml(node?.prompt || '')}</div>
-        <div class="agent-task-params" title="任务参数">参数：${escapeHtml(paramsText)}</div>
+        <div class="agent-task-params" title="${escapeHtml(tr('smart.taskParams'))}">${escapeHtml(trf('smart.agentTaskParams', {p: paramsText}))}</div>
         ${error ? `<div class="agent-task-error" data-agent-task-error role="alert">${escapeHtml(error)}</div>` : ''}
         <div class="agent-task-result">${resultLink}</div>
         <div class="agent-task-actions" data-agent-task-actions>
-            ${['queued', 'running'].includes(status) ? `<button type="button" class="agent-task-cancel agent-node-control" data-agent-cancel-task="${escapeAttr(taskId)}">取消任务</button>` : ''}
-            ${['failed', 'uncertain'].includes(status) ? `<button type="button" class="agent-task-retry agent-node-control" data-agent-retry-task="${escapeAttr(taskId)}">重试任务</button>` : ''}
+            ${['queued', 'running'].includes(status) ? `<button type="button" class="agent-task-cancel agent-node-control" data-agent-cancel-task="${escapeAttr(taskId)}">${escapeHtml(tr('smart.cancelTask'))}</button>` : ''}
+            ${['failed', 'uncertain'].includes(status) ? `<button type="button" class="agent-task-retry agent-node-control" data-agent-retry-task="${escapeAttr(taskId)}">${escapeHtml(tr('smart.retryTask'))}</button>` : ''}
         </div>
     </div>`;
 }
@@ -11316,7 +11316,7 @@ function promptNodeBodyHtml(node){
     const promptSplitPreviewH = promptNodeSplitPreviewHeight(node);
     const upstreamPromptItems = promptNodeUpstreamPromptItems(node);
     const upstreamPromptHtml = upstreamPromptItems.length ? `<div class="prompt-node-upstream">
-        <div class="prompt-node-section-title">上游输入</div>
+        <div class="prompt-node-section-title">${escapeHtml(tr('smart.upstreamInput'))}</div>
         <div class="prompt-node-upstream-list">${upstreamPromptItems.map((item, index) => `<div class="prompt-node-segment"><span>${index + 1}</span><p>${escapeHtml(item)}</p></div>`).join('')}</div>
     </div>` : '';
     const llmParams = node.llmEnabled ? `
@@ -11325,7 +11325,7 @@ function promptNodeBodyHtml(node){
             <select class="prompt-node-control prompt-llm-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
             <div class="prompt-llm-instruction-wrap">
                 <textarea class="prompt-node-control prompt-llm-instruction" placeholder="${escapeHtml(tr('smart.promptLlmInstructionPlaceholder'))}" style="height:${promptLlmInstructionHeight(node)}px">${escapeHtml(node.llmInstruction || '')}</textarea>
-                <div class="prompt-llm-instruction-resize prompt-node-control" data-llm-instruction-resize="1" title="拖动调整高度"><span></span></div>
+                <div class="prompt-llm-instruction-resize prompt-node-control" data-llm-instruction-resize="1" title="${escapeHtml(tr('smart.dragResizeHeight'))}"><span></span></div>
             </div>
             ${upstreamPromptHtml}
             <div class="prompt-node-llm-actions">
@@ -11340,16 +11340,16 @@ function promptNodeBodyHtml(node){
         </div>
         <textarea class="prompt-node-text prompt-node-control" placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
-            <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>模板库</span></button>
-            <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>分隔符</span></button>
+            <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>${escapeHtml(tr('smart.promptTemplateLibrary'))}</span></button>
+            <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>${escapeHtml(tr('smart.separator'))}</span></button>
             <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
         </div>
         ${node.promptSplitEnabled ? `<div class="prompt-node-split-row">
-            <label class="prompt-node-split-control prompt-node-control"><span>分隔符</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";"></label>
-            <span class="prompt-node-split-count">${promptItems.length || 0} 段</span>
+            <label class="prompt-node-split-control prompt-node-control"><span>${escapeHtml(tr('smart.separator'))}</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";"></label>
+            <span class="prompt-node-split-count">${escapeHtml(trf('smart.segmentCount', {n: promptItems.length || 0}))}</span>
         </div>
         <div class="prompt-node-segments" style="height:${promptSplitPreviewH}px">${promptItems.length ? promptItems.map((item, index) => `<div class="prompt-node-segment"><span>${index + 1}</span><p>${escapeHtml(item)}</p></div>`).join('') : ''}</div>
-        <div class="prompt-split-preview-resize prompt-node-control" data-prompt-split-resize="1" title="拖动调整高度"><span></span></div>` : ''}
+        <div class="prompt-split-preview-resize prompt-node-control" data-prompt-split-resize="1" title="${escapeHtml(tr('smart.dragResizeHeight'))}"><span></span></div>` : ''}
         ${inputThumbs}
         ${llmParams}
     </div>`;
@@ -11357,7 +11357,7 @@ function promptNodeBodyHtml(node){
 function refreshPromptNodeSegmentsUi(el, node){
     const items = promptNodePromptItems(node);
     const count = el.querySelector('.prompt-node-split-count');
-    if(count) count.textContent = `${items.length || 0} 段`;
+    if(count) count.textContent = trf('smart.segmentCount', {n: items.length || 0});
     const list = el.querySelector('.prompt-node-segments');
     if(list){
         list.innerHTML = items.length
@@ -11481,7 +11481,7 @@ function smartLoopBodyHtml(node){
             <div class="loop-smart-row loop-smart-prompt-actions">
                 <button class="loop-smart-control loop-smart-token loop-smart-counter-token" type="button" data-loop-token="《计数》">${escapeHtml(tr('canvas.counterToken'))}</button>
                 <span class="loop-smart-note">${escapeHtml(promptHint)}</span>
-                <button class="loop-smart-control loop-smart-add-prompt" type="button" data-loop-prompt-add="1" title="新增" aria-label="新增"><i data-lucide="plus"></i></button>
+                <button class="loop-smart-control loop-smart-add-prompt" type="button" data-loop-prompt-add="1" title="${escapeHtml(tr('smart.addNew'))}" aria-label="${escapeHtml(tr('smart.addNew'))}"><i data-lucide="plus"></i></button>
             </div>
         </div>` : ''}
         <div class="loop-smart-footer">
@@ -11501,10 +11501,10 @@ function smartGroupBodyHtml(node){
         return acc;
     }, {prompt:0, media:refThumbs.length, loop:0});
     const summary = [
-        counts.prompt ? `${counts.prompt} 提示词` : '',
-        counts.media ? `${counts.media} 图片` : '',
-        counts.loop ? `${counts.loop} 循环` : ''
-    ].filter(Boolean).join(' · ') || '双击或拖入图片';
+        counts.prompt ? trf('smart.promptCount', {n: counts.prompt}) : '',
+        counts.media ? trf('smart.imageCountLabel', {n: counts.media}) : '',
+        counts.loop ? trf('smart.loopCount', {n: counts.loop}) : ''
+    ].filter(Boolean).join(' · ') || tr('smart.promptDropHint');
     if(refThumbs.length){
         const totalThumbs = Math.max(1, Number(groupThumbLayout?.rows || 1) * Number(groupThumbLayout?.cols || 1));
         if(totalThumbs === 1 && refThumbs.length === 1){
@@ -11532,7 +11532,7 @@ function smartGroupBodyHtml(node){
     }
     return `<div class="smart-group-card">
         <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-        ${members.length ? '' : `<div class="smart-group-empty"><i data-lucide="plus"></i><span>拖入图片自动收进分组</span></div>`}
+        ${members.length ? '' : `<div class="smart-group-empty"><i data-lucide="plus"></i><span>${escapeHtml(tr('smart.groupDropHint'))}</span></div>`}
     </div>`;
 }
 function syncLocalEditInputRoles(node){
@@ -11573,28 +11573,28 @@ function localEditBodyHtml(node){
     const originalItem = (originalNode?.images || []).find(item => item?.asset_id || item?.url);
     const originalPreviewUrl = originalItem?.url || (originalItem?.asset_id ? projectMediaUrl(originalItem.asset_id) : '');
     const selectionStage = originalPreviewUrl
-        ? '<div class="local-edit-selection-stage" data-local-edit-stage><img data-local-edit-preview src="' + escapeAttr(originalPreviewUrl) + '" alt="原图选区预览" draggable="false"><canvas data-local-edit-selection-canvas aria-label="局部编辑选区"></canvas></div>'
-        : '<div class="local-edit-selection-empty">连接原图后可直接在预览图上框选或绘制</div>';
+        ? '<div class="local-edit-selection-stage" data-local-edit-stage><img data-local-edit-preview src="' + escapeAttr(originalPreviewUrl) + '" alt="' + escapeHtml(tr('smart.originalSelectionPreview')) + '" draggable="false"><canvas data-local-edit-selection-canvas aria-label="' + escapeHtml(tr('smart.localEditSelection')) + '"></canvas></div>'
+        : '<div class="local-edit-selection-empty">' + escapeHtml(tr('smart.localEditConnectHint')) + '</div>';
     const rect = Array.isArray(node.selection) ? node.selection.join(',') : '';
     return `<div class="local-edit-card" data-local-edit-node="${escapeAttr(node.id)}">
-        <div class="local-edit-roles"><div class="local-edit-connect-label">先选择角色，再从端口连接：</div><div class="local-edit-role-buttons">
-            ${['original','references','prompt'].map(role => `<button type="button" data-local-edit-connect-role="${role}" class="${node.localEditActiveRole === role ? 'active' : ''}">${role === 'original' ? '原图' : role === 'references' ? '参考' : '提示词'}</button>`).join('')}</div>
-            <label>原图<select data-local-edit-role="original">${options || '<option value="">尚未连接</option>'}</select></label>
-            <label>参考 <input data-local-edit-role="references" placeholder="连接后显示资源 ID" value="${escapeAttr((node.reference_asset_ids || []).join(','))}"></label>
-            <label>提示词 <textarea data-local-edit-role="prompt" placeholder="连接提示词节点或直接填写">${escapeHtml(connectedPrompt || node.prompt || '')}</textarea></label></div>
-        <div class="local-edit-mode" role="group" aria-label="局部编辑模式">
-            <button type="button" data-local-edit-mode="modify" class="${node.mode === 'modify' ? 'active' : ''}">局部修改</button>
-            <button type="button" data-local-edit-mode="retain" class="${node.mode === 'retain' ? 'active' : ''}">局部保留</button>
+        <div class="local-edit-roles"><div class="local-edit-connect-label">${escapeHtml(tr('smart.localEditRoleHint'))}</div><div class="local-edit-role-buttons">
+            ${['original','references','prompt'].map(role => `<button type="button" data-local-edit-connect-role="${role}" class="${node.localEditActiveRole === role ? 'active' : ''}">${role === 'original' ? tr('smart.originalImage') : role === 'references' ? tr('smart.referenceLabel') : tr('smart.promptLabel')}</button>`).join('')}</div>
+            <label>${escapeHtml(tr('smart.originalImage'))}<select data-local-edit-role="original">${options || '<option value="">' + escapeHtml(tr('smart.notConnectedYet')) + '</option>'}</select></label>
+            <label>${escapeHtml(tr('smart.referenceLabel'))} <input data-local-edit-role="references" placeholder="${escapeHtml(tr('smart.referenceIdPlaceholder'))}" value="${escapeAttr((node.reference_asset_ids || []).join(','))}"></label>
+            <label>${escapeHtml(tr('smart.promptLabel'))} <textarea data-local-edit-role="prompt" placeholder="${escapeHtml(tr('smart.promptPlaceholderLocal'))}">${escapeHtml(connectedPrompt || node.prompt || '')}</textarea></label></div>
+        <div class="local-edit-mode" role="group" aria-label="${escapeHtml(tr('smart.localEditMode'))}">
+            <button type="button" data-local-edit-mode="modify" class="${node.mode === 'modify' ? 'active' : ''}">${escapeHtml(tr('smart.localModify'))}</button>
+            <button type="button" data-local-edit-mode="retain" class="${node.mode === 'retain' ? 'active' : ''}">${escapeHtml(tr('smart.localRetain'))}</button>
         </div>
         ${selectionStage}
-        ${node.mode === 'modify' ? `<label>固定比例 <select data-local-edit-ratio><option value="1:1" ${node.aspect_ratio === '1:1' ? 'selected' : ''}>1:1</option><option value="4:3" ${node.aspect_ratio === '4:3' ? 'selected' : ''}>4:3</option><option value="16:9" ${node.aspect_ratio === '16:9' ? 'selected' : ''}>16:9</option><option value="3:4" ${node.aspect_ratio === '3:4' ? 'selected' : ''}>3:4</option></select></label>` : `<label>自由形状 <select data-local-edit-shape><option value="freehand" ${node.selectionType === 'freehand' ? 'selected' : ''}>手绘</option><option value="polygon" ${node.selectionType === 'polygon' ? 'selected' : ''}>套索</option><option value="curve" ${node.selectionType === 'curve' ? 'selected' : ''}>曲线</option></select></label>`}
-        <label>生成尺寸 <select data-local-edit-size>${['1024x1024','2048x2048','4096x4096'].map(value => `<option value="${value}" ${String(node.generation_size || '1024x1024') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-        <label>分辨率 <select data-local-edit-resolution>${['1k','2k','4k'].map(value => `<option value="${value}" ${String(node.generation_resolution || '1k') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-        <label class="local-edit-selection">${node.mode === 'modify' ? '矩形选区（原图像素 left,top,right,bottom）' : '自由形状点（JSON [[x,y], ...]）'}
+        ${node.mode === 'modify' ? `<label>${escapeHtml(tr('smart.fixedRatio'))} <select data-local-edit-ratio><option value="1:1" ${node.aspect_ratio === '1:1' ? 'selected' : ''}>1:1</option><option value="4:3" ${node.aspect_ratio === '4:3' ? 'selected' : ''}>4:3</option><option value="16:9" ${node.aspect_ratio === '16:9' ? 'selected' : ''}>16:9</option><option value="3:4" ${node.aspect_ratio === '3:4' ? 'selected' : ''}>3:4</option></select></label>` : `<label>${escapeHtml(tr('smart.freeShape'))} <select data-local-edit-shape><option value="freehand" ${node.selectionType === 'freehand' ? 'selected' : ''}>${escapeHtml(tr('smart.freehand'))}</option><option value="polygon" ${node.selectionType === 'polygon' ? 'selected' : ''}>${escapeHtml(tr('smart.polygon'))}</option><option value="curve" ${node.selectionType === 'curve' ? 'selected' : ''}>${escapeHtml(tr('smart.curve'))}</option></select></label>`}
+        <label>${escapeHtml(tr('smart.generationSize'))} <select data-local-edit-size>${['1024x1024','2048x2048','4096x4096'].map(value => `<option value="${value}" ${String(node.generation_size || '1024x1024') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label>${escapeHtml(tr('smart.resolution'))} <select data-local-edit-resolution>${['1k','2k','4k'].map(value => `<option value="${value}" ${String(node.generation_resolution || '1k') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label class="local-edit-selection">${node.mode === 'modify' ? tr('smart.rectSelection') : tr('smart.freeShapePoints')}
             <input data-local-edit-selection value="${escapeAttr(node.mode === 'modify' ? rect : JSON.stringify(node.selection || []))}"></label>
-        <label class="local-edit-feather">羽化 <input type="number" min="0" max="256" step="1" data-local-edit-feather value="${Number(node.feather_radius || 0)}"></label>
-        <button type="button" class="local-edit-submit" data-local-edit-submit="${escapeAttr(node.id)}">提交局部编辑</button>
-        ${node.output_asset_id ? `<div class="local-edit-status" role="status">已生成合成结果</div>` : '<div class="local-edit-status" role="status">等待输入</div>'}
+        <label class="local-edit-feather">${escapeHtml(tr('smart.feather'))} <input type="number" min="0" max="256" step="1" data-local-edit-feather value="${Number(node.feather_radius || 0)}"></label>
+        <button type="button" class="local-edit-submit" data-local-edit-submit="${escapeAttr(node.id)}">${escapeHtml(tr('smart.submitLocalEdit'))}</button>
+        ${node.output_asset_id ? `<div class="local-edit-status" role="status">${escapeHtml(tr('smart.localEditResultReady'))}</div>` : '<div class="local-edit-status" role="status">' + escapeHtml(tr('smart.localEditWaitingInput')) + '</div>'}
     </div>`;
 }
 function smartProjectTaskInfo(node){
@@ -11638,8 +11638,8 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     // 占位数量按真实并发数渲染（上限 8），与 pendingBoxSize 的网格公式保持一致，
     // 避免「8 张并发只显示 4 个占位」以及框尺寸与网格不一致。
     const total = Math.max(1, Math.min(8, Number(count) || 1));
-    const label = queued ? '排队中' : tr('canvas.generating');
-    const normalizedProgress = Object.keys(progress || {}).length ? progress : {phase:queued ? 'queued' : 'provider_generating', label:queued ? '排队' : '模型生成', phase_index:queued ? 0 : 3, phase_count:6};
+    const label = queued ? tr('smart.queuedWaiting') : tr('canvas.generating');
+    const normalizedProgress = Object.keys(progress || {}).length ? progress : {phase:queued ? 'queued' : 'provider_generating', label:queued ? tr('smart.phaseQueued') : tr('smart.phaseProviderGenerating'), phase_index:queued ? 0 : 3, phase_count:6};
     // #81：项目级任务（图片/视频）在占位面板上直接提供取消按钮 + 已等待时长，
     // 不必进生图历史抽屉找按钮；长视频渲染时不再「无限干等无任何反馈」。
     let cancelBtnHtml = '';
@@ -11751,7 +11751,7 @@ function nodeBodyHtml(node, layout){
     return `<div class="node-drop" data-upload-action="files">
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
-        <span class="upload-node-sub">拖拽 / 粘贴 / 双击上传</span>
+        <span class="upload-node-sub">${escapeHtml(tr('smart.uploadNodeHint'))}</span>
     </div>`;
 }
 function jimengPendingBodyHtml(node, layout){
@@ -11762,8 +11762,8 @@ function jimengPendingBodyHtml(node, layout){
         <div class="jimeng-pending-overlay">
             <div class="jimeng-pending-spinner"><i data-lucide="loader-2"></i></div>
             <div class="jimeng-pending-text">${escapeHtml(queueText)}</div>
-            <div class="jimeng-pending-sub">任务未丢失，可继续等待或手动查询</div>
-            <button class="jimeng-pending-query" type="button" data-jimeng-query="${escapeAttr(node.id)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? '查询中…' : '查询结果'}</span></button>
+            <div class="jimeng-pending-sub">${escapeHtml(tr('smart.taskNotLost'))}</div>
+            <button class="jimeng-pending-query" type="button" data-jimeng-query="${escapeAttr(node.id)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
         </div>
     </div>`;
 }
@@ -11776,15 +11776,15 @@ function smartRecoverableImageTask(node){
 function failedGenerationBodyHtml(node, tasks, layout){
     const latest = tasks[tasks.length - 1] || {};
     const error = String(latest.error || tr('smart.errRunFailed')).slice(0, 200);
-    const recovered = tasks.length > 1 ? `（含前 ${tasks.length - 1} 次失败）` : '';
-    return `<div class="loading-cell single generation-failed" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="生成失败">
+    const recovered = tasks.length > 1 ? trf('smart.includingPrevFailed', {n: tasks.length - 1}) : '';
+    return `<div class="loading-cell single generation-failed" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="${escapeHtml(tr('smart.generationFailed'))}">
         <div class="generation-failed-panel">
             <span class="generation-failed-icon"><i data-lucide="alert-triangle"></i></span>
-            <span class="generation-failed-title">生成失败${escapeHtml(recovered)}</span>
+            <span class="generation-failed-title">${escapeHtml(tr('smart.generationFailed'))}${escapeHtml(recovered)}</span>
             <span class="generation-failed-error">${escapeHtml(error)}</span>
             <div class="generation-failed-actions">
-                <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><i data-lucide="refresh-cw"></i><span>重新生成</span></button>
-                <button type="button" class="generation-failed-url" data-image-task-url="${escapeAttr(node.id)}"><i data-lucide="link"></i><span>手动填入 URL</span></button>
+                <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><i data-lucide="refresh-cw"></i><span>${escapeHtml(tr('smart.regenerate'))}</span></button>
+                <button type="button" class="generation-failed-url" data-image-task-url="${escapeAttr(node.id)}"><i data-lucide="link"></i><span>${escapeHtml(tr('smart.manualUrlFill'))}</span></button>
             </div>
         </div>
     </div>`;
@@ -11793,14 +11793,14 @@ function imageTaskRecoverBodyHtml(node, task, layout){
     const querying = Boolean(task.querying);
     const failedCount = smartPendingTasks(node).filter(item => item.failed && item.recoverTaskId).length
         + (Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks.filter(item => item.failed && item.recoverTaskId).length : 0);
-    const title = querying ? '查询中' : '任务未丢失';
-    const sub = failedCount > 1 ? `还有 ${failedCount} 个任务可查询` : `任务 ID：${task.recoverTaskId || ''}`;
+    const title = querying ? tr('smart.querying') : tr('smart.taskNotLost');
+    const sub = failedCount > 1 ? trf('smart.moreTasksToQuery', {n: failedCount}) : trf('smart.taskIdLabel', {id: task.recoverTaskId || ''});
     return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
         <div class="jimeng-pending-overlay">
             <div class="jimeng-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
             <div class="jimeng-pending-text">${escapeHtml(title)}</div>
             <div class="jimeng-pending-sub">${escapeHtml(sub)}</div>
-            <button class="jimeng-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? '查询中…' : '查询结果'}</span></button>
+            <button class="jimeng-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
         </div>
     </div>`;
 }
@@ -11826,16 +11826,16 @@ function smartNodeToolbarHtml(node){
         const displayKind = display?.url ? mediaKindForItem(display) : (img?.kind || img?.media_kind);
         return displayKind === 'image' && (display?.url || img?.asset_id);
     }).length;
-    const gridLabel = imageCount > 1 ? '宫格拼接' : '宫格切分';
+    const gridLabel = imageCount > 1 ? tr('smart.nodeToolbarGridJoin') : tr('smart.nodeToolbarGridSplit');
     const actions = [
-        {key:'preview', icon:'eye', label:'预览', enabled:kind === 'image' || kind === 'video'},
+        {key:'preview', icon:'eye', label:tr('smart.modePreview'), enabled:kind === 'image' || kind === 'video'},
         {key:'detail', icon:'info', label:tr('smart.nodeDetail'), enabled:kind === 'image'},
-        {key:'crop', icon:'crop', label:'裁剪', enabled:canEditImage},
-        {key:'outpaint', icon:'expand', label:'扩图', enabled:canEditImage},
-        {key:'mask', icon:'brush', label:'遮罩', enabled:canEditImage},
-        {key:'brush', icon:'paintbrush', label:'画笔', enabled:canEditImage},
+        {key:'crop', icon:'crop', label:tr('smart.nodeToolbarCrop'), enabled:canEditImage},
+        {key:'outpaint', icon:'expand', label:tr('smart.nodeToolbarOutpaint'), enabled:canEditImage},
+        {key:'mask', icon:'brush', label:tr('smart.nodeToolbarMask'), enabled:canEditImage},
+        {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
-        {key:'send-ps', icon:'send', label:'发送到 PS', enabled:canEditImage || Boolean(source?.asset_id)},
+        {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage || Boolean(source?.asset_id)},
         {key:'download', icon:'download', label:tr('smart.nodeDownload'), enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
@@ -11846,7 +11846,7 @@ function smartNodeToolbarHtml(node){
 function duplicateSmartNodeMediaToCanvas(node, imageIndex){
     const source = node?.images?.[imageIndex];
     const item = imageForDisplay(source);
-    if(!node || !item?.url){ toast('没有可导出到画布的素材'); return; }
+    if(!node || !item?.url){ toast(tr('smart.noExportableMedia')); return; }
     pushUndo();
     const rect = nodeRect(node);
     const point = {x:rect.x + rect.width + 220, y:rect.y + rect.height / 2};
@@ -11856,25 +11856,25 @@ function duplicateSmartNodeMediaToCanvas(node, imageIndex){
     selectedImage = {nodeId:newNode.id, index:0};
     render();
     scheduleSave();
-    toast('已添加到画布');
+    toast(tr('smart.addedToCanvas'));
 }
 async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     const item = node?.images?.[imageIndex];
     const assetId = String(item?.asset_id || '').trim();
     const projectId = canvas?.project_id || canvas?.project || canvasId || '';
-    if(!projectId || !node?.id || !assetId){ toast('当前图片还没有项目媒体原件'); return; }
+    if(!projectId || !node?.id || !assetId){ toast(tr('smart.noProjectMediaOriginal')); return; }
     try{
         if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
-            throw new Error('画布尚未保存，无法发送到 Photoshop');
+            throw new Error(tr('smart.canvasNotSavedPs'));
         }
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({source_node_id:node.id, source_media_id:assetId, ttl_seconds:300})
         });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, '发送到 Photoshop 失败'));
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
         const binding = await response.json();
-        toast(`已发送到 Photoshop：${binding.request_id}`);
-    }catch(error){ toast(error.message || '发送到 Photoshop 失败'); }
+        toast(trf('smart.sentToPs', {id: binding.request_id}));
+    }catch(error){ toast(error.message || tr('smart.sendPsFailed')); }
 }
 function runSmartNodeToolbarAction(nodeId, action){
     const node = nodes.find(n => n.id === nodeId);
@@ -11900,7 +11900,7 @@ function runSmartNodeToolbarAction(nodeId, action){
     }
     if(!item?.url) return;
     if(kind !== 'image' && action !== 'preview'){
-        toast('当前素材不支持该操作');
+        toast(tr('smart.mediaNotSupported'));
         return;
     }
     if(action === 'preview'){
@@ -11926,11 +11926,11 @@ function smartGroupToolbarHtml(node){
     const hasContent = (node.images || []).some(img => img?.url) || smartGroupMembers(node).length > 0;
     const imageCount = (node.images || []).filter(img => img?.url).length;
     const actions = [
-        {key:'arrange', icon:'layout-grid', label:'整理排列', enabled:hasContent},
-        {key:'preview', icon:'eye', label:'预览', enabled:imageCount > 0},
-        {key:'grid', icon:'grid-3x3', label:'宫格拼接', enabled:imageCount > 1},
-        {key:'download', icon:'archive', label:'批量下载', enabled:imageCount > 0},
-        {key:'ungroup', icon:'ungroup', label:'解散分组', enabled:true}
+        {key:'arrange', icon:'layout-grid', label:tr('smart.groupToolbarArrange'), enabled:hasContent},
+        {key:'preview', icon:'eye', label:tr('smart.modePreview'), enabled:imageCount > 0},
+        {key:'grid', icon:'grid-3x3', label:tr('smart.nodeToolbarGridJoin'), enabled:imageCount > 1},
+        {key:'download', icon:'archive', label:tr('smart.groupToolbarDownload'), enabled:imageCount > 0},
+        {key:'ungroup', icon:'ungroup', label:tr('smart.groupToolbarUngroup'), enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-group-menu="1">${actions.map(action => `
         <button type="button" data-smart-group-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
@@ -11944,14 +11944,14 @@ function runSmartGroupToolbarAction(nodeId, action){
     selectedIds = [];
     selectedImage = {nodeId:'', index:-1};
     if(action === 'arrange'){
-        if(arrangeSmartGroupMembers(group)){ render(); toast('已整理分组'); }
-        else toast('分组内没有可整理的节点');
+        if(arrangeSmartGroupMembers(group)){ render(); toast(tr('smart.groupArranged')); }
+        else toast(tr('smart.groupNothingToArrange'));
         return;
     }
     if(action === 'ungroup'){ ungroupNode(nodeId); return; }
     // 图片已收进分组（group.images），预览/下载/拼接直接复用单节点机器（分组就是一个多图容器）。
     const imageCount = (group.images || []).filter(img => img?.url).length;
-    if(!imageCount){ toast('分组内没有图片'); return; }
+    if(!imageCount){ toast(tr('smart.groupNoImages')); return; }
     if(action === 'preview'){
         const first = (group.images || []).findIndex(img => img?.url);
         openImagePreview(nodeId, Math.max(0, first));
@@ -11959,7 +11959,7 @@ function runSmartGroupToolbarAction(nodeId, action){
     }
     if(action === 'download'){ zipDownloadImageItems(group.title, (group.images || []).map(imageForDisplay)); return; }
     if(action === 'grid'){
-        if(imageCount <= 1){ toast('分组至少需要 2 张图片才能宫格拼接'); return; }
+        if(imageCount <= 1){ toast(tr('smart.groupNeedsTwoImages')); return; }
         const first = (group.images || []).findIndex(img => img?.url);
         openImageEditor(nodeId, Math.max(0, first));
         if(imageEditModal.classList.contains('open')){
@@ -12052,7 +12052,7 @@ function render(){
         // Keep persisted titles raw until the final text interpolation.  The
         // Agent/group/conversation titles can be user-controlled; escaping
         // here and again in the template would render entities literally.
-        const title = node.type === 'local-edit' ? (node.title || '局部编辑') : node.type === 'smart-group' ? (node.title === '万能分组' ? '智能分组' : (node.title || '智能分组')) : node.type === 'smart-conversation' ? (node.title || 'Conversation') : node.type === 'smart-agent' ? (node.title || 'Agent') : node.type === 'agent-task' ? 'Agent Task' : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
+        const title = node.type === 'local-edit' ? (node.title || tr('smart.localEditTitle')) : node.type === 'smart-group' ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === 'smart-conversation' ? (node.title || 'Conversation') : node.type === 'smart-agent' ? (node.title || 'Agent') : node.type === 'agent-task' ? 'Agent Task' : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
         const isPrompt = node.type === 'smart-prompt';
@@ -12074,7 +12074,7 @@ function render(){
         const isPending = Boolean(node.pending || isQueued || isJimengPending);
         const body = nodeBodyHtml(node, layout);
         const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
-        const hint = isSmartGroup ? '双击添加 · 拖入归组 · 选中后生成' : isAgentTask ? 'Agent 计划任务 · 状态持久保存' : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
+        const hint = isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
         const deletedInputCount = Array.isArray(node.deletedInputTombstones) ? node.deletedInputTombstones.length : 0;
         const deletedInputMarker = deletedInputCount
             ? `<div class="node-upstream-deleted-marker" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
@@ -12086,7 +12086,7 @@ function render(){
             ${runTimePillHtml(node)}
             ${deletedInputMarker}
             <div class="node-body">${body}</div>
-            ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="拖动移出分组"></div>' : ''}
+            ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
             ${(imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
@@ -12162,8 +12162,8 @@ function render(){
             <div class="node-body">${body}</div>
             <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
             ${(imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
-            <div class="node-port port-in" data-port="in" title="输入"></div>
-            <div class="node-port port-out" data-port="out" title="输出"></div>
+            <div class="node-port port-in" data-port="in" title="${escapeHtml(tr('smart.portIn'))}"></div>
+            <div class="node-port port-out" data-port="out" title="${escapeHtml(tr('smart.portOut'))}"></div>
         </div>`;
     }).join('');
     world.insertAdjacentHTML('beforeend', nodesHtml);
@@ -12772,7 +12772,7 @@ function abandonUnregisteredConversationTask(node, requestId){
     ));
     if(liveNode.messages.length !== before){
         render();
-        toast('对话任务未登记，已释放本地占位消息，可重新发送');
+        toast(tr('smart.conversationTaskReleased'));
     }
 }
 function startConversationTaskPolling(node, requestId){
@@ -12802,7 +12802,7 @@ function startConversationTaskPolling(node, requestId){
                     const data = await response.json().catch(() => ({}));
                     if(data.canvas) applyConversationCanvasResponse(data.canvas);
                     if(data.status === 'completed' || data.status === 'failed'){
-                        if(data.status === 'failed') toast(data.assistant?.error || data.message?.error || '对话任务失败');
+                        if(data.status === 'failed') toast(data.assistant?.error || data.message?.error || tr('smart.conversationTaskFailed'));
                         render();
                         return;
                     }
@@ -12838,7 +12838,7 @@ function ensureConversationExtractionMenu(){
     menu.dataset.extractPromptSelection = '';
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-hidden', 'true');
-    menu.innerHTML = '<button type="button" role="menuitem" tabindex="0" aria-label="提取选中文字为提示词" data-extract-prompt-action><i data-lucide="text-cursor-input"></i><span>提取选中文字</span></button>';
+    menu.innerHTML = '<button type="button" role="menuitem" tabindex="0" aria-label="' + escapeHtml(tr('smart.extractSelectedText')) + '" data-extract-prompt-action><i data-lucide="text-cursor-input"></i><span>' + escapeHtml(tr('smart.extractSelectedText')) + '</span></button>';
     menu.addEventListener('mousedown', event => event.stopPropagation());
     menu.addEventListener('click', event => {
         event.stopPropagation();
@@ -12978,11 +12978,11 @@ async function sendConversationMessage(node, input, button){
     let timeoutId = null;
     try {
         const projectId = conversationProjectId();
-        if(!projectId) throw new Error('对话节点缺少项目归属');
+        if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
         const mutationClient = projectCanvasMutationClient();
         const response = await mutationClient.requestAfterProjectCanvasFlush({
             flush:flushProjectCanvasBeforeGeneration,
-            failureMessage:'画布尚未保存，对话消息未发送',
+            failureMessage:tr('smart.canvasUnsavedMessageNotSent'),
             request:async () => {
                 controller = new AbortController();
                 timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -12994,7 +12994,7 @@ async function sendConversationMessage(node, input, button){
                 });
             },
         });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, '对话发送失败'));
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
         const data = await response.json();
         if(data.canvas) applyConversationCanvasResponse(data.canvas);
         else if(data.message) node.messages = [...(node.messages || []), data.message].slice(-500);
@@ -13005,10 +13005,10 @@ async function sendConversationMessage(node, input, button){
         if(error?.name === 'AbortError'){
             ensureLocalPendingConversationMessage(node, text, requestId);
             startConversationTaskPolling(node, requestId);
-            toast('请求已超时，但对话任务仍在项目内处理中');
+            toast(tr('smart.conversationTimeoutStillRunning'));
             render();
         } else {
-            toast(error?.message || '对话发送失败');
+            toast(error?.message || tr('smart.conversationSendFailed'));
         }
     } finally {
         if(timeoutId !== null) clearTimeout(timeoutId);
@@ -13097,7 +13097,7 @@ function agentTaskUrl(projectId, nodeId, taskId){
     return `/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(nodeId)}/tasks/${encodeURIComponent(taskId)}`;
 }
 function agentTaskStatusText(status){
-    return status === 'queued' ? '排队中' : status === 'running' ? '执行中' : status === 'succeeded' ? '已完成' : status === 'failed' ? '失败' : status === 'uncertain' ? '状态未知，需重试' : status || '计划中';
+    return status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.failed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusPlanning');
 }
 async function pollAgentTask(node, taskId){
     if(!node || !taskId || agentTaskPolls.has(taskId)) return;
@@ -13132,7 +13132,7 @@ async function pollAgentTask(node, taskId){
 async function planAgentNode(node, goalEl, kindEl, countEl, button){
     if(!node || node.type !== 'smart-agent' || node.agentPlanning) return;
     const goal = String(goalEl?.value || node.agentGoal || '').trim();
-    if(!goal){ toast('请先描述 Agent 目标'); return; }
+    if(!goal){ toast(tr('smart.agentGoalRequired')); return; }
     const kind = kindEl?.value === 'video' ? 'video' : kindEl?.value === 'prompt' ? 'prompt' : 'image';
     const count = Math.max(1, Math.min(kind === 'prompt' ? 1 : kind === 'video' ? 4 : 8, Number(countEl?.value) || 1));
     node.agentGoal = goal;
@@ -13150,8 +13150,8 @@ async function planAgentNode(node, goalEl, kindEl, countEl, button){
     render();
     try {
         const projectId = agentProjectId();
-        if(!projectId) throw new Error('Agent 节点缺少项目归属');
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error('画布尚未保存，计划未创建');
+        if(!projectId) throw new Error(tr('smart.agentMissingProject'));
+        if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedPlanNotCreated'));
         const requestId = String(node.agentPlanRequestId || `agent-plan-${node.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
         node.agentPlanRequestId = requestId;
         const postPlan = () => fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(node.id)}/plan`, {
@@ -13170,16 +13170,16 @@ async function planAgentNode(node, goalEl, kindEl, countEl, button){
                 const apply = window.applyConversationCanvasResponse || window.__issue13ApplyConversationCanvasResponse;
                 if(latest.canvas && typeof apply === 'function') apply(latest.canvas);
             }
-            if(!await flushProjectCanvasBeforeGeneration()) throw new Error('画布尚未保存，计划未创建');
+            if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedPlanNotCreated'));
             response = await postPlan();
         }
-        if(!response.ok) throw new Error(await responseErrorMessage(response, 'Agent 计划创建失败'));
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.agentPlanCreateFailed')));
         const data = await response.json();
         if(data.canvas) applyConversationCanvasResponse(data.canvas);
         const liveAgent = nodes.find(item => String(item.id || '') === String(node.id || ''));
         if(liveAgent && data.plan) liveAgent.agent_plan = data.plan;
-        toast('Agent 计划已生成，请确认后执行');
-    } catch(error){ toast(error.message || 'Agent 计划创建失败'); }
+        toast(tr('smart.agentPlanGeneratedConfirm'));
+    } catch(error){ toast(error.message || tr('smart.agentPlanCreateFailed')); }
     finally { node.agentPlanning = false; if(button) button.disabled = false; render(); }
 }
 async function executeAgentNode(node, button){
@@ -13195,13 +13195,13 @@ async function executeAgentNode(node, button){
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({plan_id:plan.plan_id, plan_hash:plan.plan_hash, execution_id:executionId})
         });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, 'Agent 执行失败'));
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.agentRunFailed')));
         const data = await response.json();
         if(data.plan) node.agent_plan = data.plan;
         if(data.canvas) applyConversationCanvasResponse(data.canvas);
         (data.tasks || []).forEach(task => pollAgentTask(node, task.task_id));
-        toast('Agent 已按计划开始执行');
-    } catch(error){ toast(error.message || 'Agent 执行失败'); }
+        toast(tr('smart.agentStarted'));
+    } catch(error){ toast(error.message || tr('smart.agentRunFailed')); }
     finally { node.agentExecuting = false; if(button) button.disabled = false; render(); }
 }
 function bindAgentNodeControls(el, node){
@@ -13268,7 +13268,7 @@ function bindAgentNodeControls(el, node){
     el.querySelector('[data-agent-draft-add]')?.addEventListener('click', event => {
         event.preventDefault();
         const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-        if(drafts.length >= 8){ toast('最多 8 个任务'); return; }
+        if(drafts.length >= 8){ toast(tr('smart.agentMaxTasks')); return; }
         drafts.push({kind:'image', count:1, params:{}, prompt:''});
         node.agentTaskDrafts = drafts;
         node.agentPlanRequestId = '';
@@ -13280,7 +13280,7 @@ function bindAgentNodeControls(el, node){
             event.preventDefault();
             const index = Number(removeEl.dataset.agentDraftRemove ?? 0);
             const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            if(drafts.length <= 1){ toast('至少保留一个任务'); return; }
+            if(drafts.length <= 1){ toast(tr('smart.agentMinTask')); return; }
             drafts.splice(index, 1);
             drafts.forEach((item, i) => {
                 if(!Array.isArray(item.dependencies) || !item.dependencies.length) return;
@@ -13305,13 +13305,13 @@ async function agentTaskControlAction(node, taskId, action){
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/${action}`, {method:'POST'});
         if(!response.ok){
             const detail = await response.json().catch(() => ({}));
-            showToast((detail?.detail) || (action === 'cancel' ? '取消任务失败' : '重试任务失败'), 'error');
+            showToast((detail?.detail) || (action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed')), 'error');
             return;
         }
-        showToast(action === 'cancel' ? '任务已取消' : '任务已重新排队', 'success');
+        showToast(action === 'cancel' ? tr('smart.taskCancelled') : tr('smart.taskRequeued'), 'success');
         refreshAgentPlanState(agentId);
     } catch(_){
-        showToast(action === 'cancel' ? '取消任务失败' : '重试任务失败', 'error');
+        showToast(action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed'), 'error');
     }
 }
 async function refreshAgentPlanState(agentId){
@@ -13553,22 +13553,22 @@ function bindLocalEditNodeControls(el, node){
     el.querySelector('[data-local-edit-submit]')?.addEventListener('click', async e => {
         e.preventDefault(); e.stopPropagation(); sync();
         const projectId = canvas?.project_id || canvas?.project || canvasId;
-        if(!node.original_asset_id || !node.prompt){ toast('请先填写原图和提示词'); return; }
+        if(!node.original_asset_id || !node.prompt){ toast(tr('smart.localEditNeedInput')); return; }
         const button = e.currentTarget; button.disabled = true;
         try {
-            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()) throw new Error('画布尚未保存，局部编辑未提交');
+            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedLocalEdit'));
             const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
                 original_asset_id:node.original_asset_id, reference_asset_ids:node.reference_asset_ids || [], prompt:node.prompt,
                 mode:node.mode, aspect_ratio:node.aspect_ratio || '', size:node.generation_size || '1024x1024', resolution:node.generation_resolution || '1k', selection:node.mode === 'modify' ? node.selection : {type:node.selectionType || 'freehand', points:node.selection}, feather_radius:node.feather_radius, result_node_id:node.id, base_revision:Number(canvas?.revision || 0)
             })});
-            if(!response.ok) throw new Error(await responseErrorMessage(response, '局部编辑失败'));
+            if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
             const data = await response.json();
             node.output_asset_id = data.assets?.output?.asset_id || '';
             node.model_result_asset_id = data.assets?.model_result?.asset_id || '';
             node.images = node.output_asset_id ? [{asset_id:node.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(node.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
             if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
-            toast('局部编辑完成'); render();
-        } catch(error){ toast(error.message || '局部编辑失败'); }
+            toast(tr('smart.localEditDone')); render();
+        } catch(error){ toast(error.message || tr('smart.localEditFailed')); }
         finally { button.disabled = false; }
     });
 }
@@ -13682,15 +13682,15 @@ function bindNodeEvents(){
                 const nodeId = btn.dataset.imageTaskUrl;
                 const node = nodes.find(n => String(n.id || '') === String(nodeId));
                 if(!node) return;
-                const url = prompt('请输入图片 URL');
+                const url = prompt(tr('smart.imageUrlPrompt'));
                 if(!url) return;
                 try{
-                    toast('正在下载图片...');
+                    toast(tr('smart.downloadingImage'));
                     const response = await fetch(url);
-                    if(!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
+                    if(!response.ok) throw new Error(trf('smart.downloadFailedHttp', {code: response.status}));
                     const blob = await response.blob();
                     const file = new File([blob], `image_${Date.now()}.png`, {type:'image/png'});
-                    toast('正在上传到画布...');
+                    toast(tr('smart.uploadingToCanvas'));
                     const media = await uploadProjectMedia(file);
                     // 使用 media 创建图片节点，完成该任务
                     const images = [{id:media.id, url:media.url}];
@@ -13698,9 +13698,9 @@ function bindNodeEvents(){
                     node.failedGenerationTasks = []; // 清除失败任务
                     render();
                     scheduleSave();
-                    toast('图片已成功写入画布');
+                    toast(tr('smart.imageWrittenToCanvas'));
                 }catch(err){
-                    toast(`操作失败：${err.message}`);
+                    toast(trf('smart.operationFailed', {m: err.message}));
                 }
             });
         });
@@ -14339,7 +14339,7 @@ async function renameSmartNodeImage(nodeId, imageIndex){
     const image = node?.images?.[index];
     if(!node || !image) return;
     const current = imageNameLabel(image);
-    const name = await openAssetNameDialog({title:'重命名图片', value:current, placeholder:'图片名称', cancelValue:null});
+    const name = await openAssetNameDialog({title:tr('smart.renameImage'), value:current, placeholder:tr('smart.imageName'), cancelValue:null});
     if(name === null) return;
     const next = String(name || '').trim();
     if(!next || next === current) return;
@@ -14697,7 +14697,7 @@ function setImageEditMode(mode, userTouched=false){
     if(zoomLabel) zoomLabel.style.display = isVideoPreview ? 'none' : '';
     if(cancelBtn){
         cancelBtn.style.display = '';
-        cancelBtn.textContent = isVideoPreview ? '关闭' : tr('common.cancel');
+        cancelBtn.textContent = isVideoPreview ? tr('common.close') : tr('common.cancel');
     }
     cropCanvasEl.classList.toggle('mask-mode', imageEditMode === 'mask');
     cropCanvasEl.classList.toggle('brush-mode', imageEditMode === 'brush');
@@ -14722,7 +14722,7 @@ function setImageEditMode(mode, userTouched=false){
     document.getElementById('compareToggleBtn').style.display = isPreview && !isVideoPreview ? 'inline-flex' : 'none';
     document.getElementById('compareThumbs').style.display = 'none';
     if(isPreview){
-        document.getElementById('imageEditTitle').textContent = isVideoPreview ? '预览视频' : tr('smart.previewImage');
+        document.getElementById('imageEditTitle').textContent = isVideoPreview ? tr('smart.previewVideo') : tr('smart.previewImage');
         document.getElementById('imageEditSub').textContent = isVideoPreview ? '' : tr('smart.previewHint');
         applyBtn.style.display = 'none';
         refreshComparePanel();
@@ -14731,9 +14731,9 @@ function setImageEditMode(mode, userTouched=false){
         applyImageEditZoom();
         applyBtn.style.display = '';
         if(imageEditMode === 'resize'){
-            document.getElementById('imageEditTitle').textContent = '缩放图片';
-            document.getElementById('imageEditSub').textContent = '选择缩小倍数，应用会替换当前原图';
-            applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>应用缩放</span>`;
+            document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
+            document.getElementById('imageEditSub').textContent = tr('smart.zoomImageSub');
+            applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
         } else {
             const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'brush' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
             const labelKey = imageEditMode === 'crop' ? 'canvas.applyCrop' : imageEditMode === 'outpaint' ? 'canvas.applyOutpaint' : imageEditMode === 'mask' ? 'canvas.applyMask' : imageEditMode === 'brush' ? 'canvas.applyBrush' : 'canvas.applyGrid';
@@ -14741,7 +14741,7 @@ function setImageEditMode(mode, userTouched=false){
             const subKey = imageEditMode === 'crop' ? 'canvas.cropHint' : imageEditMode === 'outpaint' ? 'canvas.outpaintHint' : imageEditMode === 'mask' ? 'canvas.maskHint2' : imageEditMode === 'brush' ? 'canvas.brushHint' : 'canvas.gridHint';
             document.getElementById('imageEditTitle').textContent = tr(titleKey);
             document.getElementById('imageEditSub').textContent = tr(subKey);
-            const applyLabel = imageEditMode === 'grid' && gridOperationMode === 'join' ? '输出拼接' : tr(labelKey);
+            const applyLabel = imageEditMode === 'grid' && gridOperationMode === 'join' ? tr('smart.outputGridJoin') : tr(labelKey);
             applyBtn.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i><span>${applyLabel}</span>`;
         }
         if(imageEditMode === 'crop'){
@@ -15069,9 +15069,9 @@ async function seekVideoForFrame(video, time){
 }
 async function exportVideoFrame(which='current'){
     const video = currentPreviewVideo();
-    if(!video){ toast('没有可导出的视频帧'); return; }
+    if(!video){ toast(tr('smart.noVideoFrames')); return; }
     if(video.readyState < 2) await waitForVideoEvent(video, 'loadeddata', 2200);
-    if(!video.videoWidth || !video.videoHeight){ toast('视频还没有加载完成'); return; }
+    if(!video.videoWidth || !video.videoHeight){ toast(tr('smart.videoNotLoaded')); return; }
     const originalTime = Number(video.currentTime || 0);
     const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     const step = videoFrameStep();
@@ -15090,17 +15090,17 @@ async function exportVideoFrame(which='current'){
         const ctx = canvasEl.getContext('2d');
         ctx.drawImage(video, 0, 0, canvasEl.width, canvasEl.height);
         const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-        if(!blob) throw new Error('导出帧失败');
+        if(!blob) throw new Error(tr('smart.frameExportFailed'));
         const editing = currentEditImage();
         const rawName = editing.image?.name || fileNameFromUrl(editing.image?.url || '') || 'video';
         const base = String(rawName).replace(/\.[a-z0-9]{2,8}$/i, '') || 'video';
         const filename = safeExportFileName(`${base}-${suffix}.png`, `${suffix}.png`);
         const uploaded = await uploadFiles([new File([blob], filename, {type:'image/png'})]);
         let frame = uploaded[0];
-        if(!frame?.url) throw new Error('导出到画布失败');
+        if(!frame?.url) throw new Error(tr('smart.exportToCanvasFailed'));
         if(canvas?.format === 'firefly-canvas-v1'){
             const owned = await importProjectMediaReference({...frame, kind:'image', mime:'image/png'});
-            if(!owned?.asset_id) throw new Error('视频帧尚未归入当前项目');
+            if(!owned?.asset_id) throw new Error(tr('smart.videoFrameNotInProject'));
             frame = {...owned, url:projectMediaUrl(owned.asset_id), preview_url:projectMediaPreviewUrl(owned.asset_id)};
         }
         frame.kind = 'image';
@@ -15116,10 +15116,10 @@ async function exportVideoFrame(which='current'){
         selectedImage = {nodeId:newNode.id, index:0};
         render();
         scheduleSave();
-        toast('已导出到画布');
+        toast(tr('smart.exportedToCanvas'));
         if(which !== 'current') await seekVideoForFrame(video, originalTime);
     } catch(e) {
-        toast((e.message || '导出帧失败').slice(0, 120));
+        toast((e.message || tr('smart.frameExportFailed')).slice(0, 120));
     }
 }
 function editDrawSnapshot(){
@@ -15578,7 +15578,7 @@ function syncGridJoinSizeControls(){
 }
 function setGridOperationMode(mode){
     gridOperationMode = mode === 'join' && canGridJoinCurrentNode() ? 'join' : 'split';
-    if(mode === 'join' && gridOperationMode !== 'join') toast('请从包含多张图片的分组打开宫格拼接');
+    if(mode === 'join' && gridOperationMode !== 'join') toast(tr('smart.gridJoinNeedsGroup'));
     syncGridOperationControls();
     refreshGridSplitPreview();
 }
@@ -15813,7 +15813,7 @@ function renderGridJoinPreview(){
     if(items.length <= 1){
         host.style.display = 'none';
         if(cropCanvasEl){ cropCanvasEl.style.width = ''; cropCanvasEl.style.height = ''; }
-        if(countEl) countEl.textContent = '分组需要至少 2 张图片';
+        if(countEl) countEl.textContent = tr('smart.gridJoinMinImages');
         return;
     }
     const layout = ensureGridJoinLayout();
@@ -15864,7 +15864,7 @@ function renderGridJoinPreview(){
         img.src = displayMediaUrl(entry.item);
         host.appendChild(img);
     });
-    if(countEl) countEl.textContent = `将拼接 ${items.length} 张图片 · 输出长边 ${Math.round(gridJoinOutputSize / 1024)}K`;
+    if(countEl) countEl.textContent = trf('smart.gridJoinPreview', {n: items.length, k: Math.round(gridJoinOutputSize / 1024)});
 }
 function refreshGridSplitPreview(){
     const canvasEl = editDrawCanvas();
@@ -16562,12 +16562,12 @@ function loadGridJoinImage(entry){
         };
         img.onerror = () => {
             if(img.dataset.proxyFallbackTried === '1'){
-                reject(new Error('图片加载失败'));
+                reject(new Error(tr('smart.imageLoadFailed')));
                 return;
             }
             const fallback = proxiedMediaUrl(entry.item);
             if(!fallback || fallback === img.src){
-                reject(new Error('图片加载失败'));
+                reject(new Error(tr('smart.imageLoadFailed')));
                 return;
             }
             img.dataset.proxyFallbackTried = '1';
@@ -16591,7 +16591,7 @@ function drawImageCover(ctx, img, dx, dy, dw, dh){
 async function applyImageGridJoin(){
     const {node, image} = currentEditImage();
     const items = currentGridJoinItems();
-    if(!node || items.length <= 1){ toast('请从包含多张图片的分组打开宫格拼接'); return; }
+    if(!node || items.length <= 1){ toast(tr('smart.gridJoinNeedsGroup')); return; }
     const layout = ensureGridJoinLayout();
     if(!layout?.items?.length) return;
     const size = gridJoinCanvasSize(layout);
@@ -16626,7 +16626,7 @@ async function applyImageGridJoin(){
         closeImageEditor();
         render();
         scheduleSave();
-        toast('已输出拼接图片');
+        toast(tr('smart.gridJoinOutputDone'));
     }
 }
 async function applyImageResize(){
@@ -16637,7 +16637,7 @@ async function applyImageResize(){
     try {
         resized = await resizedImageBlobFromEditor();
     } catch(err) {
-        toast('缩放失败：当前图片无法写入画布，请换成本地图片或重新上传后再试');
+        toast(tr('smart.zoomFailedRewrite'));
         return;
     }
     if(!resized?.blob) return;
@@ -16932,7 +16932,7 @@ function promptFlowContextImageHtml(item, {kind='reference', index=0}={}){
     const label = tr(kind === 'recent' ? 'smart.flowRecentImage' : 'smart.flowReferenceImage').replace('{n}', String(index + 1));
     const image = smartPreviewImgHtml(item, 512, `alt="${escapeAttr(label)}" draggable="false"`);
     if(kind === 'recent'){
-        return `<button class="prompt-flow-context-image is-recent" type="button" data-flow-recent-log-id="${escapeAttr(item.logId || '')}" data-flow-recent-output-index="${Number(item.outputIndex || 0)}" data-flow-recent-url="${escapeAttr(item.url || '')}" title="查看${escapeAttr(label)}详情">${image}<span>${escapeHtml(label)}</span></button>`;
+        return `<button class="prompt-flow-context-image is-recent" type="button" data-flow-recent-log-id="${escapeAttr(item.logId || '')}" data-flow-recent-output-index="${Number(item.outputIndex || 0)}" data-flow-recent-url="${escapeAttr(item.url || '')}" title="${escapeAttr(trf('smart.viewNodeDetails', {label: label}))}">${image}<span>${escapeHtml(label)}</span></button>`;
     }
     return `<figure class="prompt-flow-context-image is-reference" title="${escapeAttr(item.name || label)}">${image}<figcaption>${escapeHtml(label)}</figcaption></figure>`;
 }
@@ -17319,7 +17319,7 @@ function renderInputThumbsRow(node){
     inputThumbsRow.dataset.thumbsSig = thumbsSignature;
     inputThumbsRow.classList.toggle('has-items', Boolean(node));
     if(!node){ inputThumbsRow.innerHTML = ''; return; }
-    const addButton = `<button class="input-thumb-add ${addActive ? 'active' : ''}" type="button" data-input-add-reference title="${escapeHtml(addActive ? '收起参考图' : '添加参考图')}" aria-label="${escapeHtml(addActive ? '收起参考图' : '添加参考图')}"><i data-lucide="image-plus"></i></button>`;
+    const addButton = `<button class="input-thumb-add ${addActive ? 'active' : ''}" type="button" data-input-add-reference title="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}" aria-label="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}"><i data-lucide="image-plus"></i></button>`;
     if(!dedup.length){
         inputThumbsRow.innerHTML = `<div class="input-thumb-list empty"></div><div class="input-thumb-actions">${addButton}</div>`;
         bindInputThumbReferenceActions();
@@ -17348,7 +17348,7 @@ function renderInputThumbsRow(node){
         const sourceUrl = img.originalLocalUrl || img.url || '';
         const key = inputRefKey(img);
         const isUpstream = !manualRefKeys.has(key);
-        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-remove-reference="${escapeHtml(key)}" title="${escapeHtml(isUpstream ? '断开此参考图连线' : '删除参考图')}" aria-label="${escapeHtml(isUpstream ? '断开此参考图连线' : '删除参考图')}">×</button>`;
+        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-remove-reference="${escapeHtml(key)}" title="${escapeHtml(isUpstream ? tr('smart.disconnectRef') : tr('smart.removeRef'))}" aria-label="${escapeHtml(isUpstream ? tr('smart.disconnectRef') : tr('smart.removeRef'))}">×</button>`;
         const tooltip = [img.name || tr('smart.inputNum').replace('{n}', String(i + 1)), title, markerHint].filter(Boolean).join(' · ');
         return `<div class="input-thumb ${isSelf ? 'input-self' : ''} ${manualRefKeys.has(key) ? 'input-manual-ref' : ''}" draggable="false" data-thumb-index="${i}" data-reference-marker="${referenceMarker || ''}" data-node-id="${escapeHtml(img.nodeId || '')}" data-image-index="${img.imageIndex ?? ''}" data-url="${escapeHtml(img.url || '')}" data-source-url="${escapeHtml(sourceUrl)}" title="${escapeHtml(tooltip)}">${inner}<span class="input-thumb-label">${escapeHtml(label)}</span>${removeBtn}</div>`;
     }).join('');
@@ -17673,7 +17673,7 @@ const SMART_IMAGE_DROP_TYPE_HINT_RE = /^(?:files?|image\/.+|text\/(?:uri-list|ht
 function smartImageFilesFromDataTransfer(dataTransfer){
     return [...(dataTransfer?.files || [])].filter(isSupportedUploadFile);
 }
-async function smartResponseErrorMessage(response, fallback='请求失败'){
+async function smartResponseErrorMessage(response, fallback=tr('chat.requestFailed')){
     try {
         const data = await response.clone().json();
         const detail = data.detail ?? data.error ?? data.message;
@@ -19727,7 +19727,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
     const displayPrompt = (request.displayPrompt || '').trim();
     if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)){
         settings = previousSettings;
-        throw new Error('链路节点缺少提示词');
+        throw new Error(tr('smart.chainNodeMissingPrompt'));
     }
     const meta = {
         prompt,
@@ -19821,7 +19821,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         const request = buildPromptRequestForNode(rootNode, refsForRequest.length ? refsForRequest : null, ctx);
         const prompt = (request.prompt || '').trim();
         const displayPrompt = (request.displayPrompt || '').trim();
-        if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)) throw new Error('链路节点缺少提示词');
+        if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)) throw new Error(tr('smart.chainNodeMissingPrompt'));
         const meta = {
             prompt,
             displayPrompt:request.displayPrompt || '',
@@ -20025,10 +20025,10 @@ function cascadeRefsFromOutputs(outputs, targetNode){
     }));
 }
 function smartCascadeStopText(stopping=false){
-    return stopping ? '停止中...' : '停止运行';
+    return stopping ? tr('smart.stopping') : tr('smart.stopRun');
 }
 function smartCascadeAbortError(){
-    const err = new Error('已停止一键运行');
+    const err = new Error(tr('smart.oneClickStopped'));
     err.smartCascadeStopped = true;
     return err;
 }
@@ -20045,7 +20045,7 @@ function requestSmartCascadeStop(loopId=''){
         if(!smartCascadeRunning || smartCascadeStopRequested) return;
         smartCascadeStopRequested = true;
     }
-    toast('已请求停止，当前任务完成后停止');
+    toast(tr('smart.stopRequested'));
     render();
 }
 function smartCascadeParallelLimit(chain=[]){
@@ -20071,7 +20071,7 @@ async function runSmartCascadeRoundsWithLimit(roundIndexes, limit, runner, runSt
 }
 async function runSmartCascade(targetNode=null){
     const tail = targetNode || selectedNode();
-    if(!canRunSmartCascade(tail)){ toast('请选择链路结尾图片节点'); return; }
+    if(!canRunSmartCascade(tail)){ toast(tr('smart.cascadeTailRequired')); return; }
     savePromptDraftForCurrent();
     const graph = smartCascadeGraphForTail(tail);
     const chain = graph.path;
@@ -20267,7 +20267,7 @@ async function runSmartCascade(targetNode=null){
         selectedId = originalSelected;
         settings = originalSettings;
         promptInput.innerHTML = originalPromptHtml;
-        toast(e?.smartCascadeStopped ? '已停止一键运行' : (e.message || tr('smart.errRunFailed')).slice(0, 160));
+        toast(e?.smartCascadeStopped ? tr('smart.oneClickStopped') : (e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
         smartCascadeRuns.delete(runKey);
         syncSmartCascadeLegacyState();
@@ -20280,9 +20280,9 @@ async function runSmartCascade(targetNode=null){
 }
 function runSmartCascadeFromLoop(loopId){
     const loop = nodes.find(n => n.id === loopId && n.type === 'smart-loop');
-    if(!loop){ toast('没有找到循环节点'); return; }
+    if(!loop){ toast(tr('smart.loopNodeNotFound')); return; }
     const tail = cascadeTailForLoop(loop.id);
-    if(!tail){ toast('请把循环节点连接到下游图片链路'); return; }
+    if(!tail){ toast(tr('smart.loopNeedsTail')); return; }
     selectedId = tail.id;
     selectedIds = [];
     selectedImage = {nodeId:'', index:-1};
@@ -20521,7 +20521,7 @@ async function runGeneration(){
             pendingNode.running = false;
             pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
             scheduleSave();
-            toast((e.message || '提交结果未知，将使用同一请求标识恢复').slice(0, 160));
+            toast((e.message || tr('smart.submitUnknownRecover')).slice(0, 160));
             return;
         }
         if(handleJimengPendingSignal(pendingNode, e)){
@@ -20653,7 +20653,7 @@ async function postProjectImageTaskWithReplay(projectId, payload){
         }
         await sleep(250);
     }
-    const unknown = new Error(`提交结果未知，将使用同一请求标识恢复：${lastError?.message || '网络中断'}`);
+    const unknown = new Error(trf('smart.submitUnknownRecoverDetail', {m: lastError?.message || tr('smart.networkInterrupted')}));
     unknown.smartSubmissionUnknown = true;
     unknown.idempotencyKey = payload.idempotency_key;
     throw unknown;
@@ -20668,7 +20668,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             runSettings
         });
     if(canvas?.format === 'firefly-canvas-v1' && !runOptions.registrationQueued){
-        if(!resultNode?.id) throw new Error('项目生图缺少结果节点');
+        if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         return queueSmartGenerationRegistration(resultNode.id, () => runApiGeneration(prompt, refs, runSettings, resultNode, {
             ...runOptions,
             pendingHistoryLogId,
@@ -20676,16 +20676,16 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         }));
     }
     if(canvas?.format === 'firefly-canvas-v1'){
-        if(!resultNode?.id) throw new Error('项目生图缺少结果节点');
+        if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         const outpaintSize = validOutpaintSize(resultNode);
         const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);
         // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution
         const size = usesExplicitResolution ? sizeForRun(runSettings) : '';
         const parsed = usesExplicitResolution ? parseSizeValue(size) : null;
-        if(usesExplicitResolution && !parsed) throw new Error('生图尺寸无效');
+        if(usesExplicitResolution && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
         const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
-        if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error('参考图尚未归入当前项目');
+        if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));
         const projectId = canvas.project_id || canvas.project || canvasId;
         const payload = {
             prompt,
@@ -20718,7 +20718,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         if(!await flushProjectCanvasBeforeGeneration()){
             clearSmartGenerationSubmission(resultNode, payload.idempotency_key);
             scheduleSave();
-            throw new Error('画布尚未保存，已停止生图');
+            throw new Error(tr('smart.canvasUnsavedImageStopped'));
         }
         // The durable submission marker was saved at the previous revision.
         // A first-time replay uses the latest revision; duplicate resolution
@@ -20802,11 +20802,11 @@ function projectVideoSizeForRun(runSettings=settings){
 async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultNode=null){
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
     if(canvas?.format === 'firefly-canvas-v1'){
-        if(!resultNode?.id) throw new Error('项目视频生成缺少结果节点');
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error('画布尚未保存，已停止视频生成');
+        if(!resultNode?.id) throw new Error(tr('smart.projectVideoMissingResult'));
+        if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedVideoStopped'));
         const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(mediaKindForItem(ref)));
         const ownedRefs = await Promise.all(projectRefs.map(ref => importProjectMediaReference(ref)));
-        if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error('视频参考素材尚未归入当前项目');
+        if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error(tr('smart.videoRefsNotInProject'));
         const projectId = canvas.project_id || canvas.project || canvasId;
         const size = projectVideoSizeForRun(runSettings);
         const payload = {
@@ -20874,7 +20874,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
         const refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean).slice(0, 3);
         const videoSize = projectVideoSizeForRun(runSettings);
-        if(mismatchedAsset) toast('部分认证素材属于其它平台，已回退为普通素材。切换到对应平台的视频接口才能用 asset:// 认证地址。');
+        if(mismatchedAsset) toast(tr('smart.assetPlatformMismatch'));
         const payload = {
             prompt,
             provider_id: runSettings.videoProvider || 'comfly',
@@ -20931,7 +20931,7 @@ function projectImageTaskUrl(taskId){
 class JimengPendingSignal extends Error {
     constructor(info){
         const data = info || {};
-        super(data.message || '即梦任务排队中，可继续等待或手动查询');
+        super(data.message || tr('smart.jimengQueuedFallback'));
         this.jimengPending = true;
         this.submitId = data.submitId || data.submit_id || '';
         this.kind = data.kind || 'image';
@@ -20941,7 +20941,7 @@ class JimengPendingSignal extends Error {
 class ImageTaskRecoverSignal extends Error {
     constructor(info){
         const data = info || {};
-        super(data.message || '任务未丢失，可稍后手动查询结果');
+        super(data.message || tr('smart.taskNotLostLater'));
         this.imageTaskRecover = true;
         this.taskId = data.taskId || data.task_id || '';
         this.recoverTaskId = data.recoverTaskId || data.upstream_task_id || data.task_id || '';
@@ -20960,8 +20960,8 @@ function jimengQueueText(queueInfo){
     const qi = queueInfo || {};
     const idx = qi.queue_idx;
     const len = qi.queue_length;
-    if(idx != null && len != null) return `即梦云端排队中（第 ${idx}/${len} 位）`;
-    return '即梦云端生成中';
+    if(idx != null && len != null) return trf('smart.jimengCloudQueued', {idx: idx, len: len});
+    return tr('smart.jimengCloudGenerating');
 }
 function setNodeJimengPending(node, signal){
     if(!node || !signal || !signal.submitId) return;
@@ -21023,7 +21023,7 @@ function applyJimengQueryResult(node, data){
         delete node.jimengPending;
         node.running = false;
         node.pending = 0;
-        toast((data.error || '即梦任务失败').slice(0, 160));
+        toast((data.error || tr('smart.jimengTaskFailed')).slice(0, 160));
         render();
         scheduleStateSave();
         return true;
@@ -21056,7 +21056,7 @@ async function queryJimengNow(nodeId){
         const data = await fetchJimengQuery(submitId, kind);
         applyJimengQueryResult(node, data);
     } catch(e){
-        toast((e.message || '查询失败').slice(0, 160));
+        toast((e.message || tr('smart.queryFailed')).slice(0, 160));
     } finally {
         if(node.jimengPending) node.jimengPending.querying = false;
         render();
@@ -21082,7 +21082,7 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     if(!task || task.querying) return;
     const recoverTaskId = task.recoverTaskId || extractUpstreamTaskId(task.error || '');
     if(!recoverTaskId){
-        toast('没有任务 ID，无法查询');
+        toast(tr('smart.queryMissingTaskId'));
         return;
     }
     task.querying = true;
@@ -21104,11 +21104,11 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
             task.error = data.error || tr('smart.errRunFailed');
             toast(task.error.slice(0, 160));
         } else {
-            task.error = data.message || '任务仍在生成中，请稍后再查询';
+            task.error = data.message || tr('smart.taskStillGenerating');
             toast(task.error);
         }
     } catch(e){
-        task.error = e.message || '查询失败';
+        task.error = e.message || tr('smart.queryFailed');
         toast(task.error.slice(0, 160));
     } finally {
         const latest = smartPendingTasks(node).find(item => item.taskId === localTaskId);
@@ -21169,7 +21169,7 @@ async function pollSmartCanvasTask(taskId){
             if(task.status === 'jimeng_pending') throw new JimengPendingSignal({submitId:task.submit_id, kind:task.kind, queueInfo:task.queue_info, message:task.message});
             if(task.status === 'cancelled'){
                 const cancelledResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                const error = new Error(task.error || '任务已取消');
+                const error = new Error(task.error || tr('smart.taskCancelled'));
                 error.generationCancelled = true;
                 // 服务端终态：前端必须按服务商失败处理，不能当网络错误重试
                 error.providerFailure = true;
@@ -21382,7 +21382,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 }
                 finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
                 node.running = false;
-                toast('任务未丢失，可稍后手动查询结果');
+                toast(tr('smart.taskNotLostLater'));
                 render();
                 scheduleSave();
                 return;
@@ -21431,7 +21431,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             task._retryCount = (task._retryCount || 0) + 1;
             if(task._retryCount <= 3){
                 const delay = task._retryCount * 5000; // 5s, 10s, 15s
-                toast(`写入失败 (${task._retryCount}/3)，${delay/1000}s 后重试...`);
+                toast(trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
                 await sleep(delay);
                 // 图片回载后取消重试
                 if(activeSmartTaskPolls.has(task.taskId)){
@@ -21449,7 +21449,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                     : 0;
                 node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
                 if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                    node.failedGenerationTasks.push({taskId:task.taskId, error:`网络中断，已重试 ${task._retryCount} 次`, at:nowMs(), retryable:true});
+                    node.failedGenerationTasks.push({taskId:task.taskId, error:trf('smart.networkRetryExhausted', {n: task._retryCount}), at:nowMs(), retryable:true});
                 }
             }
             if(!node.pending && smartPendingTasks(node).length === 0){
@@ -21465,7 +21465,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 logTaskFailure(e.message || tr('smart.errRunFailed'), task);
                 if(e && typeof e === 'object') e.smartGenerationLogged = true;
             }
-            toast('写入失败，已达最大重试次数');
+            toast(tr('smart.writeFailedMaxRetries'));
             render();
             scheduleSave();
         }
@@ -21504,7 +21504,7 @@ async function retryFailedGenerationInner(node){
                     finalizeSmartPendingTask(node, failedTask.taskId, images, 'image', images.length);
                     render();
                     scheduleSave();
-                    toast(`已取回 ${images.length} 张生成结果`);
+                    toast(trf('smart.recoveredResults', {n: images.length}));
                     return;
                 }
             }catch(_){
@@ -21524,7 +21524,7 @@ async function retryFailedGenerationInner(node){
         return;
     }
     render();
-    toast('没有可重试的请求，请重新发起生成');
+    toast(tr('smart.noRetryableRequest'));
 }
 
 async function resumeSmartGenerationSubmission(node, submission){
@@ -21582,7 +21582,7 @@ async function resumeSmartGenerationSubmission(node, submission){
             clearSmartGenerationSubmission(currentNode, idempotencyKey);
             scheduleSave();
         }
-        toast((error?.message || '恢复生图提交失败').slice(0, 160));
+        toast((error?.message || tr('smart.recoverSubmitFailed')).slice(0, 160));
     } finally {
         activeSmartSubmissionRecoveries.delete(recoveryKey);
     }
@@ -21628,7 +21628,7 @@ function finishSelection(event){
 function groupSelectedNodes(){
     const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
     const selected = ids.map(id => nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
-    if(selected.length < 1){ toast('请选择要放入分组的节点'); return; }
+    if(selected.length < 1){ toast(tr('smart.groupSelectRequired')); return; }
     pushUndo();
     const rects = selected.map(nodeRect);
     const minX = Math.min(...rects.map(r => r.x));
@@ -22937,7 +22937,7 @@ if(assetAddCategoryBtn) assetAddCategoryBtn.onclick = async () => {
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({parent:localAssetFolderPath(), name})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '新建文件夹失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.folderCreateFailed'));
             return r.json();
         });
         setLocalAssetLibraryFromResponse(data);
@@ -22960,7 +22960,7 @@ if(assetRenameCategoryBtn) assetRenameCategoryBtn.onclick = async () => {
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({path:cat.id || '', name})
         }).then(async r => {
-            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '重命名文件夹失败');
+            if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.folderRenameFailed'));
             return r.json();
         });
         setLocalAssetLibraryFromResponse(data);
@@ -23551,9 +23551,15 @@ window.addEventListener('keydown', event => {
     }
 });
 window.addEventListener('studio-lang-change', () => {
+    const saveStateEl = document.getElementById('projectSaveState');
+    if(saveStateEl && saveStateEl.dataset.state){
+        const saveText = {importing: tr('smart.projectImporting'), saving: tr('smart.projectSaving'), saved: tr('smart.projectSaved'), dirty: tr('smart.projectDirty'), error: tr('smart.projectConflict')};
+        if(saveText[saveStateEl.dataset.state]) setProjectSaveState(saveStateEl.dataset.state, saveText[saveStateEl.dataset.state]);
+    }
     renderDynamicParams();
     renderInputThumbsRow(selectedNode());
     renderAssetLibrary();
+    updateSmartHistoryDrawerCollapseUi();
     if(document.getElementById('imageEditModal')?.classList.contains('open')){
         setImageEditMode(imageEditMode);
     }

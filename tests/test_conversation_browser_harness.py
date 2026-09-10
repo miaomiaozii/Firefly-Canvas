@@ -154,7 +154,7 @@ class ConversationBrowserHarnessTests(unittest.TestCase):
         self.assertIn("const CONVERSATION_MAX_NOT_FOUND_POLLS = 30", source)
         self.assertIn("notFoundPolls >= CONVERSATION_MAX_NOT_FOUND_POLLS", source)
         self.assertIn("abandonUnregisteredConversationTask(node, requestId)", source)
-        self.assertIn("可重新发送", source)
+        self.assertIn("smart.conversationTaskReleased", source)  # #97: toast moved to i18n key (zh value in static/js/i18n/smart-canvas.js)
 
     def test_browser_seed_uses_decodable_image_video_and_audio_fixtures(self):
         fixture = seed_store(self.store)
