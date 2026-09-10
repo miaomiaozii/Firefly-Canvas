@@ -175,6 +175,13 @@ STEP_DEFINITIONS = {
         "--check",
         "static/js/smart-canvas.js",
     ],
+    "excel-api-smoke": lambda python: [
+        python,
+        "-m",
+        "unittest",
+        "tests.test_excel_importer",
+        "tests.test_excel_export",
+    ],
     "surface-contract": lambda python: [python, "-m", "unittest", "tests.test_product_surface_behavior"],
     "project-contract": lambda python: [
         python,
@@ -207,13 +214,14 @@ STEP_DEFINITIONS = {
     "composer-flow-evidence": lambda python: [python, "tests/composer_flow_native_browser.py"],
     "long-content-evidence": lambda python: [python, "tests/long_content_native_browser.py"],
     "ui-integrity-evidence": lambda python: [python, "tests/ui_integrity_native_browser.py"],
+    "excel-import-evidence": lambda python: [python, "tests/excel_import_browser.py"],
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
     "browser-tracer": lambda python: [python, "tests/conversation_browser.py"],
     "browser-harness-contract": lambda python: [python, "-m", "unittest", "tests.test_conversation_browser_harness"],
 }
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "surface-contract"),
+    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract"),
     "domain": (
         "javascript-syntax",
         "surface-contract",
@@ -233,6 +241,7 @@ MODE_STEPS = {
         "composer-flow-evidence",
         "long-content-evidence",
         "ui-integrity-evidence",
+        "excel-import-evidence",
         "unit-contract-browser",
         "browser-tracer",
     ),
@@ -247,6 +256,7 @@ MODE_STEPS = {
         "composer-flow-evidence",
         "long-content-evidence",
         "ui-integrity-evidence",
+        "excel-import-evidence",
         "edge-compatibility",
         "unit-contract-browser",
         "browser-tracer",
@@ -268,6 +278,7 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "composer-flow-evidence",
         "long-content-evidence",
         "ui-integrity-evidence",
+        "excel-import-evidence",
         "edge-compatibility",
         "browser-tracer",
     )

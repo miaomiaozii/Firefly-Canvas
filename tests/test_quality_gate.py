@@ -16,6 +16,7 @@ from tests.project_linked_generation_fixture import write_project_linked_generat
 from tests.ui_integrity_fixture import write_ui_integrity_runner, write_valid_ui_integrity_artifact
 from tools.native_input_evidence import double_click_evidence, selector_owner_click_evidence
 from tools.quality_gate import (
+    BROWSER_EVIDENCE_STEP_NAMES,
     MODE_STEPS,
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
@@ -115,6 +116,23 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn(step, MODE_STEPS["trial"])
         self.assertIn(step, MODE_STEPS["release"])
 
+    def test_excel_import_evidence_runs_only_in_trial_and_release(self):
+        step = "excel-import-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
+    def test_excel_api_smoke_runs_in_fast_only(self):
+        # trial/release 的 unit-contract 分片会发现全部单测，excel 模块已在其中；
+        # fast 档只保留轻量 API 冒烟。
+        step = "excel-api-smoke"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+
     def test_long_content_runs_only_in_trial_and_release(self):
         step = "long-content-evidence"
         self.assertIn(step, STEP_DEFINITIONS)
@@ -195,6 +213,19 @@ class QualityGateTests(unittest.TestCase):
             "import unittest\n"
             "class HistoryDeletionIsolation(unittest.TestCase):\n"
             "    def test_ok(self): self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        for module_name in ("test_excel_importer.py", "test_excel_export.py"):
+            (self.fixture_root / "tests" / module_name).write_text(
+                "import unittest\n\n"
+                "class FixtureExcelContract(unittest.TestCase):\n"
+                "    def test_ok(self): self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+        (self.fixture_root / "tests" / "excel_import_browser.py").write_text(
+            "import sys\n"
+            "print('excel-import-evidence fixture ok')\n"
+            "sys.exit(0)\n",
             encoding="utf-8",
         )
         for module_name in (
@@ -481,7 +512,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "surface-contract"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -1635,9 +1666,9 @@ class QualityGateTests(unittest.TestCase):
         )
         self.write_native_browser_fixture()
         expected = {
-            "fast": (30, ["javascript-syntax", "surface-contract"]),
+            "fast": (30, ["javascript-syntax", "excel-api-smoke", "surface-contract"]),
             "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "unit-contract-browser", "browser-tracer"]),
+            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "unit-contract-browser", "browser-tracer"]),
             "release": (
                 900,
                 [
@@ -1651,6 +1682,7 @@ class QualityGateTests(unittest.TestCase):
                     "composer-flow-evidence",
                     "long-content-evidence",
                     "ui-integrity-evidence",
+                    "excel-import-evidence",
                     "edge-compatibility",
                     "unit-contract-browser",
                     "browser-tracer",

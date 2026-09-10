@@ -598,12 +598,15 @@ def load_production_app(root: Path, store: ProjectStore):
     return production_main.app
 
 
-def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str], result_timeout: float = 60):
+def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str], result_timeout: float = 60, extra_query: dict[str, str] | None = None):
     width, height = viewport
     print(f"launching {viewport} on {server.base_url}", flush=True)
     profile = Path(tempfile.mkdtemp(prefix="firefly-issue13-browser-profile-"))
     before = len(server.results)
-    query = urllib.parse.urlencode({"project": fixture["project_id"], "conversationProject": fixture["project_id"], "selectedText": fixture["selected_text"], "browserTest": "1"})
+    query = {"project": fixture["project_id"], "conversationProject": fixture["project_id"], "selectedText": fixture["selected_text"], "browserTest": "1"}
+    if extra_query:
+        query.update(extra_query)
+    query = urllib.parse.urlencode(query)
     url = f"{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
     process = subprocess.Popen(
         [
