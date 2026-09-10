@@ -260,8 +260,11 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
     }
 
 
+_CLIENT_SCRIPT_UNSET = object()
+
+
 class ConversationBrowserServer:
-    def __init__(self, store: ProjectStore, app, *, client_script: Path | None = CLIENT_SCRIPT):
+    def __init__(self, store: ProjectStore, app, *, client_script: Path | None | object = _CLIENT_SCRIPT_UNSET):
         self.store = store
         self.app = app
         self.results: list[dict] = []
@@ -279,7 +282,10 @@ class ConversationBrowserServer:
         self.lifespan_future = None
         self.delayed_conversation_response = False
         self.delayed_conversation_response_lock = threading.Lock()
-        self.client_script = client_script
+        # 三种语义：显式 Path→用之；显式 None→禁用注入（test 覆盖）；未传→构造时读
+        # harness.CLIENT_SCRIPT 模块属性（agent/canvas/local-edit 等 10+ 旧套件的注入机制，
+        # 3377b2b 误把默认参数绑死导致它们静默跑错 client）。
+        self.client_script = CLIENT_SCRIPT if client_script is _CLIENT_SCRIPT_UNSET else client_script
         owner = self
         if self.client_script is not None and not self.client_script.is_file():
             raise FileNotFoundError(f"conversation browser client is missing: {self.client_script}")

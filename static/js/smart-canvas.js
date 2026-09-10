@@ -1186,6 +1186,7 @@ function canvasForStorage(){
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
         if(node.type === 'smart-conversation') delete node.conversationSending;
+        if(node.type === 'local-edit') delete node._leBusy;
         if(node.type === 'smart-agent') {
             // Planning/execution flags belong to the live editor only.  The durable
             // plan itself is stored as agent_plan and remains reload-safe.
@@ -2375,6 +2376,20 @@ function imageLayout(images, scale=1, node=null){
             rows:1,
             width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : 300),
             height:Math.round(Number.isFinite(explicitH) && explicitH > 24 ? explicitH : 236),
+            thumb:96,
+            single:true,
+        };
+    }
+    if(node?.type === 'local-edit'){
+        // 局部编辑是表单型节点：尺寸由节点自身 w/h 决定（可拖拽调大小），
+        // 不走媒体节点的单图/批量布局，否则卡片会溢出外框。
+        const explicitW = Number(node.w);
+        const explicitH = Number(node.h);
+        return {
+            cols:1,
+            rows:1,
+            width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : LOCAL_EDIT_NODE_W),
+            height:Math.round(Number.isFinite(explicitH) && explicitH > 24 ? explicitH : LOCAL_EDIT_NODE_H),
             thumb:96,
             single:true,
         };
@@ -7928,13 +7943,29 @@ function createAgentNode(x, y, options={}){
 }
 function createLocalEditNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('local-edit'), type:'local-edit', x, y, w:360, h:330, title:'局部编辑', mode:'modify',
-        original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[0,0,256,256], feather_radius:8, images:[], created_at:Date.now()};
+    const node = {id:uid('local-edit'), type:'local-edit', x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
+        original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
     nodes.push(node);
     if(options.select !== false) selectedId = node.id;
     render();
     scheduleSave();
     return node;
+}
+// 工具排「局部编辑」：在图片节点旁创建 local-edit 节点并自动连好原图角色，
+// 用户只需要画选区+写提示词，不需要先学端口连线。
+function createLocalEditNodeFromImage(nodeId, imageIndex=null){
+    const node = nodes.find(n => n.id === nodeId);
+    if(!node) return;
+    const source = imageIndex == null ? (node.images || [])[0] : (node.images || [])[imageIndex];
+    if(!source){ toast(tr('smart.noExportableMedia')); return; }
+    const rect = nodeRect(node);
+    const point = {x:rect.x + rect.width + 140, y:Math.max(40, rect.y + Math.max(0, rect.height / 2 - LOCAL_EDIT_NODE_H / 2))};
+    const created = createLocalEditNode(point.x, point.y, {select:true});
+    created.localEditActiveRole = 'original';
+    const connected = connectInputNode(nodeId, created.id);
+    render();
+    scheduleSave();
+    toast(connected ? tr('smart.localEditCreated') : tr('smart.localEditConnectHint'));
 }
 function createLoopNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
@@ -11535,6 +11566,10 @@ function smartGroupBodyHtml(node){
         ${members.length ? '' : `<div class="smart-group-empty"><i data-lucide="plus"></i><span>${escapeHtml(tr('smart.groupDropHint'))}</span></div>`}
     </div>`;
 }
+// #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
+// 360x330 会溢出外框；卡片内部可滚动，用户仍可拖右下角调整。
+const LOCAL_EDIT_NODE_W = 400;
+const LOCAL_EDIT_NODE_H = 600;
 function syncLocalEditInputRoles(node){
     if(!node || node.type !== 'local-edit') return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
@@ -11558,43 +11593,101 @@ function syncLocalEditInputRoles(node){
     }).filter((assetId, index, all) => all.indexOf(assetId) === index);
     return map;
 }
+function localEditFullImageRect(imageW, imageH, ratio){
+    // 原图内满足精确比例的最大内接矩形（居中）。用于连接原图后的初始选区与「重置选区」，
+    // 保证 modify 模式提交时后端 ±0.02 比例校验必然通过。
+    if(!(imageW > 0) || !(imageH > 0) || !(ratio > 0)) return null;
+    let w = imageW, h = imageW / ratio;
+    if(h > imageH){ h = imageH; w = imageH * ratio; }
+    const left = Math.round((imageW - w) / 2), top = Math.round((imageH - h) / 2);
+    return [left, top, Math.min(imageW, Math.round(left + w)), Math.min(imageH, Math.round(top + h))];
+}
 function localEditBodyHtml(node){
-    const imageNodes = nodes.filter(item => (item.images || []).some(image => image?.asset_id || image?.url));
     const roleMap = syncLocalEditInputRoles(node);
     const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
-    const connectedIds = new Set([roleMap.originalNode, ...(roleMap.referenceNodes || []), ...promptNodeIds].filter(Boolean));
-    const connectedPrompt = promptNodeIds.map(id => nodes.find(item => item.id === id))
-        .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean).join('\n\n');
-    const options = imageNodes.filter(item => connectedIds.has(item.id)).map(item => {
-        const asset = (item.images || []).find(img => img?.asset_id) || item.images?.[0] || {};
-        return `<option value="${escapeAttr(asset.asset_id || '')}" ${asset.asset_id === node.original_asset_id ? 'selected' : ''}>${escapeHtml(item.title || item.id)}</option>`;
-    }).join('');
     const originalNode = nodes.find(item => item.id === roleMap.originalNode);
     const originalItem = (originalNode?.images || []).find(item => item?.asset_id || item?.url);
     const originalPreviewUrl = originalItem?.url || (originalItem?.asset_id ? projectMediaUrl(originalItem.asset_id) : '');
-    const selectionStage = originalPreviewUrl
+    const promptConnected = promptNodeIds.length > 0;
+    const connectedPrompt = promptNodeIds.map(id => nodes.find(item => item.id === id))
+        .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean).join('\n\n');
+    const promptValue = promptConnected ? connectedPrompt : (node.prompt || '');
+    const selectionOk = node.mode === 'modify'
+        ? (Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0] && node.selection[3] > node.selection[1])
+        : (Array.isArray(node.selection) && node.selection.length >= (node.selectionType === 'polygon' ? 3 : 2));
+    const selState = !roleMap.originalNode || !node.original_asset_id
+        ? 'needOriginal'
+        : !selectionOk ? 'needSelection'
+        : !String(node.prompt || '').trim() ? 'needPrompt'
+        : node._leBusy ? 'busy'
+        : node.output_asset_id ? 'done'
+        : 'ready';
+    const selStateText = {
+        needOriginal: tr('smart.localEditNeedOriginal'),
+        needSelection: tr('smart.localEditNeedSelection'),
+        needPrompt: tr('smart.localEditNeedPrompt'),
+        busy: tr('smart.localEditGenerating'),
+        done: tr('smart.localEditResultReady'),
+        ready: tr('smart.localEditReady')
+    }[selState];
+    const roleChip = (role, filled, valueText) =>
+        `<button type="button" class="local-edit-role-chip ${node.localEditActiveRole === role ? 'active' : ''} ${filled ? 'filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint'))}"><span>${escapeHtml(valueText)}</span></button>`;
+    const originalLabel = originalNode
+        ? trf('smart.localEditRoleOriginalConnected', {name: originalNode.title || originalNode.id})
+        : tr('smart.localEditRoleConnect');
+    const referenceCount = (roleMap.referenceNodes || []).length;
+    const referenceLabel = referenceCount ? trf('smart.localEditRoleReferencesCount', {n: referenceCount}) : tr('smart.localEditRoleConnect');
+    const promptLabel = promptConnected ? trf('smart.localEditRolePromptCount', {n: promptNodeIds.length}) : tr('smart.localEditRoleConnect');
+    const stage = originalPreviewUrl
         ? '<div class="local-edit-selection-stage" data-local-edit-stage><img data-local-edit-preview src="' + escapeAttr(originalPreviewUrl) + '" alt="' + escapeHtml(tr('smart.originalSelectionPreview')) + '" draggable="false"><canvas data-local-edit-selection-canvas aria-label="' + escapeHtml(tr('smart.localEditSelection')) + '"></canvas></div>'
         : '<div class="local-edit-selection-empty">' + escapeHtml(tr('smart.localEditConnectHint')) + '</div>';
-    const rect = Array.isArray(node.selection) ? node.selection.join(',') : '';
+    const stageHint = !originalPreviewUrl ? ''
+        : node.mode === 'modify' ? tr('smart.localEditHintModify')
+        : node.selectionType === 'polygon' ? tr('smart.localEditHintPolygon')
+        : node.selectionType === 'curve' ? tr('smart.localEditHintCurve')
+        : tr('smart.localEditHintFreehand');
+    const resultHtml = node.images?.[0]?.asset_id
+        ? '<div class="local-edit-result" data-local-edit-result><img src="' + escapeAttr(projectMediaUrl(node.images[0].asset_id)) + '" alt="' + escapeHtml(tr('smart.localEditResultTitle')) + '"></div>'
+        : '';
     return `<div class="local-edit-card" data-local-edit-node="${escapeAttr(node.id)}">
-        <div class="local-edit-roles"><div class="local-edit-connect-label">${escapeHtml(tr('smart.localEditRoleHint'))}</div><div class="local-edit-role-buttons">
-            ${['original','references','prompt'].map(role => `<button type="button" data-local-edit-connect-role="${role}" class="${node.localEditActiveRole === role ? 'active' : ''}">${role === 'original' ? tr('smart.originalImage') : role === 'references' ? tr('smart.referenceLabel') : tr('smart.promptLabel')}</button>`).join('')}</div>
-            <label>${escapeHtml(tr('smart.originalImage'))}<select data-local-edit-role="original">${options || '<option value="">' + escapeHtml(tr('smart.notConnectedYet')) + '</option>'}</select></label>
-            <label>${escapeHtml(tr('smart.referenceLabel'))} <input data-local-edit-role="references" placeholder="${escapeHtml(tr('smart.referenceIdPlaceholder'))}" value="${escapeAttr((node.reference_asset_ids || []).join(','))}"></label>
-            <label>${escapeHtml(tr('smart.promptLabel'))} <textarea data-local-edit-role="prompt" placeholder="${escapeHtml(tr('smart.promptPlaceholderLocal'))}">${escapeHtml(connectedPrompt || node.prompt || '')}</textarea></label></div>
-        <div class="local-edit-mode" role="group" aria-label="${escapeHtml(tr('smart.localEditMode'))}">
-            <button type="button" data-local-edit-mode="modify" class="${node.mode === 'modify' ? 'active' : ''}">${escapeHtml(tr('smart.localModify'))}</button>
-            <button type="button" data-local-edit-mode="retain" class="${node.mode === 'retain' ? 'active' : ''}">${escapeHtml(tr('smart.localRetain'))}</button>
+        <div class="local-edit-heading">
+            <span class="local-edit-heading-title"><i data-lucide="lasso"></i>${escapeHtml(tr('smart.localEditTitle'))}</span>
+            <div class="local-edit-mode" role="group" aria-label="${escapeHtml(tr('smart.localEditMode'))}">
+                <button type="button" data-local-edit-mode="modify" class="${node.mode === 'modify' ? 'active' : ''}">${escapeHtml(tr('smart.localModify'))}</button>
+                <button type="button" data-local-edit-mode="retain" class="${node.mode === 'retain' ? 'active' : ''}">${escapeHtml(tr('smart.localRetain'))}</button>
+            </div>
         </div>
-        ${selectionStage}
-        ${node.mode === 'modify' ? `<label>${escapeHtml(tr('smart.fixedRatio'))} <select data-local-edit-ratio><option value="1:1" ${node.aspect_ratio === '1:1' ? 'selected' : ''}>1:1</option><option value="4:3" ${node.aspect_ratio === '4:3' ? 'selected' : ''}>4:3</option><option value="16:9" ${node.aspect_ratio === '16:9' ? 'selected' : ''}>16:9</option><option value="3:4" ${node.aspect_ratio === '3:4' ? 'selected' : ''}>3:4</option></select></label>` : `<label>${escapeHtml(tr('smart.freeShape'))} <select data-local-edit-shape><option value="freehand" ${node.selectionType === 'freehand' ? 'selected' : ''}>${escapeHtml(tr('smart.freehand'))}</option><option value="polygon" ${node.selectionType === 'polygon' ? 'selected' : ''}>${escapeHtml(tr('smart.polygon'))}</option><option value="curve" ${node.selectionType === 'curve' ? 'selected' : ''}>${escapeHtml(tr('smart.curve'))}</option></select></label>`}
-        <label>${escapeHtml(tr('smart.generationSize'))} <select data-local-edit-size>${['1024x1024','2048x2048','4096x4096'].map(value => `<option value="${value}" ${String(node.generation_size || '1024x1024') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-        <label>${escapeHtml(tr('smart.resolution'))} <select data-local-edit-resolution>${['1k','2k','4k'].map(value => `<option value="${value}" ${String(node.generation_resolution || '1k') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-        <label class="local-edit-selection">${node.mode === 'modify' ? tr('smart.rectSelection') : tr('smart.freeShapePoints')}
-            <input data-local-edit-selection value="${escapeAttr(node.mode === 'modify' ? rect : JSON.stringify(node.selection || []))}"></label>
-        <label class="local-edit-feather">${escapeHtml(tr('smart.feather'))} <input type="number" min="0" max="256" step="1" data-local-edit-feather value="${Number(node.feather_radius || 0)}"></label>
-        <button type="button" class="local-edit-submit" data-local-edit-submit="${escapeAttr(node.id)}">${escapeHtml(tr('smart.submitLocalEdit'))}</button>
-        ${node.output_asset_id ? `<div class="local-edit-status" role="status">${escapeHtml(tr('smart.localEditResultReady'))}</div>` : '<div class="local-edit-status" role="status">' + escapeHtml(tr('smart.localEditWaitingInput')) + '</div>'}
+        <div class="local-edit-scroll">
+            <div class="local-edit-roles">
+                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.originalImage'))}</span>${roleChip('original', Boolean(originalNode), originalLabel)}</div>
+                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.referenceLabel'))}</span>${roleChip('references', referenceCount > 0, referenceLabel)}</div>
+                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.promptLabel'))}</span>${roleChip('prompt', promptConnected, promptLabel)}</div>
+            </div>
+            <div class="local-edit-stage-wrap">
+                ${stage}
+                <div class="local-edit-stage-bar">
+                    <span class="local-edit-stage-hint">${escapeHtml(stageHint)}</span>
+                    ${originalPreviewUrl ? `<button type="button" class="local-edit-stage-action" data-local-edit-reset-selection>${escapeHtml(tr('smart.localEditResetSelection'))}</button>` : ''}
+                </div>
+            </div>
+            <div class="local-edit-prompt-wrap">
+                <span class="local-edit-prompt-label">${escapeHtml(tr('smart.promptLabel'))}${promptConnected ? ' · ' + escapeHtml(tr('smart.localEditPromptFromNodes')) : ''}</span>
+                <textarea data-local-edit-role="prompt" ${promptConnected ? 'readonly' : ''} placeholder="${escapeHtml(tr('smart.promptPlaceholderLocal'))}">${escapeHtml(promptValue)}</textarea>
+            </div>
+            <div class="local-edit-params">
+                ${node.mode === 'modify'
+                    ? `<label>${escapeHtml(tr('smart.fixedRatio'))}<select data-local-edit-ratio><option value="1:1" ${node.aspect_ratio === '1:1' ? 'selected' : ''}>1:1</option><option value="4:3" ${node.aspect_ratio === '4:3' ? 'selected' : ''}>4:3</option><option value="16:9" ${node.aspect_ratio === '16:9' ? 'selected' : ''}>16:9</option><option value="3:4" ${node.aspect_ratio === '3:4' ? 'selected' : ''}>3:4</option></select></label>`
+                    : `<label>${escapeHtml(tr('smart.freeShape'))}<select data-local-edit-shape><option value="freehand" ${node.selectionType === 'freehand' ? 'selected' : ''}>${escapeHtml(tr('smart.freehand'))}</option><option value="polygon" ${node.selectionType === 'polygon' ? 'selected' : ''}>${escapeHtml(tr('smart.polygon'))}</option><option value="curve" ${node.selectionType === 'curve' ? 'selected' : ''}>${escapeHtml(tr('smart.curve'))}</option></select></label>`}
+                <label>${escapeHtml(tr('smart.generationSize'))}<select data-local-edit-size>${['1024x1024','2048x2048','4096x4096'].map(value => `<option value="${value}" ${String(node.generation_size || '1024x1024') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+                <label>${escapeHtml(tr('smart.resolution'))}<select data-local-edit-resolution>${['1k','2k','4k'].map(value => `<option value="${value}" ${String(node.generation_resolution || '1k') === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+                <label>${escapeHtml(tr('smart.feather'))}<input type="number" min="0" max="256" step="1" data-local-edit-feather value="${Number(node.feather_radius || 0)}"></label>
+            </div>
+            ${resultHtml}
+        </div>
+        <div class="local-edit-footer">
+            <span class="local-edit-status ${selState === 'needOriginal' || selState === 'needSelection' || selState === 'needPrompt' ? 'is-blocked' : ''}" data-local-edit-status role="status">${escapeHtml(selStateText)}</span>
+            <button type="button" class="local-edit-submit" data-local-edit-submit="${escapeAttr(node.id)}" ${selState === 'needOriginal' || selState === 'needSelection' || selState === 'needPrompt' || node._leBusy ? 'disabled' : ''}>${escapeHtml(tr('smart.submitLocalEdit'))}</button>
+        </div>
     </div>`;
 }
 function smartProjectTaskInfo(node){
@@ -11833,6 +11926,7 @@ function smartNodeToolbarHtml(node){
         {key:'crop', icon:'crop', label:tr('smart.nodeToolbarCrop'), enabled:canEditImage},
         {key:'outpaint', icon:'expand', label:tr('smart.nodeToolbarOutpaint'), enabled:canEditImage},
         {key:'mask', icon:'brush', label:tr('smart.nodeToolbarMask'), enabled:canEditImage},
+        {key:'local-edit', icon:'lasso', label:tr('smart.localEditTitle'), enabled:canEditImage},
         {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
         {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage || Boolean(source?.asset_id)},
@@ -11896,6 +11990,10 @@ function runSmartNodeToolbarAction(nodeId, action){
     }
     if(action === 'send-ps'){
         sendSmartNodeImageToPhotoshop(node, index);
+        return;
+    }
+    if(action === 'local-edit'){
+        createLocalEditNodeFromImage(nodeId, index);
         return;
     }
     if(!item?.url) return;
@@ -13366,14 +13464,23 @@ function bindLocalEditNodeControls(el, node){
         btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
         btn.addEventListener('click', e => {
             e.preventDefault(); e.stopPropagation();
-            node.mode = btn.dataset.localEditMode === 'retain' ? 'retain' : 'modify';
+            const nextMode = btn.dataset.localEditMode === 'retain' ? 'retain' : 'modify';
+            if(nextMode === node.mode) return;
+            const size = sourceImageSize();
+            node.mode = nextMode;
+            if(nextMode === 'modify'){
+                const isRect = Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0];
+                const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
+                const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
+                if(!isRect) node.selection = localEditFullImageRect(size.width, size.height, ratio) || [];
+            } else if(Array.isArray(node.selection) && node.selection.length && !Array.isArray(node.selection[0])){
+                // 矩形选区无法直接转点列：清空，等用户按新形状重画。
+                node.selection = [];
+            }
             render(); scheduleSave();
         });
     });
-    const original = el.querySelector('[data-local-edit-role="original"]');
-    const references = el.querySelector('[data-local-edit-role="references"]');
     const prompt = el.querySelector('[data-local-edit-role="prompt"]');
-    const selection = el.querySelector('[data-local-edit-selection]');
     const ratio = el.querySelector('[data-local-edit-ratio]');
     const shape = el.querySelector('[data-local-edit-shape]');
     const generationSize = el.querySelector('[data-local-edit-size]');
@@ -13382,8 +13489,9 @@ function bindLocalEditNodeControls(el, node){
     const selectionCanvas = el.querySelector('[data-local-edit-selection-canvas]');
     const selectionPreview = el.querySelector('[data-local-edit-preview]');
     let selectionDrag = null;
+    let lastOriginalAsset = node.original_asset_id || '';
     const sourceImageSize = () => {
-        const sourceNode = nodes.find(item => item.id === (node.localEditInputRoles.originalNode || ''));
+        const sourceNode = nodes.find(item => item.id === (node.localEditInputRoles?.originalNode || ''));
         const sourceItem = (sourceNode?.images || []).find(item => item?.asset_id || item?.url) || {};
         return {
             width: Math.max(1, Number(selectionPreview?.naturalWidth || sourceItem.natural_w || sourceItem.width || 1)),
@@ -13425,6 +13533,20 @@ function bindLocalEditNodeControls(el, node){
         y = Math.max(0, Math.min(maxHeight - h, y));
         return {x, y, w, h};
     };
+    const strokeSmoothPath = (ctx, pts) => {
+        ctx.beginPath();
+        if(pts.length < 2){ ctx.stroke(); return; }
+        ctx.moveTo(pts[0].x, pts[0].y);
+        if(pts.length === 2){ ctx.lineTo(pts[1].x, pts[1].y); }
+        else {
+            for(let i = 1; i < pts.length - 1; i++){
+                const midX = (pts[i].x + pts[i + 1].x) / 2, midY = (pts[i].y + pts[i + 1].y) / 2;
+                ctx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
+            }
+            ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        }
+        ctx.stroke();
+    };
     const drawSelection = draft => {
         if(!selectionCanvas) return;
         const bounds = selectionCanvas.getBoundingClientRect();
@@ -13449,7 +13571,7 @@ function bindLocalEditNodeControls(el, node){
                 ctx.strokeRect(dragRect.x, dragRect.y, dragRect.w, dragRect.h);
                 return;
             }
-            let rect = draft?.rect || (Array.isArray(node.selection) && node.selection.length === 4 ? node.selection : null);
+            const rect = Array.isArray(node.selection) && node.selection.length === 4 ? node.selection : null;
             if(!rect) return;
             const size = sourceImageSize();
             const x = Number(rect[0]) * width / size.width;
@@ -13459,38 +13581,62 @@ function bindLocalEditNodeControls(el, node){
             ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
             return;
         }
-        const points = draft?.points || (Array.isArray(node.selection) ? node.selection : []);
-        if(!Array.isArray(points) || points.length < 1) return;
+        // retain：freehand / polygon / curve 三种可视化与后端 rasterize 语义对齐
+        // （freehand 与 curve 是描边笔迹、polygon 是填充多边形，线宽 12 原图像素）。
         const size = sourceImageSize();
+        let displayPts;
+        if(Array.isArray(draft?.points) && draft.points.length) displayPts = draft.points;
+        else displayPts = (Array.isArray(node.selection) ? node.selection : []).map(p => ({
+            x: Number(p?.[0] || 0) * width / size.width,
+            y: Number(p?.[1] || 0) * height / size.height
+        }));
+        if(!displayPts.length) return;
+        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        const strokeW = Math.max(2, 12 * width / size.width);
+        if(node.selectionType === 'polygon'){
+            ctx.beginPath();
+            displayPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+            if(draft?.rubber) ctx.lineTo(draft.rubber.x, draft.rubber.y);
+            if(draft){ ctx.stroke(); }
+            else { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+            ctx.beginPath(); ctx.arc(displayPts[0].x, displayPts[0].y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#0284c7'; ctx.fill();
+            return;
+        }
+        ctx.lineWidth = strokeW;
+        if(node.selectionType === 'curve'){
+            const pts = (draft?.rubber && draft.points?.length) ? [...displayPts, draft.rubber] : displayPts;
+            strokeSmoothPath(ctx, pts);
+            return;
+        }
         ctx.beginPath();
-        points.forEach((point, index) => {
-            const x = Number(point?.[0] || 0) * width / size.width;
-            const y = Number(point?.[1] || 0) * height / size.height;
-            if(index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        if(node.selectionType === 'polygon' && points.length > 2) ctx.closePath();
-        if(node.selectionType === 'polygon') ctx.fill(); else ctx.stroke();
+        displayPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        ctx.stroke();
     };
-    const commitDrawnSelection = () => {
-        if(!selectionDrag || !selectionCanvas) return;
-        const bounds = selectionCanvas.getBoundingClientRect();
-        const size = sourceImageSize();
+    const commitSelection = displayPoints => {
+        if(!selectionCanvas) return;
         if(node.mode === 'modify'){
             const displayRect = displayRectFromDrag(selectionDrag);
             if(!displayRect || displayRect.w < 2 || displayRect.h < 2) return;
-            const {x, y, w, h} = displayRect;
-            const left = Math.max(0, Math.min(size.width - 1, Math.round(x * size.width / bounds.width)));
-            const top = Math.max(0, Math.min(size.height - 1, Math.round(y * size.height / bounds.height)));
-            const right = Math.max(left + 1, Math.min(size.width, Math.round((x + w) * size.width / bounds.width)));
-            const bottom = Math.max(top + 1, Math.min(size.height, Math.round((y + h) * size.height / bounds.height)));
-            node.selection = [left, top, right, bottom];
-            if(selection) selection.value = node.selection.join(',');
+            const bounds = selectionCanvas.getBoundingClientRect();
+            const size = sourceImageSize();
+            let left = Math.round(displayRect.x * size.width / Math.max(1, bounds.width));
+            let top = Math.round(displayRect.y * size.height / Math.max(1, bounds.height));
+            let w = Math.round(displayRect.w * size.width / Math.max(1, bounds.width));
+            let h = Math.round(displayRect.h * size.height / Math.max(1, bounds.height));
+            const ratio = selectionAspect();
+            if(w / Math.max(1, h) > ratio) w = Math.max(1, Math.round(h * ratio));
+            else h = Math.max(1, Math.round(w / ratio));
+            left = Math.max(0, Math.min(size.width - w, left));
+            top = Math.max(0, Math.min(size.height - h, top));
+            node.selection = [left, top, left + w, top + h];
         } else {
-            const points = (selectionDrag.points || []).map(sourcePoint);
-            if(points.length < (node.selectionType === 'polygon' ? 3 : 2)) return;
+            const points = (displayPoints || []).map(sourcePoint);
+            const min = node.selectionType === 'polygon' ? 3 : 2;
+            if(points.length < min) return;
             node.selection = points;
-            if(selection) selection.value = JSON.stringify(points);
         }
+        node._leSelectionAsset = node.original_asset_id || '';
         sync();
         drawSelection();
     };
@@ -13499,62 +13645,155 @@ function bindLocalEditNodeControls(el, node){
         event.preventDefault(); event.stopPropagation();
         try { selectionCanvas.setPointerCapture?.(event.pointerId); } catch (_) {}
         const point = displayPoint(event);
-        selectionDrag = node.mode === 'modify'
-            ? {start:point, current:point}
-            : {points:[point]};
+        if(node.mode === 'modify'){
+            selectionDrag = {start:point, current:point};
+            drawSelection(selectionDrag);
+            return;
+        }
+        // retain
+        if(!selectionDrag || node.selectionType === 'freehand'){
+            selectionDrag = {points:[point]};
+            drawSelection(selectionDrag);
+            return;
+        }
+        // polygon / curve：每次点击加一个点；polygon 点回起点（14px 内）闭合提交
+        if(node.selectionType === 'polygon' && selectionDrag.points.length >= 3){
+            const first = selectionDrag.points[0];
+            if(Math.hypot(point.x - first.x, point.y - first.y) < 14){ commitSelection(selectionDrag.points); selectionDrag = null; return; }
+        }
+        const lastPt = selectionDrag.points[selectionDrag.points.length - 1];
+        if(!selectionDrag.points.length || Math.hypot(point.x - lastPt.x, point.y - lastPt.y) >= 3) selectionDrag.points.push(point);
         drawSelection(selectionDrag);
     };
     const moveSelectionPointer = event => {
         if(!selectionDrag) return;
         event.preventDefault(); event.stopPropagation();
         const point = displayPoint(event);
-        if(node.mode === 'modify') selectionDrag.current = point;
-        else if(!selectionDrag.points.length || Math.hypot(point.x - selectionDrag.points[selectionDrag.points.length - 1].x, point.y - selectionDrag.points[selectionDrag.points.length - 1].y) >= 2) selectionDrag.points.push(point);
+        if(node.mode === 'modify'){
+            selectionDrag.current = point;
+        } else if(node.selectionType === 'freehand'){
+            if(!selectionDrag.points.length || Math.hypot(point.x - selectionDrag.points[selectionDrag.points.length - 1].x, point.y - selectionDrag.points[selectionDrag.points.length - 1].y) >= 2) selectionDrag.points.push(point);
+        } else {
+            selectionDrag.rubber = point;
+        }
         drawSelection(selectionDrag);
     };
     const endSelectionPointer = event => {
         if(!selectionDrag) return;
         event.preventDefault(); event.stopPropagation();
-        commitDrawnSelection();
         try { selectionCanvas?.releasePointerCapture?.(event.pointerId); } catch (_) {}
+        if(node.mode === 'modify' || node.selectionType === 'freehand'){
+            commitSelection(node.mode === 'modify' ? null : selectionDrag.points);
+            selectionDrag = null;
+        }
+    };
+    const doubleClickSelection = event => {
+        event.preventDefault(); event.stopPropagation();
+        if(node.mode !== 'retain' || node.selectionType === 'freehand') return;
+        const min = node.selectionType === 'polygon' ? 3 : 2;
+        if(selectionDrag?.points?.length >= min) commitSelection(selectionDrag.points);
         selectionDrag = null;
+        drawSelection();
     };
     selectionCanvas?.addEventListener('pointerdown', beginSelectionPointer);
     selectionCanvas?.addEventListener('pointermove', moveSelectionPointer);
     selectionCanvas?.addEventListener('pointerup', endSelectionPointer);
     selectionCanvas?.addEventListener('pointercancel', endSelectionPointer);
-    selectionPreview?.addEventListener('load', () => drawSelection());
+    selectionCanvas?.addEventListener('dblclick', doubleClickSelection);
+    const resetSelection = () => {
+        const size = sourceImageSize();
+        if(node.mode === 'modify'){
+            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
+            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
+            node.selection = localEditFullImageRect(size.width, size.height, ratio) || [0, 0, size.width, size.height];
+        } else node.selection = [];
+        node._leSelectionAsset = node.original_asset_id || '';
+        sync();
+        drawSelection();
+    };
+    el.querySelector('[data-local-edit-reset-selection]')?.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); resetSelection(); });
+    selectionPreview?.addEventListener('load', () => {
+        // 舞台盒锁定为原图比例，消除 object-fit 信箱化造成的 display→原图像素映射误差。
+        const stage = selectionPreview.closest('[data-local-edit-stage]');
+        const size = sourceImageSize();
+        if(stage) stage.style.aspectRatio = `${size.width} / ${size.height}`;
+        const currentAsset = node.original_asset_id || '';
+        if(lastOriginalAsset && currentAsset && lastOriginalAsset !== currentAsset){
+            // 原图被换成另一张：旧选区像素坐标失效，重置（modify=全图按比例，retain=清空）。
+            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
+            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
+            node.selection = node.mode === 'modify' ? (localEditFullImageRect(size.width, size.height, ratio) || []) : [];
+            sync();
+        }
+        lastOriginalAsset = currentAsset;
+        if(node.mode === 'modify' && !(Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0])){
+            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
+            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
+            node.selection = localEditFullImageRect(size.width, size.height, ratio) || [];
+            sync();
+        }
+        drawSelection();
+    });
     requestAnimationFrame(() => drawSelection());
     const sync = () => {
-        node.original_asset_id = String(original?.value || '');
-        node.reference_asset_ids = String(references?.value || '').split(',').map(v => v.trim()).filter(Boolean);
-        node.prompt = String(prompt?.value || '');
-        const originalNode = nodes.find(item => (node.localEditInputRoles.originalNode || '') === item.id);
-        if(originalNode){ const asset = (originalNode.images || []).find(img => img?.asset_id); if(asset) node.original_asset_id = asset.asset_id; }
-        node.reference_asset_ids = (node.localEditInputRoles.referenceNodes || []).flatMap(id => {
+        syncLocalEditInputRoles(node);
+        const roleMap = node.localEditInputRoles || {};
+        const originalNode = nodes.find(item => item.id === roleMap.originalNode);
+        node.original_asset_id = ((originalNode?.images || []).find(img => img?.asset_id) || {})?.asset_id || '';
+        node.reference_asset_ids = (roleMap.referenceNodes || []).flatMap(id => {
             const item = nodes.find(candidate => candidate.id === id);
             return (item?.images || []).map(img => img?.asset_id).filter(Boolean);
-        }).concat(node.reference_asset_ids || []).filter((v, i, arr) => arr.indexOf(v) === i);
-        const promptTexts = (node.localEditInputRoles.promptNodes || []).map(id => nodes.find(item => item.id === id))
+        }).filter((v, i, arr) => arr.indexOf(v) === i);
+        const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
+        const promptTexts = promptNodeIds.map(id => nodes.find(item => item.id === id))
             .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean);
-        if(promptTexts.length) node.prompt = promptTexts.join('\n\n');
+        node.prompt = promptTexts.length ? promptTexts.join('\n\n') : String(prompt?.value || '');
         node.feather_radius = Math.max(0, Number(feather?.value || 0));
         node.aspect_ratio = String(ratio?.value || node.aspect_ratio || '1:1');
         node.generation_size = String(generationSize?.value || node.generation_size || '1024x1024');
         node.generation_resolution = String(generationResolution?.value || node.generation_resolution || '1k');
         node.selectionType = String(shape?.value || node.selectionType || 'polygon');
-        if(node.mode === 'modify') node.selection = String(selection?.value || '').split(',').map(v => Number(v.trim())).filter(Number.isFinite);
-        else { try { node.selection = JSON.parse(selection?.value || '[]'); } catch (_) {} }
-        scheduleSave();
+        updateSubmitState();
         drawSelection();
+        scheduleSave();
     };
-    [original, references, prompt, selection, feather].forEach(input => input?.addEventListener('input', sync));
+    const updateSubmitState = () => {
+        const roleMap = node.localEditInputRoles || {};
+        const selOk = node.mode === 'modify'
+            ? (Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0] && node.selection[3] > node.selection[1])
+            : (Array.isArray(node.selection) && node.selection.length >= (node.selectionType === 'polygon' ? 3 : 2));
+        const state = !roleMap.originalNode || !node.original_asset_id ? 'needOriginal'
+            : !selOk ? 'needSelection'
+            : !String(node.prompt || '').trim() ? 'needPrompt'
+            : node._leBusy ? 'busy'
+            : node.output_asset_id ? 'done'
+            : 'ready';
+        const texts = {
+            needOriginal: tr('smart.localEditNeedOriginal'),
+            needSelection: tr('smart.localEditNeedSelection'),
+            needPrompt: tr('smart.localEditNeedPrompt'),
+            busy: tr('smart.localEditGenerating'),
+            done: tr('smart.localEditResultReady'),
+            ready: tr('smart.localEditReady')
+        };
+        const status = el.querySelector('[data-local-edit-status]');
+        const submit = el.querySelector('[data-local-edit-submit]');
+        if(status){ status.textContent = texts[state]; status.classList.toggle('is-blocked', ['needOriginal','needSelection','needPrompt'].includes(state)); }
+        if(submit){ submit.disabled = state === 'needOriginal' || state === 'needSelection' || state === 'needPrompt' || state === 'busy'; submit.classList.toggle('is-busy', state === 'busy'); }
+    };
+    [prompt, feather].forEach(input => input?.addEventListener('input', sync));
     [ratio, shape, generationSize, generationResolution].forEach(input => input?.addEventListener('change', sync));
     el.querySelector('[data-local-edit-submit]')?.addEventListener('click', async e => {
         e.preventDefault(); e.stopPropagation(); sync();
+        const roleMap = node.localEditInputRoles || {};
+        if(!roleMap.originalNode || !node.original_asset_id){ toast(tr('smart.localEditNeedOriginal')); return; }
+        if(!String(node.prompt || '').trim()){ toast(tr('smart.localEditNeedPrompt')); return; }
         const projectId = canvas?.project_id || canvas?.project || canvasId;
-        if(!node.original_asset_id || !node.prompt){ toast(tr('smart.localEditNeedInput')); return; }
-        const button = e.currentTarget; button.disabled = true;
+        const button = e.currentTarget;
+        node._leBusy = true;
+        button.disabled = true;
+        const statusEl = el.querySelector('[data-local-edit-status]');
+        if(statusEl) statusEl.textContent = tr('smart.localEditGenerating');
         try {
             if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedLocalEdit'));
             const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
@@ -13566,11 +13805,23 @@ function bindLocalEditNodeControls(el, node){
             node.output_asset_id = data.assets?.output?.asset_id || '';
             node.model_result_asset_id = data.assets?.model_result?.asset_id || '';
             node.images = node.output_asset_id ? [{asset_id:node.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(node.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
+            // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
+            // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
+            node._leBusy = false;
             if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
+            const live = nodes.find(n => n.id === node.id) || node;
+            live._leBusy = false;
+            if(!live.output_asset_id){ live.output_asset_id = node.output_asset_id; live.model_result_asset_id = node.model_result_asset_id; live.images = node.images; }
             toast(tr('smart.localEditDone')); render();
-        } catch(error){ toast(error.message || tr('smart.localEditFailed')); }
+        } catch(error){
+            const live = nodes.find(n => n.id === node.id) || node;
+            live._leBusy = false;
+            toast(error.message || tr('smart.localEditFailed'));
+            render();
+        }
         finally { button.disabled = false; }
     });
+    sync();
 }
 function bindNodeEvents(){
     world.querySelectorAll('.image-node').forEach(el => {
