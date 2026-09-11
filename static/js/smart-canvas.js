@@ -390,7 +390,11 @@ async function performUndo(){
         undoSuppressed = true;
         // #62 B-5(L2): 兜底过滤——快照里引用的媒体若已被硬删（悬空 asset_id），
         // 服务端 upsert 校验会 400「项目媒体不存在」，画布会进入持续保存失败死锁。
-        const restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
+            // 内存库可能陈旧（本会话新生产的媒体尚未登记）→ 重新拉取后再验，避免误删存活图片
+            restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        }
         nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
         if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
@@ -418,7 +422,10 @@ async function performRedo(){
         redoPushing = false;
         undoSuppressed = true;
         // #62 B-5(L2): 同 performUndo——过滤已硬删媒体的悬空引用，避免保存死锁。
-        const restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
+            restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
+        }
         nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
         if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
@@ -456,6 +463,20 @@ function filterDanglingProjectMediaImages(snapshotNodes){
         return {...node, images};
     });
     return {nodes, dropped};
+}
+
+// 内存媒体库刷新（仅项目媒体列表）：页面加载后新生产的媒体未登记进
+// projectMediaLibrary，悬空过滤会把存活媒体误判为悬空而剥离（复制→撤回丢光图片事故）。
+async function refreshProjectMediaLibraryItems(){
+    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+    if(!projectId) return false;
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media`);
+        if(!res.ok) return false;
+        const data = await res.json();
+        if(data && Array.isArray(data.items)) projectMediaLibrary = {items: data.items};
+        return true;
+    } catch { return false; }
 }
 
 // #62 B-5(L1): 媒体硬删成功后，移除仍引用它的 undo/redo 快照（返回移除数量）。

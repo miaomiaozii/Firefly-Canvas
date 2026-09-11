@@ -494,9 +494,10 @@ body.prompt-node-flow-active .smart-node-floating-menu,
 .image-node:not(.empty-node) .node-delete { background:transparent; color:var(--text); border:0; opacity:1; }
 .theme-dark .image-node:not(.empty-node) .node-delete { background:transparent; color:#f8fafc; text-shadow:0 1px 4px rgba(0,0,0,.85); }
 .image-wrap { position:relative; width:100%; border-radius:12px; overflow:visible; }
-.image-wrap .mini-x, .thumb-item .mini-x { position:absolute; right:7px; top:7px; z-index:6; opacity:0; pointer-events:none; }
-/* #89：星标按钮叠在删除按钮下方（同一右上角热区） */
-.image-wrap .image-mark, .thumb-item .image-mark { top:38px; }
+/* #89：星标按钮与删除按钮水平并排（原 top:38 竖排叠压冲突） */
+.image-wrap .mini-x, .thumb-item .mini-x { position:absolute; top:7px; right:7px; z-index:6; opacity:0; pointer-events:none; }
+.image-wrap .image-mark, .thumb-item .image-mark { top:7px; right:39px; transform:translateY(-4px); }
+.image-wrap:hover .image-mark, .thumb-item:hover .image-mark, .image-mark:focus-visible { transform:translateY(0); }
 .image-mark.image-marked { color:#b45309; background:#fef3c7; border-color:#fde68a; }
 .image-mark.image-marked i, .image-mark.image-marked svg { fill:#f59e0b; }
 .theme-dark .image-wrap .mini-x, .theme-dark .thumb-item .mini-x { background:rgba(15,23,42,.86); color:#cbd5e1; border-color:rgba(148,163,184,.28); box-shadow:0 8px 18px rgba(0,0,0,.3); }
@@ -3445,8 +3446,9 @@ button.prompt-flow-context-image { cursor:pointer; }
 .theme-dark .smart-trash-name { color:#e5e7eb; }
 .smart-trash-sub { font-size:11px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* #86：回收区缩略图（点开放大预览）+ 大图预览弹窗 */
-.smart-trash-thumb-wrap { width:56px; height:42px; border-radius:8px; overflow:hidden; flex:none; background:var(--soft, rgba(100,116,139,.12)); display:flex; align-items:center; justify-content:center; cursor:zoom-in; border:1px solid rgba(100,116,139,.18); }
-.smart-trash-thumb-wrap .smart-trash-icon { position:absolute; }
+.smart-trash-thumb-wrap { width:56px; height:42px; border-radius:8px; overflow:hidden; flex:none; background:var(--soft, rgba(100,116,139,.12)); display:flex; align-items:center; justify-content:center; cursor:zoom-in; border:1px solid rgba(100,116,139,.18); position:relative; }
+.smart-trash-thumb-wrap .smart-trash-icon { position:absolute; display:none; }
+.smart-trash-thumb-wrap.no-thumb .smart-trash-icon { display:inline-flex; align-items:center; justify-content:center; color:#94a3b8; }
 .smart-trash-thumb { width:100%; height:100%; object-fit:cover; display:block; }
 .smart-trash-thumb-wrap.no-thumb .smart-trash-thumb { display:none; }
 .smart-trash-preview-backdrop { position:fixed; inset:0; z-index:80; background:rgba(15,23,42,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; }
