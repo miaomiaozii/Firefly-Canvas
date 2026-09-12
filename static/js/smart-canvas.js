@@ -14193,7 +14193,11 @@ function bindNodeEvents(){
             if(document.activeElement?.blur) document.activeElement.blur();
             let node = nodes.find(n => n.id === id);
             if(!node) return;
-            if(e.altKey) node = duplicateForAltDrag(node, e.shiftKey);
+            let altDuplicated = false;
+            if(e.altKey){
+                const copied = duplicateForAltDrag(node, e.shiftKey);
+                if(copied && copied.id !== node.id){ node = copied; altDuplicated = true; }
+            }
             let dragIds = selectedIds.includes(node.id) ? selectedIds.slice() : [node.id];
             if(isSmartGroupNode(node)){
                 const memberIds = smartGroupMembers(node).map(member => member.id);
@@ -14210,7 +14214,10 @@ function bindNodeEvents(){
             }
             document.body.classList.remove('smart-node-drag-settling');
             document.body.classList.add('smart-node-drag');
-            capturePendingUndo();
+            // Alt+drag 复制+放置是同一步撤销：duplicateForAltDrag 已推送复制前快照。
+            // 若这里再捕获 pending 快照（其中已含复制节点），一次 Ctrl+Z 只回退“拖动”，
+            // 复制节点仍留在画布上，用户需再按一次才撤掉复制。
+            if(!altDuplicated) capturePendingUndo();
         };
         el.querySelectorAll('.node-port').forEach(port => {
             port.addEventListener('mousedown', e => {
