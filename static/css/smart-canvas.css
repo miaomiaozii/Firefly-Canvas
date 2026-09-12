@@ -3462,7 +3462,7 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-trash-preview-name { flex:1; min-width:0; font-size:13px; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* #89 已标记图片面板（工具栏星标钮下拉） */
-.smart-marked-panel { position:absolute; top:42px; left:0; z-index:30; width:300px; max-height:min(480px, calc(100vh - 120px)); display:flex; flex-direction:column; background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,.35); overflow:hidden; }
+.smart-marked-panel { position:absolute; top:62px; left:0; z-index:30; width:300px; max-height:min(480px, calc(100vh - 120px)); display:flex; flex-direction:column; background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,.35); overflow:hidden; }
 .smart-marked-panel[hidden] { display:none; }
 .smart-marked-head { flex:none; display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); }
 .smart-marked-title { flex:1; min-width:0; font-size:12px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
