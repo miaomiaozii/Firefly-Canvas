@@ -8,6 +8,8 @@ from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, looks_like_gemini_image_model  # noqa: E402,F401
 from firefly_diagnostics import emit as _diag_emit
+import logging
+logger = logging.getLogger(__name__)
 
 async def generate_jimeng_provider_image(prompt, size, model, reference_images=None, provider=None):
     refs = [ref for ref in reference_images or [] if ref.get('url')]
@@ -799,14 +801,14 @@ async def upload_image_for_apimart(client, provider, ref_url: str) -> str:
                 url = extract_apimart_asset_url(rj)
                 if valid_apimart_video_image_input(url):
                     return url
-                print(f'APIMart 上传 data URL 返回中未找到可用 asset/url: {str(rj)[:300]}')
+                logger.error(f'APIMart 上传 data URL 返回中未找到可用 asset/url: {str(rj)[:300]}')
                 return 'ERR:APIMart 上传响应未包含可用 URL'
-            print(f'APIMart 上传 data URL 失败 ({resp.status_code}): {resp.text[:300]}')
+            logger.error(f'APIMart 上传 data URL 失败 ({resp.status_code}): {resp.text[:300]}')
             return f'ERR:APIMart 上传失败({resp.status_code})'
         except ValueError as e:
             return f'ERR:{e}'
         except Exception as e:
-            print(f'APIMart 上传 data URL 异常: {e}')
+            logger.error(f'APIMart 上传 data URL 异常: {e}')
             return f'ERR:上传异常 {e}'
     path = _svc.local_media_adapter_path(ref_url, 'image')
     if path:
@@ -818,14 +820,14 @@ async def upload_image_for_apimart(client, provider, ref_url: str) -> str:
                 url = extract_apimart_asset_url(rj)
                 if valid_apimart_video_image_input(url):
                     return url
-                print(f'APIMart 文件上传返回中未找到可用 asset/url: {str(rj)[:300]}')
+                logger.error(f'APIMart 文件上传返回中未找到可用 asset/url: {str(rj)[:300]}')
                 return 'ERR:APIMart 上传响应未包含可用 URL'
-            print(f'APIMart 文件上传失败 ({resp.status_code}): {resp.text[:300]}')
+            logger.error(f'APIMart 文件上传失败 ({resp.status_code}): {resp.text[:300]}')
             return f'ERR:APIMart 上传失败({resp.status_code})'
         except ValueError as e:
             return f'ERR:{e}'
         except Exception as e:
-            print(f'APIMart 文件上传异常: {e}')
+            logger.error(f'APIMart 文件上传异常: {e}')
             return f'ERR:上传异常 {e}'
     return 'ERR:不支持的图片来源（仅支持 http/https/asset/data 或应用本地媒体）'
 
@@ -860,13 +862,13 @@ async def upload_video_for_apimart(client, provider, ref_url: str) -> str:
                 if valid_apimart_video_image_input(url):
                     return url
                 last_error = '上传响应未包含可用 URL'
-                print(f'APIMart 视频上传返回中未找到可用 asset/url ({upload_path}): {str(rj)[:300]}')
+                logger.error(f'APIMart 视频上传返回中未找到可用 asset/url ({upload_path}): {str(rj)[:300]}')
                 continue
             last_error = f'{upload_path} 返回 {resp.status_code}: {resp.text[:200]}'
-            print(f'APIMart 视频上传失败 {last_error}')
+            logger.error(f'APIMart 视频上传失败 {last_error}')
         except Exception as e:
             last_error = f'{upload_path} 异常：{e}'
-            print(f'APIMart 视频上传异常: {last_error}')
+            logger.error(f'APIMart 视频上传异常: {last_error}')
     return f'ERR:APIMart 未提供可用的视频文件上传入口（{last_error}）。请配置 PUBLIC_BASE_URL，或使用公网 http/https / asset:// 视频地址。'
 
 async def upload_audio_for_apimart(client, provider, ref_url: str) -> str:
@@ -991,7 +993,7 @@ async def save_ai_image_to_output(image_data, prefix='online_', category='output
                 f.write(response.content)
             return _svc.output_url_for(filename, category)
     except Exception as e:
-        print(f'保存上游图片失败: {e}; url={value}')
+        logger.warning(f'保存上游图片失败: {e}; url={value}')
         return value
 
 async def save_remote_video_to_output(url, prefix='video_', category='output'):
@@ -1038,7 +1040,7 @@ async def save_remote_video_to_output(url, prefix='video_', category='output'):
                 raise RuntimeError('empty video response')
             return _svc.output_url_for(filename, category)
     except Exception as e:
-        print(f'保存上游视频失败: {e}')
+        logger.warning(f'保存上游视频失败: {e}')
         try:
             if os.path.exists(path):
                 os.remove(path)
@@ -1533,7 +1535,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             if response is None:
                 if is_gpt2:
                     raise HTTPException(status_code=502, detail=f'GPT-Image-2 编辑接口 /images/edits 调用失败：{edit_failed_text[:300] or edit_failed_status}。已停止自动重试，避免上游可能已扣费后再次请求。')
-                print(f'/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON')
+                logger.warning(f'/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON')
                 image_payload = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
                 body = {'model': model, 'prompt': prompt, 'response_format': 'url', 'n': 1, 'image': image_payload}
                 if not routed_image_params.get('aspect_ratio'):
@@ -1580,7 +1582,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 if fallback_image:
                     return (fallback_image, raw)
                 try:
-                    print(f'RS 响应中没有图片，原始返回（截断）：{json.dumps(raw, ensure_ascii=False)[:800]}')
+                    logger.warning(f'RS 响应中没有图片，原始返回（截断）：{json.dumps(raw, ensure_ascii=False)[:800]}')
                 except Exception:
                     pass
                 raise HTTPException(status_code=502, detail=responses_no_image_detail(raw) or exc.detail)
@@ -2535,7 +2537,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
         try:
             return await generate_runninghub_video(payload, provider)
         except HTTPException as exc:
-            print(f'RunningHub 视频生成失败 model={payload.model}: {exc.detail}')
+            logger.error(f'RunningHub 视频生成失败 model={payload.model}: {exc.detail}')
             raise
         except httpx.HTTPStatusError as exc:
             text = exc.response.text

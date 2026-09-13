@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import asyncio
 import os
@@ -238,7 +241,7 @@ def migrate_asset_library_into_dirs():
     try:
         lib = load_asset_library()
     except Exception as exc:
-        print(f'资产库分组整理：加载失败 {exc}')
+        logger.warning(f'资产库分组整理：加载失败 {exc}')
         return
     changed = False
     for library in lib.get('libraries', []) or []:
@@ -254,7 +257,7 @@ def migrate_asset_library_into_dirs():
             try:
                 os.makedirs(os.path.join(ASSET_LIBRARY_DIR, cat_dir), exist_ok=True)
             except Exception as exc:
-                print(f'资产库分组整理：建文件夹失败 {exc}')
+                logger.warning(f'资产库分组整理：建文件夹失败 {exc}')
                 continue
             for item in cat.get('items') or []:
                 raw_url = urllib.parse.unquote(str(item.get('url') or '').split('?', 1)[0])
@@ -272,12 +275,12 @@ def migrate_asset_library_into_dirs():
                     item['url'] = '/assets/library/' + urllib.parse.quote(f'{cat_dir}/{fname}', safe='/')
                     changed = True
                 except Exception as exc:
-                    print(f'资产库分组整理：搬运 {fname} 失败 {exc}')
+                    logger.warning(f'资产库分组整理：搬运 {fname} 失败 {exc}')
     if changed:
         try:
             save_asset_library(lib)
         except Exception as exc:
-            print(f'资产库分组整理：保存失败 {exc}')
+            logger.warning(f'资产库分组整理：保存失败 {exc}')
 
 def migrate_double_extension_uploads():
     """修复历史遗留的双重扩展名（如 foo.png.png）：去掉重复的一层，并同步重命名 caption/classification 旁车文件。
@@ -309,7 +312,7 @@ def migrate_double_extension_uploads():
                     except OSError:
                         pass
     if renamed:
-        print(f'修复双重扩展名素材: {renamed} 个')
+        logger.info(f'修复双重扩展名素材: {renamed} 个')
 
 def _sniff_image_ext(path):
     try:
@@ -355,7 +358,7 @@ def migrate_mislabeled_image_extensions():
                     except OSError:
                         pass
     if fixed:
-        print(f'纠正图片扩展名(内容与后缀不符): {fixed} 个')
+        logger.info(f'纠正图片扩展名(内容与后缀不符): {fixed} 个')
 
 def recover_project_agent_tasks() -> int:
     """Rehydrate confirmed queued Agent tasks after an app reload.

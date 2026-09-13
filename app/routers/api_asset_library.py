@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
@@ -95,7 +98,7 @@ def remove_asset_library_file(item) -> None:
         if path and os.path.isfile(path):
             os.remove(path)
     except Exception as exc:
-        print(f'删除资产文件失败: {exc}')
+        logger.warning(f'删除资产文件失败: {exc}')
 
 def find_asset_category_with_library(lib, category_id, library_id=''):
     lib = normalize_asset_library(lib)
@@ -333,7 +336,7 @@ async def create_asset_library_category(payload: AssetLibraryCategoryRequest):
     try:
         os.makedirs(os.path.join(ASSET_LIBRARY_DIR, category['dir']), exist_ok=True)
     except Exception as exc:
-        print(f'创建分组文件夹失败: {exc}')
+        logger.warning(f'创建分组文件夹失败: {exc}')
     library.setdefault('categories', []).append(category)
     lib['active_library_id'] = library.get('id') or lib.get('active_library_id')
     save_asset_library(lib)
@@ -364,7 +367,7 @@ async def delete_asset_library_category(category_id: str, library_id: str=''):
             if os.path.isdir(target) and os.path.abspath(target).startswith(os.path.abspath(ASSET_LIBRARY_DIR) + os.sep):
                 shutil.rmtree(target, ignore_errors=True)
         except Exception as exc:
-            print(f'删除分组文件夹失败: {exc}')
+            logger.warning(f'删除分组文件夹失败: {exc}')
     library['categories'] = [c for c in library.get('categories', []) if c.get('id') != category_id]
     save_asset_library(lib)
     return {'library': lib}

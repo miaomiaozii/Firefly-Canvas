@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
@@ -34,7 +37,7 @@ def load_storage_settings():
             with open(STORAGE_SETTINGS_FILE, 'r', encoding='utf-8-sig') as f:
                 raw = json.load(f) if f else {}
     except Exception as exc:
-        print(f'加载存储目录设置失败: {exc}')
+        logger.warning(f'加载存储目录设置失败: {exc}')
         raw = {}
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():

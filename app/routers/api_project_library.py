@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import asyncio
 import os
@@ -1319,7 +1322,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                         item = await archive_project_generated_image(project_id, candidate, len(generated_items))
                     except BaseException as exc:
                         raise _CandidateWriteFailure(exc) from exc
-                    print(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}', file=_sys.stderr, flush=True)
+                    logger.info(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}')
                     generated_items.append(item)
                     update_project_image_task_progress(task_id, 'saving', current=len(generated_items), total=payload.n)
                     # 逐张写回：图片一归档就落到节点上（保留 pendingTasks 让前端继续显示剩余占位），
@@ -1344,13 +1347,13 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                         # 单张 partial 写回失败不中断任务：final complete 仍会携带全量
                         # media（store 层按 history id 去重合并，不会重复）。
                         pass
-                    print(f'[gen-task {task_id[:8]}] partial complete={_app_main.now_ms() - partial_start}ms', file=_sys.stderr, flush=True)
+                    logger.info(f'[gen-task {task_id[:8]}] partial complete={_app_main.now_ms() - partial_start}ms')
                     if partial_canvas is not None:
                         try:
                             flush_start = _app_main.now_ms()
                             await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
                             await manager.broadcast_canvas_updated(project_id, int(partial_canvas.get('updated_at') or partial_timestamp))
-                            print(f'[gen-task {task_id[:8]}] flush+broadcast={_app_main.now_ms() - flush_start}ms', file=_sys.stderr, flush=True)
+                            logger.info(f'[gen-task {task_id[:8]}] flush+broadcast={_app_main.now_ms() - flush_start}ms')
                         except Exception:
                             pass
                 await set_candidate_phase(candidate_index, 'completed')
@@ -1369,7 +1372,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             retryable = [(index, failure) for index, failure in candidate_failures if isinstance(failure, _CandidateWriteFailure)]
             if retryable and not project_image_task_cancel_requested(task_id):
                 for index, failure in retryable:
-                    print(f'[gen-task {task_id[:8]}] candidate #{index} write-back failed ({type(failure).__name__}: {str(failure)[:140]}), compensating', file=_sys.stderr, flush=True)
+                    logger.warning(f'[gen-task {task_id[:8]}] candidate #{index} write-back failed ({type(failure).__name__}: {str(failure)[:140]}), compensating')
                 retry_results = await asyncio.gather(
                     *(generate_one_candidate(index) for index, _ in retryable[:4]),
                     return_exceptions=True,
@@ -2099,7 +2102,7 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
                 raise
             registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=latest_revision)
         await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
-        print(f'[gen-task {task_id[:8]}] register payload.size={payload.size!r} record_size={task_record.get("size")!r} rp_size={task_record.get("requestPayload", {}).get("size")!r}', file=_sys.stderr, flush=True)
+        logger.info(f'[gen-task {task_id[:8]}] register payload.size={payload.size!r} record_size={task_record.get("size")!r} rp_size={task_record.get("requestPayload", {}).get("size")!r}')
     except RevisionConflict as exc:
         await compensate_registration_failure(str(exc))
         await cleanup_project_generation_orphans(project_id)

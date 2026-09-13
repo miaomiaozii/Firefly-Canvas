@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
@@ -92,7 +95,7 @@ def load_static_runninghub_provider():
                 provider['rh_apps'] = apply_runninghub_system_thumbnails(provider.get('rh_apps') or [], 'app')
                 return provider
     except Exception as e:
-        print(f'加载 static RunningHub 配置失败: {e}')
+        logger.warning(f'加载 static RunningHub 配置失败: {e}')
     return None
 
 def preserve_runninghub_hidden_overrides(provider):

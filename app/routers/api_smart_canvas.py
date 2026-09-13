@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import time
@@ -37,7 +40,7 @@ async def smart_canvas_prompt_templates():
         source = os.path.relpath(template_path, BASE_DIR).replace('\\', '/') if template_path else ''
         return {'templates': builtin_prompt_templates(), 'source': source}
     except Exception as e:
-        print(f'读取提示词模板失败: {e}')
+        logger.warning(f'读取提示词模板失败: {e}')
         return {'templates': []}
 
 def smart_group_export_folder(folder: str, group_name: str) -> str:

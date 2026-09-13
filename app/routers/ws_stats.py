@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import json
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
@@ -44,7 +47,7 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f'WS Error: {e}')
+        logger.warning(f'WS Error: {e}')
     finally:
         unregister_project_session(websocket)
         await manager.disconnect(websocket, client_id)

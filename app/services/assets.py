@@ -2,6 +2,8 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _safe_asset_tag, _sniff_image_ext  # noqa: E402,F401
+import logging
+logger = logging.getLogger(__name__)
 
 def unique_asset_category_dir(library, base_name: str) -> str:
     """为资产库分组生成一个唯一、文件系统安全的子文件夹名（library/<dir>/）。
@@ -44,7 +46,7 @@ def load_asset_classification_prompt():
                 if text:
                     return text
     except Exception as exc:
-        print(f'读取素材分类规则失败: {exc}')
+        logger.warning(f'读取素材分类规则失败: {exc}')
     return ASSET_CLASSIFICATION_PROMPT
 
 def normalize_asset_classification(raw):
@@ -120,7 +122,7 @@ async def classify_asset_image_best_effort(abs_path, provider_id='', model='', m
     try:
         return await _svc.classify_image_with_provider(abs_path, provider_id, model, ms_model, prompt)
     except Exception as exc:
-        print(f'素材智能分类失败: {exc}')
+        logger.warning(f'素材智能分类失败: {exc}')
         return None
 
 def find_asset_category_in_library(lib, category_id, library_id=''):
@@ -228,7 +230,7 @@ def migrate_double_extension_uploads():
                     except OSError:
                         pass
     if renamed:
-        print(f'修复双重扩展名素材: {renamed} 个')
+        logger.info(f'修复双重扩展名素材: {renamed} 个')
 
 def migrate_mislabeled_image_extensions():
     """有些采集来的图片内容与扩展名不符（例如 WebP 内容却叫 .png），导致服务端按错误 content-type 返回、
@@ -267,7 +269,7 @@ def migrate_mislabeled_image_extensions():
                     except OSError:
                         pass
     if fixed:
-        print(f'纠正图片扩展名(内容与后缀不符): {fixed} 个')
+        logger.info(f'纠正图片扩展名(内容与后缀不符): {fixed} 个')
 
 def remove_asset_library_file(item) -> None:
     """删除资产对应的本地文件（仅限 library 副本，删了不影响 /output 原图）。日志不影响主流程。"""
@@ -277,7 +279,7 @@ def remove_asset_library_file(item) -> None:
         if path and os.path.isfile(path):
             os.remove(path)
     except Exception as exc:
-        print(f'删除资产文件失败: {exc}')
+        logger.warning(f'删除资产文件失败: {exc}')
 
 def save_asset_classification_prompt(text):
     value = str(text or '').strip()

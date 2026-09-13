@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import asyncio
 import os
@@ -94,14 +97,14 @@ def switch_project_library(path: str, move_existing: bool):
             try:
                 old_store.close()
             except Exception as exc:
-                print(f'关闭原项目库失败（新项目库已安全切换）: {exc}')
+                logger.warning(f'关闭原项目库失败（新项目库已安全切换）: {exc}')
             return {'project_library': {'path': str(_app_main.FIREFLY_PROJECT_STORE.root), 'project_count': project_count}, 'migration': migration}
         finally:
             if new_store is not None:
                 try:
                     new_store.close()
                 except Exception as exc:
-                    print(f'关闭候选项目库失败: {exc}')
+                    logger.warning(f'关闭候选项目库失败: {exc}')
             if not completed and migration:
                 shutil.rmtree(migration['target'], ignore_errors=True)
                 if migration.get('target_preexisted'):

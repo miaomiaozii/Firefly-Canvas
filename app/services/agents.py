@@ -2,6 +2,8 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _AGENT_TASK_INPUT_KEYS, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_history_output, _agent_int_param, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_candidates, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout  # noqa: E402,F401
+import logging
+logger = logging.getLogger(__name__)
 
 def _agent_task_node(task: Mapping[str, Any], *, agent_id: str, execution_id: str, status: str='queued', x: Optional[float]=None, y: Optional[float]=None, w: int=300, h: int=236) -> Dict[str, Any]:
     task_id = str(task.get('task_id') or '')
@@ -710,7 +712,7 @@ def _agent_admit_execution_sync(project_id: str, node_id: str, payload_data: Map
             raise
         except (ProjectStoreError, InvalidMutation, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        print('ADMIT tasks deps:', [(t.get('index'), t.get('dependencies')) for t in tasks], flush=True)
+        logger.debug('ADMIT tasks deps:', [(t.get('index'), t.get('dependencies')) for t in tasks])
         dispatchable = [task for task in tasks if not (task.get('dependencies') or [])]
         pending_deps = [task for task in tasks if task.get('dependencies')]
         return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(dispatchable)}

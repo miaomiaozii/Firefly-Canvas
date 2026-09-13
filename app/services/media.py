@@ -1,6 +1,8 @@
 # media domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+import logging
+logger = logging.getLogger(__name__)
 
 def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]) -> List[str]:
     """Clear generated media while preserving prompts, references, settings and links."""
@@ -77,7 +79,7 @@ def reference_to_data_url(ref, max_size=None, max_bytes=None):
         except HTTPException:
             raise
         except Exception as e:
-            print(f'reference resize failed, fallback to raw: {e}')
+            logger.warning(f'reference resize failed, fallback to raw: {e}')
     with open(path, 'rb') as f:
         encoded = base64.b64encode(f.read()).decode('ascii')
     return f'data:{content_type_for_path(path)};base64,{encoded}'
@@ -189,9 +191,9 @@ async def responses_input_image_url(ref, require_public_url=False) -> str:
         if url.startswith(('http://', 'https://')):
             return url
     except HTTPException as exc:
-        print(f'RS 参考图上传图床失败，回退内联 base64：{exc.detail}')
+        logger.warning(f'RS 参考图上传图床失败，回退内联 base64：{exc.detail}')
     except Exception as exc:
-        print(f'RS 参考图上传图床异常，回退内联 base64：{exc}')
+        logger.warning(f'RS 参考图上传图床异常，回退内联 base64：{exc}')
     data_url = _svc._main('reference_to_data_url')({'url': local_path}, max_size=1536)
     return data_url if data_url.startswith('data:') else ''
 
@@ -437,7 +439,7 @@ def convert_output_to_jpg(url, quality=88):
         prefix = '/assets' if root == _svc._main('ASSETS_DIR') else '/output'
         return f'{prefix}/{rel}'
     except Exception as e:
-        print(f'转换 JPG 失败: {e}')
+        logger.warning(f'转换 JPG 失败: {e}')
         return url
 
 def attachment_embedded_image_data_urls(refs, max_images=4):
@@ -483,7 +485,7 @@ async def video_reference_to_frame_data_urls(value, max_frames=6, max_size=768):
                     f.write(response.content)
             path = cleanup_path
         except Exception as e:
-            print(f'[canvas-llm] video download failed: {e}')
+            logger.warning(f'[canvas-llm] video download failed: {e}')
             if cleanup_path and os.path.exists(cleanup_path):
                 try:
                     os.remove(cleanup_path)
@@ -501,7 +503,7 @@ async def video_reference_to_frame_data_urls(value, max_frames=6, max_size=768):
         cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', path, '-vf', f"fps=1,scale='min({max_size},iw)':-2", '-frames:v', str(max(1, max_frames)), pattern]
         proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=90)
         if proc.returncode != 0:
-            print(f'[canvas-llm] ffmpeg frame extract failed: {proc.stderr[:300]}')
+            logger.warning(f'[canvas-llm] ffmpeg frame extract failed: {proc.stderr[:300]}')
             return []
         frames = []
         for name in sorted(os.listdir(frame_dir)):
@@ -640,7 +642,7 @@ def image_size_from_reference(ref):
         if width > 0 and height > 0:
             return f'{width}x{height}'
     except Exception as exc:
-        print(f'[chat-agent] failed to read reference image size: {exc}')
+        logger.warning(f'[chat-agent] failed to read reference image size: {exc}')
     return ''
 
 def video_api_root(provider):

@@ -1,6 +1,8 @@
 # projects domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+import logging
+logger = logging.getLogger(__name__)
 
 def load_projects():
     try:
@@ -62,14 +64,14 @@ def switch_project_library(path: str, move_existing: bool):
             try:
                 old_store.close()
             except Exception as exc:
-                print(f'关闭原项目库失败（新项目库已安全切换）: {exc}')
+                logger.warning(f'关闭原项目库失败（新项目库已安全切换）: {exc}')
             return {'project_library': {'path': str(_svc._main('FIREFLY_PROJECT_STORE').root), 'project_count': project_count}, 'migration': migration}
         finally:
             if new_store is not None:
                 try:
                     new_store.close()
                 except Exception as exc:
-                    print(f'关闭候选项目库失败: {exc}')
+                    logger.warning(f'关闭候选项目库失败: {exc}')
             if not completed and migration:
                 shutil.rmtree(migration['target'], ignore_errors=True)
                 if migration.get('target_preexisted'):

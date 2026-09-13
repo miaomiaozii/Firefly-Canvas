@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
@@ -39,7 +42,7 @@ async def get_history_api(type: str=None):
                 data.sort(key=sort_key, reverse=True)
                 return data
         except Exception as e:
-            print(f'读取历史文件失败: {e}')
+            logger.warning(f'读取历史文件失败: {e}')
             return []
     return []
 
@@ -75,10 +78,10 @@ async def delete_history(req: DeleteHistoryRequest):
                     try:
                         os.remove(file_path)
                     except Exception as e:
-                        print(f'Failed to delete file {file_path}: {e}')
+                        logger.warning(f'Failed to delete file {file_path}: {e}')
             return {'success': True}
         else:
             return {'success': False, 'message': 'Record not found'}
     except Exception as e:
-        print(f'Delete history error: {e}')
+        logger.error(f'Delete history error: {e}')
         return {'success': False, 'message': str(e)}

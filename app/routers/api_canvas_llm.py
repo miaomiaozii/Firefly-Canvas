@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, text_from_responses, unwrap_apimart_response)
@@ -110,7 +113,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
                 ok_videos += 1
         for audio in audio_inputs[:3]:
             content_parts.append({'type': 'audio_reference', 'audio_reference': {'asset_id': str(audio.get('asset_id') or ''), 'kind': 'audio', 'name': str(audio.get('name') or '音频参考'), 'url': str(audio.get('url') or '')}})
-        print(f'[canvas-llm] model={model} provider={payload.provider} text_len={len(payload.message)} images={ok_imgs}/{len(payload.images)} videos={ok_videos}/{len(payload.videos)} audios={len(audio_inputs)}/{len(payload.audios)}')
+        logger.info(f'[canvas-llm] model={model} provider={payload.provider} text_len={len(payload.message)} images={ok_imgs}/{len(payload.images)} videos={ok_videos}/{len(payload.videos)} audios={len(audio_inputs)}/{len(payload.audios)}')
         upstream_messages.append({'role': 'user', 'content': content_parts})
     else:
         upstream_messages.append({'role': 'user', 'content': payload.message})

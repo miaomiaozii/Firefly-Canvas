@@ -45,6 +45,8 @@ import xml.etree.ElementTree as ET
 from contextlib import nullcontext
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
+
+logger = logging.getLogger(__name__)
 from typing import List, Dict, Any, Mapping, Optional, Tuple
 from threading import Lock, RLock, Thread
 from app.project_activity import (
@@ -684,7 +686,7 @@ def load_static_runninghub_provider():
                 provider['rh_apps'] = apply_runninghub_system_thumbnails(provider.get('rh_apps') or [], 'app')
                 return provider
     except Exception as e:
-        print(f'加载 static RunningHub 配置失败: {e}')
+        logger.warning(f'加载 static RunningHub 配置失败: {e}')
     return None
 
 def merge_runninghub_provider_with_static(provider):
@@ -1548,10 +1550,10 @@ def log_net_error(context, exc, url=''):
             proxies = urllib.request.getproxies() or '无'
         except Exception:
             proxies = '?'
-        print(f"[NET-ERR] {context} | url={url or '?'} | sys_proxy={proxies} | " + ' <- '.join(chain), flush=True)
+        logger.warning(f"[NET-ERR] {context} | url={url or '?'} | sys_proxy={proxies} | " + ' <- '.join(chain))
     except Exception:
         try:
-            print(f'[NET-ERR] {context} | {type(exc).__name__}: {exc}', flush=True)
+            logger.warning(f'[NET-ERR] {context} | {type(exc).__name__}: {exc}')
         except Exception:
             pass
 
@@ -2077,10 +2079,10 @@ async def post_openai_responses(client, url, headers, body):
     try:
         resp = await client.post(url, headers=headers, json=bg_body)
     except httpx.HTTPError as e:
-        print(f'RS background 请求传输失败，改走流式：{e}')
+        logger.warning(f'RS background 请求传输失败，改走流式：{e}')
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code in RESPONSES_REJECT_STATUSES:
-        print(f'RS background 模式被拒（{resp.status_code}），改走流式：{resp.text[:200]}')
+        logger.warning(f'RS background 模式被拒（{resp.status_code}），改走流式：{resp.text[:200]}')
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code >= 400:
         if resp.status_code == 524:
@@ -2139,7 +2141,7 @@ async def post_openai_responses_stream(client, url, headers, body):
             if resp.status_code >= 400 or 'text/event-stream' not in ctype:
                 content = await resp.aread()
                 if resp.status_code in {400, 404, 405, 415, 422}:
-                    print(f'RS 流式请求被拒（{resp.status_code}），回退非流式：{content[:200]!r}')
+                    logger.warning(f'RS 流式请求被拒（{resp.status_code}），回退非流式：{content[:200]!r}')
                     return await client.post(url, headers=headers, json=body)
                 return httpx.Response(resp.status_code, headers=resp.headers, content=content, request=request)
             completed = None
@@ -2221,7 +2223,7 @@ async def post_openai_responses_stream(client, url, headers, body):
                 return wrap(200, completed)
             return wrap(502, error_payload or {'error': {'message': 'RS 流式响应结束但没有 response.completed 事件'}})
     except httpx.HTTPError as e:
-        print(f'RS 流式请求传输失败，回退非流式：{e}')
+        logger.warning(f'RS 流式请求传输失败，回退非流式：{e}')
         return await client.post(url, headers=headers, json=body)
 
 def provider_protocol(provider):
@@ -2535,7 +2537,7 @@ def codex_postprocess_image_to_requested_size(path='', requested_size='', provid
             return upscaled_path
     except Exception as exc:
         label = 'Gemini CLI' if provider_text == 'gemini-cli' else 'Codex GPT Image 2'
-        print(f'{label} 图片尺寸后处理失败：{exc}')
+        logger.warning(f'{label} 图片尺寸后处理失败：{exc}')
         return ''
 
 def codex_models_payload(raw=None):
@@ -3147,7 +3149,7 @@ async def httpx_request_with_transient_retries(client, method, url, attempts=2, 
             last_exc = exc
             if attempt + 1 >= attempts:
                 raise
-            print(f'[HTTPX-RETRY] {method} {url} transient error: {exc}; retry {attempt + 2}/{attempts}', flush=True)
+            logger.info(f'[HTTPX-RETRY] {method} {url} transient error: {exc}; retry {attempt + 2}/{attempts}')
             await asyncio.sleep(retry_delay * (attempt + 1))
     if last_exc:
         raise last_exc
@@ -3427,7 +3429,7 @@ def image_path_to_data_url(path, max_size=1024):
                 mime = 'image/png' if fmt == 'PNG' else 'image/jpeg'
                 return f'data:{mime};base64,{encoded}'
         except Exception as e:
-            print(f'shared caption image resize failed: {e}')
+            logger.warning(f'shared caption image resize failed: {e}')
     with open(path, 'rb') as f:
         encoded = base64.b64encode(f.read()).decode('ascii')
     return f'data:{content_type_for_path(path)};base64,{encoded}'
@@ -3474,7 +3476,7 @@ def builtin_prompt_templates():
         with open(template_path, 'r', encoding='utf-8') as f:
             return parse_prompt_template_markdown(f.read())
     except Exception as e:
-        print(f'读取提示词模板失败: {e}')
+        logger.warning(f'读取提示词模板失败: {e}')
         return []
 
 def normalize_prompt_category_id(category='custom'):
@@ -3736,9 +3738,9 @@ def xlsx_embedded_image_data_urls(path, max_images=4, max_size=1536):
                         encoded = base64.b64encode(buf.getvalue()).decode('ascii')
                         urls.append(f'data:image/jpeg;base64,{encoded}')
                 except Exception as exc:
-                    print(f'[chat] failed to extract xlsx image {name}: {exc}')
+                    logger.warning(f'[chat] failed to extract xlsx image {name}: {exc}')
     except Exception as exc:
-        print(f'[chat] failed to read xlsx images {path}: {exc}')
+        logger.warning(f'[chat] failed to read xlsx images {path}: {exc}')
     return urls
 
 def read_text_attachment(path, limit=MAX_ATTACHMENT_TEXT_CHARS):
@@ -3771,7 +3773,7 @@ def read_text_attachment(path, limit=MAX_ATTACHMENT_TEXT_CHARS):
                     continue
             return data.decode('utf-8', errors='replace').strip()[:limit]
     except Exception as exc:
-        print(f'[chat] failed to read attachment text {path}: {exc}')
+        logger.warning(f'[chat] failed to read attachment text {path}: {exc}')
     return ''
 
 def is_private_asset_url(value: str) -> bool:
@@ -3844,7 +3846,7 @@ def compress_data_url_image(value, max_size=1536, jpeg_quality=88):
                 img.save(buf, format=fmt, optimize=True)
             return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     except Exception as e:
-        print(f'data url image compress failed, fallback to raw: {e}')
+        logger.warning(f'data url image compress failed, fallback to raw: {e}')
         return value
 
 def valid_video_image_input(value: str) -> bool:
@@ -4018,7 +4020,7 @@ async def apimart_upload_post(client, upload_url, headers, file_tuple, timeout=6
             if not is_transient_tls_error(e) or attempt == APIMART_UPLOAD_RETRY_ATTEMPTS - 1:
                 raise
             last_exc = e
-            print(f'APIMart 上传遇到瞬时 TLS 错误，换新连接重试（第 {attempt + 1} 次）：{e}')
+            logger.warning(f'APIMart 上传遇到瞬时 TLS 错误，换新连接重试（第 {attempt + 1} 次）：{e}')
             await asyncio.sleep(0.6 * (attempt + 1))
     if last_exc:
         raise last_exc

@@ -2,6 +2,9 @@
 from __future__ import annotations
 import sys as _sys
 import os as _os
+import logging
+
+logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
@@ -217,9 +220,9 @@ def xlsx_embedded_image_data_urls(path, max_images=4, max_size=1536):
                         encoded = base64.b64encode(buf.getvalue()).decode('ascii')
                         urls.append(f'data:image/jpeg;base64,{encoded}')
                 except Exception as exc:
-                    print(f'[chat] failed to extract xlsx image {name}: {exc}')
+                    logger.warning(f'[chat] failed to extract xlsx image {name}: {exc}')
     except Exception as exc:
-        print(f'[chat] failed to read xlsx images {path}: {exc}')
+        logger.warning(f'[chat] failed to read xlsx images {path}: {exc}')
     return urls
 
 def attachment_embedded_image_data_urls(refs, max_images=4):
@@ -265,7 +268,7 @@ def read_text_attachment(path, limit=MAX_ATTACHMENT_TEXT_CHARS):
                     continue
             return data.decode('utf-8', errors='replace').strip()[:limit]
     except Exception as exc:
-        print(f'[chat] failed to read attachment text {path}: {exc}')
+        logger.warning(f'[chat] failed to read attachment text {path}: {exc}')
     return ''
 
 def attachment_text_blocks(refs, limit_each=MAX_ATTACHMENT_TEXT_CHARS):
@@ -348,7 +351,7 @@ def image_size_from_reference(ref):
         if width > 0 and height > 0:
             return f'{width}x{height}'
     except Exception as exc:
-        print(f'[chat-agent] failed to read reference image size: {exc}')
+        logger.warning(f'[chat-agent] failed to read reference image size: {exc}')
     return ''
 
 def chat_requested_image_count(message):
@@ -458,7 +461,7 @@ async def decide_chat_agent_action(payload, conversation, refs):
             decision['router_model'] = model
             return decision
     except Exception as exc:
-        print(f'[chat-agent] intent router fallback: {exc}')
+        logger.warning(f'[chat-agent] intent router fallback: {exc}')
         fallback['router_model'] = model
         return fallback
 

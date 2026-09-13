@@ -3,6 +3,8 @@ from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _storage_abs_path  # noqa: E402,F401
 from . import secret_store, write_guard  # noqa: E402
+import logging
+logger = logging.getLogger(__name__)
 
 def read_api_env_value(key: str) -> str:
     key = str(key or '').strip()
@@ -220,7 +222,7 @@ def jimeng_wsl_base_args(exe='wsl.exe'):
     if configured and (not names or configured in names):
         return ['-d', configured]
     if configured and names:
-        print(f'JIMENG_WSL_DISTRO={configured} 不存在，已回退自动选择。可用发行版：{names}')
+        logger.warning(f'JIMENG_WSL_DISTRO={configured} 不存在，已回退自动选择。可用发行版：{names}')
     try:
         ubuntu = next((name for name in names if re.match('^Ubuntu($|-)', name)), '')
         if ubuntu:
@@ -558,7 +560,7 @@ def load_api_providers():
         providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
     except Exception as e:
-        print(f'加载 API 平台配置失败: {e}')
+        logger.warning(f'加载 API 平台配置失败: {e}')
         return defaults
 
 def _decrypt_provider_secrets(provider):

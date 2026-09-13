@@ -1,4 +1,15 @@
 """Firefly Canvas server - app assembly (auto-split from monolith)."""
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stdout,
+)
+
+logger = logging.getLogger(__name__)
+
 from contextlib import asynccontextmanager
 
 from app.core import *  # noqa: F401,F403
@@ -446,7 +457,7 @@ class ConnectionManager:
         self.connection_clients[websocket] = client_id or f"anon-{id(websocket)}"
         if client_id:
             self.user_connections[client_id] = websocket
-        print(f"WS Connected. Total: {len(self.active_connections)}, Online: {self.online_count()}")
+        logger.info(f"WS Connected. Total: {len(self.active_connections)}, Online: {self.online_count()}")
         await self.broadcast_count()
         if str(client_id or "").lower().startswith("ps_"):
             with PHOTOSHOP_ROUND_TRIP_LOCK:
@@ -460,7 +471,7 @@ class ConnectionManager:
                 try:
                     await websocket.send_text(json.dumps({"type": "photoshop_round_trip_created", "data": binding}))
                 except Exception as exc:
-                    print(f"Photoshop pending replay error: {exc}")
+                    logger.warning(f"Photoshop pending replay error: {exc}")
                     break
 
     async def disconnect(self, websocket: WebSocket, client_id: str = None):
@@ -469,7 +480,7 @@ class ConnectionManager:
         self.connection_clients.pop(websocket, None)
         if client_id and self.user_connections.get(client_id) is websocket:
             del self.user_connections[client_id]
-        print(f"WS Disconnected. Total: {len(self.active_connections)}, Online: {self.online_count()}")
+        logger.info(f"WS Disconnected. Total: {len(self.active_connections)}, Online: {self.online_count()}")
         await self.broadcast_count()
 
     def online_count(self):
@@ -486,7 +497,7 @@ class ConnectionManager:
             try:
                 await connection.send_text(data)
             except Exception as e:
-                print(f"Broadcast error: {e}")
+                logger.warning(f"Broadcast error: {e}")
                 self.active_connections.remove(connection)
 
     async def broadcast_new_image(self, image_data: dict):
@@ -495,7 +506,7 @@ class ConnectionManager:
             try:
                 await connection.send_text(data)
             except Exception as e:
-                print(f"Broadcast image error: {e}")
+                logger.warning(f"Broadcast image error: {e}")
                 self.active_connections.remove(connection)
 
     async def broadcast_canvas_updated(self, canvas_id: str, updated_at: int, client_id: str = ""):
@@ -509,7 +520,7 @@ class ConnectionManager:
             try:
                 await connection.send_text(data)
             except Exception as e:
-                print(f"Broadcast canvas error: {e}")
+                logger.warning(f"Broadcast canvas error: {e}")
                 self.active_connections.remove(connection)
 
     async def broadcast_asset_library_updated(self, updated_at: int = 0):
@@ -521,7 +532,7 @@ class ConnectionManager:
             try:
                 await connection.send_text(data)
             except Exception as e:
-                print(f"Broadcast asset library error: {e}")
+                logger.warning(f"Broadcast asset library error: {e}")
                 self.active_connections.remove(connection)
 
     async def send_personal_message(self, message: dict, client_id: str):
@@ -530,7 +541,7 @@ class ConnectionManager:
             try:
                 await ws.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Personal message error for {client_id}: {e}")
+                logger.warning(f"Personal message error for {client_id}: {e}")
 
     async def broadcast_photoshop_round_trip(self, binding: Dict[str, Any]):
         """Deliver a canvas-created binding only to connected PS connectors."""
@@ -542,7 +553,7 @@ class ConnectionManager:
             try:
                 await connection.send_text(data)
             except Exception as exc:
-                print(f"Broadcast Photoshop round-trip error: {exc}")
+                logger.warning(f"Broadcast Photoshop round-trip error: {exc}")
                 if connection in self.active_connections:
                     self.active_connections.remove(connection)
 
@@ -561,31 +572,31 @@ async def startup_event():
     try:
         await asyncio.to_thread(migrate_asset_library_into_dirs)
     except Exception as exc:
-        print(f"资产库分组整理失败: {exc}")
+        logger.warning(f"资产库分组整理失败: {exc}")
     # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
     try:
         await asyncio.to_thread(migrate_double_extension_uploads)
     except Exception as exc:
-        print(f"修复双重扩展名素材失败: {exc}")
+        logger.warning(f"修复双重扩展名素材失败: {exc}")
     # 纠正内容与扩展名不符的图片（如 WebP 内容却叫 .png），否则严格客户端解不出来
     try:
         await asyncio.to_thread(migrate_mislabeled_image_extensions)
     except Exception as exc:
-        print(f"纠正图片扩展名失败: {exc}")
+        logger.warning(f"纠正图片扩展名失败: {exc}")
     await PROJECT_CONVERSATION_RUNNER.start()
     try:
         recovered = await asyncio.to_thread(recover_project_agent_tasks)
         if recovered:
-            print(f"Agent 任务恢复提交: {recovered}")
+            logger.info(f"Agent 任务恢复提交: {recovered}")
     except Exception as exc:
-        print(f"Agent 任务恢复失败: {exc}")
+        logger.error(f"Agent 任务恢复失败: {exc}")
     # issue #95：启动对账 Photoshop 往返请求表（持久化 + 崩溃状态修复）。
     try:
         recovered_tables = await asyncio.to_thread(_photoshop_recover_round_trips)
         if recovered_tables:
-            print(f"Photoshop 往返请求表对账: {recovered_tables} 个项目表")
+            logger.info(f"Photoshop 往返请求表对账: {recovered_tables} 个项目表")
     except Exception as exc:
-        print(f"Photoshop 往返请求表对账失败: {exc}")
+        logger.error(f"Photoshop 往返请求表对账失败: {exc}")
 
 async def shutdown_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
@@ -651,7 +662,7 @@ def load_storage_settings():
             with open(STORAGE_SETTINGS_FILE, "r", encoding="utf-8-sig") as f:
                 raw = json.load(f) if f else {}
     except Exception as exc:
-        print(f"加载存储目录设置失败: {exc}")
+        logger.warning(f"加载存储目录设置失败: {exc}")
         raw = {}
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():
@@ -675,7 +686,7 @@ def ensure_runtime_config_files():
             with open(API_ENV_FILE, "a", encoding="utf-8"):
                 pass
     except Exception as e:
-        print(f"初始化 API 配置目录失败: {e}")
+        logger.warning(f"初始化 API 配置目录失败: {e}")
 
 def load_env_file():
     if not os.path.exists(API_ENV_FILE):
@@ -693,7 +704,7 @@ def load_env_file():
                     continue
                 os.environ.setdefault(key, value)
     except Exception as e:
-        print(f"加载 API/.env 失败: {e}")
+        logger.warning(f"加载 API/.env 失败: {e}")
 
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -836,7 +847,7 @@ def migrate_asset_library_into_dirs():
     try:
         lib = load_asset_library()
     except Exception as exc:
-        print(f"资产库分组整理：加载失败 {exc}")
+        logger.warning(f"资产库分组整理：加载失败 {exc}")
         return
     changed = False
     for library in lib.get("libraries", []) or []:
@@ -852,7 +863,7 @@ def migrate_asset_library_into_dirs():
             try:
                 os.makedirs(os.path.join(ASSET_LIBRARY_DIR, cat_dir), exist_ok=True)
             except Exception as exc:
-                print(f"资产库分组整理：建文件夹失败 {exc}")
+                logger.warning(f"资产库分组整理：建文件夹失败 {exc}")
                 continue
             for item in (cat.get("items") or []):
                 raw_url = urllib.parse.unquote(str(item.get("url") or "").split("?", 1)[0])
@@ -870,12 +881,12 @@ def migrate_asset_library_into_dirs():
                     item["url"] = "/assets/library/" + urllib.parse.quote(f"{cat_dir}/{fname}", safe="/")
                     changed = True
                 except Exception as exc:
-                    print(f"资产库分组整理：搬运 {fname} 失败 {exc}")
+                    logger.warning(f"资产库分组整理：搬运 {fname} 失败 {exc}")
     if changed:
         try:
             save_asset_library(lib)
         except Exception as exc:
-            print(f"资产库分组整理：保存失败 {exc}")
+            logger.warning(f"资产库分组整理：保存失败 {exc}")
 
 def save_asset_library(lib):
     with CANVAS_LOCK:
@@ -1116,7 +1127,7 @@ def _photoshop_persist_table_locked(project_id: str) -> None:
     try:
         store.save_photoshop_round_trips(str(project_id), table)
     except (OSError, ValueError, ProjectStoreError) as exc:
-        print(f"Photoshop 往返请求表落盘失败: {exc}")
+        logger.warning(f"Photoshop 往返请求表落盘失败: {exc}")
 
 
 def _photoshop_recover_round_trips() -> int:
@@ -1142,7 +1153,7 @@ def _photoshop_recover_round_trips() -> int:
             try:
                 table = store.load_photoshop_round_trips(project_id)
             except (OSError, ValueError) as exc:
-                print(f"项目 {project_id} 往返请求表加载失败: {exc}")
+                logger.warning(f"项目 {project_id} 往返请求表加载失败: {exc}")
                 continue
             if not table:
                 continue
