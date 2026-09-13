@@ -45,27 +45,6 @@ router = APIRouter()
 PROJECT_EXPORTS_LOCK = Lock()
 PROJECT_ACTIVE_EXPORTS: Dict[str, int] = {}
 
-class ProjectMediaImportActive(RuntimeError):
-    pass
-
-class LimitedFlyMultipartParser(MultiPartParser):
-
-    def __init__(self, *args, max_file_size: int, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.max_file_size = max_file_size
-        self._current_file_size = 0
-
-    def on_part_begin(self) -> None:
-        super().on_part_begin()
-        self._current_file_size = 0
-
-    def on_part_data(self, data: bytes, start: int, end: int) -> None:
-        if self._current_part.file is not None:
-            self._current_file_size += end - start
-            if self._current_file_size > self.max_file_size:
-                raise MultiPartException('Fly 项目包超过 20GB 安全限制')
-        super().on_part_data(data, start, end)
-
 async def acquire_fly_import_slot() -> None:
     while not FLY_IMPORT_UPLOAD_LOCK.acquire(blocking=False):
         await asyncio.sleep(0.05)
