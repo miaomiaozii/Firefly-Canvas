@@ -8801,6 +8801,7 @@ function setMarkedImage(assetId, marked){
             else delete img.marked;
         }
     }));
+    syncCuratedFromMarks(); // #53/#58：星标即“保留”信号，同步节点 curated 供收集/导出 API 读取
     render();
     scheduleSave();
     renderSmartMarkedPanel();
@@ -8814,6 +8815,17 @@ function rebuildMarkedAssetIdsFromNodes(){
         if(img && img.marked && img.asset_id) found.add(String(img.asset_id));
     }));
     canvas.markedAssetIds = [...found];
+    syncCuratedFromMarks(); // #53/#58：加载/rebase 后保证 curated 与星标一致（历史画布可能缺 curated 字段）
+}
+// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-nodes
+// 与 pi 收集工具据此筛选）；全部取消星标 ⇒ curated=false。只改有星标图的节点。
+function syncCuratedFromMarks(){
+    nodes.forEach(node => {
+        const imgs = node.images || [];
+        if(!imgs.some(img => img && img.marked) && !node.curated) return;
+        const curated = imgs.some(img => img && img.marked);
+        if(Boolean(node.curated) !== curated) node.curated = curated;
+    });
 }
 // #89 第四轮：同步所有带 data-marked-asset 的星位按钮（画布缩略图/生图历史/生成详情/预览大图）。
 function syncMarkedImageButtons(){
@@ -22275,6 +22287,73 @@ smartExcelExportBtn?.addEventListener('click', e => {
     e.stopPropagation();
     exportSelectedSmartNodes();
 });
+// #53/#58：星标 → 收集/导出。已标记图片面板内的「导出星标节点」：
+// 目录留空 = 浏览器 zip 下载；填服务器目录（项目库根之下）= 按任务 ID 命名写入服务器目录。
+function markedNodeIds(){
+    const ids = getMarkedAssetIds();
+    if(!ids.length) return [];
+    const out = [];
+    nodes.forEach(n => {
+        if((n.images || []).some(img => img && ids.includes(String(img.asset_id || '')))) out.push(String(n.id));
+    });
+    return out;
+}
+function downloadBlobAsZip(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function renderMarkedExportFiles(files, dir){
+    const el = document.getElementById('smartMarkedExportFiles');
+    if(!el) return;
+    if(!files?.length){ el.hidden = true; el.innerHTML = ''; return; }
+    el.innerHTML = files.map(f => {
+        const name = String(f).split(/[\\/]/).pop();
+        return `<div class="smart-marked-export-file" title="${escapeAttr(f)}"><i data-lucide="check" aria-hidden="true"></i><span>${escapeHtml(name)}</span></div>`;
+    }).join('');
+    el.hidden = false;
+    refreshIcons(el);
+}
+async function exportMarkedSmartNodes(){
+    const projectId = (typeof canvas !== 'undefined' && (canvas?.project_id || canvas?.project)) || sourceProjectId || canvasId || '';
+    if(!projectId){ toast(tr('smart.exportNoProject')); return; }
+    const nodeIds = markedNodeIds();
+    if(!nodeIds.length){ toast(tr('smart.exportNoMarked')); return; }
+    const dir = String(document.getElementById('smartMarkedExportDir')?.value || '').trim();
+    const btn = document.getElementById('smartMarkedExportBtn');
+    if(btn){ btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
+    try{
+        const res = await fetch('/api/excel/export-zip', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(dir ? {project_id: projectId, node_ids: nodeIds, export_dir: dir} : {project_id: projectId, node_ids: nodeIds}),
+        });
+        if(!res.ok){
+            let detail = res.status;
+            try{ const j = await res.json(); detail = j?.detail || j?.message || detail; }catch(e){}
+            toast(`${tr('smart.exportFailed')}: ${detail}`);
+            return;
+        }
+        if(dir){
+            const j = await res.json().catch(() => null);
+            renderMarkedExportFiles(j?.files || [], dir);
+            toast(trf('smart.exportDone', {n: (j?.files || []).length || 0}));
+        } else {
+            const blob = await res.blob();
+            downloadBlobAsZip(blob, `excel_marked_${Date.now()}.zip`);
+            toast(tr('smart.exportZipOk'));
+        }
+    }catch(err){
+        toast(`${tr('smart.exportFailed')}: ${err?.message || err}`);
+    }finally{
+        if(btn){ btn.disabled = false; btn.removeAttribute('aria-busy'); }
+    }
+}
 // #89：已标记图片面板（工具栏星标钮）。
 document.getElementById('smartMarkedToggle')?.addEventListener('mousedown', e => e.stopPropagation());
 document.getElementById('smartMarkedToggle')?.addEventListener('click', e => {
@@ -22293,6 +22372,13 @@ document.getElementById('smartMarkedDownloadAll')?.addEventListener('click', e =
     const items = markedImageItems();
     if(!items.length){ toast(tr('smart.markedEmpty')); return; }
     void zipDownloadImageItems('marked-images', items);
+});
+// #53/#58：已标记面板「导出星标节点」（目录输入 + 导出）。
+document.getElementById('smartMarkedExportBtn')?.addEventListener('mousedown', e => e.stopPropagation());
+document.getElementById('smartMarkedExportBtn')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    void exportMarkedSmartNodes();
 });
 window.onmousemove = e => {
     lastMouseWorld = screenToWorld(e);

@@ -3532,3 +3532,19 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-recovery-btn.primary:hover { background:#1d4ed8; }
 .theme-dark .smart-recovery-btn { background:rgba(148,163,184,.12); }
 .smart-recovery-btn.small { padding:5px 10px; font-size:11.5px; border-radius:8px; }
+
+/* #53/#58：已标记面板底部「星标节点导出」区（目录输入 + 导出 + 结果文件列表） */
+.smart-marked-export { flex:none; display:flex; flex-direction:column; gap:6px; padding:10px 12px; border-top:1px solid var(--line); background:color-mix(in srgb, var(--card) 40%, var(--panel)); }
+.smart-marked-export-label { font-size:10.5px; font-weight:700; color:var(--muted); }
+.smart-marked-export-input { height:28px; padding:0 9px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:11px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; outline:none; }
+.smart-marked-export-input:focus { border-color:color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.smart-marked-export-input::placeholder { color:var(--muted); opacity:.75; font-family:inherit; }
+.smart-marked-export-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:30px; border-radius:9px; border:none; background:var(--accent, #2563eb); color:#fff; font-size:11.5px; font-weight:700; cursor:pointer; }
+.smart-marked-export-btn:hover:not(:disabled) { filter:brightness(1.08); }
+.smart-marked-export-btn:disabled { opacity:.5; cursor:wait; }
+.smart-marked-export-btn i, .smart-marked-export-btn svg { width:14px; height:14px; }
+.smart-marked-export-files { display:flex; flex-direction:column; gap:3px; max-height:110px; overflow-y:auto; scrollbar-width:thin; padding:2px; }
+.smart-marked-export-files[hidden] { display:none; }
+.smart-marked-export-file { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:6px; background:var(--soft); font-size:10.5px; font-weight:600; }
+.smart-marked-export-file i, .smart-marked-export-file svg { width:12px; height:12px; flex:0 0 auto; color:#16a34a; }
+.smart-marked-export-file span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

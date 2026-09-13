@@ -94,6 +94,12 @@
                 </div>
             </div>
             <div id="smartMarkedList" class="smart-marked-list"></div>
+            <div id="smartMarkedExport" class="smart-marked-export">
+                <label class="smart-marked-export-label" for="smartMarkedExportDir" data-i18n="smart.exportDirLabel">服务器导出目录</label>
+                <input id="smartMarkedExportDir" class="smart-marked-export-input" type="text" placeholder="留空=zip 下载；如 exports/2026-09" spellcheck="false" autocomplete="off">
+                <button id="smartMarkedExportBtn" class="smart-marked-export-btn" type="button" title="将含星标图的节点输出媒体导出（按任务 ID 命名）" aria-label="导出星标节点"><i data-lucide="folder-down"></i><span data-i18n="smart.exportMarked">导出星标节点</span></button>
+                <div id="smartMarkedExportFiles" class="smart-marked-export-files" hidden></div>
+            </div>
         </div>
         <div id="smartTitle" class="smart-title" title="重命名画布项目" aria-label="重命名画布项目">
             <span id="smartTitleText" class="smart-title-text" data-i18n="smart.title">核心画布</span>
