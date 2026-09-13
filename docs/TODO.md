@@ -120,19 +120,26 @@
 
 ---
 
-## Phase 3 · P2 pi 基座接入（需先拍板架构决策）
+## Phase 3 · P2 pi 基座接入（✅ 决策已拍板，ADR 0019）
 
-### 3.1 [!] 前置决策（用户拍板）
-- 会话载体：**Node sidecar（独立进程，跨刷新恢复）** vs **浏览器内嵌 pi-agent-core（零依赖，关标签即断）**。
-- 控制台形态：**节点式（resize 手柄）** vs **停靠面板**。
+### 3.1 [x] 前置决策（2026-09-13 已拍板，见 `docs/adr/0019-pi-sidecar-runtime-deep-integration.md`）
+- 会话载体：**Node sidecar（独立进程，跨刷新恢复），一步到位** ✅
+- 控制台形态：**节点式（resize 手柄）** ✅
+- 附加约束：接口/扩展点先行、插拔架构、兼容旧 plan-first Agent、pi 日志访问、pi 维护/自修复工具、`app/core.py` 重组并入 P2、Excel 导出暴露为 pi 工具。
 
 ### 3.2 [ ] LLM provider 配置 UI + key 安全存储（浏览器加密 + 后端落盘）
 
-### 3.3 [ ] FastAPI 桥接（WebSocket/SSE 会话流 `{project_id,agent_node_id}` 独立 session）
+### 3.3 [ ] Node sidecar 运行时（启动/守护/崩溃自愈/僵尸回收、版本一致性校验、Windows 分发含 Node、锁定 vendor pi-agent-core 版本）
 
-### 3.4 [ ] 工具白名单（inspect_canvas_context / import_excel_plan / propose_image_plan / materialize_image_plan / ...）
+### 3.4 [ ] FastAPI 桥接（WebSocket/SSE 会话流 `{project_id,agent_node_id}` 独立 session）+ 工具注册/插拔架构
 
-### 3.5 [ ] 节点式控制台（Agent 节点 resize、keyed DOM 复用、复制节点=独立会话）
+### 3.5 [ ] pi 日志访问工具 `inspect_app_logs`（结构化过滤，不暴露凭据）+ 维护工具（孤儿资产清理、完整性校验）
+
+### 3.6 [ ] 工具白名单（inspect_canvas_context / import_excel_plan / propose_image_plan / materialize_image_plan / ... / export_collection；与旧 plan-first Agent 共享权限层）
+
+### 3.7 [ ] `app/core.py` 结构化重组（请求模型/异常/multipart 分家，53 个 import 源一次迁移）
+
+### 3.8 [ ] 节点式控制台（Agent 节点 resize、keyed DOM 复用、复制节点=独立会话）
 
 ---
 

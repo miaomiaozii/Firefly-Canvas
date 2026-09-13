@@ -33,14 +33,14 @@
 | **P3** | 协作/托管模式：自动搭建、视觉检查、受限自主迭代 | P2 验收通过 |
 | **P4** | 远期：pi 自我修复画布 bug | P3 稳定后另立方案 |
 
-## 4. 前置决策（进入 P2 前拍板，各二选一）
+## 4. 前置决策（✅ 2026-09-13 已拍板，详见 `docs/adr/0019-pi-sidecar-runtime-deep-integration.md`）
 
-| 决策 | 选项 A | 选项 B | 影响 |
-|---|---|---|---|
-| pi 运行时 | Node sidecar（独立进程，会话跨刷新恢复） | 浏览器内嵌 pi-agent-core（零 Node 依赖，关标签页即断） | 分发复杂度 vs 会话可靠性 |
-| 控制台形态 | 节点内展开（用户偏好） | 节点锚点 + 停靠/浮动面板 | 实现成本 vs 体验 |
+| 决策 | 选择 | 理由（ADR 0019） |
+|---|---|---|
+| pi 运行时 | **A：Node sidecar（独立进程），一步到位** | 会话跨刷新/重启持久，支撑 P3 托管与自迭代；不做内嵌两段式 |
+| 控制台形态 | **A：节点内展开（节点式）** | 画布自由坐标系，复制节点=新会话 |
 
-> 倾向：控制台形态选 **A（节点式）**——画布是自由坐标系，节点可拖拽/缩放/复制，复制节点 = 新建独立 session 的会话，天然解决固定面板占位置、多会话难开的问题。运行时选 A（sidecar）则需双运行时打包；可接受"关标签页即断"则选 B，省掉整个分发工程。
+> ADR 0019 追加的设计约束：接口/扩展点先行（工具插拔）、迁移期兼容旧 plan-first Agent、pi 可读应用结构化日志、pi 拥有维护/清理工具、`app/core.py` 拆分并入 P2、Excel 导出暴露为 pi 工具。北极星：自适应、自迭代、自修复。
 
 ## 5. P0 — 画布基础功能完善（当前）
 
@@ -101,20 +101,23 @@
 - 断网 / 无 LLM key 时全链路可用。
 - 打标 → 收集 → 导出往返无损，收集节点可保存/加载。
 
-## 7. P2 — pi 基座接入
+## 7. P2 — pi 基座接入（Node sidecar，ADR 0019）
 
-**目标**：补齐 pi 运行前置条件，接通智能层。
+**目标**：补齐 pi 运行前置条件，接通智能层；深度底座与画布产品融合（接口先行、插拔、自诊断地基）。
 
 ### 任务
 
 - [ ] LLM provider 配置 UI + key 安全存储（浏览器端加密 + 后端落盘；参考旧 C# 工具 DPAPI 思路的 Web 实现）
-- [ ] 按前置决策实现运行时；锁定并 vendor pi-agent-core 版本（当前 `@earendil-works/pi-agent-core` / `@earendil-works/pi-web-ui@0.75.3`）
-- [ ] FastAPI 桥接层：WebSocket/SSE 会话流；`{project_id, agent_node_id}` 独立 session 存储（不写 canvas.json）
+- [ ] **Node sidecar 运行时**（ADR 0019，一步到位）：sidecar 进程启动/守护/崩溃自愈/僵尸回收、与 FastAPI 的版本一致性校验、锁定并 vendor pi-agent-core 版本（当前 `@earendil-works/pi-agent-core` / `@earendil-works/pi-web-ui@0.75.3`）；Windows 分发包含 Node 运行时（渠道见 `0009-independent-release-channel.md`）
+- [ ] FastAPI 桥接层：WebSocket/SSE 会话流；`{project_id, agent_node_id}` 独立 session 存储（不写 canvas.json）；**工具注册/插拔架构**（新能力不硬编码进桥接层）
+- [ ] **pi 日志访问工具**（`inspect_app_logs`）：结构化日志按级别/时间/模块过滤；不暴露 key/凭证明文
+- [ ] **pi 维护工具**（清理孤儿资产/半成品任务、项目完整性校验），为 P3 定期自清理/自修复铺路
 - [ ] 会话纳入 Fly 导出/导入与项目复制/删除清理
 - [ ] 工具白名单（只给高层工具，不给 PATCH canvas / 文件系统 / Shell）：
-  `inspect_canvas_context` / `import_excel_plan` / `propose_image_plan` / `materialize_image_plan` / `update_managed_prompt` / `configure_generation_nodes` / `run_generation_batch` / `inspect_generation_results` / `revise_failed_tasks` / `layout_agent_plan`
-- [ ] 工具执行全部走服务端权限层：plan hash 确认、同项目输入隔离、字段锁定校验
+  `inspect_canvas_context` / `import_excel_plan` / `propose_image_plan` / `materialize_image_plan` / `update_managed_prompt` / `configure_generation_nodes` / `run_generation_batch` / `inspect_generation_results` / `revise_failed_tasks` / `layout_agent_plan` / `export_collection`（issue #58 导出能力，首要消费者是 pi）
+- [ ] 工具执行全部走服务端权限层：plan hash 确认、同项目输入隔离、字段锁定校验；**兼容期旧 plan-first Agent（#14）链路继续可用**，与 pi 工具共享权限层
 - [ ] 模型可用性校验：预设模型消失时执行前报错并提示可选模型
+- [ ] **`app/core.py` 结构化重组**（ADR 0019）：请求模型/异常/multipart 解析器分家，53 个 import 源一次迁移，一次 820+ 测试回归
 - [ ] **节点式控制台**
   - [ ] Agent 节点支持自由缩放（resize 手柄，替代当前固定 382×360，见 `smart-canvas.js:6217 createAgentNode`）
   - [ ] 解决 `render()`（`smart-canvas.js:8569`）重建销毁问题：Agent 子树 keyed DOM 复用，或独立 iframe 挂载（画布重渲染时 iframe 不动，会话状态零丢失）
@@ -125,8 +128,11 @@
 
 - 配置 key 后 pi 会话可启动、工具可调用、事件流可展示；key 失效有明确降级提示。
 - 无 key / 网络失败时，P1 链路不受影响。
-- 节点重渲染/缩放/拖拽后，控制台滚动位置与输入不丢；刷新页面会话可恢复。
+- 节点重渲染/缩放/拖拽后，控制台滚动位置与输入不丢；刷新页面/重启 sidecar 后会话可恢复（sidecar 持久性验收）。
+- sidecar 崩溃自动恢复，无僵尸进程；版本不一致有明确提示。
+- pi 通过工具读取到应用日志（不含凭证明文）、执行一次孤儿资产清理且画布数据无损。
 - Fly 导出导入后会话随项目完整迁移。
+- `app/core.py` 重组后 820+ 测试全绿，无新双轨。
 
 ## 8. P3 — 协作 / 托管模式
 
