@@ -22,47 +22,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class LocalAssetCaptionRequest(BaseModel):
-    names: List[str] = []
-    provider: str = 'comfly'
-    model: str = ''
-    ms_model: str = ''
-    prompt: str = '描述图片'
-
-class LocalAssetCaptionSaveRequest(BaseModel):
-    name: str = ''
-    caption: str = ''
-
-class LocalAssetClassifyRequest(BaseModel):
-    names: List[str] = []
-    provider: str = 'comfly'
-    model: str = ''
-    ms_model: str = ''
-    prompt: str = ''
-
-class LocalAssetUrlImportItem(BaseModel):
-    url: str = ''
-    name: str = ''
-    data: str = ''
-    content_type: str = ''
-
-class LocalAssetUrlImportRequest(BaseModel):
-    items: List[LocalAssetUrlImportItem] = []
-    folder: str = ''
-    classify: bool = False
-    provider: str = 'comfly'
-    model: str = ''
-    ms_model: str = ''
-    prompt: str = ''
-
-class LocalAssetFolderRequest(BaseModel):
-    parent: str = ''
-    path: str = ''
-    name: str = ''
-
-class LocalAssetRenameRequest(BaseModel):
-    path: str = ''
-    name: str = ''
 
 def _write_local_upload_classification(filename, classification):
     path = _local_upload_classification_path(filename)

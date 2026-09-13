@@ -139,41 +139,6 @@ def _encrypt_provider_secrets(provider):
             provider[key] = _svc.secret_store.encrypt_secret(provider[key])
     return provider
 
-class ApiProviderPayload(BaseModel):
-    id: str = ''
-    name: str = ''
-    base_url: str = ''
-    protocol: str = 'openai'
-    image_request_mode: str = 'openai'
-    image_generation_endpoint: str = ''
-    image_edit_endpoint: str = ''
-    video_generation_endpoint: str = ''
-    enabled: bool = True
-    primary: bool = False
-    image_models: List[str] = Field(default_factory=list)
-    image_model_capabilities: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    chat_models: List[str] = []
-    chat_audio_input: bool = False
-    video_models: List[str] = []
-    video_model_capabilities: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    recommended_models: Dict[str, str] = Field(default_factory=dict)
-    available_models: Dict[str, List[str]] = Field(default_factory=dict)
-    model_selection_version: int = 0
-    model_names: Dict[str, str] = {}
-    model_protocols: Dict[str, str] = {}
-    ms_loras: List[Dict[str, Any]] = []
-    ms_defaults_version: int = 0
-    rh_apps: List[Dict[str, Any]] = []
-    volcengine_project_name: str = VOLCENGINE_DEFAULT_PROJECT_NAME
-    volcengine_region: str = VOLCENGINE_DEFAULT_REGION
-    volcengine_access_key_id: Optional[str] = None
-    volcengine_secret_access_key: Optional[str] = None
-    api_key: Optional[str] = None
-    wallet_api_key: Optional[str] = None
-    clear_key: bool = False
-    clear_wallet_key: bool = False
-    clear_volcengine_access_key_id: bool = False
-    clear_volcengine_secret_access_key: bool = False
 
 def codex_models_payload(raw=None):
     all_models = [*CODEX_DEFAULT_IMAGE_MODELS, *CODEX_DEFAULT_CHAT_MODELS]
@@ -297,12 +262,6 @@ async def save_providers(payload: List[ApiProviderPayload]):
         reload_env_globals()
     return {'providers': [public_provider(p) for p in providers]}
 
-class TestConnectionPayload(BaseModel):
-    base_url: str = ''
-    api_key: str = ''
-    provider_id: str = ''
-    protocol: str = 'openai'
-    image_request_mode: str = 'openai'
 
 def protocol_from_payload(payload):
     provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()

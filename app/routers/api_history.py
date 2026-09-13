@@ -21,8 +21,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class DeleteHistoryRequest(BaseModel):
-    timestamp: float
 
 @router.get('/api/history')
 async def get_history_api(type: str=None):

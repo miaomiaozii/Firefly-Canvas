@@ -18,12 +18,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class ProjectCreateRequest(BaseModel):
-    name: str = '新项目'
-
-class ProjectUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    order: Optional[int] = None
 
 @router.get('/api/projects')
 async def get_projects(request: Request):

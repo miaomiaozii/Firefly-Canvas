@@ -20,15 +20,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class SharedFolderRegister(BaseModel):
-    path: str = ''
-    name: str = ''
-
-class SharedFolderImport(BaseModel):
-    library_id: str = ''
-    category_id: str = ''
-    folder_id: str = ''
-    paths: List[str] = []
 
 def shared_folders_load():
     try:

@@ -965,6 +965,7 @@ class ProjectImageGenerationRequest(BaseModel):
     result_node_id: str = Field(min_length=1, max_length=200)
     angle_preset: str = 'none'
     base_revision: int = Field(ge=0)
+    idempotency_key: str = Field(default='', max_length=240)
 
 class ProjectVideoGenerationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
@@ -1240,6 +1241,7 @@ class ProjectConversationMessageRequest(BaseModel):
 class ProjectHistoryDeleteRequest(BaseModel):
     log_id: str
     base_revision: int = Field(ge=0)
+    delete_media: bool = False
 
 class ProjectOriginalDeleteRequest(BaseModel):
     asset_id: str

@@ -18,9 +18,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class ImageTaskQueryRequest(BaseModel):
-    provider_id: str = 'comfly'
-    task_id: str = Field(min_length=1, max_length=240)
 
 @router.post('/api/image-task-query')
 async def query_image_task(payload: ImageTaskQueryRequest):

@@ -19,15 +19,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class RunningHubSubmitRequest(BaseModel):
-    webappId: str = ''
-    nodeInfoList: List[Dict[str, Any]] = []
-    instanceType: str = ''
-    useWallet: bool = False
-
-class RunningHubUploadAssetRequest(BaseModel):
-    url: str = ''
-    useWallet: bool = False
 
 def normalize_seed_uint32(value):
     try:

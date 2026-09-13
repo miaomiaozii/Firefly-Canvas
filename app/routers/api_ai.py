@@ -23,9 +23,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class LocalImageImportRequest(BaseModel):
-    path: str = ''
-    paths: List[str] = Field(default_factory=list)
 
 def normalize_local_image_path(value):
     text = str(value or '').strip().strip('"').strip("'")
@@ -123,10 +120,6 @@ async def upload_ai_reference(files: List[UploadFile]=File(...)):
         uploaded.append({'url': output_url_for(filename, 'input'), 'name': file.filename or filename, 'kind': kind, 'mime': content_type})
     return {'files': uploaded}
 
-class Base64UploadRequest(BaseModel):
-    data: str = ''
-    name: str = ''
-    content_type: str = ''
 
 @router.post('/api/ai/upload-base64')
 async def upload_ai_base64(payload: Base64UploadRequest):

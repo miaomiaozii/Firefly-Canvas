@@ -22,16 +22,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class SmartCanvasGroupExportItem(BaseModel):
-    kind: str = ''
-    url: str = ''
-    text: str = ''
-    name: str = ''
-
-class SmartCanvasGroupExportRequest(BaseModel):
-    folder: str = ''
-    group_name: str = 'group'
-    items: List[SmartCanvasGroupExportItem] = []
 
 @router.get('/api/smart-canvas/prompt-templates')
 async def smart_canvas_prompt_templates():

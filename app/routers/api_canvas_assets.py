@@ -22,13 +22,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class CanvasAssetCheckRequest(BaseModel):
-    urls: List[str] = []
-
-class CanvasAssetDownloadRequest(BaseModel):
-    urls: List[str] = []
-    items: List[Dict[str, Any]] = []
-    filename: str = 'canvas-output-images.zip'
 
 def canvas_asset_url_value(value):
     if isinstance(value, str):

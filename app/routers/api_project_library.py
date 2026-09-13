@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_MAX_TASKS_PER_PLAN, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectAgentExecuteRequest, ProjectAgentPlanRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
-from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds
+from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.project_activity import (
     ProjectCleanupActive,
     assert_project_owner_admissible,
@@ -73,150 +73,11 @@ async def acquire_fly_import_slot() -> None:
 def public_project_media_import_task(task: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in task.items() if key not in {'project_id', 'source_key'}}
 
-class ProjectImageGenerationRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=ONLINE_IMAGE_PROMPT_MAX_LENGTH)
-    routing_mode: str = 'auto'
-    provider_id: str = ''
-    model: str = ''
-    size: str = '1024x1024'
-    width: Optional[int] = None
-    height: Optional[int] = None
-    aspect_ratio: str = '1:1'
-    resolution: str = '1k'
-    quality: str = 'auto'
-    n: int = 1
-    reference_asset_ids: List[str] = Field(default_factory=list)
-    media_type: str = 'image'
-    result_node_id: str = Field(min_length=1, max_length=200)
-    angle_preset: str = 'none'
-    base_revision: int = Field(ge=0)
-    idempotency_key: str = Field(default='', max_length=240)
-
-class ProjectVideoGenerationRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
-    routing_mode: str = 'auto'
-    provider_id: str = ''
-    model: str = ''
-    size: str = '1280x720'
-    width: Optional[int] = None
-    height: Optional[int] = None
-    aspect_ratio: str = '16:9'
-    resolution: str = '720p'
-    duration: int = Field(ge=1, le=600)
-    quality: str = 'auto'
-    n: int = 1
-    seed: Optional[int] = None
-    enhance_prompt: bool = False
-    enable_upsample: bool = False
-    watermark: bool = False
-    camera_fixed: bool = False
-    return_last_frame: bool = False
-    generate_audio: bool = False
-    image_reference_asset_ids: List[str] = Field(default_factory=list)
-    video_reference_asset_ids: List[str] = Field(default_factory=list)
-    audio_reference_asset_ids: List[str] = Field(default_factory=list)
-    media_type: str = 'video'
-    result_node_id: str = Field(min_length=1, max_length=200)
-    base_revision: int = Field(ge=0)
-
-class ProjectAgentPlanRequest(BaseModel):
-    """User-authored Agent goal and explicit task specification.
-
-    The task list is intentionally an opaque JSON object at this boundary.  A
-    plan is a reviewable contract, so the server normalizes and validates every
-    field before persisting it rather than accepting a free-form tool call.
-    ``task_specs``/``prompt`` are accepted as compatibility aliases for early
-    clients; the persisted representation always uses ``tasks`` and ``goal``.
-    """
-    goal: str = Field(default='', max_length=VIDEO_PROMPT_MAX_LENGTH)
-    prompt: str = Field(default='', max_length=VIDEO_PROMPT_MAX_LENGTH)
-    tasks: List[Dict[str, Any]] = Field(default_factory=list)
-    task_specs: List[Dict[str, Any]] = Field(default_factory=list)
-    request_id: str = Field(default='', max_length=240)
-    base_revision: int = Field(default=0, ge=0)
-
-class ProjectAgentExecuteRequest(BaseModel):
-    plan_id: str = Field(min_length=1, max_length=240)
-    execution_id: str = Field(default='', max_length=240)
-    plan_hash: str = Field(default='', max_length=128)
-    tasks: List[Dict[str, Any]] = Field(default_factory=list)
-
-class ProjectMediaImportRequest(BaseModel):
-    source_url: str
-    source_locator: str = ''
-    name: str = ''
-    mime_type: str = ''
-    expected_kind: str = ''
-
-class PhotoshopRoundTripCreateRequest(BaseModel):
-    source_node_id: str = Field(min_length=1, max_length=200)
-    source_media_id: str = Field(min_length=1, max_length=240)
-    ttl_seconds: int = Field(default=300, ge=1, le=3600)
-
-class PhotoshopRoundTripReturnRequest(BaseModel):
-    project_id: str = Field(min_length=1, max_length=200)
-    source_node_id: str = Field(min_length=1, max_length=200)
-    request_id: str = Field(min_length=1, max_length=200)
-    name: str = Field(default='photoshop-edit.png', min_length=1, max_length=240)
-    mime_type: str = Field(default='image/png', min_length=1, max_length=128)
-    sha256: str = Field(min_length=64, max_length=64)
-    bytes_base64: str = Field(default='', max_length=256 * 1024 * 1024)
-    data: str = Field(default='', max_length=256 * 1024 * 1024)
-
-class CanvasMutationBatch(BaseModel):
-    mutations: List[Dict[str, Any]] = Field(default_factory=list)
-    client_id: str = ''
-    base_revision: int = Field(ge=0)
-    # 显式允许"非空 -> 空"的清空操作（前端用户主动清空画布时置 true）。
-    # 缺省 false 时，服务端拒绝无标志的空画布覆盖，防止加载失败的空状态 autosave 擦除数据（H39 事故）。
-    force_empty: bool = False
-
-class ProjectLocalEditRequest(BaseModel):
-    """Explicit local-edit node inputs and source-pixel selection contract."""
-    original_asset_id: str = Field(min_length=1, max_length=240)
-    reference_asset_ids: List[str] = Field(default_factory=list, max_length=16)
-    prompt: str = Field(min_length=1, max_length=ONLINE_IMAGE_PROMPT_MAX_LENGTH)
-    mode: str = 'modify'
-    selection: Any
-    aspect_ratio: str = ''
-    size: str = Field(default='1024x1024', min_length=3, max_length=32)
-    resolution: str = Field(default='1k', min_length=1, max_length=16)
-    feather_radius: float = Field(default=0, ge=0, le=256)
-    result_node_id: str = Field(min_length=1, max_length=200)
-    base_revision: int = Field(ge=0)
-
-class ProjectConversationMessageRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
-    request_id: str = Field(default='', max_length=200)
-    provider: Optional[str] = Field(default=None, max_length=80)
-    model: Optional[str] = Field(default=None, max_length=200)
-    ms_model: Optional[str] = Field(default=None, max_length=200)
-    system_prompt: Optional[str] = Field(default=None, max_length=12000)
-
-class ProjectHistoryDeleteRequest(BaseModel):
-    log_id: str
-    base_revision: int = Field(ge=0)
-    delete_media: bool = False
-
-class ProjectOriginalDeleteRequest(BaseModel):
-    asset_id: str
-    base_revision: int = Field(ge=0)
-    log_id: str = Field(min_length=1, max_length=200)
-    output_id: str = Field(min_length=1, max_length=200)
-    output_index: int = Field(ge=0)
-
-class ProjectOriginalRestoreRequest(BaseModel):
-    asset_id: str
-    base_revision: int = Field(ge=0)
-    deletion_id: str = Field(min_length=1, max_length=200)
 
 class ProjectTrashRestoreRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
 
-class ProjectOriginalProjectWideRequest(BaseModel):
-    asset_id: str
-    base_revision: int = Field(ge=0)
 
 def _normalize_generation_size_params(payload: Any, *, code: str, message: str) -> tuple:
     """Normalize empty size/resolution/aspect_ratio strings to None so they're treated

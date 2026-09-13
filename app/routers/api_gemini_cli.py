@@ -18,8 +18,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class GeminiCliHelpRequest(BaseModel):
-    command: str = ''
 
 @router.get('/api/gemini-cli/status')
 async def gemini_cli_status():

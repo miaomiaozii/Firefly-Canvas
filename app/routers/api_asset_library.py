@@ -27,59 +27,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class AssetLibraryCategoryRequest(BaseModel):
-    name: str = '新文件夹'
-    type: str = 'image'
-    library_id: str = ''
-
-class AssetLibraryRequest(BaseModel):
-    name: str = '资产库'
-
-class AssetLibraryAddRequest(BaseModel):
-    category_id: str = ''
-    url: str = ''
-    name: str = ''
-    library_id: str = ''
-
-class AssetLibraryBatchAddRequest(BaseModel):
-    category_id: str = ''
-    library_id: str = ''
-    items: List[AssetLibraryAddRequest] = []
-
-class AssetLibraryRenameRequest(BaseModel):
-    name: str = ''
-    library_id: str = ''
-
-class AssetLibraryBatchDeleteRequest(BaseModel):
-    ids: List[str] = []
-    library_id: str = ''
-
-class AssetLibraryBatchMoveRequest(BaseModel):
-    ids: List[str] = []
-    library_id: str = ''
-    target_library_id: str = ''
-    target_category_id: str = ''
-
-class AssetLibraryBatchCropRequest(BaseModel):
-    ids: List[str] = []
-    library_id: str = ''
-    target_library_id: str = ''
-    target_category_id: str = ''
-    mode: str = 'square'
-
-class AssetAvatarRegisterRequest(BaseModel):
-    library_id: str = ''
-    provider_id: str = ''
-    project_name: str = 'default'
-    group_name: str = ''
-
-class AssetLibraryClassifyRequest(BaseModel):
-    library_id: str = ''
-    ids: List[str] = []
-    provider: str = 'comfly'
-    model: str = ''
-    ms_model: str = ''
-    prompt: str = ''
 
 def avatar_platform_for_provider(provider) -> str:
     if not provider:

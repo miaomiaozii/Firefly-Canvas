@@ -17,8 +17,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class CodexHelpRequest(BaseModel):
-    command: str = ''
 
 @router.get('/api/codex/status')
 async def codex_status():

@@ -20,24 +20,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class PromptLibraryRequest(BaseModel):
-    name: str = '提示词库'
-
-class PromptLibraryItemRequest(BaseModel):
-    library_id: str = ''
-    item_id: str = ''
-    name: str = '提示词'
-    category: str = 'custom'
-    positive: str = ''
-    negative: str = ''
-    scene: str = ''
-
-class PromptLibraryBatchDeleteRequest(BaseModel):
-    ids: List[str] = []
-
-class PromptLibraryCategoryRequest(BaseModel):
-    name: str = '新分组'
-    library_id: str = ''
 
 def normalize_prompt_category_id(category='custom'):
     category_id = re.sub('[^A-Za-z0-9_-]+', '_', str(category or 'custom'))[:40] or 'custom'

@@ -19,12 +19,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class JimengHelpRequest(BaseModel):
-    command: str = ''
-
-class JimengQueryMediaRequest(BaseModel):
-    submit_id: str = ''
-    kind: str = 'image'
 
 def jimeng_login_text():
     parts = []

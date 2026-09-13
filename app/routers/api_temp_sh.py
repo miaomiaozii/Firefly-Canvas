@@ -16,8 +16,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class TempShUploadRequest(BaseModel):
-    url: str = ''
 
 @router.post('/api/temp-sh/upload')
 async def temp_sh_upload(payload: TempShUploadRequest, request: Request):

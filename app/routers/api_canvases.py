@@ -22,40 +22,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class DeleteCanvasLogRequest(BaseModel):
-    log_id: str
-    delete_unreferenced_media: bool = False
-    reset_referencing_nodes: bool = False
-    base_updated_at: int = 0
-
-class CanvasCreateRequest(BaseModel):
-    title: str = '未命名画布'
-    icon: str = '🧩'
-    kind: str = 'classic'
-    project: Optional[str] = None
-    board_x: Optional[float] = None
-    board_y: Optional[float] = None
-
-class CanvasMetaUpdate(BaseModel):
-    title: Optional[str] = None
-    icon: Optional[str] = None
-    owner: Optional[str] = None
-    color: Optional[str] = None
-    pinned: Optional[bool] = None
-    project: Optional[str] = None
-    board_x: Optional[float] = None
-    board_y: Optional[float] = None
-
-class CanvasSaveRequest(BaseModel):
-    title: str = '未命名画布'
-    icon: str = '🧩'
-    nodes: List[Dict[str, Any]] = []
-    connections: List[Dict[str, Any]] = []
-    viewport: Dict[str, Any] = {}
-    logs: List[Dict[str, Any]] = []
-    settings: Dict[str, Any] = {}
-    client_id: str = ''
-    base_updated_at: int = 0
 
 def canvas_path(canvas_id):
     cleaned = re.sub('[^a-zA-Z0-9_-]', '', canvas_id or '')

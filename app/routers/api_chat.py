@@ -26,19 +26,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class ChatRequest(BaseModel):
-    conversation_id: str = ''
-    message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
-    system_prompt: str = ''
-    model: str = ''
-    image_model: str = ''
-    image_provider: str = ''
-    mode: str = 'chat'
-    size: str = '1024x1024'
-    quality: str = 'auto'
-    reference_images: List[AIReference] = []
-    provider: str = 'comfly'
-    ms_model: str = ''
 
 def chat_system_prompt(payload):
     prompt = str(getattr(payload, 'system_prompt', '') or '').strip()

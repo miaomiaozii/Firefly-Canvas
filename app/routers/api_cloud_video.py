@@ -16,9 +16,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class CloudVideoUploadRequest(BaseModel):
-    url: str = ''
-    service: str = 'auto'
 
 @router.post('/api/cloud-video/upload')
 async def cloud_video_upload(payload: CloudVideoUploadRequest, request: Request):

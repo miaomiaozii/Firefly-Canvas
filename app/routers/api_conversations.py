@@ -18,8 +18,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-class ConversationCreateRequest(BaseModel):
-    title: str = '新对话'
 
 def list_conversations(user_id):
     records = []

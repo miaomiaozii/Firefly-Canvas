@@ -54,13 +54,6 @@ def save_global_preferences(theme: str, language: str, autosave_interval_minutes
             pass
     return preferences
 
-class GlobalPreferencesPayload(BaseModel):
-    theme: str = 'dark'
-    language: str = 'zh'
-
-class ProjectLibraryChangeRequest(BaseModel):
-    path: str = Field(min_length=1, max_length=1024)
-    move_existing: bool = False
 
 def photoshop_connection_status():
     connected_clients = [client_id for client_id in manager.connection_clients.values() if str(client_id or '').lower().startswith('ps_')]
