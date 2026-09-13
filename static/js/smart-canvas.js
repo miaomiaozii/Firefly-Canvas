@@ -283,11 +283,7 @@ let smartEdgeRevealHiding = false;
 let smartMinimapDrag = false;
 let zoomPreviewState = null;
 let runTimerInterval = null;
-let smartCascadeRunning = false;
-let smartCascadeActiveLoopId = '';
-let smartCascadeStopRequested = false;
 let smartCascadeSilentSelection = false;
-let smartCascadeRunPath = null;
 const smartCascadeRuns = new Map();
 let smartLoopContext = null;
 let transientSmartCloudLinks = [];
@@ -321,26 +317,16 @@ function syncUndoRedoButtons(){
 function activeSmartCascadeCount(){ return smartCascadeRuns.size; }
 function smartCascadeRunForLoop(loopId){ return loopId ? smartCascadeRuns.get(loopId) || null : null; }
 function smartCascadeIsLoopRunning(loopId){ return Boolean(smartCascadeRunForLoop(loopId)); }
-function syncSmartCascadeLegacyState(preferredLoopId=''){
-    const activeIds = [...smartCascadeRuns.keys()];
-    smartCascadeRunning = activeIds.length > 0;
-    smartCascadeActiveLoopId = preferredLoopId && smartCascadeRuns.has(preferredLoopId)
-        ? preferredLoopId
-        : (activeIds[0] || '');
-    const activeRun = smartCascadeActiveLoopId ? smartCascadeRuns.get(smartCascadeActiveLoopId) : null;
-    smartCascadeStopRequested = Boolean(activeRun?.stopRequested);
-    smartCascadeRunPath = activeRun?.runPath || null;
-}
-function smartCascadeAnyRunning(){ return smartCascadeRunning || activeSmartCascadeCount() > 0; }
+function smartCascadeAnyRunning(){ return activeSmartCascadeCount() > 0; }
 function smartCascadeEdgeState(edgeKey){
     for(const run of smartCascadeRuns.values()){
         const state = run?.runPath?.states?.[edgeKey];
         if(state) return state;
     }
-    return smartCascadeRunPath?.states?.[edgeKey] || '';
+    return '';
 }
 function smartCascadePathForCtx(ctx=null){
-    return ctx?.runState?.runPath || ctx?.runPath || smartCascadeRunPath;
+    return ctx?.runState?.runPath || ctx?.runPath || null;
 }
 function capturePendingUndo(){ pendingUndoSnapshot = snapshotForUndo(); }
 function commitPendingUndo(){
@@ -8170,7 +8156,8 @@ function shellPoint(event){
 function renderConnections(){
     const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => nodes.some(n => n.id === c.from) && nodes.some(n => n.id === c.to));
     const cascadeKeys = cascadeConnectionKeys();
-    const activeCascadeCount = (smartCascadeRunPath?.states && Object.values(smartCascadeRunPath.states).filter(state => state && state !== 'done').length) || 0;
+    const activeRunPath = [...smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
+    const activeCascadeCount = (activeRunPath?.states && Object.values(activeRunPath.states).filter(state => state && state !== 'done').length) || 0;
     const reduceMotion = activeCascadeCount > 24;
     const selectedConnIds = new Set(selectedNodeIds());
     // 合并连线：同一来源连到同一分组的多个成员，合成一条到分组的连线（A→A1/A2/A3 显示为 A→分组），
@@ -20312,18 +20299,13 @@ function smartCascadeAbortError(){
     return err;
 }
 function throwIfSmartCascadeStopRequested(runState=null){
-    if(runState?.stopRequested || (!runState && smartCascadeStopRequested)) throw smartCascadeAbortError();
+    if(runState?.stopRequested) throw smartCascadeAbortError();
 }
 function requestSmartCascadeStop(loopId=''){
-    const runState = loopId ? smartCascadeRunForLoop(loopId) : (smartCascadeRuns.get(smartCascadeActiveLoopId) || [...smartCascadeRuns.values()][0] || null);
-    if(runState){
-        if(runState.stopRequested) return;
-        runState.stopRequested = true;
-        syncSmartCascadeLegacyState(runState.runKey || runState.loopId || loopId);
-    } else {
-        if(!smartCascadeRunning || smartCascadeStopRequested) return;
-        smartCascadeStopRequested = true;
-    }
+    const runState = loopId ? smartCascadeRunForLoop(loopId) : ([...smartCascadeRuns.values()].pop() || null);
+    if(!runState) return;
+    if(runState.stopRequested) return;
+    runState.stopRequested = true;
     toast(tr('smart.stopRequested'));
     render();
 }
@@ -20335,7 +20317,7 @@ async function runSmartCascadeRoundsWithLimit(roundIndexes, limit, runner, runSt
     const workerCount = Math.max(1, Math.min(Number(limit) || 1, roundIndexes.length));
     const workers = Array.from({length:workerCount}, async () => {
         while(next < roundIndexes.length){
-            if(runState?.stopRequested || (!runState && smartCascadeStopRequested)) break;
+            if(runState?.stopRequested) break;
             const roundOffset = next++;
             const current = roundIndexes[roundOffset];
             try {
@@ -20367,7 +20349,6 @@ async function runSmartCascade(targetNode=null){
     const runKey = loopId || `cascade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const runState = {runKey, loopId, stopRequested:false, runPath:null};
     smartCascadeRuns.set(runKey, runState);
-    syncSmartCascadeLegacyState(runKey);
     smartCascadeSilentSelection = true;
     runBtn.disabled = true;
     pushUndo();
@@ -20381,7 +20362,6 @@ async function runSmartCascade(targetNode=null){
     let singleLoopSlots = [];
     if(singleNodeLoopRun){
         runState.runPath = {states:{}};
-        smartCascadeRunPath = runState.runPath;
     }
     if(singleNodeLoopRun){
         singleLoopSlots = Array.from({length:totalRounds}, (_, round) => {
@@ -20404,7 +20384,6 @@ async function runSmartCascade(targetNode=null){
         if(loop?.node?.id && graph.root?.id) runStates[`${loop.node.id}->${graph.root.id}`] = 'wait';
         graph.edges.forEach(edge => { runStates[edge.key] = 'wait'; });
         runState.runPath = {states:runStates};
-        smartCascadeRunPath = runState.runPath;
         scheduleConnectionLayerRefresh();
         updateComposer();
     }
@@ -20549,7 +20528,6 @@ async function runSmartCascade(targetNode=null){
         toast(e?.smartCascadeStopped ? tr('smart.oneClickStopped') : (e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
         smartCascadeRuns.delete(runKey);
-        syncSmartCascadeLegacyState();
         smartCascadeSilentSelection = false;
         syncRunButtonState();
         if(directLoopTargetRun) finishLoopTargetPreviewState(tail);
