@@ -36,7 +36,8 @@ class PlanTask:
 
     # 内容
     output_type: str = ""  # 主图 / 高级A+方案 / ...
-    source_aspect_ratio: str = ""
+    source_aspect_ratio: str = ""  # C# SourceAspectRatio：aspect 列原值
+    target_aspect_ratio: str = ""  # C# TargetAspectRatio：InferAspectRatio 推断（smoke AspectRatio 字段）
     requirements: str = ""
     copy_handling_mode: str = "none"  # none / manual_overlay_after_generation
     copy_text: str = ""
@@ -57,6 +58,11 @@ class PlanTask:
     # 参考图
     operation_references: List[ReferenceImage] = field(default_factory=list)
     generation_references: List[ReferenceImage] = field(default_factory=list)
+
+    # 单元格图片（WPS xl/cellimages.xml，对应 C# CellImageName / CellImageData；issue #101）
+    cell_image_name: str = ""
+    cell_image_data: bytes = b""
+    has_cell_image: bool = False
 
 
 @dataclass
@@ -85,6 +91,7 @@ class PlanIR:
                     "display_no": t.display_no,
                     "output_type": t.output_type,
                     "source_aspect_ratio": t.source_aspect_ratio,
+                    "target_aspect_ratio": t.target_aspect_ratio,
                     "requirements": t.requirements,
                     "copy_handling_mode": t.copy_handling_mode,
                     "copy_text": t.copy_text,
@@ -109,6 +116,10 @@ class PlanIR:
                         }
                         for r in t.generation_references
                     ],
+                    # 单元格图片（issue #101）：只暴露标识与大小，字节在内存管道里流转
+                    "cell_image_name": t.cell_image_name,
+                    "has_cell_image": t.has_cell_image,
+                    "cell_image_bytes": len(t.cell_image_data),
                 }
                 for t in self.tasks
             ],

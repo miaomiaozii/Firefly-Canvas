@@ -1,133 +1,795 @@
 # -*- coding: utf-8 -*-
 """Plan IR builder: 从 Excel 解析结果构建 Plan IR。
 
-移植 C# AddTasksFromRows 逻辑 (Program.cs:1615-1694)。
+移植 C# ImagePlanDesignerP0 的 OpenXML package 路径（Program.cs，行号为权威规格）：
+- ImportXlsxPackage:1140（主循环：ShouldSkipSheet / ScannedRowCount / imageLookup）
+- AddTasksFromRows:1615 / AddTasksFromUnmappedRows:1707 / ImportRowsForSmoke:1746
+- AddOperationReferencesFromMappedCells:1785 / ResolveReferenceFiles:1812,1853
+- NextHeaderColumn:1833 / ResolveAnchoredReferenceFiles:1843 / IsImageFilePath:1865
+- TryGetSectionMarker:1877 / LooksLikeAPlusTask:1897 / StartsWithAPlusTaskLabel:1907
+- FindHeaderRow:2074 / HasLikelyTaskBetween:2096 / LooksLikeRepeatedHeaderRow:2116
+- HeaderCellLooksLikeColumnName:2126 / LooksLikeCompositeHeaderCell:2170
+- HeaderCellScore:2195 / NormalizeSectionName:2209 / MapHeaders:2218
+- LooksLikeTaskRow:2246 / LooksLikeNoteRow:2266 / FirstMapped:2280 / JoinMapped:2289
+- JoinReferenceTextNotes:2298 / LooksLikeMachineImageReference:2319
+- JoinDistinctLines:2330 / BuildFallbackRequirements:2346 / InferSection:2363
+- InferOutputType:2372 / SanitizePromptField:2384 / InferAspectRatio:2404
+- BuildDisplayNo:2430 / DetectSameAsMain:2438 / ParseLinkedMainIndex:2444 / GuessName:2478
+- JoinRow:2488 / CompactLine:2493 / FirstNonEmpty:2498 / ContainsAny:2507
+
+验收口径：与 excel-import-smoke.json 基准逐项一致（SheetCount=13 / ScannedRowCount=23 /
+ImportedTaskCount=15 / SampleTasks 15 项全字段 / 70 张内嵌图）。
 
 设计原则：
-- 与 C# AddTasksFromRows 逻辑对齐
+- 与 C# ImagePlanDesignerP0 smoke 基准字段级对齐
 - 保持确定性（相同输入 → 相同输出）
 - 任务数量/依赖永远来自 Excel 解析器，LLM 不参与
 """
+import os
 import re
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+
 from plan_ir import PlanIR, PlanTask, ReferenceImage
 
+# ─── 基础文本工具 ─────────────────────────────────────────────────────────────
 
-def build_plan_ir(
-    source_file: str,
-    parse_result: Dict[str, object],
-) -> PlanIR:
-    """从解析结果构建 Plan IR。
 
-    Args:
-        source_file: 原始文件名
-        parse_result: parser.parse() 的返回结果
+def contains_any(text: Optional[str], *needles: str) -> bool:
+    """C# ContainsAny:2507 — 大小写不敏感子串匹配。"""
+    if not text or not text.strip():
+        return False
+    low = text.lower()
+    return any(n.lower() in low for n in needles)
 
-    Returns:
-        PlanIR 对象
-    """
-    plan = PlanIR(
-        source_file=source_file,
-        sheet_count=len(parse_result.get("sheets", {})),
+
+def compact_line(text: Optional[str]) -> str:
+    """C# CompactLine:2493 — 换行 → 空格，trim。"""
+    return (text or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ").strip()
+
+
+def first_non_empty(*values: str) -> str:
+    """C# FirstNonEmpty:2498 — 第一个非空白值（原样返回）。"""
+    for v in values:
+        if v and v.strip():
+            return v
+    return ""
+
+
+def join_row(row: List[str]) -> str:
+    """C# JoinRow:2488 — 非空单元格去重后以 \\r\\n 连接，trim。"""
+    parts: List[str] = []
+    seen = set()
+    for c in row or []:
+        if c is None:
+            continue
+        if c.strip() and c not in seen:
+            seen.add(c)
+            parts.append(c)
+    return "\r\n".join(parts).strip()
+
+
+# ─── 文本净化（C# SanitizePromptField:2384）───────────────────────────────────
+
+_RE_DISPIMG_XLFN = re.compile(r'=?_xlfn\.DISPIMG\("ID_[^"]+"\s*,\s*\d+\)', re.IGNORECASE)
+_RE_DISPIMG = re.compile(r'=?DISPIMG\("ID_[^"]+"\s*,\s*\d+\)', re.IGNORECASE)
+_RE_ID_TOKEN = re.compile(r"ID_[A-Za-z0-9]+", re.IGNORECASE)
+_RE_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_RE_LINK_LINE = re.compile(r"^(参考图片链接|参考链接|图片链接|链接)\s*[:：]?\s*$", re.IGNORECASE)
+_RE_LINK_TAIL = re.compile(r"(参考图片链接|参考链接|图片链接|链接)\s*[:：]\s*$", re.IGNORECASE)
+
+
+def sanitize_prompt_field(text: Optional[str]) -> str:
+    """C# SanitizePromptField:2384 — 剥离 DISPIMG 公式 / ID_ token / URL / 纯链接行。"""
+    if not text or not text.strip():
+        return ""
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = _RE_DISPIMG_XLFN.sub("", cleaned)
+    cleaned = _RE_DISPIMG.sub("", cleaned)
+    cleaned = _RE_ID_TOKEN.sub("", cleaned)
+    cleaned = _RE_URL.sub("", cleaned)
+    lines: List[str] = []
+    for raw in cleaned.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if _RE_LINK_LINE.match(line):
+            continue
+        line = _RE_LINK_TAIL.sub("", line).strip()
+        if line:
+            lines.append(line)
+    return "\r\n".join(lines).strip()
+
+
+def join_distinct_lines(*blocks: str) -> str:
+    """C# JoinDistinctLines:2330 — 分块拆行、trim、去重（保序）后以 \\r\\n 连接。"""
+    values: List[str] = []
+    for block in blocks:
+        if not block or not block.strip():
+            continue
+        for line in block.replace("\r\n", "\n").split("\n"):
+            v = line.strip()
+            if v and v not in values:
+                values.append(v)
+    return "\r\n".join(values)
+
+
+# ─── 命名与显示编号 ──────────────────────────────────────────────────────────
+
+
+def clean_task_name(name: str) -> str:
+    """C# CleanTaskName:1779 — 净化 + 紧凑化 + 70 字符截断。"""
+    return compact_line(sanitize_prompt_field(name))[:70]
+
+
+def build_display_no(section: str, index: int) -> str:
+    """C# BuildDisplayNo:2430。"""
+    if section and "A+" in section:
+        return f"A+ 模块 {index}"
+    if section and "主图" in section:
+        return f"主图 {index}"
+    if section and ("品牌" in section or "店铺" in section):
+        return f"店铺图 {index}"
+    return f"图片 {index}"
+
+
+def guess_name(row: List[str], row_text: str, section: str, index: int) -> str:
+    """C# GuessName:2478 — 首个非空单元格（≤60 字符）→ 行文本前 60 → 显示编号。"""
+    first = next((c for c in (row or []) if c and c.strip()), "")
+    if 0 < len(first) <= 60:
+        return first
+    prefix = build_display_no(section, index)
+    if not row_text or not row_text.strip():
+        return prefix
+    compact = row_text.replace("\r", " ").replace("\n", " ")
+    return compact[:60]
+
+
+# ─── Sheet 分类（C# :1559/:1565/:1576）───────────────────────────────────────
+
+
+def is_design_plan_sheet_name(sheet_name: Optional[str]) -> bool:
+    """C# IsDesignPlanSheetName:1559 — 含 作图|图片方案|生图方案 且不含 脚本|视频。"""
+    name = sheet_name or ""
+    return contains_any(name, "作图", "图片方案", "生图方案") and not contains_any(name, "脚本", "视频")
+
+
+def is_supplemental_plan_sheet_name(sheet_name: Optional[str]) -> bool:
+    """C# IsSupplementalPlanSheetName:1565 — A+/主图/详情类补充方案表。"""
+    name = sheet_name or ""
+    if contains_any(name, "脚本", "视频"):
+        return False
+    if contains_any(
+        name,
+        "A+方案", "A＋方案", "A+模块", "A＋模块", "A+页面", "A＋页面",
+        "A+内容", "A＋内容", "主图方案", "详情页", "详情图",
+    ):
+        return True
+    compact = compact_line(name).lower()
+    return compact in ("主图", "a+", "a＋")
+
+
+def should_skip_sheet(sheet_name: Optional[str], has_design_plan_sheet: bool) -> bool:
+    """C# ShouldSkipSheet:1576 — 有设计表时只扫设计表+补充表。"""
+    if has_design_plan_sheet:
+        return (
+            not is_design_plan_sheet_name(sheet_name)
+            and not is_supplemental_plan_sheet_name(sheet_name)
+        )
+    return contains_any(sheet_name, "商品分类", "视频脚本", "脚本", "尺寸需求") or (
+        (sheet_name or "").lower() == "sheet5"
     )
 
-    # 统计扫描行数（C# ScannedRowCount 的含义）
-    total_rows = 0
-    for sheet in parse_result.get("sheets", {}).values():
-        total_rows += len(sheet.rows())
-    plan.scanned_rows = total_rows
 
-    # 提取任务（参考图映射：drawing 锚点行号 → 任务行，issue #52）
-    tasks, unmapped_notes = extract_tasks(parse_result)
-    plan.tasks = tasks
-    plan.notes = list(unmapped_notes)
+# ─── A+ 标签（C# :1907/:1914/:1897）─────────────────────────────────────────
 
-    return plan
+_APLUS_KEYWORDS = (
+    "首图|首屏|头图|横幅|banner|模块|大场景|对比|功能|场景|细节|产品|轮播|拼接|详情|主图|卖点|核心|品牌|故事|品牌故事"
+)
+_RE_APLUS_DIGIT = re.compile(r"^\s*a\s*[+＋]\s*\d", re.IGNORECASE)
+_RE_APLUS_CN = re.compile(r"^\s*a\s*[+＋]\s*[一二三四五六七八九十]", re.IGNORECASE)
+_RE_APLUS_KEYWORD = re.compile(rf"^\s*a\s*[+＋]\s*({_APLUS_KEYWORDS})", re.IGNORECASE)
+_RE_APLUS_NUMBER_PREFIX = re.compile(
+    r"^\s*\d+\s*[、\.)-]\s*a\s*[+＋]\s*(\d|[一二三四五六七八九十]|" + _APLUS_KEYWORDS + ")",
+    re.IGNORECASE,
+)
+_RE_APLUS_NUMBER_ONLY = re.compile(r"^\s*\d+\s*[、\.)]\s*$")
 
 
-def is_task_sheet(sheet_name: str, rows: List[List[str]]) -> bool:
-    """判断是否为任务 sheet（vs 数据/参考 sheet）。
-    
-    任务 sheet 特征（严格判断，避免误判数据 sheet）：
-    - 名称包含 "图片方案" 关键词（最明确的任务 sheet 标记）
-    - 或者第一个 sheet 且包含任务序号模式
-    """
-    # 最严格：名称包含 "图片方案"
-    if '图片方案' in sheet_name:
-        return True
-    
-    # 排除明显的数据/参考 sheet
-    data_sheet_keywords = ['详情', '评论', '竞品', '关键词', '分析', '数据', '参考']
-    if any(kw in sheet_name for kw in data_sheet_keywords):
+def starts_with_aplus_task_label(text: Optional[str]) -> bool:
+    """C# StartsWithAPlusTaskLabel:1907 — ^A+数字 / ^A+中文数字 / ^A+关键词。"""
+    if not text or not text.strip():
         return False
-    
-    # 检查是否有明确的 header row（包含多个任务相关列名）
-    if rows and len(rows) > 2:
-        # 检查前 3 行是否有 header row
-        for i in range(min(3, len(rows))):
-            row_text = ' '.join(rows[i])
-            # Header row 通常包含多个关键词
-            header_keywords = ['顺序', '要求', '内容', '要素', '示例', '任务', '名称', 'section']
-            keyword_count = sum(1 for kw in header_keywords if kw in row_text)
-            if keyword_count >= 2:  # 至少 2 个 header 关键词
-                return True
-    
+    return bool(
+        _RE_APLUS_DIGIT.match(text)
+        or _RE_APLUS_CN.match(text)
+        or _RE_APLUS_KEYWORD.match(text)
+    )
+
+
+def has_number_prefix_aplus_task_label(text: Optional[str]) -> bool:
+    """C# HasNumberPrefixAPlusTaskLabel:1914 — ^\\d+[、\\.)-]A+标签。"""
+    if not text or not text.strip():
+        return False
+    return bool(_RE_APLUS_NUMBER_PREFIX.match(text))
+
+
+def looks_like_aplus_task(name: Optional[str], requirements: Optional[str]) -> bool:
+    """C# LooksLikeAPlusTask:1897。"""
+    name_c = compact_line(name)
+    if starts_with_aplus_task_label(name_c) or has_number_prefix_aplus_task_label(name_c):
+        return True
+    req_c = compact_line(requirements)
+    if starts_with_aplus_task_label(req_c):
+        return True
+    if name_c.strip() and not _RE_APLUS_NUMBER_ONLY.match(name_c):
+        return False
+    return starts_with_aplus_task_label(req_c)
+
+
+# ─── Section / 输出类型 / 比例推断（C# :2209/:2363/:2372/:2404/:1755）────────
+
+
+def normalize_section_name(section: Optional[str]) -> str:
+    """C# NormalizeSectionName:2209 — A+ 类 → 高级A+方案；主图类 → 主图方案；否则原样。"""
+    text = compact_line(section)
+    if not text:
+        return ""
+    if contains_any(text, "高级A+", "高级A＋", "A+", "A＋", "aplus", "a plus"):
+        return "高级A+方案"
+    if contains_any(
+        text, "主图", "main", "场景图", "白底图", "尺寸图", "功能卖点", "对比图", "使用图", "细节图", "礼物图"
+    ):
+        return "主图方案"
+    return section or ""
+
+
+def infer_section(sheet_name: Optional[str], row_text: Optional[str]) -> str:
+    """C# InferSection:2363。"""
+    text = ((sheet_name or "") + " " + (row_text or "")).lower()
+    if "a+" in text or "高级a" in text:
+        return "高级A+方案"
+    if "主图" in text:
+        return "主图方案"
+    if contains_any(sheet_name or "", "作图", "店铺", "品牌") or "店铺" in text or "品牌" in text:
+        return "品牌店铺方案"
+    return "图片方案"
+
+
+def infer_output_type(text: Optional[str], section: Optional[str]) -> str:
+    """C# InferOutputType:2372。"""
+    source = (text or "").lower()
+    if "白底" in source:
+        return "Amazon white-background main image"
+    if "场景" in source:
+        return "lifestyle scene image"
+    if "尺寸" in source:
+        return "dimension infographic"
+    if "细节" in source:
+        return "detail infographic"
+    if "对比" in source:
+        return "comparison infographic"
+    if section and "A+" in section:
+        return "Premium A+ content module"
+    return "ecommerce product image"
+
+
+_RE_ASPECT_DIMS = re.compile(r"(\d{3,5})\s*[x×*]\s*(\d{2,5})", re.IGNORECASE)
+
+
+def infer_aspect_ratio(section: Optional[str], source_aspect_ratio: Optional[str], row_text: Optional[str]) -> str:
+    """C# InferAspectRatio:2404 — 比例串（3:4 优先）→ 尺寸串（必返回）→ A+ 默认 21:9 → 1:1。"""
+    text = ((source_aspect_ratio or "") + " " + (row_text or "")).lower()
+    for ratio in ("3:4", "4:3", "16:9", "21:9", "1:1"):
+        if ratio in text:
+            return ratio
+    dims = _RE_ASPECT_DIMS.findall(text)
+    if dims:
+        try:
+            width = float(dims[-1][0])
+            height = float(dims[-1][1])
+            if height > 0:
+                ratio_value = width / height
+                if ratio_value >= 3.0:
+                    return "21:9"
+                if ratio_value >= 1.45:
+                    return "16:9"
+                if ratio_value <= 0.8:
+                    return "3:4"
+                return "1:1"
+        except ValueError:
+            pass
+    if section and "A+" in section:
+        return "21:9"
+    return "1:1"
+
+
+def infer_initial_section(sheet_name: Optional[str], rows: List[List[str]], start: int) -> str:
+    """C# InferInitialSection:1755。"""
+    sheet = sheet_name or ""
+    if contains_any(sheet, "主图") and contains_any(sheet, "a+", "A+", "高级A"):
+        return "主图方案"
+    if contains_any(sheet, "a+", "A+", "高级A"):
+        return "高级A+方案"
+    for i in range(start, len(rows)):
+        text = join_row(rows[i])
+        marker = try_get_section_marker(rows[i], text)
+        if marker and "A+" in marker:
+            return "主图方案"
+    if contains_any(sheet, "图片方案", "作图", "主图"):
+        return "主图方案"
+    return infer_section(sheet_name, "")
+
+
+# ─── Header 机制（C# :2074-:2244）────────────────────────────────────────────
+
+
+def header_cell_score(compact: str) -> int:
+    """C# HeaderCellScore:2195 — 表头单元格关键词计分（入参需已 CompactLine）。"""
+    if not compact or not compact.strip():
+        return 0
+    if contains_any(compact, "图序", "图号", "序号", "顺序"):
+        return 1
+    if contains_any(compact, "任务名称", "图片名称", "模块名称", "任务标题", "图片标题"):
+        return 2
+    if contains_any(compact, "内容/要素", "内容要素", "展示元素", "运营需求", "画面需求", "作图需求", "要求"):
+        return 2
+    if contains_any(compact, "图片示例", "参考图", "参考图片", "效果图") or compact == "参考":
+        return 2
+    if contains_any(compact, "图类型", "画面类型", "输出类型", "方案类型", "图片类型"):
+        return 2
+    if contains_any(
+        compact, "提示词", "prompt", "文案", "文字", "字幕", "叠字", "比例", "宽高", "尺寸",
+        "类型", "名称", "标题", "类目", "像素", "板块", "所属", "分类", "描述", "布局",
+        "场景", "备注", "方案", "运营",
+    ):
+        return 1
+    if len(compact) <= 18 and contains_any(compact, "任务", "图片", "图", "需求", "卖点", "内容"):
+        return 1
+    return 0
+
+
+_COMPOSITE_HEADER_KEYWORDS = (
+    "任务名称", "图片名称", "模块名称", "任务标题", "图片标题",
+    "所属板块", "所属分类", "方案分类",
+    "图类型", "画面类型", "输出类型", "方案类型", "图片类型",
+    "运营文案", "卖点文案", "展示文案", "画面文案",
+    "画面比例", "图片比例", "图片尺寸", "输出尺寸", "图片像素",
+)
+
+
+def looks_like_composite_header_cell(compact: str) -> bool:
+    """C# LooksLikeCompositeHeaderCell:2170 — ≤18 字符且含复合列名关键词。"""
+    if not compact or not compact.strip() or len(compact) > 18:
+        return False
+    return contains_any(compact, *_COMPOSITE_HEADER_KEYWORDS)
+
+
+_COLUMN_NAME_EXACT = (
+    "顺序", "序号", "图序", "图号", "要求", "需求", "运营需求", "画面需求", "作图需求",
+    "内容", "内容/要素", "内容要素", "展示元素", "图片示例", "参考图", "参考图片", "参考",
+    "效果图", "文案", "卖点文案", "文字", "字幕", "叠字", "比例", "尺寸", "宽高", "像素",
+    "类型", "名称", "标题", "类目", "描述", "布局", "场景", "备注", "方案", "运营",
+    "提示词", "prompt", "板块", "所属", "分类", "方案类型", "图片类型", "输出类型",
+    "图类型", "画面类型", "任务", "模块", "图片",
+)
+
+
+def header_cell_looks_like_column_name(compact: str) -> bool:
+    """C# HeaderCellLooksLikeColumnName:2126 — 精确列名集合 + 前缀 '顺序 ' + 复合格。"""
+    if not compact or not compact.strip():
+        return False
+    if compact == "顺序" or compact.startswith("顺序 "):
+        return True
+    return compact in _COLUMN_NAME_EXACT or looks_like_composite_header_cell(compact)
+
+
+def looks_like_repeated_header_row(row: List[str]) -> bool:
+    """C# LooksLikeRepeatedHeaderRow:2116 — ≥2 个列名样式格且总分达标（2 格≥2，否则≥3）。"""
+    non_empty = [compact_line(c) for c in (row or []) if c and c.strip()]
+    if len(non_empty) < 2:
+        return False
+    scored_cells = sum(1 for c in non_empty if header_cell_looks_like_column_name(c))
+    score = sum(header_cell_score(c) for c in non_empty)
+    required_score = 2 if len(non_empty) == 2 else 3
+    return scored_cells >= 2 and score >= required_score
+
+
+def has_likely_task_between(rows: List[List[str]], start: int, end_exclusive: int) -> bool:
+    """C# HasLikelyTaskBetween:2096 — (start, endExclusive) 内存在疑似任务行。"""
+    for i in range(max(0, start), min(len(rows), end_exclusive)):
+        row_text = join_row(rows[i])
+        if not row_text or not row_text.strip():
+            continue
+        if looks_like_repeated_header_row(rows[i]):
+            continue
+        if try_get_section_marker(rows[i], row_text):
+            continue
+        if sum(1 for c in rows[i] if c and c.strip()) >= 2:
+            return True
+        if looks_like_task_row(rows[i], row_text, False):
+            return True
     return False
 
 
-def extract_tasks(parse_result: Dict[str, object]) -> Tuple[List[PlanTask], List[str]]:
-    """从解析结果提取任务列表（对应 C# AddTasksFromRows 的调用循环）。
+def find_header_row(rows: List[List[str]]) -> int:
+    """C# FindHeaderRow:2074 — 前 80 行内重复表头行；任务间隔保护。"""
+    best_row = -1
+    best_score = 0
+    for i in range(min(len(rows), 80)):
+        if not looks_like_repeated_header_row(rows[i]):
+            continue
+        score = sum(header_cell_score(compact_line(c)) for c in rows[i])
+        if score > best_score:
+            if best_row >= 0 and has_likely_task_between(rows, best_row + 1, i):
+                continue
+            best_score = score
+            best_row = i
+        elif score == best_score and score >= 2 and not has_likely_task_between(rows, best_row + 1, i):
+            best_row = i
+    return best_row if best_score >= 2 else -1
 
-    Returns:
-        (tasks, unmapped_notes)：未映射到任何任务行的参考图说明（C# 报告项）。
+
+def _add_map(col_map: Dict[str, List[int]], key: str, index: int) -> None:
+    """C# AddMap:2244 — 同键多列（Append）。"""
+    col_map.setdefault(key, []).append(index)
+
+
+def map_headers(header_row: List[str]) -> Dict[str, List[int]]:
+    """C# MapHeaders:2218 — 有序优先级链（先匹配先占用，同键多列）。"""
+    col_map: Dict[str, List[int]] = {}
+    for i, h in enumerate(header_row or []):
+        if not h or not h.strip():
+            continue
+        if compact_line(h) == "参考" or contains_any(h, "效果图", "图片示例", "参考图", "参考图补充", "参考图片", "图片参考"):
+            _add_map(col_map, "operationRef", i)
+        elif contains_any(h, "图序", "图号", "序号", "顺序"):
+            _add_map(col_map, "name", i)
+        elif contains_any(h, "文案", "叠字", "文字", "字幕", "卖点文案"):
+            _add_map(col_map, "copy", i)
+        elif contains_any(h, "内容/要素", "内容要素", "展示元素", "评论+卖点", "卖点", "运营需求", "画面需求", "作图需求", "要求", "类目"):
+            _add_map(col_map, "requirements", i)
+        elif contains_any(h, "比例", "宽高", "尺寸", "像素"):
+            _add_map(col_map, "aspect", i)
+        elif contains_any(h, "提示词", "prompt"):
+            _add_map(col_map, "prompt", i)
+        elif contains_any(h, "板块", "所属", "分类", "方案类型", "图片类型"):
+            _add_map(col_map, "section", i)
+        elif contains_any(h, "输出类型", "图类型", "画面类型", "类型"):
+            _add_map(col_map, "outputType", i)
+        elif contains_any(h, "任务", "模块", "图片", "名称", "标题", "序号"):
+            _add_map(col_map, "name", i)
+        elif contains_any(h, "运营", "需求", "方案", "画面", "描述", "要求", "布局", "场景", "备注", "内容"):
+            _add_map(col_map, "requirements", i)
+    return col_map
+
+
+# ─── 行分类（C# :2246/:2266/:1877）───────────────────────────────────────────
+
+
+def looks_like_note_row(row: List[str]) -> bool:
+    """C# LooksLikeNoteRow:2266 — 首个非空格恰为 备注/说明/注意事项（可带冒号）。"""
+    if not row:
+        return False
+    first = next((c for c in row if c and c.strip()), "")
+    return compact_line(first) in ("备注", "备注：", "说明", "说明：", "注意事项", "注意事项：")
+
+
+def try_get_section_marker(row: List[str], row_text: Optional[str]) -> str:
+    """C# TryGetSectionMarker:1877 — A+/主图方案 区块标记行（非空 ≤2 格）。"""
+    if not row_text or not row_text.strip():
+        return ""
+    non_empty = sum(1 for c in (row or []) if c and c.strip())
+    if non_empty > 2:
+        return ""
+    text = compact_line(row_text)
+    if contains_any(text, "高级A+", "高级A＋", "A+", "A＋"):
+        if starts_with_aplus_task_label(text):
+            return ""
+        return "高级A+方案"
+    if contains_any(text, "主图方案", "主图列表"):
+        return "主图方案"
+    return ""
+
+
+def looks_like_task_row(row: List[str], row_text: Optional[str], has_header: bool) -> bool:
+    """C# LooksLikeTaskRow:2246。"""
+    if not row_text or not row_text.strip() or len(row_text) < 4:
+        return False
+    non_empty = sum(1 for c in (row or []) if c and c.strip())
+    if looks_like_note_row(row):
+        return False
+    if contains_any(row_text, "合计", "总计"):
+        return False
+    if non_empty <= 1 and contains_any(row_text, "说明：", "注意事项"):
+        return False
+    if contains_any(row_text, "主图视频", "视频方案", "视频镜头") and not contains_any(
+        row_text, "视频封面", "封面图片", "图片模块"
+    ):
+        return False
+    if has_header:
+        if non_empty <= 0:
+            return False
+        if non_empty == 1 and contains_any(row_text, "高级A+", "高级A＋", "A+", "A＋", "主图方案"):
+            return False
+        return non_empty >= 2 or contains_any(
+            row_text, "主图", "首图", "尺寸图", "场景", "功能卖点", "对比图", "使用图", "细节", "场景补充"
+        )
+    return contains_any(
+        row_text, "主图", "a+", "A+", "模块", "图片", "需求", "文案", "场景", "白底", "尺寸", "细节", "对比", "产品"
+    ) or (non_empty >= 2 and len(row_text) > 20)
+
+
+# ─── 映射列取值（C# :2280/:2289）─────────────────────────────────────────────
+
+
+def _col_values(row: List[str], col_map: Dict[str, List[int]], key: str) -> List[str]:
+    cols = col_map.get(key, []) if col_map else []
+    return [row[i] for i in cols if i < len(row)]
+
+
+def first_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
+    """C# FirstMapped:2280。"""
+    for v in _col_values(row, col_map, key):
+        if v and v.strip():
+            return v
+    return ""
+
+
+def join_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
+    """C# JoinMapped:2289。"""
+    parts = [v for v in _col_values(row, col_map, key) if v and v.strip()]
+    return "\r\n".join(parts)
+
+
+# ─── 回退需求 / 显示编号 / 主图关联（C# :2346/:2430/:2438/:2444/:2478）────────
+
+
+def build_fallback_requirements(row: List[str], col_map: Optional[Dict[str, List[int]]]) -> str:
+    """C# BuildFallbackRequirements:2346。"""
+    parts: List[str] = []
+    if col_map:
+        for key in ("name", "requirements", "outputType", "copy", "prompt"):
+            v = join_mapped(row, col_map, key)
+            if v and v.strip():
+                parts.append(v)
+    if parts:
+        return sanitize_prompt_field(join_distinct_lines(*parts))
+    return sanitize_prompt_field(join_row(row))
+
+
+def detect_same_as_main(task: PlanTask) -> bool:
+    """C# DetectSameAsMain:2438。"""
+    req = task.requirements or ""
+    if "同主图" not in req:
+        return False
+    if not contains_any(req, "主图", "同第"):
+        return False
+    if task.linked_main_index > 0 and task.section_index > 0 and task.linked_main_index != task.section_index:
+        return False
+    return True
+
+
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_LINKED_MAIN_MARKERS = ("主图", "同第", "参考主图")
+
+
+def parse_linked_main_index(task: PlanTask) -> int:
+    """C# ParseLinkedMainIndex:2444 — 主图/同第/参考主图 标记后的数字（支持中文一~九）。"""
+    req = (task.requirements or "") + "\n" + (task.copy_text or "")
+    for marker in _LINKED_MAIN_MARKERS:
+        idx = 0
+        while True:
+            idx = req.find(marker, idx)
+            if idx < 0:
+                break
+            rest = req[idx + len(marker):].lstrip(" :：是(（")
+            for ch in rest:
+                if ch.isdigit():
+                    return int(ch)
+                if ch in _CN_DIGITS:
+                    return _CN_DIGITS[ch]
+                break
+            idx += 1
+    return 0
+
+
+# ─── 参考图解析（C# :1812/:1833/:1843/:1853/:1865/:2298/:2319）────────────────
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def is_image_file_path(file_path: str) -> bool:
+    """C# IsImageFilePath:1865。"""
+    if not file_path or not file_path.strip():
+        return False
+    ext = os.path.splitext(file_path.strip())[1].lower()
+    return ext in _IMAGE_EXTS
+
+
+def next_header_column(headers: List[str], column_index: int) -> int:
+    """C# NextHeaderColumn:1833。"""
+    if not headers:
+        return column_index + 1
+    for i in range(column_index + 1, len(headers)):
+        if headers[i] and headers[i].strip():
+            return i
+    return column_index + 8
+
+
+def resolve_anchored_reference_files(
+    sheet_name: str,
+    row_number: int,
+    column_index: int,
+    image_lookup: Dict[str, Dict[str, Any]],
+) -> Iterator[Dict[str, Any]]:
+    """C# ResolveAnchoredReferenceFiles:1843 — CELL:{sheet}!{row}:{col}# 前缀匹配（大小写不敏感）。"""
+    if not image_lookup:
+        return
+    prefix = f"CELL:{sheet_name or ''}!{row_number}:{column_index}#"
+    for key in sorted(image_lookup, key=lambda k: k.lower()):
+        if key.lower().startswith(prefix.lower()):
+            yield image_lookup[key]
+
+
+def resolve_reference_files_text(
+    cell_text: str,
+    image_lookup: Dict[str, Dict[str, Any]],
+) -> Iterator[Any]:
+    """C# ResolveReferenceFiles:1853 — ID_ token（大小写不敏感）+ 图片路径（须存在）。"""
+    text = cell_text or ""
+    if image_lookup:
+        # C# result 字典为 OrdinalIgnoreCase → 先归一化键再查
+        low_lookup = {k.lower(): v for k, v in image_lookup.items()}
+        for m in re.findall(r"ID_[A-Za-z0-9]+", text):
+            value = low_lookup.get(m.lower())
+            if value is not None:
+                yield value
+    parts = re.split(r"[\n;；]", text.replace("\r\n", "\n").replace("\r", "\n"))
+    for part in parts:
+        value = part.strip().strip('"')
+        if value and is_image_file_path(value) and os.path.exists(value):
+            yield value
+
+
+def resolve_reference_files(
+    cell_text: str,
+    image_lookup: Optional[Dict[str, Dict[str, Any]]],
+    sheet_name: str,
+    row_number: int,
+    column_index: int,
+    headers: List[str],
+) -> Iterator[Any]:
+    """C# ResolveReferenceFiles:1812 — operationRef 列范围内锚定图 + 文本引用。"""
+    if image_lookup is not None:
+        end = next_header_column(headers, column_index)
+        if end <= column_index:
+            end = column_index + 1
+        end = min(end, column_index + 8)
+        for column in range(column_index, end):
+            yield from resolve_anchored_reference_files(sheet_name, row_number, column, image_lookup)
+    yield from resolve_reference_files_text(cell_text, image_lookup or {})
+
+
+def looks_like_machine_image_reference(text: str) -> bool:
+    """C# LooksLikeMachineImageReference:2319。"""
+    compact = compact_line(text)
+    if not compact or not compact.strip():
+        return False
+    if _RE_ID_TOKEN.search(compact):
+        return True
+    if _RE_DISPIMG.search(compact) or _RE_DISPIMG_XLFN.search(compact):
+        return True
+    if _RE_URL.search(compact):
+        return True
+    return False
+
+
+def join_reference_text_notes(
+    row: List[str],
+    headers: List[str],
+    col_map: Dict[str, List[int]],
+    image_lookup: Dict[str, Dict[str, Any]],
+) -> str:
+    """C# JoinReferenceTextNotes:2298 — 参考列文本（非机读引用）并入需求。"""
+    parts: List[str] = []
+    for i in _distinct(col_map.get("operationRef", []) if col_map else []):
+        if i >= len(row):
+            continue
+        value = row[i]
+        if not value or not value.strip():
+            continue
+        if looks_like_machine_image_reference(value):
+            continue
+        if any(v is not None for v in resolve_reference_files(value, image_lookup, "", 0, i, headers)):
+            continue
+        source = compact_line(headers[i]) if i < len(headers) else ""
+        prefix = f"参考：{source}" if source and source.strip() else "参考"
+        cleaned = sanitize_prompt_field(value)
+        if cleaned:
+            parts.append(f"{prefix}：{cleaned}")
+    return join_distinct_lines(*parts)
+
+
+def _distinct(seq: List[int]) -> List[int]:
+    return list(dict.fromkeys(seq))
+
+
+def add_operation_references_from_mapped_cells(
+    row: List[str],
+    headers: List[str],
+    col_map: Dict[str, List[int]],
+    image_lookup: Dict[str, Dict[str, Any]],
+    sheet_name: str,
+    row_number: int,
+) -> List[Tuple[Any, str]]:
+    """C# AddOperationReferencesFromMappedCells:1785。
+
+    返回 [(value, sourceColumn), ...]；value 为 lookup 值 dict 或原始路径字符串；
+    已按 扩展名/存在性/路径去重 过滤。
     """
-    tasks: List[PlanTask] = []
-    sort_index = 0
-    counters: Dict[str, int] = {}
-    unmapped_notes: List[str] = []
-
-    for sheet_name, sheet_data in parse_result.get("sheets", {}).items():
-        rows = sheet_data.rows()
-        if not rows:
+    if not col_map or "operationRef" not in col_map:
+        return []
+    result: List[Tuple[Any, str]] = []
+    seen: set = set()
+    for i in _distinct(col_map["operationRef"]):
+        if i < 0:
             continue
-
-        # 只处理任务 sheet
-        if not is_task_sheet(sheet_name, rows):
-            continue
-
-        # 参考图映射（issue #52 / C# AddOperationReferencesFromMappedCells）：
-        # 按 drawing 锚点行号把图片关联到任务行；锚点行号是原始 sheet 行号，
-        # 需通过 grid_row_numbers() 对齐到 rows() 过滤空行后的网格下标。
-        row_numbers = sheet_data.grid_row_numbers()
-        row_image_refs: Dict[int, List[Dict[str, Any]]] = {}
-        for anchor in getattr(sheet_data, "image_anchors", []) or []:
-            row_no = anchor.get("row")
-            if not row_no or row_no not in row_numbers:
+        source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "Excel参考图"
+        cell_text = row[i] if i < len(row) else ""
+        for value in resolve_reference_files(cell_text, image_lookup, sheet_name, row_number, i, headers):
+            path = value.get("path") if isinstance(value, dict) else value
+            if not path:
                 continue
-            row_image_refs.setdefault(row_numbers.index(row_no), []).append(anchor)
-        for refs in row_image_refs.values():
-            refs.sort(key=lambda a: (a.get("col") is None, a.get("col") or 0))
-
-        sort_index = add_tasks_from_rows(tasks, rows, sheet_name, counters, sort_index, row_image_refs)
-
-        # 报告未映射到任务行的图片（C# 对未匹配行会打印警告）；
-        # asset_id 格式为「sheet!行号:rid」，取冒号后段才是 rid。
-        mapped_rids = {
-            ref.asset_id.rsplit(":", 1)[1]
-            for task in tasks
-            for ref in task.operation_references
-            if ref.asset_id.count(":") >= 1
-        }
-        for anchor in getattr(sheet_data, "image_anchors", []) or []:
-            rid = anchor.get("rid")
-            if rid in mapped_rids:
+            if not is_image_file_path(path):
                 continue
-            if anchor.get("row") is None:
-                unmapped_notes.append(f"{sheet_name}: 图片 {rid} 使用绝对锚点，未关联到任务行")
-            else:
-                unmapped_notes.append(f"{sheet_name}: 图片 {rid} 位于行 {anchor['row']}，未匹配到任务行")
+            if isinstance(value, dict) and not os.path.exists(path):
+                # lookup 命中的图在内存中（bytes 已随 parse_result），不要求磁盘存在
+                if not value.get("data"):
+                    continue
+            elif not os.path.exists(path):
+                continue
+            if path.lower() in seen:
+                continue
+            seen.add(path.lower())
+            result.append((value, source))
+    return result
 
-    return tasks, unmapped_notes
+
+# ─── imageLookup 构建（C# ExtractCellImages:1232 结果集，OrdinalIgnoreCase）────
+
+
+def build_image_lookup(
+    sheets: Dict[str, Any],
+    cell_images: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """构建 C# imageLookup 等价物：{lowercase_key: {"path","data","origin"}}。
+
+    - cell images：key = cNvPr name（ID_xxxx），origin="cellimage"
+    - drawing 锚点：key = CELL:{sheet}!{row}:{col}#{seq}（C# CellImageKey:1456），origin="anchored"
+    """
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for name, val in (cell_images or {}).items():
+        if isinstance(val, dict):
+            data, path = val.get("data"), val.get("path")
+        else:  # 兼容旧格式（纯 bytes）
+            data, path = val, f"maps/{name}.png"
+        if data is not None:
+            lookup[name.lower()] = {"path": path or f"maps/{name}.png", "data": data, "origin": "cellimage"}
+    for sheet_name, sheet_data in (sheets or {}).items():
+        for anchor in getattr(sheet_data, "image_anchors", None) or []:
+            data = getattr(sheet_data, "images", {}).get(anchor.get("rid"))
+            if data is None:
+                continue
+            key = f"CELL:{sheet_name}!{anchor.get('row')}:{anchor.get('col')}#{anchor.get('seq')}"
+            lookup[key.lower()] = {
+                "path": anchor.get("path") or key,
+                "data": data,
+                "origin": "anchored",
+            }
+    return lookup
+
+
+# ─── 任务构建主循环（C# AddTasksFromRows:1615 / AddTasksFromUnmappedRows:1707）
 
 
 def add_tasks_from_rows(
@@ -136,84 +798,142 @@ def add_tasks_from_rows(
     sheet_name: str,
     counters: Dict[str, int],
     sort_index: int,
-    image_lookup: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+    image_lookup: Dict[str, Dict[str, Any]],
 ) -> int:
-    """对应 C# AddTasksFromRows。
-
-    image_lookup: 网格行下标（rows 的 0-based 下标）→ 该行图片锚点列表
-        （每项含 rid/row/col，row/col 为原始 1-based 行列）。用于把参考图
-        关联到任务（C# AddOperationReferencesFromMappedCells 的数据级等价物）。
-    """
+    """C# AddTasksFromRows:1615 — 表头路径（image_lookup 为 None 时退化为无锚定图）。"""
     header_row = find_header_row(rows)
     if header_row < 0:
-        # 无 header：兜底 unmapped rows
+        before = len(tasks)
         add_tasks_from_unmapped_rows(tasks, rows, sheet_name, counters, sort_index)
-        # 重新计算 sort_index
-        sort_index = len(tasks)
-        return sort_index
-
+        return len(tasks)
     headers = rows[header_row]
-    header_map = map_headers(headers)
-    start = header_row + 1
-    current_section = infer_initial_section(sheet_name, rows, start)
+    col_map = map_headers(headers)
+    current_section = infer_initial_section(sheet_name, rows, header_row + 1)
 
-    for i in range(start, len(rows)):
+    for i in range(header_row + 1, len(rows)):
         row = rows[i]
         row_text = join_row(row)
-
-        # Section marker
         section_marker = try_get_section_marker(row, row_text)
         if section_marker:
             current_section = section_marker
             continue
-
-        # Skip repeated header
-        if i != header_row and looks_like_repeated_header_row(row):
+        if looks_like_repeated_header_row(row):
+            continue
+        if not looks_like_task_row(row, row_text, True):
             continue
 
-        # Skip non-task rows
-        if not looks_like_task_row(row, row_text):
-            continue
+        mapped_name = first_mapped(row, col_map, "name")
+        mapped_requirements = join_mapped(row, col_map, "requirements")
+        mapped_output_type = first_mapped(row, col_map, "outputType")
+        row_lead = first_non_empty(*row)
+        mapped_section = first_mapped(row, col_map, "section")
 
-        # Extract mapped fields
-        mapped_name = first_mapped(row, header_map, "name")
-        mapped_requirements = join_mapped(row, header_map, "requirements")
-        mapped_output_type = first_mapped(row, header_map, "outputType")
-        row_lead = first_non_empty(row)
-        mapped_section = normalize_section_name(first_mapped(row, header_map, "section"))
-
-        # Section inference chain
-        section = mapped_section
-        if not section:
-            # 检查是否是 A+ 任务：只有任务 ID 本身以 "A+" 开头才算 A+ 任务
-            # 不能仅因为文本中包含 "A+" 就判断为 A+ 任务（主图任务也可能描述 A+ 用途）
-            if row_lead.upper().startswith("A+"):
-                section = "高级A+方案"
+        section = normalize_section_name(mapped_section)
+        if not section or not section.strip():
+            output_type_section = normalize_section_name(mapped_output_type)
+            if output_type_section and output_type_section.strip():
+                section = output_type_section
             else:
-                # 主图任务
-                section = "主图方案"
-        if not section:
-            section = current_section or infer_section(sheet_name, row_text) or ""
-
-        if mapped_section:
-            current_section = mapped_section
-        # Update counters
+                section = "高级A+方案" if looks_like_aplus_task(mapped_name, mapped_requirements) else ""
+                if not section:
+                    section = "高级A+方案" if looks_like_aplus_task(row_lead, mapped_requirements) else ""
+        if not section or not section.strip():
+            section = first_non_empty(
+                current_section,
+                infer_section(sheet_name, row_text),
+            )
+        else:
+            current_section = section
         counters[section] = counters.get(section, 0) + 1
-        sort_index += 1
         section_idx = counters[section]
+        sort_index += 1
 
-        # Build requirements
         requirements = mapped_requirements
-        if not requirements:
-            requirements = build_fallback_requirements(row, header_map)
-        ref_notes = join_reference_text_notes(row, headers, header_map, image_lookup)
-        if ref_notes:
-            requirements = join_distinct_lines(requirements, ref_notes)
-
-        # Build task（外部 Excel 文本为不可信输入，统一过滤防 prompt injection）
-        name = clean_text_for_prompt_injection(
-            clean_task_name(mapped_name) or guess_name(row, row_text, section, section_idx)
+        copy_text = join_mapped(row, col_map, "copy")
+        if not requirements or not requirements.strip():
+            requirements = build_fallback_requirements(row, col_map)
+        requirements = join_distinct_lines(
+            requirements,
+            join_reference_text_notes(row, headers, col_map, image_lookup),
         )
+
+        row_number = i + 1  # 1-based（C# 行索引 +1 = SourceRow）
+        refs = add_operation_references_from_mapped_cells(
+            row, headers, col_map, image_lookup, sheet_name, row_number
+        )
+
+        source_aspect = first_mapped(row, col_map, "aspect")
+        task_name = clean_task_name(first_non_empty(mapped_name, guess_name(row, row_text, section, section_idx)))
+        task = PlanTask(
+            task_id=f"excel_{sort_index}",
+            name=task_name,
+            section=section,
+            source_row=f"{sheet_name}!{row_number}",
+            sort_index=sort_index,
+            section_index=section_idx,
+            display_no=build_display_no(section, section_idx),
+            output_type=first_non_empty(mapped_output_type, infer_output_type(row_text, section)),
+            source_aspect_ratio=source_aspect,
+            target_aspect_ratio=infer_aspect_ratio(section, source_aspect, row_text),
+            requirements=requirements,
+            copy_handling_mode="none" if not (copy_text and copy_text.strip()) else "manual_overlay_after_generation",
+            copy_text=copy_text,
+            base_prompt=first_mapped(row, col_map, "prompt"),
+            status="待处理",
+            selected=True,
+        )
+        # 单元格图片挂接（issue #101：任务带图统计用；C# 该路径不挂，python 扩展）
+        for value, _source in refs:
+            if isinstance(value, dict) and value.get("origin") == "cellimage":
+                task.cell_image_name = os.path.splitext(os.path.basename(value["path"]))[0]
+                task.cell_image_data = value.get("data") or b""
+                task.has_cell_image = True
+                break
+        task.same_as_main = detect_same_as_main(task)
+        task.linked_main_index = parse_linked_main_index(task)
+        task.linked_main_label = (
+            f"同主图 {task.linked_main_index}"
+            if task.linked_main_index > 0
+            else ("同主图" if task.same_as_main else "")
+        )
+        task.operation_references = [
+            ReferenceImage(
+                asset_id=value.get("path") if isinstance(value, dict) else value,
+                source=source,
+            )
+            for value, source in refs
+        ]
+        tasks.append(task)
+    return sort_index
+
+
+def add_tasks_from_unmapped_rows(
+    tasks: List[PlanTask],
+    rows: List[List[str]],
+    sheet_name: str,
+    counters: Dict[str, int],
+    sort_index: int,
+) -> int:
+    """C# AddTasksFromUnmappedRows:1707 — 无表头兜底路径。"""
+    current_section = infer_initial_section(sheet_name, rows, 0)
+    for i, row in enumerate(rows):
+        row_text = join_row(row)
+        section_marker = try_get_section_marker(row, row_text)
+        if section_marker:
+            current_section = section_marker
+            continue
+        if looks_like_repeated_header_row(row):
+            continue
+        if not looks_like_task_row(row, row_text, False):
+            continue
+        section = first_non_empty(current_section, infer_section(sheet_name, row_text))
+        counters[section] = counters.get(section, 0) + 1
+        section_idx = counters[section]
+        sort_index += 1
+        first = next((c for c in row if c and c.strip()), "")
+        if first.startswith("同主图"):
+            first = "同主图"
+        name = clean_task_name(first if first.strip() else guess_name(row, row_text, section, section_idx))
         task = PlanTask(
             task_id=f"excel_{sort_index}",
             name=name,
@@ -222,417 +942,69 @@ def add_tasks_from_rows(
             sort_index=sort_index,
             section_index=section_idx,
             display_no=build_display_no(section, section_idx),
-            output_type=mapped_output_type or infer_output_type(row_text, section),
-            source_aspect_ratio=first_mapped(row, header_map, "aspect"),
-            requirements=clean_text_for_prompt_injection(requirements),
-            copy_handling_mode="",  # set below
-            copy_text=clean_text_for_prompt_injection(join_mapped(row, header_map, "copy")),
-            overlay_plan="",
-            base_prompt=clean_text_for_prompt_injection(first_mapped(row, header_map, "prompt")),
-            base_negative_prompt="",
-            same_as_main=False,
-            linked_main_index=0,
-            linked_main_label="",
+            output_type=infer_output_type(row_text, section),
+            target_aspect_ratio=infer_aspect_ratio(section, "", row_text),
+            requirements=sanitize_prompt_field(join_row(row)),
             status="待处理",
             selected=True,
-            last_failure_reason="",
-            # 参考图映射（issue #52）：anchor 行 = 本任务行时关联；
-            # asset_id 为「sheet!行号:rId」稳定标识（媒体字节在 parse_result.sheets
-            # 的 images[rid]，Phase 3 媒体管道落地后替换为真实资源 ID）。
-            operation_references=[
-                ReferenceImage(
-                    asset_id=f"{sheet_name}!{i + 1}:{anchor.get('rid')}",
-                    source=f"Excel 内嵌图（{sheet_name} 行 {anchor.get('row')} 列 {anchor.get('col')}）",
-                    url=None,
-                )
-                for anchor in (image_lookup or {}).get(i, [])
-            ],
         )
-        # Copy handling
-        if task.copy_text:
-            task.copy_handling_mode = "manual_overlay_after_generation"
-        else:
-            task.copy_handling_mode = "none"
-
-        # SameAsMain / LinkedMain
         task.same_as_main = detect_same_as_main(task)
         task.linked_main_index = parse_linked_main_index(task)
         task.linked_main_label = (
-            f"同主图 {task.linked_main_index}" if task.linked_main_index > 0
+            f"同主图 {task.linked_main_index}"
+            if task.linked_main_index > 0
             else ("同主图" if task.same_as_main else "")
         )
-
         tasks.append(task)
-
     return sort_index
 
 
-# ─── Header Detection ─────────────────────────────────────────────────────────
-
-def find_header_row(rows: List[List[str]]) -> int:
-    """查找 header row 索引（对应 C# FindHeaderRow）。返回 -1 表示未找到。"""
-    # 在前 10 行中寻找有 2 个以上非空单元格的行
-    for idx in range(min(10, len(rows))):
-        row = rows[idx]
-        non_empty = [c.strip() for c in row if c.strip()]
-        if len(non_empty) >= 2:
-            # 检查是否包含常见 header 关键词
-            text = " ".join(non_empty).lower()
-            if any(kw in text for kw in ["名称", "图片", "主图", "a+", "提示", "prompt", "类型", "output"]):
-                return idx
-    return -1
+# ─── 入口（C# ImportXlsxPackage:1140 / ImportRowsForSmoke:1746）───────────────
 
 
-def map_headers(headers: List[str]) -> Dict[str, List[int]]:
-    """映射 header 名称到列索引（对应 C# MapHeaders）。"""
-    col_map: Dict[str, List[int]] = {
-        "name": [], "requirements": [], "reference": [], "outputType": [], "section": [],
-        "aspect": [], "prompt": [], "copy": [],
-    }
-    for idx, cell in enumerate(headers):
-        cell_lower = cell.strip().lower()
-        if not cell_lower:
-            continue
-        # name
-        if any(kw in cell_lower for kw in ["名称", "图片名称", "name", "标题"]):
-            col_map["name"].append(idx)
-        # requirements
-        elif any(kw in cell_lower for kw in ["要求", "需求", "说明", "requirements", "备注", "内容"]):
-            col_map["requirements"].append(idx)
-        # reference（参考图列：C# JoinReferenceTextNotes 的文本注记来源）
-        elif any(kw in cell_lower for kw in ["参考图", "参考", "reference", "示例图"]):
-            col_map["reference"].append(idx)
-        # outputType
-        elif any(kw in cell_lower for kw in ["类型", "output", "产出", "类别"]):
-            col_map["outputType"].append(idx)
-        # section
-        elif any(kw in cell_lower for kw in ["分区", "section", "类别", "板块"]):
-            col_map["section"].append(idx)
-        # aspect
-        elif any(kw in cell_lower for kw in ["比例", "aspect", "尺寸"]):
-            col_map["aspect"].append(idx)
-        # prompt
-        elif any(kw in cell_lower for kw in ["提示", "prompt", "描述", "生成描述"]):
-            col_map["prompt"].append(idx)
-        # copy
-        elif any(kw in cell_lower for kw in ["文案", "copy", "文字", "叠加文字"]):
-            col_map["copy"].append(idx)
-    return col_map
+def extract_tasks(parse_result: Dict[str, Any]):
+    """C# ImportXlsxPackage 主循环。
 
-
-# ─── Row Classification ───────────────────────────────────────────────────────
-
-def try_get_section_marker(row: List[str], row_text: str) -> Optional[str]:
-    """检查是否为 section marker 行（对应 C# TryGetSectionMarker）。
-    
-    在基准 Excel 中，section 是通过行内容推断的，没有显式的 section marker 行。
-    主图任务（1、主图...）→ "主图方案" section
-    A+ 任务（A+1、...）→ "高级A+方案" section
+    返回 (tasks, notes, scanned_rows)。
+    口径：
+    - should_skip_sheet（有设计表时只扫设计表+补充表）
+    - ScannedRowCount = 过滤后各表 <row> 元素数之和
+    - 图片注记 = imageLookup 键数（cellimages + drawing 锚点图）
     """
-    # 这个函数在基准 Excel 中返回 None（没有显式 section marker）
-    # Section 推断由 looks_like_task_row 和 infer_section 完成
-    return None
+    tasks: List[PlanTask] = []
+    notes: List[str] = []
+    counters: Dict[str, int] = {}
+    sort_index = 0
+    scanned_rows = 0
 
+    sheets: Dict[str, Any] = parse_result.get("sheets") or {}
+    cell_images: Dict[str, Any] = parse_result.get("cell_images") or {}
+    image_lookup = build_image_lookup(sheets, cell_images)
+    has_design = any(is_design_plan_sheet_name(name) for name in sheets)
 
-def looks_like_repeated_header_row(row: List[str]) -> bool:
-    """检查是否为重复 header 行（对应 C# LooksLikeRepeatedHeaderRow）。"""
-    text = " ".join(c.strip().lower() for c in row if c.strip())
-    # 如果一行包含多个常见 header 关键词，视为重复 header
-    header_keywords = ["名称", "类型", "提示", "比例", "要求", "prompt", "output", "name"]
-    matches = sum(1 for kw in header_keywords if kw in text)
-    return matches >= 3
-
-
-def looks_like_task_row(row: List[str], row_text: str) -> bool:
-    """检查是否为任务行（对应 C# LooksLikeTaskRow）。
-    
-    任务行特征：
-    - 第一列或第二列以数字+顿号开头（如 "1、主图"、"2、功能卖点"）
-    - 或者以 "A+" + 数字开头（如 "A+1、"、"A+2"）
-    - 不包含 "视频" 关键词（视频任务不算图片任务）
-    """
-    if not row_text.strip():
-        return False
-    
-    # 排除视频任务
-    if "视频" in row_text:
-        return False
-    
-    # 检查前两列是否有任务序号模式
-    for cell in row[:2]:
-        cell = cell.strip()
-        # 模式1: "1、主图" / "2、功能卖点" 等
-        if re.match(r"^\d+[、,.．]\s*", cell):
-            return True
-        # 模式2: "A+1、" / "A+2" 等
-        if re.match(r"^A\+\d+", cell, re.IGNORECASE):
-            return True
-    
-    return False
-
-
-# ─── Section Inference ────────────────────────────────────────────────────────
-
-def infer_initial_section(sheet_name: str, rows: List[List[str]], start: int) -> str:
-    """推断初始 section（对应 C# InferInitialSection）。"""
-    # 从 sheet 名称推断
-    section = infer_section(sheet_name, "")
-    if section:
-        return section
-    # 从后续行内容推断
-    for i in range(min(start + 5, len(rows))):
-        row_text = " ".join(rows[i])
-        section = infer_section(sheet_name, row_text)
-        if section:
-            return section
-    return ""
-
-
-def infer_section(sheet_name: str, row_text: str) -> str:
-    """推断 section（对应 C# InferSection）。"""
-    # 从 sheet name 推断
-    if "图片方案" in sheet_name or "主图" in sheet_name:
-        return "主图方案"
-    if "A+" in sheet_name or "a+" in sheet_name.lower():
-        return "高级A+方案"
-    if "详情" in sheet_name:
-        return "详情图"
-
-    # 从行文本推断
-    if row_text:
-        if "A+" in row_text or "a+" in row_text:
-            return "高级A+方案"
-        if "主图" in row_text:
-            return "主图方案"
-        if "详情" in row_text:
-            return "详情图"
-
-    return ""
-
-
-def normalize_section_name(name: str) -> str:
-    """规范化 section 名称（对应 C# NormalizeSectionName）。"""
-    if not name:
-        return ""
-    name = name.strip()
-    if "主图" in name:
-        return "主图"
-    if "A+" in name or "a+" in name.lower():
-        return "高级A+方案"
-    if "详情" in name:
-        return "详情图"
-    return name
-
-
-def infer_output_type(row_text: str, section: str) -> str:
-    """推断 output type（对应 C# InferOutputType）。
-    
-    优先使用 section 作为 output type，避免因为 requirements/prompt 中包含 "A+" 字样
-    而错误分类（例如主图任务的 requirements 可能描述 "A+ 用途"）。
-    """
-    # 优先使用 section（已在任务分类时正确推断）
-    if section:
-        if "主图" in section:
-            return "主图"
-        if "A+" in section or "高级" in section:
-            return "高级A+方案"
-        if "详情" in section:
-            return "详情图"
-    
-    # fallback: 根据 row_text 推断
-    if row_text:
-        if "A+" in row_text or "a+" in row_text:
-            return "高级A+方案"
-        if "主图" in row_text:
-            return "主图"
-    
-    return section or ""
-
-
-# ─── Field Extraction Helpers ─────────────────────────────────────────────────
-
-def first_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
-    """获取映射字段的第一个非空值（对应 C# FirstMapped）。"""
-    for idx in col_map.get(key, []):
-        if idx < len(row) and row[idx].strip():
-            return row[idx].strip()
-    return ""
-
-
-def join_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
-    """获取映射字段的所有值并拼接（对应 C# JoinMapped）。"""
-    parts = []
-    for idx in col_map.get(key, []):
-        if idx < len(row) and row[idx].strip():
-            parts.append(row[idx].strip())
-    return " ".join(parts)
-
-
-def first_non_empty(row: List[str]) -> str:
-    """获取行中第一个非空值（对应 C# FirstNonEmpty）。"""
-    for cell in row:
-        if cell and cell.strip():
-            return cell.strip()
-    return ""
-
-
-def join_row(row: List[str]) -> str:
-    """拼接行文本（对应 C# JoinRow）。"""
-    return " ".join(c.strip() for c in row if c.strip())
-
-
-def build_fallback_requirements(row: List[str], col_map: Dict[str, List[int]]) -> str:
-    """构建 fallback requirements（对应 C# BuildFallbackRequirements）。"""
-    # 用所有非空且非 name 列的值作为 requirements
-    name_cols = set(col_map.get("name", []))
-    parts = []
-    for idx, cell in enumerate(row):
-        if idx in name_cols:
+    for sheet_name, sheet_data in sheets.items():
+        if should_skip_sheet(sheet_name, has_design):
             continue
-        if cell and cell.strip():
-            parts.append(cell.strip())
-    return " ".join(parts[:5])  # 限制长度
-
-
-def join_distinct_lines(text1: str, text2: str) -> str:
-    """拼接两段文本，去重（对应 C# JoinDistinctLines）。"""
-    if not text2:
-        return text1
-    if not text1:
-        return text2
-    lines1 = set(text1.split("\n"))
-    lines2 = text2.split("\n")
-    result = text1
-    for line in lines2:
-        if line not in lines1:
-            result += "\n" + line
-    return result
-
-
-def join_reference_text_notes(
-    row: List[str],
-    headers: List[str],
-    col_map: Dict[str, List[int]],
-    image_lookup: Optional[Dict[int, List[Dict[str, Any]]]],
-) -> str:
-    """提取引用文本注释（对应 C# JoinReferenceTextNotes）。
-
-    把「参考图」列里的单元格文本注记（如「参考竞品 A 的构图」）拼接进任务要求；
-    无参考列或单元格全空时返回空串。
-    """
-    parts = [row[idx].strip() for idx in col_map.get("reference", []) if idx < len(row) and row[idx].strip()]
-    return " ".join(parts)
-
-
-# ─── Naming & Display ─────────────────────────────────────────────────────────
-
-def clean_task_name(name: str) -> str:
-    """清理任务名称（对应 C# CleanTaskName）。"""
-    if not name:
-        return ""
-    # 去除引号、多余空格
-    name = name.strip().strip("\"'")
-    name = re.sub(r"\s+", " ", name)
-    return name[:80]
-
-
-def guess_name(row: List[str], row_text: str, section: str, section_idx: int) -> str:
-    """猜测任务名称（对应 C# GuessName）。"""
-    # 用第一列或前几列内容
-    lead = first_non_empty(row)
-    if lead:
-        return lead[:60]
-    # 用 section + 序号
-    return f"{section} {section_idx}"
-
-
-def build_display_no(section: str, section_idx: int) -> str:
-    """构建显示编号（对应 C# BuildDisplayNo）。"""
-    if "主图" in section:
-        return f"主图 {section_idx}"
-    if "A+" in section:
-        return f"A+ 模块 {section_idx}"
-    if "详情" in section:
-        return f"详情图 {section_idx}"
-    return f"{section} {section_idx}" if section else str(section_idx)
-
-
-# ─── Relationship Detection ───────────────────────────────────────────────────
-
-def detect_same_as_main(task: PlanTask) -> bool:
-    """检测是否同主图（对应 C# DetectSameAsMain）。"""
-    text = task.name + task.requirements + task.base_prompt
-    return "同主图" in text
-
-
-def parse_linked_main_index(task: PlanTask) -> int:
-    """解析关联主图序号（对应 C# ParseLinkedMainIndex）。"""
-    text = task.name + task.requirements
-    match = re.search(r"同主图\s*(\d+)", text)
-    if match:
-        return int(match.group(1))
-    return 0
-
-
-# ─── Fallback Task Extraction ─────────────────────────────────────────────────
-
-def clean_text_for_prompt_injection(text: str, max_length: int = 500) -> str:
-    """清理文本以防止 prompt injection。"""
-    if not text:
-        return ""
-    # 限制长度
-    text = text[:max_length]
-    # 移除控制字符（保留换行、制表符、空格）
-    text = ''.join(c for c in text if c.isprintable() or c in '\n\t\r')
-    # 移除可疑的模式（简化版，可根据需要扩展）
-    suspicious_patterns = [
-        r'(?i)(ignore|忽略).{0,50}(instruction|指令|指令)',
-        r'(?i)(new|new)\s*instruction',
-        r'(?i)(ignore|忽略)\s*all\s*(previous|prior|上述)',
-    ]
-    for pattern in suspicious_patterns:
-        text = re.sub(pattern, '[filtered]', text)
-    return text
-
-def add_tasks_from_unmapped_rows(
-    tasks: List[PlanTask],
-    rows: List[List[str]],
-    sheet_name: str,
-    counters: Dict[str, int],
-    sort_index: int,
-):
-    """从未映射行提取任务（对应 C# AddTasksFromUnmappedRows）。简化实现。"""
-    # 简单策略：每个非空行都作为任务
-    section = infer_section(sheet_name, "") or "主图"
-    for i, row in enumerate(rows):
-        row_text = join_row(row)
-        if not row_text.strip():
+        rows = sheet_data.rows()
+        scanned_rows += len(rows)
+        if not rows:
             continue
-        if looks_like_repeated_header_row(row):
-            continue
-        sort_index += 1
-        counters[section] = counters.get(section, 0) + 1
-        section_idx = counters[section]
-        # 清理文本防止 prompt injection
-        clean_name = clean_text_for_prompt_injection(clean_task_name(first_non_empty(row)) or f"任务 {sort_index}")
-        clean_requirements = clean_text_for_prompt_injection(row_text[:200])
-        task = PlanTask(
-            task_id=f"excel_{sort_index}",
-            name=clean_name,
-            section=section,
-            source_row=f"{sheet_name}!{i + 1}",
-            sort_index=sort_index,
-            section_index=section_idx,
-            display_no=build_display_no(section, section_idx),
-            output_type=infer_output_type(row_text, section),
-            source_aspect_ratio="",
-            requirements=clean_requirements,
-            copy_handling_mode="none",
-            copy_text="",
-            overlay_plan="",
-            base_prompt="",
-            base_negative_prompt="",
-            status="待处理",
-            selected=True,
-        )
-        tasks.append(task)
+        sort_index = add_tasks_from_rows(tasks, rows, sheet_name, counters, sort_index, image_lookup)
+
+    if image_lookup:
+        notes.append(f"已抽取 Excel 单元格图片：{len(image_lookup)} 张。")
+    return tasks, notes, scanned_rows
+
+
+def build_plan_ir(source_file: str, parse_result: Dict[str, Any]) -> PlanIR:
+    """构建 PlanIR（C# Report 口径：SheetCount/ScannedRowCount/ImportedTaskCount）。"""
+    sheets = parse_result.get("sheets") or {}
+    plan = PlanIR(source_file=source_file, sheet_count=len(sheets))
+    tasks, notes, scanned_rows = extract_tasks(parse_result)
+    plan.tasks = tasks
+    plan.notes = notes
+    plan.scanned_rows = scanned_rows
+    # C# :1207-1210 — 有任务时追加 OpenXML 兜底注记
+    if len(plan.tasks) > 0:
+        plan.notes.append("已用 OpenXML 兜底读取 .xlsx，并自动识别任务字段。")
+    return plan

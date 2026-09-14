@@ -45,9 +45,9 @@
   - **domain budget** 120→180s（实测 129.6s，原 120s 不足）。
 - **验证**：domain 质量门 6/6 步骤通过（129.6s，commit 93c6e7a）。
 
-### 1.4 [ ] 清理重复定义 / 死代码（S2 维护性）
-- **2026-09-10 复核更新**：请求模型重复定义不止 1 处——`app/core.py` 有 **65 个**类被 `app/routers/*.py` 本地同名类 shadow（clean-room W1 拆分时机械复制未清 core 副本；api_project_library 14 个、api_asset_library 10 个、api_local_assets 7 个等），core 版全部是死代码。收敛工作暂缓，待专门排期（先清完再评估 core.py 拆分收益）。
-- 收敛 `main.py:1677` 的巨型 import（单行 17,468 字符 / ~675 符号 re-export core；main.py 仍 1731 行）—— 随 core.py 拆分一并处理。
+### 1.4 [~] 清理重复定义 / 死代码（S2 维护性）——重复定义已收敛，巨型 import 随 P2 core.py 重组
+- ✅ **2026-09-13 重复定义收敛（issue #100 已关）**：Part A `app/core.py` 单一 BaseModel 来源（22 router 删 65 重复，`4310b5c`）；Part B main.py 删 7 个死代码路由（`af04d9d`）；收尾 api_project_library.py 删 2 重复类（`9ac867a`）。AST diff 证明语义等价，冒烟 10/10。
+- [ ] 收敛 `main.py:1236` 的巨型 import（单行 17,468 字符 / ~675 符号 re-export core）—— 随 P2 `app/core.py` 结构化重组（3.7）一并处理。
 
 ---
 
@@ -117,6 +117,15 @@
   - 布局验证：0 重叠 ✓
   - 边连通：Plan→Agent→Task→Result 全连接 ✓
 - **断网可用**：所有功能纯本地实现（stdlib + FastAPI），无需外部依赖 ✓
+
+---
+
+## 当前焦点（2026-09-13 更新）
+
+- **P0 验收通过**（测试地基建成：763 单测 + ui_integrity 5 视口 + 6 浏览器回归全绿，`3be3611`）；详见 `docs/agent-pi-roadmap.md` §5 验收差距评估。
+- **P1 无 LLM 主链路任务全部完成**（含打标收集/导出 `efa33bc` + 基准 Excel 复测 PASS：846 单测 / retest 4 计数项 + 15 任务逐字段 0 差异 / E2E 15/15 / ui_integrity 5 视口全绿）。
+- **删除数据安全两笔收尾（后续队列，不阻塞 P2）**：P1-3 节点/单图删除对生成中任务无保护、P1-9 静默孤儿回收不走回收区（均见 `docs/deletion-mechanism-review.md`）。
+- **下一步：P2 pi 基座（ADR 0019 Node sidecar）**，见 §3.2–3.8。
 
 ---
 
