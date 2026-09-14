@@ -50,7 +50,7 @@ def main():
             store = ProjectStore(pathlib.Path(root) / 'projects', snapshot_delay=0)
             seed_store(store)
             app = harness.load_production_app(pathlib.Path(root) / 'runtime', store)
-            server = harness.ConversationBrowserServer(store, app)
+            server = harness.ConversationBrowserServer(store, app, client_script=CLIENT_SCRIPT)
             harness.CLIENT_SCRIPT = CLIENT_SCRIPT
             harness.INJECT_PATHS = {'/static/global-settings.html'}
             server.start()

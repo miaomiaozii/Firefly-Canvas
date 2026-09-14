@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import copy
 import hashlib
@@ -12,6 +13,7 @@ import tempfile
 import time
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -584,7 +586,7 @@ def inspect_scene(
               * Math.max(0,Math.min(selectionMenuRect.bottom,selectionNameRect.bottom)-Math.max(selectionMenuRect.top,selectionNameRect.top))
             : 0;
           const selectionMenuAvoidsName=!selectionName || !visible(selectionName) || selectionMenuNameOverlap<=1;
-          const expectedActionIds=['preview','crop','outpaint','mask','brush','grid','send-ps','download'];
+          const expectedActionIds=['preview','detail','crop','outpaint','mask','local-edit','brush','grid','send-ps','download'];
           const selectionButtons=[...(selectionMenu?.querySelectorAll('button[data-smart-node-action]')||[])];
           const selectionActions=selectionButtons.map(button=>{{
             const rect=button.getBoundingClientRect();
@@ -636,6 +638,9 @@ def inspect_scene(
             selectionActionsReachable,
             selectionMenuAvoidsName,
             selectionMenuNameOverlap,
+            selectionNodeRect:selectionRect?{{left:selectionRect.left,top:selectionRect.top,right:selectionRect.right,bottom:selectionRect.bottom,width:selectionRect.width,height:selectionRect.height}}:null,
+            selectionNameRect:selectionNameRect?{{left:selectionNameRect.left,top:selectionNameRect.top,right:selectionNameRect.right,bottom:selectionNameRect.bottom,width:selectionNameRect.width,height:selectionNameRect.height}}:null,
+            selectionMenuRect:selectionMenuRect?{{left:selectionMenuRect.left,top:selectionMenuRect.top,right:selectionMenuRect.right,bottom:selectionMenuRect.bottom,width:selectionMenuRect.width,height:selectionMenuRect.height}}:null,
             promptSurfacesOpaque,
             promptSurfaceAlphas:promptSurfaces.map(element=>({{selector:element.id ? '#'+element.id : '.'+[...element.classList].join('.'),alpha:surfaceAlpha(element)}})),
             decorativeEnglishAbsent,
@@ -1431,21 +1436,56 @@ def run_viewport(
         expected_original = Path(store.media_record(project_id, selected_asset_id)["path"]).read_bytes()
         downloads_root = attempt_root / "downloads"
         downloads_root.mkdir(exist_ok=True)
+        # Chrome 152 headless=new 下 Browser.setDownloadBehavior 对网络 URL 的下载路径不稳定
+        # （请求被静默丢弃，会话内重设无效；data: URL 路径正常，已实测）。改用 Fetch 域拦截
+        # /api/download-output 并直接取响应字节：确定性，且同样验证“点击对正确 asset 发起请求
+        # + 响应字节与媒体原图一致”（只替换 Chrome 自身不稳定的落盘环节，不改验证语义）。
         browser.cdp.command(
-            "Browser.setDownloadBehavior",
-            {"behavior": "allow", "downloadPath": str(downloads_root)},
+            "Fetch.enable",
+            {"patterns": [{"urlPattern": "*download-output*", "requestStage": "Response"}]},
         )
         browser.native_click(".smart-log-detail-download")
         download_deadline = time.monotonic() + 10
         downloaded: list[Path] = []
-        while time.monotonic() < download_deadline:
-            downloaded = [
-                path for path in downloads_root.iterdir()
-                if path.is_file() and not path.name.endswith(".crdownload")
-            ]
-            if downloaded:
+        handled_requests: set[str] = set()
+        download_url = ""
+        while time.monotonic() < download_deadline and not downloaded:
+            for event in browser.cdp.events:
+                if event.get("method") != "Fetch.requestPaused":
+                    continue
+                params = event.get("params") or {}
+                request_id = str(params.get("requestId") or "")
+                if not request_id or request_id in handled_requests:
+                    continue
+                request = params.get("request") or {}
+                url = str(request.get("url") or "")
+                if "download-output" not in url:
+                    continue
+                handled_requests.add(request_id)
+                body = browser.cdp.command("Fetch.getResponseBody", {"requestId": request_id})
+                payload = body.get("body") or ""
+                raw = base64.b64decode(payload) if body.get("base64Encoded") else payload.encode("utf-8", "surrogateescape")
+                name = parse_qs(urlparse(url).query).get("name", ["download-output.bin"])[0]
+                (downloads_root / name).write_bytes(raw)
+                download_url = url
+                try:
+                    # 以原始响应头继续：不产生 net::ERR_FAILED console 误报，也不触碰 Chrome 下载管理器
+                    browser.cdp.command("Fetch.continueRequest", {"requestId": request_id})
+                except Exception:
+                    pass
                 break
-            time.sleep(0.05)
+            if not downloaded:
+                downloaded = [
+                    path for path in downloads_root.iterdir()
+                    if path.is_file() and not path.name.endswith(".crdownload")
+                ]
+            if not downloaded:
+                time.sleep(0.05)
+        try:
+            browser.cdp.command("Fetch.disable")
+        except Exception:
+            pass
+        detail_facts["downloadRequestUrl"] = download_url
         detail_facts["downloadSourceMatches"] = bool(
             len(downloaded) == 1 and downloaded[0].read_bytes() == expected_original
         )
@@ -1589,7 +1629,13 @@ def run_viewport(
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
                 canvasDomOutputIds:outputIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-output-id]')),
                 canvasSelectedOutputId:String(document.querySelector('[data-id="integrity-multi-output"] .image-selected')?.dataset.outputId||''),
-                destructiveGroupDeleteHiddenWhileRestorable:!historyCard.querySelector('[data-log-delete="media"]'),
+                // 合同（与 static/js/smart-canvas.js 的 destructiveRecordDelete 实现一致）：
+                // 只要记录上仍有存活原图，「删记录+媒体」按钮必须可用——可恢复态（tombstone+
+                // 恢复原图按钮）不隐藏它，否则剩余原图无法从该卡片彻底删除；且该路径的原图
+                // 进回收区 7 天可恢复（docs/deletion-mechanism-review.md 入口 6），并非不可逆操作。
+                // 旧断言 destructiveGroupDeleteHiddenWhileRestorable 与本场景及 1193 行
+                // dangerousGroupDeletePresent（同卡片态要求按钮存在）自相矛盾，已废弃。
+                destructiveGroupDeleteVisibleWhileOutputsAlive:!!historyCard.querySelector('[data-log-delete="media"]'),
               };
             })()"""
         )
@@ -1618,7 +1664,7 @@ def run_viewport(
             and post_delete_facts.get("actionAssetIds") == [expected_selected_asset_id] * 4
             and post_delete_facts.get("actionOutputIds") == [expected_selected_output_id] * 4
             and post_delete_facts.get("detailStayedOpen")
-            and post_delete_facts.get("destructiveGroupDeleteHiddenWhileRestorable")
+            and post_delete_facts.get("destructiveGroupDeleteVisibleWhileOutputsAlive")
         )
         if not post_delete_facts["singleAssetSynchronized"]:
             raise AssertionError(

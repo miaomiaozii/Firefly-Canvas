@@ -57,7 +57,7 @@ def main():
             project_id = seed_store(store)
             canvas_id = store.canvas(project_id)['id']
             app = harness.load_production_app(pathlib.Path(root) / 'runtime', store)
-            server = harness.ConversationBrowserServer(store, app)
+            server = harness.ConversationBrowserServer(store, app, client_script=CLIENT_SCRIPT)
             harness.CLIENT_SCRIPT = CLIENT_SCRIPT
             server.start()
             try:

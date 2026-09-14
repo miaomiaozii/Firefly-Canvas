@@ -6,6 +6,9 @@ replace that node's image in place -- NOT create a new branch output node.
 Seed: one smart-image node that already owns one media asset. The browser
 clicks it, enters a prompt, clicks Run, waits for completion, then asserts:
   1. canvas node count stays 1 (no new node was created)
+     (the #85 candidate pool / history-group node that archives the replaced
+     image is excluded from the count -- it is part of in-place replace, not
+     a new branch output node)
   2. the current node's images[0] asset_id differs from the seed asset
      (the image was replaced, not kept untouched beside a new node)
 """

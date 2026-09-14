@@ -78,7 +78,7 @@ class UiIntegrityContractTests(unittest.TestCase):
 
     def test_native_evidence_fails_closed_on_every_selection_action_and_embedded_scale(self):
         for marker in (
-            "const expectedActionIds=['preview','crop','outpaint','mask','brush','grid','send-ps','download']",
+            "const expectedActionIds=['preview','detail','crop','outpaint','mask','local-edit','brush','grid','send-ps','download']",
             "button[data-smart-node-action]",
             "selectionActions:{{expectedActionIds,actualActionIds,actions:selectionActions,allReachable:selectionActionsReachable}}",  
             "result.selectionMenuAvoidsName",

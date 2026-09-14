@@ -126,7 +126,7 @@ def main():
             store = ProjectStore(Path(root) / "projects", snapshot_delay=0)
             fixture = seed_store(store)
             app = load_app(Path(root) / "runtime", store)
-            server = harness.ConversationBrowserServer(store, app)
+            server = harness.ConversationBrowserServer(store, app, client_script=CLIENT_SCRIPT)
             harness.CLIENT_SCRIPT = CLIENT_SCRIPT
             server.start()
             try:

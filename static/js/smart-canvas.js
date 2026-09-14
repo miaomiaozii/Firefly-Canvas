@@ -2688,13 +2688,17 @@ function positionSmartNodeFloatingMenus(){
         const nameRect = nameBadge && getComputedStyle(nameBadge).visibility !== 'hidden'
             ? nameBadge.getBoundingClientRect()
             : null;
-        const uiBlockers = ['#composer','#minimap','.smart-top-left'].map(selector => {
+        const uiBlockers = ['#composer','#minimap','.smart-top-left','.smart-title'].map(selector => {
             const element = document.querySelector(selector);
             if(!element || getComputedStyle(element).display === 'none' || getComputedStyle(element).visibility === 'hidden') return null;
             return element.getBoundingClientRect();
         }).filter(Boolean);
         const centerCandidates = [
             desiredCenter,
+            // 名称徽章是节点自身的标签，擦到它用户就认不出菜单归属；
+            // 必须给出「恰好贴住徽章边缘」的候选（零边距），否则 694px 宽菜单在窄视口
+            // （如 1280x720）里只有从 minimap 锚点推出的粗粒度位置可选，会残留 ~1.4px 擦碰。
+            ...(nameRect ? [nameRect.left - menuRect.width / 2, nameRect.right + menuRect.width / 2] : []),
             ...uiBlockers.flatMap(rect => [
                 rect.left - margin - menuRect.width / 2,
                 rect.right + margin + menuRect.width / 2
@@ -2729,11 +2733,29 @@ function positionSmartNodeFloatingMenus(){
                 top:clampTop(nodeRect.top + menuRect.height + margin)
             }
         ];
-        const score = candidate => blockers.reduce((total, rect, index) => {
-            const weight = index === 0 ? 1 : 10;
-            return total + overlapArea(candidate.center - menuRect.width / 2, candidate.top, rect) * weight;
-        }, Math.abs(candidate.center - desiredCenter) * 0.02);
-        const position = candidates.reduce((best, candidate) => score(candidate) < score(best) ? candidate : best, candidates[0]);
+        // 字典序评分：chrome 表面（工具栏/minimap/composer/标题行）与名称徽章是硬约束——
+        // 它们与菜单同属固定 chrome 层，盖住它们会破坏可点击性（#world 的 transform 堆叠
+        // 上下文使菜单 z-index 无法覆盖 chrome，800x600 实测）；节点本身重叠是设计允许
+        // （菜单本就浮在节点上），只是软偏好。全部候选都在硬约束上打平时才比节点重叠。
+        const score = candidate => {
+            let nodeOverlap = 0;
+            let badgeOverlap = 0;
+            let chromeOverlap = 0;
+            blockers.forEach((rect, index) => {
+                const area = overlapArea(candidate.center - menuRect.width / 2, candidate.top, rect);
+                if (index === 0) nodeOverlap += area;
+                else if (index === 1 && nameRect) badgeOverlap += area;
+                else chromeOverlap += area;
+            });
+            return [chromeOverlap, badgeOverlap, nodeOverlap, Math.abs(candidate.center - desiredCenter)];
+        };
+        const betterScore = (a, b) => {
+            for (let i = 0; i < a.length; i++) {
+                if (a[i] !== b[i]) return a[i] < b[i];
+            }
+            return false;
+        };
+        const position = candidates.reduce((best, candidate) => betterScore(score(candidate), score(best)) ? candidate : best, candidates[0]);
         const centerX = position.center;
         const screenTop = position.top;
         const scaleX = nodeRect.width / Math.max(1, nodeEl.offsetWidth);
@@ -6467,6 +6489,7 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
     rebuildMarkedAssetIdsFromNodes();
+    updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
     const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
@@ -7429,6 +7452,7 @@ async function loadCanvas(){
         const cleanedDetachedInputs = cleanupDetachedRunInputRefs();
         canvas.nodes = nodes;
         rebuildMarkedAssetIdsFromNodes();
+        updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
         if(isProjectCanvasData(canvas)){
             // Core project files never carry UI state. Keep the per-project
             // viewport in browser-local storage instead.
@@ -8896,6 +8920,18 @@ function markedImageItems(){
     }));
     return getMarkedAssetIds().map(id => found.get(id)).filter(item => item?.url);
 }
+// #89 星标列表显示名：优先 name/alias，其次 url 里的文件名（generated-1.png 这类），最后才退回 asset_id。
+// 裸 asset_id（32 位十六进制）当文件名展示既丑又无信息量。
+function markedItemDisplayName(item){
+    const name = String(item?.name || item?.alias || '').trim();
+    if(name) return name;
+    try{
+        const path = String(item?.url || '').split('?')[0];
+        const file = path.slice(path.lastIndexOf('/') + 1);
+        if(file && !/^[0-9a-f]{24,}$/i.test(file)) return decodeURIComponent(file);
+    }catch(e){}
+    return String(item?.asset_id || '');
+}
 function renderSmartMarkedPanel(){
     const count = getMarkedAssetIds().length;
     const badge = document.getElementById('smartMarkedCount');
@@ -8908,12 +8944,13 @@ function renderSmartMarkedPanel(){
         if(window.lucide) lucide.createIcons();
         return;
     }
+    // 列表内的图必然都是已标记状态：星标按钮直接渲染填充态（image-marked）。
     list.innerHTML = items.map((item, i) => `
         <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
             <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
-            <span class="smart-marked-name" title="${escapeAttr(item.name || item.asset_id)}">${escapeHtml(item.name || item.asset_id)}</span>
+            <span class="smart-marked-name" title="${escapeAttr(markedItemDisplayName(item))}">${escapeHtml(markedItemDisplayName(item))}</span>
             <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><i data-lucide="download"></i></button>
-            <button class="mini-x smart-marked-unmark" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
+            <button class="mini-x smart-marked-unmark image-marked" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
         </div>`).join('');
     list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
         e.preventDefault(); e.stopPropagation();
@@ -10340,6 +10377,7 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
     rebuildMarkedAssetIdsFromNodes();
+    updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
     if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreLogId, '', restoreUiState);
@@ -11589,7 +11627,7 @@ function smartGroupBodyHtml(node){
 // #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
 // 360x330 会溢出外框；卡片内部可滚动，用户仍可拖右下角调整。
 const LOCAL_EDIT_NODE_W = 400;
-const LOCAL_EDIT_NODE_H = 600;
+const LOCAL_EDIT_NODE_H = 520;
 function syncLocalEditInputRoles(node){
     if(!node || node.type !== 'local-edit') return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
@@ -11650,14 +11688,15 @@ function localEditBodyHtml(node){
         done: tr('smart.localEditResultReady'),
         ready: tr('smart.localEditReady')
     }[selState];
-    const roleChip = (role, filled, valueText) =>
-        `<button type="button" class="local-edit-role-chip ${node.localEditActiveRole === role ? 'active' : ''} ${filled ? 'filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint'))}"><span>${escapeHtml(valueText)}</span></button>`;
-    const originalLabel = originalNode
-        ? trf('smart.localEditRoleOriginalConnected', {name: originalNode.title || originalNode.id})
-        : tr('smart.localEditRoleConnect');
+    // 三轮 UI 精修：角色行从「3 行标签+芯片」压缩为「单行 3 芯片」（图标+角色名+状态），
+    // 节点高度显著下降，4:3 原图下默认高度不再出现内部滚条。
+    const roleChip = (role, icon, label, filled, statusText) =>
+        `<button type="button" class="local-edit-role-chip${node.localEditActiveRole === role ? ' active' : ''}${filled ? ' filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint') + ' ' + statusText)}"><i data-lucide="${icon}" aria-hidden="true"></i><span class="local-edit-role-name">${escapeHtml(label)}</span><span class="local-edit-role-status">${escapeHtml(statusText)}</span></button>`;
+    const notConnectedText = tr('smart.localEditRoleNotConnected');
+    const originalStatus = originalNode ? (originalNode.title || originalNode.id) : notConnectedText;
     const referenceCount = (roleMap.referenceNodes || []).length;
-    const referenceLabel = referenceCount ? trf('smart.localEditRoleReferencesCount', {n: referenceCount}) : tr('smart.localEditRoleConnect');
-    const promptLabel = promptConnected ? trf('smart.localEditRolePromptCount', {n: promptNodeIds.length}) : tr('smart.localEditRoleConnect');
+    const referenceStatus = referenceCount ? trf('smart.localEditRoleReferencesCount', {n: referenceCount}) : notConnectedText;
+    const promptStatus = promptConnected ? trf('smart.localEditRolePromptCount', {n: promptNodeIds.length}) : notConnectedText;
     const stage = originalPreviewUrl
         ? '<div class="local-edit-selection-stage" data-local-edit-stage><img data-local-edit-preview src="' + escapeAttr(originalPreviewUrl) + '" alt="' + escapeHtml(tr('smart.originalSelectionPreview')) + '" draggable="false"><canvas data-local-edit-selection-canvas aria-label="' + escapeHtml(tr('smart.localEditSelection')) + '"></canvas></div>'
         : '<div class="local-edit-selection-empty">' + escapeHtml(tr('smart.localEditConnectHint')) + '</div>';
@@ -11679,9 +11718,9 @@ function localEditBodyHtml(node){
         </div>
         <div class="local-edit-scroll">
             <div class="local-edit-roles">
-                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.originalImage'))}</span>${roleChip('original', Boolean(originalNode), originalLabel)}</div>
-                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.referenceLabel'))}</span>${roleChip('references', referenceCount > 0, referenceLabel)}</div>
-                <div class="local-edit-role-row"><span class="local-edit-role-label">${escapeHtml(tr('smart.promptLabel'))}</span>${roleChip('prompt', promptConnected, promptLabel)}</div>
+                ${roleChip('original', 'image', tr('smart.originalImage'), Boolean(originalNode), originalStatus)}
+                ${roleChip('references', 'images', tr('smart.referenceLabel'), referenceCount > 0, referenceStatus)}
+                ${roleChip('prompt', 'type', tr('smart.promptLabel'), promptConnected, promptStatus)}
             </div>
             <div class="local-edit-stage-wrap">
                 ${stage}
@@ -11738,6 +11777,125 @@ async function cancelNodeGenerationTask(nodeId, button=null){
         toast(err?.message || tr('smart.nodeCancelFailed'));
     }
 }
+// #90：批量待出图格子 → 生成任务详情弹窗：展示当前节点全部任务
+//（任务 ID / 阶段 / 进度 / 已用时），支持取消指定任务。
+// 数据从 node.pendingTasks + canvas.logs 现读，每秒重渲（状态签名变化时），
+// 任务完成/失败后行内状态实时变化；关闭时清理定时器与事件。
+let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, onKey}
+function smartBatchTaskRows(node){
+    const tasks = smartPendingTasks(node);
+    const batchProgress = (tasks.find(task => task?.progress) || {}).progress || {};
+    const candidatePhases = Array.isArray(batchProgress.candidate_phases) ? batchProgress.candidate_phases : [];
+    return tasks.map((task, index) => {
+        const taskId = String(task?.taskId || '');
+        const log = (canvas?.logs || []).find(item => smartHistoryTaskId(item) === taskId);
+        const status = log?.status === 'failed' ? 'failed' : log?.status === 'completed' ? 'completed' : 'active';
+        const phaseKey = String(task?.progress?.phase || candidatePhases[index] || '');
+        const phaseIndex = Math.max(0, GENERATION_PROGRESS_PHASES.findIndex(item => item[0] === phaseKey));
+        const phaseLabel = GENERATION_PROGRESS_PHASES[phaseIndex]?.[1] || phaseKey || '';
+        const taskProgress = task?.progress || {};
+        const startedAt = Number(taskProgress.started_at || task?.createdAt || 0);
+        let progressText = '—';
+        if(Number(taskProgress.current) > 0 && Number(taskProgress.total) > 0) progressText = `${taskProgress.current} / ${taskProgress.total}`;
+        else if(Number(taskProgress.percent) > 0) progressText = `${Math.round(Number(taskProgress.percent))}%`;
+        else if(Number(taskProgress.bytes_total) > 0) progressText = `${generationProgressBytes(taskProgress.bytes_done)} / ${generationProgressBytes(taskProgress.bytes_total)}`;
+        const elapsedMs = status === 'active'
+            ? (startedAt > 0 ? Math.max(0, Date.now() - startedAt) : 0)
+            : (Number(taskProgress.elapsed_ms) || (startedAt > 0 ? Math.max(0, (Number(log?.finished_at) || Date.now()) - startedAt) : 0));
+        return { taskId, status, phaseKey, phaseLabel, progressText, elapsedMs, isProject:/^project_(img|vid)_/.test(taskId) };
+    });
+}
+function renderBatchTaskDetail(){
+    const state = batchTaskDetailState;
+    if(!state) return;
+    const node = nodes.find(item => String(item?.id || '') === state.nodeId);
+    const rows = node ? smartBatchTaskRows(node) : [];
+    const backdrop = state.backdrop;
+    const listEl = backdrop.querySelector('[data-batch-task-detail-list]');
+    if(!listEl) return;
+    const total = Math.max(1, rows.length, Number(node?._batchTotal) || 0, Number(node?.pending) || 0);
+    const cellEl = backdrop.querySelector('[data-batch-task-detail-cell]');
+    if(cellEl) cellEl.textContent = trf('smart.batchTaskCellOf', {i: state.cellIndex + 1, n: total});
+    const subEl = backdrop.querySelector('[data-batch-task-detail-sub]');
+    if(subEl) subEl.textContent = trf('smart.batchTaskSub', {name: node?.title || tr('smart.nodeTitleImage'), count: rows.length});
+    listEl.innerHTML = rows.length
+        ? rows.map((row, index) => {
+            const activeCell = index === state.cellIndex;
+            const statusLabel = row.status === 'failed' ? tr('smart.failed') : row.status === 'completed' ? tr('smart.stSucceeded') : (row.phaseKey === 'queued' ? tr('smart.stQueued') : tr('smart.stRunning'));
+            const statusClass = row.status === 'active' ? (row.phaseKey === 'queued' ? 'is-queued' : 'is-running') : `is-${row.status}`;
+            const shortId = row.taskId.length > 30 ? `${row.taskId.slice(0, 22)}…${row.taskId.slice(-6)}` : row.taskId;
+            const cancelBtn = (row.status === 'active' && row.isProject)
+                ? `<button type="button" class="batch-task-detail-cancel" data-batch-task-cancel="${escapeAttr(row.taskId)}"><i data-lucide="square"></i><span>${escapeHtml(tr('smart.batchTaskCancel'))}</span></button>`
+                : '';
+            return `<div class="batch-task-detail-row${activeCell ? ' is-active' : ''}" data-batch-task-row="${index}">
+                <span class="batch-task-detail-idx">${index + 1}/${rows.length}</span>
+                <div class="batch-task-detail-main">
+                    <div class="batch-task-detail-top">
+                        <span class="batch-task-detail-status ${statusClass}">${escapeHtml(statusLabel)}</span>
+                        <code class="batch-task-detail-id" title="${escapeAttr(row.taskId)}">${escapeHtml(shortId)}</code>
+                    </div>
+                    <div class="batch-task-detail-meta">
+                        <span>${escapeHtml(tr('smart.batchTaskColStage'))} <b>${escapeHtml(row.phaseLabel || '—')}</b></span>
+                        <span>${escapeHtml(tr('smart.batchTaskColProgress'))} <b>${escapeHtml(row.progressText)}</b></span>
+                    </div>
+                </div>
+                <span class="batch-task-detail-elapsed" title="${escapeAttr(tr('smart.batchTaskColElapsed'))}">${escapeHtml(formatRunDuration(row.elapsedMs) || '0s')}</span>
+                ${cancelBtn}
+            </div>`;
+        }).join('')
+        : `<div class="batch-task-detail-empty">${escapeHtml(tr('smart.batchTaskEmpty'))}</div>`;
+    listEl.querySelectorAll('[data-batch-task-cancel]').forEach(btn => {
+        btn.addEventListener('click', async e => {
+            e.preventDefault(); e.stopPropagation();
+            const taskId = btn.dataset.batchTaskCancel;
+            if(!window.confirm(trf('smart.batchTaskCancelConfirm', {task: taskId}))) return;
+            btn.disabled = true;
+            btn.setAttribute('aria-busy', 'true');
+            try {
+                await controlProjectImageTask('', taskId, 'cancel', btn);
+            } catch(err){
+                toast(err?.message || tr('smart.nodeCancelFailed'));
+                renderBatchTaskDetail();
+            }
+        });
+    });
+    const activeRow = listEl.querySelector('.batch-task-detail-row.is-active');
+    if(activeRow) activeRow.scrollIntoView({block:'nearest'});
+    refreshIcons(listEl);
+}
+function openBatchTaskDetail(nodeId, cellIndex=0){
+    const node = nodes.find(item => String(item?.id || '') === String(nodeId || ''));
+    if(!node) return;
+    closeBatchTaskDetail();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'smartBatchTaskDetailBackdrop';
+    backdrop.className = 'batch-task-detail-backdrop';
+    backdrop.innerHTML = `<div class="batch-task-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="smartBatchTaskDetailTitle">
+        <div class="batch-task-detail-head">
+            <h3 id="smartBatchTaskDetailTitle">${escapeHtml(tr('smart.batchTaskDetailTitle'))}<span class="batch-task-detail-cell" data-batch-task-detail-cell></span></h3>
+            <button type="button" class="batch-task-detail-close" data-batch-task-detail-close aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button>
+        </div>
+        <p class="batch-task-detail-sub" data-batch-task-detail-sub></p>
+        <div class="batch-task-detail-list" data-batch-task-detail-list></div>
+    </div>`;
+    const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); closeBatchTaskDetail(); } };
+    batchTaskDetailState = {nodeId: String(node.id), cellIndex, timer:null, backdrop, onKey};
+    document.addEventListener('keydown', onKey, true);
+    backdrop.addEventListener('click', e => { if(e.target === backdrop) closeBatchTaskDetail(); });
+    backdrop.querySelector('[data-batch-task-detail-close]').addEventListener('click', e => { e.stopPropagation(); closeBatchTaskDetail(); });
+    document.body.appendChild(backdrop);
+    renderBatchTaskDetail();
+    batchTaskDetailState.timer = setInterval(renderBatchTaskDetail, 1000);
+    refreshIcons(backdrop);
+}
+function closeBatchTaskDetail(){
+    const state = batchTaskDetailState;
+    if(!state) return;
+    batchTaskDetailState = null;
+    if(state.timer) clearInterval(state.timer);
+    document.removeEventListener('keydown', state.onKey, true);
+    state.backdrop.remove();
+}
 setInterval(() => {
     // #81：轻量秒级刷新占位面板的「已等待」文案（只改文本节点，不触发画布重渲）。
     document.querySelectorAll('[data-elapsed-since]').forEach(el => {
@@ -11747,7 +11905,8 @@ setInterval(() => {
         el.textContent = sec < 60 ? tr('canvas.taskElapsedSec').replace('{n}', String(sec)) : sec < 3600 ? tr('canvas.taskElapsedMin').replace('{n}', String(Math.floor(sec / 60))) : tr('canvas.taskElapsedHour').replace('{n}', String(Math.floor(sec / 3600)));
     });
 }, 1000);
-function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[], taskInfo=null){
+function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, completedImgs=[], candidatePhases=[], taskInfo=null, nodeId=''){
+    // #90：待出图格子可点击 → 任务详情弹窗（nodeId 空时不挂点击属性）。
     // 占位数量按真实并发数渲染（上限 8），与 pendingBoxSize 的网格公式保持一致，
     // 避免「8 张并发只显示 4 个占位」以及框尺寸与网格不一致。
     const total = Math.max(1, Math.min(8, Number(count) || 1));
@@ -11770,7 +11929,7 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
         // 单图占位与批量分支同规范：铺满 node-body（width/height:100%），
         // 节点 16px padding 即外边距；此前用 layout.width/height（=节点外框尺寸）
         // 会让占位框贴住/越出外框、与 pending 呼吸边框错位。
-        return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}" style="width:100%;height:100%" role="status" aria-label="${escapeAttr(label)}">${copy}</div>`;
+        return `<div class="loading-cell single generation-placeholder${queued ? ' queued' : ''}${nodeId ? ' batch-cell-clickable' : ''}" style="width:100%;height:100%" role="status" aria-label="${escapeAttr(label)}"${nodeId ? ` data-batch-cell-detail="${escapeAttr(nodeId)}" data-batch-cell-index="0" title="${escapeAttr(tr('smart.batchTaskCellHint'))}"` : ''}>${copy}</div>`;
     }
     // 与 pendingBoxSize/imageLayout 使用同一套网格规范（getBatchThumbGridSize），
     // 占位格固定 136×102，不再用 1fr 拉伸，保证与完成阶段缩略图尺寸一致。
@@ -11785,16 +11944,19 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
         if(doneImg?.url){
             return `<div class="loading-cell filled generation-filled-cell" data-image-index="${index}" role="img" aria-label="${escapeAttr(`${index + 1}/${total}`)}">${thumbMediaHtml(doneImg)}</div>`;
         }
+        // #90：待出图格子（未写回）挂点击属性 → 打开任务详情弹窗。
+        const cellDetail = nodeId ? ` data-batch-cell-detail="${escapeAttr(nodeId)}" data-batch-cell-index="${index}" title="${escapeAttr(tr('smart.batchTaskCellHint'))}"` : '';
         const cellPhase = phases[index] || '';
         if(cellPhase && cellPhase !== 'completed'){
             const stageIndex = Math.max(0, GENERATION_PROGRESS_PHASES.findIndex(item => item[0] === cellPhase));
             const stageLabel = GENERATION_PROGRESS_PHASES[stageIndex]?.[1] || cellPhase;
             const stageSegments = GENERATION_PROGRESS_PHASES.map(([key, title], stageIdx) => `<span class="cell-stage-seg${stageIdx < stageIndex ? ' done' : stageIdx === stageIndex ? ' active' : ''}" title="${escapeAttr(title)}"></span>`).join('');
-            return `<div class="loading-cell generation-placeholder cell-with-stage" role="status" aria-label="${escapeAttr(stageLabel)}"><div class="generation-placeholder-panel cell-stage-panel"><span class="cell-stage-label">${escapeHtml(stageLabel)}</span><span class="cell-stage-track" aria-hidden="true">${stageSegments}</span></div></div>`;
+            return `<div class="loading-cell generation-placeholder cell-with-stage${nodeId ? ' batch-cell-clickable' : ''}"${cellDetail} role="status" aria-label="${escapeAttr(stageLabel)}"><div class="generation-placeholder-panel cell-stage-panel"><span class="cell-stage-label">${escapeHtml(stageLabel)}</span><span class="cell-stage-track" aria-hidden="true">${stageSegments}</span></div></div>`;
         }
         // #84：空格不再塞完整状态面板（会溢出 136×102 格子），统一只显示序号；
         // 状态面板整体移到节点底部状态条（见下方 .pending-batch-stack）。
-        return `<div class="loading-cell generation-placeholder" role="status" aria-label="${escapeAttr(label)}"><div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-idx">${index + 1}/${total}</span></span></div></div>`;
+        // 三轮 UI 精修：序号去掉重胶囊（描边+阴影+毛玻璃），改为轻量居中小字，网格更安静。
+        return `<div class="loading-cell generation-placeholder${nodeId ? ' batch-cell-clickable' : ''}"${cellDetail} role="status" aria-label="${escapeAttr(label)}"><span class="generation-placeholder-idx">${index + 1}/${total}</span></div>`;
     }).join('');
     // #84：网格 + 底部整宽状态条（spinner + 生成中/已等待 + 阶段进度 + 取消按钮一行横排）。
     // 此前状态面板竖排塞进单个 136×102 缩略格（高约 108px > 格高 102px），
@@ -11828,7 +11990,7 @@ function nodeBodyHtml(node, layout){
     }
     if(node.queued && imgs.length === 0 && !node.pending){
         const queuedProgress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
-        return generationPlaceholderHtml(layout, 1, true, queuedProgress, [], [], smartProjectTaskInfo(node));
+        return generationPlaceholderHtml(layout, 1, true, queuedProgress, [], [], smartProjectTaskInfo(node), node.id);
     }
     if(node.pending){
         // 以提交时固化的 _batchTotal 渲染占位格（写回期间格子数/几何不变），已写回的图按序填入
@@ -11836,7 +11998,7 @@ function nodeBodyHtml(node, layout){
         const progress = smartPendingTasks(node).find(task => task?.progress)?.progress || {};
         const completed = (imgs || []).slice(0, count);
         const candidatePhases = Array.isArray(progress?.candidate_phases) ? progress.candidate_phases : [];
-        return generationPlaceholderHtml(layout, count, false, progress, completed, candidatePhases, smartProjectTaskInfo(node));
+        return generationPlaceholderHtml(layout, count, false, progress, completed, candidatePhases, smartProjectTaskInfo(node), node.id);
     }
     if(imgs.length > 1){
         const visibleRows = Math.max(1, Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, Number(layout.visibleRows || layout.rows || 1)));
@@ -14005,6 +14167,18 @@ function bindNodeEvents(){
                 clearImageClickTimer();
                 suppressImageClickUntil = Date.now() + 260;
                 void cancelNodeGenerationTask(id, btn);
+            });
+        });
+        // #90：批量待出图格子点击 → 任务详情弹窗（mousedown 拦截避免触发节点拖动/图片点选）。
+        el.querySelectorAll('[data-batch-cell-detail]').forEach(cell => {
+            cell.addEventListener('mousedown', e => {
+                e.preventDefault(); e.stopPropagation();
+            }, true);
+            cell.addEventListener('click', e => {
+                e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+                clearImageClickTimer();
+                suppressImageClickUntil = Date.now() + 260;
+                openBatchTaskDetail(cell.dataset.batchCellDetail, Number(cell.dataset.batchCellIndex || 0));
             });
         });
         el.querySelectorAll('.image-name-badge').forEach(badge => {
