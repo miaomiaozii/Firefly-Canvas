@@ -3,7 +3,9 @@
 
 移植 C# ImagePlanDesignerP0 的 OpenXML package 路径（Program.cs，行号为权威规格）：
 - ImportXlsxPackage:1140（主循环：ShouldSkipSheet / ScannedRowCount / imageLookup）
-- AddTasksFromRows:1615 / AddTasksFromUnmappedRows:1707 / ImportRowsForSmoke:1746
+- AddTasksFromRows:1615（含 PlanBlocks 两级兜底）/ AddTasksFromUnmappedRows:1707 / ImportRowsForSmoke:1746
+- AddTasksFromPlanBlocks:1921 / IsPlanBlockStart:1980 / FindPlanBlockEnd:1990 / ShouldSkipPlanBlock:2002
+- HasExplicitImageCue:2010 / JoinBlock:2016 / ExtractImageCount:2029 / ExtractCopyText:2048 / GuessPlanBlockName:2063
 - AddOperationReferencesFromMappedCells:1785 / ResolveReferenceFiles:1812,1853
 - NextHeaderColumn:1833 / ResolveAnchoredReferenceFiles:1843 / IsImageFilePath:1865
 - TryGetSectionMarker:1877 / LooksLikeAPlusTask:1897 / StartsWithAPlusTaskLabel:1907
@@ -787,6 +789,191 @@ def build_image_lookup(
     return lookup
 
 
+# ─── 块式方案块（C# AddTasksFromPlanBlocks:1921 起，无表头第一级兜底）──────────────
+
+_RE_MODULE_LABEL = re.compile(r"模块\s*\d|模块\s*[一二三四五六七八九]")
+_RE_BLOCK_START_COUNT = re.compile(r"出\s*\d+\s*张|共\s*\d+\s*张|\d+\s*张(长图|方图|左大图|右小图|图|banner)", re.IGNORECASE)
+_RE_IMAGE_CUE = re.compile(r"(?:出|共)\s*\d+\s*张|\d+\s*张(长图|方图|左大图|右小图|图|banner)", re.IGNORECASE)
+_RE_CATEGORY_PAGE = re.compile(r"^分类页\s*\d|^🏠|^Home", re.IGNORECASE)
+_RE_COUNT_TOTAL = re.compile(r"共\s*(\d+)\s*张(?:长图|方图|左大图|右小图|图|banner)?", re.IGNORECASE)
+_RE_COUNT_EACH = re.compile(r"(?:出\s*)?(\d+)\s*张(?:长图|方图|左大图|右小图|图|banner)?", re.IGNORECASE)
+
+
+def is_plan_block_start(text: Optional[str]) -> bool:
+    """C# IsPlanBlockStart:1980 — 视频封面/封面图片 / 模块N / 出N张|共N张|N张(长图|...)。"""
+    if not text or not text.strip():
+        return False
+    if contains_any(text, "不需要出图", "无需出图"):
+        return False
+    if contains_any(text, "视频") and not contains_any(text, "视频封面", "封面图片", "图片模块"):
+        return False
+    return (
+        contains_any(text, "视频封面", "封面图片")
+        or bool(_RE_MODULE_LABEL.search(text))
+        or bool(_RE_BLOCK_START_COUNT.search(text))
+    )
+
+
+def find_plan_block_end(rows: List[List[str]], start: int) -> int:
+    """C# FindPlanBlockEnd:1990 — 下一个块起始/分类页行索引；无则 len(rows)。"""
+    for i in range(start, len(rows)):
+        text = join_row(rows[i])
+        if not text or not text.strip():
+            continue
+        if is_plan_block_start(text):
+            return i
+        if _RE_CATEGORY_PAGE.search(text):
+            return i
+    return len(rows)
+
+
+def should_skip_plan_block(text: Optional[str]) -> bool:
+    """C# ShouldSkipPlanBlock:2002 — 空白 / 不需要出图 / 视频（无豁免词）。"""
+    if not text or not text.strip():
+        return True
+    if contains_any(text, "不需要出图", "无需出图"):
+        return True
+    if contains_any(text, "视频") and not contains_any(text, "视频封面", "封面图片", "视频+图片模块"):
+        return True
+    return False
+
+
+def has_explicit_image_cue(text: Optional[str]) -> bool:
+    """C# HasExplicitImageCue:2010 — 视频封面/封面图片 或 出/共N张 / N张(长图|...)。"""
+    return contains_any(text, "视频封面", "封面图片") or bool(_RE_IMAGE_CUE.search(text or ""))
+
+
+def join_block(rows: List[List[str]], start: int, end: int) -> str:
+    """C# JoinBlock:2016 — 逐行 compact、剔除空行、18 行上限、保序去重、\r\n 连接并 trim。"""
+    lines: List[str] = []
+    for i in range(start, min(end, len(rows))):
+        text = compact_line(join_row(rows[i]))
+        if text and text.strip():
+            lines.append(text)
+        if len(lines) >= 18:
+            break
+    return "\r\n".join(dict.fromkeys(lines)).strip()
+
+
+def extract_image_count(text: Optional[str]) -> int:
+    """C# ExtractImageCount:2029 — 共N张 优先（上限 12）；否则逐项 N张 求和（还需前缀排除、单项≤12）；
+    无线索且含 视频封面/封面图片 → 1；结果钳制 [1, 12]。"""
+    total_match = _RE_COUNT_TOTAL.search(text or "")
+    if total_match:
+        total_count = int(total_match.group(1))
+        if total_count > 0:
+            return min(total_count, 12)
+    total = 0
+    for m in _RE_COUNT_EACH.finditer(text or ""):
+        prefix = (text or "")[max(0, m.start() - 4):m.start()]
+        if "还需" in prefix:
+            continue
+        count = int(m.group(1))
+        if count > 0 and count <= 12:
+            total += count
+    if total <= 0 and contains_any(text, "视频封面", "封面图片"):
+        total = 1
+    return max(1, min(1 if total <= 0 else total, 12))
+
+
+def extract_copy_text(text: Optional[str]) -> str:
+    """C# ExtractCopyText:2048 — 每行含「文案」则取首个全/半角冒号后的值（无冒号取整行），保序去重，\r\n 连接。"""
+    lines: List[str] = []
+    for raw in (text or "").replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        index = line.lower().find("文案")
+        if index < 0:
+            continue
+        value = line
+        m = re.search(r"[：:]", line[index:])
+        if m:
+            colon = index + m.start()
+            if colon + 1 < len(line):
+                value = line[colon + 1:].strip()
+        if value and value.strip():
+            lines.append(value)
+    return "\r\n".join(dict.fromkeys(lines))
+
+
+def guess_plan_block_name(block_text: Optional[str], section: str, index: int) -> str:
+    """C# GuessPlanBlockName:2063 — 首个非空行（70 字符截断）；无则显示编号。"""
+    for raw in (block_text or "").replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        return line[:70]
+    return build_display_no(section, index)
+
+
+def add_tasks_from_plan_blocks(
+    tasks: List[PlanTask],
+    rows: List[List[str]],
+    sheet_name: str,
+    counters: Dict[str, int],
+    sort_index: int,
+) -> int:
+    """C# AddTasksFromPlanBlocks:1921 — 块式方案块（无表头第一级兜底）。返回 sort_index。
+
+    忠实移植注意：
+    - Name 不做 clean_task_name（C# 块路径就是 baseName/count 拼接）；
+    - 不挂 operation_references / cell_image（C# 该路径没有）；
+    - C# for 循环内 `i = Math.Max(i, end - 1)` 后还有 i++ → python while 等价 `+ 1`。
+    """
+    section = infer_section(sheet_name, "")
+    i = 0
+    while i < len(rows):
+        row_text = join_row(rows[i])
+        if not is_plan_block_start(row_text):
+            i += 1
+            continue
+
+        end = find_plan_block_end(rows, i + 1)
+        block_text = join_block(rows, max(0, i - 2), end)
+        if should_skip_plan_block(block_text):
+            i = max(i, end - 1) + 1
+            continue
+        if not has_explicit_image_cue(block_text) and _RE_MODULE_LABEL.search(row_text):
+            i += 1
+            continue
+
+        count = extract_image_count(block_text)
+        next_index = counters[section] + 1 if section in counters else 1
+        base_name = first_non_empty(
+            compact_line(row_text),
+            guess_plan_block_name(block_text, section, next_index),
+        )
+        copy_text = extract_copy_text(block_text)
+        aspect = infer_aspect_ratio(section, "", block_text)
+
+        for copy_index in range(1, count + 1):
+            if section not in counters:
+                counters[section] = 0
+            counters[section] += 1
+            sort_index += 1
+            name = f"{base_name} {copy_index}/{count}" if count > 1 else base_name
+            task = PlanTask(
+                task_id=f"excel_{sort_index}",
+                name=name,
+                section=section,
+                source_row=f"{sheet_name}!{i + 1}",
+                sort_index=sort_index,
+                section_index=counters[section],
+                display_no=build_display_no(section, counters[section]),
+                output_type=infer_output_type(block_text, section),
+                source_aspect_ratio=aspect,
+                target_aspect_ratio=aspect,
+                requirements=block_text,
+                copy_handling_mode="none" if not (copy_text and copy_text.strip()) else "manual_overlay_after_generation",
+                copy_text=copy_text,
+                status="待处理",
+                selected=True,
+            )
+            apply_main_link(task)
+            tasks.append(task)
+        i = max(i, end - 1) + 1
+    return sort_index
+
+
 # ─── 任务构建主循环（C# AddTasksFromRows:1615 / AddTasksFromUnmappedRows:1707）
 
 
@@ -809,11 +996,19 @@ def add_tasks_from_rows(
     sort_index: int,
     image_lookup: Dict[str, Dict[str, Any]],
 ) -> int:
-    """C# AddTasksFromRows:1615 — 表头路径（image_lookup 为 None 时退化为无锚定图）。"""
+    """C# AddTasksFromRows:1615 — 表头路径（image_lookup 为 None 时退化为无锚定图）。
+
+    无表头分支为两级兜底（C# :1618-1623）：先 AddTasksFromPlanBlocks（块式方案块），
+    仅其 0 产出时才 AddTasksFromUnmappedRows。返回 sort_index（既有 `return len(tasks)`
+    会丢 sort_index、多 sheet 时 task_id 重复，顺手修复）。
+    """
     header_row = find_header_row(rows)
     if header_row < 0:
-        add_tasks_from_unmapped_rows(tasks, rows, sheet_name, counters, sort_index)
-        return len(tasks)
+        before = len(tasks)
+        sort_index = add_tasks_from_plan_blocks(tasks, rows, sheet_name, counters, sort_index)
+        if len(tasks) == before:
+            sort_index = add_tasks_from_unmapped_rows(tasks, rows, sheet_name, counters, sort_index)
+        return sort_index
     headers = rows[header_row]
     col_map = map_headers(headers)
     current_section = infer_initial_section(sheet_name, rows, header_row + 1)

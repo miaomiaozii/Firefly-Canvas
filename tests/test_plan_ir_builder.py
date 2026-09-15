@@ -24,6 +24,15 @@ if str(ROOT) not in sys.path:
 from plan_ir import PlanTask
 from plan_ir_builder import (
     add_operation_references_from_mapped_cells,
+    add_tasks_from_plan_blocks,
+    extract_copy_text,
+    extract_image_count,
+    find_plan_block_end,
+    guess_plan_block_name,
+    has_explicit_image_cue,
+    is_plan_block_start,
+    join_block,
+    should_skip_plan_block,
     build_display_no,
     build_fallback_requirements,
     build_image_lookup,
@@ -285,6 +294,13 @@ class TestPlanIRBuild(unittest.TestCase):
         self.assertEqual([t.name for t in plan.tasks], ["主图 1", "主图 2", "主图 4"])
         self.assertTrue(any("已抽取" not in n for n in plan.notes))  # 无图 → 无图片注记
 
+    def test_sheet_count_counts_all_parse_result_sheets(self):
+        # #103 守护项：sheet_count = parse_result["sheets"] 全部条目（对齐 C# :1188 口径的 python 侧上限；
+        # excel_importer.parse 在 sheet part 缺失时会少写条目，已知偏差见完成报告）
+        sheets = {"Sheet1": FakeSheet([["a"]]), "Sheet2": FakeSheet([["b"]])}
+        plan = build_plan_ir("test.xlsx", parse_result(sheets))
+        self.assertEqual(plan.sheet_count, 2)
+
     def test_scanned_rows_counts_all_row_elements(self):
         rows = _main_sheet_rows() + [[""] * 6]  # 空行元素也算（C# UsedRange.Rows.Count 口径近似）
         sheets = {"图片方案-高地牛": FakeSheet(rows)}
@@ -492,6 +508,238 @@ class TestJoinMappedDedup(unittest.TestCase):
 
     def test_unmapped_key_returns_empty(self):
         self.assertEqual(join_mapped(["a"], {}, "requirements"), "")
+
+
+class TestPlanBlockHelpers(unittest.TestCase):
+    """C# AddTasksFromPlanBlocks:1921 配套助手（IsPlanBlockStart:1980 / FindPlanBlockEnd:1990 /
+    ShouldSkipPlanBlock:2002 / HasExplicitImageCue:2010 / JoinBlock:2016 /
+    ExtractImageCount:2029 / ExtractCopyText:2048 / GuessPlanBlockName:2063）。"""
+
+    # ── is_plan_block_start（C# :1980）──
+
+    def test_module_label_starts_block(self):
+        self.assertTrue(is_plan_block_start("模块一：使用场景"))
+
+    def test_count_phrases_start_block(self):
+        self.assertTrue(is_plan_block_start("出2张场景图"))
+        self.assertTrue(is_plan_block_start("共3张长图"))
+
+    def test_video_cover_starts_block(self):
+        self.assertTrue(is_plan_block_start("视频封面"))
+
+    def test_video_without_cover_excluded(self):
+        self.assertFalse(is_plan_block_start("视频脚本 模块一"))
+
+    def test_no_image_needed_excluded(self):
+        self.assertFalse(is_plan_block_start("模块一 不需要出图"))
+
+    def test_blank_and_plain_line_not_start(self):
+        self.assertFalse(is_plan_block_start(""))
+        self.assertFalse(is_plan_block_start(None))
+        self.assertFalse(is_plan_block_start("普通描述行"))
+
+    # ── should_skip_plan_block（C# :2002）──
+
+    def test_blank_block_skipped(self):
+        self.assertTrue(should_skip_plan_block(""))
+
+    def test_no_image_needed_skipped(self):
+        self.assertTrue(should_skip_plan_block("模块一 无需出图"))
+
+    def test_video_without_exemption_skipped(self):
+        self.assertTrue(should_skip_plan_block("视频脚本 模块一"))
+
+    def test_video_plus_image_module_not_skipped(self):
+        self.assertFalse(should_skip_plan_block("视频+图片模块 出2张"))
+
+    def test_normal_block_not_skipped(self):
+        self.assertFalse(should_skip_plan_block("模块一 出2张"))
+
+    # ── has_explicit_image_cue（C# :2010）──
+
+    def test_count_phrases_are_cues(self):
+        self.assertTrue(has_explicit_image_cue("出2张"))
+        self.assertTrue(has_explicit_image_cue("共3张长图"))
+
+    def test_video_cover_is_cue(self):
+        self.assertTrue(has_explicit_image_cue("视频封面"))
+
+    def test_module_label_alone_not_cue(self):
+        self.assertFalse(has_explicit_image_cue("模块一：使用场景"))
+
+    # ── extract_image_count（C# :2029）──
+
+    def test_total_phrase_wins(self):
+        self.assertEqual(extract_image_count("共3张长图"), 3)
+
+    def test_per_item_count(self):
+        self.assertEqual(extract_image_count("出2张场景图"), 2)
+
+    def test_still_needed_prefix_excluded(self):
+        self.assertEqual(extract_image_count("出2张 还需1张"), 2)
+
+    def test_video_cover_defaults_to_one(self):
+        self.assertEqual(extract_image_count("视频封面"), 1)
+
+    def test_no_cue_defaults_to_one(self):
+        self.assertEqual(extract_image_count("模块一"), 1)
+
+    def test_capped_at_twelve(self):
+        self.assertEqual(extract_image_count("共20张"), 12)
+
+    # ── extract_copy_text（C# :2048）──
+
+    def test_single_line_after_colon(self):
+        self.assertEqual(extract_copy_text("文案：突出logo"), "突出logo")
+
+    def test_multi_line_values(self):
+        self.assertEqual(extract_copy_text("文案: 双行\r\n第二行文案：B"), "双行\r\nB")
+
+    def test_no_copy_line_returns_empty(self):
+        self.assertEqual(extract_copy_text("模块一 出2张"), "")
+
+    # ── join_block（C# :2016）──
+
+    def test_drops_empty_dedupes_joins_crlf(self):
+        rows = [["a"], [""], ["a"], ["b"]]
+        self.assertEqual(join_block(rows, 0, 4), "a\r\nb")
+
+    def test_eighteen_line_cap(self):
+        rows = [[f"行{i}"] for i in range(20)]
+        self.assertEqual(len(join_block(rows, 0, 20).split("\r\n")), 18)
+
+    # ── find_plan_block_end（C# :1990）──
+
+    def test_next_block_start_is_end(self):
+        rows = [["x"], ["模块一"], ["y"]]
+        self.assertEqual(find_plan_block_end(rows, 0), 1)
+
+    def test_category_page_is_end(self):
+        rows = [["y"], ["分类页 2"]]
+        self.assertEqual(find_plan_block_end(rows, 0), 1)
+
+    def test_no_end_returns_row_count(self):
+        rows = [["y"], ["z"]]
+        self.assertEqual(find_plan_block_end(rows, 0), 2)
+
+    # ── guess_plan_block_name（C# :2063）──
+
+    def test_first_nonempty_line(self):
+        self.assertEqual(guess_plan_block_name("\r\n第二行", "主图方案", 1), "第二行")
+
+    def test_seventy_char_truncation(self):
+        self.assertEqual(len(guess_plan_block_name("长" * 100, "主图方案", 1)), 70)
+
+    def test_empty_block_uses_display_no(self):
+        self.assertEqual(guess_plan_block_name("", "主图方案", 3), "主图 3")
+
+
+class TestPlanBlocksEndToEnd(unittest.TestCase):
+    """#103 块式无表头两级兜底（C# AddTasksFromRows:1615-1624 / AddTasksFromPlanBlocks:1921）。
+
+    期望值按 C# 原文语义推演（非任务描述初稿）：
+    - "出2张场景图" 命中 IsPlanBlockStart（出N张）→ 自身成为块起点，截断上一块；
+    - "模块一：使用场景" 块（rows 0-1）无显式出图线索且行文本命中 模块 regex → 被跳过；
+    - "模块二：对比场景" 块（rows 2-4）含 "出2张场景图" → count=2，copy 亦为 "突出logo"。
+    """
+
+    @staticmethod
+    def _core_rows():
+        return [
+            ["高地牛 A+ 补充方案"],
+            ["模块一：使用场景"],
+            ["出2张场景图"],
+            ["文案：突出logo"],
+            ["模块二：对比场景"],
+        ]
+
+    def test_core_block_fixture_produces_four_tasks(self):
+        rows = self._core_rows()
+        # 防 fixture 失效：单格行 score<2 → 无表头
+        self.assertEqual(find_header_row(rows), -1)
+        plan = build_plan_ir("t.xlsx", parse_result({"A+方案": FakeSheet(rows)}))
+        self.assertEqual(len(plan.tasks), 4)
+        self.assertEqual(
+            [t.name for t in plan.tasks],
+            ["出2张场景图 1/2", "出2张场景图 2/2", "模块二：对比场景 1/2", "模块二：对比场景 2/2"],
+        )
+        # section = infer_section("A+方案", "")（C# :2363）
+        for t in plan.tasks:
+            self.assertEqual(t.section, "高级A+方案")
+        # C# 用块起始行 i+1（1-based），非 copyIndex 行
+        self.assertEqual([t.source_row for t in plan.tasks], ["A+方案!3", "A+方案!3", "A+方案!5", "A+方案!5"])
+        self.assertEqual([t.sort_index for t in plan.tasks], [1, 2, 3, 4])
+        self.assertEqual([t.task_id for t in plan.tasks], ["excel_1", "excel_2", "excel_3", "excel_4"])
+        self.assertEqual([t.section_index for t in plan.tasks], [1, 2, 3, 4])
+        self.assertEqual([t.display_no for t in plan.tasks], ["A+ 模块 1", "A+ 模块 2", "A+ 模块 3", "A+ 模块 4"])
+        # 文案：块文本含 "文案：突出logo"（C# ExtractCopyText:2048）
+        self.assertEqual([t.copy_text for t in plan.tasks], ["突出logo"] * 4)
+        self.assertEqual(
+            [t.copy_handling_mode for t in plan.tasks],
+            ["manual_overlay_after_generation"] * 4,
+        )
+        # requirements = JoinBlock 原文（C# :2016，从 max(0, i-2) 起）
+        self.assertEqual(
+            plan.tasks[0].requirements,
+            "高地牛 A+ 补充方案\r\n模块一：使用场景\r\n出2张场景图\r\n文案：突出logo",
+        )
+        self.assertEqual(
+            plan.tasks[2].requirements,
+            "出2张场景图\r\n文案：突出logo\r\n模块二：对比场景",
+        )
+        # 比例：A+ 默认 21:9（C# InferAspectRatio:2404）
+        self.assertEqual([t.target_aspect_ratio for t in plan.tasks], ["21:9"] * 4)
+        self.assertEqual([t.source_aspect_ratio for t in plan.tasks], ["21:9"] * 4)
+        # 输出类型：块文本含 场景（C# InferOutputType:2372）
+        self.assertEqual([t.output_type for t in plan.tasks], ["lifestyle scene image"] * 4)
+        # 主图关联：无标记
+        self.assertEqual([t.same_as_main for t in plan.tasks], [False] * 4)
+        self.assertEqual([t.linked_main_index for t in plan.tasks], [0] * 4)
+        self.assertEqual([t.linked_main_label for t in plan.tasks], [""] * 4)
+        # 状态默认值
+        self.assertEqual([t.status for t in plan.tasks], ["待处理"] * 4)
+        self.assertEqual([t.selected for t in plan.tasks], [True] * 4)
+
+    def test_no_block_markers_falls_back_to_unmapped(self):
+        # 无块标记 → PlanBlocks 0 产出 → AddTasksFromUnmappedRows 老路径（改动前基线一致：2 任务）
+        rows = [["场景图A"], ["场景图B"]]
+        self.assertEqual(find_header_row(rows), -1)
+        plan = build_plan_ir("t.xlsx", parse_result({"Sheet1": FakeSheet(rows)}))
+        self.assertEqual(len(plan.tasks), 2)
+        self.assertEqual([t.name for t in plan.tasks], ["场景图A", "场景图B"])
+        self.assertEqual([t.section for t in plan.tasks], ["图片方案", "图片方案"])
+        self.assertEqual([t.display_no for t in plan.tasks], ["图片 1", "图片 2"])
+
+    def test_skipped_block_falls_back_to_unmapped(self):
+        # ShouldSkipPlanBlock 命中（不需要出图）→ 0 产出 → unmapped 回退：
+        # "模块一：使用场景" 命中 模块 关键词成任务；"不需要出图" 不含 图片 整词不成任务（改动前基线一致：1 任务）
+        rows = [["模块一：使用场景"], ["不需要出图"]]
+        self.assertEqual(find_header_row(rows), -1)
+        plan = build_plan_ir("t.xlsx", parse_result({"A+方案": FakeSheet(rows)}))
+        self.assertEqual(len(plan.tasks), 1)
+        self.assertEqual(plan.tasks[0].name, "模块一：使用场景")
+        self.assertEqual(plan.tasks[0].section, "高级A+方案")
+
+    def test_sort_index_continues_across_sheets(self):
+        # 无表头分支返回 sort_index（既有 return len(tasks) 丢 sort_index 的 bug 顺手修复）
+        rows_a = [["出2张场景图"]]
+        rows_b = [["出1张对比图"]]
+        plan = build_plan_ir(
+            "t.xlsx",
+            parse_result({"A+方案": FakeSheet(rows_a), "A+方案2": FakeSheet(rows_b)}),
+        )
+        self.assertEqual([t.task_id for t in plan.tasks], ["excel_1", "excel_2", "excel_3"])
+        self.assertEqual([t.sort_index for t in plan.tasks], [1, 2, 3])
+
+    def test_add_tasks_from_plan_blocks_returns_sort_index(self):
+        from plan_ir import PlanTask
+
+        tasks: list[PlanTask] = []
+        rows = [["出2张场景图"], ["文案：突出logo"]]
+        sort_index = add_tasks_from_plan_blocks(tasks, rows, "A+方案", {}, 10)
+        self.assertEqual(sort_index, 12)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0].task_id, "excel_11")
 
 
 class TestMainLinkEndToEnd(unittest.TestCase):
