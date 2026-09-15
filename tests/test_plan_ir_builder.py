@@ -21,12 +21,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from plan_ir import PlanTask
 from plan_ir_builder import (
     add_operation_references_from_mapped_cells,
     build_display_no,
+    build_fallback_requirements,
     build_image_lookup,
     build_plan_ir,
     clean_task_name,
+    detect_same_as_main,
     extract_tasks,
     find_header_row,
     first_non_empty,
@@ -39,12 +42,15 @@ from plan_ir_builder import (
     is_design_plan_sheet_name,
     is_supplemental_plan_sheet_name,
     join_distinct_lines,
+    join_mapped,
+    join_reference_text_notes,
     looks_like_aplus_task,
     looks_like_note_row,
     looks_like_repeated_header_row,
     looks_like_task_row,
     map_headers,
     normalize_section_name,
+    parse_linked_main_index,
     sanitize_prompt_field,
     should_skip_sheet,
     starts_with_aplus_task_label,
@@ -358,6 +364,159 @@ class TestPlanIRBuild(unittest.TestCase):
     def test_first_non_empty(self):
         self.assertEqual(first_non_empty("", "  ", "x", "y"), "x")
         self.assertEqual(first_non_empty("", "  "), "")
+
+
+class TestFallbackRequirements(unittest.TestCase):
+    """C# BuildFallbackRequirements:2346 — 排除已映射列，取未映射非空单元格。"""
+
+    def test_takes_unmapped_columns_only(self):
+        row = ["主图 3", "", "白底图", "", "未映射描述"]
+        col_map = {"name": [0], "requirements": [1], "outputType": [2]}
+        self.assertEqual(build_fallback_requirements(row, col_map), "未映射描述")
+
+    def test_all_mapped_falls_back_to_join_row(self):
+        row = ["主图 3", "", "白底图"]
+        col_map = {"name": [0], "requirements": [1], "outputType": [2]}
+        self.assertEqual(
+            build_fallback_requirements(row, col_map),
+            "主图 3\r\n白底图",
+        )
+
+    def test_section_aspect_columns_excluded(self):
+        row = ["主图 3", "", "白底图", "3:4", "自由描述"]
+        col_map = {"name": [0], "requirements": [1], "section": [2], "aspect": [3]}
+        self.assertEqual(build_fallback_requirements(row, col_map), "自由描述")
+
+    def test_no_col_map_takes_all_non_empty(self):
+        row = ["主图 3", "", "白底图"]
+        self.assertEqual(
+            build_fallback_requirements(row, None),
+            "主图 3\r\n白底图",
+        )
+
+
+class TestMainLinkDetection(unittest.TestCase):
+    """C# DetectSameAsMain:2438 / ParseLinkedMainIndex:2444 — 扫 Name+Requirements+CopyText+OverlayPlan。"""
+
+    @staticmethod
+    def _task(**kw):
+        base = dict(name="任务", requirements="", copy_text="", overlay_plan="")
+        base.update(kw)
+        return PlanTask(**base)
+
+    # ── detect_same_as_main ──
+
+    def test_same_as_main_reference_marker(self):
+        self.assertTrue(detect_same_as_main(self._task(requirements="参考主图第2张")))
+
+    def test_same_as_main_same_nth(self):
+        self.assertTrue(detect_same_as_main(self._task(requirements="同第2")))
+
+    def test_same_as_main_in_name(self):
+        self.assertTrue(detect_same_as_main(self._task(name="同主图变体")))
+
+    def test_same_as_main_in_copy(self):
+        self.assertTrue(detect_same_as_main(self._task(copy_text="文案同主图")))
+
+    def test_same_as_main_in_overlay(self):
+        self.assertTrue(detect_same_as_main(self._task(overlay_plan="叠字同第3")))
+
+    def test_same_as_main_false_without_marker(self):
+        self.assertFalse(detect_same_as_main(self._task(requirements="白底产品图")))
+
+    # ── parse_linked_main_index ──
+
+    def test_index_reference_main_nth(self):
+        self.assertEqual(parse_linked_main_index(self._task(requirements="参考主图第2张")), 2)
+
+    def test_index_parenthetical(self):
+        self.assertEqual(parse_linked_main_index(self._task(requirements="同主图（使用第3张）")), 3)
+
+    def test_index_same_nth(self):
+        self.assertEqual(parse_linked_main_index(self._task(requirements="同第2")), 2)
+
+    def test_index_chinese_digit(self):
+        self.assertEqual(parse_linked_main_index(self._task(requirements="同主图，第三张")), 3)
+
+    def test_index_from_name(self):
+        self.assertEqual(parse_linked_main_index(self._task(name="主图 2 变体")), 2)
+
+    def test_index_none(self):
+        self.assertEqual(parse_linked_main_index(self._task(requirements="白底产品图")), 0)
+
+
+class TestReferenceTextNotes(unittest.TestCase):
+    """C# JoinReferenceTextNotes:2298 — 注记 = {表头或参考}：{净化文本}，整条去重。"""
+
+    def test_nonempty_header_prefix(self):
+        row = ["使用这张图的构图"]
+        headers = ["参考图"]
+        col_map = {"operationRef": [0]}
+        self.assertEqual(
+            join_reference_text_notes(row, headers, col_map, {}),
+            "参考图：使用这张图的构图",
+        )
+
+    def test_empty_header_uses_reference(self):
+        row = ["使用这张图的构图"]
+        headers = [""]
+        col_map = {"operationRef": [0]}
+        self.assertEqual(
+            join_reference_text_notes(row, headers, col_map, {}),
+            "参考：使用这张图的构图",
+        )
+
+    def test_machine_reference_skipped(self):
+        row = ["ID_ABC123"]
+        headers = ["参考图"]
+        col_map = {"operationRef": [0]}
+        self.assertEqual(join_reference_text_notes(row, headers, col_map, {}), "")
+
+    def test_identical_notes_deduped(self):
+        row = ["同样的描述", "同样的描述"]
+        headers = ["参考图", "参考图"]
+        col_map = {"operationRef": [0, 1]}
+        self.assertEqual(
+            join_reference_text_notes(row, headers, col_map, {}),
+            "参考图：同样的描述",
+        )
+
+
+class TestJoinMappedDedup(unittest.TestCase):
+    """C# JoinMapped:2289 — 链尾 .Distinct()。"""
+
+    def test_duplicate_values_deduped(self):
+        row = ["相同文本", "相同文本", "不同"]
+        col_map = {"requirements": [0, 1, 2]}
+        self.assertEqual(join_mapped(row, col_map, "requirements"), "相同文本\r\n不同")
+
+    def test_unmapped_key_returns_empty(self):
+        self.assertEqual(join_mapped(["a"], {}, "requirements"), "")
+
+
+class TestMainLinkEndToEnd(unittest.TestCase):
+    """#102 验收用例：requirements 空列回退 + 参考主图第N张（现有 15 任务基线抓不住这些分支）。"""
+
+    def test_empty_requirements_column_uses_unmapped_fallback(self):
+        rows = [
+            ["任务名称", "内容/要素", "画面需求", "图片示例", "备注", "其他"],
+            ["主图 3", "", "", "", "", "突出logo"],
+        ]
+        plan = build_plan_ir("t.xlsx", parse_result({"Sheet1": FakeSheet(rows)}))
+        self.assertEqual(len(plan.tasks), 1)
+        self.assertEqual(plan.tasks[0].requirements, "突出logo")
+
+    def test_reference_main_nth_sets_link_fields(self):
+        rows = [
+            ["任务名称", "内容/要素", "画面需求", "图片示例", "备注"],
+            ["场景图", "场景图", "参考主图第2张，改为露营场景", "", ""],
+        ]
+        plan = build_plan_ir("t.xlsx", parse_result({"Sheet1": FakeSheet(rows)}))
+        self.assertEqual(len(plan.tasks), 1)
+        task = plan.tasks[0]
+        self.assertTrue(task.same_as_main)
+        self.assertEqual(task.linked_main_index, 2)
+        self.assertEqual(task.linked_main_label, "同主图 2")
 
 
 if __name__ == "__main__":

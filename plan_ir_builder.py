@@ -536,37 +536,36 @@ def first_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str
 
 
 def join_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
-    """C# JoinMapped:2289。"""
+    """C# JoinMapped:2289 — 非空单元格值去重（.Distinct()）后以 \r\n 连接。"""
     parts = [v for v in _col_values(row, col_map, key) if v and v.strip()]
-    return "\r\n".join(parts)
+    return "\r\n".join(_distinct(parts))
 
 
 # ─── 回退需求 / 显示编号 / 主图关联（C# :2346/:2430/:2438/:2444/:2478）────────
 
 
 def build_fallback_requirements(row: List[str], col_map: Optional[Dict[str, List[int]]]) -> str:
-    """C# BuildFallbackRequirements:2346。"""
-    parts: List[str] = []
+    """C# BuildFallbackRequirements:2346 — 排除已映射列，取未映射非空单元格（净化去重）。"""
+    skip: set = set()
     if col_map:
-        for key in ("name", "requirements", "outputType", "copy", "prompt"):
-            v = join_mapped(row, col_map, key)
-            if v and v.strip():
-                parts.append(v)
-    if parts:
-        return sanitize_prompt_field(join_distinct_lines(*parts))
+        for key in ("name", "section", "outputType", "copy", "aspect", "prompt", "operationRef"):
+            skip.update(col_map.get(key, []))
+    values: List[str] = []
+    for i, text in enumerate(row or []):
+        if i in skip or not text or not text.strip():
+            continue
+        cleaned = sanitize_prompt_field(text)
+        if cleaned and cleaned.strip() and cleaned not in values:
+            values.append(cleaned)
+    if values:
+        return "\r\n".join(values)
     return sanitize_prompt_field(join_row(row))
 
 
 def detect_same_as_main(task: PlanTask) -> bool:
-    """C# DetectSameAsMain:2438。"""
-    req = task.requirements or ""
-    if "同主图" not in req:
-        return False
-    if not contains_any(req, "主图", "同第"):
-        return False
-    if task.linked_main_index > 0 and task.section_index > 0 and task.linked_main_index != task.section_index:
-        return False
-    return True
+    """C# DetectSameAsMain:2438 — 扫 Name+Requirements+CopyText+OverlayPlan 全文，命中任一标记。"""
+    text = f"{task.name} {task.requirements} {task.copy_text} {task.overlay_plan}".lower()
+    return contains_any(text, "a+同主图", "同主图", "同第", "参考主图")
 
 
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -574,22 +573,20 @@ _LINKED_MAIN_MARKERS = ("主图", "同第", "参考主图")
 
 
 def parse_linked_main_index(task: PlanTask) -> int:
-    """C# ParseLinkedMainIndex:2444 — 主图/同第/参考主图 标记后的数字（支持中文一~九）。"""
-    req = (task.requirements or "") + "\n" + (task.copy_text or "")
+    """C# ParseLinkedMainIndex:2444 — 从首个标记位置扫到文本末尾，取第一个数字/中文数字（一~九）。"""
+    text = f"{task.name} {task.requirements} {task.copy_text} {task.overlay_plan}"
     for marker in _LINKED_MAIN_MARKERS:
-        idx = 0
-        while True:
-            idx = req.find(marker, idx)
-            if idx < 0:
-                break
-            rest = req[idx + len(marker):].lstrip(" :：是(（")
-            for ch in rest:
-                if ch.isdigit():
+        idx = text.find(marker)
+        if idx < 0:
+            continue
+        for ch in text[idx:]:
+            if ch.isdigit():
+                try:
                     return int(ch)
-                if ch in _CN_DIGITS:
-                    return _CN_DIGITS[ch]
-                break
-            idx += 1
+                except ValueError:  # 上标等非 Nd 数字，C# char.IsDigit 亦不命中
+                    continue
+            if ch in _CN_DIGITS:
+                return _CN_DIGITS[ch]
     return 0
 
 
@@ -700,14 +697,15 @@ def join_reference_text_notes(
             continue
         if looks_like_machine_image_reference(value):
             continue
-        if any(v is not None for v in resolve_reference_files(value, image_lookup, "", 0, i, headers)):
-            continue
-        source = compact_line(headers[i]) if i < len(headers) else ""
-        prefix = f"参考：{source}" if source and source.strip() else "参考"
         cleaned = sanitize_prompt_field(value)
-        if cleaned:
-            parts.append(f"{prefix}：{cleaned}")
-    return join_distinct_lines(*parts)
+        if not cleaned or not cleaned.strip():
+            continue
+        # C# 调 text-only 重载（ResolveReferenceFiles:1853），非锚定全参重载
+        if any(v is not None for v in resolve_reference_files_text(cleaned, image_lookup or {})):
+            continue
+        source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "参考"
+        parts.append(f"{source}：{cleaned}")
+    return "\r\n".join(_distinct(parts))
 
 
 def _distinct(seq: List[int]) -> List[int]:
@@ -792,6 +790,17 @@ def build_image_lookup(
 # ─── 任务构建主循环（C# AddTasksFromRows:1615 / AddTasksFromUnmappedRows:1707）
 
 
+def apply_main_link(task: PlanTask) -> None:
+    """主图关联三字段（表头/无表头路径共用）。"""
+    task.same_as_main = detect_same_as_main(task)
+    task.linked_main_index = parse_linked_main_index(task)
+    task.linked_main_label = (
+        f"同主图 {task.linked_main_index}"
+        if task.linked_main_index > 0
+        else ("同主图" if task.same_as_main else "")
+    )
+
+
 def add_tasks_from_rows(
     tasks: List[PlanTask],
     rows: List[List[str]],
@@ -803,7 +812,6 @@ def add_tasks_from_rows(
     """C# AddTasksFromRows:1615 — 表头路径（image_lookup 为 None 时退化为无锚定图）。"""
     header_row = find_header_row(rows)
     if header_row < 0:
-        before = len(tasks)
         add_tasks_from_unmapped_rows(tasks, rows, sheet_name, counters, sort_index)
         return len(tasks)
     headers = rows[header_row]
@@ -889,13 +897,7 @@ def add_tasks_from_rows(
                 task.cell_image_data = value.get("data") or b""
                 task.has_cell_image = True
                 break
-        task.same_as_main = detect_same_as_main(task)
-        task.linked_main_index = parse_linked_main_index(task)
-        task.linked_main_label = (
-            f"同主图 {task.linked_main_index}"
-            if task.linked_main_index > 0
-            else ("同主图" if task.same_as_main else "")
-        )
+        apply_main_link(task)
         task.operation_references = [
             ReferenceImage(
                 asset_id=value.get("path") if isinstance(value, dict) else value,
@@ -948,13 +950,7 @@ def add_tasks_from_unmapped_rows(
             status="待处理",
             selected=True,
         )
-        task.same_as_main = detect_same_as_main(task)
-        task.linked_main_index = parse_linked_main_index(task)
-        task.linked_main_label = (
-            f"同主图 {task.linked_main_index}"
-            if task.linked_main_index > 0
-            else ("同主图" if task.same_as_main else "")
-        )
+        apply_main_link(task)
         tasks.append(task)
     return sort_index
 
