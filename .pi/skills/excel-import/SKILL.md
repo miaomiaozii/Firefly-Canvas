@@ -40,7 +40,7 @@ curl -X POST http://localhost:8000/api/excel/expand-plan \
 Each task becomes three nodes:
 - `smart-prompt` with `text = base_prompt`
 - `smart-image` for each reference image (uploaded as asset first)
-- `smart-image` for generation with `runSettings{model: "nano-banana-pro", aspect_ratio, prompt}` and `pending=1`
+- `smart-image` for generation with `runSettings{model: "nano-banana-2", aspect_ratio, prompt}` and `pending=1`
 
 Edges: prompt → generation, reference image → generation. Only per-task generation nodes are created.
 

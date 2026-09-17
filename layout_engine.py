@@ -16,7 +16,7 @@ from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass
 
 # 默认生图模型（nano-banana 系列）
-DEFAULT_IMAGE_MODEL = "nano-banana-pro"
+DEFAULT_IMAGE_MODEL = "nano-banana-2"
 
 
 @dataclass
