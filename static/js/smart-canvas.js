@@ -2976,6 +2976,23 @@ function jumpToSmartEdgeRevealNode(){
     centerViewportOnWorldPoint({x:Number(node.x || 0) + 120, y:Number(node.y || 0) + 100});
     render();
 }
+function fitBoundsViewport(bounds){
+    if(!bounds) return;
+    const pad = 160;
+    const minX = bounds.min_x;
+    const minY = bounds.min_y;
+    const maxX = bounds.max_x;
+    const maxY = bounds.max_y;
+    const width = Math.max(1, maxX - minX + pad * 2);
+    const height = Math.max(1, maxY - minY + pad * 2);
+    const nextScale = Math.max(0.06, Math.min(0.82, (shell.clientWidth - 80) / width, (shell.clientHeight - 80) / height));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    viewport.scale = nextScale;
+    viewport.x = shell.clientWidth / 2 - cx * viewport.scale;
+    viewport.y = shell.clientHeight / 2 - cy * viewport.scale;
+    applyViewport();
+}
 function fitAllNodesViewport(){
     if(!nodes.length){
         viewport.scale = 0.45;
@@ -5955,6 +5972,7 @@ async function mergeReloadCanvasNow(){
 
 // 导出刷新函数供外部模块调用
 window.refreshSmartCanvas = () => mergeReloadCanvasNow();
+window.fitBoundsViewport = fitBoundsViewport;
 
 function scheduleCanvasMergeReload(delay=200){
     clearTimeout(canvasSyncTimer);

@@ -112,10 +112,47 @@ async def expand_plan(request: Request, payload: ExpandPlanRequest) -> Dict[str,
     nodes_created = sum(1 for op in operations if op['type'] == 'create_node')
     edges_created = sum(1 for op in operations if op['type'] == 'create_edge')
 
+    # 6. 计算新建节点的包围盒（用于前端视口总览）
+    bounds = self._calculate_bounds(operations)
+
     return {
         "success": True,
         "message": f"展开成功：{nodes_created} 节点, {edges_created} 边",
         "project_id": project_id,
         "nodes_created": nodes_created,
         "edges_created": edges_created,
+        "bounds": bounds,
+    }
+
+
+def _calculate_bounds(operations: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    """计算新建节点的包围盒。"""
+    if not operations:
+        return None
+
+    min_x = float('inf')
+    min_y = float('inf')
+    max_x = float('-inf')
+    max_y = float('-inf')
+
+    for op in operations:
+        if op['type'] != 'create_node':
+            continue
+        x = float(op.get('x', 0))
+        y = float(op.get('y', 0))
+        w = float(op.get('width', 0))
+        h = float(op.get('height', 0))
+        min_x = min(min_x, x)
+        min_y = min(min_y, y)
+        max_x = max(max_x, x + w)
+        max_y = max(max_y, y + h)
+
+    if min_x == float('inf'):
+        return None
+
+    return {
+        "min_x": min_x,
+        "min_y": min_y,
+        "max_x": max_x,
+        "max_y": max_y,
     }

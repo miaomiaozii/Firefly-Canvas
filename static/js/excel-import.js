@@ -354,6 +354,14 @@ const ExcelImport = {
                 window.refreshSmartCanvas();
             }
 
+            // 视口总览：pan/zoom 到展开内容的包围盒
+            if (result.bounds && window.fitBoundsViewport) {
+                // 等待画布刷新完成后再调整视口
+                setTimeout(() => {
+                    window.fitBoundsViewport(result.bounds);
+                }, 300);
+            }
+
         } catch (error) {
             this.hideLoading();
             console.error('[ExcelImport] Expand error:', error);
