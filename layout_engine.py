@@ -1,9 +1,9 @@
 """确定性布局器：根据 Plan IR 计算节点位置，避免重叠。
 
-三分区布局：
-- 左区：方案节点（Excel 计划）
-- 中区：Agent 节点
-- 右区：任务节点（按 section 分组，主图/A+）
+每任务布局：
+- 提示词节点（smart-prompt）：text = task.base_prompt
+- 生图节点（smart-image）：runSettings{model, aspect_ratio, prompt} + pending=1
+- 一条边：提示词 → 生图
 
 设计原则：
 - 确定性：相同输入 → 相同输出
@@ -13,6 +13,9 @@
 
 from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass
+
+# 默认生图模型（nano-banana 系列）
+DEFAULT_IMAGE_MODEL = "nano-banana-pro"
 
 
 @dataclass
@@ -29,19 +32,22 @@ class DeterministicLayout:
     """确定性布局器。"""
 
     # 布局参数
-    PLAN_NODE_W = 280.0  # 方案节点宽度
-    PLAN_NODE_H = 200.0  # 方案节点高度
-    AGENT_NODE_W = 300.0  # Agent 节点宽度
-    AGENT_NODE_H = 360.0  # Agent 节点高度
-    TASK_NODE_W = 240.0  # 任务节点宽度
-    TASK_NODE_H = 160.0  # 任务节点高度
-    HORIZONTAL_GAP = 60.0  # 水平间距
-    VERTICAL_GAP = 30.0  # 垂直间距
-    MARGIN = 80.0  # 边距
-    ZONE_GAP = 100.0  # 分区间距
+    PROMPT_NODE_W = 280.0  # 提示词节点宽度
+    PROMPT_NODE_H = 160.0  # 提示词节点高度
+    IMAGE_NODE_W = 240.0   # 生图节点宽度
+    IMAGE_NODE_H = 160.0   # 生图节点高度
+    HORIZONTAL_GAP = 60.0  # 水平间距（提示词→生图）
+    VERTICAL_GAP = 30.0    # 垂直间距
+    MARGIN = 80.0          # 边距
+    ZONE_GAP = 100.0       # 分区间距（已有画布偏移用）
 
     def generate_canvas_operations(self, plan: Dict[str, Any], existing_canvas: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """生成画布操作序列（节点、边）。
+
+        每任务产出：
+        - 1 个 smart-prompt 节点（提示词）
+        - 1 个 smart-image 节点（生图，带 runSettings + pending=1）
+        - 1 条边（提示词 → 生图）
 
         Args:
             plan: Plan IR 的 to_dict() 输出
@@ -58,117 +64,83 @@ class DeterministicLayout:
         offset_x, offset_y = self._calculate_offset(existing_canvas)
 
         operations = []
-        plan_id = "excel_plan"
-        agent_id = "excel_agent"
 
-        # 1. 创建方案节点（左区）
-        operations.append({
-            "type": "create_node",
-            "node_id": plan_id,
-            "node_type": "smart-prompt",
-            "x": self.MARGIN + offset_x,
-            "y": self.MARGIN + offset_y,
-            "width": self.PLAN_NODE_W,
-            "height": self.PLAN_NODE_H,
-            "label": "Excel 导入方案",
-            "excel_task_id": "",
-            "excel_section": "plan",
-            "extra_data": {
-                "text": f"来源：{plan.get('source_file', 'Excel')}\n任务数：{len(tasks)}\nsheets: {plan.get('sheet_count', 0)}\n扫描行数：{plan.get('scanned_rows', 0)}",
-                "excel_plan_data": plan,
-            },
-        })
-
-        # 2. 创建 Agent 节点（中区）
-        agent_x = self.MARGIN + self.PLAN_NODE_W + self.ZONE_GAP + offset_x
-        operations.append({
-            "type": "create_node",
-            "node_id": agent_id,
-            "node_type": "smart-agent",
-            "x": agent_x,
-            "y": self.MARGIN + offset_y,
-            "width": self.AGENT_NODE_W,
-            "height": self.AGENT_NODE_H,
-            "label": "Excel 导入 Agent",
-            "excel_task_id": "",
-            "excel_section": "agent",
-            "extra_data": {
-                "agent_id": agent_id,
-            },
-        })
-
-        # 3. 创建任务节点（右区，按 section 分组）
+        # 按 section 分组，每组一个网格区域
         sections = self._group_tasks_by_section(tasks)
-        task_x = agent_x + self.AGENT_NODE_W + self.ZONE_GAP
         current_y = self.MARGIN + offset_y
 
         for section, section_tasks in sections.items():
-            # Section 标题位置
-            section_y = current_y
-
             # 计算 section 内的网格布局
             row = 0
             col = 0
             max_cols = 2  # 每 section 最多 2 列
 
-            # 列距：任务宽 + 任务→结果间距(20) + 结果宽(200) + 列间距
-            # （避免第一列的结果节点与第二列的任务节点水平重叠）
-            col_stride = self.TASK_NODE_W + 20 + 200 + self.HORIZONTAL_GAP
+            # 列距：提示词宽 + 提示词→生图间距 + 生图宽 + 列间距
+            col_stride = (self.PROMPT_NODE_W + self.HORIZONTAL_GAP +
+                          self.IMAGE_NODE_W + self.HORIZONTAL_GAP)
 
             for task in section_tasks:
-                # 任务节点
                 task_id = task["task_id"]
-                result_id = f"{task_id}-result"
+                prompt_id = f"{task_id}-prompt"
+                image_id = f"{task_id}-image"
 
-                tx = task_x + col * col_stride
-                ty = section_y + row * (self.TASK_NODE_H + self.VERTICAL_GAP)
+                # 提示词节点 x
+                px = self.MARGIN + offset_x + col * col_stride
+                # 生图节点 x（提示词右侧）
+                ix = px + self.PROMPT_NODE_W + self.HORIZONTAL_GAP
+                # y 坐标
+                ty = current_y + row * (self.PROMPT_NODE_H + self.VERTICAL_GAP)
 
+                # 1. 提示词节点（smart-prompt）
                 operations.append({
                     "type": "create_node",
-                    "node_id": task_id,
-                    "node_type": "agent-task",
-                    "x": tx,
+                    "node_id": prompt_id,
+                    "node_type": "smart-prompt",
+                    "x": px,
                     "y": ty,
-                    "width": self.TASK_NODE_W,
-                    "height": self.TASK_NODE_H,
+                    "width": self.PROMPT_NODE_W,
+                    "height": self.PROMPT_NODE_H,
                     "label": f"{task.get('display_no', '')} {task.get('name', '')}",
                     "excel_task_id": task_id,
                     "excel_section": section,
                     "extra_data": {
-                        "agent_id": agent_id,
-                        "task_id": task_id,
-                        "kind": "image",
-                        "status": "queued",
-                        "prompt": task.get('base_prompt', ''),
-                        "requirements": task.get('requirements', ''),
-                        "section": section,
-                        "section_index": task.get('section_index', 0),
-                        "source_row": task.get('source_row', ''),
+                        "text": task.get('base_prompt', ''),
                         "excel_task_data": task,
                     },
                 })
 
-                # 结果节点
-                rx = tx + self.TASK_NODE_W + 20
+                # 2. 生图节点（smart-image）
+                aspect_ratio = task.get('target_aspect_ratio', '') or '1:1'
                 operations.append({
                     "type": "create_node",
-                    "node_id": result_id,
+                    "node_id": image_id,
                     "node_type": "smart-image",
-                    "x": rx,
+                    "x": ix,
                     "y": ty,
-                    "width": 200,
-                    "height": self.TASK_NODE_H,
-                    "label": f"结果 {task.get('display_no', '')}",
+                    "width": self.IMAGE_NODE_W,
+                    "height": self.IMAGE_NODE_H,
+                    "label": f"生成 {task.get('display_no', '')}",
                     "excel_task_id": task_id,
                     "excel_section": section,
                     "extra_data": {
-                        "agent_id": agent_id,
-                        "agent_task_id": task_id,
-                        "outputKind": "image",
+                        "runSettings": {
+                            "model": DEFAULT_IMAGE_MODEL,
+                            "aspect_ratio": aspect_ratio,
+                            "prompt": task.get('base_prompt', ''),
+                        },
                         "pending": 1,
                         "running": False,
+                        "outputKind": "image",
                         "excel_task_data": task,
                     },
+                })
+
+                # 3. 边：提示词 → 生图
+                operations.append({
+                    "type": "create_edge",
+                    "from": prompt_id,
+                    "to": image_id,
+                    "label": "",
                 })
 
                 # 移动到下一位置
@@ -179,37 +151,7 @@ class DeterministicLayout:
 
             # 更新 y 坐标到下一 section
             rows = (len(section_tasks) + max_cols - 1) // max_cols
-            current_y += rows * (self.TASK_NODE_H + self.VERTICAL_GAP) + 40
-
-        # 4. 创建边（connections）
-        # Plan -> Agent
-        operations.append({
-            "type": "create_edge",
-            "from": plan_id,
-            "to": agent_id,
-            "label": "",
-        })
-
-        # Agent -> 每个任务
-        for task in tasks:
-            task_id = task["task_id"]
-            result_id = f"{task_id}-result"
-
-            # Agent -> Task
-            operations.append({
-                "type": "create_edge",
-                "from": agent_id,
-                "to": task_id,
-                "label": "",
-            })
-
-            # Task -> Result
-            operations.append({
-                "type": "create_edge",
-                "from": task_id,
-                "to": result_id,
-                "label": "",
-            })
+            current_y += rows * (self.PROMPT_NODE_H + self.VERTICAL_GAP) + 40
 
         return operations
 

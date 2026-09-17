@@ -134,19 +134,19 @@
     check('预览浮层有展开按钮', Boolean(expandButton));
     if (expandButton) expandButton.click();
 
-    await waitFor('展开完成：浮层消失且 8 个节点渲染', () => {
+    await waitFor('展开完成：浮层消失且 6 个节点渲染', () => {
       const ids = excelNodeIds();
-      const want = ['excel_plan', 'excel_agent', 'excel_1', 'excel_1-result', 'excel_2', 'excel_2-result', 'excel_3', 'excel_3-result'];
+      const want = ['excel_1-prompt', 'excel_1-image', 'excel_2-prompt', 'excel_2-image', 'excel_3-prompt', 'excel_3-image'];
       return want.every(id => ids.includes(id)) ? ids : null;
     }, 60000);
-    check('画布渲染全部 8 个展开节点', true);
+    check('画布渲染全部 6 个展开节点', true);
 
     // 与服务器落盘一致性
     const serverIds = await waitFor('服务器画布含 excel 节点', async () => {
       const ids = await serverExcelNodes();
       return Array.isArray(ids) && ids.length === 6 ? ids : null;
     }, 30000);
-    check('服务器画布 6 个 excel 节点与 UI 一致', JSON.stringify(serverIds.sort()) === JSON.stringify(['excel_1', 'excel_1-result', 'excel_2', 'excel_2-result', 'excel_3', 'excel_3-result'].sort()), JSON.stringify(serverIds));
+    check('服务器画布 6 个 excel 节点与 UI 一致', JSON.stringify(serverIds.sort()) === JSON.stringify(['excel_1-prompt', 'excel_1-image', 'excel_2-prompt', 'excel_2-image', 'excel_3-prompt', 'excel_3-image'].sort()), JSON.stringify(serverIds));
   } catch (error) {
     errors.push(String(error?.message || error));
   }
