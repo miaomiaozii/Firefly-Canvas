@@ -56,7 +56,7 @@ This creates the following topology for each task:
 - Edges: prompt → generation, reference image → generation
 
 The generation node is created with `runSettings`:
-- `model`: defaults to `banana2` (can be overridden by the plan)
+- `model`: defaults to `nano-banana-pro` (can be overridden by the plan)
 - `aspect_ratio`: from the task's `target_aspect_ratio`
 - `prompt`: from the task's `base_prompt`
 
@@ -92,7 +92,7 @@ For each task in the Excel plan:
 
 | Field | Description |
 |-------|-------------|
-| `model` | Model ID for generation (default: `banana2`) |
+| `model` | Model ID for generation (default: `nano-banana-pro`) |
 | `aspect_ratio` | Output image aspect ratio (e.g., "16:9", "1:1") |
 | `prompt` | The prompt text for generation |
 
