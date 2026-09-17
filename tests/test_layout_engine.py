@@ -21,8 +21,8 @@ def _plan(tasks):
     }
 
 
-def _task(task_id, section, target_aspect_ratio="1:1"):
-    return {
+def _task(task_id, section, target_aspect_ratio="1:1", generation_references=None):
+    task = {
         "task_id": task_id,
         "name": f"任务{task_id}",
         "section": section,
@@ -33,6 +33,9 @@ def _task(task_id, section, target_aspect_ratio="1:1"):
         "section_index": 1,
         "source_row": "",
     }
+    if generation_references is not None:
+        task["generation_references"] = generation_references
+    return task
 
 
 def _rects(ops):
@@ -138,6 +141,73 @@ class TestEmptyCanvasLayout(unittest.TestCase):
         ops = DeterministicLayout().generate_canvas_operations(_plan(tasks))
         by_id = {o["node_id"]: o for o in ops if o["type"] == "create_node"}
         self.assertLess(by_id["excel_1-prompt"]["x"], by_id["excel_1-image"]["x"])
+
+    def test_task_with_reference_image(self):
+        # 有参考图的任务：产出参考图 smart-image 节点 + 参考图→生图 边
+        refs = [{"asset_id": "asset-123", "source": "ref1.png", "url": None}]
+        tasks = [_task("excel_1", "主图方案", generation_references=refs)]
+        ops = DeterministicLayout().generate_canvas_operations(_plan(tasks))
+        nodes = [o for o in ops if o["type"] == "create_node"]
+        edges = [o for o in ops if o["type"] == "create_edge"]
+        by_id = {o["node_id"]: o for o in nodes}
+        
+        # 应该有 3 个节点：提示词 + 生图 + 参考图
+        self.assertEqual(len(nodes), 3)
+        # 应该有 2 条边：提示词→生图 + 参考图→生图
+        self.assertEqual(len(edges), 2)
+        
+        # 参考图节点存在且类型正确
+        self.assertIn("excel_1-ref-0", by_id)
+        self.assertEqual(by_id["excel_1-ref-0"]["node_type"], "smart-image")
+        # 参考图节点带 asset_id
+        self.assertEqual(by_id["excel_1-ref-0"]["extra_data"]["images"][0]["asset_id"], "asset-123")
+        
+        # 边连通性：参考图→生图
+        edge_pairs = {(o["from"], o["to"]) for o in edges}
+        self.assertIn(("excel_1-ref-0", "excel_1-image"), edge_pairs)
+        self.assertIn(("excel_1-prompt", "excel_1-image"), edge_pairs)
+
+    def test_task_without_reference_image(self):
+        # 无参考图的任务：无参考图节点，生图节点仍在
+        tasks = [_task("excel_1", "主图方案")]  # 无 generation_references
+        ops = DeterministicLayout().generate_canvas_operations(_plan(tasks))
+        nodes = [o for o in ops if o["type"] == "create_node"]
+        node_ids = {o["node_id"] for o in nodes}
+        
+        # 应该有 2 个节点：提示词 + 生图（无参考图）
+        self.assertEqual(len(nodes), 2)
+        self.assertNotIn("excel_1-ref-0", node_ids)
+        self.assertIn("excel_1-image", node_ids)
+
+    def test_multiple_reference_images(self):
+        # 多个参考图：每个都建节点并连入生图
+        refs = [
+            {"asset_id": "asset-1", "source": "ref1.png", "url": None},
+            {"asset_id": "asset-2", "source": "ref2.png", "url": None},
+        ]
+        tasks = [_task("excel_1", "主图方案", generation_references=refs)]
+        ops = DeterministicLayout().generate_canvas_operations(_plan(tasks))
+        nodes = [o for o in ops if o["type"] == "create_node"]
+        edges = [o for o in ops if o["type"] == "create_edge"]
+        
+        # 应该有 4 个节点：提示词 + 生图 + 2 参考图
+        self.assertEqual(len(nodes), 4)
+        # 应该有 3 条边：提示词→生图 + 2 参考图→生图
+        self.assertEqual(len(edges), 3)
+        
+        edge_pairs = {(o["from"], o["to"]) for o in edges}
+        self.assertIn(("excel_1-ref-0", "excel_1-image"), edge_pairs)
+        self.assertIn(("excel_1-ref-1", "excel_1-image"), edge_pairs)
+
+    def test_no_overlap_with_reference_images(self):
+        # 有参考图的任务：无重叠
+        refs = [{"asset_id": "asset-1", "source": "ref1.png", "url": None}]
+        tasks = [
+            _task(f"excel_{i}", "主图方案", generation_references=refs if i % 2 == 0 else [])
+            for i in range(1, 5)
+        ]
+        rects = _rects(DeterministicLayout().generate_canvas_operations(_plan(tasks)))
+        self.assertEqual(_overlap_pairs(rects), [])
 
 
 class TestExistingCanvasOffset(unittest.TestCase):

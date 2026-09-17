@@ -3,7 +3,8 @@
 每任务布局：
 - 提示词节点（smart-prompt）：text = task.base_prompt
 - 生图节点（smart-image）：runSettings{model, aspect_ratio, prompt} + pending=1
-- 一条边：提示词 → 生图
+- 参考图节点（smart-image，可选）：从 task.generation_references 创建
+- 边：提示词 → 生图，参考图 → 生图
 
 设计原则：
 - 确定性：相同输入 → 相同输出
@@ -36,6 +37,8 @@ class DeterministicLayout:
     PROMPT_NODE_H = 160.0  # 提示词节点高度
     IMAGE_NODE_W = 240.0   # 生图节点宽度
     IMAGE_NODE_H = 160.0   # 生图节点高度
+    REF_NODE_W = 200.0     # 参考图节点宽度
+    REF_NODE_H = 160.0     # 参考图节点高度
     HORIZONTAL_GAP = 60.0  # 水平间距（提示词→生图）
     VERTICAL_GAP = 30.0    # 垂直间距
     MARGIN = 80.0          # 边距
@@ -79,17 +82,49 @@ class DeterministicLayout:
             col_stride = (self.PROMPT_NODE_W + self.HORIZONTAL_GAP +
                           self.IMAGE_NODE_W + self.HORIZONTAL_GAP)
 
+            # 先计算每个任务的行高，然后按行分组，每行使用最大行高
+            # 行高 = 提示词高 + 参考图总数 * (参考图高 + 间距)
+            task_row_heights = []
             for task in section_tasks:
+                refs = task.get("generation_references", [])
+                num_refs = len(refs)
+                row_height = self.PROMPT_NODE_H
+                if num_refs > 0:
+                    row_height += num_refs * (self.REF_NODE_H + self.VERTICAL_GAP)
+                task_row_heights.append(row_height)
+
+            # 计算每行的最大行高
+            row_heights = []
+            for r in range((len(section_tasks) + max_cols - 1) // max_cols):
+                start = r * max_cols
+                end = min(start + max_cols, len(section_tasks))
+                row_max = max(task_row_heights[start:end])
+                row_heights.append(row_max)
+
+            # 计算每行的起始 y 坐标
+            row_y_positions = []
+            y = current_y
+            for rh in row_heights:
+                row_y_positions.append(y)
+                y += rh + self.VERTICAL_GAP
+
+            # 现在按行放置任务
+            row = 0
+            col = 0
+            for idx, task in enumerate(section_tasks):
                 task_id = task["task_id"]
                 prompt_id = f"{task_id}-prompt"
                 image_id = f"{task_id}-image"
+
+                refs = task.get("generation_references", [])
+                row_height = task_row_heights[idx]
 
                 # 提示词节点 x
                 px = self.MARGIN + offset_x + col * col_stride
                 # 生图节点 x（提示词右侧）
                 ix = px + self.PROMPT_NODE_W + self.HORIZONTAL_GAP
-                # y 坐标
-                ty = current_y + row * (self.PROMPT_NODE_H + self.VERTICAL_GAP)
+                # y 坐标（使用该行的起始 y）
+                ty = row_y_positions[row]
 
                 # 1. 提示词节点（smart-prompt）
                 operations.append({
@@ -143,6 +178,44 @@ class DeterministicLayout:
                     "label": "",
                 })
 
+                # 4. 参考图节点（如果有）
+                for i, ref in enumerate(refs):
+                    ref_id = f"{task_id}-ref-{i}"
+                    ref_x = px
+                    ref_y = ty + (i + 1) * (self.REF_NODE_H + self.VERTICAL_GAP)
+
+                    # 参考图节点（smart-image，传图形态）
+                    operations.append({
+                        "type": "create_node",
+                        "node_id": ref_id,
+                        "node_type": "smart-image",
+                        "x": ref_x,
+                        "y": ref_y,
+                        "width": self.REF_NODE_W,
+                        "height": self.REF_NODE_H,
+                        "label": f"参考图 {i + 1}",
+                        "excel_task_id": task_id,
+                        "excel_section": section,
+                        "extra_data": {
+                            "images": [{
+                                "asset_id": ref.get("asset_id", ""),
+                                "kind": "image",
+                                "name": ref.get("source", f"ref-{i}"),
+                            }],
+                            "outputKind": "image",
+                            "excel_ref_index": i,
+                            "excel_task_data": task,
+                        },
+                    })
+
+                    # 边：参考图 → 生图
+                    operations.append({
+                        "type": "create_edge",
+                        "from": ref_id,
+                        "to": image_id,
+                        "label": "",
+                    })
+
                 # 移动到下一位置
                 col += 1
                 if col >= max_cols:
@@ -150,8 +223,7 @@ class DeterministicLayout:
                     row += 1
 
             # 更新 y 坐标到下一 section
-            rows = (len(section_tasks) + max_cols - 1) // max_cols
-            current_y += rows * (self.PROMPT_NODE_H + self.VERTICAL_GAP) + 40
+            current_y = y + 40
 
         return operations
 
