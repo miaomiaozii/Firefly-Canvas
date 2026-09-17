@@ -5972,6 +5972,7 @@ async function mergeReloadCanvasNow(){
 
 // 导出刷新函数供外部模块调用
 window.refreshSmartCanvas = () => mergeReloadCanvasNow();
+window.waitForCanvasRefresh = () => mergeReloadCanvasNow();
 window.fitBoundsViewport = fitBoundsViewport;
 
 function scheduleCanvasMergeReload(delay=200){

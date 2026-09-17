@@ -113,7 +113,7 @@ async def expand_plan(request: Request, payload: ExpandPlanRequest) -> Dict[str,
     edges_created = sum(1 for op in operations if op['type'] == 'create_edge')
 
     # 6. 计算新建节点的包围盒（用于前端视口总览）
-    bounds = self._calculate_bounds(operations)
+    bounds = _calculate_bounds(operations)
 
     return {
         "success": True,

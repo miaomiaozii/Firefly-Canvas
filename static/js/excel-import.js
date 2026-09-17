@@ -357,9 +357,15 @@ const ExcelImport = {
             // 视口总览：pan/zoom 到展开内容的包围盒
             if (result.bounds && window.fitBoundsViewport) {
                 // 等待画布刷新完成后再调整视口
-                setTimeout(() => {
-                    window.fitBoundsViewport(result.bounds);
-                }, 300);
+                if (window.waitForCanvasRefresh) {
+                    window.waitForCanvasRefresh().then(() => {
+                        window.fitBoundsViewport(result.bounds);
+                    });
+                } else {
+                    setTimeout(() => {
+                        window.fitBoundsViewport(result.bounds);
+                    }, 500);
+                }
             }
 
         } catch (error) {
