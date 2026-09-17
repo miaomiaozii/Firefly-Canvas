@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main
+import app.routers.api_excel_expand as api_excel_expand
 from firefly_projects import ProjectStore
 from layout_engine import DeterministicLayout
 
@@ -83,6 +84,10 @@ class TestScale60Expansion(unittest.TestCase):
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
+        # 固定 _app_main 指向 main：它是模块级常量，import 时按顺序捕获，
+        # 与其他测试合跑时可能落到 __main__（缺 project_store_call）。
+        self.previous_app_main = api_excel_expand._app_main
+        api_excel_expand._app_main = main
         self.client = TestClient(
             main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"}
         )
@@ -90,6 +95,7 @@ class TestScale60Expansion(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
+        api_excel_expand._app_main = self.previous_app_main
         self.store.close()
         self.temp_dir.cleanup()
 
