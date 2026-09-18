@@ -139,7 +139,7 @@ class DeterministicLayout:
                     "excel_task_id": task_id,
                     "excel_section": section,
                     "extra_data": {
-                        "text": task.get('base_prompt', ''),
+                        "text": task.get('base_prompt') or task.get('requirements', ''),
                         "excel_task_data": task,
                     },
                 })
@@ -161,7 +161,7 @@ class DeterministicLayout:
                         "runSettings": {
                             "model": DEFAULT_IMAGE_MODEL,
                             "aspect_ratio": aspect_ratio,
-                            "prompt": task.get('base_prompt', ''),
+                            "prompt": task.get('base_prompt') or task.get('requirements', ''),
                         },
                         "pending": 1,
                         "running": False,
