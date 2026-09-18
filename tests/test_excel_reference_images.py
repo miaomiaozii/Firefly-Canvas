@@ -5,6 +5,7 @@
 正确填充到 generation_references，布局器据此生成参考图节点并连入生图节点。
 """
 
+import base64
 import sys
 import tempfile
 import unittest
@@ -187,6 +188,72 @@ class TestExcelReferenceImages(unittest.TestCase):
         self.assertIn("excel_1-prompt", node_ids)
         self.assertIn("excel_1-image", node_ids)
         self.assertNotIn("excel_1-ref-0", node_ids)
+
+
+    def test_expand_plan_uploads_base64_reference_images(self):
+        """expand-plan：带 base64 data 的参考图应上传为项目资产并替换 asset_id。"""
+        project = self.store.create_project("Base64 reference upload test")
+
+        # 构造带 base64 data 的参考图（模拟 import-plan 的输出）
+        image_bytes = b"fake image bytes for testing"
+        image_b64 = base64.b64encode(image_bytes).decode('ascii')
+
+        plan = {
+            "source_file": "test_b64_ref.xlsx",
+            "sheet_count": 1,
+            "scanned_rows": 1,
+            "tasks": [
+                {
+                    "task_id": "excel_1",
+                    "name": "主图 1",
+                    "section": "主图方案",
+                    "display_no": "主图 1",
+                    "base_prompt": "整体产品图，白底",
+                    "requirements": "",
+                    "target_aspect_ratio": "1:1",
+                    "section_index": 1,
+                    "source_row": "",
+                    "generation_references": [
+                        {
+                            "asset_id": "maps/fake_ref.png",  # 假的路径
+                            "source": "Excel参考图",
+                            "url": None,
+                            "data": image_b64,  # base64 编码的字节
+                        }
+                    ],
+                }
+            ],
+        }
+
+        response = self.client.post(
+            "/api/excel/expand-plan",
+            json={"project_id": project["id"], "plan": plan},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["nodes_created"], 3, f"期望 3 节点，实际 {body['nodes_created']}")
+
+        # 验证画布上确实有参考图节点
+        canvas = self.store.canvas(project["id"])
+        node_ids = {n["id"] for n in canvas["nodes"]}
+        self.assertIn("excel_1-ref-0", node_ids, "缺少参考图节点 excel_1-ref-0")
+
+        # 验证参考图节点的 asset_id 不是假的路径，而是真实的 SHA256 digest
+        ref_node = next(n for n in canvas["nodes"] if n["id"] == "excel_1-ref-0")
+        ref_images = ref_node.get("images", [])
+        self.assertGreater(len(ref_images), 0, "参考图节点没有 images 数据")
+        asset_id = ref_images[0].get("asset_id", "")
+        self.assertNotEqual(asset_id, "maps/fake_ref.png", "asset_id 仍为假路径，上传替换失败")
+        self.assertTrue(len(asset_id) == 64, f"asset_id 应为 64 位 SHA256，实际长度 {len(asset_id)}")
+
+        # 验证媒体文件确实被上传到项目
+        media_list = self.store.list_media(project["id"])
+        self.assertGreater(len(media_list), 0, "项目中没有媒体文件，上传失败")
+        # 验证上传的媒体记录存在
+        uploaded = self.store.media_record(project["id"], asset_id)
+        self.assertIsNotNone(uploaded, "无法通过 asset_id 获取上传的媒体记录")
+        self.assertEqual(uploaded["name"], "fake_ref.png", "上传的媒体文件名不匹配")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 """Excel 计划展开 API：将 Plan IR 原子展开为工作流节点。"""
 
 import asyncio
+import base64
+import logging
+import mimetypes
 import os
 import sys
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
@@ -10,6 +14,8 @@ from typing import Dict, Any, List, Optional
 from layout_engine import DeterministicLayout
 
 from app.core import ProjectNotFound, RevisionConflict
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,6 +51,9 @@ async def expand_plan(request: Request, payload: ExpandPlanRequest) -> Dict[str,
 
     if not tasks:
         raise HTTPException(status_code=400, detail="Plan IR 中没有任务")
+
+    # 0. 上传参考图字节为项目资产（替换假的 asset_id 为真实 ID）
+    await _upload_reference_images(project_id, tasks)
 
     # 1. 获取当前画布（项目不存在 → 404）
     try:
@@ -123,6 +132,57 @@ async def expand_plan(request: Request, payload: ExpandPlanRequest) -> Dict[str,
         "edges_created": edges_created,
         "bounds": bounds,
     }
+
+
+async def _upload_reference_images(project_id: str, tasks: List[Dict[str, Any]]) -> None:
+    """将 Plan IR 中携带的参考图字节上传为项目资产。
+
+    遍历所有任务的 generation_references，对有 data（base64）字段的引用：
+    1. 解码字节
+    2. 通过 project_store_call('import_media') 上传为项目资产
+    3. 用真实 asset_id 替换假的 asset_id（原为 maps/xxx.png 路径）
+    4. 清除 data 字段（避免重复上传）
+
+    无 data 字段的引用（如已有真实 asset_id）保持不变。
+    """
+    for task in tasks:
+        refs = task.get("generation_references", [])
+        if not refs:
+            continue
+        for ref in refs:
+            data_b64 = ref.get("data")
+            if not data_b64:
+                continue
+            try:
+                data = base64.b64decode(data_b64)
+            except Exception:
+                continue
+            if not data:
+                continue
+            # 从 asset_id（路径）提取文件名
+            fake_id = ref.get("asset_id", "")
+            filename = Path(fake_id).name if fake_id else "reference.png"
+            # 推断 MIME 类型
+            mime_type, _ = mimetypes.guess_type(filename)
+            if not mime_type:
+                mime_type = "image/png"
+            try:
+                record = await asyncio.to_thread(
+                    _app_main.project_store_call,
+                    'import_media',
+                    project_id,
+                    data,
+                    filename,
+                    mime_type,
+                    {"source": ref.get("source", "Excel参考图")}
+                )
+                # 用真实 asset_id 替换（不设置 url，避免被项目存储校验为外部引用）
+                ref["asset_id"] = record.get("asset_id", "")
+            except Exception as e:
+                # 上传失败不阻塞展开，节点仍会创建（空节点）
+                logger.warning(f"[ExcelExpand] 参考图上传失败: {filename}: {e}")
+            finally:
+                ref["data"] = None  # 清除，避免重复上传
 
 
 def _calculate_bounds(operations: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:

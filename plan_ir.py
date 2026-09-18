@@ -8,6 +8,7 @@
 - LLM 只润色 + 歧义追问，禁止 LLM 编造任务
 """
 
+import base64
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
@@ -18,6 +19,7 @@ class ReferenceImage:
     asset_id: str
     source: str  # 来源描述
     url: Optional[str] = None
+    data: Optional[bytes] = None  # 原始字节（Excel 内嵌图，展开时上传为资产）
 
 
 @dataclass
@@ -112,7 +114,8 @@ class PlanIR:
                         {
                             "asset_id": r.asset_id,
                             "source": r.source,
-                            "url": r.url
+                            "url": r.url,
+                            "data": base64.b64encode(r.data).decode('ascii') if r.data else None,
                         }
                         for r in t.generation_references
                     ],

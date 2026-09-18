@@ -1097,6 +1097,7 @@ def add_tasks_from_rows(
             ReferenceImage(
                 asset_id=value.get("path") if isinstance(value, dict) else value,
                 source=source,
+                data=value.get("data") if isinstance(value, dict) else None,
             )
             for value, source in refs
         ]
