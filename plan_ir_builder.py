@@ -1093,7 +1093,7 @@ def add_tasks_from_rows(
                 task.has_cell_image = True
                 break
         apply_main_link(task)
-        task.operation_references = [
+        task.generation_references = [
             ReferenceImage(
                 asset_id=value.get("path") if isinstance(value, dict) else value,
                 source=source,
