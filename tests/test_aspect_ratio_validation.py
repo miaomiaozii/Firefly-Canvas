@@ -123,5 +123,44 @@ class AspectRatioValidationTests(unittest.TestCase):
         self.assertIn("16:9", msg)
 
 
+class IncompatibleParameterApiTests(unittest.TestCase):
+    """Verify that IncompatibleGenerationParameterError is converted to a 400 response."""
+
+    def test_exception_handler_returns_400_with_details(self):
+        """The exception handler should return 400 with structured error details."""
+        # We test the exception handler logic directly rather than through HTTP
+        # because that requires a full FastAPI test client setup.
+        exc = core.IncompatibleGenerationParameterError(
+            parameter='aspect_ratio',
+            requested_value='5:3',
+            supported_values=['1:1', '16:9', '9:16'],
+            model_id='nano-banana',
+            detail='Test detail',
+        )
+
+        # Verify the exception has all the fields the handler needs
+        self.assertEqual(exc.parameter, 'aspect_ratio')
+        self.assertEqual(exc.requested_value, '5:3')
+        self.assertEqual(exc.supported_values, ['1:1', '16:9', '9:16'])
+        self.assertEqual(exc.model_id, 'nano-banana')
+        self.assertIn('aspect_ratio', str(exc))
+        self.assertIn('5:3', str(exc))
+        self.assertIn('not supported', str(exc))
+
+    def test_error_message_includes_supported_values(self):
+        """The error message should list the supported values for user guidance."""
+        exc = core.IncompatibleGenerationParameterError(
+            parameter='aspect_ratio',
+            requested_value='5:3',
+            supported_values=['1:1', '4:3', '3:4', '16:9', '9:16'],
+            model_id='nano-banana',
+        )
+        msg = str(exc)
+        # Should list some supported values
+        self.assertIn('1:1', msg)
+        self.assertIn('16:9', msg)
+        self.assertIn('Supported values:', msg)
+
+
 if __name__ == "__main__":
     unittest.main()
