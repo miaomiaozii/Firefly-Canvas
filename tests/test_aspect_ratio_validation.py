@@ -126,10 +126,13 @@ class AspectRatioValidationTests(unittest.TestCase):
 class IncompatibleParameterApiTests(unittest.TestCase):
     """Verify that IncompatibleGenerationParameterError is converted to a 400 response."""
 
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        from main import app
+        self.client = TestClient(app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
+
     def test_exception_handler_returns_400_with_details(self):
         """The exception handler should return 400 with structured error details."""
-        # We test the exception handler logic directly rather than through HTTP
-        # because that requires a full FastAPI test client setup.
         exc = core.IncompatibleGenerationParameterError(
             parameter='aspect_ratio',
             requested_value='5:3',
@@ -160,6 +163,57 @@ class IncompatibleParameterApiTests(unittest.TestCase):
         self.assertIn('1:1', msg)
         self.assertIn('16:9', msg)
         self.assertIn('Supported values:', msg)
+
+    def test_exception_handler_registered(self):
+        """Verify the exception handler is registered for IncompatibleGenerationParameterError."""
+        from main import app
+        # Check that the handler is registered in the app's exception handlers
+        self.assertIn(
+            core.IncompatibleGenerationParameterError,
+            app.exception_handlers,
+            "IncompatibleGenerationParameterError handler not registered in app"
+        )
+
+    def test_exception_handler_returns_400_response(self):
+        """Verify the exception handler returns a 400 response with structured details."""
+        from main import app
+        # Get the registered handler
+        handler = app.exception_handlers[core.IncompatibleGenerationParameterError]
+
+        # Create a fake request and exception
+        from starlette.requests import Request
+        scope = {'type': 'http', 'method': 'POST', 'path': '/api/test'}
+        request = Request(scope)
+
+        exc = core.IncompatibleGenerationParameterError(
+            parameter='aspect_ratio',
+            requested_value='5:3',
+            supported_values=['1:1', '16:9', '9:16'],
+            model_id='nano-banana',
+        )
+
+        # Call the handler (it's async, so we need to run it)
+        import asyncio
+        response = asyncio.get_event_loop().run_until_complete(handler(request, exc))
+
+        # Verify the response
+        self.assertEqual(response.status_code, 400)
+        # Parse the JSON body
+        import json
+        body = json.loads(response.body.decode('utf-8'))
+        self.assertIn('detail', body)
+        self.assertIn('parameter', body)
+        self.assertEqual(body['parameter'], 'aspect_ratio')
+        self.assertIn('requested_value', body)
+        self.assertEqual(body['requested_value'], '5:3')
+        self.assertIn('supported_values', body)
+        self.assertEqual(body['supported_values'], ['1:1', '16:9', '9:16'])
+        self.assertIn('model_id', body)
+        self.assertEqual(body['model_id'], 'nano-banana')
+        # Error message should mention the unsupported ratio
+        self.assertIn('aspect_ratio', body['detail'])
+        self.assertIn('5:3', body['detail'])
+        self.assertIn('not supported', body['detail'])
 
 
 if __name__ == "__main__":
