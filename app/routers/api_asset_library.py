@@ -241,7 +241,7 @@ async def get_asset_library():
 @router.post('/api/asset-library/libraries')
 async def create_asset_library(payload: AssetLibraryRequest):
     lib = load_asset_library()
-    library = {'id': f'lib_{uuid.uuid4().hex[:12]}', 'name': sanitize_asset_name(payload.name, '资产库'), 'type': 'asset', 'categories': []}
+    library = {'id': f'lib_{uuid.uuid4().hex[:12]}', 'name': sanitize_asset_name(payload.name, '全局资源库'), 'type': 'asset', 'categories': []}
     library['categories'].append({'id': f'cat_{uuid.uuid4().hex[:12]}', 'name': '默认分组', 'type': 'image', 'items': []})
     lib.setdefault('libraries', []).append(library)
     lib['active_library_id'] = library['id']
@@ -253,8 +253,8 @@ async def rename_asset_library(library_id: str, payload: AssetLibraryRenameReque
     lib = load_asset_library()
     library = find_asset_library(lib, library_id)
     if not library or library.get('id') != library_id:
-        raise HTTPException(status_code=404, detail='资产库不存在')
-    library['name'] = sanitize_asset_name(payload.name, library.get('name') or '资产库')
+        raise HTTPException(status_code=404, detail='全局资源库不存在')
+    library['name'] = sanitize_asset_name(payload.name, library.get('name') or '全局资源库')
     save_asset_library(lib)
     return {'library': lib, 'asset_library': library}
 
@@ -263,9 +263,9 @@ async def delete_asset_library(library_id: str):
     lib = load_asset_library()
     libraries = lib.get('libraries') or []
     if len(libraries) <= 1:
-        raise HTTPException(status_code=400, detail='至少保留一个资产库')
+        raise HTTPException(status_code=400, detail='至少保留一个全局资源库')
     if not any((item.get('id') == library_id for item in libraries)):
-        raise HTTPException(status_code=404, detail='资产库不存在')
+        raise HTTPException(status_code=404, detail='全局资源库不存在')
     lib['libraries'] = [item for item in libraries if item.get('id') != library_id]
     if lib.get('active_library_id') == library_id:
         lib['active_library_id'] = lib['libraries'][0].get('id')
@@ -277,7 +277,7 @@ async def create_asset_library_category(payload: AssetLibraryCategoryRequest):
     lib = load_asset_library()
     library = find_asset_library(lib, payload.library_id)
     if not library:
-        raise HTTPException(status_code=404, detail='资产库不存在')
+        raise HTTPException(status_code=404, detail='全局资源库不存在')
     category = {'id': f'cat_{uuid.uuid4().hex[:12]}', 'name': sanitize_asset_name(payload.name, '新文件夹'), 'type': 'image', 'items': []}
     category['dir'] = unique_asset_category_dir(library, payload.name)
     try:

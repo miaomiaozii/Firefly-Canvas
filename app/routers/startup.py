@@ -241,7 +241,7 @@ def migrate_asset_library_into_dirs():
     try:
         lib = load_asset_library()
     except Exception as exc:
-        logger.warning(f'资产库分组整理：加载失败 {exc}')
+        logger.warning(f'全局资源库分组整理：加载失败 {exc}')
         return
     changed = False
     for library in lib.get('libraries', []) or []:
@@ -257,7 +257,7 @@ def migrate_asset_library_into_dirs():
             try:
                 os.makedirs(os.path.join(ASSET_LIBRARY_DIR, cat_dir), exist_ok=True)
             except Exception as exc:
-                logger.warning(f'资产库分组整理：建文件夹失败 {exc}')
+                logger.warning(f'全局资源库分组整理：建文件夹失败 {exc}')
                 continue
             for item in cat.get('items') or []:
                 raw_url = urllib.parse.unquote(str(item.get('url') or '').split('?', 1)[0])
@@ -275,12 +275,12 @@ def migrate_asset_library_into_dirs():
                     item['url'] = '/assets/library/' + urllib.parse.quote(f'{cat_dir}/{fname}', safe='/')
                     changed = True
                 except Exception as exc:
-                    logger.warning(f'资产库分组整理：搬运 {fname} 失败 {exc}')
+                    logger.warning(f'全局资源库分组整理：搬运 {fname} 失败 {exc}')
     if changed:
         try:
             save_asset_library(lib)
         except Exception as exc:
-            logger.warning(f'资产库分组整理：保存失败 {exc}')
+            logger.warning(f'全局资源库分组整理：保存失败 {exc}')
 
 def migrate_double_extension_uploads():
     """修复历史遗留的双重扩展名（如 foo.png.png）：去掉重复的一层，并同步重命名 caption/classification 旁车文件。

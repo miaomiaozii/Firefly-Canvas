@@ -6547,7 +6547,7 @@ async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0,
     }
 }
 
-// ── 片②：资产库多选批量删除 ───────────────────────────────
+// ── 片②：全局资源库多选批量删除 ───────────────────────────────
 const assetBatchToggleBtn = document.getElementById('assetBatchToggleBtn');
 const assetBatchBar = document.getElementById('assetBatchBar');
 const assetBatchSelectAll = document.getElementById('assetBatchSelectAll');
@@ -19025,7 +19025,7 @@ function renderMentionPicker(source){
             </button>
         `).join('')}</div>` : `<div class="mention-empty">${escapeHtml(tr('smart.mentionEmpty'))}</div>`;
     const librarySelect = (mentionSource === 'asset' && assetLibs.length)
-        ? `<label class="mention-library-row"><span>${escapeHtml(tr('smart.assetLibrary'))}</span><select class="mention-library-select" data-mention-library>${assetLibs.map(lib => `<option value="${escapeHtml(lib.id)}" ${lib.id === activeAssetLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || '资产库')}</option>`).join('')}</select></label>`
+        ? `<label class="mention-library-row"><span>${escapeHtml(tr('smart.assetLibrary'))}</span><select class="mention-library-select" data-mention-library>${assetLibs.map(lib => `<option value="${escapeHtml(lib.id)}" ${lib.id === activeAssetLibraryId ? 'selected' : ''}>${escapeHtml(lib.name || '全局资源库')}</option>`).join('')}</select></label>`
         : '';
     const folderChips = (mentionSource === 'asset' && nextAssetCats.length)
         ? nextAssetCats.map(cat => {

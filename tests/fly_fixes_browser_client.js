@@ -398,7 +398,7 @@
                 }, 5000);
                 assertion('T9 delete button rendered in asset library', delBtn);
                 if(delBtn){
-                    // 记录 DELETE 响应码：服务端 500 时前端会 toast 失败且不刷新资产库 —— 直接抓住请求层故障
+                    // 记录 DELETE 响应码：服务端 500 时前端会 toast 失败且不刷新全局资源库 —— 直接抓住请求层故障
                     let t9DeleteStatus = null;
                     const origFetch = window.fetch;
                     window.fetch = async(...fargs) => {

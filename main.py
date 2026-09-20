@@ -302,11 +302,11 @@ async def startup_event():
         PROJECT_MEDIA_IMPORT_SHUTTING_DOWN = False
         PROJECT_MEDIA_IMPORT_ACCEPTING = True
     ensure_project_media_import_executor()
-    # 启动时整理资产库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
+    # 启动时整理全局资源库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
     try:
         await asyncio.to_thread(migrate_asset_library_into_dirs)
     except Exception as exc:
-        logger.warning(f"资产库分组整理失败: {exc}")
+        logger.warning(f"全局资源库分组整理失败: {exc}")
     # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
     try:
         await asyncio.to_thread(migrate_double_extension_uploads)

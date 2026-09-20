@@ -1341,7 +1341,7 @@ class AssetLibraryCategoryRequest(BaseModel):
     library_id: str = ''
 
 class AssetLibraryRequest(BaseModel):
-    name: str = '资产库'
+    name: str = '全局资源库'
 
 class AssetLibraryAddRequest(BaseModel):
     category_id: str = ''

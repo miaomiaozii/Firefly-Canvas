@@ -3,7 +3,7 @@
   "libraries": [
     {
       "id": "default",
-      "name": "默认资产库",
+      "name": "默认全局资源库",
       "type": "asset",
       "categories": [
         {

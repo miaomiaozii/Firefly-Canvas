@@ -17,7 +17,7 @@ def jimeng_decode_cli_output(stdout, stderr):
 
 def default_asset_library():
     categories = [{'id': 'characters', 'name': '角色', 'type': 'image', 'items': []}, {'id': 'scenes', 'name': '场景', 'type': 'image', 'items': []}]
-    return {'active_library_id': 'default', 'libraries': [{'id': 'default', 'name': '默认资产库', 'type': 'asset', 'categories': categories}], 'categories': categories, 'updated_at': _svc._main('now_ms')()}
+    return {'active_library_id': 'default', 'libraries': [{'id': 'default', 'name': '默认全局资源库', 'type': 'asset', 'categories': categories}], 'categories': categories, 'updated_at': _svc._main('now_ms')()}
 
 def normalize_asset_library(lib):
     if not isinstance(lib, dict):
@@ -25,10 +25,10 @@ def normalize_asset_library(lib):
     legacy_categories = lib.get('categories') if isinstance(lib.get('categories'), list) else None
     libraries = lib.get('libraries') if isinstance(lib.get('libraries'), list) else []
     if not libraries:
-        libraries = [{'id': 'default', 'name': '默认资产库', 'type': 'asset', 'categories': legacy_categories or default_asset_library()['categories']}]
+        libraries = [{'id': 'default', 'name': '默认全局资源库', 'type': 'asset', 'categories': legacy_categories or default_asset_library()['categories']}]
     for library in libraries:
         library['id'] = re.sub('[^A-Za-z0-9_-]+', '_', str(library.get('id') or f'lib_{uuid.uuid4().hex[:8]}'))[:40]
-        library['name'] = sanitize_asset_name(library.get('name') or '资产库', '资产库')
+        library['name'] = sanitize_asset_name(library.get('name') or '全局资源库', '全局资源库')
         cats = library.get('categories') if isinstance(library.get('categories'), list) else []
         cats[:] = [cat for cat in cats if isinstance(cat, dict) and cat.get('type', 'image') != 'workflow']
         for cat in cats:

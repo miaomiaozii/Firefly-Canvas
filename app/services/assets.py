@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def unique_asset_category_dir(library, base_name: str) -> str:
-    """为资产库分组生成一个唯一、文件系统安全的子文件夹名（library/<dir>/）。
+    """为全局资源库分组生成一个唯一、文件系统安全的子文件夹名（library/<dir>/）。
     以分组名为基础（保留中文），与同库其它分组的 dir 及磁盘上已存在的文件夹去重。"""
     base = sanitize_asset_name(base_name, '分组').strip(' .') or '分组'
     existing = {str(c.get('dir')) for c in library.get('categories') or [] if isinstance(c, dict) and c.get('dir')}

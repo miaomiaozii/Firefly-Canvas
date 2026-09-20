@@ -119,7 +119,7 @@
         "studio.local": { zh: "本地", en: "Local" },
         "studio.dimensions": { zh: "尺寸", en: "Dimensions" },
         "studio.renderArt": { zh: "开始生成", en: "Render Art" },
-        "studio.renderLocal": { zh: "本地生成", en: "Render Art (Local)" },
+        "studio.renderLocal": { zh: "在线生成", en: "Render Art (Online)" },
         "studio.renderCloud": { zh: "云端生成", en: "Render Art (Cloud)" },
         "studio.loadMore": { zh: "加载更多归档", en: "Load More Archive" },
         "studio.loadingArchives": { zh: "正在加载归档...", en: "Loading Archives..." },
