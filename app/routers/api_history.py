@@ -70,13 +70,6 @@ async def delete_history(req: DeleteHistoryRequest):
                 with open(_app_main.HISTORY_FILE, 'w', encoding='utf-8') as f:
                     json.dump(new_history, f, ensure_ascii=False, indent=4)
         if target_record:
-            for img_url in target_record.get('images', []):
-                file_path = _app_main.output_file_from_url(img_url)
-                if file_path and os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                    except Exception as e:
-                        logger.warning(f'Failed to delete file {file_path}: {e}')
             return {'success': True}
         else:
             return {'success': False, 'message': 'Record not found'}
