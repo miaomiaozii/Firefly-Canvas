@@ -11,7 +11,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (BaseModel, DeleteHistoryRequest, HISTORY_LOCK, _os, _sys, json, os)
-_from_main_names = ['HISTORY_FILE', 'output_file_from_url']
+_from_main_names = ['HISTORY_FILE']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
