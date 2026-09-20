@@ -22,7 +22,7 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-@router.get('/api/history')
+# Legacy global history endpoint removed (ADR 0013: history is project-scoped)
 async def get_history_api(type: str=None):
     if os.path.exists(_app_main.HISTORY_FILE):
         try:
@@ -44,7 +44,7 @@ async def get_history_api(type: str=None):
             return []
     return []
 
-@router.post('/api/history/delete')
+# Legacy global history delete endpoint removed
 async def delete_history(req: DeleteHistoryRequest):
     if not os.path.exists(_app_main.HISTORY_FILE):
         return {'success': False, 'message': 'History file not found'}
