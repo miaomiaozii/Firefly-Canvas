@@ -2924,6 +2924,29 @@ def jimeng_submit_id(raw):
     visit(raw)
     return found[0] if found else ''
 
+class IncompatibleGenerationParameterError(Exception):
+    """Raised when a user-requested generation parameter is not supported by the selected model.
+
+    Per ADR 0006, the system must stop generation and report the incompatible
+    parameter rather than silently modifying or downgrading it.
+    """
+    def __init__(self, parameter: str, requested_value, supported_values=None, model_id: str = '', detail: str = ''):
+        self.parameter = parameter
+        self.requested_value = requested_value
+        self.supported_values = supported_values
+        self.model_id = model_id
+        self.detail = detail
+        model_part = f" for model '{model_id}'" if model_id else ''
+        if supported_values is not None:
+            supported_str = ', '.join(str(v) for v in supported_values)
+            msg = f"{parameter} '{requested_value}'{model_part} is not supported. Supported values: {supported_str}"
+        else:
+            msg = f"{parameter} '{requested_value}'{model_part} is not supported"
+        if detail:
+            msg += f". {detail}"
+        super().__init__(msg)
+
+
 class JimengPendingError(Exception):
     """即梦任务还在云端排队/生成（轮询超时但未失败）。submit_id 可用于后续续查。"""
 
@@ -4321,7 +4344,16 @@ def gemini_model_name(model):
     value = selected_model(model, 'gemini-3-pro-image-preview').strip()
     return value[len('models/'):] if value.startswith('models/') else value
 
-def gemini_supported_aspect_ratio(size, fallback='1:1'):
+def gemini_supported_aspect_ratio(size, fallback='1:1', strict=False):
+    """Find the supported aspect ratio closest to the requested size.
+
+    When strict=False (default): returns the closest supported ratio (snap-to-nearest).
+    When strict=True: raises IncompatibleGenerationParameterError if the requested
+    ratio is not within tolerance of any supported ratio, per ADR 0006.
+
+    A small tolerance (0.5%) is used to account for pixel rounding when users
+    specify pixel dimensions that are meant to represent a standard ratio.
+    """
     width, height = parse_size_pair(size)
     if not width or not height:
         match = re.fullmatch('\\s*(\\d+)\\s*:\\s*(\\d+)\\s*', str(size or ''))
@@ -4330,11 +4362,26 @@ def gemini_supported_aspect_ratio(size, fallback='1:1'):
     if not width or not height:
         return fallback
     ratio = width / height
+    # Check if the requested ratio is within tolerance of a supported ratio
+    # Tolerance of 0.5% accounts for pixel rounding (e.g., 3840x1648 ≈ 21:9)
+    RATIO_TOLERANCE = 0.005
+    for item in GEMINI_IMAGE_ASPECT_RATIOS:
+        supported_ratio = item[0] / item[1]
+        if abs(ratio - supported_ratio) / supported_ratio < RATIO_TOLERANCE:
+            return item[2]
+    if strict:
+        raise IncompatibleGenerationParameterError(
+            parameter='aspect_ratio',
+            requested_value=str(size),
+            supported_values=[item[2] for item in GEMINI_IMAGE_ASPECT_RATIOS],
+            model_id='gemini-image-family',
+            detail='The requested aspect ratio is not in the model\'s supported list. Generation must stop per ADR 0006.'
+        )
     return min(GEMINI_IMAGE_ASPECT_RATIOS, key=lambda item: abs(math.log(ratio / (item[0] / item[1]))))[2]
 
 def banana_image_request_params(size):
     _, resolution = apimart_size_resolution(size)
-    return {'aspect_ratio': gemini_supported_aspect_ratio(size), 'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution}
+    return {'aspect_ratio': gemini_supported_aspect_ratio(size, strict=True), 'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution}
 
 def image_provider_model_ids(provider):
     configured = (provider or {}).get('image_models') or []
@@ -4405,7 +4452,7 @@ def route_openai_image_request(provider, model, size):
         _, resolution = apimart_size_resolution(size)
         requested_variant = requested_model != family
         params = {
-            'aspect_ratio': gemini_supported_aspect_ratio(size),
+            'aspect_ratio': gemini_supported_aspect_ratio(size, strict=True),
             'image_size': resolution.upper() if resolution in {'1k', '2k', '4k'} else resolution,
         }
         target_model = 'nano-banana-hd' if family == 'nano-banana' and resolution in {'2k', '4k'} else f'{family}-{resolution}'
@@ -4441,17 +4488,17 @@ def gemini_image_config(size, image_parameters=None):
     explicit_aspect = str(explicit.get('aspect_ratio') or '').strip()
     explicit_resolution = str(explicit.get('resolution') or '').strip()
     if explicit_aspect or explicit_resolution:
-        return {'aspectRatio': explicit_aspect or gemini_supported_aspect_ratio(size), 'imageSize': (explicit_resolution or apimart_size_resolution(size)[1]).upper()}
+        return {'aspectRatio': explicit_aspect or gemini_supported_aspect_ratio(size, strict=True), 'imageSize': (explicit_resolution or apimart_size_resolution(size)[1]).upper()}
     width, height = parse_size_pair(size)
     if not width or not height:
         raw = str(size or '').strip().upper()
         if raw in {'1K', '2K', '4K'}:
             return {'aspectRatio': '1:1', 'imageSize': raw}
         if re.fullmatch('\\d+\\s*:\\s*\\d+', raw):
-            return {'aspectRatio': gemini_supported_aspect_ratio(raw), 'imageSize': '1K'}
+            return {'aspectRatio': gemini_supported_aspect_ratio(raw, strict=True), 'imageSize': '1K'}
         return {'aspectRatio': '1:1', 'imageSize': '2K'}
     _, resolution = apimart_size_resolution(size)
-    aspect_ratio = gemini_supported_aspect_ratio(size)
+    aspect_ratio = gemini_supported_aspect_ratio(size, strict=True)
     return {'aspectRatio': aspect_ratio, 'imageSize': resolution.upper()}
 
 def runninghub_output_ext(remote, content_type=''):
