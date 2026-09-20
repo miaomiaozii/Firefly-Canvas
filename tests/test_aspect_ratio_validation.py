@@ -194,7 +194,11 @@ class IncompatibleParameterApiTests(unittest.TestCase):
 
         # Call the handler (it's async, so we need to run it)
         import asyncio
-        response = asyncio.get_event_loop().run_until_complete(handler(request, exc))
+        loop = asyncio.new_event_loop()
+        try:
+            response = loop.run_until_complete(handler(request, exc))
+        finally:
+            loop.close()
 
         # Verify the response
         self.assertEqual(response.status_code, 400)
