@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Plan IR（结构化任务清单）。
+"""Plan IR（结构化任务清单）+ 从 Excel 解析结果构建 Plan IR 的工具包。
 
 参考历史 C# 工具 ImagePlanDesignerP0 的 ImageTask 类（Program.cs:406-436）。
 
 原则：
 - 任务数量/依赖永远来自 Excel 解析器
 - LLM 只润色 + 歧义追问，禁止 LLM 编造任务
-"""
 
+拆分为 7 个模块：
+- plan_ir/text_utils: 基础文本工具
+- plan_ir/sheet_classifier: Sheet 分类
+- plan_ir/header_detector: Header 检测和映射
+- plan_ir/row_classifier: 行分类
+- plan_ir/reference_resolver: 参考图解析
+- plan_ir/task_builder: 任务构建（表头路径 + 无表头路径）
+- plan_ir_builder: 薄编排器（re-export build_plan_ir/extract_tasks）
+"""
 import base64
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
@@ -149,4 +157,13 @@ class PlanIR:
         return sections
 
 
-# 注意：任务 ID 由调用方根据 sort_index 生成，格式为 excel_{sort_index}
+# Re-export main entry points
+from plan_ir.task_builder import build_plan_ir, extract_tasks  # noqa: F401,E402
+
+__all__ = [
+    "PlanIR",
+    "PlanTask",
+    "ReferenceImage",
+    "build_plan_ir",
+    "extract_tasks",
+]
