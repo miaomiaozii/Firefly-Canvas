@@ -375,6 +375,13 @@ async def shutdown_event():
     with CANVAS_TASK_LOCK:
         PROJECT_IMAGE_GENERATION_FUTURES.clear()
         PROJECT_VIDEO_GENERATION_FUTURES.clear()
+    # Clean up agent host subprocesses before closing the project store
+    try:
+        from app.services.agent_host import agent_host_manager
+        await agent_host_manager.cleanup_all()
+    except Exception as e:
+        logger.warning(f"Failed to clean up agent host sessions: {e}")
+
     GLOBAL_LOOP = None
     _core_runtime.GLOBAL_LOOP = None
     await asyncio.to_thread(project_store_call, "close")
