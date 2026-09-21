@@ -14,6 +14,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -27,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 import main
 from firefly_projects import ProjectStore
-from app.services.agent_host import AgentHostManager, AgentSession
+from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess, make_streaming_response_script, make_tool_call_script
 
 
@@ -575,6 +576,128 @@ class TestFakeAgentProcess(unittest.TestCase):
         self.assertEqual(script[2]["type"], "tool_execution_end")
         self.assertEqual(script[2]["isError"], False)
         self.assertEqual(script[3]["type"], "agent_end")
+
+
+class TestMultiNodeIsolation(unittest.TestCase):
+    """Test that two agent nodes' event streams are isolated from each other.
+
+    Verifies that events dispatched to node A's session only reach node A's
+    WebSocket stream, and events for node B only reach node B's stream.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-agent-isolation-tests-")
+        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
+        # Reset the global manager's sessions for a clean test
+        run_async(agent_host_manager.cleanup_all())
+
+    def tearDown(self):
+        run_async(agent_host_manager.cleanup_all())
+        self.client.close()
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _receive_with_timeout(ws, timeout=5.0):
+        """Receive one WS message with a timeout so a broken event flow fails
+        instead of hanging the suite (TestClient's receive_json blocks)."""
+        box = {}
+
+        def _recv():
+            try:
+                box["value"] = ws.receive_json()
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = exc
+
+        thread = threading.Thread(target=_recv, daemon=True)
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+            raise AssertionError("WS receive timed out: event stream broken")
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
+    def test_two_nodes_events_do_not_cross(self):
+        """Events from node A should not appear in node B's WS stream, and vice versa."""
+        project = self.store.create_project("Isolation Test Project")
+        project_id = project["id"]
+
+        # Pre-create running sessions so the WS endpoint does not spawn a real pi process
+        session_a = run_async(agent_host_manager.get_or_create_session(project_id, "node-a"))
+        session_b = run_async(agent_host_manager.get_or_create_session(project_id, "node-b"))
+
+        script_a = make_streaming_response_script("Hello from A")
+        script_b = make_streaming_response_script("Hello from B")
+
+        session_a.process = FakeAgentProcess(script=script_a)
+        session_b.process = FakeAgentProcess(script=script_b)
+
+        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+                # Dispatch on each session's portal loop: the WS ASGI tasks (and
+                # their send channels) live there, not on run_async's temp loop.
+                for event in script_a:
+                    ws_a.portal.call(agent_host_manager._dispatch_event, session_a, event)
+                for event in script_b:
+                    ws_b.portal.call(agent_host_manager._dispatch_event, session_b, event)
+
+                events_a = [self._receive_with_timeout(ws_a) for _ in script_a]
+                events_b = [self._receive_with_timeout(ws_b) for _ in script_b]
+
+        a_text = "".join(
+            e.get("assistantMessageEvent", {}).get("delta", "")
+            for e in events_a
+            if e.get("type") == "message_update"
+        )
+        b_text = "".join(
+            e.get("assistantMessageEvent", {}).get("delta", "")
+            for e in events_b
+            if e.get("type") == "message_update"
+        )
+
+        self.assertIn("Hello from A", a_text, f"Node A should receive its own text. Got: {a_text}")
+        self.assertNotIn("Hello from B", a_text, f"Node A should NOT receive node B's text. Got: {a_text}")
+        self.assertIn("Hello from B", b_text, f"Node B should receive its own text. Got: {b_text}")
+        self.assertNotIn("Hello from A", b_text, f"Node B should NOT receive node A's text. Got: {b_text}")
+        self.assertGreater(len(events_a), 0, "Node A should receive events")
+        self.assertGreater(len(events_b), 0, "Node B should receive events")
+
+    def test_two_nodes_tool_events_do_not_cross(self):
+        """Tool execution events from node A should not appear in node B's stream."""
+        project = self.store.create_project("Isolation Tool Test Project")
+        project_id = project["id"]
+
+        session_a = run_async(agent_host_manager.get_or_create_session(project_id, "node-a"))
+        session_b = run_async(agent_host_manager.get_or_create_session(project_id, "node-b"))
+
+        script_a = make_tool_call_script("canvas.create_node", {"type": "smart-prompt", "title": "A's node"}, {"success": True, "node_id": "n1"})
+        script_b = make_tool_call_script("canvas.update_node", {"node_id": "n2", "title": "B's node"}, {"success": True})
+
+        session_a.process = FakeAgentProcess(script=script_a)
+        session_b.process = FakeAgentProcess(script=script_b)
+
+        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+                for event in script_a:
+                    ws_a.portal.call(agent_host_manager._dispatch_event, session_a, event)
+                for event in script_b:
+                    ws_b.portal.call(agent_host_manager._dispatch_event, session_b, event)
+
+                events_a = [self._receive_with_timeout(ws_a) for _ in script_a]
+                events_b = [self._receive_with_timeout(ws_b) for _ in script_b]
+
+        a_tools = [e for e in events_a if e.get("type") == "tool_execution_start"]
+        b_tools = [e for e in events_b if e.get("type") == "tool_execution_start"]
+
+        self.assertEqual(len(a_tools), 1, f"Node A should receive 1 tool event. Got: {len(a_tools)}")
+        self.assertEqual(a_tools[0]["toolName"], "canvas.create_node")
+        self.assertEqual(len(b_tools), 1, f"Node B should receive 1 tool event. Got: {len(b_tools)}")
+        self.assertEqual(b_tools[0]["toolName"], "canvas.update_node")
 
 
 class TestAgentConfirmation(unittest.TestCase):
