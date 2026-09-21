@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Plan IR Builder (thin orchestrator).
+"""Plan IR Builder (compatibility shim).
 
-从 Excel 解析结果构建 Plan IR。拆分为 plan_ir/ 包中的 7 个模块：
+⚠️ 本文件是向后兼容垫片，仅 re-export plan_ir/ 包中的函数。
+一旦所有调用者迁移到 `from plan_ir import build_plan_ir`，本文件可移除。
+
+从 Excel 解析结果构建 Plan IR。实际实现位于 plan_ir/ 包中的 7 个模块：
 - plan_ir/text_utils: 基础文本工具
 - plan_ir/sheet_classifier: Sheet 分类
 - plan_ir/header_detector: Header 检测和映射
 - plan_ir/row_classifier: 行分类
 - plan_ir/reference_resolver: 参考图解析
 - plan_ir/task_builder: 任务构建
-- plan_ir_builder: 本文件，薄编排器（re-export）
 """
 from typing import Any, Dict, List, Optional, Tuple
 

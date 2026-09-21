@@ -15,7 +15,7 @@ import os
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from plan_ir.text_utils import compact_line, sanitize_prompt_field, join_row
+from plan_ir.text_utils import compact_line, distinct, sanitize_prompt_field, join_row
 
 # ─── 参考图解析（C# :1812/:1833/:1843/:1853/:1865/:2298/:2319）────────────────
 
@@ -120,7 +120,7 @@ def join_reference_text_notes(
 ) -> str:
     """C# JoinReferenceTextNotes:2298 — 参考列文本（非机读引用）并入需求。"""
     parts: List[str] = []
-    for i in _distinct(col_map.get("operationRef", []) if col_map else []):
+    for i in distinct(col_map.get("operationRef", []) if col_map else []):
         if i >= len(row):
             continue
         value = row[i]
@@ -136,11 +136,7 @@ def join_reference_text_notes(
             continue
         source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "参考"
         parts.append(f"{source}：{cleaned}")
-    return "\r\n".join(_distinct(parts))
-
-
-def _distinct(seq: List[int]) -> List[int]:
-    return list(dict.fromkeys(seq))
+    return "\r\n".join(distinct(parts))
 
 
 def add_operation_references_from_mapped_cells(
@@ -160,7 +156,7 @@ def add_operation_references_from_mapped_cells(
         return []
     result: List[Tuple[Any, str]] = []
     seen: set = set()
-    for i in _distinct(col_map["operationRef"]):
+    for i in distinct(col_map["operationRef"]):
         if i < 0:
             continue
         source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "Excel参考图"

@@ -11,7 +11,7 @@
 - clean_task_name: 净化 + 紧凑化 + 70 字符截断
 """
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # ─── 基础文本工具 ─────────────────────────────────────────────────────────────
 
@@ -93,6 +93,11 @@ def join_distinct_lines(*blocks: str) -> str:
             if v and v not in values:
                 values.append(v)
     return "\r\n".join(values)
+
+
+def distinct(seq: List[Any]) -> List[Any]:
+    """去重（保序）。"""
+    return list(dict.fromkeys(seq))
 
 
 # ─── 命名与显示编号 ──────────────────────────────────────────────────────────

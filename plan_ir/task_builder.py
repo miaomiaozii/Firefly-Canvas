@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from plan_ir import PlanIR, PlanTask, ReferenceImage
 from plan_ir.text_utils import (
-    contains_any, compact_line, first_non_empty, join_row, join_distinct_lines,
+    contains_any, compact_line, distinct, first_non_empty, join_row, join_distinct_lines,
     sanitize_prompt_field, clean_task_name, build_display_no, guess_name,
 )
 from plan_ir.sheet_classifier import is_design_plan_sheet_name, should_skip_sheet
@@ -130,10 +130,6 @@ def infer_initial_section(sheet_name: Optional[str], rows: List[List[str]], star
 # ─── 映射列取值（C# :2280/:2289）─────────────────────────────────────────────
 
 
-def _distinct(seq: List[str]) -> List[str]:
-    return list(dict.fromkeys(seq))
-
-
 def _col_values(row: List[str], col_map: Dict[str, List[int]], key: str) -> List[str]:
     cols = col_map.get(key, []) if col_map else []
     return [row[i] for i in cols if i < len(row)]
@@ -150,7 +146,7 @@ def first_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str
 def join_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
     """C# JoinMapped:2289 — 非空单元格值去重（.Distinct()）后以 \r\n 连接。"""
     parts = [v for v in _col_values(row, col_map, key) if v and v.strip()]
-    return "\r\n".join(_distinct(parts))
+    return "\r\n".join(distinct(parts))
 
 
 # ─── 回退需求 / 显示编号 / 主图关联（C# :2346/:2430/:2438/:2444/:2478）────────
