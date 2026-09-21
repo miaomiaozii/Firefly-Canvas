@@ -337,7 +337,7 @@ class AgentHostManager:
 
     def _get_project_dir(self, project_id: str) -> str:
         """Get the project directory path."""
-        store = main.FIREFLY_PROJECT_STORE
+        store = _app_main.FIREFLY_PROJECT_STORE
         if store is None:
             raise RuntimeError("Project store not initialized")
         # ProjectStore has a root attribute
@@ -383,8 +383,9 @@ class AgentHostManager:
         self.sessions.clear()
 
 
-# Import main here to avoid circular import at module level
-import main
+# Resolve the main module without re-importing it (isolated-module test design).
+import sys as _sys
+_app_main = _sys.modules.get(os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 
 # Global singleton
 agent_host_manager = AgentHostManager()

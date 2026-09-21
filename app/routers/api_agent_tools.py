@@ -9,7 +9,9 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 import json
 import uuid
 
-import main
+import sys as _sys
+import os as _os
+_app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.core import OnlineImageRequest
 from app.services.misc import build_online_image_result
@@ -28,7 +30,7 @@ VIEWPORT_STATE = {}
 
 def _validate_project(project_id: str):
     """Validate that the project exists and return the store."""
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     if store is None:
         raise HTTPException(status_code=500, detail="Project store not initialized")
     try:
@@ -39,7 +41,7 @@ def _validate_project(project_id: str):
 
 def _apply_mutations(project_id: str, mutations: list):
     """Apply canvas mutations with retry on revision conflict."""
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     for attempt in range(8):
         try:
             # Get the current revision directly from the canvas
@@ -58,7 +60,7 @@ def _apply_mutations(project_id: str, mutations: list):
 async def list_nodes(project_id: str, x_agent_project: str = Header(default="")):
     """List all nodes on the canvas with summary info."""
     _validate_project(project_id)
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     nodes = canvas.get("nodes", [])
@@ -90,7 +92,7 @@ async def list_nodes(project_id: str, x_agent_project: str = Header(default=""))
 async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
     """Get detailed information about a specific node."""
     _validate_project(project_id)
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     nodes = canvas.get("nodes", [])
@@ -126,7 +128,7 @@ async def create_node(project_id: str, request: Request, x_agent_project: str = 
         node["x"] = 0
     if "y" not in node:
         node["y"] = 0
-    node["created_at"] = main.now_ms()
+    node["created_at"] = _app_main.now_ms()
 
     _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
     return {"success": True, "node_id": node["id"]}
@@ -139,7 +141,7 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
     body = await request.json()
 
     # Get current node
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     nodes = canvas.get("nodes", [])
@@ -155,7 +157,7 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
     for key, value in body.items():
         if key not in ("id", "type", "created_at"):  # Don't allow changing identity
             target_node[key] = value
-    target_node["updated_at"] = main.now_ms()
+    target_node["updated_at"] = _app_main.now_ms()
 
     _apply_mutations(project_id, [{"op": "upsert_node", "node": target_node}])
     return {"success": True, "node_id": node_id}
@@ -192,7 +194,7 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
     """Remove a connection between two nodes."""
     _validate_project(project_id)
     # Find the edge first
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     connections = canvas.get("connections", [])
@@ -223,7 +225,7 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
         raise HTTPException(status_code=400, detail="node_id is required")
 
     # Get the node
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     nodes = canvas.get("nodes", [])
@@ -373,7 +375,7 @@ async def upload_media(project_id: str, request: Request, x_agent_project: str =
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
     # Use the store directly to import the media file
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     try:
         record = store.import_media_file(
             project_id,
@@ -415,7 +417,7 @@ async def focus_node(project_id: str, request: Request, x_agent_project: str = H
         raise HTTPException(status_code=400, detail="node_id is required")
 
     # Get the node's position
-    store = main.FIREFLY_PROJECT_STORE
+    store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
     canvas = opened.get("canvas", {})
     nodes = canvas.get("nodes", [])

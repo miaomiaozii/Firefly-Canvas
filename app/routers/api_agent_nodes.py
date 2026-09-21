@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-import main
 from app.services.agent_host import agent_host_manager
 
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"])
