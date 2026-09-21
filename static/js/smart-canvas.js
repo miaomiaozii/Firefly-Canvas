@@ -232,7 +232,6 @@ let canvasLoadReady = false;
 let conversationCanvasLastAcceptedRevision = 0;
 const projectMediaImportCache = new Map();
 const conversationTaskPolls = new Map();
-const agentTaskPolls = new Map();
 let activeProjectMediaImports = 0;
 const projectMediaImportWaiters = [];
 let apiProviders = [];
@@ -1194,13 +1193,6 @@ function canvasForStorage(){
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
         if(node.type === 'smart-conversation') delete node.conversationSending;
         if(node.type === 'local-edit') delete node._leBusy;
-        if(node.type === 'smart-agent') {
-            // Planning/execution flags belong to the live editor only.  The durable
-            // plan itself is stored as agent_plan and remains reload-safe.
-            delete node.agentPlanning;
-            delete node.agentExecuting;
-            delete node.agentPlanRequestId;
-        }
     });
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
     clean.logs = mediaReferencesForStorage((clean.logs || []).filter(log => log?.status !== 'pending'));
@@ -13715,117 +13707,6 @@ function bindConversationNodeControls(el, node){
     });
 }
 function agentProjectId(){ return canvas?.project_id || canvas?.project || sourceProjectId || ''; }
-function agentTaskUrl(projectId, nodeId, taskId){
-    return `/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(nodeId)}/tasks/${encodeURIComponent(taskId)}`;
-}
-function agentTaskStatusText(status){
-    return status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.failed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusPlanning');
-}
-async function pollAgentTask(node, taskId){
-    if(!node || !taskId || agentTaskPolls.has(taskId)) return;
-    const state = {cancelled:false};
-    agentTaskPolls.set(taskId, state);
-    (async() => {
-        const projectId = agentProjectId();
-        const deadline = Date.now() + 30 * 60 * 1000;
-        try {
-            while(!state.cancelled && Date.now() < deadline){
-                let response = null;
-                try { response = await fetch(agentTaskUrl(projectId, node.id, taskId)); } catch(_) { response = null; }
-                if(response?.ok){
-                    const task = await response.json().catch(() => ({}));
-                    const live = nodes.find(item => item.id === node.id) || node;
-                    if(live.agent_plan?.tasks){
-                        const planTask = live.agent_plan.tasks.find(item => item.task_id === taskId);
-                        if(planTask){ planTask.status = task.status || planTask.status; if(task.error) planTask.error = task.error; }
-                    }
-                    const canvasResponse = await fetch(`/api/project-library/${encodeURIComponent(projectId)}`).then(r => r.ok ? r.json() : null).catch(() => null);
-                    if(canvasResponse?.canvas) applyConversationCanvasResponse(canvasResponse.canvas);
-                    render();
-                    if(task.status === 'succeeded' || task.status === 'failed') return;
-                }
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-        } finally {
-            if(agentTaskPolls.get(taskId) === state) agentTaskPolls.delete(taskId);
-        }
-    })();
-}
-async function planAgentNode(node, goalEl, kindEl, countEl, button){
-    if(!node || node.type !== 'smart-agent' || node.agentPlanning) return;
-    const goal = String(goalEl?.value || node.agentGoal || '').trim();
-    if(!goal){ toast(tr('smart.agentGoalRequired')); return; }
-    const kind = kindEl?.value === 'video' ? 'video' : kindEl?.value === 'prompt' ? 'prompt' : 'image';
-    const count = Math.max(1, Math.min(kind === 'prompt' ? 1 : kind === 'video' ? 4 : 8, Number(countEl?.value) || 1));
-    node.agentGoal = goal;
-    node.agentTaskDraft = {kind, count, params:{}};
-    const drafts = Array.isArray(node.agentTaskDrafts) && node.agentTaskDrafts.length
-        ? node.agentTaskDrafts.map(item => {
-            const itemKind = item?.kind === 'video' ? 'video' : item?.kind === 'prompt' ? 'prompt' : 'image';
-            const itemCount = Math.max(1, Math.min(itemKind === 'prompt' ? 1 : itemKind === 'video' ? 4 : 8, Number(item?.count) || 1));
-            return {kind:itemKind, count:itemCount, params:{...(item?.params || {})}, prompt:String(item?.prompt || '').trim(), ...(Array.isArray(item?.dependencies) && item.dependencies.length ? {dependencies:item.dependencies} : {})};
-        }).slice(0, 8)
-        : [{kind, count, params:{}, prompt:''}];
-    const taskPayloads = drafts.map(item => ({kind:item.kind, count:item.kind === 'prompt' ? 1 : item.count, params:{...(item.params || {}), ...(item.prompt ? {prompt:item.prompt} : {})}, ...(Array.isArray(item.dependencies) && item.dependencies.length ? {dependencies:item.dependencies} : {})}));
-    node.agentPlanning = true;
-    if(button) button.disabled = true;
-    render();
-    try {
-        const projectId = agentProjectId();
-        if(!projectId) throw new Error(tr('smart.agentMissingProject'));
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedPlanNotCreated'));
-        const requestId = String(node.agentPlanRequestId || `agent-plan-${node.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
-        node.agentPlanRequestId = requestId;
-        const postPlan = () => fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(node.id)}/plan`, {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({goal, request_id:requestId, tasks:taskPayloads, base_revision:Number(canvas?.revision || 0)})
-        });
-        let response = await postPlan();
-        if(response.status === 409){
-            // A different Agent worker may have committed a result between the
-            // save above and this POST.  Rebase the authoritative canvas, then
-            // retry the same request ID once; never overwrite Agent-2 inputs or
-            // silently create a third plan.
-            const latestResponse = await fetch(`/api/project-library/${encodeURIComponent(projectId)}`);
-            if(latestResponse.ok){
-                const latest = await latestResponse.json().catch(() => ({}));
-                const apply = window.applyConversationCanvasResponse || window.__issue13ApplyConversationCanvasResponse;
-                if(latest.canvas && typeof apply === 'function') apply(latest.canvas);
-            }
-            if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedPlanNotCreated'));
-            response = await postPlan();
-        }
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.agentPlanCreateFailed')));
-        const data = await response.json();
-        if(data.canvas) applyConversationCanvasResponse(data.canvas);
-        const liveAgent = nodes.find(item => String(item.id || '') === String(node.id || ''));
-        if(liveAgent && data.plan) liveAgent.agent_plan = data.plan;
-        toast(tr('smart.agentPlanGeneratedConfirm'));
-    } catch(error){ toast(error.message || tr('smart.agentPlanCreateFailed')); }
-    finally { node.agentPlanning = false; if(button) button.disabled = false; render(); }
-}
-async function executeAgentNode(node, button){
-    const plan = node?.agent_plan;
-    if(!plan || plan.status !== 'awaiting_confirmation' || node.agentExecuting) return;
-    node.agentExecuting = true;
-    if(button) button.disabled = true;
-    render();
-    try {
-        const projectId = agentProjectId();
-        const executionId = `agent-execution-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(node.id)}/execute`, {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({plan_id:plan.plan_id, plan_hash:plan.plan_hash, execution_id:executionId})
-        });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.agentRunFailed')));
-        const data = await response.json();
-        if(data.plan) node.agent_plan = data.plan;
-        if(data.canvas) applyConversationCanvasResponse(data.canvas);
-        (data.tasks || []).forEach(task => pollAgentTask(node, task.task_id));
-        toast(tr('smart.agentStarted'));
-    } catch(error){ toast(error.message || tr('smart.agentRunFailed')); }
-    finally { node.agentExecuting = false; if(button) button.disabled = false; render(); }
-}
 function bindAgentNodeControls(el, node){
     // TUI-style agent node: bind terminal input
     const nodeId = node.id;
@@ -13946,99 +13827,6 @@ function renderAgentNode(nodeId) {
     }
 }
 
-// Legacy plan-based agent functions (kept for backward compatibility during migration)
-function bindAgentNodeControlsLegacy(el, node){
-    el.querySelectorAll('.agent-node-control,.agent-node-action').forEach(control => {
-        control.addEventListener('mousedown', event => event.stopPropagation());
-        control.addEventListener('click', event => event.stopPropagation());
-    });
-    const goalEl = el.querySelector('[data-agent-goal]');
-    goalEl?.addEventListener('input', event => { node.agentGoal = event.target.value; node.agentPlanRequestId = ''; scheduleSave(); });
-    el.querySelectorAll('[data-agent-kind]').forEach(kindEl => {
-        kindEl.addEventListener('change', event => {
-            const index = Number(kindEl.closest('[data-agent-draft-index]')?.dataset?.agentDraftIndex ?? 0);
-            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
-            item.kind = event.target.value === 'video' ? 'video' : event.target.value === 'prompt' ? 'prompt' : 'image';
-            if(item.kind === 'prompt') item.count = 1;
-            drafts[index] = item;
-            node.agentTaskDrafts = drafts;
-            if(node.agentTaskDraft) node.agentTaskDraft = item;
-            node.agentPlanRequestId = '';
-            const countEl = kindEl.closest('[data-agent-draft-index]')?.querySelector('[data-agent-count]');
-            if(countEl){ countEl.max = item.kind === 'prompt' ? '1' : '8'; if(item.kind === 'prompt') countEl.value = '1'; }
-            scheduleSave();
-        });
-    });
-    el.querySelectorAll('[data-agent-count]').forEach(countEl => {
-        countEl.addEventListener('input', event => {
-            const index = Number(countEl.closest('[data-agent-draft-index]')?.dataset?.agentDraftIndex ?? 0);
-            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
-            item.count = Number(event.target.value) || 1;
-            drafts[index] = item;
-            node.agentTaskDrafts = drafts;
-            if(node.agentTaskDraft) node.agentTaskDraft = item;
-            scheduleSave();
-        });
-    });
-    el.querySelectorAll('[data-agent-draft-prompt]').forEach(promptEl => {
-        promptEl.addEventListener('input', event => {
-            const index = Number(promptEl.dataset.agentDraftPrompt ?? 0);
-            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
-            item.prompt = event.target.value;
-            drafts[index] = item;
-            node.agentTaskDrafts = drafts;
-            if(node.agentTaskDraft) node.agentTaskDraft = item;
-            scheduleSave();
-        });
-    });
-    el.querySelectorAll('[data-agent-draft-deps]').forEach(depsEl => {
-        depsEl.addEventListener('change', event => {
-            const index = Number(depsEl.dataset.agentDraftDeps ?? 0);
-            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            const item = drafts[index] || {kind:'image', count:1, params:{}, prompt:''};
-            const raw = String(event.target.value || '').trim();
-            item.dependencies = raw === '' ? undefined : [Number(raw)];
-            drafts[index] = item;
-            node.agentTaskDrafts = drafts;
-            if(node.agentTaskDraft) node.agentTaskDraft = item;
-            node.agentPlanRequestId = '';
-            scheduleSave();
-        });
-    });
-    el.querySelector('[data-agent-draft-add]')?.addEventListener('click', event => {
-        event.preventDefault();
-        const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-        if(drafts.length >= 8){ toast(tr('smart.agentMaxTasks')); return; }
-        drafts.push({kind:'image', count:1, params:{}, prompt:''});
-        node.agentTaskDrafts = drafts;
-        node.agentPlanRequestId = '';
-        scheduleSave();
-        render();
-    });
-    el.querySelectorAll('[data-agent-draft-remove]').forEach(removeEl => {
-        removeEl.addEventListener('click', event => {
-            event.preventDefault();
-            const index = Number(removeEl.dataset.agentDraftRemove ?? 0);
-            const drafts = Array.isArray(node.agentTaskDrafts) ? node.agentTaskDrafts.slice() : [{kind:'image', count:1, params:{}, prompt:''}];
-            if(drafts.length <= 1){ toast(tr('smart.agentMinTask')); return; }
-            drafts.splice(index, 1);
-            drafts.forEach((item, i) => {
-                if(!Array.isArray(item.dependencies) || !item.dependencies.length) return;
-                const remapped = item.dependencies.map(dep => dep === index ? null : dep > index ? dep - 1 : dep).filter(dep => dep !== null && dep < i);
-                if(remapped.length) item.dependencies = remapped; else delete item.dependencies;
-            });
-            node.agentTaskDrafts = drafts;
-            node.agentPlanRequestId = '';
-            scheduleSave();
-            render();
-        });
-    });
-    el.querySelector('[data-agent-plan]')?.addEventListener('click', event => { event.preventDefault(); planAgentNode(node, goalEl, el.querySelector('[data-agent-kind]'), el.querySelector('[data-agent-count]'), event.currentTarget); });
-    el.querySelector('[data-agent-confirm]')?.addEventListener('click', event => { event.preventDefault(); executeAgentNode(node, event.currentTarget); });
-}
 async function agentTaskControlAction(node, taskId, action){
     if(!node || !taskId) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
@@ -14065,7 +13853,6 @@ async function refreshAgentPlanState(agentId){
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}`).then(r => r.ok ? r.json() : null).catch(() => null);
         if(response?.canvas) applyConversationCanvasResponse(response.canvas);
     } catch(_){}
-    (node.agent_plan?.tasks || []).forEach(task => pollAgentTask(node, task.task_id));
     render();
 }
 function bindAgentTaskNodeControls(el, node){
