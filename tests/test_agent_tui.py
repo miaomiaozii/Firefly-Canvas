@@ -241,6 +241,79 @@ class TestAgentCommandSending(unittest.TestCase):
 
 
 
+class TestAgentCrashRecovery(unittest.TestCase):
+    """Test crash detection and auto-respawn."""
+
+    def setUp(self):
+        self.project_id = "test-project"
+        self.node_id = "agent-crash"
+        self.manager = AgentHostManager()
+        self.session = asyncio.get_event_loop().run_until_complete(
+            self.manager.get_or_create_session(self.project_id, self.node_id)
+        )
+        # Create a fake process that will "crash"
+        self.process = FakeAgentProcess(script=[
+            {"type": "session", "sessionId": "s1"},
+        ])
+        self.session.process = self.process
+        self.session.status = "running"
+
+    def test_process_exit_sets_crashed_status(self):
+        """Test that when the process exits with non-zero code, status is crashed."""
+        # Simulate process exit with non-zero code
+        self.process._returncode = 1
+        self.process._closed = True
+
+        # Trigger the reader task to detect the exit
+        asyncio.get_event_loop().run_until_complete(
+            self.manager._read_events(self.session)
+        )
+
+        # Status should be crashed (or starting/running if respawned)
+        self.assertIn(self.session.status, ["crashed", "starting", "running"])
+
+    def test_process_exit_zero_sets_stopped(self):
+        """Test that when the process exits with zero code, status is stopped."""
+        # Simulate process exit with zero code
+        self.process._returncode = 0
+        self.process._closed = True
+
+        # Trigger the reader task to detect the exit
+        asyncio.get_event_loop().run_until_complete(
+            self.manager._read_events(self.session)
+        )
+
+        # Status should be stopped (no respawn for clean exit)
+        self.assertEqual(self.session.status, "stopped")
+
+    def test_respawn_session_method_exists(self):
+        """Test that respawn_session method exists and is callable."""
+        self.assertTrue(hasattr(self.manager, "respawn_session"))
+        self.assertTrue(callable(self.manager.respawn_session))
+
+    def test_process_exited_event_dispatched(self):
+        """Test that process_exited event is dispatched when process exits."""
+        events_received = []
+
+        async def event_handler(sess, event):
+            events_received.append(event)
+
+        self.manager.on_event(self.session, event_handler)
+
+        # Simulate process exit
+        self.process._returncode = 1
+        self.process._closed = True
+
+        # Trigger the reader task to detect the exit
+        asyncio.get_event_loop().run_until_complete(
+            self.manager._read_events(self.session)
+        )
+
+        # Should have received process_exited event
+        event_types = [e.get("type") for e in events_received]
+        self.assertIn("process_exited", event_types)
+
+
 class TestAgentEventDispatch(unittest.TestCase):
     """Test event dispatching and status updates."""
 

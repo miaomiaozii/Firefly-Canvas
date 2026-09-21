@@ -90,8 +90,14 @@ class AgentHostManager:
             self.sessions[key] = session
             return session
 
-    async def spawn_session(self, session: AgentSession, model: str = "") -> bool:
-        """Spawn a pi --mode rpc subprocess for the session."""
+    async def spawn_session(self, session: AgentSession, model: str = "", continue_session: bool = False) -> bool:
+        """Spawn a pi --mode rpc subprocess for the session.
+
+        Args:
+            session: The agent session to spawn.
+            model: Optional model override.
+            continue_session: If True, use --continue to restore previous session.
+        """
         if session.is_running:
             return True
 
@@ -112,6 +118,14 @@ class AgentHostManager:
                 "--name", f"firefly-agent-{session.node_id[:8]}",
                 "--system-prompt", DEFAULT_SYSTEM_PROMPT,
             ]
+
+            # If continuing an existing session, add --continue flag
+            # Auto-detect: if session_dir has existing session files, continue
+            if continue_session:
+                cmd.append("--continue")
+            elif os.listdir(session_dir):
+                # Existing session found, continue it
+                cmd.append("--continue")
 
             # Add model if specified
             if model or session.model:
@@ -190,8 +204,8 @@ class AgentHostManager:
             logger.error(f"Error reading events from agent {session.node_id}: {e}")
         finally:
             # Check if process exited
-            if session.process.poll() is not None:
-                exit_code = session.process.returncode
+            exit_code = session.process.poll()
+            if exit_code is not None:
                 session.status = "crashed" if exit_code != 0 else "stopped"
                 logger.warning(f"Agent process {session.node_id} exited with code {exit_code}")
                 # Notify handlers
@@ -200,6 +214,12 @@ class AgentHostManager:
                         await handler(session, {"type": "process_exited", "exit_code": exit_code})
                     except Exception:
                         pass
+
+                # Auto-respawn if it crashed (non-zero exit) or was running (not manually stopped)
+                if session.status != "stopped":
+                    logger.info(f"Auto-respawning agent session {session.node_id}")
+                    # Use --continue to restore session state
+                    await self.spawn_session(session, continue_session=True)
 
     async def _dispatch_event(self, session: AgentSession, event: dict):
         """Dispatch an event to all registered handlers."""
@@ -326,6 +346,35 @@ class AgentHostManager:
     def _get_canvas_tools_path(self) -> str:
         """Get the path to the canvas-tools.ts extension."""
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), "agent_extensions", "canvas-tools.ts")
+
+    async def restore_sessions(self, project_id: str, node_ids: List[str]) -> int:
+        """Restore sessions for existing agent nodes after server restart.
+
+        For each node_id, checks if there's an existing session directory and
+        respawns the pi subprocess with --continue to restore the conversation.
+
+        Returns the number of sessions restored.
+        """
+        restored = 0
+        for node_id in node_ids:
+            try:
+                session = await self.get_or_create_session(project_id, node_id)
+                # Check if there's an existing session to continue
+                project_dir = self._get_project_dir(project_id)
+                session_dir = os.path.join(project_dir, session.session_dir)
+                if os.path.isdir(session_dir) and os.listdir(session_dir):
+                    # Has existing session, continue it
+                    if await self.spawn_session(session, continue_session=True):
+                        restored += 1
+                        logger.info(f"Restored agent session {node_id}")
+                else:
+                    # No existing session, start fresh
+                    if await self.spawn_session(session):
+                        restored += 1
+                        logger.info(f"Started new agent session {node_id}")
+            except Exception as e:
+                logger.error(f"Failed to restore agent session {node_id}: {e}")
+        return restored
 
     async def cleanup_all(self):
         """Stop all sessions (called on shutdown)."""
