@@ -3,13 +3,20 @@
 These endpoints are called by the Pi agent's canvas-tools extension via localhost HTTP.
 They execute canvas mutations through the existing project store.
 """
+import asyncio
+import time
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 import json
 import uuid
 
 import main
+from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
+from app.core import OnlineImageRequest
+from app.services.misc import build_online_image_result
 
 router = APIRouter(prefix="/api/projects/{project_id}/canvas", tags=["agent-tools"])
+
+generate_router = APIRouter(prefix="/api/projects/{project_id}/generate", tags=["agent-generate"])
 
 
 def _validate_project(project_id: str):
@@ -192,3 +199,149 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
 
     _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
     return {"success": True, "from": from_node, "to": to_node}
+
+
+# =============================================================================
+# Generate tools
+# =============================================================================
+
+
+@generate_router.post("/trigger")
+async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Trigger generation on a node, returns task ID."""
+    _validate_project(project_id)
+    body = await request.json()
+    node_id = body.get("node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+
+    # Get the node
+    store = main.FIREFLY_PROJECT_STORE
+    opened = store.open_project(project_id)
+    canvas = opened.get("canvas", {})
+    nodes = canvas.get("nodes", [])
+    target_node = None
+    for node in nodes:
+        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
+            target_node = node
+            break
+    if target_node is None:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    node_type = str(target_node.get("type", ""))
+    prompt = str(target_node.get("prompt", "") or target_node.get("text", ""))
+    if not prompt:
+        raise HTTPException(status_code=400, detail=f"Node {node_id} has no prompt")
+
+    # Use the canvas image task API (simpler, no project-specific routing)
+    payload = {
+        "prompt": prompt,
+        "provider_id": "comfly",
+        "model": "",
+        "size": "1024x1024",
+        "quality": "auto",
+        "n": 1,
+        "reference_images": [],
+    }
+
+    # Create the task using the existing API
+    task_id = f"agent_img_{uuid.uuid4().hex}"
+    with CANVAS_TASK_LOCK:
+        CANVAS_TASKS[task_id] = {
+            "id": task_id,
+            "type": "agent-image",
+            "status": "queued",
+            "project_id": project_id,
+            "node_id": node_id,
+            "node_type": node_type,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "result": None,
+            "error": "",
+        }
+
+    # Run the generation in the background
+    asyncio.create_task(_run_agent_generation(task_id, project_id, node_id, payload))
+
+    return {"task_id": task_id, "type": "image", "node_id": node_id}
+
+
+async def _run_agent_generation(task_id: str, project_id: str, node_id: str, payload: dict):
+    """Run generation in the background and update task status."""
+    try:
+        # Use the existing image generation function
+        result = await build_online_image_result(
+            OnlineImageRequest(**payload)
+        )
+        with CANVAS_TASK_LOCK:
+            CANVAS_TASKS[task_id].update({
+                "status": "succeeded",
+                "result": result,
+                "error": "",
+                "updated_at": time.time(),
+            })
+    except Exception as exc:
+        with CANVAS_TASK_LOCK:
+            CANVAS_TASKS[task_id].update({
+                "status": "failed",
+                "error": str(exc),
+                "updated_at": time.time(),
+            })
+
+
+@generate_router.get("/tasks/{task_id}")
+async def get_task_status(project_id: str, task_id: str, x_agent_project: str = Header(default="")):
+    """Query the status of a generation task."""
+    _validate_project(project_id)
+
+    # Check in-memory task store first
+    with CANVAS_TASK_LOCK:
+        task = dict(CANVAS_TASKS.get(task_id) or {})
+
+    if task:
+        # Normalize the response
+        result = task.get("result")
+        return {
+            "task_id": task_id,
+            "status": task.get("status", "unknown"),
+            "type": task.get("type", ""),
+            "error": task.get("error", ""),
+            "result": result,
+            "updated_at": task.get("updated_at"),
+        }
+
+    raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+
+@generate_router.get("/tasks/{task_id}/wait")
+async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(default=120, ge=1, le=600), x_agent_project: str = Header(default="")):
+    """Wait for a generation task to complete (with timeout)."""
+    _validate_project(project_id)
+
+    deadline = time.time() + timeout
+    last_status = None
+
+    while time.time() < deadline:
+        try:
+            status = await get_task_status(project_id, task_id)
+        except HTTPException as e:
+            if e.status_code == 404:
+                # Task not found yet, keep waiting
+                await asyncio.sleep(0.5)
+                continue
+            raise
+
+        last_status = status
+        if status["status"] in ("succeeded", "failed", "timeout", "cancelled", "jimeng_pending"):
+            return status
+
+        # Poll with backoff
+        await asyncio.sleep(min(1.0, (deadline - time.time()) / 2))
+
+    # Timeout reached
+    return {
+        "task_id": task_id,
+        "status": "timeout",
+        "error": f"Wait timed out after {timeout}s (last status: {last_status.get('status', 'unknown') if last_status else 'not found'})",
+        "last_status": last_status,
+    }

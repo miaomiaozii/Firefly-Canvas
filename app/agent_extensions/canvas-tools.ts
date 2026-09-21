@@ -192,4 +192,62 @@ export default function (pi: ExtensionAPI) {
             };
         },
     });
+
+    // Generate tools
+    pi.registerTool({
+        name: "generate.trigger",
+        description: "Trigger generation on a node, returns task ID",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to generate on" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/generate/trigger`,
+                "POST",
+                { node_id: params.node_id }
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "generate.status",
+        description: "Query the status of a generation task",
+        parameters: Type.Object({
+            task_id: Type.String({ description: "The task ID to query" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}`,
+                "GET"
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "generate.wait",
+        description: "Wait for a generation task to complete (with timeout)",
+        parameters: Type.Object({
+            task_id: Type.String({ description: "The task ID to wait for" }),
+            timeout_seconds: Type.Optional(Type.Number({ description: "Timeout in seconds (default 120)" })),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait`,
+                "GET",
+                { timeout: params.timeout_seconds || 120 }
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
 }
