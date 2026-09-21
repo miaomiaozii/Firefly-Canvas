@@ -195,6 +195,52 @@ class TestAgentHostManager(unittest.TestCase):
         self.assertEqual(len(self.manager.sessions), 0, "Sessions should be cleared")
 
 
+class TestAgentCommandSending(unittest.TestCase):
+    """Test sending steer, follow_up, and abort commands."""
+
+    def setUp(self):
+        self.project_id = "test-project"
+        self.node_id = "agent-1"
+        self.manager = AgentHostManager()
+        self.session = asyncio.get_event_loop().run_until_complete(
+            self.manager.get_or_create_session(self.project_id, self.node_id)
+        )
+        self.process = FakeAgentProcess(script=[{"type": "session", "sessionId": "s1"}])
+        self.session.process = self.process
+        self.session.status = "running"
+
+    def test_send_steer(self):
+        """Test that send_steer sends the correct command."""
+        self.process.reset_script([{"type": "session", "sessionId": "s1"}])
+        asyncio.get_event_loop().run_until_complete(
+            self.manager.send_steer(self.session, "go left")
+        )
+        self.assertEqual(len(self.process.commands), 1)
+        self.assertEqual(self.process.commands[0]["type"], "steer")
+        self.assertEqual(self.process.commands[0]["message"], "go left")
+
+    def test_send_follow_up(self):
+        """Test that send_follow_up sends the correct command."""
+        self.process.reset_script([{"type": "session", "sessionId": "s1"}])
+        asyncio.get_event_loop().run_until_complete(
+            self.manager.send_follow_up(self.session, "then do X")
+        )
+        self.assertEqual(len(self.process.commands), 1)
+        self.assertEqual(self.process.commands[0]["type"], "follow_up")
+        self.assertEqual(self.process.commands[0]["message"], "then do X")
+
+    def test_send_abort(self):
+        """Test that send_abort sends the correct command."""
+        self.process.reset_script([{"type": "session", "sessionId": "s1"}])
+        asyncio.get_event_loop().run_until_complete(
+            self.manager.send_abort(self.session)
+        )
+        self.assertEqual(len(self.process.commands), 1)
+        self.assertEqual(self.process.commands[0]["type"], "abort")
+
+
+
+
 class TestAgentEventDispatch(unittest.TestCase):
     """Test event dispatching and status updates."""
 

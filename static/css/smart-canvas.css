@@ -3851,6 +3851,48 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #565f89;
 }
 
+.agent-tui-action-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+.agent-tui-btn {
+    background: #2f3549;
+    border: 1px solid #3d4560;
+    color: #c0caf5;
+    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.agent-tui-btn:hover:not(:disabled) {
+    background: #3d4560;
+    border-color: #7aa2f7;
+}
+
+.agent-tui-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.agent-tui-btn-steer:hover:not(:disabled) {
+    color: #e0af68;
+}
+
+.agent-tui-btn-followup:hover:not(:disabled) {
+    color: #7dcfff;
+}
+
+.agent-tui-btn-abort:hover:not(:disabled) {
+    color: #f7768e;
+}
+
 @keyframes agent-tui-cursor-blink {
     0%, 100% { border-right: 2px solid #56d364; }
     50% { border-right: 2px solid transparent; }

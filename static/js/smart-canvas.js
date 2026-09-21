@@ -11532,6 +11532,51 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
     renderAgentNode(nodeId);
 }
 
+function sendAgentSteer(nodeId, projectId, message) {
+    const state = getAgentTuiState(nodeId);
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/steer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+        }).catch(e => console.error('Failed to send agent steer:', e));
+        return;
+    }
+    state.socket.send(JSON.stringify({ type: 'steer', message: message }));
+    state.messages.push({ role: 'system', text: `↪ steer: ${message}` });
+    renderAgentNode(nodeId);
+}
+
+function sendAgentFollowUp(nodeId, projectId, message) {
+    const state = getAgentTuiState(nodeId);
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/follow_up`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+        }).catch(e => console.error('Failed to send agent follow_up:', e));
+        return;
+    }
+    state.socket.send(JSON.stringify({ type: 'follow_up', message: message }));
+    state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` });
+    renderAgentNode(nodeId);
+}
+
+function sendAgentAbort(nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/abort`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        }).catch(e => console.error('Failed to send agent abort:', e));
+        return;
+    }
+    state.socket.send(JSON.stringify({ type: 'abort' }));
+    state.status = 'idle';
+    state.messages.push({ role: 'system', text: '⏹ aborted' });
+    renderAgentNode(nodeId);
+}
+
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
@@ -11609,7 +11654,12 @@ function agentNodeBodyHtml(node) {
         </div>
         <div class="agent-tui-input-row">
             <span class="agent-tui-prompt">&gt;</span>
-            <input type="text" class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" ${state.status === 'busy' ? '' : ''}>
+            <input type="text" class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" ${state.status === 'busy' ? 'disabled' : ''}>
+            <div class="agent-tui-action-buttons">
+                <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
+                <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
+                <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="Abort (中止当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
+            </div>
         </div>
     </div>`;
 }
@@ -13754,6 +13804,46 @@ function bindAgentNodeControls(el, node){
                     inputEl.value = '';
                 }
             }
+        });
+    }
+
+    // Bind steer button
+    const steerBtn = el.querySelector('[data-agent-steer]');
+    if (steerBtn) {
+        steerBtn.addEventListener('mousedown', event => event.stopPropagation());
+        steerBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            const inputEl = el.querySelector('[data-agent-tui-input]');
+            const message = inputEl ? inputEl.value.trim() : '';
+            if (message) {
+                sendAgentSteer(nodeId, projectId, message);
+                inputEl.value = '';
+            }
+        });
+    }
+
+    // Bind follow-up button
+    const followupBtn = el.querySelector('[data-agent-followup]');
+    if (followupBtn) {
+        followupBtn.addEventListener('mousedown', event => event.stopPropagation());
+        followupBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            const inputEl = el.querySelector('[data-agent-tui-input]');
+            const message = inputEl ? inputEl.value.trim() : '';
+            if (message) {
+                sendAgentFollowUp(nodeId, projectId, message);
+                inputEl.value = '';
+            }
+        });
+    }
+
+    // Bind abort button
+    const abortBtn = el.querySelector('[data-agent-abort]');
+    if (abortBtn) {
+        abortBtn.addEventListener('mousedown', event => event.stopPropagation());
+        abortBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            sendAgentAbort(nodeId, projectId);
         });
     }
 
