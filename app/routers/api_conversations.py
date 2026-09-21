@@ -35,22 +35,18 @@ def list_conversations(user_id):
         records.append({'id': data.get('id'), 'title': data.get('title', '新对话'), 'created_at': data.get('created_at', 0), 'updated_at': data.get('updated_at', 0), 'last_message': (last_message or {}).get('content', '')})
     return sorted(records, key=lambda item: item['updated_at'], reverse=True)
 
-# Legacy global conversations endpoint removed (ADR 0002: conversations are canvas-scoped)
 async def conversations(request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     return {'user_id': user_id, 'conversations': list_conversations(user_id)}
 
-# Legacy global conversation create endpoint removed
 async def create_conversation(payload: ConversationCreateRequest, request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     return {'conversation': new_conversation(user_id, payload.title)}
 
-# Legacy global conversation get endpoint removed
 async def get_conversation(conversation_id: str, request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     return {'conversation': load_conversation(user_id, conversation_id)}
 
-# Legacy global conversation delete endpoint removed
 async def delete_conversation(conversation_id: str, request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     path = conversation_path(user_id, conversation_id)

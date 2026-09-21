@@ -1175,9 +1175,7 @@ from app.routers import api_canvas_video as _r_api_canvas_video
 app.include_router(_r_api_canvas_video.router)
 from app.routers import api_canvases as _r_api_canvases
 app.include_router(_r_api_canvases.router)
-# Legacy global chat endpoints removed (ADR 0002: conversations are canvas-scoped)
-# from app.routers import api_chat as _r_api_chat
-# app.include_router(_r_api_chat.router)
+
 from app.routers import api_excel_import as _r_api_excel_import
 app.include_router(_r_api_excel_import.router)
 from app.routers import api_excel_expand as _r_api_excel_expand
@@ -1190,18 +1188,14 @@ from app.routers import api_codex as _r_api_codex
 app.include_router(_r_api_codex.router)
 from app.routers import api_config as _r_api_config
 app.include_router(_r_api_config.router)
-# Legacy global conversations endpoints removed (ADR 0002: conversations are canvas-scoped)
-# from app.routers import api_conversations as _r_api_conversations
-# app.include_router(_r_api_conversations.router)
+
 from app.routers import api_download_output as _r_api_download_output
 app.include_router(_r_api_download_output.router)
 from app.routers import api_gemini_cli as _r_api_gemini_cli
 app.include_router(_r_api_gemini_cli.router)
 from app.routers import api_global_settings as _r_api_global_settings
 app.include_router(_r_api_global_settings.router)
-# Legacy global history endpoints removed (ADR 0013: history is project-scoped)
-# from app.routers import api_history as _r_api_history
-# app.include_router(_r_api_history.router)
+
 from app.routers import api_image_jpeg as _r_api_image_jpeg
 app.include_router(_r_api_image_jpeg.router)
 from app.routers import api_image_params as _r_api_image_params

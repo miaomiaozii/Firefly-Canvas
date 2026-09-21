@@ -488,7 +488,6 @@ async def build_chat_text_reply(payload, conversation):
     raw_data = unwrap_apimart_response(raw) if isinstance(raw, dict) else raw
     return {'id': uuid.uuid4().hex, 'role': 'assistant', 'content': text_from_chat_response(raw).strip() or '接口返回了空回复。', 'created_at': _app_main.now_ms(), 'model': model, 'raw_usage': raw_data.get('usage') if isinstance(raw_data, dict) else None}
 
-# Legacy global chat endpoint removed (ADR 0002: conversations are canvas-scoped)
 async def chat(payload: ChatRequest, request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     conversation = load_conversation(user_id, payload.conversation_id) if payload.conversation_id else new_conversation(user_id, display_title(payload.message))
@@ -567,7 +566,6 @@ async def chat(payload: ChatRequest, request: Request, x_user_id: str=Header(def
     save_conversation(user_id, conversation)
     return {'conversation': conversation, 'message': assistant_message}
 
-# Legacy global chat agent endpoint removed
 async def chat_agent(payload: ChatRequest, request: Request, x_user_id: str=Header(default='')):
     user_id = safe_user_id(x_user_id, request)
     conversation = load_conversation(user_id, payload.conversation_id) if payload.conversation_id else new_conversation(user_id, display_title(payload.message))
@@ -621,7 +619,6 @@ async def chat_agent(payload: ChatRequest, request: Request, x_user_id: str=Head
     save_conversation(user_id, conversation)
     return {'conversation': conversation, 'message': assistant_message, 'agent': {'action': action, 'decision': decision}}
 
-# Legacy global chat stream endpoint removed
 async def chat_stream(payload: ChatRequest, request: Request, x_user_id: str=Header(default='')):
     if payload.mode == 'image':
         raise HTTPException(status_code=400, detail='图片模式请使用 /api/chat')
