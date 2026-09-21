@@ -27,9 +27,10 @@ def _apply_mutations(project_id: str, mutations: list):
     """Apply canvas mutations with retry on revision conflict."""
     store = main.FIREFLY_PROJECT_STORE
     for attempt in range(8):
-        opened = store.open_project(project_id)
-        revision = opened.get("revision", 0)
         try:
+            # Get the current revision directly from the canvas
+            canvas = store.canvas(project_id)
+            revision = int(canvas.get("revision") or 0)
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
             return result
         except Exception as e:
@@ -150,7 +151,7 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
 async def delete_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
     """Delete a node from the canvas."""
     _validate_project(project_id)
-    _apply_mutations(project_id, [{"op": "delete_node", "node_id": node_id}])
+    _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
     return {"success": True, "node_id": node_id}
 
 
@@ -189,5 +190,5 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
     if target_edge is None:
         raise HTTPException(status_code=404, detail=f"Edge not found: {from_node} -> {to_node}")
 
-    _apply_mutations(project_id, [{"op": "delete_edge", "edge_id": target_edge.get("id", "")}])
+    _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
     return {"success": True, "from": from_node, "to": to_node}
