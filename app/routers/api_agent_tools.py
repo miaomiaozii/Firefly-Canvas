@@ -24,6 +24,8 @@ media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent
 
 viewport_router = APIRouter(prefix="/api/projects/{project_id}/viewport", tags=["agent-viewport"])
 
+confirm_router = APIRouter(prefix="/api/projects/{project_id}/agent", tags=["agent-confirm"])
+
 # Global viewport state per project
 VIEWPORT_STATE = {}
 
@@ -402,6 +404,20 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
     return response
 
 
+@media_router.delete("/{asset_id}")
+async def delete_media(project_id: str, asset_id: str, x_agent_project: str = Header(default="")):
+    """Delete a media file from the project."""
+    _validate_project(project_id)
+
+    store = _app_main.FIREFLY_PROJECT_STORE
+    try:
+        store.delete_media(project_id, asset_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, "asset_id": asset_id}
+
+
 # =============================================================================
 # Viewport tools
 # =============================================================================
@@ -466,3 +482,81 @@ async def get_viewport_state(project_id: str, x_agent_project: str = Header(defa
     """Get the current viewport state."""
     _validate_project(project_id)
     return VIEWPORT_STATE.get(project_id, {"scale": 1.0, "x": 0, "y": 0})
+
+
+# =============================================================================
+# Confirmation gate
+# =============================================================================
+
+
+@confirm_router.post("/confirm")
+async def request_confirmation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Request user confirmation for a destructive operation.
+
+    Called by the canvas-tools extension before executing destructive tools.
+    Sends a confirm event to the frontend via the agent's WS stream and blocks
+    waiting for the user's decision (with timeout).
+
+    Body: {"node_id": "...", "tool": "...", "params": {...}, "message": "..."}
+    Returns: {"approved": true} or {"approved": false, "reason": "timeout"|"rejected"}
+    """
+    _validate_project(project_id)
+    body = await request.json()
+    node_id = body.get("node_id")
+    tool = body.get("tool", "")
+    params = body.get("params", {})
+    message = body.get("message", "")
+    timeout = body.get("timeout_seconds", 60)
+
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+
+    from app.services.agent_host import agent_host_manager
+
+    # Get the agent session
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+
+    # Generate a unique confirm ID
+    confirm_id = f"confirm-{uuid.uuid4().hex[:12]}"
+
+    # Create a completion event and result holder
+    loop = asyncio.get_event_loop()
+    done_event = asyncio.Event()
+    result = {"approved": False, "reason": "timeout"}
+
+    # Register a temporary confirm handler
+    async def handle_confirm_response(cid, approved):
+        if cid == confirm_id:
+            result["approved"] = approved
+            result["reason"] = "rejected" if not approved else None
+            done_event.set()
+
+    agent_host_manager.on_confirm(session, handle_confirm_response)
+
+    try:
+        # Send the confirm event to the frontend via the session's event handlers
+        confirm_event = {
+            "type": "confirm",
+            "confirm_id": confirm_id,
+            "tool": tool,
+            "params": params,
+            "message": message,
+        }
+        for handler in session.event_handlers:
+            try:
+                await handler(session, confirm_event)
+            except Exception:
+                pass
+
+        # Wait for the user's decision (with timeout)
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=float(timeout))
+        except asyncio.TimeoutError:
+            result["approved"] = False
+            result["reason"] = "timeout"
+
+        return {"approved": result["approved"], "reason": result["reason"]}
+    finally:
+        # Clean up the temporary handler
+        if handle_confirm_response in session.confirm_handlers:
+            session.confirm_handlers.remove(handle_confirm_response)

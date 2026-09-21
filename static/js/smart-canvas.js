@@ -11495,6 +11495,12 @@ function handleAgentEvent(nodeId, event) {
         case 'process_exited':
             state.status = 'crashed';
             break;
+        case 'confirm': {
+            // Confirmation request from agent for destructive operation
+            state.confirm = event;
+            state.status = 'waiting_confirm';
+            break;
+        }
         case 'response':
             // Command response, ignore for now
             break;
@@ -11577,6 +11583,33 @@ function sendAgentAbort(nodeId, projectId) {
     renderAgentNode(nodeId);
 }
 
+function sendAgentConfirm(nodeId, projectId, approved) {
+    const state = getAgentTuiState(nodeId);
+    if (!state.confirm) return;
+    const confirmId = state.confirm.confirm_id;
+    state.confirm = null;
+    state.status = 'busy';
+
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+        state.socket.send(JSON.stringify({
+            type: 'confirm',
+            confirm_id: confirmId,
+            approved: approved,
+        }));
+    } else {
+        // WS not connected, send via HTTP (fire-and-forget)
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
+        }).catch(e => console.error('Failed to send agent confirm:', e));
+    }
+
+    const text = approved ? '✅ 已批准' : '❌ 已取消';
+    state.messages.push({ role: 'system', text });
+    renderAgentNode(nodeId);
+}
+
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
@@ -11641,6 +11674,19 @@ function agentNodeBodyHtml(node) {
         </div>`;
     }
 
+    // Render confirmation card if waiting for user decision
+    let confirmHtml = '';
+    if (state.confirm) {
+        const c = state.confirm;
+        confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
+            <div class="agent-tui-confirm-message">⚠️ ${escapeHtml(c.message || '请确认操作')}</div>
+            <div class="agent-tui-confirm-buttons">
+                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
+                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}">取消</button>
+            </div>
+        </div>`;
+    }
+
     return `<div class="agent-tui-card">
         <div class="agent-tui-header">
             <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
@@ -11650,6 +11696,7 @@ function agentNodeBodyHtml(node) {
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
                 ${messagesHtml || '<div class="agent-tui-empty">输入自然语言描述你的创作目标...</div>'}
                 ${toolsHtml}
+                ${confirmHtml}
             </div>
         </div>
         <div class="agent-tui-input-row">
@@ -13844,6 +13891,26 @@ function bindAgentNodeControls(el, node){
         abortBtn.addEventListener('click', event => {
             event.stopPropagation();
             sendAgentAbort(nodeId, projectId);
+        });
+    }
+
+    // Bind confirm approve button
+    const approveBtn = el.querySelector('[data-agent-confirm-approve]');
+    if (approveBtn) {
+        approveBtn.addEventListener('mousedown', event => event.stopPropagation());
+        approveBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            sendAgentConfirm(nodeId, projectId, true);
+        });
+    }
+
+    // Bind confirm reject button
+    const rejectBtn = el.querySelector('[data-agent-confirm-reject]');
+    if (rejectBtn) {
+        rejectBtn.addEventListener('mousedown', event => event.stopPropagation());
+        rejectBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            sendAgentConfirm(nodeId, projectId, false);
         });
     }
 
