@@ -140,6 +140,7 @@ class AgentHostManager:
             env = os.environ.copy()
             env["FIREFLY_AGENT_API_BASE"] = os.environ.get("FIREFLY_AGENT_API_BASE", "http://127.0.0.1:8000")
             env["FIREFLY_AGENT_PROJECT_ID"] = session.project_id
+            env["FIREFLY_AGENT_NODE_ID"] = session.node_id
 
             logger.info(f"Spawning pi subprocess for agent {session.node_id}: {' '.join(cmd[:6])}...")
 

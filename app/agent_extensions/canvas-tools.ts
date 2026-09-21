@@ -4,6 +4,7 @@ import { Type } from "typebox";
 // Base URL for FastAPI backend (injected via environment or config)
 const API_BASE = process.env.FIREFLY_AGENT_API_BASE || "http://127.0.0.1:8000";
 const PROJECT_ID = process.env.FIREFLY_AGENT_PROJECT_ID || "";
+const NODE_ID = process.env.FIREFLY_AGENT_NODE_ID || "";
 
 async function callApi(path: string, method: string, body?: any) {
     const url = `${API_BASE}${path}`;
@@ -131,21 +132,32 @@ export default function (pi: ExtensionAPI) {
         description: "Delete a node from the canvas (requires user confirmation)",
         parameters: Type.Object({
             node_id: Type.String({ description: "The node ID to delete" }),
-            confirm: Type.Optional(Type.Boolean({ description: "Set to true to confirm deletion" })),
         }),
         async execute(toolCallId, params) {
-            if (!params.confirm) {
+            // Hard confirmation gate: ask the user via the backend confirm endpoint
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.delete_node",
+                    params: { node_id: params.node_id },
+                    message: `删除节点 ${params.node_id}？此操作不可撤销。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
                 return {
                     content: [{
                         type: "text",
-                        text: `Confirmation required. Call again with confirm: true to delete node ${params.node_id}.`,
+                        text: `删除已取消：${reason}。节点 ${params.node_id} 未被删除。`,
                     }],
-                    details: { requires_confirmation: true },
+                    details: { approved: false, reason: confirmData.reason },
                 };
             }
             const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "DELETE");
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: `节点 ${params.node_id} 已删除。` }],
                 details: {},
             };
         },
@@ -282,6 +294,45 @@ export default function (pi: ExtensionAPI) {
             );
             return {
                 content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "media.delete",
+        description: "Delete a media file from the project (requires user confirmation)",
+        parameters: Type.Object({
+            asset_id: Type.String({ description: "The asset ID to delete" }),
+        }),
+        async execute(toolCallId, params) {
+            // Hard confirmation gate: ask the user via the backend confirm endpoint
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "media.delete",
+                    params: { asset_id: params.asset_id },
+                    message: `删除媒体文件 ${params.asset_id}？此操作不可撤销。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{
+                        type: "text",
+                        text: `删除已取消：${reason}。媒体文件 ${params.asset_id} 未被删除。`,
+                    }],
+                    details: { approved: false, reason: confirmData.reason },
+                };
+            }
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/media/${params.asset_id}`,
+                "DELETE"
+            );
+            return {
+                content: [{ type: "text", text: `媒体文件 ${params.asset_id} 已删除。` }],
                 details: {},
             };
         },
