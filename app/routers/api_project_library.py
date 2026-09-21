@@ -418,90 +418,7 @@ def _agent_memory_task_active(task_id: str) -> bool:
 def _agent_plan_response(project_id: str, canvas: Dict[str, Any], agent: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True, 'project_id': project_id, 'agent': copy.deepcopy(agent), 'plan': copy.deepcopy(plan), 'canvas': copy.deepcopy(canvas)}
 
-@router.post('/api/project-library/{project_id}/agent/{node_id}/plan')
-@router.post('/api/project-library/{project_id}/agent/{node_id}/plans')
-async def create_project_agent_plan(project_id: str, node_id: str, payload: ProjectAgentPlanRequest, request: Request):
-    ensure_same_origin_request(request)
-    request_id = str(payload.request_id or '').strip()
-    if not request_id:
-        raise HTTPException(status_code=400, detail={'code': 'agent_request_id_required', 'message': 'Agent 计划需要稳定 request_id 以保证幂等'})
-    try:
-        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
-        canvas = opened['canvas']
-        agent = project_agent_node(canvas, node_id)
-        current_revision = int(canvas.get('revision') or 0)
-        fields_set = getattr(payload, 'model_fields_set', None)
-        if fields_set is None:
-            fields_set = getattr(payload, '__fields_set__', set())
-        requested_revision = int(payload.base_revision or 0)
-        if 'base_revision' not in fields_set:
-            requested_revision = current_revision
-        if requested_revision != current_revision:
-            raise RevisionConflict(canvas)
-        previous_plan = agent.get('agent_plan')
-        if request_id:
-            durable_plans = []
-            if isinstance(previous_plan, dict):
-                durable_plans.append(previous_plan)
-            durable_plans.extend((item for item in agent.get('agent_plans') or [] if isinstance(item, dict)))
-            original = next((item for item in reversed(durable_plans) if str(item.get('request_id') or '') == request_id), None)
-            if original is not None:
-                agent_response = copy.deepcopy(agent)
-                agent_response['agent_plan'] = copy.deepcopy(original)
-                return _agent_plan_response(project_id, canvas, agent_response, copy.deepcopy(original))
-        inputs = await asyncio.to_thread(project_agent_connected_inputs, project_id, canvas, node_id)
-        goal = str(payload.goal or payload.prompt or '').strip()[:VIDEO_PROMPT_MAX_LENGTH]
-        tasks = [_agent_normalize_task(item, index, goal=goal, inputs=inputs) for index, item in enumerate(_agent_task_specs(payload))]
-        if not tasks:
-            raise HTTPException(status_code=400, detail='Agent 计划至少需要一个在线任务')
-        now = _app_main.now_ms()
-        plan_id = f'agent-plan-{uuid.uuid4().hex}'
-        planned_tasks = []
-        for task in tasks:
-            task_id = f'agent-task-{uuid.uuid4().hex}'
-            planned_tasks.append({**copy.deepcopy(task), 'task_id': task_id, 'plan_id': plan_id, 'result_node_id': f'{task_id}-result', 'status': 'planned', 'created_at': now})
-        plan = {'plan_id': plan_id, 'request_id': request_id, 'status': 'awaiting_confirmation', 'goal': goal, 'inputs': copy.deepcopy(inputs), 'tasks': planned_tasks, 'created_at': now, 'updated_at': now, 'planned_revision': current_revision, 'executions': []}
-        plan['plan_hash'] = _agent_plan_hash(plan)
-        replacement = copy.deepcopy(agent)
-        replacement['agent_plan'] = plan
-        history_plans = [item for item in replacement.get('agent_plans') or [] if isinstance(item, dict)]
-        history_plans.append(copy.deepcopy(plan))
-        replacement['agent_plans'] = history_plans[-32:]
-        result = await asyncio.to_thread(_app_main.project_store_call, 'apply_mutations', project_id, [{'op': 'upsert_node', 'node': replacement}], base_revision=current_revision)
-        await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
-        saved = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
-        saved_agent = project_agent_node(saved['canvas'], node_id)
-        return _agent_plan_response(project_id, saved['canvas'], saved_agent, saved_agent['agent_plan'])
-    except RevisionConflict as exc:
-        if request_id:
-            try:
-                reopened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
-                reopened_agent = project_agent_node(reopened['canvas'], node_id)
-                durable_plan = reopened_agent.get('agent_plan')
-                if isinstance(durable_plan, dict) and str(durable_plan.get('request_id') or '') == request_id:
-                    return _agent_plan_response(project_id, reopened['canvas'], reopened_agent, durable_plan)
-            except (ProjectNotFound, ProjectStoreError, HTTPException):
-                pass
-        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
-    except ProjectNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except (ProjectStoreError, InvalidMutation, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@router.get('/api/project-library/{project_id}/agent/{node_id}/plan')
-@router.get('/api/project-library/{project_id}/agent/{node_id}/plans')
-async def get_project_agent_plan(project_id: str, node_id: str):
-    try:
-        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
-        agent = project_agent_node(opened['canvas'], node_id)
-        plan = agent.get('agent_plan')
-        if not isinstance(plan, dict):
-            raise HTTPException(status_code=404, detail='Agent 尚未生成计划')
-        return _agent_plan_response(project_id, opened['canvas'], agent, plan)
-    except ProjectNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 def _agent_execution_tasks_from_plan(plan: Mapping[str, Any], execution_id: str) -> List[Dict[str, Any]]:
     values = []
@@ -682,21 +599,7 @@ def _agent_admit_execution_sync(project_id: str, node_id: str, payload_data: Map
         dispatchable = [task for task in tasks if not (task.get('dependencies') or [])]
         return {'kind': 'new', 'ok': True, 'project_id': project_id, 'agent_id': node_id, 'plan_id': plan['plan_id'], 'execution_id': execution_id, 'status': 'running', 'tasks': [{'task_id': task['task_id'], 'result_node_id': task['result_node_id'], 'kind': task['kind'], 'status': 'queued'} for task in tasks], 'plan': copy.deepcopy(plan), 'submit_tasks': copy.deepcopy(dispatchable)}
 
-@router.post('/api/project-library/{project_id}/agent/{node_id}/execute')
-@router.post('/api/project-library/{project_id}/agent/{node_id}/confirm')
-@router.post('/api/project-library/{project_id}/agent/{node_id}/plan/execute')
-async def execute_project_agent_plan(project_id: str, node_id: str, payload: ProjectAgentExecuteRequest, request: Request):
-    ensure_same_origin_request(request)
-    execution_id = str(payload.execution_id or '').strip()
-    if not execution_id:
-        raise HTTPException(status_code=400, detail={'code': 'agent_execution_id_required', 'message': 'Agent 执行需要稳定 execution_id 以保证幂等'})
-    payload_data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
-    result = await asyncio.to_thread(_agent_admit_execution_sync, project_id, node_id, payload_data)
-    submit_tasks = result.pop('submit_tasks', [])
-    for task in submit_tasks:
-        _agent_submit_task(task, project_id, node_id, execution_id)
-    result.pop('kind', None)
-    return JSONResponse(status_code=202, content=result)
+
 
 @router.get('/api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}')
 async def get_project_agent_task(project_id: str, node_id: str, task_id: str):

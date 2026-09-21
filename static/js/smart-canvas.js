@@ -11335,9 +11335,6 @@ function conversationNodeBodyHtml(node){
         </div>
     </div>`;
 }
-function agentPlanStatusLabel(status){
-    return status === 'awaiting_confirmation' ? tr('smart.agentStatusAwaiting') : status === 'planned' ? tr('smart.agentStatusPlanned') : status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'completed' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.agentStatusFailed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusNotPlanned');
-}
 // Agent TUI state management
 const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model }
 
