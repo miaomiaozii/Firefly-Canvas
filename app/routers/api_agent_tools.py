@@ -18,6 +18,8 @@ router = APIRouter(prefix="/api/projects/{project_id}/canvas", tags=["agent-tool
 
 generate_router = APIRouter(prefix="/api/projects/{project_id}/generate", tags=["agent-generate"])
 
+media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent-media"])
+
 
 def _validate_project(project_id: str):
     """Validate that the project exists and return the store."""
@@ -345,3 +347,49 @@ async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(defa
         "error": f"Wait timed out after {timeout}s (last status: {last_status.get('status', 'unknown') if last_status else 'not found'})",
         "last_status": last_status,
     }
+
+
+# =============================================================================
+# Media tools
+# =============================================================================
+
+
+@media_router.post("/upload")
+async def upload_media(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Upload a media file to the project library."""
+    _validate_project(project_id)
+    body = await request.json()
+    file_path = body.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+
+    import os
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    # Use the store directly to import the media file
+    store = main.FIREFLY_PROJECT_STORE
+    try:
+        record = store.import_media_file(
+            project_id,
+            file_path,
+            os.path.basename(file_path),
+            "",
+            source_info={"locator": file_path, "name": os.path.basename(file_path), "type": "local_output"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, "asset_id": record["asset_id"], "media": record}
+
+
+@media_router.get("/list")
+async def list_media(project_id: str, x_agent_project: str = Header(default="")):
+    """List all media assets in the project."""
+    _validate_project(project_id)
+
+    # Use the existing list endpoint
+    from app.routers.api_project_library import list_project_media
+
+    response = await list_project_media(project_id)
+    return response

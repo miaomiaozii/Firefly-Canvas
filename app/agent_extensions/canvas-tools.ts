@@ -250,4 +250,40 @@ export default function (pi: ExtensionAPI) {
             };
         },
     });
+
+    // Media tools
+    pi.registerTool({
+        name: "media.upload",
+        description: "Upload a media file to the project library, returns asset ID",
+        parameters: Type.Object({
+            file_path: Type.String({ description: "Path to the media file to upload" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/media/upload`,
+                "POST",
+                { file_path: params.file_path }
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "media.list",
+        description: "List all media assets in the project",
+        parameters: Type.Object({}),
+        async execute() {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/media/list`,
+                "GET"
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
 }
