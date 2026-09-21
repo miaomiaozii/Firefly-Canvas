@@ -313,6 +313,119 @@ class TestAgentCrashRecovery(unittest.TestCase):
         event_types = [e.get("type") for e in events_received]
         self.assertIn("process_exited", event_types)
 
+    def test_auto_respawn_on_crash(self):
+        """Test that spawn_session is called with continue_session=True when process crashes."""
+        # Simulate process exit with non-zero code
+        self.process._returncode = 1
+        self.process._closed = True
+
+        # Mock spawn_session to avoid needing real pi CLI
+        with patch.object(self.manager, 'spawn_session', return_value=True) as mock_spawn:
+            # Trigger the reader task to detect the exit and auto-respawn
+            asyncio.get_event_loop().run_until_complete(
+                self.manager._read_events(self.session)
+            )
+
+            # Verify spawn_session was called with continue_session=True
+            mock_spawn.assert_called_once_with(self.session, continue_session=True)
+
+    def test_no_auto_respawn_on_clean_exit(self):
+        """Test that spawn_session is NOT called when process exits cleanly (code 0)."""
+        # Simulate clean process exit (code 0)
+        self.process._returncode = 0
+        self.process._closed = True
+
+        # Mock spawn_session
+        with patch.object(self.manager, 'spawn_session', return_value=True) as mock_spawn:
+            asyncio.get_event_loop().run_until_complete(
+                self.manager._read_events(self.session)
+            )
+
+            # spawn_session should NOT be called for clean exit
+            mock_spawn.assert_not_called()
+            # Status should be stopped
+            self.assertEqual(self.session.status, "stopped")
+
+    def test_complete_respawn_flow_with_event_reconnect(self):
+        """Test complete respawn flow: crash detection → auto-respawn → event stream reconnects.
+
+        Verifies that after a crash and respawn, new events from the respawned
+        process flow through to registered event handlers (not just that a new
+        process is spawned).
+        """
+        # Phase 1: Initial session with events, then crash
+        initial_events = [
+            {"type": "session", "sessionId": "s1"},
+            {"type": "agent_start"},
+            {"type": "agent_end"},
+        ]
+        self.process.reset_script(initial_events)
+
+        # Collect all events
+        received_events = []
+
+        async def event_handler(sess, event):
+            received_events.append(event)
+
+        self.manager.on_event(self.session, event_handler)
+
+        # Read initial events, then simulate crash
+        self.process._returncode = 1
+        self.process._closed = True
+
+        # Mock spawn_session to simulate respawn with a new fake process
+        respawned_events = [
+            {"type": "session", "sessionId": "s2"},
+            {"type": "agent_start"},
+            {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "respawned"}},
+            {"type": "agent_end"},
+        ]
+        new_process = FakeAgentProcess(script=respawned_events)
+
+        # Track whether spawn was called
+        spawn_called = []
+
+        async def fake_spawn(sess, continue_session=False):
+            # Simulate what spawn_session does: set up new process
+            sess.process = new_process
+            sess.status = "running"
+            spawn_called.append(True)
+            return True
+
+        with patch.object(self.manager, 'spawn_session', side_effect=fake_spawn):
+            # Trigger crash detection and auto-respawn
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(
+                self.manager._read_events(self.session)
+            )
+
+            # Verify spawn was called
+            self.assertGreater(len(spawn_called), 0, "spawn_session should have been called")
+
+            # Now manually read events from the respawned process
+            # (simulating what the real spawn_session's reader task would do)
+            new_process._closed = True
+            new_process._returncode = 0
+            loop.run_until_complete(
+                self.manager._read_events(self.session)
+            )
+
+        # Verify crash was detected (from first _read_events)
+        event_types = [e.get("type") for e in received_events]
+        self.assertIn("process_exited", event_types, "Should receive process_exited event")
+
+        # Verify respawned process events flowed through (event stream reconnected)
+        # The respawned process should have emitted agent_start, message_update, agent_end
+        self.assertIn("agent_start", event_types, "Should receive agent_start from respawned process")
+        self.assertIn("agent_end", event_types, "Should receive agent_end from respawned process")
+
+        # Verify the message content from the respawned process
+        message_updates = [e for e in received_events if e.get("type") == "message_update"]
+        self.assertGreater(len(message_updates), 0, "Should receive message_update from respawned process")
+
+        # Verify the session is now using the new process
+        self.assertIs(self.session.process, new_process, "Session should use the respawned process")
+
 
 class TestAgentEventDispatch(unittest.TestCase):
     """Test event dispatching and status updates."""
