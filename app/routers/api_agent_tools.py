@@ -20,6 +20,11 @@ generate_router = APIRouter(prefix="/api/projects/{project_id}/generate", tags=[
 
 media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent-media"])
 
+viewport_router = APIRouter(prefix="/api/projects/{project_id}/viewport", tags=["agent-viewport"])
+
+# Global viewport state per project
+VIEWPORT_STATE = {}
+
 
 def _validate_project(project_id: str):
     """Validate that the project exists and return the store."""
@@ -393,3 +398,69 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
 
     response = await list_project_media(project_id)
     return response
+
+
+# =============================================================================
+# Viewport tools
+# =============================================================================
+
+
+@viewport_router.post("/focus")
+async def focus_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Scroll canvas to focus on a node."""
+    _validate_project(project_id)
+    body = await request.json()
+    node_id = body.get("node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id is required")
+
+    # Get the node's position
+    store = main.FIREFLY_PROJECT_STORE
+    opened = store.open_project(project_id)
+    canvas = opened.get("canvas", {})
+    nodes = canvas.get("nodes", [])
+    target_node = None
+    for node in nodes:
+        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
+            target_node = node
+            break
+    if target_node is None:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    # Store the viewport state
+    VIEWPORT_STATE[project_id] = {
+        "focus_node_id": node_id,
+        "x": target_node.get("x", 0),
+        "y": target_node.get("y", 0),
+        "scale": 1.0,
+        "updated_at": time.time(),
+    }
+
+    return {"success": True, "node_id": node_id}
+
+
+@viewport_router.post("/zoom")
+async def set_zoom(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Set the canvas zoom level."""
+    _validate_project(project_id)
+    body = await request.json()
+    level = body.get("level")
+    if level is None:
+        raise HTTPException(status_code=400, detail="level is required")
+
+    # Store the viewport state
+    current = VIEWPORT_STATE.get(project_id, {})
+    VIEWPORT_STATE[project_id] = {
+        **current,
+        "scale": float(level),
+        "updated_at": time.time(),
+    }
+
+    return {"success": True, "level": level}
+
+
+@viewport_router.get("/state")
+async def get_viewport_state(project_id: str, x_agent_project: str = Header(default="")):
+    """Get the current viewport state."""
+    _validate_project(project_id)
+    return VIEWPORT_STATE.get(project_id, {"scale": 1.0, "x": 0, "y": 0})

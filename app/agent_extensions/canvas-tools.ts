@@ -286,4 +286,43 @@ export default function (pi: ExtensionAPI) {
             };
         },
     });
+
+    // Viewport tools
+    pi.registerTool({
+        name: "viewport.focus",
+        description: "Scroll canvas to focus on a node",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to focus on" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/viewport/focus`,
+                "POST",
+                { node_id: params.node_id }
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "viewport.zoom",
+        description: "Set the canvas zoom level (0.1 to 8.0)",
+        parameters: Type.Object({
+            level: Type.Number({ description: "Zoom level (0.1 to 8.0)" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/viewport/zoom`,
+                "POST",
+                { level: params.level }
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
 }

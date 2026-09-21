@@ -1197,6 +1197,7 @@ from app.routers import api_agent_tools as _r_api_agent_tools
 app.include_router(_r_api_agent_tools.router)
 app.include_router(_r_api_agent_tools.generate_router)
 app.include_router(_r_api_agent_tools.media_router)
+app.include_router(_r_api_agent_tools.viewport_router)
 from app.routers import api_agent_nodes as _r_api_agent_nodes
 app.include_router(_r_api_agent_nodes.router)
 from app.routers import api_config as _r_api_config
