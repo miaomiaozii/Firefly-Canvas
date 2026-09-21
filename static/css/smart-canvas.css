@@ -3671,3 +3671,187 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-marked-export-file { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:6px; background:var(--soft); font-size:10.5px; font-weight:600; }
 .smart-marked-export-file i, .smart-marked-export-file svg { width:12px; height:12px; flex:0 0 auto; color:#16a34a; }
 .smart-marked-export-file span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Agent TUI (terminal-style) styles */
+.agent-tui-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #1a1b26;
+    color: #c0caf5;
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow: hidden;
+}
+
+.agent-tui-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: #16161e;
+    border-bottom: 1px solid #2f3549;
+    flex-shrink: 0;
+}
+
+.agent-tui-title {
+    font-weight: 600;
+    color: #7aa2f7;
+    font-size: 12px;
+}
+
+.agent-tui-status {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.agent-tui-status-idle {
+    background: #2f3549;
+    color: #7aa2f7;
+}
+
+.agent-tui-status-busy {
+    background: #44475a;
+    color: #e0af68;
+    animation: agent-tui-pulse 1.5s ease-in-out infinite;
+}
+
+.agent-tui-status-connecting {
+    background: #2f3549;
+    color: #9ece6a;
+}
+
+.agent-tui-status-error {
+    background: #44475a;
+    color: #f7768e;
+}
+
+.agent-tui-status-disconnected {
+    background: #2f3549;
+    color: #565f89;
+}
+
+@keyframes agent-tui-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.agent-tui-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    min-height: 0;
+}
+
+.agent-tui-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.agent-tui-empty {
+    color: #565f89;
+    font-style: italic;
+    padding: 8px 0;
+}
+
+.agent-tui-msg {
+    padding: 4px 6px;
+    border-radius: 4px;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.agent-tui-msg-user {
+    background: rgba(122, 162, 247, 0.1);
+    border-left: 2px solid #7aa2f7;
+}
+
+.agent-tui-msg-assistant {
+    background: rgba(94, 212, 149, 0.05);
+    border-left: 2px solid #56d364;
+}
+
+.agent-tui-msg-assistant.agent-tui-msg-streaming {
+    animation: agent-tui-cursor-blink 0.8s step-end infinite;
+}
+
+.agent-tui-msg-system {
+    background: rgba(247, 118, 142, 0.1);
+    border-left: 2px solid #f7768e;
+    color: #f7768e;
+}
+
+.agent-tui-msg-role {
+    color: #7aa2f7;
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+.agent-tui-tool {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    margin: 2px 0;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.agent-tui-tool-icon {
+    font-size: 12px;
+}
+
+.agent-tui-tool-name {
+    color: #e0af68;
+    font-weight: 500;
+}
+
+.agent-tui-tool-args {
+    color: #565f89;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.agent-tui-input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    background: #16161e;
+    border-top: 1px solid #2f3549;
+    flex-shrink: 0;
+}
+
+.agent-tui-prompt {
+    color: #7aa2f7;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.agent-tui-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #c0caf5;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 2px 0;
+}
+
+.agent-tui-input::placeholder {
+    color: #565f89;
+}
+
+@keyframes agent-tui-cursor-blink {
+    0%, 100% { border-right: 2px solid #56d364; }
+    50% { border-right: 2px solid transparent; }
+}

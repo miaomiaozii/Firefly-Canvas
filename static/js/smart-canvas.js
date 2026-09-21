@@ -11338,50 +11338,279 @@ function conversationNodeBodyHtml(node){
 function agentPlanStatusLabel(status){
     return status === 'awaiting_confirmation' ? tr('smart.agentStatusAwaiting') : status === 'planned' ? tr('smart.agentStatusPlanned') : status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'completed' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.agentStatusFailed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusNotPlanned');
 }
-function agentNodeBodyHtml(node){
-    const plan = node?.agent_plan && typeof node.agent_plan === 'object' ? node.agent_plan : null;
-    const draft = node.agentTaskDraft && typeof node.agentTaskDraft === 'object' ? node.agentTaskDraft : {kind:'image', count:1, params:{}};
-    const refs = conversationConnectedReferences(node);
-    const refHtml = refs.length
-        ? `<div class="agent-node-refs" aria-label="${escapeHtml(tr('smart.agentDirectInput'))}">${refs.map(item => `<span class="agent-node-ref" data-agent-reference-kind="${escapeAttr(item.kind)}"><i data-lucide="${item.kind === 'video' ? 'film' : item.kind === 'audio' ? 'file-audio' : 'image'}"></i><span>${escapeHtml(item.name || item.asset_id)}</span></span>`).join('')}</div>`
-        : `<div class="agent-node-warning" role="status">${escapeHtml(tr('smart.agentDirectInputNote'))}</div>`;
-    const taskRows = (plan?.tasks || []).map((task, index) => `<article class="agent-plan-task" data-agent-plan-task="${escapeAttr(task.task_id || '')}">
-        <div class="agent-plan-task-title"><span>${escapeHtml(trf('smart.agentTaskLabel', {n: index + 1, k: task.kind === 'video' ? tr('smart.agentKindVideo') : task.kind === 'prompt' ? tr('smart.agentKindPrompt') : tr('smart.agentKindImage')}))}</span><span class="agent-plan-task-status" data-agent-task-status="${escapeAttr(task.task_id || '')}" data-status="${escapeAttr(task.status || '')}">${escapeHtml(agentPlanStatusLabel(task.status))}</span></div>
-        <div class="agent-plan-task-meta">${escapeHtml(trf('smart.agentTaskMeta', {t: task.model_type || 'online', c: Number(task.count || 1), p: JSON.stringify(task.params || {})}))}</div>
-        <div class="agent-plan-task-meta">${escapeHtml(trf('smart.agentTaskPrompt', {p: task.prompt || ''}))}</div>
-    </article>`).join('');
-    const planPanel = plan ? `<section class="agent-node-plan" data-agent-plan-panel aria-label="${escapeHtml(tr('smart.agentPlanAria'))}">
-        <div class="agent-plan-task-title"><span>${escapeHtml(tr('smart.agentPlanTitle'))}</span><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan.status))}</span></div>
-        <div class="agent-plan-task-meta" data-agent-plan-id>${escapeHtml(trf('smart.agentPlanId', {id: plan.plan_id || ''}))}</div>
-        ${taskRows || '<div class="agent-node-warning">' + escapeHtml(tr('smart.agentPlanEmpty')) + '</div>'}
-    </section>` : '<section class="agent-node-plan" data-agent-plan-panel hidden></section>';
-    const canConfirm = Boolean(plan && plan.status === 'awaiting_confirmation');
-    return `<div class="agent-node-card">
-        <div class="agent-node-heading"><div class="agent-node-subtitle">${escapeHtml(tr('smart.agentSubtitle'))}</div><span class="agent-node-plan-status" data-agent-plan-status>${escapeHtml(agentPlanStatusLabel(plan?.status || ''))}</span></div>
-        <textarea class="agent-node-goal agent-node-control" data-agent-goal placeholder="${escapeHtml(tr('smart.agentGoalPlaceholder'))}">${escapeHtml(node.agentGoal || plan?.goal || '')}</textarea>
-        ${refHtml}
-        <div class="agent-node-drafts" data-agent-drafts>${(Array.isArray(node.agentTaskDrafts) && node.agentTaskDrafts.length ? node.agentTaskDrafts : [draft]).map((item, index) => `<div class="agent-node-draft agent-node-control" data-agent-draft-index="${index}">
-            <div class="agent-node-controls agent-node-control">
-                <select data-agent-kind aria-label="${escapeHtml(tr('smart.agentTaskType'))}"><option value="prompt" ${item.kind === 'prompt' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindPrompt'))}</option><option value="image" ${(item.kind || 'image') === 'image' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindImage'))}</option><option value="video" ${item.kind === 'video' ? 'selected' : ''}>${escapeHtml(tr('smart.agentKindVideo'))}</option></select>
-                <input data-agent-count aria-label="${escapeHtml(tr('smart.agentTaskCountLabel'))}" type="number" min="1" max="${item.kind === 'prompt' ? 1 : 8}" value="${Math.max(1, Math.min(item.kind === 'prompt' ? 1 : 8, Number(item.count) || 1))}">
-                <button type="button" class="agent-node-action agent-node-draft-remove" data-agent-draft-remove="${index}" title="${escapeHtml(tr('smart.removeTask'))}">${escapeHtml(tr('smart.remove'))}</button>
-            </div>
-            <input class="agent-node-control agent-node-draft-prompt" data-agent-draft-prompt="${index}" placeholder="${escapeHtml(tr('smart.agentTaskPromptPlaceholder'))}" value="${escapeAttr(item.prompt || '')}">
-            <div class="agent-node-draft-deps agent-node-control">
-                <label>${escapeHtml(tr('smart.dependentTask'))}</label>
-                <select data-agent-draft-deps="${index}" aria-label="${escapeHtml(tr('smart.agentTaskDeps'))}">
-                    <option value="" ${Array.isArray(item.dependencies) && item.dependencies.length ? '' : 'selected'}>${escapeHtml(tr('smart.noDependency'))}</option>
-                    ${Array.from({length: index}, (_, prev) => `<option value="${prev}" ${Array.isArray(item.dependencies) && item.dependencies.includes(prev) ? 'selected' : ''}>${escapeHtml(trf('smart.taskLabel', {n: prev}))}</option>`).join('')}
-                </select>
-            </div>
-        </div>`).join('')}
+// Agent TUI state management
+const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model }
+
+function getAgentTuiState(nodeId) {
+    if (!agentTuiState.has(nodeId)) {
+        agentTuiState.set(nodeId, {
+            socket: null,
+            messages: [],
+            status: 'idle',
+            model: '',
+            toolActivities: new Map(),
+            thinkingVisible: false,
+        });
+    }
+    return agentTuiState.get(nodeId);
+}
+
+function connectAgentWebSocket(nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+        return state.socket;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/stream`;
+
+    try {
+        state.socket = new WebSocket(wsUrl);
+    } catch (e) {
+        console.error('Failed to connect agent WebSocket:', e);
+        return null;
+    }
+
+    state.socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleAgentEvent(nodeId, data);
+        } catch (e) {
+            console.error('Failed to parse agent event:', e);
+        }
+    };
+
+    state.socket.onclose = () => {
+        state.status = 'disconnected';
+        state.socket = null;
+        // Re-render to show disconnected state
+        renderAgentNode(nodeId);
+    };
+
+    state.socket.onerror = () => {
+        state.status = 'error';
+    };
+
+    state.status = 'connecting';
+    return state.socket;
+}
+
+function handleAgentEvent(nodeId, event) {
+    const state = getAgentTuiState(nodeId);
+    const eventType = event.type;
+
+    switch (eventType) {
+        case 'session':
+            state.status = 'idle';
+            break;
+        case 'agent_start':
+            state.status = 'busy';
+            break;
+        case 'agent_end':
+            state.status = 'idle';
+            break;
+        case 'turn_start':
+            state.status = 'busy';
+            break;
+        case 'turn_end': {
+            state.status = 'idle';
+            const msg = event.message || {};
+            const content = msg.content || [];
+            const text = content
+                .filter(c => c && c.type === 'text')
+                .map(c => c.text || '')
+                .join('');
+            if (text) {
+                state.messages.push({ role: 'assistant', text });
+            }
+            break;
+        }
+        case 'message_update': {
+            const ame = event.assistantMessageEvent || {};
+            if (ame.type === 'text_delta') {
+                const delta = ame.delta || '';
+                // Append to last assistant message or create new
+                const last = state.messages[state.messages.length - 1];
+                if (last && last.role === 'assistant' && last.streaming) {
+                    last.text += delta;
+                } else {
+                    state.messages.push({ role: 'assistant', text: delta, streaming: true });
+                }
+            } else if (ame.type === 'thinking_delta') {
+                // Store thinking separately (hidden by default)
+                if (!state.thinking) state.thinking = [];
+                const delta = ame.delta || '';
+                const last = state.thinking[state.thinking.length - 1];
+                if (last && last.streaming) {
+                    last.text += delta;
+                } else {
+                    state.thinking.push({ text: delta, streaming: true });
+                }
+            }
+            break;
+        }
+        case 'tool_execution_start': {
+            const toolName = event.toolName || '';
+            const toolCallId = event.toolCallId || '';
+            state.toolActivities.set(toolCallId, {
+                name: toolName,
+                status: 'running',
+                args: event.args,
+                result: null,
+                isError: false,
+            });
+            state.status = 'busy';
+            break;
+        }
+        case 'tool_execution_update': {
+            const toolCallId = event.toolCallId || '';
+            const activity = state.toolActivities.get(toolCallId);
+            if (activity) {
+                activity.update = event.update;
+            }
+            break;
+        }
+        case 'tool_execution_end': {
+            const toolCallId = event.toolCallId || '';
+            const activity = state.toolActivities.get(toolCallId);
+            if (activity) {
+                activity.status = event.isError ? 'error' : 'done';
+                activity.result = event.result;
+                activity.isError = event.isError;
+            }
+            break;
+        }
+        case 'auto_retry_start':
+            state.status = 'retrying';
+            break;
+        case 'auto_retry_end':
+            if (event.success) {
+                state.status = 'busy';
+            } else {
+                state.status = 'error';
+                state.messages.push({ role: 'system', text: 'Agent 自动重试失败' });
+            }
+            break;
+        case 'process_exited':
+            state.status = 'crashed';
+            break;
+        case 'response':
+            // Command response, ignore for now
+            break;
+        default:
+            break;
+    }
+
+    // Re-render the agent node
+    renderAgentNode(nodeId);
+}
+
+function sendAgentPrompt(nodeId, projectId, message, images = []) {
+    const state = getAgentTuiState(nodeId);
+    
+    // Add user message to state
+    state.messages.push({ role: 'user', text: message });
+    state.status = 'busy';
+
+    // Send via WebSocket if connected
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+        state.socket.send(JSON.stringify({
+            type: 'prompt',
+            message: message,
+            images: images,
+        }));
+    } else {
+        // WebSocket not connected, use HTTP API
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, images }),
+        }).catch(e => console.error('Failed to send agent prompt:', e));
+    }
+
+    renderAgentNode(nodeId);
+}
+
+function agentNodeBodyHtml(node) {
+    const nodeId = node.id;
+    const state = getAgentTuiState(nodeId);
+    const projectId = canvasId || '';
+
+    // Determine status indicator
+    let statusClass = 'agent-tui-status-idle';
+    let statusText = '空闲';
+    switch (state.status) {
+        case 'busy':
+            statusClass = 'agent-tui-status-busy';
+            statusText = '运行中';
+            break;
+        case 'connecting':
+            statusClass = 'agent-tui-status-connecting';
+            statusText = '连接中';
+            break;
+        case 'retrying':
+            statusClass = 'agent-tui-status-busy';
+            statusText = '重试中';
+            break;
+        case 'error':
+            statusClass = 'agent-tui-status-error';
+            statusText = '错误';
+            break;
+        case 'crashed':
+            statusClass = 'agent-tui-status-error';
+            statusText = '已崩溃';
+            break;
+        case 'disconnected':
+            statusClass = 'agent-tui-status-disconnected';
+            statusText = '已断开';
+            break;
+    }
+
+    // Render messages
+    let messagesHtml = '';
+    for (const msg of state.messages) {
+        if (msg.role === 'user') {
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+        } else if (msg.role === 'assistant') {
+            const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+        } else if (msg.role === 'system') {
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+        }
+    }
+
+    // Render tool activities
+    let toolsHtml = '';
+    for (const [toolCallId, activity] of state.toolActivities) {
+        let icon = '⚙';
+        if (activity.status === 'done') icon = '✅';
+        else if (activity.status === 'error') icon = '❌';
+        else if (activity.status === 'running') icon = '⏳';
+
+        const argsPreview = activity.args ? JSON.stringify(activity.args).slice(0, 80) : '';
+        toolsHtml += `<div class="agent-tui-tool" data-tool-call-id="${escapeAttr(toolCallId)}">
+            <span class="agent-tui-tool-icon">${icon}</span>
+            <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
+            <span class="agent-tui-tool-args">${escapeHtml(argsPreview)}</span>
+        </div>`;
+    }
+
+    return `<div class="agent-tui-card">
+        <div class="agent-tui-header">
+            <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
+            <span class="agent-tui-status ${statusClass}">${statusText}</span>
         </div>
-        <div class="agent-node-controls agent-node-control">
-            <button type="button" class="agent-node-action" data-agent-draft-add>${escapeHtml(tr('smart.addTask'))}</button>
-            <button type="button" class="agent-node-action primary" data-agent-plan>${escapeHtml(tr('smart.generatePlan'))}</button>
-            <button type="button" class="agent-node-action" data-agent-confirm ${canConfirm ? '' : 'disabled'}>${escapeHtml(tr('smart.confirmAndRun'))}</button>
+        <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
+            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
+                ${messagesHtml || '<div class="agent-tui-empty">输入自然语言描述你的创作目标...</div>'}
+                ${toolsHtml}
+            </div>
         </div>
-        ${planPanel}
+        <div class="agent-tui-input-row">
+            <span class="agent-tui-prompt">&gt;</span>
+            <input type="text" class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" ${state.status === 'busy' ? '' : ''}>
+        </div>
     </div>`;
 }
 function agentTaskNodeBodyHtml(node){
@@ -13504,6 +13733,67 @@ async function executeAgentNode(node, button){
     finally { node.agentExecuting = false; if(button) button.disabled = false; render(); }
 }
 function bindAgentNodeControls(el, node){
+    // TUI-style agent node: bind terminal input
+    const nodeId = node.id;
+    const projectId = canvasId || '';
+
+    // Connect WebSocket when node is rendered
+    connectAgentWebSocket(nodeId, projectId);
+
+    // Bind input
+    const inputEl = el.querySelector('[data-agent-tui-input]');
+    if (inputEl) {
+        inputEl.addEventListener('mousedown', event => event.stopPropagation());
+        inputEl.addEventListener('keydown', event => {
+            event.stopPropagation();
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                const message = inputEl.value.trim();
+                if (message) {
+                    sendAgentPrompt(nodeId, projectId, message);
+                    inputEl.value = '';
+                }
+            }
+        });
+    }
+
+    // Bind body scroll to bottom on new messages
+    const bodyEl = el.querySelector('[data-agent-tui-body]');
+    if (bodyEl) {
+        bodyEl.addEventListener('mousedown', event => event.stopPropagation());
+    }
+}
+
+function renderAgentNode(nodeId) {
+    // Find the rendered element for this node and re-render its body
+    const el = document.querySelector(`[data-node-id="${nodeId}"]`);
+    if (!el) return;
+
+    // Find the node data
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    // Get the layout
+    const layout = nodeLayout(node);
+    if (!layout) return;
+
+    // Re-render just the body
+    const body = nodeBodyHtml(node, layout);
+    const bodyContainer = el.querySelector('.node-body');
+    if (bodyContainer) {
+        bodyContainer.innerHTML = body;
+        // Re-bind controls
+        bindAgentNodeControls(bodyContainer, node);
+        // Scroll to bottom
+        const messagesEl = bodyContainer.querySelector('[data-agent-tui-messages]');
+        if (messagesEl) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+    }
+}
+
+// Legacy plan-based agent functions (kept for backward compatibility during migration)
+function bindAgentNodeControlsLegacy(el, node){
     el.querySelectorAll('.agent-node-control,.agent-node-action').forEach(control => {
         control.addEventListener('mousedown', event => event.stopPropagation());
         control.addEventListener('click', event => event.stopPropagation());
@@ -14503,6 +14793,16 @@ function setDropHighlight(targetId){
     const el = world.querySelector(`.image-node[data-id="${targetId}"]`);
     if(el) el.classList.add('drop-target');
 }
+function cleanupAgentTuiState(nodeId) {
+    const state = agentTuiState.get(nodeId);
+    if (state) {
+        if (state.socket) {
+            try { state.socket.close(); } catch (e) {}
+        }
+        agentTuiState.delete(nodeId);
+    }
+}
+
 function deleteNode(id){
     pushUndo();
     const deleteIds = new Set([id]);
@@ -14510,6 +14810,12 @@ function deleteNode(id){
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
     const removedNodes = nodes.filter(node => deleteIds.has(node.id));
+    // Clean up agent TUI state for deleted agent nodes
+    removedNodes.forEach(node => {
+        if (isSmartAgentNode(node)) {
+            cleanupAgentTuiState(node.id);
+        }
+    });
     nodes = nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = nodes;
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
     nodes.forEach(node => {
