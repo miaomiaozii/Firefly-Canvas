@@ -207,6 +207,42 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(history["createdAt"], history["created_at"])
         self.assertGreater(history["createdAt"], 0)
 
+    def test_image_generation_rejects_unsupported_aspect_ratio_with_400(self):
+        """#112 / ADR 0006: 不支持的宽高比 → 400 + 指出不兼容参数，不静默吸附、不建任务。"""
+        project = self.store.create_project("宽高比拒绝")
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result-node", "type": "smart-image", "images": []}}],
+            base_revision=0,
+        )
+        task_ids_before = set(main.CANVAS_TASKS.keys())
+        with patch.object(main, "load_api_providers", return_value=self.providers):
+            response = self.client.post(
+                f"/api/project-library/{project['id']}/image-generation-tasks",
+                json={
+                    "prompt": "宽高比拒绝",
+                    "routing_mode": "auto",
+                    "size": "1024x1024",
+                    "width": None,
+                    "height": None,
+                    "aspect_ratio": "5:3",
+                    "resolution": "1k",
+                    "quality": "auto",
+                    "n": 1,
+                    "reference_asset_ids": [],
+                    "media_type": "image",
+                    "result_node_id": "result-node",
+                    "angle_preset": "none",
+                    "base_revision": 1,
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        detail = response.json().get("detail") or {}
+        self.assertEqual(detail.get("code"), "no_compatible_image_model")
+        self.assertIn("aspect_ratio", detail.get("incompatible_parameters", []))
+        # 路由失败在任务创建之前：没有新任务、结果节点未被注册为生成中
+        self.assertEqual(set(main.CANVAS_TASKS.keys()), task_ids_before)
+
     def test_generated_original_download_preserves_exact_provider_bytes_and_asset_identity(self):
         project = self.store.create_project("原件字节下载")
         self.store.apply_mutations(
