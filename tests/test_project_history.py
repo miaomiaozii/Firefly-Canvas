@@ -410,6 +410,29 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertFalse((Path(self.temp_dir.name) / "projects" / project["id"] / "trash" / "media" / original["filename"]).exists())
         self.assertFalse((Path(self.temp_dir.name) / "projects" / project["id"] / "trash" / "previews" / preview.name).exists())
 
+    def test_history_delete_preserves_media_files_on_disk(self):
+        """#113: 删除生成记录只移除记录条目，磁盘上的图片文件保留（显式 delete-with-media 才是删文件入口）。"""
+        project, _other_project, original, _reference, _downstream_media, _other_media = self._seed_projects()
+        media_path = Path(self.temp_dir.name) / "projects" / project["id"] / "media" / original["filename"]
+        self.assertTrue(media_path.is_file())
+
+        response = self.client.post(
+            f"/api/project-library/{project['id']}/history/delete",
+            json={"log_id": "history-original", "base_revision": 1},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["canvas"]["logs"], [])
+        # 记录已移除，但磁盘图片文件原样保留
+        self.assertTrue(media_path.is_file())
+        self.assertEqual(media_path.read_bytes(), b"generated-original")
+        self.assertEqual(
+            self.client.get(f"/api/project-library/{project['id']}/media/{original['asset_id']}").status_code,
+            200,
+        )
+        # 普通删除不产生回收站条目
+        self.assertEqual(self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"], [])
+
     def test_history_delete_with_media_removes_all_outputs_in_one_revision(self):
         project, _other_project, original, _reference, _downstream_media, _other_media = self._seed_projects()
         second = self.store.import_media(
