@@ -232,6 +232,12 @@ def normalize_image_model_capabilities(value: Any, models: Sequence[str]) -> dic
     for model in models:
         raw = source.get(model) if isinstance(source.get(model), Mapping) else {}
         normalized = _inferred_image_model_capabilities(model)
+        if raw:
+            # Explicit declarations are authoritative: the permissive defaults
+            # inferred for unknown models (#135) must not leak into models that
+            # declare their own capabilities.
+            for key in ("arbitrary_size", "arbitrary_aspect_ratio", "arbitrary_resolution"):
+                normalized.pop(key, None)
         for key in ("media_types", "sizes", "aspect_ratios", "resolutions"):
             if key in raw:
                 normalized[key] = _string_list(raw.get(key))
@@ -372,6 +378,17 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
         })
     elif any(token in identifier for token in ("text-to-image", "text2image", "txt2img")):
         capability["max_reference_images"] = 0
+    else:
+        # Unknown model with no reliable capability data: be permissive rather than
+        # over-restricting. ADR 0006 fail-fast applies to known families (gemini/banana/
+        # gpt-image) with declared limits; unknown models defer to the provider, which
+        # rejects truly unsupported parameters itself.
+        capability.update({
+            "arbitrary_size": True,
+            "arbitrary_aspect_ratio": True,
+            "arbitrary_resolution": True,
+            "max_reference_images": 20,
+        })
     return capability
 
 

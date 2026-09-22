@@ -288,17 +288,41 @@ class ImageGenerationRoutingTests(unittest.TestCase):
         self.assertEqual(route.request["aspect_ratio"], "21:9")
         self.assertEqual(route.request["resolution"], "4k")
 
-    def test_unknown_model_capabilities_are_not_treated_as_unlimited(self):
+    def test_unknown_model_without_explicit_capabilities_is_permissive(self):
+        """#135: 无显式能力的未知模型不再被误拒，size/宽高比/分辨率/参考图均可通过路由。"""
         providers = [{
             "id": "unknown", "enabled": True, "protocol": "openai",
             "image_models": ["mystery-image-model"],
         }]
-        with self.assertRaises(ModelRoutingError) as raised:
-            route_image_generation(self.request(), providers)
-        self.assertEqual(
-            raised.exception.incompatible_parameters,
-            ["size", "width", "height", "aspect_ratio", "resolution", "reference_count"],
+        route = route_image_generation(self.request(), providers)
+        self.assertEqual((route.provider_id, route.model), ("unknown", "mystery-image-model"))
+        self.assertEqual(route.request["size"], "3840x1648")
+        self.assertEqual(route.request["aspect_ratio"], "21:9")
+        self.assertEqual(route.request["resolution"], "4k")
+        self.assertEqual(route.request["reference_count"], 2)
+
+    def test_issue_135_unknown_model_routes_size_aspect_ratio_resolution_and_references(self):
+        """#135: 回归测试——provider 不声明 image_model_capabilities 的未知模型（如 z-image-turbo）
+        带 size/aspect_ratio/resolution/参考图的合法请求必须能通过路由，不抛 no_compatible_image_model。"""
+        providers = [{
+            "id": "zimage", "enabled": True, "protocol": "openai",
+            "image_models": ["z-image-turbo"],
+        }]
+        route = route_image_generation(
+            self.request(
+                size="1536x1024", width=1536, height=1024,
+                aspect_ratio="3:2", resolution="2k",
+                reference_asset_ids=("asset-a", "asset-b"),
+            ),
+            providers,
         )
+        self.assertEqual((route.provider_id, route.model), ("zimage", "z-image-turbo"))
+        self.assertEqual(route.request["size"], "1536x1024")
+        self.assertEqual(route.request["width"], 1536)
+        self.assertEqual(route.request["height"], 1024)
+        self.assertEqual(route.request["aspect_ratio"], "3:2")
+        self.assertEqual(route.request["resolution"], "2k")
+        self.assertEqual(route.request["reference_count"], 2)
 
 
 class VideoGenerationRoutingTests(unittest.TestCase):
