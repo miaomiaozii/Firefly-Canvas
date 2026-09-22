@@ -12,7 +12,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
-_from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'prune_generation_history_for_media', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
+_from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -161,12 +161,11 @@ def json_references_media_path(value: Any, target_path: str) -> bool:
 def persisted_json_references_media_path(target_path: str) -> bool:
     """Scan persisted user documents before deleting generated media.
 
-    Canvas logs are only one possible owner. Nodes, other canvases, ordinary
-    generation history, conversations, and asset metadata all count as live
-    references and keep the file on disk.
+    Canvas logs are only one possible owner. Nodes, other canvases, and asset
+    metadata all count as live references and keep the file on disk.
     """
     candidates = [_app_main.ASSET_LIBRARY_PATH]
-    for root in (_app_main.CANVAS_DIR, _app_main.CONVERSATION_DIR):
+    for root in (_app_main.CANVAS_DIR,):
         if os.path.isdir(root):
             for current, _, files in os.walk(root):
                 candidates.extend((os.path.join(current, name) for name in files if name.lower().endswith('.json')))
@@ -184,25 +183,6 @@ def persisted_json_references_media_path(target_path: str) -> bool:
         if json_references_media_path(value, target_path):
             return True
     return False
-
-def prune_generation_history_for_media(paths: List[str]) -> int:
-    """Remove history cards that would otherwise point at deleted media."""
-    if not paths or not os.path.isfile(_app_main.HISTORY_FILE):
-        return 0
-    try:
-        with HISTORY_LOCK:
-            with open(_app_main.HISTORY_FILE, 'r', encoding='utf-8-sig') as handle:
-                history = json.load(handle)
-            if not isinstance(history, list):
-                return 0
-            kept = [record for record in history if not any((json_references_media_path(record, path) for path in paths))]
-            removed = len(history) - len(kept)
-            if removed:
-                with open(_app_main.HISTORY_FILE, 'w', encoding='utf-8') as handle:
-                    json.dump(kept, handle, ensure_ascii=False, indent=4)
-            return removed
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return 0
 
 def smart_owned_result_items(images: List[Any], paths: List[str]) -> List[Any]:
     """Return generated results, including legacy results without the marker."""
@@ -463,7 +443,6 @@ async def delete_canvas_log(canvas_id: str, payload: DeleteCanvasLogRequest):
                 skipped_referenced.append(os.path.basename(path))
                 continue
             deletable_paths.append(path)
-        prune_generation_history_for_media(deletable_paths)
         for path in deletable_paths:
             try:
                 removed_previews += delete_media_preview_cache(path)

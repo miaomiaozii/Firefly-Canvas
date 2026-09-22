@@ -923,9 +923,6 @@ def parse_prompt_template_markdown(text: str):
         templates.append({'id': f'builtin_md_{number}', 'number': number, 'name': name, 'name_en': PROMPT_TEMPLATE_EN.get(name, {}).get('name', name), 'category': prompt_template_category(name, scene), 'scene': scene, 'scene_en': PROMPT_TEMPLATE_EN.get(name, {}).get('scene', scene), 'positive': positive, 'negative': negative, 'params': params, 'builtin': True})
     return templates
 
-class DeleteHistoryRequest(BaseModel):
-    timestamp: float
-
 class DeleteCanvasLogRequest(BaseModel):
     log_id: str
     delete_unreferenced_media: bool = False
@@ -1118,20 +1115,6 @@ class ApiProviderPayload(BaseModel):
     clear_volcengine_access_key_id: bool = False
     clear_volcengine_secret_access_key: bool = False
 
-class ChatRequest(BaseModel):
-    conversation_id: str = ''
-    message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
-    system_prompt: str = ''
-    model: str = ''
-    image_model: str = ''
-    image_provider: str = ''
-    mode: str = 'chat'
-    size: str = '1024x1024'
-    quality: str = 'auto'
-    reference_images: List[AIReference] = []
-    provider: str = 'comfly'
-    ms_model: str = ''
-
 def chat_system_prompt(payload):
     prompt = str(getattr(payload, 'system_prompt', '') or '').strip()
     return prompt or SYSTEM_PROMPT
@@ -1148,9 +1131,6 @@ class CanvasLLMRequest(BaseModel):
     videos: List[str] = []
     audios: List[str] = []
     audio_references: List[Dict[str, Any]] = Field(default_factory=list)
-
-class ConversationCreateRequest(BaseModel):
-    title: str = '新对话'
 
 class CanvasCreateRequest(BaseModel):
     title: str = '未命名画布'

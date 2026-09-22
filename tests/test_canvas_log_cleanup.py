@@ -312,7 +312,12 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(path.exists())
         self.assertEqual(result["removed_files"], [path.name])
-        self.assertEqual(json.loads(self.history.read_text(encoding="utf-8")), [])
+        # Legacy generation history is no longer pruned: orphan cards stay on
+        # disk (recoverable) and must not block media deletion.
+        self.assertEqual(
+            json.loads(self.history.read_text(encoding="utf-8")),
+            [{"timestamp": 123, "url": url, "images": [url]}],
+        )
 
     async def test_cleanup_preserves_media_when_json_is_unreadable(self):
         path, url = self.generated_file()

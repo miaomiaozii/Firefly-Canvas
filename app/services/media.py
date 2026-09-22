@@ -282,12 +282,11 @@ def json_references_media_path(value: Any, target_path: str) -> bool:
 def persisted_json_references_media_path(target_path: str) -> bool:
     """Scan persisted user documents before deleting generated media.
 
-    Canvas logs are only one possible owner. Nodes, other canvases, ordinary
-    generation history, conversations, and asset metadata all count as live
-    references and keep the file on disk.
+    Canvas logs are only one possible owner. Nodes, other canvases, and asset
+    metadata all count as live references and keep the file on disk.
     """
     candidates = [_svc._main('ASSET_LIBRARY_PATH')]
-    for root in (_svc._main('CANVAS_DIR'), _svc._main('CONVERSATION_DIR')):
+    for root in (_svc._main('CANVAS_DIR'),):
         if os.path.isdir(root):
             for current, files in os.walk(root):
                 candidates.extend((os.path.join(current, name) for name in files if name.lower().endswith('.json')))
@@ -305,25 +304,6 @@ def persisted_json_references_media_path(target_path: str) -> bool:
         if json_references_media_path(value, target_path):
             return True
     return False
-
-def prune_generation_history_for_media(paths: List[str]) -> int:
-    """Remove history cards that would otherwise point at deleted media."""
-    if not paths or not os.path.isfile(_svc._main('HISTORY_FILE')):
-        return 0
-    try:
-        with HISTORY_LOCK:
-            with open(_svc._main('HISTORY_FILE'), 'r', encoding='utf-8-sig') as handle:
-                history = json.load(handle)
-            if not isinstance(history, list):
-                return 0
-            kept = [record for record in history if not any((json_references_media_path(record, path) for path in paths))]
-            removed = len(history) - len(kept)
-            if removed:
-                with open(_svc._main('HISTORY_FILE'), 'w', encoding='utf-8') as handle:
-                    json.dump(kept, handle, ensure_ascii=False, indent=4)
-            return removed
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return 0
 
 def expand_canvas_generated_media_paths(canvas: Dict[str, Any], paths: List[str]) -> List[str]:
     """Include every generated result owned by a result node touched by the log."""
