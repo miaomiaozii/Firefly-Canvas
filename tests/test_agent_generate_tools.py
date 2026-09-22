@@ -63,6 +63,53 @@ class AgentGenerateToolsTests(unittest.TestCase):
         self.assertEqual(data["type"], "image")
         self.assertEqual(data["node_id"], "image-1")
 
+    def test_trigger_generation_uses_model_routing(self):
+        """#134: generate.trigger routes through model routing (ADR 0006), not a hardcoded provider/size."""
+        from unittest import mock
+        import main as main_mod
+        from firefly_generation import GenerationRoute
+
+        captured = {}
+
+        def fake_route(request, providers, *, provider_id="", model=""):
+            captured['request'] = request
+            captured['provider_id'] = provider_id
+            captured['model'] = model
+            return GenerationRoute(
+                provider_id='routed-provider',
+                provider_name='Routed',
+                model='routed-model',
+                protocol='openai',
+                adapter='http',
+                reason='test',
+                request=request.to_dict(),
+            )
+
+        # Node with non-default generation params to prove they are not hardcoded.
+        revision = int(self.store.open_project(self.project_id)["canvas"].get("revision") or 0)
+        self.store.apply_mutations(
+            self.project_id,
+            [{"op": "upsert_node", "node": {"id": "img-routed", "type": "smart-image", "prompt": "a test subject", "x": 0, "y": 0, "generation_size": "2048x2048", "aspect_ratio": "16:9", "generation_resolution": "2k"}}],
+            base_revision=revision,
+        )
+
+        with mock.patch.object(main_mod, 'route_image_generation', side_effect=fake_route):
+            response = self.client.post(
+                f"/api/projects/{self.project_id}/generate/trigger",
+                json={"node_id": "img-routed"},
+            )
+        self.assertEqual(response.status_code, 200)
+
+        # Auto routing: no pinned provider/model.
+        self.assertEqual(captured['provider_id'], "")
+        self.assertEqual(captured['model'], "")
+        # The node's generation parameters were passed to the router (not hardcoded).
+        req = captured['request']
+        self.assertEqual(req.size, "2048x2048")
+        self.assertEqual(req.aspect_ratio, "16:9")
+        self.assertEqual(req.resolution, "2k")
+        self.assertEqual(req.prompt, "a test subject")
+
     def test_trigger_generation_no_prompt(self):
         """generate.trigger returns 400 if node has no prompt."""
         # Create a node with no prompt or text

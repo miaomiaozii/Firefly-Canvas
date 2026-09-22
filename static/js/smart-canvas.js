@@ -11527,49 +11527,46 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
     renderAgentNode(nodeId);
 }
 
-function sendAgentSteer(nodeId, projectId, message) {
+function sendAgentCommand(nodeId, projectId, command, options = {}) {
     const state = getAgentTuiState(nodeId);
+    const { body, wsPayload, onSuccess } = options;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${command}`;
+    // WebSocket not connected, use HTTP API
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/steer`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message }),
-        }).catch(e => console.error('Failed to send agent steer:', e));
+        const fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+        if (body !== undefined) fetchOpts.body = JSON.stringify(body);
+        fetch(url, fetchOpts).catch(e => console.error(`Failed to send agent ${command}:`, e));
         return;
     }
-    state.socket.send(JSON.stringify({ type: 'steer', message: message }));
-    state.messages.push({ role: 'system', text: `↪ steer: ${message}` });
+    state.socket.send(JSON.stringify(wsPayload));
+    if (onSuccess) onSuccess(state);
     renderAgentNode(nodeId);
+}
+
+function sendAgentSteer(nodeId, projectId, message) {
+    sendAgentCommand(nodeId, projectId, 'steer', {
+        body: { message },
+        wsPayload: { type: 'steer', message },
+        onSuccess: (state) => state.messages.push({ role: 'system', text: `↪ steer: ${message}` }),
+    });
 }
 
 function sendAgentFollowUp(nodeId, projectId, message) {
-    const state = getAgentTuiState(nodeId);
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/follow_up`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message }),
-        }).catch(e => console.error('Failed to send agent follow_up:', e));
-        return;
-    }
-    state.socket.send(JSON.stringify({ type: 'follow_up', message: message }));
-    state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` });
-    renderAgentNode(nodeId);
+    sendAgentCommand(nodeId, projectId, 'follow_up', {
+        body: { message },
+        wsPayload: { type: 'follow_up', message },
+        onSuccess: (state) => state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` }),
+    });
 }
 
 function sendAgentAbort(nodeId, projectId) {
-    const state = getAgentTuiState(nodeId);
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/abort`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        }).catch(e => console.error('Failed to send agent abort:', e));
-        return;
-    }
-    state.socket.send(JSON.stringify({ type: 'abort' }));
-    state.status = 'idle';
-    state.messages.push({ role: 'system', text: '⏹ aborted' });
-    renderAgentNode(nodeId);
+    sendAgentCommand(nodeId, projectId, 'abort', {
+        wsPayload: { type: 'abort' },
+        onSuccess: (state) => {
+            state.status = 'idle';
+            state.messages.push({ role: 'system', text: '⏹ aborted' });
+        },
+    });
 }
 
 function sendAgentConfirm(nodeId, projectId, approved) {

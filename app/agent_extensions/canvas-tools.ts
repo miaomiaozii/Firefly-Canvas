@@ -376,4 +376,20 @@ export default function (pi: ExtensionAPI) {
             };
         },
     });
+
+    pi.registerTool({
+        name: "viewport.state",
+        description: "Read the current canvas viewport state (focused node, position, zoom scale)",
+        parameters: Type.Object({}),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/projects/${PROJECT_ID}/viewport/state`,
+                "GET"
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
 }

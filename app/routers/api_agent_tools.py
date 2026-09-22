@@ -13,8 +13,9 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
-from app.core import OnlineImageRequest
+from app.core import OnlineImageRequest, AIReference
 from app.services.misc import build_online_image_result
+from firefly_generation import ImageGenerationRequest, ModelRoutingError
 
 router = APIRouter(prefix="/api/projects/{project_id}/canvas", tags=["agent-tools"])
 
@@ -58,13 +59,27 @@ def _apply_mutations(project_id: str, mutations: list):
     raise HTTPException(status_code=409, detail="Canvas mutation failed after retries")
 
 
-@router.get("/nodes")
-async def list_nodes(project_id: str, x_agent_project: str = Header(default="")):
-    """List all nodes on the canvas with summary info."""
+def _open_canvas(project_id: str) -> dict:
+    """Validate the project and return its canvas dict."""
     _validate_project(project_id)
     store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
-    canvas = opened.get("canvas", {})
+    return opened.get("canvas", {})
+
+
+def _find_node(project_id: str, node_id: str) -> dict:
+    """Find a node by ID on the canvas, or raise 404."""
+    canvas = _open_canvas(project_id)
+    for node in canvas.get("nodes", []):
+        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
+            return node
+    raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+
+@router.get("/nodes")
+async def list_nodes(project_id: str, x_agent_project: str = Header(default="")):
+    """List all nodes on the canvas with summary info."""
+    canvas = _open_canvas(project_id)
     nodes = canvas.get("nodes", [])
     connections = canvas.get("connections", [])
 
@@ -93,15 +108,7 @@ async def list_nodes(project_id: str, x_agent_project: str = Header(default=""))
 @router.get("/nodes/{node_id}")
 async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
     """Get detailed information about a specific node."""
-    _validate_project(project_id)
-    store = _app_main.FIREFLY_PROJECT_STORE
-    opened = store.open_project(project_id)
-    canvas = opened.get("canvas", {})
-    nodes = canvas.get("nodes", [])
-    for node in nodes:
-        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
-            return node
-    raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+    return _find_node(project_id, node_id)
 
 
 @router.get("/selection")
@@ -139,21 +146,10 @@ async def create_node(project_id: str, request: Request, x_agent_project: str = 
 @router.patch("/nodes/{node_id}")
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
-    _validate_project(project_id)
     body = await request.json()
 
     # Get current node
-    store = _app_main.FIREFLY_PROJECT_STORE
-    opened = store.open_project(project_id)
-    canvas = opened.get("canvas", {})
-    nodes = canvas.get("nodes", [])
-    target_node = None
-    for node in nodes:
-        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
-            target_node = node
-            break
-    if target_node is None:
-        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+    target_node = _find_node(project_id, node_id)
 
     # Apply updates
     for key, value in body.items():
@@ -220,39 +216,67 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
 @generate_router.post("/trigger")
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Trigger generation on a node, returns task ID."""
-    _validate_project(project_id)
     body = await request.json()
     node_id = body.get("node_id")
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
-    # Get the node
-    store = _app_main.FIREFLY_PROJECT_STORE
-    opened = store.open_project(project_id)
-    canvas = opened.get("canvas", {})
-    nodes = canvas.get("nodes", [])
-    target_node = None
-    for node in nodes:
-        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
-            target_node = node
-            break
-    if target_node is None:
-        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+    target_node = _find_node(project_id, node_id)
 
     node_type = str(target_node.get("type", ""))
     prompt = str(target_node.get("prompt", "") or target_node.get("text", ""))
     if not prompt:
         raise HTTPException(status_code=400, detail=f"Node {node_id} has no prompt")
 
-    # Use the canvas image task API (simpler, no project-specific routing)
+    # Route through model routing (ADR 0006): the router picks provider + model
+    # from the node's generation parameters; no hardcoded provider/size.
+    reference_asset_ids = [str(a) for a in (target_node.get("reference_asset_ids") or [])]
+    gen_request = ImageGenerationRequest(
+        prompt=prompt,
+        size=str(target_node.get("generation_size") or "1024x1024"),
+        width=target_node.get("width"),
+        height=target_node.get("height"),
+        aspect_ratio=str(target_node.get("aspect_ratio") or "1:1"),
+        resolution=str(target_node.get("generation_resolution") or "1k"),
+        reference_asset_ids=tuple(reference_asset_ids),
+        media_type="image",
+        quality="auto",
+        count=1,
+    )
+    try:
+        route = _app_main.route_image_generation(
+            gen_request, _app_main.load_api_providers(), provider_id="", model=""
+        )
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+
+    # Convert reference asset IDs to image references for the provider call.
+    reference_images = []
+    if reference_asset_ids:
+        try:
+            ref_records = await asyncio.to_thread(
+                _app_main.project_image_references, project_id, reference_asset_ids
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        reference_images = [
+            AIReference(
+                url=str(r.get("url") or ""),
+                name=str(r.get("name") or ""),
+                kind=str(r.get("kind") or "image"),
+                mime=str(r.get("mime") or "image/png"),
+            )
+            for r in ref_records
+        ]
+
     payload = {
         "prompt": prompt,
-        "provider_id": "comfly",
-        "model": "",
-        "size": "1024x1024",
+        "provider_id": route.provider_id,
+        "model": route.model,
+        "size": gen_request.size,
         "quality": "auto",
         "n": 1,
-        "reference_images": [],
+        "reference_images": reference_images,
     }
 
     # Create the task using the existing API
@@ -426,24 +450,13 @@ async def delete_media(project_id: str, asset_id: str, x_agent_project: str = He
 @viewport_router.post("/focus")
 async def focus_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Scroll canvas to focus on a node."""
-    _validate_project(project_id)
     body = await request.json()
     node_id = body.get("node_id")
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
     # Get the node's position
-    store = _app_main.FIREFLY_PROJECT_STORE
-    opened = store.open_project(project_id)
-    canvas = opened.get("canvas", {})
-    nodes = canvas.get("nodes", [])
-    target_node = None
-    for node in nodes:
-        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
-            target_node = node
-            break
-    if target_node is None:
-        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+    target_node = _find_node(project_id, node_id)
 
     # Store the viewport state
     VIEWPORT_STATE[project_id] = {

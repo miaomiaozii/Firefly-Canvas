@@ -109,10 +109,12 @@
 | 生成 | `generate.status` / `generate.wait` | 查询 / 阻塞等待（带超时，超时返回进行中状态而非失败） |
 | 媒体 | `media.upload` / `media.list` | 上传资产（如用户给的参考图）/ 列项目媒体 |
 | 视口 | `viewport.focus` | 聚焦到指定节点（让结果"指给用户看"） |
+| 视口 | `viewport.zoom` | 设置缩放级别（0.1–8.0） |
+| 视口 | `viewport.state` | 读取当前视口状态（聚焦节点 / 位置 / 缩放） |
 
 工具设计原则：
 
-- **走既有管线**：`generate.trigger` 复用现有生成管线（任务状态卡照常出现），Agent 不另起炉灶。
+- **走既有管线**：`generate.trigger` 复用现有生成管线（任务状态卡照常出现），并经模型路由（ADR 0006）由路由器决定服务商与模型，Agent 不另起炉灶、不硬编码供应商/尺寸。
 - **异步生成 = trigger + wait**：wait 超时不视为失败，Agent 可稍后再查（避免长阻塞）。
 - **确认门在工具层（硬门，实现细节）**：破坏性工具的 handler（canvas-tools.ts 内）先调 FastAPI 确认端点 → 端点经 WebSocket 向前端发 confirm 事件 → handler 阻塞等待用户批准（带超时）→ 批准才执行。提示词只能"建议"，门是硬的。
 - **上下文注入**：会话开始 + Agent 主动调用 `canvas.list_nodes` 获取画布快照；不每轮全量注入（省 token）。
