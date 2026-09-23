@@ -135,7 +135,7 @@ def canvas_assets_index():
         item_counts[kind] = item_counts.get(kind, 0) + len(canvas_items)
     canvases.sort(key=lambda item: (0 if item.get('pinned') else 1, -int(item.get('updated_at') or item.get('created_at') or 0)))
     items.sort(key=lambda item: int(item.get('canvas_updated_at') or item.get('created_at') or 0), reverse=True)
-    categories = [{'id': 'all', 'name': '全部画布', 'count': item_counts.get('all', 0), 'canvas_count': canvas_counts.get('all', 0)}, {'id': 'smart', 'name': '智能画布', 'count': item_counts.get('smart', 0), 'canvas_count': canvas_counts.get('smart', 0)}, {'id': 'classic', 'name': '普通画布', 'count': item_counts.get('classic', 0), 'canvas_count': canvas_counts.get('classic', 0)}]
+    categories = [{'id': 'all', 'name': '全部画布', 'count': item_counts.get('all', 0), 'canvas_count': canvas_counts.get('all', 0)}, {'id': 'smart', 'name': '核心画布', 'count': item_counts.get('smart', 0), 'canvas_count': canvas_counts.get('smart', 0)}, {'id': 'classic', 'name': '经典画布', 'count': item_counts.get('classic', 0), 'canvas_count': canvas_counts.get('classic', 0)}]
     return {'categories': categories, 'canvases': canvases, 'items': items}
 
 def fetch_remote_media_bytes(url: str, timeout: float=30.0, max_bytes: int=200 * 1024 * 1024):

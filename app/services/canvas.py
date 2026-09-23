@@ -34,10 +34,10 @@ def save_canvas(canvas):
 def new_canvas(title='未命名画布', icon='layers', kind='classic', project=None, board_x=None, board_y=None):
     project_id = str(project or '').strip()
     if not project_id:
-        raise HTTPException(status_code=410, detail='旧画布创建入口已停用，请从项目列表新建项目')
+        raise HTTPException(status_code=410, detail='经典画布创建入口已停用，请从项目列表新建项目')
     timestamp = _svc._main('now_ms')()
     canvas_kind = normalize_canvas_kind(kind)
-    canvas = {'id': uuid.uuid4().hex, 'title': (title or ('智能画布' if canvas_kind == 'smart' else '未命名画布'))[:80], 'icon': (icon or ('sparkles' if canvas_kind == 'smart' else '🧩'))[:32], 'kind': canvas_kind, 'owner': '', 'color': '', 'pinned': False, 'project': project_id, 'created_at': timestamp, 'updated_at': timestamp, 'nodes': [], 'connections': [], 'viewport': {'x': 0, 'y': 0, 'scale': 1}}
+    canvas = {'id': uuid.uuid4().hex, 'title': (title or ('核心画布' if canvas_kind == 'smart' else '未命名画布'))[:80], 'icon': (icon or ('sparkles' if canvas_kind == 'smart' else '🧩'))[:32], 'kind': canvas_kind, 'owner': '', 'color': '', 'pinned': False, 'project': project_id, 'created_at': timestamp, 'updated_at': timestamp, 'nodes': [], 'connections': [], 'viewport': {'x': 0, 'y': 0, 'scale': 1}}
     if board_x is not None:
         canvas['board_x'] = float(board_x)
     if board_y is not None:
@@ -119,5 +119,5 @@ def canvas_assets_index():
         item_counts[kind] = item_counts.get(kind, 0) + len(canvas_items)
     canvases.sort(key=lambda item: (0 if item.get('pinned') else 1, -int(item.get('updated_at') or item.get('created_at') or 0)))
     items.sort(key=lambda item: int(item.get('canvas_updated_at') or item.get('created_at') or 0), reverse=True)
-    categories = [{'id': 'all', 'name': '全部画布', 'count': item_counts.get('all', 0), 'canvas_count': canvas_counts.get('all', 0)}, {'id': 'smart', 'name': '智能画布', 'count': item_counts.get('smart', 0), 'canvas_count': canvas_counts.get('smart', 0)}, {'id': 'classic', 'name': '普通画布', 'count': item_counts.get('classic', 0), 'canvas_count': canvas_counts.get('classic', 0)}]
+    categories = [{'id': 'all', 'name': '全部画布', 'count': item_counts.get('all', 0), 'canvas_count': canvas_counts.get('all', 0)}, {'id': 'smart', 'name': '核心画布', 'count': item_counts.get('smart', 0), 'canvas_count': canvas_counts.get('smart', 0)}, {'id': 'classic', 'name': '经典画布', 'count': item_counts.get('classic', 0), 'canvas_count': canvas_counts.get('classic', 0)}]
     return {'categories': categories, 'canvases': canvases, 'items': items}

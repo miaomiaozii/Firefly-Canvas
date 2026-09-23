@@ -288,7 +288,7 @@ async def trashed_canvases():
 
 @router.post('/api/canvases')
 async def create_canvas(payload: CanvasCreateRequest):
-    raise HTTPException(status_code=410, detail='旧画布创建入口已停用；一个项目只拥有一张核心画布')
+    raise HTTPException(status_code=410, detail='经典画布创建入口已停用；一个项目只拥有一张核心画布')
 
 @router.get('/api/canvases/{canvas_id}/meta')
 async def get_canvas_meta(canvas_id: str):

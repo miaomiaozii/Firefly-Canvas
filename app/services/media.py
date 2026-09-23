@@ -282,7 +282,7 @@ def json_references_media_path(value: Any, target_path: str) -> bool:
 def persisted_json_references_media_path(target_path: str) -> bool:
     """Scan persisted user documents before deleting generated media.
 
-    Canvas logs are only one possible owner. Nodes, other canvases, and asset
+    Canvas history is only one possible owner. Nodes, other canvases, and asset
     metadata all count as live references and keep the file on disk.
     """
     candidates = [_svc._main('ASSET_LIBRARY_PATH')]
