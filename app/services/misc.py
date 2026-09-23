@@ -233,8 +233,8 @@ def apimart_video_reference_error(value: str) -> str:
         return '空的视频地址'
     if text.startswith(('/output/', '/assets/')):
         if not _svc._main('output_file_from_url')(text):
-            return '这是本地画布文件路径，但后端没有找到对应文件，请重新上传视频后再试。'
-        return '这是本地画布文件，APIMart 无法访问 127.0.0.1/局域网路径；请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），或改用公网 http/https 视频 URL、审核后的 asset:// 地址。'
+            return '这是本地项目文件路径，但后端没有找到对应文件，请重新上传视频后再试。'
+        return '这是本地项目文件，APIMart 无法访问 127.0.0.1/局域网路径；请在 API/.env 配置 PUBLIC_MEDIA_BASE_URL 或 PUBLIC_BASE_URL 为可公网访问的媒体地址（例如内网穿透 HTTPS 地址），或改用公网 http/https 视频 URL、审核后的 asset:// 地址。'
     if text.startswith('data:') or text.startswith('blob:') or text.startswith('file:'):
         return 'APIMart 的 video_urls 不支持 data/blob/file 地址；请改用公网 http/https 视频 URL，或审核后的 asset:// 地址。'
     return 'APIMart 的 video_urls 只支持公网 http/https URL 或 asset:// 私域素材 URL。'

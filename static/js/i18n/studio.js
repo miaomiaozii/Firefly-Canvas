@@ -91,7 +91,7 @@
         "globalSettings.chatModels": { zh: "对话模型", en: "Chat models" },
         "globalSettings.videoModels": { zh: "视频模型", en: "Video models" },
         "globalSettings.availableModels": { zh: "可选模型", en: "Available models" },
-        "globalSettings.modelSelectionHint": { zh: "拉取到的模型不会自动加入；勾选后才会进入画布列表。", en: "Fetched models stay out of the canvas until you select them." },
+        "globalSettings.modelSelectionHint": { zh: "拉取到的模型不会自动加入；勾选后才会进入项目列表。", en: "Fetched models stay out of the project list until you select them." },
         "globalSettings.searchModels": { zh: "搜索模型…", en: "Search models…" },
         "globalSettings.testConnection": { zh: "验证地址", en: "Test endpoint" },
         "globalSettings.fetchModels": { zh: "拉取模型", en: "Fetch models" },

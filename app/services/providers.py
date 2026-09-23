@@ -349,7 +349,7 @@ def volcengine_public_asset_url(url: str) -> str:
     public = _svc._main('local_asset_public_url')(text)
     if public:
         return public
-    return 'ERR:火山要求素材是公网可访问的 http/https URL；本地画布文件需配置 PUBLIC_BASE_URL/PUBLIC_MEDIA_BASE_URL 暴露为公网地址。'
+    return 'ERR:火山要求素材是公网可访问的 http/https URL；本地项目文件需配置 PUBLIC_BASE_URL/PUBLIC_MEDIA_BASE_URL 暴露为公网地址。'
 
 def volcengine_image_payload(ref):
     value = _svc._main('reference_to_data_url')(ref, max_size=1536)

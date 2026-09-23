@@ -232,7 +232,7 @@ def volcengine_public_asset_url(url: str) -> str:
     public = local_asset_public_url(text)
     if public:
         return public
-    return 'ERR:火山要求素材是公网可访问的 http/https URL；本地画布文件需配置 PUBLIC_BASE_URL/PUBLIC_MEDIA_BASE_URL 暴露为公网地址。'
+    return 'ERR:火山要求素材是公网可访问的 http/https URL；本地项目文件需配置 PUBLIC_BASE_URL/PUBLIC_MEDIA_BASE_URL 暴露为公网地址。'
 
 @router.get('/api/asset-library')
 async def get_asset_library():
