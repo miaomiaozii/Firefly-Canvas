@@ -182,7 +182,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertTrue(Path(self.store.media_record(project["id"], generated_asset)["path"]).is_file())
         self.assertNotEqual(generated_asset, reference["asset_id"])
 
-        history = opened["logs"][-1]
+        history = opened["history"][-1]
         self.assertEqual(history["prompt"], request["prompt"])
         self.assertEqual(history["executed_prompt"], call.args[0])
         self.assertEqual(history["actual_provider_id"], "fake-http")
@@ -433,7 +433,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(first_terminal["status"], "cancelled", first_terminal)
         history_by_task = {
             item.get("task_id"): item
-            for item in self.store.open_project(project["id"])["canvas"].get("logs") or []
+            for item in self.store.open_project(project["id"])["canvas"].get("history") or []
         }
         self.assertEqual(history_by_task[first_id]["status"], "cancelled")
         self.assertEqual(history_by_task[second_id]["status"], "succeeded")
@@ -495,7 +495,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
 
         terminal = self.wait_for_task(task_id)
         self.assertEqual(terminal["status"], "cancelled", terminal)
-        history = [item for item in self.store.open_project(project["id"])["canvas"]["logs"] if item.get("task_id") == task_id]
+        history = [item for item in self.store.open_project(project["id"])["canvas"]["history"] if item.get("task_id") == task_id]
         self.assertEqual([item["status"] for item in history], ["cancelled"])
 
     def test_cancel_broadcast_failure_does_not_hide_the_durable_cancelled_terminal(self):
@@ -546,7 +546,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(cancelled.status_code, 200, cancelled.text)
         self.assertEqual(cancelled.json()["status"], "cancelled")
         self.assertEqual(self.wait_for_task(task_id)["status"], "cancelled")
-        history = [item for item in self.store.open_project(project["id"])["canvas"]["logs"] if item.get("task_id") == task_id]
+        history = [item for item in self.store.open_project(project["id"])["canvas"]["history"] if item.get("task_id") == task_id]
         self.assertEqual([item["status"] for item in history], ["cancelled"])
 
     def test_repeating_an_idempotent_submission_reuses_task_without_adapter_recall(self):
@@ -703,7 +703,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         canvas = self.store.open_project(project["id"])["canvas"]
         node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
         self.assertNotIn("pendingTasks", node)
-        records = [item for item in canvas["logs"] if item.get("idempotency_key") == "registration-failure"]
+        records = [item for item in canvas["history"] if item.get("idempotency_key") == "registration-failure"]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["status"], "failed")
         self.assertEqual(records[0]["termination_reason"], "registration_failed")
@@ -742,7 +742,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         canvas = self.store.open_project(project["id"])["canvas"]
         node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
         self.assertNotIn("pendingTasks", node)
-        records = [item for item in canvas["logs"] if item.get("task_id") == task_id]
+        records = [item for item in canvas["history"] if item.get("task_id") == task_id]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["status"], "failed")
         self.assertEqual(records[0]["termination_reason"], "scheduling_failed")
@@ -836,7 +836,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(terminal["result"]["history_record"]["status"], "failed")
         records = [
             item
-            for item in self.store.open_project(project["id"])["canvas"]["logs"]
+            for item in self.store.open_project(project["id"])["canvas"]["history"]
             if item.get("task_id") == submitted.json()["task_id"]
         ]
         self.assertEqual(len(records), 1)
@@ -885,13 +885,13 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.store = ProjectStore(self.store_root, snapshot_delay=0)
         main.FIREFLY_PROJECT_STORE = self.store
         canvas = self.store.open_project(project["id"])["canvas"]
-        records = [item for item in canvas["logs"] if item.get("task_id") == task_id]
+        records = [item for item in canvas["history"] if item.get("task_id") == task_id]
         self.assertEqual([item["status"] for item in records], ["cancelled"])
         self.assertEqual(records[0]["termination_reason"], "service_shutdown")
         node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
         self.assertNotIn("pendingTasks", node)
         time.sleep(0.1)
-        self.assertFalse(any(item.get("status") == "succeeded" for item in self.store.open_project(project["id"])["canvas"]["logs"] if item.get("task_id") == task_id))
+        self.assertFalse(any(item.get("status") == "succeeded" for item in self.store.open_project(project["id"])["canvas"]["history"] if item.get("task_id") == task_id))
 
     def test_success_commit_exception_reconciles_to_succeeded_without_retry_or_orphan_cleanup(self):
         project = self.store.create_project("成功提交后异常恢复")
@@ -940,7 +940,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(terminal["result"]["history_record"]["status"], "succeeded")
         self.assertEqual(adapter.await_count, 1)
         canvas = self.store.open_project(project["id"])["canvas"]
-        records = [item for item in canvas["logs"] if item.get("task_id") == submitted.json()["task_id"]]
+        records = [item for item in canvas["history"] if item.get("task_id") == submitted.json()["task_id"]]
         self.assertEqual([item["status"] for item in records], ["succeeded"])
         self.assertEqual(len(self.store.list_media(project["id"])), 1)
         with main.CANVAS_TASK_LOCK:
@@ -1008,7 +1008,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
 
         self.assertEqual(terminal["status"], "cancelled", terminal)
         self.assertEqual(terminal["result"]["history_record"]["status"], "cancelled")
-        records = [item for item in self.store.open_project(project["id"])["canvas"]["logs"] if item.get("task_id") == submitted.json()["task_id"]]
+        records = [item for item in self.store.open_project(project["id"])["canvas"]["history"] if item.get("task_id") == submitted.json()["task_id"]]
         self.assertEqual([item["status"] for item in records], ["cancelled"])
         self.assertEqual(self.store.list_media(project["id"]), [])
         retry = self.client.post(
@@ -1054,7 +1054,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             terminal = self.wait_for_task(submitted.json()["task_id"])
 
         self.assertEqual(terminal["status"], "succeeded", terminal)
-        records = [item for item in self.store.open_project(project["id"])["canvas"]["logs"] if item.get("task_id") == submitted.json()["task_id"]]
+        records = [item for item in self.store.open_project(project["id"])["canvas"]["history"] if item.get("task_id") == submitted.json()["task_id"]]
         self.assertEqual([item["status"] for item in records], ["succeeded"])
 
     def test_restart_explicitly_terminates_durable_pending_task_without_adapter_recall(self):
@@ -1124,7 +1124,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         canvas = self.store.open_project(project["id"])["canvas"]
         node = next(item for item in canvas["nodes"] if item["id"] == "result-node")
         self.assertNotIn("pendingTasks", node)
-        task_history = [item for item in canvas["logs"] if item.get("task_id") == task_id]
+        task_history = [item for item in canvas["history"] if item.get("task_id") == task_id]
         self.assertEqual(len(task_history), 1)
         self.assertEqual(task_history[0]["status"], "failed")
         self.assertEqual(task_history[0]["termination_reason"], "service_restart_unknown")
@@ -1189,10 +1189,10 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         )
         self.assertRegex(node["images"][0]["output_id"], r"^output-[a-f0-9]{32}$")
         self.assertEqual(node["images"][0]["output_order"], 0)
-        terminal_history = next(item for item in canvas["logs"] if item.get("task_id") == task_id)
+        terminal_history = next(item for item in canvas["history"] if item.get("task_id") == task_id)
         self.assertEqual(terminal_history["outputs"][0]["output_id"], node["images"][0]["output_id"])
         self.assertNotIn("pendingTasks", node)
-        self.assertEqual(len([item for item in canvas["logs"] if item.get("task_id") == task_id]), 1)
+        self.assertEqual(len([item for item in canvas["history"] if item.get("task_id") == task_id]), 1)
 
     def test_partial_completion_stages_images_while_keeping_pending_placeholder_state(self):
         project = self.store.create_project("增量写回占位状态")
@@ -1229,7 +1229,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertFalse(node.get("running"))
         self.assertEqual([item.get("taskId") for item in node.get("pendingTasks", [])], [task_id])
         self.assertGreaterEqual(node.get("pending", 0), 3)
-        running_logs = [item for item in canvas["logs"] if item.get("id") == "generation-partial"]
+        running_logs = [item for item in canvas["history"] if item.get("id") == "generation-partial"]
         self.assertEqual(len(running_logs), 1)
         self.assertEqual(running_logs[0]["status"], "running")
 
@@ -1263,7 +1263,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             [first["asset_id"], second["asset_id"]],
         )
         self.assertNotIn("_generationBatchApplied", node)
-        final_logs = [item for item in canvas["logs"] if item.get("id") == "generation-partial"]
+        final_logs = [item for item in canvas["history"] if item.get("id") == "generation-partial"]
         self.assertEqual(len(final_logs), 1)
         self.assertEqual(final_logs[0]["status"], "succeeded")
         self.assertEqual(len(final_logs[0]["outputs"]), 2)
@@ -1352,7 +1352,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertEqual(adapter.await_count, 2)
         history_by_task = {
             item.get("task_id"): item
-            for item in self.store.open_project(project["id"])["canvas"].get("logs") or []
+            for item in self.store.open_project(project["id"])["canvas"].get("history") or []
         }
         self.assertEqual(history_by_task[failed_id]["status"], "failed")
         self.assertEqual(history_by_task[retry_id]["status"], "succeeded")
@@ -1555,10 +1555,10 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         node = next(item for item in opened["nodes"] if item["id"] == "result")
         self.assertEqual(node["pending"], 0)
         self.assertNotIn("pendingTasks", node)
-        self.assertEqual(opened["logs"][-1]["status"], "failed")
-        self.assertEqual(opened["logs"][-1]["actual_model"], "fake-wide-4k")
-        self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
-        self.assertGreater(opened["logs"][-1]["createdAt"], 0)
+        self.assertEqual(opened["history"][-1]["status"], "failed")
+        self.assertEqual(opened["history"][-1]["actual_model"], "fake-wide-4k")
+        self.assertEqual(opened["history"][-1]["createdAt"], opened["history"][-1]["created_at"])
+        self.assertGreater(opened["history"][-1]["createdAt"], 0)
         self.assertEqual(self.store.list_media(project["id"]), [])
 
 

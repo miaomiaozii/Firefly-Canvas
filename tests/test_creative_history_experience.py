@@ -31,10 +31,10 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("object-fit:cover", final_thumbnail_rules)
         self.assertIn('class="log-output-gallery"', SCRIPT)
         self.assertIn("const outputCards = outputs.map(item =>", SCRIPT)
-        # Selection is now an IIFE that keys on both logId and outputId so a
+        # Selection is now an IIFE that keys on both historyId and outputId so a
         # specific output within a multi-output log can be addressed.
         self.assertIn("const selectedIndex = (() => {", SCRIPT)
-        self.assertIn("smartHistorySelectedImage?.logId === logId && smartHistorySelectedImage?.outputId", SCRIPT)
+        self.assertIn("smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId", SCRIPT)
         runner = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")
         self.assertIn("multiOutputIndependentDeleteRestore", runner)
         self.assertIn("rootScrollStable", runner)
@@ -88,13 +88,13 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
 
     def test_multi_output_history_has_discoverable_previews_and_detail_switching(self):
         self.assertIn('class="log-output-preview-list"', SCRIPT)
-        self.assertIn('data-log-output-preview="${item.outputIndex}"', SCRIPT)
-        self.assertIn("smartLogModal?.querySelectorAll('.log-output-preview.is-selected')", SCRIPT)
+        self.assertIn('data-history-output-preview="${item.outputIndex}"', SCRIPT)
+        self.assertIn("smartHistoryModal?.querySelectorAll('.log-output-preview.is-selected')", SCRIPT)
         self.assertIn('class="smart-log-detail-output-strip"', SCRIPT)
         self.assertIn('class="smart-log-detail-output"', SCRIPT)
-        self.assertIn("function selectSmartLogDetailOutput(outputIndex, {focus=false}={})", SCRIPT)
-        self.assertIn("switchSmartLogDetailOutput(1)", SCRIPT)
-        self.assertIn("switchSmartLogDetailOutput(-1)", SCRIPT)
+        self.assertIn("function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={})", SCRIPT)
+        self.assertIn("switchSmartHistoryDetailOutput(1)", SCRIPT)
+        self.assertIn("switchSmartHistoryDetailOutput(-1)", SCRIPT)
         self.assertRegex(CANVAS_CSS, r"\.log-output-preview-list\s*\{[^}]*display:grid")
         self.assertRegex(CANVAS_CSS, r"\.smart-log-detail-output-strip\s*\{[^}]*display:grid")
 
@@ -157,20 +157,20 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length || outputs.length > 0", SCRIPT)
         self.assertIn("destructiveRecordDelete ? `<button", SCRIPT)
         self.assertIn("function reconcileSmartOriginalDeletionUi(", SCRIPT)
-        self.assertIn("reconcileSmartOriginalDeletionUi(logId, outputId, deletionUiState);", SCRIPT)
-        self.assertIn("data-log-delete-original", SCRIPT)
+        self.assertIn("reconcileSmartOriginalDeletionUi(historyId, outputId, deletionUiState);", SCRIPT)
+        self.assertIn("data-history-delete-original", SCRIPT)
         self.assertIn('class="smart-log-detail-delete-original"', SCRIPT)
         self.assertIn("deleteOriginal.dataset.assetId = String(item.asset_id || '')", SCRIPT)
-        self.assertIn("data-log-delete=\"media\"", SCRIPT)
+        self.assertIn("data-history-delete=\"media\"", SCRIPT)
 
     def test_output_occurrence_identity_drives_delete_restore_and_ui_reconciliation(self):
         self.assertIn("outputId:String(item.output_id || '')", SCRIPT)
         self.assertIn('data-output-id="${escapeAttr(item.output_id || \'\')}"', SCRIPT)
-        self.assertIn("log_id:logId", SCRIPT)
+        self.assertIn("history_id:historyId", SCRIPT)
         self.assertIn("output_id:outputId", SCRIPT)
         self.assertIn("deletion_id:snapshot.projectOriginalDelete.deletionId", SCRIPT)
         self.assertIn("const deletionId = String(data.deleted?.deletion_id || '')", SCRIPT)
-        self.assertIn("projectOriginalDelete:{assetId, outputId, deletionId, logId, projectId}", SCRIPT)
+        self.assertIn("projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}", SCRIPT)
         self.assertIn("historySelectedOutputId:String(historyOutput?.output_id || '')", SCRIPT)
         self.assertIn("detailSelectedOutputId:String(detailOutput?.output_id || '')", SCRIPT)
         self.assertIn("canvasSelectedOutputId:String(selectedCanvasItem?.output_id || '')", SCRIPT)
@@ -192,7 +192,7 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("saveProjectCanvasUntilSettled", settle.group("body"))
 
     def test_generation_detail_contains_metadata_and_sharing_actions(self):
-        self.assertIn("function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={})", SCRIPT)
+        self.assertIn("function openSmartHistoryDetail({url, kind='image', historyId='', outputIndex=0}={})", SCRIPT)
         for selector in (
             "smart-log-detail-frame",
             "smart-log-detail-zoom-tools",
@@ -204,19 +204,19 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
             "smart-log-detail-copy-2k",
         ):
             self.assertIn(selector, SCRIPT)
-        self.assertIn("function copySmartLogImage2k(item)", SCRIPT)
+        self.assertIn("function copySmartHistoryImage2k(item)", SCRIPT)
         self.assertIn("new ClipboardItem({'image/png':blob})", SCRIPT)
         self.assertIn("navigator.clipboard.write", SCRIPT)
         self.assertIn("function zoomPanAroundPoint(", SCRIPT)
-        self.assertIn("function setupSmartLogDetailInteractions(box)", SCRIPT)
+        self.assertIn("function setupSmartHistoryDetailInteractions(box)", SCRIPT)
         self.assertIn("2048", SCRIPT)
         self.assertRegex(CANVAS_CSS, r"\.smart-log-detail\s*\{[^}]*width:min\(1600px, calc\(100vw - 40px\)\)[^}]*height:min\(920px, calc\(100dvh - 40px\)\)")
 
     def test_generation_detail_escape_does_not_close_history(self):
-        self.assertIn("document.querySelector('#smartLogLightbox.open')", SCRIPT)
+        self.assertIn("document.querySelector('#smartHistoryLightbox.open')", SCRIPT)
         self.assertIn("Generation history is persistent workspace chrome", SCRIPT)
         self.assertNotIn(
-            "closeSmartLogLightbox(); closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasLog();",
+            "closeSmartHistoryLightbox(); closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasLog();",
             SCRIPT,
         )
 

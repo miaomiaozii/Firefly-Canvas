@@ -22,8 +22,8 @@
         }
         return false;
     }
-    function renderedTime(logId){
-        const card = document.querySelector(`[data-canvas-log-id="${CSS.escape(logId)}"]`);
+    function renderedTime(historyId){
+        const card = document.querySelector(`[data-canvas-history-id="${CSS.escape(historyId)}"]`);
         const subline = card?.querySelector('.log-subline');
         const span = subline?.querySelector('span');
         return span?.textContent?.trim() || '';
@@ -40,11 +40,11 @@
         const lang = window.StudioI18n?.lang && window.StudioI18n.lang() === 'en' ? 'en-US' : 'zh-CN';
         const expectedTimeText = new Date(expectedCreatedAt).toLocaleString(lang);
         const expectedOlderTimeText = new Date(expectedOlderCreatedAt).toLocaleString(lang);
-        const loaded = await waitFor(() => document.querySelector('#smartLogToggle') && document.title.includes('时间历史项目'), 15000);
+        const loaded = await waitFor(() => document.querySelector('#smartHistoryToggle') && document.title.includes('时间历史项目'), 15000);
         assertion('real product page loaded its canvas', loaded, document.title);
-        const toggle = document.getElementById('smartLogToggle');
+        const toggle = document.getElementById('smartHistoryToggle');
         toggle?.click();
-        const opened = await waitFor(() => document.getElementById('smartLogModal')?.classList.contains('open') && Boolean(document.querySelector('[data-canvas-log-id="history-time-1"]')), 12000);
+        const opened = await waitFor(() => document.getElementById('smartHistoryModal')?.classList.contains('open') && Boolean(document.querySelector('[data-canvas-history-id="history-time-1"]')), 12000);
         assertion('history drawer renders the seeded timestamped record', opened, document.querySelectorAll('.log-item').length);
         if(!opened){ await postResult(); return; }
 

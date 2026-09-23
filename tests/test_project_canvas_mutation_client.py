@@ -28,12 +28,12 @@ const baseline = {{
   nodes: {{conversation: JSON.stringify({{id:'conversation', type:'smart-conversation', messages:[]}})}},
   edges: {{}},
   viewport: JSON.stringify({{x:0,y:0,scale:1}}),
-  meta: JSON.stringify({{title:'Project', icon:'sparkles', settings:{{}}, logs:[]}})
+  meta: JSON.stringify({{title:'Project', icon:'sparkles', settings:{{}}, history:[]}})
 }};
 const initialCanvas = {{
   project_id:'project-1', revision:4,
   nodes:[{{id:'conversation', type:'smart-conversation', messages:[]}}],
-  connections:[], viewport:{{x:0,y:0,scale:1}}, title:'Project', icon:'sparkles', settings:{{}}, logs:[]
+  connections:[], viewport:{{x:0,y:0,scale:1}}, title:'Project', icon:'sparkles', settings:{{}}, history:[]
 }};
 const latestCanvas = {{
   ...initialCanvas,
@@ -82,7 +82,7 @@ const baseline = {{
   viewport:{{x:12,y:34,scale:1.4}},
   settings:{{engine:'api', provider_id:'comfly', model:'image-model', promptH:240}},
   nodes:[{{id:'image', type:'smart-image', prompt:'keep prompt', runSettings:{{model:'image-model'}}}}],
-  connections:[], logs:[{{id:'history-1', prompt:'keep history'}}]
+  connections:[], history:[{{id:'history-1', prompt:'keep history'}}]
 }};
 const changed = {{...baseline,
   viewport:{{x:800,y:-240,scale:0.48}},
@@ -97,7 +97,7 @@ console.log(JSON.stringify({{snapshot, changes}}));
         meta = json.loads(payload["snapshot"]["meta"])
         self.assertNotIn("settings", meta)
         self.assertEqual(meta["title"], "Project")
-        self.assertEqual(meta["logs"], [{"id": "history-1", "prompt": "keep history"}])
+        self.assertEqual(meta["history"], [{"id": "history-1", "prompt": "keep history"}])
         self.assertEqual(payload["changes"]["mutations"], [])
 
     def test_rebase_combines_local_node_edit_with_concurrent_server_node_update(self):
@@ -105,7 +105,7 @@ console.log(JSON.stringify({{snapshot, changes}}));
 const {{rebaseProjectCanvasMutations, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
 const baselineCanvas = {{
   nodes:[{{id:'shared', type:'smart-conversation', x:10, messages:[]}}],
-  connections:[], viewport:{{x:0,y:0,scale:1}}, settings:{{}}, logs:[]
+  connections:[], viewport:{{x:0,y:0,scale:1}}, settings:{{}}, history:[]
 }};
 const serverCanvas = {{
   ...baselineCanvas, revision:9,
@@ -129,7 +129,7 @@ console.log(JSON.stringify(result));
 const {{rebaseProjectCanvasMutations, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
 const baselineCanvas = {{nodes:[{{id:'media', images:[
   {{asset_id:'a', name:'A'}}, {{asset_id:'b', name:'B'}}
-]}}], connections:[], viewport:{{}}, settings:{{}}, logs:[]}};
+]}}], connections:[], viewport:{{}}, settings:{{}}, history:[]}};
 const local = {{id:'media', images:[
   {{asset_id:'a', name:'A locally renamed'}}, {{asset_id:'b', name:'B'}}
 ]}};
@@ -150,7 +150,7 @@ console.log(JSON.stringify(result.canvas.nodes[0].images));
     def test_retry_limit_returns_latest_revision_with_local_intent_still_rebased(self):
         script = f"""
 const {{flushProjectCanvasMutations}} = require({json.dumps(str(MUTATION_CLIENT))});
-const canvas = {{revision:1, nodes:[], connections:[], viewport:{{}}, settings:{{}}, logs:[]}};
+const canvas = {{revision:1, nodes:[], connections:[], viewport:{{}}, settings:{{}}, history:[]}};
 const calls = [];
 const result = await flushProjectCanvasMutations({{
   canvas,
@@ -183,7 +183,7 @@ console.log(JSON.stringify({{calls, result}}));
 const {{durableSnapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
 const base = {{
   nodes:[{{id:'image', type:'smart-image', title:'猫', prompt:'一只猫', images:[]}}],
-  connections:[], viewport:{{x:0,y:0,scale:1}}, settings:{{}}, logs:[]
+  connections:[], viewport:{{x:0,y:0,scale:1}}, settings:{{}}, history:[]
 }};
 const runtimeOnly = {{...base, nodes:[{{...base.nodes[0], running:true, pending:1, queued:true,
   pendingTasks:[{{taskId:'task-1'}}], runStartedAt:123, runTimerHidden:false}}]}};
@@ -202,7 +202,7 @@ console.log(JSON.stringify({{
 const {{durableSnapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
 const base = {{
   nodes:[{{id:'image', type:'smart-image', images:[{{asset_id:'asset-1', natural_w:480, natural_h:320}}]}}],
-  connections:[], viewport:{{}}, settings:{{}}, logs:[]
+  connections:[], viewport:{{}}, settings:{{}}, history:[]
 }};
 const measured = {{...base, nodes:[{{...base.nodes[0], images:[{{...base.nodes[0].images[0], _naturalSizeLoading:true, layout_w:480, layout_h:320}}]}}]}};
 const edited = {{...base, nodes:[{{...base.nodes[0], images:[{{...base.nodes[0].images[0], natural_w:640}}]}}]}};
@@ -220,7 +220,7 @@ console.log(JSON.stringify({{
 const {{rebaseProjectCanvasMutations, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
 const node = {{id:'deleted-node', type:'smart-prompt', text:'before'}};
 const edge = {{id:'deleted-edge', from:'source', to:'deleted-node'}};
-const baseline = {{nodes:[node], connections:[edge], viewport:{{}}, settings:{{}}, logs:[]}};
+const baseline = {{nodes:[node], connections:[edge], viewport:{{}}, settings:{{}}, history:[]}};
 const server = {{...baseline, revision:8, nodes:[], connections:[]}};
 const result = rebaseProjectCanvasMutations(server, snapshotFromCanvas(baseline), [
   {{op:'upsert_node', node:{{...node, text:'stale local edit'}}}},
@@ -236,7 +236,7 @@ console.log(JSON.stringify(result));
     def test_conversation_response_rebases_unsaved_local_intent_and_keeps_it_pending(self):
         script = f"""
 const {{rebaseProjectCanvasResponse, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
-const baselineCanvas = {{revision:4, title:'Project', icon:'sparkles', settings:{{}}, logs:[], viewport:{{x:0,y:0,scale:1}},
+const baselineCanvas = {{revision:4, title:'Project', icon:'sparkles', settings:{{}}, history:[], viewport:{{x:0,y:0,scale:1}},
   nodes:[
     {{id:'conversation', type:'smart-conversation', x:100, messages:[]}},
     {{id:'image', type:'smart-image', x:20, images:[{{asset_id:'asset-1', kind:'image'}}]}}
@@ -272,7 +272,7 @@ console.log(JSON.stringify(result));
     def test_agent_terminal_remote_state_wins_over_local_transient_poll_state(self):
         script = f"""
 const {{rebaseProjectCanvasResponse, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
-const baseline = {{revision:3, title:'Project', icon:'sparkles', settings:{{}}, logs:[], viewport:{{}}, nodes:[
+const baseline = {{revision:3, title:'Project', icon:'sparkles', settings:{{}}, history:[], viewport:{{}}, nodes:[
   {{id:'agent', type:'smart-agent', agent_plan:{{plan_id:'p', status:'running', tasks:[{{task_id:'t', status:'running'}}]}}}},
   {{id:'t', type:'agent-task', task_id:'t', status:'running', error:''}},
   {{id:'r', type:'smart-image', agent_task_id:'t', generationState:'queued', images:[], pending:1, running:true}}
@@ -299,7 +299,7 @@ console.log(JSON.stringify(result.canvas.nodes));
     def test_conversation_rebase_replaces_timeout_placeholder_by_request_and_role(self):
         script = f"""
 const {{rebaseProjectCanvasResponse, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
-const baseline = {{revision:7, title:'Project', icon:'sparkles', settings:{{}}, logs:[], viewport:{{}},
+const baseline = {{revision:7, title:'Project', icon:'sparkles', settings:{{}}, history:[], viewport:{{}},
   nodes:[{{id:'conversation', type:'smart-conversation', messages:[]}}], connections:[]}};
 const local = {{...baseline, nodes:[{{id:'conversation', type:'smart-conversation', messages:[
   {{id:'local-request-1', role:'user', request_id:'request-1', status:'pending', text:'keep one user'}}
@@ -326,7 +326,7 @@ console.log(JSON.stringify(result.canvas.nodes[0].messages));
     def test_conversation_response_ignores_older_revision_without_losing_newer_messages(self):
         script = f"""
 const {{rebaseProjectCanvasResponse, snapshotFromCanvas}} = require({json.dumps(str(MUTATION_CLIENT))});
-const current = {{revision:3, title:'Project', icon:'sparkles', settings:{{}}, logs:[], viewport:{{}},
+const current = {{revision:3, title:'Project', icon:'sparkles', settings:{{}}, history:[], viewport:{{}},
   nodes:[{{id:'conversation', type:'smart-conversation', messages:[
     {{id:'user-a', role:'user', request_id:'a', status:'completed', text:'A'}},
     {{id:'user-b', role:'user', request_id:'b', status:'pending', text:'B'}}
@@ -386,7 +386,7 @@ console.log(JSON.stringify({{observed, failed, failedPostCalls}}));
 const {{flushProjectCanvasMutations}} = require({json.dumps(str(MUTATION_CLIENT))});
 let confirmations = 0;
 const result = await flushProjectCanvasMutations({{
-  canvas:{{revision:2, nodes:[], connections:[], viewport:{{}}, settings:{{}}, logs:[]}},
+  canvas:{{revision:2, nodes:[], connections:[], viewport:{{}}, settings:{{}}, history:[]}},
   mutations:[{{op:'upsert_node', node:{{id:'conversation-new', type:'smart-conversation'}}}}],
   send:async () => ({{status:200, revision:3, updated_at:10, saved:false}}),
   confirmSaved:async response => {{ confirmations += 1; return response.revision === 3; }}

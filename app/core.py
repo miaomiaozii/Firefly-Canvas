@@ -924,7 +924,7 @@ def parse_prompt_template_markdown(text: str):
     return templates
 
 class DeleteCanvasLogRequest(BaseModel):
-    log_id: str
+    history_id: str
     delete_unreferenced_media: bool = False
     reset_referencing_nodes: bool = False
     base_updated_at: int = 0
@@ -1219,14 +1219,14 @@ class ProjectConversationMessageRequest(BaseModel):
     system_prompt: Optional[str] = Field(default=None, max_length=12000)
 
 class ProjectHistoryDeleteRequest(BaseModel):
-    log_id: str
+    history_id: str
     base_revision: int = Field(ge=0)
     delete_media: bool = False
 
 class ProjectOriginalDeleteRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
-    log_id: str = Field(min_length=1, max_length=200)
+    history_id: str = Field(min_length=1, max_length=200)
     output_id: str = Field(min_length=1, max_length=200)
     output_index: int = Field(ge=0)
 
@@ -1245,7 +1245,7 @@ class CanvasSaveRequest(BaseModel):
     nodes: List[Dict[str, Any]] = []
     connections: List[Dict[str, Any]] = []
     viewport: Dict[str, Any] = {}
-    logs: List[Dict[str, Any]] = []
+    history: List[Dict[str, Any]] = []
     settings: Dict[str, Any] = {}
     client_id: str = ''
     base_updated_at: int = 0
@@ -1460,7 +1460,7 @@ def iter_canvas_asset_values(value, path=''):
         if url:
             yield (path, value, url)
         for key, child in value.items():
-            if key in {'run', 'runs', 'settings', 'params', 'metadata', 'meta', 'prompt', 'text', 'caption', 'logs'}:
+            if key in {'run', 'runs', 'settings', 'params', 'metadata', 'meta', 'prompt', 'text', 'caption', 'history'}:
                 continue
             yield from iter_canvas_asset_values(child, f'{path}.{key}' if path else str(key))
     elif isinstance(value, list):

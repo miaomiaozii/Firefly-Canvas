@@ -750,7 +750,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertTrue(record["filename"].endswith(".mp4"))
         self.assertEqual(self.client.get(f"/api/project-library/{project['id']}/media/{generated_asset}").content, small_structural_mp4())
         self.assertNotIn("url", node["images"][0])
-        history_output = opened["logs"][-1]["outputs"][0]
+        history_output = opened["history"][-1]["outputs"][0]
         self.assertEqual(
             {key: value for key, value in history_output.items() if key not in {"output_id", "output_order"}},
             {"asset_id": generated_asset, "kind": "video"},
@@ -758,10 +758,10 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertRegex(history_output["output_id"], r"^output-[a-f0-9]{32}$")
         self.assertEqual(history_output["output_id"], node["images"][0]["output_id"])
         self.assertEqual((history_output["output_order"], node["images"][0]["output_order"]), (0, 0))
-        self.assertEqual(opened["logs"][-1]["params"]["audio_reference_count"], 1)
-        self.assertIs(opened["logs"][-1]["params"]["return_last_frame"], True)
-        self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
-        self.assertGreater(opened["logs"][-1]["createdAt"], 0)
+        self.assertEqual(opened["history"][-1]["params"]["audio_reference_count"], 1)
+        self.assertIs(opened["history"][-1]["params"]["return_last_frame"], True)
+        self.assertEqual(opened["history"][-1]["createdAt"], opened["history"][-1]["created_at"])
+        self.assertGreater(opened["history"][-1]["createdAt"], 0)
 
         with patch.object(main, "generate_video_preview_image", return_value=Image.new("RGB", (8, 6), "red")):
             preview = self.client.get(f"/api/project-library/{project['id']}/media/{generated_asset}/preview?w=128")
@@ -807,7 +807,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
                 response = self.client.post(f"/api/project-library/{project['id']}/video-generation-tasks", json=payload)
             self.assertEqual(response.status_code, 400, response.text)
         fake_generate.assert_not_awaited()
-        self.assertEqual(self.store.open_project(project["id"])["canvas"]["logs"], [])
+        self.assertEqual(self.store.open_project(project["id"])["canvas"]["history"], [])
 
     def test_project_video_references_use_restricted_adapter_handles_and_keep_project_isolation(self):
         project = self.store.create_project("适配边界")
@@ -1384,20 +1384,20 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         opened = self.store.open_project(project["id"])["canvas"]
         node = next(item for item in opened["nodes"] if item["id"] == "video-result")
         self.assertEqual(node["pending"], 0)
-        self.assertEqual(opened["logs"][-1]["status"], "failed")
-        self.assertEqual(opened["logs"][-1]["createdAt"], opened["logs"][-1]["created_at"])
-        self.assertGreater(opened["logs"][-1]["createdAt"], 0)
+        self.assertEqual(opened["history"][-1]["status"], "failed")
+        self.assertEqual(opened["history"][-1]["createdAt"], opened["history"][-1]["created_at"])
+        self.assertGreater(opened["history"][-1]["createdAt"], 0)
         # #83: 失败任务保留已下载成功的视频（被失败记录引用，重试可取回），不再静默硬删
         partial_items = self.store.list_media(project["id"])
         self.assertEqual(len(partial_items), 1)
-        self.assertEqual([output["asset_id"] for output in opened["logs"][-1]["outputs"]], [partial_items[0]["asset_id"]])
+        self.assertEqual([output["asset_id"] for output in opened["history"][-1]["outputs"]], [partial_items[0]["asset_id"]])
 
         recover_provider = AsyncMock(return_value=([{"type": "b64", "value": good, "mime_type": "video/mp4"}], {}))
         retry = self.payload(base_revision=opened["revision"])
         _retry_submitted, recovered = self.submit(project, retry, recover_provider)
         self.assertEqual(recovered["status"], "succeeded", recovered)
         reopened = self.store.open_project(project["id"])["canvas"]
-        self.assertEqual([item["status"] for item in reopened["logs"]], ["failed", "succeeded"])
+        self.assertEqual([item["status"] for item in reopened["history"]], ["failed", "succeeded"])
         # 重试产生的视频与半成品字节相同（同 sha256 → 同 asset_id），媒体库仍为 1 条；
         # 节点展示重试结果，失败任务保留的半成品由失败记录引用。
         self.assertEqual(len(self.store.list_media(project["id"])), 1)
@@ -1431,7 +1431,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertEqual((first_task["status"], second_task["status"]), ("succeeded", "succeeded"))
         opened = self.store.open_project(project["id"])["canvas"]
         self.assertTrue(all(next(item for item in opened["nodes"] if item["id"] == node_id)["images"] for node_id in ("first", "second")))
-        self.assertEqual(len([log for log in opened["logs"] if log["type"] == "online-video"]), 2)
+        self.assertEqual(len([log for log in opened["history"] if log["type"] == "online-video"]), 2)
 
     def test_video_archiver_rejects_non_video_or_oversized_bytes_and_uses_verified_extension(self):
         project = self.store.create_project("视频归档安全")

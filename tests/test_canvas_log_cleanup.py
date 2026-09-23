@@ -52,7 +52,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         value = {
             "id": canvas_id,
             "title": "test",
-            "logs": logs,
+            "history": logs,
             "nodes": nodes or [],
             "connections": [],
             "viewport": {"x": 0, "y": 0, "scale": 1},
@@ -99,12 +99,12 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.delete_canvas_log(
             "record_only",
-            main.DeleteCanvasLogRequest(log_id="log-1", delete_unreferenced_media=False),
+            main.DeleteCanvasLogRequest(history_id="log-1", delete_unreferenced_media=False),
         )
 
         self.assertTrue(path.exists())
         self.assertEqual(result["removed_files"], [])
-        self.assertEqual(result["canvas"]["logs"], [])
+        self.assertEqual(result["canvas"]["history"], [])
 
     async def test_cleanup_keeps_media_referenced_by_a_node(self):
         path, url = self.generated_file()
@@ -116,7 +116,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.delete_canvas_log(
             "referenced",
-            main.DeleteCanvasLogRequest(log_id="log-1", delete_unreferenced_media=True),
+            main.DeleteCanvasLogRequest(history_id="log-1", delete_unreferenced_media=True),
         )
 
         self.assertTrue(path.exists())
@@ -148,7 +148,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         result = await main.delete_canvas_log(
             "remove_node",
             main.DeleteCanvasLogRequest(
-                log_id="log-1",
+                history_id="log-1",
                 delete_unreferenced_media=True,
                 reset_referencing_nodes=True,
             ),
@@ -190,7 +190,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         result = await main.delete_canvas_log(
             "classic_output",
             main.DeleteCanvasLogRequest(
-                log_id="log-1",
+                history_id="log-1",
                 delete_unreferenced_media=True,
                 reset_referencing_nodes=True,
             ),
@@ -230,7 +230,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         result = await main.delete_canvas_log(
             "multi_result",
             main.DeleteCanvasLogRequest(
-                log_id="log-1",
+                history_id="log-1",
                 delete_unreferenced_media=True,
                 reset_referencing_nodes=True,
             ),
@@ -265,7 +265,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         result = await main.delete_canvas_log(
             "reference_only",
             main.DeleteCanvasLogRequest(
-                log_id="log-1",
+                history_id="log-1",
                 delete_unreferenced_media=True,
                 reset_referencing_nodes=True,
             ),
@@ -289,7 +289,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.delete_canvas_log(
             "unreferenced",
-            main.DeleteCanvasLogRequest(log_id="log-1", delete_unreferenced_media=True),
+            main.DeleteCanvasLogRequest(history_id="log-1", delete_unreferenced_media=True),
         )
 
         self.assertFalse(path.exists())
@@ -307,7 +307,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.delete_canvas_log(
             "history_only",
-            main.DeleteCanvasLogRequest(log_id="log-1", delete_unreferenced_media=True),
+            main.DeleteCanvasLogRequest(history_id="log-1", delete_unreferenced_media=True),
         )
 
         self.assertFalse(path.exists())
@@ -326,7 +326,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         result = await main.delete_canvas_log(
             "unreadable_owner",
-            main.DeleteCanvasLogRequest(log_id="log-1", delete_unreferenced_media=True),
+            main.DeleteCanvasLogRequest(history_id="log-1", delete_unreferenced_media=True),
         )
 
         self.assertTrue(path.exists())
@@ -340,7 +340,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
             await main.delete_canvas_log(
                 "stale",
                 main.DeleteCanvasLogRequest(
-                    log_id="log-1",
+                    history_id="log-1",
                     delete_unreferenced_media=True,
                     base_updated_at=100,
                 ),
@@ -349,7 +349,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertTrue(path.exists())
         stored = json.loads((self.canvases / "stale.json").read_text(encoding="utf-8"))
-        self.assertEqual([item["id"] for item in stored["logs"]], ["log-1"])
+        self.assertEqual([item["id"] for item in stored["history"]], ["log-1"])
 
     async def test_saved_version_advances_when_clock_is_unchanged(self):
         _, url = self.generated_file()
@@ -358,7 +358,7 @@ class CanvasLogCleanupTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "now_ms", return_value=200):
             result = await main.delete_canvas_log(
                 "monotonic",
-                main.DeleteCanvasLogRequest(log_id="log-1", base_updated_at=200),
+                main.DeleteCanvasLogRequest(history_id="log-1", base_updated_at=200),
             )
 
         self.assertEqual(result["canvas"]["updated_at"], 201)

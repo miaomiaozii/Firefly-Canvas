@@ -2992,7 +2992,7 @@ body.prompt-flow-active #world > :not(#composer) { visibility:hidden; pointer-ev
 .log-buttons button { flex:0 0 28px; width:28px; min-width:28px; height:28px; min-height:28px; padding:0; border:1px solid transparent; border-radius:var(--radius-utility, 6px); background:transparent; color:var(--muted); box-shadow:none; }
 .log-buttons button:hover,
 .log-buttons button:focus-visible { border-color:var(--line); background:var(--soft); color:var(--text); }
-.log-buttons button[data-log-send-all] { color:var(--accent); }
+.log-buttons button[data-history-send-all] { color:var(--accent); }
 .log-buttons button.danger { color:var(--danger); border-color:transparent; background:transparent; }
 .log-buttons button.danger:hover,
 .log-buttons button.danger:focus-visible { border-color:color-mix(in srgb, var(--danger) 35%, var(--line)); background:color-mix(in srgb, var(--danger) 10%, transparent); color:var(--danger); }

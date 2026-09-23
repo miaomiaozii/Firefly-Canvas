@@ -689,9 +689,9 @@ def validate_candidate(root: Path) -> dict:
         required_clicks = {
             ".model-control > .smart-pill",
             ".size-picker-control > .smart-pill",
-            "#smartLogToggle",
+            "#smartHistoryToggle",
             "#composerFlowBtn",
-            '[data-canvas-log-id="integrity-success-one"] [data-log-output-preview="3"]',
+            '[data-canvas-history-id="integrity-success-one"] [data-history-output-preview="3"]',
             '.smart-log-detail-output[data-output-index="1"]',
             ".smart-log-detail-copy-2k",
             ".smart-log-detail-delete-original",
@@ -735,7 +735,7 @@ def validate_candidate(root: Path) -> dict:
             ".size-picker-control.pinned .smart-popover",
             "#promptInput",
             ".composer-head",
-            "#smartLogModal .log-list",
+            "#smartHistoryModal .log-list",
             ".smart-log-detail-stage",
         }
         trusted_wheels = {
@@ -749,7 +749,7 @@ def validate_candidate(root: Path) -> dict:
             raise ValueError("missing trusted native wheel ownership, history navigation, or preview zoom evidence")
         if not any(
             item.get("action") == "wheel"
-            and item.get("selector") == "#smartLogModal .log-list"
+            and item.get("selector") == "#smartHistoryModal .log-list"
             and item.get("trusted") is True
             and abs(float(item.get("delta_x") or 0)) > 0
             and abs(float(item.get("delta_y") or 0)) <= 0.1

@@ -90,8 +90,8 @@ function setupSmartTitleEdit(){
     smartTitle?.addEventListener('dblclick', event => { event.preventDefault(); openSmartTitleEdit(); });
 }
 const imageEditModal = document.getElementById('imageEditModal');
-const smartLogModal = document.getElementById('smartLogModal');
-const smartLogList = document.getElementById('smartLogList');
+const smartHistoryModal = document.getElementById('smartHistoryModal');
+const smartHistoryList = document.getElementById('smartHistoryList');
 const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
 const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
 let smartHistoryDrawerCollapsed = false;
@@ -1162,9 +1162,9 @@ function syncLiveProjectMediaReferences(storageCanvas, materializedCanvas){
         Object.assign(node, merged);
     });
     canvas.nodes = nodes;
-    const beforeLogs = new Map((storageCanvas?.logs || []).map(log => [String(log?.id || ''), log]));
-    const savedLogs = new Map((materializedCanvas?.logs || []).map(log => [String(log?.id || ''), log]));
-    canvas.logs = (canvas.logs || []).map(log => {
+    const beforeLogs = new Map((storageCanvas?.history || []).map(log => [String(log?.id || ''), log]));
+    const savedLogs = new Map((materializedCanvas?.history || []).map(log => [String(log?.id || ''), log]));
+    canvas.history = (canvas.history || []).map(log => {
         const id = String(log?.id || '');
         const savedLog = savedLogs.get(id);
         return savedLog
@@ -1188,14 +1188,14 @@ function canvasForStorage(){
     // 日志预览的临时节点（编辑器打开期间临时塞进 nodes）绝不能被持久化，否则刷新后会留下幽灵节点。
     if(Array.isArray(clean.nodes)) clean.nodes = clean.nodes.filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID);
     (clean.nodes || []).forEach(node => {
-        delete node._pendingHistoryLogId;
+        delete node._pendingHistoryId;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
         if(node.type === 'smart-conversation') delete node.conversationSending;
         if(node.type === 'local-edit') delete node._leBusy;
     });
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
-    clean.logs = mediaReferencesForStorage((clean.logs || []).filter(log => log?.status !== 'pending'));
+    clean.history = mediaReferencesForStorage((clean.history || []).filter(log => log?.status !== 'pending'));
     return clean;
 }
 function apiErrorMessage(data, fallback=tr('chat.requestFailed')){
@@ -2802,7 +2802,7 @@ function frameSmartCanvasContentIfNeeded(){
         .filter(rect => rect.width > 0 && rect.height > 0);
     if(!content.length) return false;
 
-    const drawerOpen = smartLogModal?.classList.contains('open');
+    const drawerOpen = smartHistoryModal?.classList.contains('open');
     const safe = {
         left:32,
         top:86,
@@ -5707,7 +5707,7 @@ function usedCanvasOutputUrls(){
 }
 function successfulRecentGenerationLogOutputs(sourceNodeId='', withinMs=30 * 60 * 1000){
     const cutoff = Date.now() - withinMs;
-    const logs = (canvas?.logs || [])
+    const logs = (canvas?.history || [])
         .filter(log => log && log.status === 'success' && Number(log.createdAt || 0) >= cutoff)
         .filter(log => Array.isArray(log.outputs) && log.outputs.length)
         .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
@@ -5719,7 +5719,7 @@ function successfulRecentGenerationLogOutputs(sourceNodeId='', withinMs=30 * 60 
         nodeId:log.nodeId
     }))).filter(item => item.url);
 }
-function recoverStuckLoopOutputsFromLogs(){
+function recoverStuckLoopOutputsFromHistory(){
     const used = usedCanvasOutputUrls();
     let changed = false;
     const slots = (nodes || [])
@@ -5917,8 +5917,8 @@ function applyMergedServerCanvas(serverCanvas){
             if(nodeId) smartGenerationNodeRevisions.set(nodeId, Math.max(serverRevision, Number(smartGenerationNodeRevisions.get(nodeId) || 0)));
         });
     }
-    canvas.logs = mergeSmartHistoryRecordLists(canvas.logs || [], serverCanvas.logs || []);
-    const terminalTaskIds = terminalSmartGenerationTaskIds(canvas.logs || []);
+    canvas.history = mergeSmartHistoryRecordLists(canvas.history || [], serverCanvas.history || []);
+    const terminalTaskIds = terminalSmartGenerationTaskIds(canvas.history || []);
     const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, terminalTaskIds);
     const nodeIds = new Set(mergedNodes.map(n => n.id));
     nodes = mergedNodes;
@@ -5931,7 +5931,7 @@ function applyMergedServerCanvas(serverCanvas){
         }
     });
     const cleanedState = clearCompletedNodeBusyStates();
-    const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
+    const recoveredLoopOutputs = recoverStuckLoopOutputsFromHistory();
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
     const serverRev = Number(serverCanvas.revision || 0);
     if(serverRev > 0) canvas.revision = Math.max(serverRev, Number(canvas.revision || 0));
@@ -5942,7 +5942,7 @@ function applyMergedServerCanvas(serverCanvas){
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
     if(recoveredLoopOutputs || createdRemoteTaskCards) scheduleSave();
-    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
     resumeJimengPendingNodes();
     return true;
@@ -6052,7 +6052,7 @@ function setAssetLibraryFromResponse(data, options={}){
 }
 function toggleAssetLibrary(open=!assetLibraryOpen){
     if(!assetPanel || !assetToggle) return;
-    if(open && smartLogModal?.classList.contains('open')) closeSmartCanvasLog();
+    if(open && smartHistoryModal?.classList.contains('open')) closeSmartCanvasLog();
     assetLibraryOpen = !!open;
     assetPanel.classList.toggle('open', assetLibraryOpen);
     assetToggle?.classList.toggle('active', assetLibraryOpen);
@@ -6493,9 +6493,9 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
     if(!serverCanvasData) return Number(canvas?.revision || 0);
     const nextCanvas = hydrateProjectMediaReferences(serverCanvasData);
     canvas = nextCanvas;
-    canvas.logs = activeTaskLogs !== null
-        ? mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs)
-        : (canvas.logs || []);
+    canvas.history = activeTaskLogs !== null
+        ? mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs)
+        : (canvas.history || []);
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
@@ -6638,7 +6638,7 @@ async function smartAssetBatchDelete(){
     }
     // 3) 刷新 + 汇总提示
     if(assetLibraryIsProject()) renderAssetLibrary();
-    renderSmartCanvasLog();
+    renderSmartCanvasHistory();
     refreshSmartProjectMediaTrashButton();
     if(assetBatchSelected.size === 0) setAssetBatchMode(false);
     assetBatchBusy = false;
@@ -6877,14 +6877,14 @@ async function smartTrashRestoreItem(assetId, deletionId){
                 : (res.message || tr('smart.trashRestoreFailed'));
             if(res.status !== 409) throw new Error(msg);
             toast(msg);
-            renderSmartCanvasLog();
+            renderSmartCanvasHistory();
             refreshSmartProjectMediaTrashButton();
             await openSmartTrashPanel();
             return;
         }
         if(res.data?.canvas) await adoptServerCanvas(res.data.canvas);
         toast(tr('canvas.originalRestored'));
-        renderSmartCanvasLog();
+        renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
         await openSmartTrashPanel();
     } catch(err){
@@ -7014,7 +7014,7 @@ async function smartUnusedCleanAll(){
     if(assetLibraryIsProject()) renderAssetLibrary();
     // #60: 删除会影响历史引用的媒体时，同步刷新历史列表与回收区入口按钮（此前不刷新，
     // 历史卡片/按钮状态滞后到下次手动打开面板）。
-    renderSmartCanvasLog();
+    renderSmartCanvasHistory();
     refreshSmartProjectMediaTrashButton();
     if(failCount > 0) toast(tr('smart.unusedCleanPartial').replace('{ok}', String(okCount)).replace('{fail}', String(failCount)));
     else toast(tr('smart.unusedCleanDone').replace('{n}', String(okCount)));
@@ -7121,9 +7121,9 @@ async function cascadeArchiveDeletedMedia(images){
     if(!assetIds.size) return;
     const stillReferenced = new Set();
     nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
-    // #88：生成历史（canvas.logs）引用的原图不在节点集合里——仅删画布图时也要豁免，
+    // #88：生成历史（canvas.history）引用的原图不在节点集合里——仅删画布图时也要豁免，
     // 否则会把历史里还挂着的原图归档进回收区，历史缩略图 404。
-    (Array.isArray(canvas?.logs) ? canvas.logs : []).forEach(log => {
+    (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
         (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
             const id = String(output?.asset_id || '');
             if(id) stillReferenced.add(id);
@@ -7442,7 +7442,7 @@ async function loadCanvas(){
         document.title = canvas.title || tr('canvas.smartCanvas');
         setSmartTitleText(canvas.title || tr('canvas.smartCanvas'));
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
+        canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         nodes.forEach(n => {
@@ -7458,7 +7458,7 @@ async function loadCanvas(){
             }
         });
         const cleanedCompletedState = clearCompletedNodeBusyStates();
-        const recoveredLoopOutputs = recoverStuckLoopOutputsFromLogs();
+        const recoveredLoopOutputs = recoverStuckLoopOutputsFromHistory();
         const hiddenCompletedTimers = hideCompletedRunTimers();
         const cleanedDetachedInputs = cleanupDetachedRunInputRefs();
         canvas.nodes = nodes;
@@ -7711,7 +7711,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
                     );
                     nodes = restoredNodes.nodes;
                     canvas.nodes = nodes;
-                    canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(serverCanvas.logs || []));
+                    canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(serverCanvas.history || []));
                     canvas.connections = Array.isArray(serverCanvas.connections) ? serverCanvas.connections : [];
                     persistedCoreSnapshot = projectCanvasSnapshot(serverCanvas);
                     persistedDurableSnapshot = durableSnapshotForCanvas(serverCanvas);
@@ -7736,7 +7736,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
             canvas = localView.canvas;
             nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-            canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
+            canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
             canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
             persistedCoreSnapshot = projectCanvasSnapshot(flushResult.serverCanvas);
             persistedDurableSnapshot = durableSnapshotForCanvas(flushResult.serverCanvas);
@@ -7762,7 +7762,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
         canvas = localView.canvas;
         nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
+        canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         applyViewport();
         render();
@@ -7836,7 +7836,7 @@ async function saveCanvas({automatic=false}={}){
                 nodes:storageCanvas.nodes || [],
                 connections:storageCanvas.connections || [],
                 viewport:storageCanvas.viewport || {x:0,y:0,scale:1},
-                logs:storageCanvas.logs || [],
+                history:storageCanvas.history || [],
                 settings:storageCanvas.settings || {},
                 base_updated_at:storageCanvas.updated_at || canvas.updated_at || 0,
                 client_id:smartClientId
@@ -7902,7 +7902,7 @@ function createNode(x, y, images=[], options={}){
     node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : mediaNodeDefaultScale(node);
     if(options.title) node.title = String(options.title);
     if(options.runMeta) attachRunMeta(node, options.runMeta);
-    if(options.historyLogId) node.historyLogId = String(options.historyLogId);
+    if(options.historyId) node.historyId = String(options.historyId);
     if(options.needsRegeneration != null) node.needsRegeneration = Boolean(options.needsRegeneration);
     if(options.generationState) node.generationState = String(options.generationState);
     inheritNodeMetaFromImage(node);
@@ -8873,7 +8873,7 @@ function syncMarkedImageButtons(){
     if(window.lucide) lucide.createIcons();
 }
 // #89 第四轮：生成详情/生图历史的 output 项 → 画布节点 {nodeId,index}（优先 asset_id 匹配，回退 url）。
-function smartLogDetailNodeImageRef(item){
+function smartHistoryDetailNodeImageRef(item){
     const assetId = String(item?.asset_id || '');
     const url = String(item?.url || '');
     let ref = null;
@@ -8919,7 +8919,7 @@ function toggleMarkedImage(node, imageIndex){
 // asset_id → 可用文件（含 url）：先查生成历史输出，再查节点图片；文件已删的自动跳过。
 function markedImageItems(){
     const found = new Map();
-    (Array.isArray(canvas?.logs) ? canvas.logs : []).forEach(log => {
+    (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
         (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
             const id = String(output?.asset_id || '');
             if(id && output?.url && !found.has(id)) found.set(id, output);
@@ -9041,7 +9041,7 @@ function smartRunSnapshot(node, prompt, refs=[], kind='image'){
         size: kind === 'image' && isApiLikeEngine(settingsSnapshot.engine) ? sizeForRun(settingsSnapshot) : ''
     };
 }
-function smartLogRunMeta(log){
+function smartHistoryRunMeta(log){
     const request = log?.request && typeof log.request === 'object' ? log.request : {};
     const params = log?.params && typeof log.params === 'object' ? log.params : {};
     const snapshot = cloneSmartSettings(log?.runSettings || log?.settings || {});
@@ -9081,7 +9081,7 @@ function smartHistoryLogTimestamp(log){
     if(!Number.isFinite(value) || value <= 0) return 0;
     return value < 1000000000000 ? value * 1000 : value;
 }
-function smartLogRunMs(log){
+function smartHistoryRunMs(log){
     const value = Number(log?.runMs ?? 0);
     if(Number.isFinite(value) && value > 0) return value;
     const start = smartHistoryLogTimestamp(log);
@@ -9115,7 +9115,7 @@ function sortSmartHistoryLogs(logs){
     const list = Array.isArray(logs) ? logs : [];
     return list.slice().sort((a, b) => smartHistoryLogTimestamp(b) - smartHistoryLogTimestamp(a) || 0);
 }
-function smartPendingHistoryLogId(taskId){
+function smartPendingHistoryId(taskId){
     return `pending-generation-${String(taskId || '').trim()}`;
 }
 function smartPendingHistoryTaskId(log){
@@ -9171,7 +9171,7 @@ function applySmartTaskProgress(taskId, progress){
             changed = true;
         });
     });
-    const taskLog = (canvas?.logs || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);
+    const taskLog = (canvas?.history || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);
     if(taskLog){
         const nextProgress = {...progress, failed:taskLog.status === 'failed' || Boolean(progress.failed)};
         if(JSON.stringify(taskLog.progress || {}) !== JSON.stringify(nextProgress)){
@@ -9181,24 +9181,24 @@ function applySmartTaskProgress(taskId, progress){
     }
     if(changed){
         render();
-        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     return changed;
 }
 function beginSmartPendingHistoryLog(node, defaults={}){
     if(!canvas || !node) return '';
-    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
     if(!defaults.forceNew){
-        const currentId = String(node._pendingHistoryLogId || '');
-        const current = canvas.logs.find(log => String(log?.id || '') === currentId && log?.status === 'pending');
+        const currentId = String(node._pendingHistoryId || '');
+        const current = canvas.history.find(log => String(log?.id || '') === currentId && log?.status === 'pending');
         if(current) return currentId;
-        const matching = canvas.logs.find(log =>
+        const matching = canvas.history.find(log =>
             log?.status === 'pending'
             && String(log?.nodeId || '') === String(node.id || '')
             && !smartPendingHistoryTaskId(log)
         );
         if(matching){
-            node._pendingHistoryLogId = matching.id;
+            node._pendingHistoryId = matching.id;
             return matching.id;
         }
     }
@@ -9207,7 +9207,7 @@ function beginSmartPendingHistoryLog(node, defaults={}){
     const model = String(defaults.model || runSettings.model || '');
     const prompt = String(defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
     const id = `pending-local-${uid('generation')}`;
-    canvas.logs.push({
+    canvas.history.push({
         id,
         createdAt:Number(defaults.createdAt || node.runStartedAt || Date.now()),
         status:'pending',
@@ -9223,28 +9223,28 @@ function beginSmartPendingHistoryLog(node, defaults={}){
         runSettings:cloneSmartSettings(runSettings),
         outputs:[]
     });
-    node._pendingHistoryLogId = id;
-    canvas.logs = sortSmartHistoryLogs(canvas.logs);
-    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    node._pendingHistoryId = id;
+    canvas.history = sortSmartHistoryLogs(canvas.history);
+    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     return id;
 }
 function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defaults={}){
     if(!canvas || !node) return false;
-    canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+    canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
     let changed = false;
     const runSettings = smartSettingsForNode(node);
     (Array.isArray(tasks) ? tasks : []).forEach(task => {
         const taskId = String(task?.taskId || task?.task_id || '').trim();
         if(!taskId) return;
-        const id = smartPendingHistoryLogId(taskId);
-        if(canvas.logs.some(log => String(log?.id || '') === id || smartHistoryTaskId(log) === taskId)) return;
+        const id = smartPendingHistoryId(taskId);
+        if(canvas.history.some(log => String(log?.id || '') === id || smartHistoryTaskId(log) === taskId)) return;
         const createdAt = Number(task?.createdAt || task?.created_at || defaults.createdAt || node.runStartedAt || Date.now());
         const kind = String(task?.kind || defaults.kind || runSettings.apiKind || 'image');
         const providerId = String(task?.providerId || task?.provider_id || defaults.providerId || runSettings.providerId || '');
         const model = String(task?.model || defaults.model || runSettings.model || '');
         const prompt = String(task?.prompt || defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
-        const localId = String(task?.pendingHistoryLogId || node._pendingHistoryLogId || '');
-        const localEntry = canvas.logs.find(log =>
+        const localId = String(task?.pendingHistoryId || node._pendingHistoryId || '');
+        const localEntry = canvas.history.find(log =>
             log?.status === 'pending'
             && !smartPendingHistoryTaskId(log)
             && (String(log?.id || '') === localId || String(log?.nodeId || '') === String(node.id || ''))
@@ -9261,11 +9261,11 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
             localEntry.displayPrompt = localEntry.prompt;
             localEntry.runSettings = cloneSmartSettings(runSettings);
             if(task?.progress) localEntry.progress = {...task.progress};
-            if(String(node._pendingHistoryLogId || '') === localId) node._pendingHistoryLogId = id;
+            if(String(node._pendingHistoryId || '') === localId) node._pendingHistoryId = id;
             changed = true;
             return;
         }
-        canvas.logs.push({
+        canvas.history.push({
             id,
             createdAt,
             status:'pending',
@@ -9285,37 +9285,37 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
         changed = true;
     });
     if(changed){
-        canvas.logs = sortSmartHistoryLogs(canvas.logs);
-        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+        canvas.history = sortSmartHistoryLogs(canvas.history);
+        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     return changed;
 }
 function failSmartPendingHistoryLog(taskId, error=''){
-    const id = smartPendingHistoryLogId(taskId);
-    const entry = (canvas?.logs || []).find(log => String(log?.id || '') === id || (log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId || '')));
+    const id = smartPendingHistoryId(taskId);
+    const entry = (canvas?.history || []).find(log => String(log?.id || '') === id || (log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId || '')));
     if(!entry) return false;
     entry.status = 'failed';
     entry.error = String(error || tr('smart.errRunFailed'));
     entry.completed_at = Date.now();
     entry.runMs = Math.max(0, entry.completed_at - smartHistoryLogTimestamp(entry));
     entry.id = uid('log');
-    canvas.logs = sortSmartHistoryLogs(canvas.logs || []);
-    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    canvas.history = sortSmartHistoryLogs(canvas.history || []);
+    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     return true;
 }
-function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
+function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
     if(!canvas) return;
-    canvas.logs = canvas.logs || [];
+    canvas.history = canvas.history || [];
     const runNodeId = String(run?.nodeId || '');
     const runNode = nodes.find(node => String(node?.id || '') === runNodeId);
-    const pendingId = String(run?.pendingHistoryLogId || runNode?._pendingHistoryLogId || '');
-    const pendingEntry = canvas.logs.find(log =>
+    const pendingId = String(run?.pendingHistoryId || runNode?._pendingHistoryId || '');
+    const pendingEntry = canvas.history.find(log =>
         log?.status === 'pending'
         && (String(log?.id || '') === pendingId || (runNodeId && String(log?.nodeId || '') === runNodeId))
     );
     if(pendingEntry){
-        canvas.logs = canvas.logs.filter(log => log !== pendingEntry);
-        if(runNode && String(runNode._pendingHistoryLogId || '') === pendingId) delete runNode._pendingHistoryLogId;
+        canvas.history = canvas.history.filter(log => log !== pendingEntry);
+        if(runNode && String(runNode._pendingHistoryId || '') === pendingId) delete runNode._pendingHistoryId;
     }
     const outputItems = resultMediaUrls(outputs).map(item => {
         if(typeof item === 'string') return {url:item};
@@ -9348,13 +9348,13 @@ function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
         runMs:Number(runMs || 0),
         error:error ? String(error) : ''
     };
-    canvas.logs = [entry, ...canvas.logs].slice(0, 500);
-    if(!error && recoverStuckLoopOutputsFromLogs()) render();
+    canvas.history = [entry, ...canvas.history].slice(0, 500);
+    if(!error && recoverStuckLoopOutputsFromHistory()) render();
     scheduleSave();
 }
 const SMART_LOG_PREVIEW_NODE_ID = '__smart_log_preview__';
-let smartLogPreviewRestore = null;
-function smartLogOutputItem(output){
+let smartHistoryPreviewRestore = null;
+function smartHistoryOutputItem(output){
     if(typeof output === 'string') return {url:output};
     if(!output || typeof output !== 'object') return null;
     const url = output.url || output.path || output.src || output.uri || '';
@@ -9366,12 +9366,12 @@ function smartLogOutputItem(output){
         name:output.name || output.filename || ''
     });
 }
-function smartLogEntryById(logId){
-    return (canvas?.logs || []).find(log => String(log?.id || '') === String(logId || '')) || null;
+function smartHistoryEntryById(historyId){
+    return (canvas?.history || []).find(log => String(log?.id || '') === String(historyId || '')) || null;
 }
-function smartLogImageOutputs(log){
+function smartHistoryImageOutputs(log){
     return (log?.outputs || []).map((output, outputIndex) => {
-        const item = smartLogOutputItem(output);
+        const item = smartHistoryOutputItem(output);
         const kind = item?.kind || (outputUrlLooksVideo(item?.url || '') ? 'video' : 'image');
         return item?.url && kind === 'image' ? {
             ...item,
@@ -9382,15 +9382,15 @@ function smartLogImageOutputs(log){
         } : null;
     }).filter(Boolean);
 }
-function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
-    const log = smartLogEntryById(logId);
-    let outputs = smartLogImageOutputs(log);
+function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=null){
+    const log = smartHistoryEntryById(historyId);
+    let outputs = smartHistoryImageOutputs(log);
     if(Number.isInteger(outputIndex)) outputs = outputs.filter(output => output.outputIndex === outputIndex);
     if(log?.kind === 'video' && !outputs.length) return;
     const rect = shell.getBoundingClientRect();
     const point = dropPoint || screenToWorld({clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2});
     const failed = log?.status === 'failed' || !outputs.length;
-    const runMeta = smartLogRunMeta(log);
+    const runMeta = smartHistoryRunMeta(log);
     pushUndo();
     const node = createImageNodeAt(point, outputs.map(output => {
         const clean = {...output};
@@ -9400,7 +9400,7 @@ function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
         skipUndo:true,
         title:outputs.length > 1 ? 'Group' : 'Image',
         runMeta,
-        historyLogId:log?.id || '',
+        historyId:log?.id || '',
         needsRegeneration:failed,
         generationState:failed ? 'ready' : 'complete'
     });
@@ -9410,9 +9410,9 @@ function sendSmartLogOutputsToCanvas(logId, outputIndex=null, dropPoint=null){
     toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
     return node;
 }
-function setSmartLogDragState(active, card=null){
-    smartLogModal?.classList.toggle('log-drag-active', active);
-    smartLogModal?.querySelectorAll('.log-media-card.is-dragging,.log-history-image.is-dragging').forEach(el => el.classList.remove('is-dragging'));
+function setSmartHistoryDragState(active, card=null){
+    smartHistoryModal?.classList.toggle('log-drag-active', active);
+    smartHistoryModal?.querySelectorAll('.log-media-card.is-dragging,.log-history-image.is-dragging').forEach(el => el.classList.remove('is-dragging'));
     if(active){
         card?.classList.add('is-dragging');
         card?.querySelector?.('.log-history-image')?.classList.add('is-dragging');
@@ -9424,30 +9424,30 @@ function clearSmartHistoryTap(){
 }
 function selectSmartHistoryImage(card){
     if(!card) return;
-    const logItem = card.closest('[data-canvas-log-id]');
+    const logItem = card.closest('[data-canvas-history-id]');
     smartHistorySelectedImage = {
-        logId:logItem?.dataset.canvasLogId || '',
-        outputIndex:Number(card.dataset.logOutputIndex || 0),
+        historyId:logItem?.dataset.canvasHistoryId || '',
+        outputIndex:Number(card.dataset.historyOutputIndex || 0),
         outputId:String(card.dataset.outputId || '')
     };
-    smartLogModal?.querySelectorAll('.log-media-card.is-selected').forEach(item => {
+    smartHistoryModal?.querySelectorAll('.log-media-card.is-selected').forEach(item => {
         item.classList.remove('is-selected');
         item.removeAttribute('data-history-selected');
         item.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'false');
     });
-    smartLogModal?.querySelectorAll('.log-output-preview.is-selected').forEach(item => {
+    smartHistoryModal?.querySelectorAll('.log-output-preview.is-selected').forEach(item => {
         item.classList.remove('is-selected');
         item.setAttribute('aria-current', 'false');
     });
     card.classList.add('is-selected');
     card.dataset.historySelected = 'true';
     card.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'true');
-    const preview = logItem?.querySelector(`.log-output-preview[data-log-output-preview="${smartHistorySelectedImage.outputIndex}"]`);
+    const preview = logItem?.querySelector(`.log-output-preview[data-history-output-preview="${smartHistorySelectedImage.outputIndex}"]`);
     preview?.classList.add('is-selected');
     preview?.setAttribute('aria-current', 'true');
 }
 function smartHistoryDrawerContainsPoint(clientX, clientY){
-    const rect = smartLogModal?.getBoundingClientRect?.();
+    const rect = smartHistoryModal?.getBoundingClientRect?.();
     return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
 }
 function smartHistoryCanvasDropPoint(clientX, clientY){
@@ -9455,22 +9455,22 @@ function smartHistoryCanvasDropPoint(clientX, clientY){
     if(!target?.closest?.('#world')) return null;
     return screenToWorld({clientX, clientY});
 }
-function handleSmartHistoryTap(image, logId, outputIndex, clientX, clientY){
+function handleSmartHistoryTap(image, historyId, outputIndex, clientX, clientY){
     const now = performance.now();
     const previous = smartHistoryTap;
     const sameImage = previous
-        && previous.logId === logId
+        && previous.historyId === historyId
         && previous.outputIndex === outputIndex
         && now - previous.time <= 320
         && Math.hypot(clientX - previous.clientX, clientY - previous.clientY) <= 20;
     if(sameImage){
         clearSmartHistoryTap();
-        openSmartLogDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', logId, outputIndex});
+        openSmartHistoryDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', historyId, outputIndex});
         return;
     }
     if(previous?.timer) clearTimeout(previous.timer);
     const card = image?.closest('.log-media-card');
-    const tap = {logId, outputIndex, clientX, clientY, time:now, timer:null};
+    const tap = {historyId, outputIndex, clientX, clientY, time:now, timer:null};
     tap.timer = setTimeout(() => {
         selectSmartHistoryImage(card);
         if(smartHistoryTap === tap) smartHistoryTap = null;
@@ -9482,7 +9482,7 @@ function clearSmartHistoryPointerState(){
     if(!state) return;
     state.image?.classList.remove('is-dragging');
     try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) {}
-    setSmartLogDragState(false);
+    setSmartHistoryDragState(false);
     smartHistoryPointerState = null;
     scheduleSmartHistoryWindowRender();
 }
@@ -9501,7 +9501,7 @@ function setSmartHistoryDragPayload(event, item){
     transfer.setData('application/x-smart-asset', JSON.stringify(payload));
     if(payload.url) transfer.setData('text/plain', payload.url);
 }
-function bindSmartHistoryImage(image, item, logId, outputIndex){
+function bindSmartHistoryImage(image, item, historyId, outputIndex){
     image.draggable = true;
     image.onpointerdown = event => {
         if(event.button !== 0) return;
@@ -9511,7 +9511,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         smartHistoryPointerState = {
             image,
             card:image.closest('.log-media-card'),
-            logId,
+            historyId,
             outputIndex,
             pointerId,
             startX:event.clientX,
@@ -9527,7 +9527,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         if(!state.moved && distance >= 8){
             state.moved = true;
             clearSmartHistoryTap();
-            setSmartLogDragState(true, state.card);
+            setSmartHistoryDragState(true, state.card);
         }
         if(state.moved) event.preventDefault();
         event.stopPropagation();
@@ -9542,13 +9542,13 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
                 ? smartHistoryCanvasDropPoint(event.clientX, event.clientY)
                 : null;
             if(dropPoint){
-                sendSmartLogOutputsToCanvas(logId, outputIndex, dropPoint);
+                sendSmartHistoryOutputsToCanvas(historyId, outputIndex, dropPoint);
             }
             clearSmartHistoryPointerState();
             return;
         }
         clearSmartHistoryPointerState();
-        handleSmartHistoryTap(image, logId, outputIndex, event.clientX, event.clientY);
+        handleSmartHistoryTap(image, historyId, outputIndex, event.clientX, event.clientY);
     };
     image.onpointercancel = event => {
         event.stopPropagation();
@@ -9558,7 +9558,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         const state = smartHistoryPointerState || {
             image,
             card:image.closest('.log-media-card'),
-            logId,
+            historyId,
             outputIndex,
             pointerId:event.pointerId ?? 1,
             startX:event.clientX,
@@ -9571,7 +9571,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         smartHistoryPointerState = state;
         clearSmartHistoryTap();
         setSmartHistoryDragPayload(event, item);
-        setSmartLogDragState(true, state.card);
+        setSmartHistoryDragState(true, state.card);
         event.stopPropagation();
     };
     image.ondragend = event => {
@@ -9594,7 +9594,7 @@ function bindSmartHistoryImage(image, item, logId, outputIndex){
         } else if(event.key === ' ' || event.key === 'Spacebar'){
             event.preventDefault();
             event.stopPropagation();
-            openSmartLogDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', logId, outputIndex});
+            openSmartHistoryDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', historyId, outputIndex});
         }
     };
 }
@@ -9608,7 +9608,7 @@ function normalizedResolutionTier(value){
     const match = String(value || '').trim().toLowerCase().match(/^([124])\s*k$/);
     return match ? `${match[1]}K` : '';
 }
-function smartLogResolutionTier(log, outputs=[]){
+function smartHistoryResolutionTier(log, outputs=[]){
     if(log?.kind === 'video' || log?.outputKind === 'video' || outputs.some(item => item?.kind === 'video' || outputUrlLooksVideo(item?.url || ''))) return '';
     const sources = [log?.params, log?.request, log?.runSettings].filter(Boolean);
     for(const source of sources){
@@ -9628,7 +9628,7 @@ function smartLogResolutionTier(log, outputs=[]){
     if(longest >= 768) return '1K';
     return '';
 }
-function smartLogSizeSummary(log, outputs=[]){
+function smartHistorySizeSummary(log, outputs=[]){
     const req = log?.request || {};
     const requestLabel = normalizedSizeLabel(req.size || req.resolution || '');
     const actualLabels = [...new Set(outputs.map(imageResolutionLabel).filter(Boolean))];
@@ -9642,120 +9642,120 @@ function smartLogSizeSummary(log, outputs=[]){
     return trf('smart.actualOnly', {a: actualLabel});
 }
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
-function cleanupSmartLogPreviewNode(){
+function cleanupSmartHistoryPreviewNode(){
     if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)){ nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID); if(canvas) canvas.nodes = nodes; }
-    if(smartLogPreviewRestore){
-        selectedId = smartLogPreviewRestore.selectedId;
-        selectedImage = smartLogPreviewRestore.selectedImage;
-        smartLogPreviewRestore = null;
+    if(smartHistoryPreviewRestore){
+        selectedId = smartHistoryPreviewRestore.selectedId;
+        selectedImage = smartHistoryPreviewRestore.selectedImage;
+        smartHistoryPreviewRestore = null;
     }
 }
-let smartLogDetailLastFocus = null;
-let smartLogDetailSession = {logId:'', outputs:[], outputIndex:0, outputId:''};
-let smartLogDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
-function applySmartLogDetailTransform(){
-    const box = document.getElementById('smartLogLightbox');
+let smartHistoryDetailLastFocus = null;
+let smartHistoryDetailSession = {historyId:'', outputs:[], outputIndex:0, outputId:''};
+let smartHistoryDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
+function applySmartHistoryDetailTransform(){
+    const box = document.getElementById('smartHistoryLightbox');
     const stage = box?.querySelector('.smart-log-detail-stage');
     const frame = box?.querySelector('.smart-log-detail-frame');
     if(frame){
-        frame.style.transform = `translate(${smartLogDetailView.pan.x}px, ${smartLogDetailView.pan.y}px) scale(${smartLogDetailView.zoom})`;
-        frame.dataset.zoom = String(smartLogDetailView.zoom);
+        frame.style.transform = `translate(${smartHistoryDetailView.pan.x}px, ${smartHistoryDetailView.pan.y}px) scale(${smartHistoryDetailView.zoom})`;
+        frame.dataset.zoom = String(smartHistoryDetailView.zoom);
     }
-    stage?.classList.toggle('panning', Boolean(smartLogDetailView.drag));
+    stage?.classList.toggle('panning', Boolean(smartHistoryDetailView.drag));
     const label = box?.querySelector('.smart-log-detail-zoom-label');
-    if(label) label.textContent = `${Math.round(smartLogDetailView.zoom * 100)}%`;
+    if(label) label.textContent = `${Math.round(smartHistoryDetailView.zoom * 100)}%`;
 }
-function resetSmartLogDetailView(){
-    smartLogDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
-    applySmartLogDetailTransform();
+function resetSmartHistoryDetailView(){
+    smartHistoryDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
+    applySmartHistoryDetailTransform();
 }
-function zoomSmartLogDetail(factor, clientX=null, clientY=null){
-    const frame = document.querySelector('#smartLogLightbox.open .smart-log-detail-frame');
+function zoomSmartHistoryDetail(factor, clientX=null, clientY=null){
+    const frame = document.querySelector('#smartHistoryLightbox.open .smart-log-detail-frame');
     const rect = frame?.getBoundingClientRect();
     if(!rect) return;
     const next = zoomPanAroundPoint(
-        smartLogDetailView.zoom,
-        smartLogDetailView.pan,
+        smartHistoryDetailView.zoom,
+        smartHistoryDetailView.pan,
         factor,
         rect,
         clientX ?? rect.left + rect.width / 2,
         clientY ?? rect.top + rect.height / 2,
         {min:0.1, max:8}
     );
-    smartLogDetailView.zoom = next.zoom;
-    smartLogDetailView.pan = next.pan;
-    applySmartLogDetailTransform();
+    smartHistoryDetailView.zoom = next.zoom;
+    smartHistoryDetailView.pan = next.pan;
+    applySmartHistoryDetailTransform();
 }
-function finishSmartLogDetailPan(stage, pointerId){
-    if(!smartLogDetailView.drag) return;
-    try { stage?.releasePointerCapture?.(pointerId ?? smartLogDetailView.drag.pointerId); } catch (_) {}
-    smartLogDetailView.drag = null;
-    applySmartLogDetailTransform();
+function finishSmartHistoryDetailPan(stage, pointerId){
+    if(!smartHistoryDetailView.drag) return;
+    try { stage?.releasePointerCapture?.(pointerId ?? smartHistoryDetailView.drag.pointerId); } catch (_) {}
+    smartHistoryDetailView.drag = null;
+    applySmartHistoryDetailTransform();
 }
-function setupSmartLogDetailInteractions(box){
+function setupSmartHistoryDetailInteractions(box){
     const stage = box.querySelector('.smart-log-detail-stage');
     stage.addEventListener('wheel', event => {
         event.preventDefault();
         event.stopPropagation();
-        zoomSmartLogDetail(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
+        zoomSmartHistoryDetail(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
     }, {passive:false});
     stage.addEventListener('pointerdown', event => {
         if(event.button !== 0 || event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
         event.stopPropagation();
         stage.setPointerCapture?.(event.pointerId);
-        smartLogDetailView.drag = {
+        smartHistoryDetailView.drag = {
             pointerId:event.pointerId,
             clientX:event.clientX,
             clientY:event.clientY,
-            startX:smartLogDetailView.pan.x,
-            startY:smartLogDetailView.pan.y
+            startX:smartHistoryDetailView.pan.x,
+            startY:smartHistoryDetailView.pan.y
         };
-        applySmartLogDetailTransform();
+        applySmartHistoryDetailTransform();
     });
     stage.addEventListener('pointermove', event => {
-        const drag = smartLogDetailView.drag;
+        const drag = smartHistoryDetailView.drag;
         if(!drag || drag.pointerId !== event.pointerId) return;
         event.preventDefault();
         event.stopPropagation();
-        smartLogDetailView.pan = {
+        smartHistoryDetailView.pan = {
             x:drag.startX + event.clientX - drag.clientX,
             y:drag.startY + event.clientY - drag.clientY
         };
-        applySmartLogDetailTransform();
+        applySmartHistoryDetailTransform();
     });
-    stage.addEventListener('pointerup', event => finishSmartLogDetailPan(stage, event.pointerId));
-    stage.addEventListener('pointercancel', event => finishSmartLogDetailPan(stage, event.pointerId));
+    stage.addEventListener('pointerup', event => finishSmartHistoryDetailPan(stage, event.pointerId));
+    stage.addEventListener('pointercancel', event => finishSmartHistoryDetailPan(stage, event.pointerId));
     stage.addEventListener('dblclick', event => {
         if(event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
         event.preventDefault();
         event.stopPropagation();
-        resetSmartLogDetailView();
+        resetSmartHistoryDetailView();
     });
     box.querySelectorAll('[data-smart-log-detail-zoom]').forEach(button => {
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            const action = button.dataset.smartLogDetailZoom;
-            if(action === 'reset') resetSmartLogDetailView();
-            else zoomSmartLogDetail(action === 'in' ? 1.12 : 1 / 1.12);
+            const action = button.dataset.smartHistoryDetailZoom;
+            if(action === 'reset') resetSmartHistoryDetailView();
+            else zoomSmartHistoryDetail(action === 'in' ? 1.12 : 1 / 1.12);
         });
     });
 }
-function closeSmartLogLightbox(){
-    const box = document.getElementById('smartLogLightbox');
+function closeSmartHistoryLightbox(){
+    const box = document.getElementById('smartHistoryLightbox');
     if(!box) return;
     box.classList.remove('open');
     box.setAttribute('aria-hidden', 'true');
     const img = box.querySelector('.smart-log-detail-image');
     if(img){ img.onerror = null; img.removeAttribute('src'); }
-    smartLogDetailSession = {logId:'', outputs:[], outputIndex:0, outputId:''};
+    smartHistoryDetailSession = {historyId:'', outputs:[], outputIndex:0, outputId:''};
     box.querySelector('.smart-log-detail-output-strip')?.replaceChildren();
-    resetSmartLogDetailView();
-    const restore = smartLogDetailLastFocus;
-    smartLogDetailLastFocus = null;
+    resetSmartHistoryDetailView();
+    const restore = smartHistoryDetailLastFocus;
+    smartHistoryDetailLastFocus = null;
     if(restore?.isConnected) requestAnimationFrame(() => restore.focus({preventScroll:true}));
 }
-async function smartLogImage2kPngBlob(item){
+async function smartHistoryImage2kPngBlob(item){
     const sourceUrl = displayMediaUrl(item);
     if(!sourceUrl) throw new Error(tr('smart.imageUrlUnavailable'));
     const response = await fetch(sourceUrl, {credentials:'same-origin'});
@@ -9781,23 +9781,23 @@ async function smartLogImage2kPngBlob(item){
         bitmap.close?.();
     }
 }
-async function copySmartLogImage2k(item){
+async function copySmartHistoryImage2k(item){
     if(!item?.url) throw new Error(tr('smart.imageUrlUnavailable'));
     if(typeof ClipboardItem !== 'function' || !navigator.clipboard?.write){
         throw new Error(tr('smart.copyImageUnsupported'));
     }
-    const blob = await smartLogImage2kPngBlob(item);
+    const blob = await smartHistoryImage2kPngBlob(item);
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
     return {width:'≤2048', mime:'image/png'};
 }
-function ensureSmartLogDetail(){
-    let box = document.getElementById('smartLogLightbox');
+function ensureSmartHistoryDetail(){
+    let box = document.getElementById('smartHistoryLightbox');
     if(box) return box;
     box = document.createElement('div');
-    box.id = 'smartLogLightbox';
+    box.id = 'smartHistoryLightbox';
     box.className = 'smart-log-lightbox';
     box.setAttribute('aria-hidden', 'true');
-    box.innerHTML = `<article class="smart-log-detail" role="dialog" aria-modal="true" aria-labelledby="smartLogDetailTitle">
+    box.innerHTML = `<article class="smart-log-detail" role="dialog" aria-modal="true" aria-labelledby="smartHistoryDetailTitle">
         <div class="smart-log-detail-stage preview-stage" aria-label="${escapeAttr(tr('smart.generationDetailPreview'))}">
             <div class="smart-log-detail-frame preview-frame"><img class="smart-log-detail-image" alt="${escapeAttr(tr('canvas.originalImage'))}" draggable="false"></div>
             <button class="smart-log-detail-output-nav is-previous" type="button" data-smart-log-detail-output-nav="previous" title="${escapeAttr(tr('smart.generationPreviousOutput'))}" aria-label="${escapeAttr(tr('smart.generationPreviousOutput'))}"><i data-lucide="chevron-left"></i></button>
@@ -9811,9 +9811,9 @@ function ensureSmartLogDetail(){
             <span class="smart-log-detail-preview-hint">${escapeHtml(tr('smart.generationDetailPreviewHint'))}</span>
         </div>
         <aside class="smart-log-detail-info">
-            <header class="smart-log-detail-head"><h2 id="smartLogDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button></header>
+            <header class="smart-log-detail-head"><h2 id="smartHistoryDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button></header>
             <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
-            <section class="smart-log-detail-outputs" aria-labelledby="smartLogDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartLogDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
+            <section class="smart-log-detail-outputs" aria-labelledby="smartHistoryDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartHistoryDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
             <section class="smart-log-detail-modes" aria-label="${escapeAttr(tr('canvas.editImage'))}">
                 <button type="button" data-smart-log-detail-mode="preview"><i data-lucide="eye"></i><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="crop"><i data-lucide="crop"></i><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
@@ -9830,14 +9830,14 @@ function ensureSmartLogDetail(){
     </article>`;
     document.body.appendChild(box);
     box.addEventListener('click', event => {
-        if(event.target === box || event.target.closest('.smart-log-lightbox-close')) closeSmartLogLightbox();
+        if(event.target === box || event.target.closest('.smart-log-lightbox-close')) closeSmartHistoryLightbox();
     });
-    setupSmartLogDetailInteractions(box);
+    setupSmartHistoryDetailInteractions(box);
     box.querySelectorAll('[data-smart-log-detail-output-nav]').forEach(button => {
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            switchSmartLogDetailOutput(button.dataset.smartLogDetailOutputNav === 'previous' ? -1 : 1);
+            switchSmartHistoryDetailOutput(button.dataset.smartHistoryDetailOutputNav === 'previous' ? -1 : 1);
         });
     });
     // #89 第四轮：详情面板工具排——与预览大图同一套编辑器（openImageEditor + setImageEditMode）。
@@ -9845,43 +9845,43 @@ function ensureSmartLogDetail(){
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            const outputs = smartLogDetailSession.outputs || [];
-            const item = outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex) || null;
+            const outputs = smartHistoryDetailSession.outputs || [];
+            const item = outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex) || null;
             if(!item?.url) return;
-            const ref = smartLogDetailNodeImageRef(item);
+            const ref = smartHistoryDetailNodeImageRef(item);
             if(!ref){ toast(tr('smart.markNotOnCanvas')); return; }
             openImageEditor(ref.nodeId, ref.index);
-            if(button.dataset.smartLogDetailMode !== 'preview') setImageEditMode(button.dataset.smartLogDetailMode, true);
+            if(button.dataset.smartHistoryDetailMode !== 'preview') setImageEditMode(button.dataset.smartHistoryDetailMode, true);
         });
     });
     box.querySelector('[data-smart-log-detail-mark]')?.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        const outputs = smartLogDetailSession.outputs || [];
-        const item = outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex) || null;
+        const outputs = smartHistoryDetailSession.outputs || [];
+        const item = outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex) || null;
         const assetId = String(item?.asset_id || '');
         if(!assetId){ toast(tr('smart.markUnavailable')); return; }
         setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
     });
     return box;
 }
-function smartLogDetailPositionLabel(current, total){
+function smartHistoryDetailPositionLabel(current, total){
     return tr('smart.generationOutputPosition')
         .replace('{current}', String(current))
         .replace('{total}', String(total));
 }
-function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
-    const box = document.querySelector('#smartLogLightbox.open') || document.getElementById('smartLogLightbox');
-    const outputs = smartLogDetailSession.outputs;
+function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
+    const box = document.querySelector('#smartHistoryLightbox.open') || document.getElementById('smartHistoryLightbox');
+    const outputs = smartHistoryDetailSession.outputs;
     const requested = Number(outputIndex);
     const sessionIndex = outputs.findIndex(output => output.outputIndex === requested);
     if(!box || !outputs.length || sessionIndex < 0) return false;
     const item = outputs[sessionIndex];
-    smartLogDetailSession.outputIndex = item.outputIndex;
-    smartLogDetailSession.outputId = String(item.output_id || '');
-    resetSmartLogDetailView();
+    smartHistoryDetailSession.outputIndex = item.outputIndex;
+    smartHistoryDetailSession.outputId = String(item.output_id || '');
+    resetSmartHistoryDetailView();
     const total = outputs.length;
-    const position = smartLogDetailPositionLabel(sessionIndex + 1, total);
+    const position = smartHistoryDetailPositionLabel(sessionIndex + 1, total);
     const positionOutput = box.querySelector('.smart-log-detail-output-position');
     if(positionOutput) positionOutput.textContent = position;
     box.querySelectorAll('.smart-log-detail-output').forEach(button => {
@@ -9910,17 +9910,17 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
     deleteOriginal.title = `${tr('canvas.deleteSelectedOriginal')} · ${position}`;
     deleteOriginal.setAttribute('aria-label', deleteOriginal.title);
     // #87：「删除当前原图」需要 log 墓碑上下文，无 log（简化形态）时隐藏。
-    deleteOriginal.hidden = !item.asset_id || !smartLogEntryById(smartLogDetailSession?.logId) || canvas?.format !== 'firefly-canvas-v1';
+    deleteOriginal.hidden = !item.asset_id || !smartHistoryEntryById(smartHistoryDetailSession?.historyId) || canvas?.format !== 'firefly-canvas-v1';
     deleteOriginal.onclick = event => {
         event.preventDefault();
-        void deleteSmartProjectOriginal(smartLogDetailSession.logId, item.outputIndex);
+        void deleteSmartProjectOriginal(smartHistoryDetailSession.historyId, item.outputIndex);
     };
     // #89 第四轮：工具排对视频隐藏；当前 output 不在画布节点上时禁用（提示后再点）。
     const modesSection = box.querySelector('.smart-log-detail-modes');
     if(modesSection){
         const isVideo = String(item.kind || '').includes('video') || outputUrlLooksVideo(String(item.url || ''));
         modesSection.style.display = isVideo ? 'none' : '';
-        const nodeRef = smartLogDetailNodeImageRef(item);
+        const nodeRef = smartHistoryDetailNodeImageRef(item);
         modesSection.querySelectorAll('[data-smart-log-detail-mode]').forEach(btn => {
             btn.disabled = !nodeRef;
         });
@@ -9945,7 +9945,7 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
         copy2k.disabled = true;
         copy2k.setAttribute('aria-busy', 'true');
         try {
-            await copySmartLogImage2k(item);
+            await copySmartHistoryImage2k(item);
             toast(tr('smart.copy2kDone'));
         } catch(error){
             toast(error?.message || tr('smart.pairCopyFailed'));
@@ -9969,19 +9969,19 @@ function selectSmartLogDetailOutput(outputIndex, {focus=false}={}){
     img.src = displayMediaUrl(item);
     return true;
 }
-function switchSmartLogDetailOutput(delta){
-    const outputs = smartLogDetailSession.outputs;
+function switchSmartHistoryDetailOutput(delta){
+    const outputs = smartHistoryDetailSession.outputs;
     if(outputs.length < 2) return false;
-    const current = outputs.findIndex(output => output.outputIndex === smartLogDetailSession.outputIndex);
+    const current = outputs.findIndex(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
     const next = (Math.max(0, current) + Number(delta) + outputs.length) % outputs.length;
-    return selectSmartLogDetailOutput(outputs[next].outputIndex, {focus:true});
+    return selectSmartHistoryDetailOutput(outputs[next].outputIndex, {focus:true});
 }
-function renderSmartLogDetailOutputs(box){
-    const outputs = smartLogDetailSession.outputs;
+function renderSmartHistoryDetailOutputs(box){
+    const outputs = smartHistoryDetailSession.outputs;
     const strip = box.querySelector('.smart-log-detail-output-strip');
     strip.style.cssText = `--smart-log-output-count:${Math.min(outputs.length, 8)};--smart-log-output-columns:${Math.min(outputs.length, 4)}`;
     strip.innerHTML = outputs.map((item, index) => {
-        const position = smartLogDetailPositionLabel(index + 1, outputs.length);
+        const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
         const preview = smartPreviewImgHtml(item, 256, `alt="${escapeAttr(position)}" draggable="false"`);
         return `<button class="smart-log-detail-output" type="button" data-output-index="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="false" aria-label="${escapeAttr(position)}" title="${escapeAttr(position)}">${preview}<span>${index + 1}</span></button>`;
     }).join('');
@@ -9990,16 +9990,16 @@ function renderSmartLogDetailOutputs(box){
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            selectSmartLogDetailOutput(Number(button.dataset.outputIndex), {focus:true});
+            selectSmartHistoryDetailOutput(Number(button.dataset.outputIndex), {focus:true});
         };
     });
 }
-function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
+function openSmartHistoryDetail({url, kind='image', historyId='', outputIndex=0}={}){
     if(!url) return;
     if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(displayMediaUrl({url}), '_blank'); return; }
-    const log = smartLogEntryById(logId);
-    const fallback = smartLogOutputItem({url, kind, name:smartImageNameFromUrl(url)});
-    const outputs = smartLogImageOutputs(log);
+    const log = smartHistoryEntryById(historyId);
+    const fallback = smartHistoryOutputItem({url, kind, name:smartImageNameFromUrl(url)});
+    const outputs = smartHistoryImageOutputs(log);
     const requestedIndex = Number(outputIndex);
     if(!outputs.some(output => output.outputIndex === requestedIndex) && fallback?.url){
         outputs.push({...fallback, outputIndex:requestedIndex, kind:'image'});
@@ -10007,20 +10007,20 @@ function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
     if(!outputs.length) return;
     const modelMeta = historyLogModelMeta(log);
     const timestamp = smartHistoryLogTimestamp(log);
-    const box = ensureSmartLogDetail();
-    smartLogDetailLastFocus = document.activeElement;
+    const box = ensureSmartHistoryDetail();
+    smartHistoryDetailLastFocus = document.activeElement;
     const requestedOutput = outputs.find(output => output.outputIndex === requestedIndex) || outputs[0];
-    smartLogDetailSession = {
-        logId:String(logId || ''),
+    smartHistoryDetailSession = {
+        historyId:String(historyId || ''),
         outputs,
         outputIndex:requestedOutput.outputIndex,
         outputId:String(requestedOutput.output_id || ''),
     };
-    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || tr('canvas.logUnrecorded');
+    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || tr('canvas.historyUnrecorded');
     box.querySelector('.smart-log-detail-time').textContent = timestamp
         ? new Date(timestamp).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN')
-        : tr('canvas.logUnrecorded');
-    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || tr('canvas.logNoPrompt'));
+        : tr('canvas.historyUnrecorded');
+    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || tr('canvas.historyNoPrompt'));
     // #87：无 log（手动导入图等）→ 同一面板的简化形态：隐藏模型/时间/提示词行，
     // 不是另一套 UI；「删除当前原图」需要 log 墓碑上下文，无 log 时隐藏。
     const hasLogContext = Boolean(log);
@@ -10030,15 +10030,15 @@ function openSmartLogDetail({url, kind='image', logId='', outputIndex=0}={}){
         const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
         if(deleteOriginal) deleteOriginal.hidden = true;
     }
-    renderSmartLogDetailOutputs(box);
+    renderSmartHistoryDetailOutputs(box);
     box.classList.add('open');
     box.setAttribute('aria-hidden', 'false');
-    selectSmartLogDetailOutput(requestedIndex);
+    selectSmartHistoryDetailOutput(requestedIndex);
     refreshIcons(box);
     requestAnimationFrame(() => box.querySelector('.smart-log-lightbox-close')?.focus({preventScroll:true}));
 }
-function smartLogPreviewNode(url, kind='image', context={}){
-    openSmartLogDetail({url, kind, ...context});
+function smartHistoryPreviewNode(url, kind='image', context={}){
+    openSmartHistoryDetail({url, kind, ...context});
 }
 // #87：画布图片「详情」入口——统一打开「生成详情」面板（与生图历史抽屉同一组件，
 // 以后改详情 UI 只改一处）；能匹配到生成历史时展示完整元数据，
@@ -10053,57 +10053,57 @@ function openSmartImageDetail(nodeId, imageIndex=0){
         window.open(displayMediaUrl({url:item.url}), '_blank');
         return;
     }
-    const ctx = smartLogContextForImage(node, imageIndex);
-    openSmartLogDetail({
+    const ctx = smartHistoryContextForImage(node, imageIndex);
+    openSmartHistoryDetail({
         url:item.url,
         kind:'image',
-        logId:ctx?.logId || '',
+        historyId:ctx?.historyId || '',
         outputIndex:ctx?.outputIndex ?? 0
     });
 }
-// 查找图片对应的生成历史条目（asset_id 优先，url 兜底），返回 {logId, outputIndex} 或 null。
-function smartLogContextForImage(node, imageIndex){
+// 查找图片对应的生成历史条目（asset_id 优先，url 兜底），返回 {historyId, outputIndex} 或 null。
+function smartHistoryContextForImage(node, imageIndex){
     const source = node?.images?.[imageIndex];
     const item = imageForDisplay(source) || source;
     const assetId = String(source?.asset_id || item?.asset_id || '');
     const url = String(item?.url || source?.url || '');
     if(!assetId && !url) return null;
-    const logs = Array.isArray(canvas?.logs) ? canvas.logs : [];
+    const logs = Array.isArray(canvas?.history) ? canvas.history : [];
     for(const log of logs){
         if(!log || typeof log !== 'object' || !String(log?.id || '')) continue;
-        const outputs = smartLogImageOutputs(log);
+        const outputs = smartHistoryImageOutputs(log);
         const outputIndex = outputs.findIndex(output => {
             if(assetId && String(output?.asset_id || '') === assetId) return true;
             if(!assetId && url && String(output?.url || '') === url) return true;
             return false;
         });
-        if(outputIndex >= 0) return {logId:String(log.id || ''), outputIndex};
+        if(outputIndex >= 0) return {historyId:String(log.id || ''), outputIndex};
     }
     return null;
 }
-function smartActiveHistoryTaskLogs(logs, excludedLogId=''){
+function smartActiveHistoryTaskLogs(logs, excludedHistoryId=''){
     return (logs || []).filter(item =>
         item?.status === 'pending'
         && smartPendingHistoryTaskId(item)
-        && String(item.id || '') !== String(excludedLogId || '')
+        && String(item.id || '') !== String(excludedHistoryId || '')
     );
 }
 function mergeSmartActiveHistoryTaskLogs(serverLogs, activeTaskLogs){
     const hydratedServerLogs = hydrateProjectMediaReferences(serverLogs || []);
-    const serverLogIds = new Set(hydratedServerLogs.map(item => String(item?.id || '')));
+    const serverHistoryIds = new Set(hydratedServerLogs.map(item => String(item?.id || '')));
     return sortSmartHistoryLogs([
         ...hydratedServerLogs,
-        ...(activeTaskLogs || []).filter(item => !serverLogIds.has(String(item?.id || ''))),
+        ...(activeTaskLogs || []).filter(item => !serverHistoryIds.has(String(item?.id || ''))),
     ]);
 }
-let smartLogDeletingBusy = false;
-async function deleteCanvasLogEntry(logId, deleteMedia=false){
-    if(!canvas || !canvasId || !logId) return;
-    if(smartLogDeletingBusy) return;
+let smartHistoryDeletingBusy = false;
+async function deleteCanvasLogEntry(historyId, deleteMedia=false){
+    if(!canvas || !canvasId || !historyId) return;
+    if(smartHistoryDeletingBusy) return;
     const confirmText = deleteMedia ? tr('canvas.deleteLogMediaConfirm') : tr('canvas.deleteLogConfirm');
     if(!confirm(confirmText)) return;
-    smartLogDeletingBusy = true;
-    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs, logId);
+    smartHistoryDeletingBusy = true;
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history, historyId);
     try {
         if(debouncedSaveTimer){
             clearTimeout(debouncedSaveTimer);
@@ -10115,13 +10115,13 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             ? (deleteMedia
                 ? `/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/history/delete-with-media`
                 : `/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/history/delete`)
-            : `/api/canvases/${encodeURIComponent(canvasId)}/logs/delete`;
+            : `/api/canvases/${encodeURIComponent(canvasId)}/history/delete`;
         const payload = projectHistory ? {
-            log_id:logId,
+            history_id:historyId,
             base_revision:Number(canvas.revision || 0),
             delete_media:Boolean(deleteMedia)
         } : {
-            log_id:logId,
+            history_id:historyId,
             delete_unreferenced_media:deleteMedia,
             reset_referencing_nodes:deleteMedia,
             base_updated_at:Number(canvas.updated_at || 0)
@@ -10132,10 +10132,10 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             // #68: 409 = 画布版本冲突（revision 已被其他操作推进）——rebase 后停止本次删除，
             // 不让过期状态继续连锁冲突。
             if(result.canvasSynced){
-                toast(result.message || tr('canvas.logDeleteConflict'));
+                toast(result.message || tr('canvas.historyDeleteConflict'));
                 return;
             }
-            throw new Error(result.message || tr('canvas.logDeleteFailed'));
+            throw new Error(result.message || tr('canvas.historyDeleteFailed'));
         }
         const data = result.data;
         if(projectHistory && data.canvas){
@@ -10143,8 +10143,8 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             await adoptServerCanvas(data.canvas, {activeTaskLogs});
         } else {
             // 遗留 canvas 路径：本地合并删除结果
-            canvas.logs = mergeSmartActiveHistoryTaskLogs(
-                data.canvas?.logs || (canvas.logs || []).filter(item => item.id !== logId),
+            canvas.history = mergeSmartActiveHistoryTaskLogs(
+                data.canvas?.history || (canvas.history || []).filter(item => item.id !== historyId),
                 activeTaskLogs,
             );
             if(data.canvas?.nodes){
@@ -10156,37 +10156,37 @@ async function deleteCanvasLogEntry(logId, deleteMedia=false){
             canvas.updated_at = Number(data.canvas?.updated_at || canvas.updated_at || Date.now());
             canvas.revision = Number(data.canvas?.revision ?? canvas.revision ?? 0);
         }
-        renderSmartCanvasLog();
+        renderSmartCanvasHistory();
         if(projectHistory && deleteMedia) refreshSmartProjectMediaTrashButton();
-        const notes = [deleteMedia ? tr('canvas.deleteLogAndMedia') : tr('canvas.logDeleted')];
-        if(data.removed_files?.length) notes.push(tr('canvas.logMediaRemoved').replace('{n}', data.removed_files.length));
-        if(data.reset_node_ids?.length) notes.push(tr('canvas.logNodesReset').replace('{n}', data.reset_node_ids.length));
-        if(data.skipped_referenced?.length) notes.push(tr('canvas.logMediaReferenced').replace('{n}', data.skipped_referenced.length));
+        const notes = [deleteMedia ? tr('canvas.deleteLogAndMedia') : tr('canvas.historyDeleted')];
+        if(data.removed_files?.length) notes.push(tr('canvas.historyMediaRemoved').replace('{n}', data.removed_files.length));
+        if(data.reset_node_ids?.length) notes.push(tr('canvas.historyNodesReset').replace('{n}', data.reset_node_ids.length));
+        if(data.skipped_referenced?.length) notes.push(tr('canvas.historyMediaReferenced').replace('{n}', data.skipped_referenced.length));
         toast(notes.join(' · '));
     } catch(err) {
-        toast(err?.message || tr('canvas.logDeleteFailed'));
+        toast(err?.message || tr('canvas.historyDeleteFailed'));
     } finally {
-        smartLogDeletingBusy = false;
+        smartHistoryDeletingBusy = false;
     }
 }
-function captureSmartOriginalDeletionUiState(logId, outputId, outputIndex=-1){
+function captureSmartOriginalDeletionUiState(historyId, outputId, outputIndex=-1){
     const normalizedOutputId = String(outputId || '');
-    const logOutputs = smartLogImageOutputs(smartLogEntryById(logId));
+    const logOutputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
     const deletionPosition = logOutputs.findIndex(output => String(output.output_id || '') === normalizedOutputId);
     const historySelectedOutputId = String(smartHistorySelectedImage?.outputId || '');
-    const historyOutput = smartHistorySelectedImage?.logId === String(logId || '')
+    const historyOutput = smartHistorySelectedImage?.historyId === String(historyId || '')
         ? historySelectedOutputId
             ? logOutputs.find(output => String(output.output_id || '') === historySelectedOutputId)
             : logOutputs.find(output => output.outputIndex === Number(smartHistorySelectedImage.outputIndex))
         : null;
-    const detailOpen = Boolean(document.querySelector('#smartLogLightbox.open'));
-    const detailSelectedOutputId = String(smartLogDetailSession.outputId || '');
+    const detailOpen = Boolean(document.querySelector('#smartHistoryLightbox.open'));
+    const detailSelectedOutputId = String(smartHistoryDetailSession.outputId || '');
     const detailOutput = detailSelectedOutputId
-        ? smartLogDetailSession.outputs.find(output => String(output.output_id || '') === detailSelectedOutputId)
-        : smartLogDetailSession.outputs.find(output => output.outputIndex === smartLogDetailSession.outputIndex);
+        ? smartHistoryDetailSession.outputs.find(output => String(output.output_id || '') === detailSelectedOutputId)
+        : smartHistoryDetailSession.outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
     const detailPosition = detailSelectedOutputId
-        ? smartLogDetailSession.outputs.findIndex(output => String(output.output_id || '') === detailSelectedOutputId)
-        : smartLogDetailSession.outputs.findIndex(output => output.outputIndex === smartLogDetailSession.outputIndex);
+        ? smartHistoryDetailSession.outputs.findIndex(output => String(output.output_id || '') === detailSelectedOutputId)
+        : smartHistoryDetailSession.outputs.findIndex(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
     const selectedNode = nodes.find(node => String(node?.id || '') === String(selectedImage.nodeId || ''));
     const selectedCanvasImages = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
     const canvasSelectedOutputId = String(selectedImage.outputId || '');
@@ -10198,7 +10198,7 @@ function captureSmartOriginalDeletionUiState(logId, outputId, outputIndex=-1){
         deletionPosition:deletionPosition >= 0 ? deletionPosition : Number(outputIndex),
         historySelectedOutputId:String(historyOutput?.output_id || ''),
         detailOpen,
-        detailLogId:String(smartLogDetailSession.logId || ''),
+        detailHistoryId:String(smartHistoryDetailSession.historyId || ''),
         detailPosition,
         detailSelectedOutputId:String(detailOutput?.output_id || ''),
         canvasNodeId:String(selectedNode?.id || ''),
@@ -10212,9 +10212,9 @@ function smartOutputAtPreservedPosition(outputs, preservedOutputId, fallbackPosi
     if(!outputs.length) return null;
     return outputs[Math.max(0, Math.min(outputs.length - 1, Number(fallbackPosition) || 0))];
 }
-function reconcileSmartOriginalDeletionUi(logId, deletedOutputId, state){
-    const outputs = smartLogImageOutputs(smartLogEntryById(logId));
-    if(smartHistorySelectedImage?.logId === String(logId || '') || state.historySelectedOutputId){
+function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
+    const outputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
+    if(smartHistorySelectedImage?.historyId === String(historyId || '') || state.historySelectedOutputId){
         const nextHistory = smartOutputAtPreservedPosition(
             outputs,
             state.historySelectedOutputId === String(deletedOutputId || '') ? '' : state.historySelectedOutputId,
@@ -10222,7 +10222,7 @@ function reconcileSmartOriginalDeletionUi(logId, deletedOutputId, state){
         );
         smartHistorySelectedImage = nextHistory
             ? {
-                logId:String(logId || ''),
+                historyId:String(historyId || ''),
                 outputIndex:nextHistory.outputIndex,
                 outputId:String(nextHistory.output_id || ''),
             }
@@ -10246,24 +10246,24 @@ function reconcileSmartOriginalDeletionUi(logId, deletedOutputId, state){
             }
             : {nodeId:'', index:-1, outputId:''};
     }
-    if(state.detailOpen && state.detailLogId === String(logId || '')){
-        const box = document.querySelector('#smartLogLightbox.open');
+    if(state.detailOpen && state.detailHistoryId === String(historyId || '')){
+        const box = document.querySelector('#smartHistoryLightbox.open');
         if(!box || !outputs.length){
-            closeSmartLogLightbox();
+            closeSmartHistoryLightbox();
         } else {
             const nextDetail = smartOutputAtPreservedPosition(
                 outputs,
                 state.detailSelectedOutputId === String(deletedOutputId || '') ? '' : state.detailSelectedOutputId,
                 state.detailPosition,
             );
-            smartLogDetailSession = {
-                logId:String(logId || ''),
+            smartHistoryDetailSession = {
+                historyId:String(historyId || ''),
                 outputs,
                 outputIndex:nextDetail.outputIndex,
                 outputId:String(nextDetail.output_id || ''),
             };
-            renderSmartLogDetailOutputs(box);
-            selectSmartLogDetailOutput(nextDetail.outputIndex);
+            renderSmartHistoryDetailOutputs(box);
+            selectSmartHistoryDetailOutput(nextDetail.outputIndex);
             refreshIcons(box);
         }
     }
@@ -10275,11 +10275,11 @@ async function settleProjectCanvasBeforeOriginalMutation(){
     while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
     return await saveProjectCanvasUntilSettled();
 }
-async function deleteSmartProjectOriginal(logId, outputIndex, options = {}){
+async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
-    const log = smartLogEntryById(logId);
+    const log = smartHistoryEntryById(historyId);
     // Bug fix: 实时查找 output_id 在 log.outputs 中的当前位置，而不是使用缓存的 outputIndex
-    const allOutputs = smartLogImageOutputs(log);
+    const allOutputs = smartHistoryImageOutputs(log);
     const item = allOutputs.find(output => output.outputIndex === Number(outputIndex));
     const assetId = item?.asset_id || '';
     const outputId = String(item?.output_id || '');
@@ -10290,8 +10290,8 @@ async function deleteSmartProjectOriginal(logId, outputIndex, options = {}){
     if(!options.skipConfirm && !confirm(tr('canvas.deleteOriginalConfirm'))) return;
     // Bug fix: 实时查找当前 outputIndex（基于 output_id），避免从生图节点再次生图后 outputIndex 失效
     const currentIndex = allOutputs.find(o => String(o.output_id || '') === outputId)?.outputIndex ?? Number(outputIndex);
-    const deletionUiState = captureSmartOriginalDeletionUiState(logId, outputId, currentIndex);
-    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs);
+    const deletionUiState = captureSmartOriginalDeletionUiState(historyId, outputId, currentIndex);
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history);
     try {
         if(await settleProjectCanvasBeforeOriginalMutation() !== true){
             throw new Error(tr('smart.projectSaveFailed'));
@@ -10300,7 +10300,7 @@ async function deleteSmartProjectOriginal(logId, outputIndex, options = {}){
         const deletePayload = () => JSON.stringify({
             asset_id:assetId,
             base_revision:Number(canvas.revision || 0),
-            log_id:logId,
+            history_id:historyId,
             output_id:outputId,
             output_index:Number(currentIndex),
         });
@@ -10316,21 +10316,21 @@ async function deleteSmartProjectOriginal(logId, outputIndex, options = {}){
         const data = result.data;
         const deletionId = String(data.deleted?.deletion_id || '');
         if(!deletionId) throw new Error(tr('canvas.originalDeleteFailed'));
-        pushUndo({projectOriginalDelete:{assetId, outputId, deletionId, logId, projectId}});
+        pushUndo({projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}});
         await adoptServerCanvas(data.canvas || canvas, {activeTaskLogs});
-        reconcileSmartOriginalDeletionUi(logId, outputId, deletionUiState);
+        reconcileSmartOriginalDeletionUi(historyId, outputId, deletionUiState);
         render();
-        renderSmartCanvasLog();
+        renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
         toast(tr('canvas.originalDeleted'));
     } catch(err){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
     }
 }
-function smartLogIdForDeletedOutput(assetId, deletionId=''){
+function smartHistoryIdForDeletedOutput(assetId, deletionId=''){
     const normalizedAssetId = String(assetId || '');
     const normalizedDeletionId = String(deletionId || '');
-    const log = (canvas?.logs || []).find(item => (item?.deletedOutputTombstones || []).some(tombstone =>
+    const log = (canvas?.history || []).find(item => (item?.deletedOutputTombstones || []).some(tombstone =>
         normalizedDeletionId
             ? String(tombstone?.deletion_id || '') === normalizedDeletionId
             : String(tombstone?.deleted_asset_id || tombstone?.asset_id || '') === normalizedAssetId
@@ -10346,17 +10346,17 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     if(await settleProjectCanvasBeforeOriginalMutation() !== true){
         throw new Error(tr('smart.projectSaveFailed'));
     }
-    const restoreLogId = String(snapshot.projectOriginalDelete.logId || '')
-        || smartLogIdForDeletedOutput(restoreAssetId, restoreDeletionId);
-    const restoreUiState = restoreLogId
-        ? captureSmartOriginalDeletionUiState(restoreLogId, '')
+    const restoreHistoryId = String(snapshot.projectOriginalDelete.historyId || '')
+        || smartHistoryIdForDeletedOutput(restoreAssetId, restoreDeletionId);
+    const restoreUiState = restoreHistoryId
+        ? captureSmartOriginalDeletionUiState(restoreHistoryId, '')
         : null;
     const projectId = snapshot.projectOriginalDelete.projectId || canvas.project_id || canvas.project || canvasId;
     canvas.nodes = nodes;
     const localCanvasBeforeRestore = canvasForStorage();
     const localBaseline = persistedCoreSnapshot || projectCanvasSnapshot(localCanvasBeforeRestore);
     const localChanges = buildCoreMutations(localCanvasBeforeRestore, localBaseline);
-    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.logs);
+    const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history);
     const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/restore`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -10383,7 +10383,7 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     }
     canvas = restoredCanvas;
     canvas = hydrateProjectMediaReferences(canvas);
-    canvas.logs = mergeSmartActiveHistoryTaskLogs(canvas.logs, activeTaskLogs);
+    canvas.history = mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs);
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.nodes = nodes;
@@ -10391,7 +10391,7 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
-    if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreLogId, '', restoreUiState);
+    if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreHistoryId, '', restoreUiState);
     render();
     if(localChanges.mutations.length){
         if(await saveProjectCanvasUntilSettled() !== true) throw new Error(tr('smart.projectSaveFailed'));
@@ -10401,10 +10401,10 @@ async function restoreSmartProjectOriginalUndo(snapshot){
         persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
         markAutosaveSaved();
     }
-    renderSmartCanvasLog();
+    renderSmartCanvasHistory();
     refreshSmartProjectMediaTrashButton();
 }
-async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', logId=''){
+async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', historyId=''){
     const normalizedAssetId = String(assetId || '').trim();
     if(!normalizedAssetId) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
@@ -10412,7 +10412,7 @@ async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', 
         assetId:normalizedAssetId,
         deletionId:String(deletionId || ''),
         outputId:String(outputId || ''),
-        logId:String(logId || ''),
+        historyId:String(historyId || ''),
         projectId,
     };
     try {
@@ -10492,7 +10492,7 @@ async function purgeSmartProjectMediaTrash(){
 }
 function smartHistoryLogCardHtml(log, historyIndex){
         const outputs = (log.outputs || []).map((output, outputIndex) => {
-            const item = smartLogOutputItem(output);
+            const item = smartHistoryOutputItem(output);
             return item?.url ? {...item, outputIndex} : null;
         }).filter(Boolean);
         const first = outputs[0] || null;
@@ -10502,13 +10502,13 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const taskId = log.task_id || log.taskId || req.task_id || req.taskId || req.prompt_id || req.promptId || '';
         const backend = req.provider_id || req.providerId || req.backend || '';
         const projectTask = String(taskId || '').startsWith('project_img_') || String(taskId || '').startsWith('project_vid_');
-        const sizeSummary = smartLogSizeSummary(log, outputs);
-        const resolutionTier = smartLogResolutionTier(log, outputs);
-        const imageOutputCount = smartLogImageOutputs(log).length;
+        const sizeSummary = smartHistorySizeSummary(log, outputs);
+        const resolutionTier = smartHistoryResolutionTier(log, outputs);
+        const imageOutputCount = smartHistoryImageOutputs(log).length;
         const modelMeta = historyLogModelMeta(log);
         const subParts = [
             date,
-            tr('canvas.logOutputsCount').replace('{n}', String(outputs.length)),
+            tr('canvas.historyOutputsCount').replace('{n}', String(outputs.length)),
             sizeSummary,
             taskId ? `ID ${taskId}` : '',
             backend
@@ -10533,7 +10533,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
                 const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
                 const label = imageResolutionLabel(item);
                 const name = item.name || smartImageNameFromUrl(item.url);
-                const selected = smartHistorySelectedImage?.logId === String(log.id || '')
+                const selected = smartHistorySelectedImage?.historyId === String(log.id || '')
                     && smartHistorySelectedImage.outputIndex === outputIndex;
                 const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
                 const attrs = kind === 'image'
@@ -10541,17 +10541,17 @@ function smartHistoryLogCardHtml(log, historyIndex){
                     : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
                 const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
                 const actionsHtml = item.asset_id && canvas?.format === 'firefly-canvas-v1'
-                    ? `<button type="button" class="log-media-download-original" data-log-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-log-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`
+                    ? `<button type="button" class="log-media-download-original" data-history-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-history-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`
                     : '';
-                return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-log-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-log-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
+                return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-history-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-history-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
             }).join('');
             const outputPreviews = outputs.length > 1 ? outputs.map((item, index) => {
-                const position = smartLogDetailPositionLabel(index + 1, outputs.length);
+                const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
                 const preview = smartPreviewImgHtml(item, 192, `alt="${escapeAttr(position)}" draggable="false"`);
-                const previewSelected = smartHistorySelectedImage?.logId === String(log.id || '')
+                const previewSelected = smartHistorySelectedImage?.historyId === String(log.id || '')
                     && smartHistorySelectedImage.outputIndex === item.outputIndex;
                 const previewHint = `${position} · ${tr('smart.generationOutputPreviewHint')}`;
-                return `<button class="log-output-preview${previewSelected ? ' is-selected' : ''}" type="button" data-log-output-preview="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="${previewSelected ? 'true' : 'false'}" aria-label="${escapeAttr(previewHint)}" title="${escapeAttr(previewHint)}">${preview}</button>`;
+                return `<button class="log-output-preview${previewSelected ? ' is-selected' : ''}" type="button" data-history-output-preview="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="${previewSelected ? 'true' : 'false'}" aria-label="${escapeAttr(previewHint)}" title="${escapeAttr(previewHint)}">${preview}</button>`;
             }).join('') : '';
             const previewCount = Math.min(outputs.length, 8);
             const previewColumns = previewCount;
@@ -10585,12 +10585,12 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const deleteOriginalLabel = outputs.length > 1
             ? tr('canvas.deleteSelectedOriginal')
             : tr('canvas.deleteOriginal');
-        return `<div class="log-item ${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-log-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
+        return `<div class="log-item ${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-history-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
             ${thumbHtml}
             <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
             <div class="log-main">
                 <div class="log-meta">
-                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? tr('canvas.logCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
+                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? tr('canvas.historyCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
                     <span class="log-chip">${escapeHtml(log.platform || log.actual_provider_name || '-')}</span>
                     ${modelMeta.label ? `<span class="log-chip model-chip" title="${escapeAttr(modelMeta.raw)}">${escapeHtml(modelMeta.label)}</span>` : ''}
                     ${resolutionTier ? `<span class="log-chip resolution-chip">${escapeHtml(resolutionTier)}</span>` : ''}
@@ -10601,31 +10601,31 @@ function smartHistoryLogCardHtml(log, historyIndex){
                  ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><i data-lucide="book-open-text"></i></button>` : ''}
              </div>
              <div class="log-buttons">
-                  ${pending && projectTask ? `<button type="button" data-log-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.logCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.logCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('canvas.logCancelTask'))}</span></button>` : ''}
-                  ${failed && projectTask ? `<button type="button" data-log-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.logRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.logRetryTaskTitle'))}"><i data-lucide="rotate-cw"></i><span>${escapeHtml(tr('canvas.logRetryTask'))}</span></button>` : ''}
-                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-log-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
-                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-log-delete-original="${String(first.output_id || '').trim()}" data-log-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
-                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-log-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
-                  ${!pending ? `<button type="button" data-log-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
-                  <button type="button" data-log-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
-                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-log-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
-                  <span class="log-duration">${escapeHtml(formatRunDuration(smartLogRunMs(log)))}</span>` : ''}
+                  ${pending && projectTask ? `<button type="button" data-history-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('canvas.historyCancelTask'))}</span></button>` : ''}
+                  ${failed && projectTask ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><i data-lucide="rotate-cw"></i><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
+                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
+                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-history-delete-original="${String(first.output_id || '').trim()}" data-history-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
+                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-history-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
+                  ${!pending ? `<button type="button" data-history-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
+                  <button type="button" data-history-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
+                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-history-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
+                  <span class="log-duration">${escapeHtml(formatRunDuration(smartHistoryRunMs(log)))}</span>` : ''}
               </div>
          </div>`;
 }
 function smartHistoryFocusedCard(logs){
-    const activeCard = document.activeElement?.closest?.('.log-item[data-canvas-log-id]');
-    const card = smartLogList?.contains(activeCard)
+    const activeCard = document.activeElement?.closest?.('.log-item[data-canvas-history-id]');
+    const card = smartHistoryList?.contains(activeCard)
         ? activeCard
         : (smartHistoryVirtualState.focusCard?.isConnected ? smartHistoryVirtualState.focusCard : null);
-    if(!card || !smartLogList?.contains(card)) return {card:null, index:-1, logId:''};
-    const logId = card.dataset.canvasLogId || '';
-    return {card, index:logs.findIndex(log => String(log?.id || '') === logId), logId};
+    if(!card || !smartHistoryList?.contains(card)) return {card:null, index:-1, historyId:''};
+    const historyId = card.dataset.canvasHistoryId || '';
+    return {card, index:logs.findIndex(log => String(log?.id || '') === historyId), historyId};
 }
 function protectSmartHistoryFocus(){
     const active = document.activeElement;
-    const card = active?.closest?.('.log-item[data-canvas-log-id]');
-    if(card && smartLogList?.contains(card)){
+    const card = active?.closest?.('.log-item[data-canvas-history-id]');
+    if(card && smartHistoryList?.contains(card)){
         smartHistoryVirtualState.focusCard = card;
         smartHistoryVirtualState.focusElement = active;
     } else {
@@ -10636,8 +10636,8 @@ function protectSmartHistoryFocus(){
 function smartHistoryVisibleRange(count){
     const stride = smartHistoryVirtualState.stride;
     if(!stride) return {start:0, end:Math.min(count, 1)};
-    const left = Math.max(0, Number(smartLogList?.scrollLeft || 0));
-    const width = Math.max(1, Number(smartLogList?.clientWidth || stride));
+    const left = Math.max(0, Number(smartHistoryList?.scrollLeft || 0));
+    const width = Math.max(1, Number(smartHistoryList?.clientWidth || stride));
     const start = Math.max(0, Math.min(count - 1, Math.floor(left / stride)));
     const end = Math.max(start + 1, Math.min(count, Math.ceil((left + width) / stride)));
     return {start, end};
@@ -10675,35 +10675,35 @@ function smartHistoryRailHtml(logs, indexes){
     return html;
 }
 function replaceSmartHistoryRail(html, focused, preserveFocusedCard=true){
-    const savedScrollLeft = smartLogList.scrollLeft;
+    const savedScrollLeft = smartHistoryList.scrollLeft;
     if(!preserveFocusedCard || !focused.card || focused.index < 0){
-        smartLogList.innerHTML = html;
+        smartHistoryList.innerHTML = html;
         return savedScrollLeft;
     }
     const template = document.createElement('template');
     template.innerHTML = html;
     const desiredNodes = [...template.content.children];
-    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasLogId === focused.logId);
+    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasHistoryId === focused.historyId);
     if(focusPosition < 0){
-        smartLogList.replaceChildren(template.content);
+        smartHistoryList.replaceChildren(template.content);
         return savedScrollLeft;
     }
     const generatedFocusedCard = desiredNodes[focusPosition];
     focused.card.dataset.historyIndex = generatedFocusedCard.dataset.historyIndex || String(focused.index);
-    [...smartLogList.childNodes].forEach(node => {
+    [...smartHistoryList.childNodes].forEach(node => {
         if(node !== focused.card) node.remove();
     });
     const before = document.createDocumentFragment();
     desiredNodes.slice(0, focusPosition).forEach(node => before.appendChild(node));
-    smartLogList.insertBefore(before, focused.card);
-    desiredNodes.slice(focusPosition + 1).forEach(node => smartLogList.appendChild(node));
+    smartHistoryList.insertBefore(before, focused.card);
+    desiredNodes.slice(focusPosition + 1).forEach(node => smartHistoryList.appendChild(node));
     return savedScrollLeft;
 }
 function updateSmartHistorySpacerWidths(){
-    const card = smartLogList.querySelector('.log-item');
+    const card = smartHistoryList.querySelector('.log-item');
     if(card){
         const cardWidth = Number(card.getBoundingClientRect().width || card.offsetWidth || 0);
-        const listStyle = getComputedStyle(smartLogList);
+        const listStyle = getComputedStyle(smartHistoryList);
         const gap = Number.parseFloat(listStyle.columnGap || listStyle.gap || '0') || 0;
         if(cardWidth > 0){
             smartHistoryVirtualState.gap = gap;
@@ -10712,7 +10712,7 @@ function updateSmartHistorySpacerWidths(){
     }
     const stride = smartHistoryVirtualState.stride;
     const gap = smartHistoryVirtualState.gap;
-    smartLogList.querySelectorAll('[data-history-spacer]').forEach(spacer => {
+    smartHistoryList.querySelectorAll('[data-history-spacer]').forEach(spacer => {
         const omitted = Math.max(0, Number(spacer.dataset.historyOmitted || 0));
         spacer.hidden = omitted === 0;
         const width = omitted && stride ? Math.max(0, omitted * stride - gap) : 0;
@@ -10723,10 +10723,10 @@ function updateSmartHistorySpacerWidths(){
         spacer.style.pointerEvents = 'none';
     });
 }
-async function controlProjectImageTask(logId, taskId, action, button=null){
+async function controlProjectImageTask(historyId, taskId, action, button=null){
     if(!taskId || !['cancel', 'retry'].includes(action)) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
-    const sourceLog = smartLogEntryById(logId);
+    const sourceLog = smartHistoryEntryById(historyId);
     if(button){
         button.disabled = true;
         button.setAttribute('aria-busy', 'true');
@@ -10785,12 +10785,12 @@ async function controlProjectImageTask(logId, taskId, action, button=null){
     }
 }
 function bindLongContentHistoryTriggers(){
-    smartLogList?.querySelectorAll?.('[data-long-content-open="history-prompt"], [data-long-content-open="history-error"]').forEach(button => {
+    smartHistoryList?.querySelectorAll?.('[data-long-content-open="history-prompt"], [data-long-content-open="history-error"]').forEach(button => {
         const activate = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const log = smartLogEntryById(logId);
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const log = smartHistoryEntryById(historyId);
             const kind = button.dataset.longContentOpen;
             const isError = kind === 'history-error';
             const text = String(isError ? log?.error || '' : log?.prompt || '');
@@ -10799,7 +10799,7 @@ function bindLongContentHistoryTriggers(){
                 title:tr(isError ? 'smart.generationErrorFull' : 'smart.historyPromptFull'),
                 text,
                 trigger:button,
-                triggerIdentity:{kind, logId}
+                triggerIdentity:{kind, historyId}
             });
         };
         button.onclick = activate;
@@ -10809,21 +10809,21 @@ function bindLongContentHistoryTriggers(){
     });
 }
 function bindSmartHistoryWindow(){
-    bindSmartPreviewImageFallbacks(smartLogList);
+    bindSmartPreviewImageFallbacks(smartHistoryList);
     bindLongContentHistoryTriggers();
-    smartLogList.querySelectorAll('[data-log-preview]').forEach(el => {
+    smartHistoryList.querySelectorAll('[data-history-preview]').forEach(el => {
         el.onclick = e => {
             e.stopPropagation();
             const card = el.closest('.log-media-card');
             const url = el.dataset.url || card?.dataset.url || '';
             const kind = el.dataset.kind || card?.dataset.kind || 'image';
-            const logId = el.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const outputIndex = Number(el.dataset.logOutputIndex ?? card?.dataset.logOutputIndex ?? 0);
-            if(url) smartLogPreviewNode(url, kind, {logId, outputIndex});
+            const historyId = el.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const outputIndex = Number(el.dataset.historyOutputIndex ?? card?.dataset.historyOutputIndex ?? 0);
+            if(url) smartHistoryPreviewNode(url, kind, {historyId, outputIndex});
         };
     });
     const bindLogCopy = (selector, key) => {
-        smartLogList.querySelectorAll(selector).forEach(el => {
+        smartHistoryList.querySelectorAll(selector).forEach(el => {
             el.onclick = async e => {
                 e.stopPropagation();
                 const text = el.dataset[key] || '';
@@ -10840,10 +10840,10 @@ function bindSmartHistoryWindow(){
     };
     bindLogCopy('[data-prompt]', 'prompt');
     bindLogCopy('[data-error]', 'error');
-    smartLogList.querySelectorAll('[data-log-copy-prompt]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-copy-prompt]').forEach(button => {
         button.onclick = async e => {
             e.stopPropagation();
-            const text = button.closest('[data-canvas-log-id]')?.querySelector('[data-prompt]')?.dataset.prompt || '';
+            const text = button.closest('[data-canvas-history-id]')?.querySelector('[data-prompt]')?.dataset.prompt || '';
             const copied = await copyTextToClipboard(text);
             const label = button.querySelector('span');
             const oldText = label?.textContent || tr('canvas.copyPrompt');
@@ -10855,51 +10855,51 @@ function bindSmartHistoryWindow(){
             }, 1200);
         };
     });
-    smartLogList.querySelectorAll('[data-log-send-output]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-send-output]').forEach(button => {
         button.onclick = e => {
             e.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            sendSmartLogOutputsToCanvas(logId, Number(button.dataset.logSendOutput));
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            sendSmartHistoryOutputsToCanvas(historyId, Number(button.dataset.historySendOutput));
         };
     });
-    smartLogList.querySelectorAll('[data-log-send-all]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-send-all]').forEach(button => {
         button.onclick = e => {
             e.stopPropagation();
-            sendSmartLogOutputsToCanvas(button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '');
+            sendSmartHistoryOutputsToCanvas(button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '');
         };
     });
-    smartLogList.querySelectorAll('[data-log-output-preview]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-output-preview]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const card = button.closest('[data-canvas-log-id]');
-            const logId = card?.dataset.canvasLogId || '';
-            const outputIndex = Number(button.dataset.logOutputPreview || 0);
-            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
+            const card = button.closest('[data-canvas-history-id]');
+            const historyId = card?.dataset.canvasHistoryId || '';
+            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
+            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
             const gallery = card?.querySelector('.log-output-gallery');
-            const outputCard = card?.querySelector(`[data-log-output-index="${outputIndex}"]`);
+            const outputCard = card?.querySelector(`[data-history-output-index="${outputIndex}"]`);
             if(gallery && outputCard) gallery.scrollTo({left:outputCard.offsetLeft, behavior:'instant'});
             selectSmartHistoryImage(outputCard);
         };
         button.ondblclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const outputIndex = Number(button.dataset.logOutputPreview || 0);
-            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
-            if(item?.url) openSmartLogDetail({url:item.url, kind:'image', logId, outputIndex});
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
+            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
+            if(item?.url) openSmartHistoryDetail({url:item.url, kind:'image', historyId, outputIndex});
         };
         button.onkeydown = event => {
             if(event.key !== ' ' && event.key !== 'Spacebar') return;
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const outputIndex = Number(button.dataset.logOutputPreview || 0);
-            const item = smartLogImageOutputs(smartLogEntryById(logId)).find(output => output.outputIndex === outputIndex);
-            if(item?.url) openSmartLogDetail({url:item.url, kind:'image', logId, outputIndex});
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
+            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
+            if(item?.url) openSmartHistoryDetail({url:item.url, kind:'image', historyId, outputIndex});
         };
     });
-    smartLogList.querySelectorAll('.log-output-gallery').forEach(gallery => {
+    smartHistoryList.querySelectorAll('.log-output-gallery').forEach(gallery => {
         gallery.addEventListener('wheel', event => {
             const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
             if(!delta) return;
@@ -10911,7 +10911,7 @@ function bindSmartHistoryWindow(){
             }
         }, {passive:false});
     });
-    smartLogList.querySelectorAll('.log-output-preview-list').forEach(track => {
+    smartHistoryList.querySelectorAll('.log-output-preview-list').forEach(track => {
         track.addEventListener('wheel', event => {
             const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
             if(!delta) return;
@@ -10923,103 +10923,103 @@ function bindSmartHistoryWindow(){
             }
         }, {passive:false});
     });
-    smartLogList.querySelectorAll('.log-history-image').forEach(image => {
+    smartHistoryList.querySelectorAll('.log-history-image').forEach(image => {
         const card = image.closest('.log-media-card');
-        const logId = card?.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-        bindSmartHistoryImage(image, smartLogOutputItem({
-            ...((smartLogEntryById(logId)?.outputs || [])[Number(card?.dataset.logOutputIndex)] || {}),
+        const historyId = card?.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+        bindSmartHistoryImage(image, smartHistoryOutputItem({
+            ...((smartHistoryEntryById(historyId)?.outputs || [])[Number(card?.dataset.historyOutputIndex)] || {}),
             url:card?.dataset.url || ''
-        }), logId, Number(card?.dataset.logOutputIndex));
+        }), historyId, Number(card?.dataset.historyOutputIndex));
     });
-    smartLogList.querySelectorAll('[data-log-cancel-task]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-cancel-task]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            void controlProjectImageTask(logId, button.dataset.logCancelTask || '', 'cancel', button);
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            void controlProjectImageTask(historyId, button.dataset.historyCancelTask || '', 'cancel', button);
         };
     });
-    smartLogList.querySelectorAll('[data-log-retry-task]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-retry-task]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const retryTaskId = button.dataset.logRetryTask || '';
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const retryTaskId = button.dataset.historyRetryTask || '';
             if(String(retryTaskId).startsWith('project_vid_')){
                 // 视频暂无服务端重试路由：走节点级重新生成（重建提交）。
-                const nodeId = smartLogEntryById(logId)?.result_node_id || '';
+                const nodeId = smartHistoryEntryById(historyId)?.result_node_id || '';
                 void retryFailedGeneration(nodeId);
                 return;
             }
-            void controlProjectImageTask(logId, retryTaskId, 'retry', button);
+            void controlProjectImageTask(historyId, retryTaskId, 'retry', button);
         };
     });
-    smartLogList.querySelectorAll('[data-log-download-original]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-download-original]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            const output = (smartLogEntryById(logId)?.outputs || [])[Number(button.dataset.logDownloadOriginal)];
-            const item = smartLogOutputItem(output);
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            const output = (smartHistoryEntryById(historyId)?.outputs || [])[Number(button.dataset.historyDownloadOriginal)];
+            const item = smartHistoryOutputItem(output);
             if(item?.url) downloadPreviewFile(item);
         };
     });
     // #89 第四轮：生图历史卡片上的星标。
-    smartLogList.querySelectorAll('[data-log-mark]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-mark]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const assetId = String(button.dataset.logMark || '');
+            const assetId = String(button.dataset.historyMark || '');
             if(!assetId) return;
             setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
         };
     });
-    smartLogList.querySelectorAll('[data-log-delete-original]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-delete-original]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const card = button.closest('[data-canvas-log-id]');
-            const logId = card?.dataset.canvasLogId || '';
-            const log = smartLogEntryById(logId);
-            const images = smartLogImageOutputs(log);
+            const card = button.closest('[data-canvas-history-id]');
+            const historyId = card?.dataset.canvasHistoryId || '';
+            const log = smartHistoryEntryById(historyId);
+            const images = smartHistoryImageOutputs(log);
             // Bug fix: 删除当前选中的图片（通过 output_id 匹配），否则删除第一张
             const selectedIndex = (() => {
-                if(smartHistorySelectedImage?.logId === logId && smartHistorySelectedImage?.outputId){
+                if(smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId){
                     const matched = images.find(img => String(img.output_id || '') === smartHistorySelectedImage.outputId);
                     if(matched) return matched.outputIndex;
                 }
                 return images[0]?.outputIndex ?? 0;
             })();
-            deleteSmartProjectOriginal(logId, selectedIndex);
+            deleteSmartProjectOriginal(historyId, selectedIndex);
         };
     });
-    smartLogList.querySelectorAll('[data-log-restore-original]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-restore-original]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
             restoreSmartProjectOriginal(
-                button.dataset.logRestoreOriginal || '',
+                button.dataset.historyRestoreOriginal || '',
                 button.dataset.deletionId || '',
                 button.dataset.outputId || '',
-                logId,
+                historyId,
             );
         };
     });
-    smartLogList.querySelectorAll('[data-log-delete]').forEach(button => {
+    smartHistoryList.querySelectorAll('[data-history-delete]').forEach(button => {
         button.onclick = e => {
             e.stopPropagation();
-            const logId = button.closest('[data-canvas-log-id]')?.dataset.canvasLogId || '';
-            if(!logId) return;
+            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
+            if(!historyId) return;
             button.disabled = true;
             button.setAttribute('aria-busy','true');
-            deleteCanvasLogEntry(logId, button.dataset.logDelete === 'media').finally(() => {
+            deleteCanvasLogEntry(historyId, button.dataset.historyDelete === 'media').finally(() => {
                 button.disabled = false;
                 button.removeAttribute('aria-busy');
             });
         };
     });
-    smartLogList.querySelectorAll('button').forEach(button => {
+    smartHistoryList.querySelectorAll('button').forEach(button => {
         button.onmousedown = event => {
             if(event.button !== 0) return;
             const state = {
@@ -11039,14 +11039,14 @@ function bindSmartHistoryWindow(){
     refreshIcons();
 }
 function renderSmartHistoryWindow(force=false){
-    if(!smartLogList) return;
+    if(!smartHistoryList) return;
     if(smartHistoryPointerState){
         smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
         return;
     }
-    const logs = canvas?.logs || [];
+    const logs = canvas?.history || [];
     if(!logs.length){
-        smartLogList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
+        smartHistoryList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
         smartHistoryVirtualState.start = 0;
         smartHistoryVirtualState.end = 0;
         smartHistoryVirtualState.count = 0;
@@ -11056,7 +11056,7 @@ function renderSmartHistoryWindow(force=false){
         refreshIcons();
         return;
     }
-    if(smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === smartHistorySelectedImage.logId)){
+    if(smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === smartHistorySelectedImage.historyId)){
         smartHistorySelectedImage = null;
     }
     const focused = smartHistoryFocusedCard(logs);
@@ -11087,7 +11087,7 @@ function renderSmartHistoryWindow(force=false){
     smartHistoryVirtualState.count = logs.length;
     smartHistoryVirtualState.signature = signature;
     updateSmartHistorySpacerWidths();
-    smartLogList.scrollLeft = Math.min(savedScrollLeft, Math.max(0, smartLogList.scrollWidth - smartLogList.clientWidth));
+    smartHistoryList.scrollLeft = Math.min(savedScrollLeft, Math.max(0, smartHistoryList.scrollWidth - smartHistoryList.clientWidth));
     bindSmartHistoryWindow();
     if(protectedFocusElement?.isConnected && document.activeElement !== protectedFocusElement){
         protectedFocusElement.focus({preventScroll:true});
@@ -11095,7 +11095,7 @@ function renderSmartHistoryWindow(force=false){
     smartHistoryVirtualState.focusCard = null;
     smartHistoryVirtualState.focusElement = null;
 }
-function renderSmartCanvasLog(){
+function renderSmartCanvasHistory(){
     renderSmartHistoryWindow(true);
 }
 function scheduleSmartHistoryWindowRender(force=false){
@@ -11109,8 +11109,8 @@ function scheduleSmartHistoryWindowRender(force=false){
     });
 }
 function updateSmartHistoryDrawerCollapseUi(){
-    smartLogModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
-    smartLogModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartLogModal.classList.contains('open')));
+    smartHistoryModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
+    smartHistoryModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartHistoryModal.classList.contains('open')));
     if(smartHistoryCollapse){
         smartHistoryCollapse.title = smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
         smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
@@ -11119,69 +11119,69 @@ function updateSmartHistoryDrawerCollapseUi(){
     }
 }
 function toggleSmartHistoryDrawerCollapsed(){
-    if(!smartLogModal?.classList.contains('open')) openSmartCanvasLog();
+    if(!smartHistoryModal?.classList.contains('open')) openSmartCanvasLog();
     smartHistoryDrawerCollapsed = !smartHistoryDrawerCollapsed;
     updateSmartHistoryDrawerCollapseUi();
     if(!smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
 }
 function scrollSmartHistoryRailTo(value, immediate=false){
-    if(!smartLogList) return false;
-    const before = smartLogList.scrollLeft;
-    const max = Math.max(0, smartLogList.scrollWidth - smartLogList.clientWidth);
+    if(!smartHistoryList) return false;
+    const before = smartHistoryList.scrollLeft;
+    const max = Math.max(0, smartHistoryList.scrollWidth - smartHistoryList.clientWidth);
     const next = Math.max(0, Math.min(max, Number(value) || 0));
     if(Math.abs(next - before) < 0.5) return false;
     protectSmartHistoryFocus();
-    smartLogList.scrollLeft = next;
+    smartHistoryList.scrollLeft = next;
     if(immediate) renderSmartHistoryWindow();
     else scheduleSmartHistoryWindowRender();
-    return Math.abs(smartLogList.scrollLeft - before) >= 0.5;
+    return Math.abs(smartHistoryList.scrollLeft - before) >= 0.5;
 }
 function handleSmartHistoryWheel(event){
     event.stopPropagation();
     const unit = event.deltaMode === 1
         ? 40
         : event.deltaMode === 2
-            ? Math.max(1, smartLogList.clientWidth)
+            ? Math.max(1, smartHistoryList.clientWidth)
             : 1;
     const delta = (Number(event.deltaX || 0) + Number(event.deltaY || 0)) * unit;
-    if(delta && scrollSmartHistoryRailTo(smartLogList.scrollLeft + delta)) event.preventDefault();
+    if(delta && scrollSmartHistoryRailTo(smartHistoryList.scrollLeft + delta)) event.preventDefault();
 }
 function handleSmartHistoryKeydown(event){
     if(event.altKey || event.ctrlKey || event.metaKey) return;
-    const stride = smartHistoryVirtualState.stride || Math.max(1, smartLogList.clientWidth / 2);
-    let next = smartLogList.scrollLeft;
+    const stride = smartHistoryVirtualState.stride || Math.max(1, smartHistoryList.clientWidth / 2);
+    let next = smartHistoryList.scrollLeft;
     if(event.key === 'ArrowLeft') next -= stride;
     else if(event.key === 'ArrowRight') next += stride;
     else if(event.key === 'Home') next = 0;
-    else if(event.key === 'End') next = smartLogList.scrollWidth - smartLogList.clientWidth;
+    else if(event.key === 'End') next = smartHistoryList.scrollWidth - smartHistoryList.clientWidth;
     else return;
     event.stopPropagation();
     if(scrollSmartHistoryRailTo(next, event.key === 'Home' || event.key === 'End')) event.preventDefault();
 }
 function setupSmartHistoryDrawer(){
-    if(!smartLogModal) return;
-    smartLogModal.addEventListener('pointerdown', event => event.stopPropagation());
-    smartLogModal.addEventListener('mousedown', event => event.stopPropagation());
-    smartLogModal.addEventListener('click', event => event.stopPropagation());
-    smartLogModal.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
-    if(smartLogList){
-        smartLogList.tabIndex = 0;
-        smartLogList.addEventListener('scroll', () => scheduleSmartHistoryWindowRender(), {passive:true});
-        smartLogList.addEventListener('wheel', handleSmartHistoryWheel, {passive:false});
-        smartLogList.addEventListener('keydown', handleSmartHistoryKeydown);
+    if(!smartHistoryModal) return;
+    smartHistoryModal.addEventListener('pointerdown', event => event.stopPropagation());
+    smartHistoryModal.addEventListener('mousedown', event => event.stopPropagation());
+    smartHistoryModal.addEventListener('click', event => event.stopPropagation());
+    smartHistoryModal.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
+    if(smartHistoryList){
+        smartHistoryList.tabIndex = 0;
+        smartHistoryList.addEventListener('scroll', () => scheduleSmartHistoryWindowRender(), {passive:true});
+        smartHistoryList.addEventListener('wheel', handleSmartHistoryWheel, {passive:false});
+        smartHistoryList.addEventListener('keydown', handleSmartHistoryKeydown);
     }
     updateSmartHistoryDrawerCollapseUi();
 }
 function openSmartCanvasLog(){
     if(!canvas) return;
     if(assetLibraryOpen) toggleAssetLibrary(false);
-    renderSmartCanvasLog();
-    smartLogModal.classList.add('open');
+    renderSmartCanvasHistory();
+    smartHistoryModal.classList.add('open');
     updateSmartHistoryDrawerCollapseUi();
     refreshSmartProjectMediaTrashButton();
 }
 function closeSmartCanvasLog(){
-    smartLogModal?.classList.remove('open');
+    smartHistoryModal?.classList.remove('open');
     updateSmartHistoryDrawerCollapseUi();
 }
 function openSmartSettings(){
@@ -12110,7 +12110,7 @@ async function cancelNodeGenerationTask(nodeId, button=null){
 }
 // #90：批量待出图格子 → 生成任务详情弹窗：展示当前节点全部任务
 //（任务 ID / 阶段 / 进度 / 已用时），支持取消指定任务。
-// 数据从 node.pendingTasks + canvas.logs 现读，每秒重渲（状态签名变化时），
+// 数据从 node.pendingTasks + canvas.history 现读，每秒重渲（状态签名变化时），
 // 任务完成/失败后行内状态实时变化；关闭时清理定时器与事件。
 let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, onKey}
 function smartBatchTaskRows(node){
@@ -12119,7 +12119,7 @@ function smartBatchTaskRows(node){
     const candidatePhases = Array.isArray(batchProgress.candidate_phases) ? batchProgress.candidate_phases : [];
     return tasks.map((task, index) => {
         const taskId = String(task?.taskId || '');
-        const log = (canvas?.logs || []).find(item => smartHistoryTaskId(item) === taskId);
+        const log = (canvas?.history || []).find(item => smartHistoryTaskId(item) === taskId);
         const status = log?.status === 'failed' ? 'failed' : log?.status === 'completed' ? 'completed' : 'active';
         const phaseKey = String(task?.progress?.phase || candidatePhases[index] || '');
         const phaseIndex = Math.max(0, GENERATION_PROGRESS_PHASES.findIndex(item => item[0] === phaseKey));
@@ -13566,7 +13566,7 @@ function applyConversationCanvasResponse(nextCanvas){
     );
     canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
     nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));
+    canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     if(canvas.format === 'firefly-canvas-v1'){
         persistedCoreSnapshot = responseState.serverSnapshot;
@@ -15015,7 +15015,7 @@ async function deleteImage(id, imageIndex){
     // #88 删除双向：该图同时是某条生成历史的「当前原图」时，先问删除范围；
     // 无历史关联维持原静默删除。选「画布+历史原图」走项目级删除链路
     //（墓碑+回收区 7 天可恢复+undo 令牌），不再级联归档。
-    const logCtx = smartLogContextForImage(node, imageIndex);
+    const logCtx = smartHistoryContextForImage(node, imageIndex);
     let alsoDeleteOriginal = false;
     if(logCtx){
         const choice = await confirmCanvasImageDeleteScope();
@@ -15042,7 +15042,7 @@ async function deleteImage(id, imageIndex){
     render();
     scheduleSave();
     if(alsoDeleteOriginal){
-        void deleteSmartProjectOriginal(logCtx.logId, logCtx.outputIndex, {skipConfirm:true});
+        void deleteSmartProjectOriginal(logCtx.historyId, logCtx.outputIndex, {skipConfirm:true});
     } else if(removedImage){
         // #74 (D1): 被删的单图若无其他引用 → 移入回收区。
         void cascadeArchiveDeletedMedia([removedImage]);
@@ -16919,7 +16919,7 @@ function openImageEditor(nodeId, imageIndex=0){
     refreshIcons();
 }
 function closeImageEditor(){
-    cleanupSmartLogPreviewNode();
+    cleanupSmartHistoryPreviewNode();
     imageEditModal.classList.remove('open');
     document.querySelector('.image-edit-panel')?.classList.remove('video-preview-mode');
     const img = document.getElementById('cropImage');
@@ -17425,16 +17425,16 @@ function restoreLongContentTriggerFocus(identity, fallback){
         }
     }
     if(!target && (kind === 'history-prompt' || kind === 'history-error')){
-        const logId = String(identity?.logId || '');
-        const cardSelector = `.log-item[data-canvas-log-id="${CSS.escape(logId)}"]`;
-        let card = smartLogList?.querySelector?.(cardSelector) || null;
-        if(!card && smartLogList){
-            const index = (canvas?.logs || []).findIndex(log => String(log?.id || '') === logId);
+        const historyId = String(identity?.historyId || '');
+        const cardSelector = `.log-item[data-canvas-history-id="${CSS.escape(historyId)}"]`;
+        let card = smartHistoryList?.querySelector?.(cardSelector) || null;
+        if(!card && smartHistoryList){
+            const index = (canvas?.history || []).findIndex(log => String(log?.id || '') === historyId);
             if(index >= 0){
-                const stride = smartHistoryVirtualState.stride || Math.max(1, smartLogList.clientWidth || 1);
-                smartLogList.scrollLeft = Math.max(0, index * stride);
+                const stride = smartHistoryVirtualState.stride || Math.max(1, smartHistoryList.clientWidth || 1);
+                smartHistoryList.scrollLeft = Math.max(0, index * stride);
                 renderSmartHistoryWindow(true);
-                card = smartLogList.querySelector(cardSelector);
+                card = smartHistoryList.querySelector(cardSelector);
             }
         }
         target = card?.querySelector?.(`[data-long-content-open="${kind}"]`) || null;
@@ -17631,13 +17631,13 @@ function clearPromptFlowGeometry(){
 function recentPromptFlowImages(limit=2){
     const seen = new Set();
     const results = [];
-    for(const log of sortSmartHistoryLogs(canvas?.logs || [])){
+    for(const log of sortSmartHistoryLogs(canvas?.history || [])){
         if(['pending','failed','cancelled','original_deleted'].includes(String(log?.status || ''))) continue;
-        for(const output of smartLogImageOutputs(log)){
+        for(const output of smartHistoryImageOutputs(log)){
             const key = output.asset_id || output.url;
             if(!key || seen.has(key)) continue;
             seen.add(key);
-            results.push({...output, logId:String(log?.id || '')});
+            results.push({...output, historyId:String(log?.id || '')});
             if(results.length >= limit) return results;
         }
     }
@@ -17647,7 +17647,7 @@ function promptFlowContextImageHtml(item, {kind='reference', index=0}={}){
     const label = tr(kind === 'recent' ? 'smart.flowRecentImage' : 'smart.flowReferenceImage').replace('{n}', String(index + 1));
     const image = smartPreviewImgHtml(item, 512, `alt="${escapeAttr(label)}" draggable="false"`);
     if(kind === 'recent'){
-        return `<button class="prompt-flow-context-image is-recent" type="button" data-flow-recent-log-id="${escapeAttr(item.logId || '')}" data-flow-recent-output-index="${Number(item.outputIndex || 0)}" data-flow-recent-url="${escapeAttr(item.url || '')}" title="${escapeAttr(trf('smart.viewNodeDetails', {label: label}))}">${image}<span>${escapeHtml(label)}</span></button>`;
+        return `<button class="prompt-flow-context-image is-recent" type="button" data-flow-recent-log-id="${escapeAttr(item.historyId || '')}" data-flow-recent-output-index="${Number(item.outputIndex || 0)}" data-flow-recent-url="${escapeAttr(item.url || '')}" title="${escapeAttr(trf('smart.viewNodeDetails', {label: label}))}">${image}<span>${escapeHtml(label)}</span></button>`;
     }
     return `<figure class="prompt-flow-context-image is-reference" title="${escapeAttr(item.name || label)}">${image}<figcaption>${escapeHtml(label)}</figcaption></figure>`;
 }
@@ -17736,10 +17736,10 @@ function renderPromptFlowContext(node){
         button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            openSmartLogDetail({
+            openSmartHistoryDetail({
                 url:button.dataset.flowRecentUrl || '',
                 kind:'image',
-                logId:button.dataset.flowRecentLogId || '',
+                historyId:button.dataset.flowRecentHistoryId || '',
                 outputIndex:Number(button.dataset.flowRecentOutputIndex || 0)
             });
         };
@@ -18625,26 +18625,26 @@ async function acceptProjectGenerationRegistration(taskResult){
     if(currentNode){
         const localTasks = smartPendingTasks(currentNode);
         const currentTaskIds = new Set((taskResult.taskIds || []).filter(Boolean));
-        const pendingHistoryLogId = String(taskResult.pendingHistoryLogId || '');
+        const pendingHistoryId = String(taskResult.pendingHistoryId || '');
         const preserved = {
-            pendingHistoryLogId:currentNode._pendingHistoryLogId,
+            pendingHistoryId:currentNode._pendingHistoryId,
             generationBatchApplied:currentNode._generationBatchApplied,
             runStartedAt:currentNode.runStartedAt
         };
         Object.assign(currentNode, hydrateProjectMediaReferences(registeredNode));
         const mergedTasks = smartPendingTasks(registeredNode).map(task => {
             const local = localTasks.find(item => item.taskId && item.taskId === task.taskId)
-                || (currentTaskIds.has(task.taskId) ? localTasks.find(item => !item.taskId && String(item.pendingHistoryLogId || '') === pendingHistoryLogId) : null);
+                || (currentTaskIds.has(task.taskId) ? localTasks.find(item => !item.taskId && String(item.pendingHistoryId || '') === pendingHistoryId) : null);
             return {
                 ...task,
                 ...(local || {}),
                 taskId:task.taskId,
-                pendingHistoryLogId:String(local?.pendingHistoryLogId || (currentTaskIds.has(task.taskId) ? pendingHistoryLogId : '') || '')
+                pendingHistoryId:String(local?.pendingHistoryId || (currentTaskIds.has(task.taskId) ? pendingHistoryId : '') || '')
             };
         });
         currentNode.pendingTasks = mergedTasks;
         currentNode.pending = Math.max(mergedTasks.length, mergedTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
-        if(preserved.pendingHistoryLogId) currentNode._pendingHistoryLogId = preserved.pendingHistoryLogId;
+        if(preserved.pendingHistoryId) currentNode._pendingHistoryId = preserved.pendingHistoryId;
         if(preserved.generationBatchApplied !== undefined) currentNode._generationBatchApplied = preserved.generationBatchApplied;
         if(preserved.runStartedAt) currentNode.runStartedAt = preserved.runStartedAt;
     }
@@ -20483,7 +20483,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
         const result = await generateUrlsForCurrentSettings(outputNode, prompt, request.refs || [], runSettings);
         if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
         if(outpaintSize) delete requestNode.outpaintSize;
-        if(!outputNode._serverGenerationHistoryRecorded) addSmartGenerationLog({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+        if(!outputNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputNode._serverGenerationHistoryRecorded;
         const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
         const additions = result.urls.map((item, i) => {
@@ -20519,7 +20519,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
             return [];
         }
         outputNode.running = false;
-        if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
+        if(!e?.smartGenerationLogged) addSmartGenerationHistory({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         render();
         throw e;
     }
@@ -20697,7 +20697,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             runPath.states[edgeKey] = 'done';
             scheduleConnectionLayerRefresh();
         }
-        if(!outputSlot._serverGenerationHistoryRecorded) addSmartGenerationLog({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+        if(!outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputSlot._serverGenerationHistoryRecorded;
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {
@@ -21048,7 +21048,7 @@ async function runGeneration(){
     undoSuppressed = false;
     const pendingNode = branchNode || node;
     const priorPendingTasks = smartPendingTasks(pendingNode);
-    const pendingHistoryLogId = apiConcurrentRun && logKind === 'image'
+    const pendingHistoryId = apiConcurrentRun && logKind === 'image'
         ? beginSmartPendingHistoryLog(pendingNode, {
             prompt,
             kind:logKind,
@@ -21058,7 +21058,7 @@ async function runGeneration(){
             forceNew:true
         })
         : '';
-    if(pendingHistoryLogId) runLog.pendingHistoryLogId = pendingHistoryLogId;
+    if(pendingHistoryId) runLog.pendingHistoryId = pendingHistoryId;
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
         // 新一轮生成开始：框内已有上一轮残留图片（且没有仍在飞行的任务）时，
@@ -21114,7 +21114,7 @@ async function runGeneration(){
             if(Array.isArray(videoResult?.taskIds)){
                 const taskIds = videoResult.taskIds.filter(Boolean);
                 if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-                const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryLogId:index === 0 ? pendingHistoryLogId : ''}));
+                const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
                 pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
                 ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'video'});
                 pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
@@ -21136,7 +21136,7 @@ async function runGeneration(){
                 }
                 if(!(completedVideoNode.images || []).length) throw new Error(tr('smart.errNoOutVideos'));
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-                if(!completedVideoNode._serverGenerationHistoryRecorded) addSmartGenerationLog({run:runLog, outputs:completedVideoNode.images || [], runMs:nowMs() - runLogStart});
+                if(!completedVideoNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:runLog, outputs:completedVideoNode.images || [], runMs:nowMs() - runLogStart});
                 delete completedVideoNode._serverGenerationHistoryRecorded;
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -21147,7 +21147,7 @@ async function runGeneration(){
             if(!outVideos.length) throw new Error(tr('smart.errNoOutVideos'));
             finalizePendingNode(pendingNode, outVideos, pendingMeta, 'video');
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            addSmartGenerationLog({run:runLog, outputs:outVideos, runMs:nowMs() - runLogStart});
+            addSmartGenerationHistory({run:runLog, outputs:outVideos, runMs:nowMs() - runLogStart});
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;
             scheduleSave();
@@ -21155,7 +21155,7 @@ async function runGeneration(){
         }
         const rhModelMode = settings.engine === 'runninghub' && Boolean(runningHubSelectedModel(settings));
         const outImages = rhModelMode
-            ? await runApiGeneration(prompt, refs, runningHubModelApiSettings(settings), pendingNode, {pendingHistoryLogId})
+            ? await runApiGeneration(prompt, refs, runningHubModelApiSettings(settings), pendingNode, {pendingHistoryId})
             : settings.engine === 'runninghub'
                 ? await runRunningHubGeneration(prompt, refs)
                 : settings.engine === 'modelscope'
@@ -21170,12 +21170,12 @@ async function runGeneration(){
                     resolution:settings.msResolution || '1k',
                     customRatio:settings.msCustomRatio || '',
                     customSize:settings.msCustomSize || ''
-                }, pendingNode, {pendingHistoryLogId})
-                : await runApiGeneration(prompt, refs, settings, pendingNode, {pendingHistoryLogId, overlapping:priorPendingTasks.length > 0});
+                }, pendingNode, {pendingHistoryId})
+                : await runApiGeneration(prompt, refs, settings, pendingNode, {pendingHistoryId, overlapping:priorPendingTasks.length > 0});
         if(isApiLikeEngine(settings.engine) || rhModelMode){
             const taskIds = Array.isArray(outImages?.taskIds) ? outImages.taskIds : [];
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-            const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, size:sizeForRun(settings) || '', createdAt:runLogStart, pendingHistoryLogId:index === 0 ? pendingHistoryLogId : ''}));
+            const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, size:sizeForRun(settings) || '', createdAt:runLogStart, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
             pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
             // 提交时就固化目标比例：占位/逐张写入/完成三个阶段共用同一个格子比例，
             // 任何阶段都不再按真实图重算，彻底消除「上传方形、写入跳回」的跳变。
@@ -21206,7 +21206,7 @@ async function runGeneration(){
             if(!(completedImageNode.images || []).length) throw new Error(tr('smart.errNoOutImages'));
             if(outpaintSize) delete node.outpaintSize;
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            if(!completedImageNode._serverGenerationHistoryRecorded) addSmartGenerationLog({run:runLog, outputs:completedImageNode.images || [], runMs:nowMs() - runLogStart});
+            if(!completedImageNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:runLog, outputs:completedImageNode.images || [], runMs:nowMs() - runLogStart});
             delete completedImageNode._serverGenerationHistoryRecorded;
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;
@@ -21217,7 +21217,7 @@ async function runGeneration(){
         if(outpaintSize) delete node.outpaintSize;
         finalizePendingNode(pendingNode, outImages, pendingMeta);
         if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-        addSmartGenerationLog({run:runLog, outputs:outImages, runMs:nowMs() - runLogStart});
+        addSmartGenerationHistory({run:runLog, outputs:outImages, runMs:nowMs() - runLogStart});
         clearPromptInput({preserveDraft:true});
         settings = previousSettings;
         scheduleSave();
@@ -21254,7 +21254,7 @@ async function runGeneration(){
         }
         if(extracted) restoreFromExtraction(node, extracted);
         delete pendingNode._runMetaTargetId;
-        if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
+        if(!e?.smartGenerationLogged) addSmartGenerationHistory({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
         if(!apiConcurrentRun){
@@ -21366,7 +21366,7 @@ async function postProjectImageTaskWithReplay(projectId, payload){
 }
 async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=null, runOptions={}){
     const count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
-    const pendingHistoryLogId = runOptions.pendingHistoryLogId || beginSmartPendingHistoryLog(resultNode, {
+    const pendingHistoryId = runOptions.pendingHistoryId || beginSmartPendingHistoryLog(resultNode, {
             prompt,
             kind:'image',
             providerId:runSettings.providerId || runSettings.provider_id || '',
@@ -21377,7 +21377,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         return queueSmartGenerationRegistration(resultNode.id, () => runApiGeneration(prompt, refs, runSettings, resultNode, {
             ...runOptions,
-            pendingHistoryLogId,
+            pendingHistoryId,
             registrationQueued:true
         }));
     }
@@ -21410,12 +21410,12 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             result_node_id:resultNode.id,
             angle_preset:runSettings.anglePreset || 'none',
             base_revision:Number(canvas.revision || 0),
-            idempotency_key:runOptions.idempotencyKey || `browser:${projectId}:${pendingHistoryLogId || uid('generation')}`
+            idempotency_key:runOptions.idempotencyKey || `browser:${projectId}:${pendingHistoryId || uid('generation')}`
         };
         const submission = upsertSmartGenerationSubmission(resultNode, {
             idempotencyKey:payload.idempotency_key,
             requestPayload:{...payload},
-            pendingHistoryLogId,
+            pendingHistoryId,
             count,
             prompt,
             createdAt:nowMs()
@@ -21432,7 +21432,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         payload.base_revision = Number(canvas.revision || payload.base_revision || 0);
         if(submission) submission.requestPayload = {...payload};
         const task = await postProjectImageTaskWithReplay(projectId, payload);
-        const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryLogId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
+        const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
         await acceptProjectGenerationRegistration(taskResult);
         // 新运行重置计时器：项目 API 提交路径不经过 runCascadeStepIntoNode，
         // 必须显式重置，否则持久化节点会带着上次生成的旧 runStartedAt 无限涨。
@@ -21925,21 +21925,21 @@ function absorbProjectGenerationResult(result, taskId=''){
     const revision = Number(result.project_revision || 0);
     const registeredRevision = Number(result.registered_revision || 0);
     if(result.history_record?.id){
-        canvas.logs = Array.isArray(canvas.logs) ? canvas.logs : [];
+        canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
         let pendingProgress = null;
         if(taskId){
-            const pendingId = smartPendingHistoryLogId(taskId);
-            const taskLog = canvas.logs.find(log => String(log?.id || '') === pendingId || smartHistoryTaskId(log) === String(taskId));
+            const pendingId = smartPendingHistoryId(taskId);
+            const taskLog = canvas.history.find(log => String(log?.id || '') === pendingId || smartHistoryTaskId(log) === String(taskId));
             if(taskLog?.progress) pendingProgress = {...taskLog.progress};
-            canvas.logs = canvas.logs.filter(log => String(log?.id || '') !== pendingId && !(log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId)));
+            canvas.history = canvas.history.filter(log => String(log?.id || '') !== pendingId && !(log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId)));
         }
         const hydratedRecord = hydrateProjectMediaReferences(result.history_record);
         if(['failed', 'cancelled'].includes(result.history_record.status) && pendingProgress) hydratedRecord.progress = {...pendingProgress, failed:result.history_record.status === 'failed'};
-        const index = canvas.logs.findIndex(item => item?.id === result.history_record.id);
-        if(index >= 0) canvas.logs[index] = hydratedRecord;
-        else canvas.logs.unshift(hydratedRecord);
-        canvas.logs = mergeSmartHistoryRecordLists(canvas.logs, []);
-        if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+        const index = canvas.history.findIndex(item => item?.id === result.history_record.id);
+        if(index >= 0) canvas.history[index] = hydratedRecord;
+        else canvas.history.unshift(hydratedRecord);
+        canvas.history = mergeSmartHistoryRecordLists(canvas.history, []);
+        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     const resultNode = nodes.find(item => item.id === result.result_node_id);
     const resultNodeId = String(resultNode?.id || '');
@@ -21952,7 +21952,7 @@ function absorbProjectGenerationResult(result, taskId=''){
             else delete resultNode[key];
         }
         if(!smartPendingTasks(resultNode).length){
-            delete resultNode._pendingHistoryLogId;
+            delete resultNode._pendingHistoryId;
             resultNode.runFinishedAt = nowMs();
             if(!resultNode.runStartedAt) resultNode.runStartedAt = resultNode.runFinishedAt;
             resultNode.runElapsedMs = Math.max(0, resultNode.runFinishedAt - Number(resultNode.runStartedAt || resultNode.runFinishedAt));
@@ -22038,7 +22038,7 @@ async function resumeSmartPendingNode(node, logContext={}){
     const logTaskFailure = (message, task) => {
         if(!logContext?.run || !message) return;
         const runMs = Math.max(0, nowMs() - Number(logContext.runLogStart || nowMs()));
-        addSmartGenerationLog({
+        addSmartGenerationHistory({
             run:logContext.run,
             outputs:[],
             runMs,
@@ -22243,7 +22243,7 @@ async function resumeSmartGenerationSubmission(node, submission){
         const projectId = canvas.project_id || canvas.project || canvasId;
         const payload = {...(submission.requestPayload || {}), idempotency_key:idempotencyKey, result_node_id:nodeId, base_revision:Number(canvas.revision || 0)};
         const task = await postProjectImageTaskWithReplay(projectId, payload);
-        const pendingHistoryLogId = String(submission.pendingHistoryLogId || smartPendingHistoryLogId(task.task_id));
+        const pendingHistoryId = String(submission.pendingHistoryId || smartPendingHistoryId(task.task_id));
         const taskResult = {
             taskIds:[task.task_id].filter(Boolean),
             count:Number(submission.count || payload.n || 1),
@@ -22252,7 +22252,7 @@ async function resumeSmartGenerationSubmission(node, submission){
             route:task.route,
             projectRevision:task.project_revision,
             registeredNode:task.registered_node,
-            pendingHistoryLogId,
+            pendingHistoryId,
             idempotencyKey:task.idempotency_key || idempotencyKey
         };
         await acceptProjectGenerationRegistration(taskResult);
@@ -22267,7 +22267,7 @@ async function resumeSmartGenerationSubmission(node, submission){
             model:taskResult.model,
             prompt:submission.prompt || payload.prompt || '',
             createdAt:Number(submission.createdAt || nowMs()),
-            pendingHistoryLogId,
+            pendingHistoryId,
             idempotencyKey
         }));
         currentNode.pendingTasks = [...smartPendingTasks(currentNode).filter(item => !taskIds.includes(item.taskId)), ...newTasks];
@@ -23992,24 +23992,24 @@ document.addEventListener('click', event => {
     if(!event.target.closest('.prompt-template-panel') && !event.target.closest('.prompt-preset-edit') && !event.target.closest('#composerTemplateBtn')) closePromptTemplatePanel();
 });
 document.addEventListener('keydown', event => {
-    if(document.querySelector('#smartLogLightbox.open') && !event.altKey && !event.ctrlKey && !event.metaKey){
+    if(document.querySelector('#smartHistoryLightbox.open') && !event.altKey && !event.ctrlKey && !event.metaKey){
         if(event.key === 'ArrowLeft'){
             event.preventDefault();
             event.stopPropagation();
-            switchSmartLogDetailOutput(-1);
+            switchSmartHistoryDetailOutput(-1);
             return;
         }
         if(event.key === 'ArrowRight'){
             event.preventDefault();
             event.stopPropagation();
-            switchSmartLogDetailOutput(1);
+            switchSmartHistoryDetailOutput(1);
             return;
         }
     }
-    if(event.key === 'Escape' && document.querySelector('#smartLogLightbox.open')){
+    if(event.key === 'Escape' && document.querySelector('#smartHistoryLightbox.open')){
         event.preventDefault();
         event.stopPropagation();
-        closeSmartLogLightbox();
+        closeSmartHistoryLightbox();
         return;
     }
     if(event.key === 'Escape' && closeActiveLongContentSession()){
@@ -24259,7 +24259,7 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
 }, {passive:false});
 window.addEventListener('resize', () => {
     if(cropState) syncImageEditOverflow();
-    if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     const repositionComposer = () => {
         const active = activeComposerNode();
         if(active?.id && composer?.classList.contains('open')) positionComposerForNode(active);

@@ -88,7 +88,7 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
         raise ValueError("lifecycle isolation assertions are incomplete")
     identity_keys = (
         "project_id", "failed_task_id", "retry_task_id", "cancel_task_id", "download_task_id",
-        "record_log_id", "original_log_id", "record_asset_id", "original_asset_id",
+        "record_history_id", "original_history_id", "record_asset_id", "original_asset_id",
     )
     if not all(isinstance(lifecycle.get(key), str) and lifecycle[key] for key in identity_keys):
         raise ValueError("lifecycle identities are missing")
@@ -105,7 +105,7 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
         int(terminal_counts.get(task_id) or 0) != 1 for task_id in task_ids
     ):
         raise ValueError("terminal task-to-record identity evidence is not one-to-one")
-    if not lifecycle.get("download_record_log_id") or not lifecycle.get("download_asset_id"):
+    if not lifecycle.get("download_record_history_id") or not lifecycle.get("download_asset_id"):
         raise ValueError("download is not bound to record and asset identities")
     if lifecycle.get("retention_ms") != 604_800_000:
         raise ValueError("deleted original does not have exact seven-day retention")
@@ -133,19 +133,19 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
     ordered_selectors = [str(item.get("selector") or "") for item in operations]
     selectors = set(ordered_selectors)
     required_selectors = {
-        "#smartLogToggle",
-        f'[data-log-cancel-task="{lifecycle["cancel_task_id"]}"]',
-        f'[data-log-retry-task="{lifecycle["failed_task_id"]}"]',
-        f'[data-canvas-log-id="{lifecycle["record_log_id"]}"] [data-log-delete="record"]',
-        f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="0"]',
-        f'[data-log-restore-original="{lifecycle["original_asset_id"]}"]',
-        f'[data-canvas-log-id="{lifecycle["download_record_log_id"]}"] [data-log-download-original]',
+        "#smartHistoryToggle",
+        f'[data-history-cancel-task="{lifecycle["cancel_task_id"]}"]',
+        f'[data-history-retry-task="{lifecycle["failed_task_id"]}"]',
+        f'[data-canvas-history-id="{lifecycle["record_history_id"]}"] [data-history-delete="record"]',
+        f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="0"]',
+        f'[data-history-restore-original="{lifecycle["original_asset_id"]}"]',
+        f'[data-canvas-history-id="{lifecycle["download_record_history_id"]}"] [data-history-download-original]',
     }
     if not required_selectors.issubset(selectors):
         raise ValueError("native UI operations do not cover every destructive product entry")
-    cancel_index = ordered_selectors.index(f'[data-log-cancel-task="{lifecycle["cancel_task_id"]}"]')
-    retry_index = ordered_selectors.index(f'[data-log-retry-task="{lifecycle["failed_task_id"]}"]')
-    if cancel_index >= retry_index or ordered_selectors[:retry_index].count("#smartLogToggle") < 2:
+    cancel_index = ordered_selectors.index(f'[data-history-cancel-task="{lifecycle["cancel_task_id"]}"]')
+    retry_index = ordered_selectors.index(f'[data-history-retry-task="{lifecycle["failed_task_id"]}"]')
+    if cancel_index >= retry_index or ordered_selectors[:retry_index].count("#smartHistoryToggle") < 2:
         raise ValueError("safe retry was not exercised after reopening the reloaded history UI")
 
     requests = _read_json(_artifact(root, attempt.get("requests"), "requests"), "requests")

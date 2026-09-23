@@ -921,7 +921,7 @@ class ProjectStoreContractTests(unittest.TestCase):
             {"op": "upsert_node", "node": {"id": "prompt", "type": "prompt", "x": 120, "y": 80, "w": 280, "h": 180}},
             {"op": "upsert_node", "node": {"id": "image", "type": "image", "x": 520, "y": 140, "w": 320, "h": 240, "images": [{"asset_id": referenced["asset_id"]}]}},
             {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt", "to": "image"}},
-            {"op": "set_canvas_meta", "logs": [{"id": "log-1", "output_asset_id": referenced["asset_id"]}]},
+            {"op": "set_canvas_meta", "history": [{"id": "log-1", "output_asset_id": referenced["asset_id"]}]},
         ])
         self.store.flush(source["id"])
 
@@ -939,7 +939,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(copied_opened["canvas"]["revision"], 0)
         self.assertEqual(copied_opened["canvas"]["nodes"], source_opened["canvas"]["nodes"])
         self.assertEqual(copied_opened["canvas"]["connections"], source_opened["canvas"]["connections"])
-        self.assertEqual(copied_opened["canvas"]["logs"], source_opened["canvas"]["logs"])
+        self.assertEqual(copied_opened["canvas"]["history"], source_opened["canvas"]["history"])
         backup = json.loads((self.root / duplicate["id"] / "canvas.json.bak").read_text(encoding="utf-8"))
         self.assertEqual(backup["nodes"], source_opened["canvas"]["nodes"])
         self.assertEqual(backup["connections"], source_opened["canvas"]["connections"])
@@ -1204,28 +1204,28 @@ class ProjectStoreContractTests(unittest.TestCase):
     def test_generation_history_is_saved_outside_canvas_snapshot(self):
         project = self.store.create_project("历史分离")
         self.apply_mutations(project["id"], [
-            {"op": "set_canvas_meta", "logs": [{"id": "log-1", "prompt": "萤火"}]},
+            {"op": "set_canvas_meta", "history": [{"id": "log-1", "prompt": "萤火"}]},
         ])
         self.store.flush(project["id"])
         project_dir = self.root / project["id"]
         canvas_payload = json.loads((project_dir / "canvas.json").read_text(encoding="utf-8"))
         history_payload = json.loads((project_dir / "history.json").read_text(encoding="utf-8"))
-        self.assertNotIn("logs", canvas_payload)
+        self.assertNotIn("history", canvas_payload)
         self.assertEqual(history_payload, {"records": [{"id": "log-1", "prompt": "萤火"}]})
         restarted = ProjectStore(self.root, snapshot_delay=0)
         try:
-            self.assertEqual(restarted.open_project(project["id"])["canvas"]["logs"], history_payload["records"])
+            self.assertEqual(restarted.open_project(project["id"])["canvas"]["history"], history_payload["records"])
         finally:
             restarted.close()
 
     def test_history_delete_uses_same_revision_cas_as_canvas_mutations(self):
         project = self.store.create_project("历史并发")
         self.apply_mutations(project["id"], [
-            {"op": "set_canvas_meta", "logs": [{"id": "log-1"}, {"id": "log-2"}]},
+            {"op": "set_canvas_meta", "history": [{"id": "log-1"}, {"id": "log-2"}]},
         ])
         deleted = self.store.delete_history_record(project["id"], "log-1", base_revision=1)
         self.assertEqual(deleted["revision"], 2)
-        self.assertEqual(deleted["logs"], [{"id": "log-2"}])
+        self.assertEqual(deleted["history"], [{"id": "log-2"}])
         with self.assertRaises(RevisionConflict):
             self.store.delete_history_record(project["id"], "log-2", base_revision=1)
 
@@ -1243,10 +1243,10 @@ class ProjectStoreContractTests(unittest.TestCase):
         )
 
         self.apply_mutations(project["id"], [
-            {"op": "set_canvas_meta", "logs": [{"id": "generation-b", "prompt": "乙（浏览器已同步）"}]},
+            {"op": "set_canvas_meta", "history": [{"id": "generation-b", "prompt": "乙（浏览器已同步）"}]},
         ])
 
-        history = self.store.open_project(project["id"])["canvas"]["logs"]
+        history = self.store.open_project(project["id"])["canvas"]["history"]
         self.assertEqual([item["id"] for item in history], ["generation-a", "generation-b"])
         self.assertEqual(history[-1]["prompt"], "乙（浏览器已同步）")
 
@@ -1288,7 +1288,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         node = next(item for item in failed["nodes"] if item["id"] == "result")
         self.assertNotIn("pendingTasks", node)
         self.assertEqual(node["pending"], 0)
-        self.assertEqual(failed["logs"][-1]["id"], "failure-1")
+        self.assertEqual(failed["history"][-1]["id"], "failure-1")
 
     def test_generation_registration_uses_revision_cas_and_allows_same_node_overlap(self):
         project = self.store.create_project("生成并发")
@@ -1367,7 +1367,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         forged_terminal = self.store.apply_mutations(
             project["id"],
             [
-                {"op": "set_canvas_meta", "logs": [{"id": "forged-success", "task_id": "second", "status": "succeeded"}]},
+                {"op": "set_canvas_meta", "history": [{"id": "forged-success", "task_id": "second", "status": "succeeded"}]},
                 {"op": "upsert_node", "node": {"id": "result", "type": "smart-image", "title": "forged terminal attempted"}},
             ],
             base_revision=int(changed_type["revision"]),
@@ -1375,7 +1375,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         opened_after_forgery = self.store.open_project(project["id"])["canvas"]
         protected = next(item for item in opened_after_forgery["nodes"] if item["id"] == "result")
         self.assertEqual([item["taskId"] for item in protected["pendingTasks"]], ["first", "second"])
-        self.assertFalse(any(item.get("id") == "forged-success" for item in opened_after_forgery["logs"]))
+        self.assertFalse(any(item.get("id") == "forged-success" for item in opened_after_forgery["history"]))
 
         cancelled = self.store.cancel_image_generation(
             project["id"],
@@ -1482,7 +1482,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         node_output_ids = [image["output_id"] for image in result_node["images"]]
         history_output_ids = [
             record["outputs"][0]["output_id"]
-            for record in completed["logs"]
+            for record in completed["history"]
         ]
         self.assertEqual(
             [image["asset_id"] for image in result_node["images"]],
@@ -1491,17 +1491,17 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(len(set(node_output_ids)), 2)
         self.assertEqual(node_output_ids, history_output_ids)
 
-        selected_record = completed["logs"][0]
+        selected_record = completed["history"][0]
         deleted = self.store.delete_generated_original(
             project["id"],
             shared["asset_id"],
             base_revision=completed["revision"],
-            log_id=selected_record["id"],
+            history_id=selected_record["id"],
             output_id=selected_record["outputs"][0]["output_id"],
             output_index=0,
         )["canvas"]
         remaining_node = next(node for node in deleted["nodes"] if node["id"] == "result")
-        remaining_records = [record for record in deleted["logs"] if record.get("outputs")]
+        remaining_records = [record for record in deleted["history"] if record.get("outputs")]
         self.assertEqual(len(remaining_node["images"]), 1)
         self.assertEqual(len(remaining_records), 1)
         self.assertEqual(
@@ -1514,12 +1514,12 @@ class ProjectStoreContractTests(unittest.TestCase):
         with self.assertRaises(InvalidMutation):
             self.apply_mutations(project["id"], [
                 {"op": "upsert_node", "node": {"id": "must-not-stick"}},
-                {"op": "set_canvas_meta", "logs": [{"id": "must-not-stick"}]},
+                {"op": "set_canvas_meta", "history": [{"id": "must-not-stick"}]},
                 {"op": "unsupported"},
             ])
         opened = self.store.open_project(project["id"])["canvas"]
         self.assertEqual(opened["nodes"], [])
-        self.assertEqual(opened["logs"], [])
+        self.assertEqual(opened["history"], [])
 
     def test_fly_import_creates_new_identity_and_one_project_owned_canvas(self):
         package = make_fly_package(
@@ -1539,7 +1539,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         opened = self.store.open_project(imported["id"])["canvas"]
         self.assertEqual(opened["id"], imported["id"])
         self.assertEqual(opened["nodes"][0]["images"], [{"asset_id": "asset-1"}])
-        self.assertEqual(opened["logs"], [{"id": "h1"}])
+        self.assertEqual(opened["history"], [{"id": "h1"}])
         self.assertEqual((self.root / imported["id"] / "media" / "asset-1.png").read_bytes(), b"synthetic-media")
 
     def test_utf8_roundtrip_preserves_chinese_project_names(self):
@@ -1624,7 +1624,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         media = self.store.import_media(project["id"], b"project-original", "original.png", "image/png")
         self.apply_mutations(project["id"], [
             {"op": "upsert_node", "node": {"id": "result", "images": [{"asset_id": media["asset_id"]}]}},
-            {"op": "set_canvas_meta", "logs": [{"id": "history-1", "outputs": [{"asset_id": media["asset_id"]}]}]},
+            {"op": "set_canvas_meta", "history": [{"id": "history-1", "outputs": [{"asset_id": media["asset_id"]}]}]},
         ])
         project_dir = self.root / project["id"]
         (project_dir / "previews" / "rebuild.webp").write_bytes(b"preview")
@@ -1659,7 +1659,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertNotEqual(imported["id"], project["id"])
         reopened = self.store.open_project(imported["id"])["canvas"]
         node_image = reopened["nodes"][0]["images"][0]
-        history_output = reopened["logs"][0]["outputs"][0]
+        history_output = reopened["history"][0]["outputs"][0]
         self.assertEqual(
             {key: value for key, value in node_image.items() if key not in {"output_id", "output_order"}},
             {"asset_id": media["asset_id"]},
@@ -2185,7 +2185,7 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertFalse(node.get("pendingTasks"))
         self.assertEqual(node.get("pending"), 0)
         self.assertIs(node.get("running"), False)
-        history = result.get("logs") or []
+        history = result.get("history") or []
         self.assertTrue(any(item.get("id") == "history-fail" and item.get("status") == "failed" for item in history))
 
     def test_delete_media_if_unreferenced_and_purge_deleted_media(self):
@@ -2276,7 +2276,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
             self._partial(project["id"], "result", "task-1", history_id, media, None)
 
         opened = self.store.open_project(project["id"])["canvas"]
-        record = next(item for item in opened["logs"] if item["id"] == history_id)
+        record = next(item for item in opened["history"] if item["id"] == history_id)
         self.assertEqual(
             [output["asset_id"] for output in record["outputs"]],
             [a["asset_id"], b["asset_id"], c["asset_id"]],
@@ -2317,7 +2317,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
             task_id="task-1",
             require_pending=True,
         )
-        record = next(item for item in final["logs"] if item["id"] == history_id)
+        record = next(item for item in final["history"] if item["id"] == history_id)
         self.assertEqual(
             [output["asset_id"] for output in record["outputs"]],
             [a["asset_id"], b["asset_id"]],
@@ -2343,7 +2343,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
             project["id"], "result", "task-1",
             {"id": "generation-cancel-1", "task_id": "task-1", "outputs": [], "error": "任务已取消"},
         )
-        task_records = [item for item in cancelled["logs"] if str(item.get("task_id") or "") == "task-1"]
+        task_records = [item for item in cancelled["history"] if str(item.get("task_id") or "") == "task-1"]
         self.assertEqual(len(task_records), 1)
         record = task_records[0]
         self.assertEqual(record["status"], "cancelled")
@@ -2351,7 +2351,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
             [output["asset_id"] for output in record["outputs"]],
             [a["asset_id"], b["asset_id"]],
         )
-        self.assertNotIn(history_id, [item["id"] for item in cancelled["logs"]])
+        self.assertNotIn(history_id, [item["id"] for item in cancelled["history"]])
         node = next(item for item in cancelled["nodes"] if item["id"] == "result")
         self.assertNotIn("pendingTasks", node)
         # 已归档图仍被历史记录引用 → 孤儿清理不会动它们
@@ -2380,7 +2380,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
             },
             require_pending=True,
         )
-        task_records = [item for item in failed["logs"] if str(item.get("task_id") or "") == "task-1"]
+        task_records = [item for item in failed["history"] if str(item.get("task_id") or "") == "task-1"]
         self.assertEqual(len(task_records), 1)
         record = task_records[0]
         self.assertEqual(record["status"], "timeout")
@@ -2403,7 +2403,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
                 "runStartedAt": 1700000000000, "runElapsedMs": 42,
                 "images": [{"asset_id": original["asset_id"], "kind": "image"}],
             }},
-            {"op": "set_canvas_meta", "logs": [{
+            {"op": "set_canvas_meta", "history": [{
                 "id": "log-gen", "status": "succeeded", "result_node_id": "some-other-node",
                 "outputs": [{"asset_id": original["asset_id"], "kind": "image"}],
             }]},
@@ -2430,7 +2430,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
                 "runStartedAt": 1700000000000,
                 "images": [{"asset_id": original["asset_id"], "kind": "image", "output_id": "out-1"}],
             }},
-            {"op": "set_canvas_meta", "logs": [{
+            {"op": "set_canvas_meta", "history": [{
                 "id": "log-gen", "status": "succeeded", "result_node_id": "result",
                 "outputs": [{"asset_id": original["asset_id"], "kind": "image", "output_id": "out-1"}],
             }]},
@@ -2499,7 +2499,7 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         hist_ref = self.store.import_media(project["id"], b"href-bytes", "href.png", "image/png")
         self.apply_mutations(project["id"], [
             {"op": "upsert_node", "node": {"id": "n1", "type": "image", "images": [{"asset_id": node_ref["asset_id"]}]}},
-            {"op": "set_canvas_meta", "logs": [{
+            {"op": "set_canvas_meta", "history": [{
                 "id": "log-1", "status": "succeeded",
                 "outputs": [{"asset_id": hist_ref["asset_id"], "kind": "image"}],
             }]},

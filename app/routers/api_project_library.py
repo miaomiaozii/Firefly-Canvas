@@ -310,7 +310,7 @@ async def get_project_agent_task(project_id: str, node_id: str, task_id: str):
         if result_node is not None:
             result['result_node'] = copy.deepcopy(result_node)
         history_id = f'agent-generation-{task_id}'
-        result['history_record'] = next((item for item in opened['canvas'].get('logs') or [] if str(item.get('id') or '') == history_id), None)
+        result['history_record'] = next((item for item in opened['canvas'].get('history') or [] if str(item.get('id') or '') == history_id), None)
         return result
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -433,7 +433,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
     # A terminal history record is the durable commit marker.  Read it before a
     # stale pending node so a crash between the two snapshot writes cannot turn
     # an already-paid success into a synthetic restart failure.
-    for record in reversed(canvas.get('logs') or []):
+    for record in reversed(canvas.get('history') or []):
         if not isinstance(record, dict) or str(record.get('task_id') or record.get('taskId') or '') != clean_task_id:
             continue
         return {
@@ -488,7 +488,7 @@ def durable_project_image_task_by_idempotency(
             if not isinstance(pending, dict) or str(pending.get('idempotencyKey') or '') != clean_key:
                 continue
             return durable_project_image_task(canvas, str(pending.get('taskId') or ''))
-    for record in canvas.get('logs') or []:
+    for record in canvas.get('history') or []:
         if not isinstance(record, dict) or str(record.get('idempotency_key') or '') != clean_key:
             continue
         return durable_project_image_task(canvas, str(record.get('task_id') or record.get('taskId') or ''))
@@ -1686,7 +1686,7 @@ def durable_project_video_task(canvas: Mapping[str, Any], task_id: str) -> Optio
     与图片同一约定：crash 在两次快照写之间时，不能把已付费成功合成成重启失败。
     """
     clean_task_id = str(task_id or '').strip()
-    for record in reversed(canvas.get('logs') or []):
+    for record in reversed(canvas.get('history') or []):
         if not isinstance(record, dict) or str(record.get('task_id') or record.get('taskId') or '') != clean_task_id:
             continue
         if str(record.get('type') or '') not in {'online-video', 'video'}:
@@ -3462,9 +3462,9 @@ async def create_project_local_edit(project_id: str, payload: ProjectLocalEditRe
         node.update({'id': payload.result_node_id, 'type': 'local-edit', 'mode': mode, 'inputs': {'original': {'asset_id': payload.original_asset_id}, 'references': [{'asset_id': item} for item, _content in references], 'prompt': payload.prompt}, 'input_roles': {'original': {'asset_id': payload.original_asset_id}, 'references': [{'asset_id': item} for item, _content in references], 'prompt': payload.prompt}, 'original_asset_id': payload.original_asset_id, 'reference_asset_ids': [item for item, _content in references], 'model_input_asset_id': model_input_asset['asset_id'], 'model_result_asset_id': model_asset['asset_id'], 'selection_asset_id': selection_asset['asset_id'] if mode == 'modify' else '', 'mask_asset_id': selection_asset['asset_id'] if mode == 'retain' else '', 'selection': persisted_selection, 'feather_radius': payload.feather_radius, 'generation_size': payload.size, 'generation_resolution': payload.resolution, 'images': [{'asset_id': output_asset['asset_id'], 'kind': 'image', 'name': 'local-edit-output.png'}], 'output_asset_id': output_asset['asset_id'], 'outputKind': 'image'})
         completed_at = _app_main.now_ms()
         history_record = {'id': f'local-edit-{uuid.uuid4().hex}', 'type': 'local-edit', 'status': 'succeeded', 'mode': mode, 'prompt': payload.prompt, 'selection': persisted_selection, 'aspect_ratio': payload.aspect_ratio, 'feather_radius': payload.feather_radius, 'generation_size': payload.size, 'generation_resolution': payload.resolution, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'platform': 'Local Edit', 'model': mode, 'original_asset_id': payload.original_asset_id, 'reference_asset_ids': [item for item, _content in references], 'model_input_asset_id': model_input_asset['asset_id'], 'model_result_asset_id': model_asset['asset_id'], 'selection_asset_id': selection_asset['asset_id'] if mode == 'modify' else '', 'mask_asset_id': selection_asset['asset_id'] if mode == 'retain' else '', 'output_asset_id': output_asset['asset_id'], 'result_node_id': payload.result_node_id}
-        existing_history = opened['canvas'].get('logs') if isinstance(opened.get('canvas'), dict) else []
+        existing_history = opened['canvas'].get('history') if isinstance(opened.get('canvas'), dict) else []
         history_records = [item for item in existing_history or [] if isinstance(item, dict)][-4999:] + [history_record]
-        changed = await asyncio.to_thread(_app_main.project_store_call, 'apply_mutations', project_id, [{'op': 'upsert_node', 'node': node}, {'op': 'set_canvas_meta', 'logs': history_records}], base_revision=payload.base_revision)
+        changed = await asyncio.to_thread(_app_main.project_store_call, 'apply_mutations', project_id, [{'op': 'upsert_node', 'node': node}, {'op': 'set_canvas_meta', 'history': history_records}], base_revision=payload.base_revision)
         await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
         await manager.broadcast_canvas_updated(project_id, int(changed.get('updated_at') or _app_main.now_ms()))
         return {'ok': True, 'mode': mode, 'node': node, 'assets': {'original': payload.original_asset_id, 'model_input': model_input_asset, 'model_result': model_asset, 'selection': selection_asset, 'output': output_asset}, 'canvas': await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)}
@@ -3492,7 +3492,7 @@ async def firefly_project_save_status(project_id: str):
 @router.post('/api/project-library/{project_id}/history/delete')
 async def delete_project_history(project_id: str, payload: ProjectHistoryDeleteRequest):
     try:
-        canvas = await asyncio.to_thread(_app_main.project_store_call, 'delete_history_record', project_id, payload.log_id, base_revision=payload.base_revision)
+        canvas = await asyncio.to_thread(_app_main.project_store_call, 'delete_history_record', project_id, payload.history_id, base_revision=payload.base_revision)
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
     except ProjectNotFound as exc:
@@ -3508,7 +3508,7 @@ async def delete_project_history_with_media(project_id: str, payload: ProjectHis
             _app_main.project_store_call,
             'delete_history_record_with_media',
             project_id,
-            payload.log_id,
+            payload.history_id,
             base_revision=payload.base_revision,
         )
     except RevisionConflict as exc:
@@ -3537,7 +3537,7 @@ async def delete_project_generated_original(project_id: str, payload: ProjectOri
             project_id,
             payload.asset_id,
             base_revision=payload.base_revision,
-            log_id=payload.log_id,
+            history_id=payload.history_id,
             output_id=payload.output_id,
             output_index=payload.output_index,
         )

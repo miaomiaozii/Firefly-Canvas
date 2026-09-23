@@ -64,27 +64,27 @@
             const observedBothPending = await waitFor(() => {
                 const current = nodeById('gen-conn');
                 const pending = current?.pendingTasks || [];
-                const logs = evalCanvas()?.logs || [];
+                const logs = evalCanvas()?.history || [];
                 const ids = pending.map(item => String(item.taskId || '')).filter(Boolean);
                 if(ids.length < 2 || !ids.every(id => logs.some(log => log.status === 'pending' && String(log.request?.task_id || '') === id))) return false;
                 observedTaskIds = ids;
                 evalFn('openSmartCanvasLog')?.();
-                return ids.every(id => document.querySelector(`[data-log-cancel-task="${CSS.escape(id)}"]`));
+                return ids.every(id => document.querySelector(`[data-history-cancel-task="${CSS.escape(id)}"]`));
             }, 30000);
             assertion('second client renders one independent status card per overlapping task', observedBothPending, {
                 observedTaskIds,
                 pending:nodeById('gen-conn')?.pendingTasks || [],
-                logs:(evalCanvas()?.logs || []).filter(log => log.status === 'pending').map(log => ({id:log.id, task:log.request?.task_id})),
+                logs:(evalCanvas()?.history || []).filter(log => log.status === 'pending').map(log => ({id:log.id, task:log.request?.task_id})),
             });
             if(observedBothPending) await fetch('/__multiclient_observed', {method:'POST'});
             const observedIndependentTerminals = await waitFor(() => {
                 if(observedTaskIds.length < 2) return false;
-                const logs = evalCanvas()?.logs || [];
+                const logs = evalCanvas()?.history || [];
                 const states = observedTaskIds.map(id => logs.find(log => String(log.task_id || log.request?.task_id || '') === id)?.status || '');
                 return states.includes('cancelled') && states.includes('succeeded');
             }, 60000);
             const terminalStates = observedTaskIds.map(id => {
-                const log = (evalCanvas()?.logs || []).find(item => String(item.task_id || item.request?.task_id || '') === id);
+                const log = (evalCanvas()?.history || []).find(item => String(item.task_id || item.request?.task_id || '') === id);
                 return {taskId:id, status:log?.status || ''};
             });
             assertion('second client merges remote cancelled and succeeded records by task identity', observedIndependentTerminals, terminalStates);
@@ -98,14 +98,14 @@
             result.diagnostics.push(...(carried.diagnostics || []));
             const recoveredAfterReload = await waitFor(() => {
                 const current = nodeById('gen-conn');
-                const logs = evalCanvas()?.logs || [];
+                const logs = evalCanvas()?.history || [];
                 return !(current?.generationSubmissions || []).length
                     && logs.some(log => log.status === 'succeeded' && String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY'));
             }, 60000);
             const recoveredCaptured = await (await fetch('/__captured_requests')).json();
             assertion('reload replays an unknown submission with the same durable key', recoveredAfterReload, {
                 submissions:nodeById('gen-conn')?.generationSubmissions || [],
-                matchingLogs:(evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY')).map(log => ({task:log.task_id, status:log.status})),
+                matchingLogs:(evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY')).map(log => ({task:log.task_id, status:log.status})),
             });
             assertion('response-loss recovery invokes the fake adapter only once', recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length === 1, recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length);
             sessionStorage.removeItem('t09-submission-recovery-phase');
@@ -160,7 +160,7 @@
         } finally {
             eval('nodes').splice(0, eval('nodes').length, ...eval('nodes').filter(item => item.id !== 'revision-probe'));
             evalCanvas().nodes = eval('nodes');
-            evalCanvas().logs = (evalCanvas().logs || []).filter(item => item.id !== 'revision-probe-history');
+            evalCanvas().history = (evalCanvas().history || []).filter(item => item.id !== 'revision-probe-history');
         }
 
         const ref = nodeById('img-ref');
@@ -293,7 +293,7 @@
         const firstCountSelected = await setGenerationCount(3);
         const firstCountApplied = await waitFor(() => Number(smartSettings()?.count || 0) === 3, 3000);
         assertion('first cancellable task requests three outputs', firstCountSelected && firstCountApplied, smartSettings()?.count);
-        const historyCountBeforeRun = (evalCanvas()?.logs || []).length;
+        const historyCountBeforeRun = (evalCanvas()?.history || []).length;
         runBtn?.click();
         await sleep(120);
         const firstPendingNode = document.querySelector('[data-id="gen-conn"]');
@@ -302,23 +302,23 @@
         assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner), firstPlaceholderSpinner ? {className:firstPlaceholderSpinner.className} : 'missing');
         const firstNodeProgress = firstPendingNode?.querySelector('.generation-stage-progress');
         assertion('node placeholder shows six honest generation stages without a fake percent', Boolean(firstNodeProgress) && firstNodeProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstNodeProgress.textContent.includes('%'), firstNodeProgress?.outerHTML || 'missing');
-        document.getElementById('smartLogToggle')?.click();
-        const pendingHistoryVisible = await waitFor(() => Boolean(document.querySelector('#smartLogList .log-item.pending .log-history-placeholder')), 5000);
-        const pendingHistoryCard = document.querySelector('#smartLogList .log-item.pending');
+        document.getElementById('smartHistoryToggle')?.click();
+        const pendingHistoryVisible = await waitFor(() => Boolean(document.querySelector('#smartHistoryList .log-item.pending .log-history-placeholder')), 5000);
+        const pendingHistoryCard = document.querySelector('#smartHistoryList .log-item.pending');
         const pendingHistoryPlaceholder = pendingHistoryCard?.querySelector('.log-history-placeholder');
-        assertion('history immediately shows the running task as the newest pending card', pendingHistoryVisible && document.querySelector('#smartLogList .log-item') === pendingHistoryCard, pendingHistoryCard?.dataset?.canvasLogId || 'missing');
+        assertion('history immediately shows the running task as the newest pending card', pendingHistoryVisible && document.querySelector('#smartHistoryList .log-item') === pendingHistoryCard, pendingHistoryCard?.dataset?.canvasHistoryId || 'missing');
         assertion('history pending card has an animated placeholder', Boolean(pendingHistoryPlaceholder) && getComputedStyle(pendingHistoryPlaceholder).animationName !== 'none', pendingHistoryPlaceholder ? {className:pendingHistoryPlaceholder.className, animation:getComputedStyle(pendingHistoryPlaceholder).animationName} : 'missing');
         const firstHistoryProgress = pendingHistoryCard?.querySelector('.generation-stage-progress');
         assertion('history placeholder shows the same six generation stages', Boolean(firstHistoryProgress) && firstHistoryProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstHistoryProgress.textContent.includes('%'), firstHistoryProgress?.outerHTML || 'missing');
         const livePhaseSynced = await waitFor(() => {
             const nodeProgress = document.querySelector('[data-id="gen-conn"] .generation-stage-progress');
-            const historyProgress = document.querySelector('#smartLogList .log-item.pending .generation-stage-progress');
+            const historyProgress = document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress');
             return nodeProgress?.dataset?.phase === 'provider_generating'
                 && historyProgress?.dataset?.phase === nodeProgress.dataset.phase;
         }, 7000);
         assertion('node and history progress advance to the same live provider stage', livePhaseSynced, {
             node:document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.dataset?.phase || '',
-            history:document.querySelector('#smartLogList .log-item.pending .generation-stage-progress')?.dataset?.phase || '',
+            history:document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress')?.dataset?.phase || '',
         });
         const concurrentRunEnabled = await waitFor(() => !runBtn?.disabled, 3000);
         assertion('run button stays enabled while the current generation is pending', concurrentRunEnabled, runBtn?.disabled);
@@ -335,11 +335,11 @@
         const secondCountApplied = await waitFor(() => Number(smartSettings()?.count || 0) === 1, 3000);
         assertion('overlapping survivor requests one output', secondCountSelected && secondCountApplied, smartSettings()?.count);
         runBtn?.click();
-        const concurrentPendingVisible = await waitFor(() => document.querySelectorAll('#smartLogList .log-item.pending').length >= 2, 5000);
-        assertion('a second run creates an independent pending history card', concurrentPendingVisible, document.querySelectorAll('#smartLogList .log-item.pending').length);
-        const firstPendingLog = (evalCanvas()?.logs || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('连通性测试提示词'));
-        const firstPendingCard = firstPendingLog ? document.querySelector(`[data-canvas-log-id="${firstPendingLog.id}"]`) : null;
-        const firstCancelButton = firstPendingCard?.querySelector('[data-log-cancel-task]');
+        const concurrentPendingVisible = await waitFor(() => document.querySelectorAll('#smartHistoryList .log-item.pending').length >= 2, 5000);
+        assertion('a second run creates an independent pending history card', concurrentPendingVisible, document.querySelectorAll('#smartHistoryList .log-item.pending').length);
+        const firstPendingLog = (evalCanvas()?.history || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('连通性测试提示词'));
+        const firstPendingCard = firstPendingLog ? document.querySelector(`[data-canvas-history-id="${firstPendingLog.id}"]`) : null;
+        const firstCancelButton = firstPendingCard?.querySelector('[data-history-cancel-task]');
         assertion('each project pending card exposes a task-scoped cancel control', Boolean(firstCancelButton), firstPendingCard?.outerHTML || 'missing');
         const secondClientObservedOverlap = await waitFor(async () => {
             const response = await fetch('/__multiclient_observed');
@@ -348,12 +348,12 @@
         assertion('second real browser observes both task cards before cancellation', secondClientObservedOverlap, secondClientObservedOverlap);
         firstCancelButton?.click();
         const firstCancelled = await waitFor(() => {
-            const logs = evalCanvas()?.logs || [];
+            const logs = evalCanvas()?.history || [];
             const cancelled = logs.find(log => log.status === 'cancelled' && String(log.prompt || '').includes('连通性测试提示词'));
             const remaining = logs.filter(log => log.status === 'pending');
             return Boolean(cancelled) && remaining.length === 1;
         }, 5000);
-        assertion('cancelling the first task preserves the overlapping second task', firstCancelled, (evalCanvas()?.logs || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
+        assertion('cancelling the first task preserves the overlapping second task', firstCancelled, (evalCanvas()?.history || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
         const cancelledCountReconciled = await waitFor(() => {
             const current = nodeById('gen-conn');
             return Number(current?.pending || 0) === 1 && (current?.pendingTasks || []).length === 1;
@@ -373,14 +373,14 @@
         }, 60000);
         assertion('generation completes on gen-conn', completed, JSON.stringify(nodeById('gen-conn')?.images?.map(i => i.url) || []));
         const pendingHistoryReplaced = await waitFor(() => {
-            const logs = evalCanvas()?.logs || [];
+            const logs = evalCanvas()?.history || [];
             return logs.length === historyCountBeforeRun + 2
                 && logs.filter(log => log.status === 'cancelled').length >= 1
                 && logs.filter(log => log.status === 'succeeded').length >= 1
                 && !logs.some(log => log.status === 'pending')
-                && Boolean(document.querySelector('#smartLogList .log-item:not(.pending) .log-history-image'));
+                && Boolean(document.querySelector('#smartHistoryList .log-item:not(.pending) .log-history-image'));
         }, 8000);
-        assertion('cancelled and completed tasks replace only their own history placeholders', pendingHistoryReplaced, {before:historyCountBeforeRun, after:(evalCanvas()?.logs || []).length, statuses:(evalCanvas()?.logs || []).map(log => log.status)});
+        assertion('cancelled and completed tasks replace only their own history placeholders', pendingHistoryReplaced, {before:historyCountBeforeRun, after:(evalCanvas()?.history || []).length, statuses:(evalCanvas()?.history || []).map(log => log.status)});
         assertion('completed node no longer renders the stage progress placeholder', !document.querySelector('[data-id="gen-conn"] .generation-stage-progress'), document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.outerHTML || 'removed');
         const genImages = nodeById('gen-conn')?.images || [];
         const urlImage = genImages.find(i => i.url);
@@ -457,13 +457,13 @@
         assertion('auto routing selects model', Boolean(autoEntry.model), autoEntry.model);
         assertion('auto routing forwards prompt', String(autoEntry.prompt || '').includes('自动路由测试提示词'), autoEntry.prompt);
         const autoHistorySettled = await waitFor(() => {
-            const matching = (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词'));
+            const matching = (evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词'));
             return matching.some(log => log.status === 'succeeded') && !matching.some(log => log.status === 'pending');
         }, 15000);
-        assertion('auto routing history settles before the failure journey begins', autoHistorySettled, (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词')).map(log => log.status));
+        assertion('auto routing history settles before the failure journey begins', autoHistorySettled, (evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('自动路由测试提示词')).map(log => log.status));
 
-        const historyCountBeforeFailure = (evalCanvas()?.logs || []).length;
-        const failedCountBefore = (evalCanvas()?.logs || []).filter(log => log.status === 'failed').length;
+        const historyCountBeforeFailure = (evalCanvas()?.history || []).length;
+        const failedCountBefore = (evalCanvas()?.history || []).filter(log => log.status === 'failed').length;
         const promptEl3 = document.querySelector('#composer [data-prompt-text], #composer textarea, #composer [contenteditable="true"], #promptInput');
         if(promptEl3){
             promptEl3.textContent = 'FORCE_HISTORY_FAILURE';
@@ -476,13 +476,13 @@
         assertion('forced failure run button enabled', failedRunClickable, failedRunBtn?.disabled);
         failedRunBtn?.click();
         const failedPendingVisible = await waitFor(() => {
-            const card = document.querySelector('#smartLogList .log-item.pending');
+            const card = document.querySelector('#smartHistoryList .log-item.pending');
             const placeholder = card?.querySelector('.log-history-placeholder');
             return Boolean(card && placeholder && getComputedStyle(placeholder).animationName !== 'none');
         }, 5000);
-        assertion('failing generation first appears as an animated history placeholder', failedPendingVisible, document.querySelector('#smartLogList .log-item.pending')?.dataset?.canvasLogId || 'missing');
+        assertion('failing generation first appears as an animated history placeholder', failedPendingVisible, document.querySelector('#smartHistoryList .log-item.pending')?.dataset?.canvasHistoryId || 'missing');
         const failedHistoryResolved = await waitFor(() => {
-            const logs = evalCanvas()?.logs || [];
+            const logs = evalCanvas()?.history || [];
             const matching = logs.filter(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
             return logs.length === historyCountBeforeFailure + 1
                 && matching.length === 1
@@ -490,31 +490,31 @@
         }, 60000);
         assertion('failed result replaces the history placeholder without adding a duplicate', failedHistoryResolved, {
             before: historyCountBeforeFailure,
-            after: (evalCanvas()?.logs || []).length,
-            pending: (evalCanvas()?.logs || []).filter(log => log.status === 'pending').length,
-            failed: (evalCanvas()?.logs || []).filter(log => log.status === 'failed').length - failedCountBefore,
+            after: (evalCanvas()?.history || []).length,
+            pending: (evalCanvas()?.history || []).filter(log => log.status === 'pending').length,
+            failed: (evalCanvas()?.history || []).filter(log => log.status === 'failed').length - failedCountBefore,
         });
-        const failedLog = (evalCanvas()?.logs || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+        const failedLog = (evalCanvas()?.history || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
         evalFn('renderSmartCanvasLog')?.();
-        const failedStageProgress = failedLog ? document.querySelector(`[data-canvas-log-id="${CSS.escape(String(failedLog.id || ''))}"] .generation-stage-progress.is-failed`) : null;
+        const failedStageProgress = failedLog ? document.querySelector(`[data-canvas-history-id="${CSS.escape(String(failedLog.id || ''))}"] .generation-stage-progress.is-failed`) : null;
         assertion('failed history keeps the stage where generation stopped', failedStageProgress?.dataset?.phase === 'provider_generating', failedStageProgress?.outerHTML || failedLog?.progress || 'missing');
         const failedTaskId = failedLog?.task_id || failedLog?.request?.task_id || '';
-        const retryButton = failedLog ? document.querySelector(`[data-canvas-log-id="${failedLog.id}"] [data-log-retry-task]`) : null;
+        const retryButton = failedLog ? document.querySelector(`[data-canvas-history-id="${failedLog.id}"] [data-history-retry-task]`) : null;
         assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.logRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
         retryButton?.click();
         const retryPending = await waitFor(() => {
-            const retryLog = (evalCanvas()?.logs || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+            const retryLog = (evalCanvas()?.history || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
             const retryTaskId = retryLog?.task_id || retryLog?.request?.task_id || '';
             return retryTaskId && retryTaskId !== failedTaskId;
         }, 5000);
-        assertion('retry creates a distinct pending task identity', retryPending, (evalCanvas()?.logs || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
+        assertion('retry creates a distinct pending task identity', retryPending, (evalCanvas()?.history || []).map(log => ({task:log.task_id || log.request?.task_id, status:log.status, prompt:log.prompt})));
         const retryCompleted = await waitFor(() => {
-            const matching = (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+            const matching = (evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
             return matching.some(log => log.status === 'failed')
                 && matching.some(log => log.status === 'succeeded')
                 && !matching.some(log => log.status === 'pending');
         }, 60000);
-        assertion('explicit retry preserves the failed record and completes the new task', retryCompleted, (evalCanvas()?.logs || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE')).map(log => ({task:log.task_id || log.request?.task_id, status:log.status})));
+        assertion('explicit retry preserves the failed record and completes the new task', retryCompleted, (evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('FORCE_HISTORY_FAILURE')).map(log => ({task:log.task_id || log.request?.task_id, status:log.status})));
         const capturedAfterRetry = await (await fetch('/__captured_requests')).json();
         assertion('explicit retry invokes the fake adapter exactly once more', capturedAfterRetry.filter(item => String(item.prompt || '').includes('FORCE_HISTORY_FAILURE')).length === 2, capturedAfterRetry.filter(item => String(item.prompt || '').includes('FORCE_HISTORY_FAILURE')).length);
 

@@ -161,7 +161,7 @@ def json_references_media_path(value: Any, target_path: str) -> bool:
 def persisted_json_references_media_path(target_path: str) -> bool:
     """Scan persisted user documents before deleting generated media.
 
-    Canvas logs are only one possible owner. Nodes, other canvases, and asset
+    Canvas history is only one possible owner. Nodes, other canvases, and asset
     metadata all count as live references and keep the file on disk.
     """
     candidates = [_app_main.ASSET_LIBRARY_PATH]
@@ -392,7 +392,7 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
                 canvas['viewport'] = payload.viewport
             else:
                 canvas['viewport'] = canvas.get('viewport') or {'x': 0, 'y': 0, 'scale': 1}
-            canvas['logs'] = payload.logs[-500:]
+            canvas['history'] = payload.history[-500:]
             canvas['settings'] = payload.settings or {}
             save_canvas(canvas)
             return canvas
@@ -400,10 +400,10 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get('updated_at') or _app_main.now_ms()), payload.client_id)
     return {'canvas': canvas}
 
-@router.post('/api/canvases/{canvas_id}/logs/delete')
+@router.post('/api/canvases/{canvas_id}/history/delete')
 async def delete_canvas_log(canvas_id: str, payload: DeleteCanvasLogRequest):
-    log_id = str(payload.log_id or '').strip()
-    if not log_id:
+    history_id = str(payload.history_id or '').strip()
+    if not history_id:
         raise HTTPException(status_code=400, detail='缺少日志 ID')
 
     def remove_log_record():
@@ -414,10 +414,10 @@ async def delete_canvas_log(canvas_id: str, payload: DeleteCanvasLogRequest):
             current_updated_at = int(canvas.get('updated_at') or 0)
             if payload.base_updated_at and current_updated_at and (int(payload.base_updated_at) < current_updated_at):
                 raise HTTPException(status_code=409, detail={'message': '画布已被其他页面更新，请刷新后重试。', 'canvas': canvas, 'updated_at': current_updated_at})
-            logs = list(canvas.get('logs') or [])
-            target = next((item for item in logs if str(item.get('id') or '') == log_id), None)
+            history = list(canvas.get('history') or [])
+            target = next((item for item in history if str(item.get('id') or '') == history_id), None)
             if not target:
-                raise HTTPException(status_code=404, detail='生成日志不存在')
+                raise HTTPException(status_code=404, detail='生成历史不存在')
             candidate_paths = []
             if payload.delete_unreferenced_media:
                 for url in collect_local_media_urls(target.get('outputs') or []):
@@ -428,7 +428,7 @@ async def delete_canvas_log(canvas_id: str, payload: DeleteCanvasLogRequest):
             if payload.reset_referencing_nodes and candidate_paths:
                 candidate_paths = expand_canvas_generated_media_paths(canvas, candidate_paths)
                 reset_node_ids = reset_canvas_result_nodes_for_media(canvas, candidate_paths)
-            canvas['logs'] = [item for item in logs if str(item.get('id') or '') != log_id]
+            canvas['history'] = [item for item in history if str(item.get('id') or '') != history_id]
             save_canvas(canvas)
             return (canvas, candidate_paths, reset_node_ids)
     canvas, candidate_paths, reset_node_ids = await asyncio.to_thread(remove_log_record)

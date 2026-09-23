@@ -139,7 +139,7 @@ def project_scope_snapshot(store: ProjectStore, project_id: str) -> dict:
         }
     return {
         "canvas": project["canvas"],
-        "history": list(project["canvas"].get("logs") or []),
+        "history": list(project["canvas"].get("history") or []),
         "media": media,
     }
 
@@ -997,7 +997,7 @@ def run_project_roundtrip(
             {"op": "upsert_edge", "edge": {"from": node_id, "to": "t05-generated-original", "kind": "input"}},
             {
                 "op": "set_canvas_meta",
-                "logs": [
+                "history": [
                     {
                         "id": "t05-generation-record",
                         "task_id": "t05-task",
@@ -1055,7 +1055,7 @@ def run_project_roundtrip(
     source_canvas = scoped_source["canvas"]
     source_nodes = list(source_canvas.get("nodes") or [])
     source_connections = list(source_canvas.get("connections") or [])
-    source_logs = list(source_canvas.get("logs") or [])
+    source_logs = list(source_canvas.get("history") or [])
     source_media = {item["asset_id"]: store.media_record(project_id, item["asset_id"]) for item in store.list_media(project_id)}
     media_asset_ids = sorted(source_media)
     expected_asset_ids = sorted([referenced["asset_id"], generated["asset_id"], unreferenced["asset_id"]])
@@ -1141,7 +1141,7 @@ def run_project_roundtrip(
     if (
         duplicate_nodes != durable_nodes(source_nodes)
         or duplicate_canvas.get("connections") != source_connections
-        or duplicate_canvas.get("logs") != source_logs
+        or duplicate_canvas.get("history") != source_logs
         or duplicate_media_asset_ids != media_asset_ids
         or not duplicate_provenance_preserved
         or not duplicate_paths_independent
@@ -1218,12 +1218,12 @@ def run_project_roundtrip(
     reopened_canvas = (reopened_project or {}).get("canvas") or {}
     reopened_nodes = list(reopened_canvas.get("nodes") or [])
     reopened_connections = list(reopened_canvas.get("connections") or [])
-    reopened_history = list(reopened_canvas.get("logs") or [])
+    reopened_history = list(reopened_canvas.get("history") or [])
     reopened_scope = project_scope_snapshot(store, project_id)
     reopened_canvas_preserved = (
         reopened_nodes == source_nodes
         and reopened_connections == source_connections
-        and list(reopened_canvas.get("logs") or []) == source_logs
+        and list(reopened_canvas.get("history") or []) == source_logs
     )
     reopened_history_preserved = reopened_history == source_scope["history"]
     reopened_media_preserved = reopened_scope["media"] == source_scope["media"]

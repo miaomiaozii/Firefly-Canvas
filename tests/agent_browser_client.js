@@ -109,7 +109,7 @@
         const canvas = await refreshCanvas();
         const resultNodes = (canvas.nodes || []).filter(node => node.agent_task_id && node.type === 'smart-image');
         assertion('successful task creates a project-owned result node', resultNodes.length === 1 && (resultNodes[0].images || []).length === 1, resultNodes);
-        assertion('successful task records visible generation history', (canvas.logs || []).some(item => item.type === 'agent-image' && item.status === 'succeeded' && item.model), (canvas.logs || []).slice(-3));
+        assertion('successful task records visible generation history', (canvas.history || []).some(item => item.type === 'agent-image' && item.status === 'succeeded' && item.model), (canvas.history || []).slice(-3));
         const planStatus = (canvas.nodes || []).find(node => node.id === agent.dataset.id)?.agent_plan?.status;
         assertion('durable plan status closes after the task succeeds', planStatus === 'completed', planStatus);
         // The first worker completion may advance the canvas revision while a
@@ -173,7 +173,7 @@
             const promptResult = (promptCanvas.nodes || []).find(node => node.agent_task_id && node.type === 'smart-prompt');
             const promptEdges = (promptCanvas.connections || []).filter(edge => edge.from === promptResult?.id || edge.to === promptResult?.id);
             assertion('prompt task creates a visible smart-prompt with no automatic connection', promptResult?.text === '一只发光的萤火虫' && promptEdges.length === 0, {promptResult, promptEdges});
-            assertion('prompt task writes a project history record without media output', (promptCanvas.logs || []).some(item => item.type === 'agent-prompt' && item.status === 'succeeded' && item.prompt_output?.text === '一只发光的萤火虫'), (promptCanvas.logs || []).slice(-3));
+            assertion('prompt task writes a project history record without media output', (promptCanvas.history || []).some(item => item.type === 'agent-prompt' && item.status === 'succeeded' && item.prompt_output?.text === '一只发光的萤火虫'), (promptCanvas.history || []).slice(-3));
         }
         const taskRects = [...document.querySelectorAll('.agent-task-node')].map(el => el.getBoundingClientRect());
         const overlap = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;

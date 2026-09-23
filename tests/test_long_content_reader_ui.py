@@ -44,13 +44,13 @@ class LongContentReaderUiContractTests(unittest.TestCase):
         self.assertIn('data-long-content-open="input-prompt"', self.source)
         self.assertIn('data-long-content-open="history-prompt"', self.source)
         self.assertIn('data-long-content-open="history-error"', self.source)
-        self.assertIn("smartLogEntryById(logId)", self.source)
+        self.assertIn("smartHistoryEntryById(historyId)", self.source)
         self.assertIn("bindLongContentHistoryTriggers", self.source)
 
     def test_escape_and_focus_restoration_are_owned_by_the_active_session(self):
         self.assertIn("function closeActiveLongContentSession(){", self.source)
         self.assertIn("if(event.key === 'Escape' && closeActiveLongContentSession())", self.source)
-        self.assertIn("data-canvas-log-id", self.source)
+        self.assertIn("data-canvas-history-id", self.source)
         self.assertIn("renderSmartHistoryWindow(true);", self.source)
         self.assertIn("focus({preventScroll:true})", self.source)
 

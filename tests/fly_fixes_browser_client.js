@@ -167,7 +167,7 @@
             // 打开历史，找到该图的原图删除按钮并点击
             const hasHistory = await waitFor(() => {
                 try {
-                    const logs = (0, eval)('canvas?.logs || []');
+                    const logs = (0, eval)('canvas?.history || []');
                     return logs.length > 0;
                 } catch(_) { return false; }
             }, 8000);
@@ -176,7 +176,7 @@
                 // 调试：捕获节点图片与日志输出的 output_id 对比
                 const dbg = await (async () => {
                     try {
-                        const logs = (0, eval)('canvas?.logs || []');
+                        const logs = (0, eval)('canvas?.history || []');
                         const log = logs.find(lg => (lg.outputs || []).some(o => (o.url || o.asset_id) && String(o.asset_id) === String(genImg.asset_id)));
                         const output = log ? (log.outputs || []).find(o => String(o.asset_id) === String(genImg.asset_id)) : null;
                         return {
@@ -185,7 +185,7 @@
                             logFound: !!log,
                             logOutputId: output ? (output.output_id || '(none)') : '(no output)',
                             logOutputIndex: output ? output.outputIndex : -1,
-                            logId: log ? log.id : '(no log)',
+                            historyId: log ? log.id : '(no log)',
                         };
                     } catch(e){ return {error: e.message}; }
                 })();
@@ -193,7 +193,7 @@
                 // 模拟删除：用 deleteSmartProjectOriginal
                 const delOk = await waitFor(async () => {
                     try {
-                        const logs = (0, eval)('canvas?.logs || []');
+                        const logs = (0, eval)('canvas?.history || []');
                         const log = logs.find(lg => (lg.outputs || []).some(o => (o.url || o.asset_id) && String(o.asset_id) === String(genImg.asset_id)));
                         if(!log) return false;
                         const output = (log.outputs || []).find(o => String(o.asset_id) === String(genImg.asset_id));
@@ -216,8 +216,8 @@
                 const afterDbg = await (async () => {
                     try {
                         const n = findNode('gen-node');
-                        const logs = (0, eval)('canvas?.logs || []');
-                        const log = logs.find(lg => lg.id === dbg.logId);
+                        const logs = (0, eval)('canvas?.history || []');
+                        const log = logs.find(lg => lg.id === dbg.historyId);
                         return {
                             nodeImages: n && n.images ? n.images.map(im => ({asset: (im.asset_id||'').slice(0,8), outId: im.output_id||'(none)', url: (im.url||'').slice(-20)})) : 'no node',
                             logStatus: log ? log.status : '(no log)',

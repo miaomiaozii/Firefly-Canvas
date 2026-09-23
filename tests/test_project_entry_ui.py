@@ -131,10 +131,10 @@ class ProjectEntryUiTests(unittest.TestCase):
     def test_canvas_history_entry_and_view_only_navigation_do_not_persist(self):
         page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
         script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
-        toggle = re.search(r'<button id="smartLogToggle".*?</button>', page, re.S)
+        toggle = re.search(r'<button id="smartHistoryToggle".*?</button>', page, re.S)
         self.assertIsNotNone(toggle)
-        self.assertIn('data-i18n="canvas.generationLogs"', toggle.group(0))
-        self.assertNotIn('data-i18n="canvas.logs"', toggle.group(0))
+        self.assertIn('data-i18n="canvas.generationHistory"', toggle.group(0))
+        self.assertNotIn('data-i18n="canvas.history"', toggle.group(0))
         mouseup_pan = script[script.index("if(panState) {"):script.index("if(smartMinimapDrag)", script.index("if(panState) {"))]
         self.assertNotIn("scheduleSave()", mouseup_pan)
         wheel = script[script.index("shell.addEventListener('wheel'"):script.index("shell.ondragover", script.index("shell.addEventListener('wheel'"))]

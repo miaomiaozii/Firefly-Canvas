@@ -477,14 +477,14 @@ def capture_server_state(store: ProjectStore, project_id: str) -> dict | None:
                 if isinstance(item, dict)
             ],
         } if isinstance(plan, dict) else None,
-        "logs": [
+        "history": [
             {
                 "id": item.get("id"),
                 "type": item.get("type"),
                 "status": item.get("status"),
                 "error": (item.get("error") or "")[:500],
             }
-            for item in canvas.get("logs") or []
+            for item in canvas.get("history") or []
             if isinstance(item, dict)
         ],
     }

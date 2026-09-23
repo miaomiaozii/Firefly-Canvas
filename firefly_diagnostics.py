@@ -65,7 +65,7 @@ SAFE_CORRELATION_KEYS = {
     "state",
     "node_id",
     "asset_id",
-    "log_id",
+    "history_id",
     "deletion_id",
     "media_kind",
     "revision",

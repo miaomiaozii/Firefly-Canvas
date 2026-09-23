@@ -154,11 +154,11 @@ class ProjectStoreEdgeCasesTests(unittest.TestCase):
         pid = project["id"]
         self.store.apply_mutations(
             pid,
-            [{"op": "set_canvas_meta", "logs": [{"id": "log-1", "text": "历史🎯记录", "type": "info", "at": 1}]}],
+            [{"op": "set_canvas_meta", "history": [{"id": "log-1", "text": "历史🎯记录", "type": "info", "at": 1}]}],
             base_revision=0,
         )
         canvas = self.store.canvas(pid)
-        self.assertTrue(any("历史🎯记录" in (r.get("text") or "") for r in canvas.get("logs") or []))
+        self.assertTrue(any("历史🎯记录" in (r.get("text") or "") for r in canvas.get("history") or []))
 
 
 if __name__ == "__main__":

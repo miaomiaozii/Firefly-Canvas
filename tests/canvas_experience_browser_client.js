@@ -99,7 +99,7 @@
       toolbarControls[2]?.id === 'smartRedoButton',
       toolbarControls[3]?.id === 'smartSettingsLink',
       toolbarControls[4]?.id === 'smartShortcutToggle',
-      toolbarControls[5]?.id === 'smartLogToggle',
+      toolbarControls[5]?.id === 'smartHistoryToggle',
       toolbarControls[6]?.id === 'assetToggle',
       toolbarControls[7]?.id === 'smartSaveButton',
     ];

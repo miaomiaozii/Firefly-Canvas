@@ -644,12 +644,12 @@ class ProjectCleanupMixin:
                     keep_backup=False,
                 )
                 canvas = copy.deepcopy(opened)
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_store._now_ms(), int(canvas.get("updated_at") or 0) + 1)
                 self._canvases[project_id] = canvas
                 self._schedule_snapshot(project_id)
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(self._histories.get(project_id, []))
+                result["history"] = copy.deepcopy(self._histories.get(project_id, []))
                 return {"canvas": result, "restored": asset_id}
 

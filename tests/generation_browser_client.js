@@ -56,13 +56,13 @@
     const saved = await waitFor(`${kind} task result`, async () => {
       const canvas = await canvasSnapshot();
       const current = (canvas.nodes || []).find(item => item.id === nodeId);
-      const logs = (canvas.logs || []).filter(item => item.result_node_id === nodeId && item.status === 'succeeded');
+      const logs = (canvas.history || []).filter(item => item.result_node_id === nodeId && item.status === 'succeeded');
       return current?.images?.length && !current.pending && logs.length ? { canvas, current, logs } : null;
     }, 60000, 250);
     const current = saved.current;
     const media = current.images || [];
     check(`${kind} result has project asset`, Boolean(media[0]?.asset_id));
-    check(`${kind} generation history is persisted`, saved.logs.some(item => item.outputs?.length));
+    check(`${kind} generation history is persisted`, saved.history.some(item => item.outputs?.length));
     const rendered = await waitFor(`${kind} result DOM`, () => {
       const nodeElement = document.querySelector(`.image-node[data-id="${nodeId}"]`);
       return nodeElement?.querySelector('.node-img, .media-card') || null;

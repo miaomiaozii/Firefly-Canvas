@@ -189,7 +189,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             {"op": "upsert_edge", "edge": {"id": "generator-downstream", "from": "generator", "to": "downstream", "kind": "flow"}},
             {
                 "op": "set_canvas_meta",
-                "logs": history_records,
+                "history": history_records,
             },
         ],
         base_revision=0,
@@ -199,7 +199,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
         [
             {
                 "op": "set_canvas_meta",
-                "logs": [
+                "history": [
                     {
                         "id": "history-other",
                         "type": "online-image",
@@ -370,13 +370,13 @@ class HistoryBrowserServer:
                         owner.request_counts["history_delete_with_media"] += 1
                         deleted = owner.store.delete_history_record_with_media(
                             project_id,
-                            body["log_id"],
+                            body["history_id"],
                             base_revision=body["base_revision"],
                         )
                         self.send_json({"ok": True, **deleted})
                         return
                     if project_id and len(parts) == 5 and parts[3] == "history" and parts[4] == "delete":
-                        canvas = owner.store.delete_history_record(project_id, body["log_id"], base_revision=body["base_revision"])
+                        canvas = owner.store.delete_history_record(project_id, body["history_id"], base_revision=body["base_revision"])
                         owner.store.flush(project_id)
                         self.send_json({"ok": True, "canvas": canvas})
                         return
@@ -386,7 +386,7 @@ class HistoryBrowserServer:
                             project_id,
                             body["asset_id"],
                             base_revision=body["base_revision"],
-                            log_id=body.get("log_id"),
+                            history_id=body.get("history_id"),
                             output_id=body.get("output_id"),
                             output_index=body.get("output_index"),
                         )

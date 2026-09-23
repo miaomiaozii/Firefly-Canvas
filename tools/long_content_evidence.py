@@ -98,7 +98,7 @@ def validate(root: Path) -> dict:
         required_clicks = {
             '[data-id="reader-prompt"] .prompt-node-flow-toggle',
             '[data-long-content-open="input-prompt"]',
-            '[data-canvas-log-id="reader-history"] [data-long-content-open="history-prompt"]',
+            '[data-canvas-history-id="reader-history"] [data-long-content-open="history-prompt"]',
             "#longContentReaderClose",
         }
         if not required_clicks.issubset(trusted_clicks):

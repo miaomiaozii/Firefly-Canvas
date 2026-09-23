@@ -124,7 +124,7 @@ def seed_project(store: ProjectStore, name: str) -> str:
             },
             {"op": "upsert_edge", "edge": {"from": "reader-source", "to": "reader-prompt", "kind": "input"}},
             {"op": "upsert_edge", "edge": {"from": "reader-prompt", "to": "reader-image", "kind": "input"}},
-            {"op": "set_canvas_meta", "logs": logs},
+            {"op": "set_canvas_meta", "history": logs},
         ],
         base_revision=0,
     )
@@ -143,7 +143,7 @@ def project_content_snapshot(store: ProjectStore, project_id: str) -> str:
     durable = {
         "nodes": canvas.get("nodes") or [],
         "connections": canvas.get("connections") or [],
-        "logs": canvas.get("logs") or [],
+        "history": canvas.get("history") or [],
     }
     return json.dumps(durable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -291,9 +291,9 @@ def run_viewport(
         browser.native_press("Escape")
         browser.wait_for("longContentSession.mode === 'idle' && document.activeElement?.matches('[data-long-content-open=\"input-prompt\"]')", timeout=10)
 
-        browser.native_click("#smartLogToggle")
-        browser.wait_for("document.querySelector('#smartLogModal.open') && document.querySelector('[data-canvas-log-id=\"reader-history\"] [data-long-content-open=\"history-prompt\"]')", timeout=20)
-        history_prompt_selector = '[data-canvas-log-id="reader-history"] [data-long-content-open="history-prompt"]'
+        browser.native_click("#smartHistoryToggle")
+        browser.wait_for("document.querySelector('#smartHistoryModal.open') && document.querySelector('[data-canvas-history-id=\"reader-history\"] [data-long-content-open=\"history-prompt\"]')", timeout=20)
+        history_prompt_selector = '[data-canvas-history-id="reader-history"] [data-long-content-open="history-prompt"]'
         browser.evaluate(f"window.__t13HistoryTrigger=document.querySelector({json.dumps(history_prompt_selector)})")
         browser.native_click(history_prompt_selector)
         browser.wait_for("longContentSession.kind === 'history-prompt'")
@@ -307,17 +307,17 @@ def run_viewport(
         history_scroll_top = browser.evaluate("longContentReaderBody.scrollTop")
         snap("history-prompt-reader")
         trigger_was_virtualized = browser.evaluate(
-            "smartLogList.scrollLeft=smartLogList.scrollWidth; renderSmartHistoryWindow(true); !window.__t13HistoryTrigger.isConnected"
+            "smartHistoryList.scrollLeft=smartHistoryList.scrollWidth; renderSmartHistoryWindow(true); !window.__t13HistoryTrigger.isConnected"
         )
         if not trigger_was_virtualized:
             raise AssertionError("history virtualization did not replace the original reader trigger")
         browser.native_press("Escape")
         browser.wait_for(
-            "longContentSession.mode === 'idle' && document.activeElement?.closest('[data-canvas-log-id]')?.dataset.canvasLogId === 'reader-history' && document.activeElement?.dataset.longContentOpen === 'history-prompt'",
+            "longContentSession.mode === 'idle' && document.activeElement?.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId === 'reader-history' && document.activeElement?.dataset.longContentOpen === 'history-prompt'",
             timeout=10,
         )
 
-        error_selector = '[data-canvas-log-id="reader-error"] [data-long-content-open="history-error"]'
+        error_selector = '[data-canvas-history-id="reader-error"] [data-long-content-open="history-error"]'
         browser.wait_for(f"document.querySelector({json.dumps(error_selector)})", timeout=10)
         browser.evaluate(f"document.querySelector({json.dumps(error_selector)}).focus()")
         browser.native_press("Enter")
@@ -333,7 +333,7 @@ def run_viewport(
         snap("generation-error-reader")
         browser.native_click("#longContentReaderClose")
         browser.wait_for(
-            "longContentSession.mode === 'idle' && document.activeElement?.closest('[data-canvas-log-id]')?.dataset.canvasLogId === 'reader-error' && document.activeElement?.dataset.longContentOpen === 'history-error'",
+            "longContentSession.mode === 'idle' && document.activeElement?.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId === 'reader-error' && document.activeElement?.dataset.longContentOpen === 'history-error'",
             timeout=10,
         )
 

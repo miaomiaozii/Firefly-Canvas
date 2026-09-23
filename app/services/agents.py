@@ -454,10 +454,10 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
                     raise ProjectStoreError('Agent 提示词结果节点不存在')
                 replacement_result = copy.deepcopy(result_node)
                 replacement_result.update({'text': str(task.get('prompt') or ''), 'outputKind': 'prompt', 'generationState': 'succeeded', 'updated_at': completed_at})
-                history = [item for item in opened['canvas'].get('logs') or [] if str(item.get('id') or '') != history_record['id']]
+                history = [item for item in opened['canvas'].get('history') or [] if str(item.get('id') or '') != history_record['id']]
                 history.append(copy.deepcopy(history_record))
                 try:
-                    canvas = _svc._main('_agent_apply_mutations')(project_id, [{'op': 'upsert_node', 'node': replacement_result}, {'op': 'set_canvas_meta', 'logs': history[-5000:]}], retries=1)
+                    canvas = _svc._main('_agent_apply_mutations')(project_id, [{'op': 'upsert_node', 'node': replacement_result}, {'op': 'set_canvas_meta', 'history': history[-5000:]}], retries=1)
                     break
                 except RevisionConflict:
                     continue
@@ -537,11 +537,11 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
                     break
                 replacement_result = copy.deepcopy(result_node)
                 replacement_result.update({'pending': 0, 'running': False, 'generationState': 'failed', 'error': detail[:1000]})
-                history = copy.deepcopy(opened['canvas'].get('logs') or [])
+                history = copy.deepcopy(opened['canvas'].get('history') or [])
                 history = [item for item in history if str(item.get('id') or '') != history_record['id']]
                 history.append(history_record)
                 try:
-                    _svc._main('_agent_apply_mutations')(project_id, [{'op': 'upsert_node', 'node': replacement_result}, {'op': 'set_canvas_meta', 'logs': history[-5000:]}], retries=1)
+                    _svc._main('_agent_apply_mutations')(project_id, [{'op': 'upsert_node', 'node': replacement_result}, {'op': 'set_canvas_meta', 'history': history[-5000:]}], retries=1)
                     break
                 except RevisionConflict:
                     continue

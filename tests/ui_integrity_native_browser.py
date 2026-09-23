@@ -284,7 +284,7 @@ def seed_project(store: ProjectStore, name: str) -> str:
                 },
             },
             {"op": "upsert_edge", "edge": {"from": "integrity-prompt", "to": "integrity-image", "kind": "input"}},
-            {"op": "set_canvas_meta", "logs": logs},
+            {"op": "set_canvas_meta", "history": logs},
             {"op": "set_viewport", "viewport": {"x": 0, "y": 0, "scale": 1}},
         ],
         base_revision=0,
@@ -340,7 +340,7 @@ def seed_duplicate_occurrence_project(store: ProjectStore, name: str) -> str:
             },
             {
                 "op": "set_canvas_meta",
-                "logs": [
+                "history": [
                     {
                         "id": "integrity-duplicate-log",
                         "type": "online-image",
@@ -441,7 +441,7 @@ def settle(browser: NativeBrowser) -> dict:
 def history_drawer_state(browser: NativeBrowser) -> dict:
     state = browser.evaluate(
         """(() => {
-          const drawer=document.querySelector('#smartLogModal');
+          const drawer=document.querySelector('#smartHistoryModal');
           const panel=drawer?.querySelector('.log-panel');
           if(!drawer || !panel) return null;
           const style=getComputedStyle(panel);
@@ -460,7 +460,7 @@ def history_drawer_state(browser: NativeBrowser) -> dict:
 
 
 def reveal_history_card(browser: NativeBrowser, card_selector: str) -> dict:
-    list_selector = "#smartLogModal .log-list"
+    list_selector = "#smartHistoryModal .log-list"
     for attempt in range(7):
         state = browser.evaluate(
             f"""(() => {{
@@ -571,7 +571,7 @@ def inspect_scene(
           const untitledIconButtons=iconButtons.filter(button=>!String(button.getAttribute('title')||'').trim()).map(button=>button.id||button.className);
           const compact=[...document.querySelectorAll('.smart-top-left > button,.preview-icon-btn,.log-buttons button,.composer-view-btn,.smart-log-detail-actions button')].filter(visible).map(button=>{{const style=getComputedStyle(button);return {{radius:parseFloat(style.borderRadius)||0,border:parseFloat(style.borderTopWidth)||0}};}});
           const dynamic=document.querySelector('#dynamicParams');
-          const history=document.querySelector('#smartLogList');
+          const history=document.querySelector('#smartHistoryList');
           const createGrid=document.querySelector('#createMenu .create-menu-grid');
           const pageHorizontal=Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)>innerWidth+1;
           const selection=document.querySelector('.image-node[data-id="integrity-image"].selected');
@@ -605,9 +605,9 @@ def inspect_scene(
           const unselectedMenuTabStops=[...document.querySelectorAll('.image-node:not(.selected) .smart-node-floating-menu button')].filter(button=>button.matches(':focus-visible') || (button.getClientRects().length && getComputedStyle(button).visibility!=='hidden'));
           const modelPopover=document.querySelector('.model-control.pinned .smart-popover');
           const sizePopover=document.querySelector('.size-picker-control.pinned .smart-popover');
-          const historyStatus=document.querySelector('[data-canvas-log-id="integrity-failed"] .log-chip.status-failed');
-          const historyError=document.querySelector('[data-canvas-log-id="integrity-failed"] [data-long-content-open="history-error"]');
-          const destructive=document.querySelector('[data-canvas-log-id="integrity-failed"] [data-log-delete="media"]');
+          const historyStatus=document.querySelector('[data-canvas-history-id="integrity-failed"] .log-chip.status-failed');
+          const historyError=document.querySelector('[data-canvas-history-id="integrity-failed"] [data-long-content-open="history-error"]');
+          const destructive=document.querySelector('[data-canvas-history-id="integrity-failed"] [data-history-delete="media"]');
           const surfaceAlpha=element=>{{
             if(!element) return 0;
             const color=getComputedStyle(element).backgroundColor.trim();
@@ -930,9 +930,9 @@ def run_viewport(
         snap("create-menu")
         browser.native_press("Escape")
 
-        browser.native_click("#smartLogToggle")
+        browser.native_click("#smartHistoryToggle")
         browser.wait_for(
-            "document.querySelector('#smartLogModal.open') && document.querySelector('[data-canvas-log-id=\"integrity-failed\"] [data-long-content-open=\"history-error\"]')",
+            "document.querySelector('#smartHistoryModal.open') && document.querySelector('[data-canvas-history-id=\"integrity-failed\"] [data-long-content-open=\"history-error\"]')",
             timeout=20,
         )
         settle(browser)
@@ -942,24 +942,24 @@ def run_viewport(
             (
                 ".smart-top-left",
                 "#minimap",
-                "#smartLogModal.open .log-panel",
-                '[data-canvas-log-id="integrity-failed"] .log-chip.status-failed',
-                '[data-canvas-log-id="integrity-failed"] [data-long-content-open="history-error"]',
-                '[data-canvas-log-id="integrity-failed"] [data-log-delete="media"]',
+                "#smartHistoryModal.open .log-panel",
+                '[data-canvas-history-id="integrity-failed"] .log-chip.status-failed',
+                '[data-canvas-history-id="integrity-failed"] [data-long-content-open="history-error"]',
+                '[data-canvas-history-id="integrity-failed"] [data-history-delete="media"]',
             ),
-            (".smart-top-left", "#minimap", "#smartLogModal.open .log-panel"),
+            (".smart-top-left", "#minimap", "#smartHistoryModal.open .log-panel"),
         )
         require_scene(history_scene)
         if not history_scene["historyMeaningReachable"]:
             raise AssertionError(f"history status, error, or destructive meaning is not reachable: {history_scene}")
         history_card_visibility = reveal_history_card(
             browser,
-            '[data-canvas-log-id="integrity-success-one"]',
+            '[data-canvas-history-id="integrity-success-one"]',
         )
         settle(browser)
         history_facts = browser.evaluate(
             """(() => {
-              const drawer=smartLogModal.getBoundingClientRect();
+              const drawer=smartHistoryModal.getBoundingClientRect();
               const thumb=document.querySelector('.log-item:not(.failed) .log-thumb-square')?.getBoundingClientRect();
               const images=[...document.querySelectorAll('.log-item:not(.failed) .log-history-image')];
               const title=document.querySelector('.log-title');
@@ -1001,13 +1001,13 @@ def run_viewport(
             raise AssertionError(f"history is not fixed and image-first: {history_facts}")
         multi_output_facts = browser.evaluate(
             """(() => {
-              const card=document.querySelector('[data-canvas-log-id="integrity-success-one"]');
-              const list=document.querySelector('#smartLogModal .log-list');
+              const card=document.querySelector('[data-canvas-history-id="integrity-success-one"]');
+              const list=document.querySelector('#smartHistoryModal .log-list');
               const thumb=card.querySelector('.log-thumb-square');
               const media=[...card.querySelectorAll('.log-output-gallery .log-media-card')];
               const gallery=card.querySelector('.log-output-gallery');
               const strip=card.querySelector('.log-output-preview-list');
-              const outputPreviews=[...card.querySelectorAll('[data-log-output-preview]')];
+              const outputPreviews=[...card.querySelectorAll('[data-history-output-preview]')];
               const rect=element=>{
                 const value=element?.getBoundingClientRect();
                 return value ? {left:value.left,top:value.top,right:value.right,bottom:value.bottom,width:value.width,height:value.height} : null;
@@ -1078,7 +1078,7 @@ def run_viewport(
                 && stripStyle.overflowY==='hidden';
               return {
                 outputCount:media.length,
-                downloadCount:card.querySelectorAll('[data-log-download-original]').length,
+                downloadCount:card.querySelectorAll('[data-history-download-original]').length,
                 previewCount:outputPreviews.length,
                 previewsDiscoverable:previews.length===8 && previews.every((item,index)=>
                   item.outputIndex===index && item.ariaLabel.includes(`${index + 1}`)
@@ -1098,7 +1098,7 @@ def run_viewport(
                 stripWheelShift:false,
                 noVisibleScrollbars:[scrollbar(list),scrollbar(gallery),scrollbar(strip)].every(item=>item.scrollbarWidth==='none' && item.webkitDisplay==='none'),
                 unifiedRadii:[radius(thumb),radius(gallery),...outputPreviews.map(radius)].every(value=>Math.abs(value-6)<=.5),
-                dangerousGroupDeletePresent:!!card.querySelector('[data-log-delete="media"]'),
+                dangerousGroupDeletePresent:!!card.querySelector('[data-history-delete="media"]'),
                 mediaRatios,
                 previewGeometry:{
                   viewportRect,
@@ -1129,7 +1129,7 @@ def run_viewport(
         )
         multi_output_facts["historyCardVisibility"] = history_card_visibility
         output_identity_before = browser.evaluate(
-            "smartLogEntryById('integrity-success-one').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))"
+            "smartHistoryEntryById('integrity-success-one').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))"
         )
         canvas_identity_before = browser.evaluate(
             "nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))"
@@ -1154,22 +1154,22 @@ def run_viewport(
         multi_output_facts["canvasOutputIdsBefore"] = [item["outputId"] for item in canvas_identity_before]
 
         strip_scroll_before = float(browser.evaluate(
-            "document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0"
+            "document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0"
         ))
         browser.native_wheel(
-            '[data-canvas-log-id="integrity-success-one"] .log-output-preview-list',
+            '[data-canvas-history-id="integrity-success-one"] .log-output-preview-list',
             160,
             relative=(0.5, 0.5),
         )
         browser.wait_for(
-            "Number(document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0)>20",
+            "Number(document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0)>20",
             timeout=10,
         )
         strip_scroll_after = float(browser.evaluate(
-            "document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0"
+            "document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-preview-list')?.scrollLeft||0"
         ))
         browser.evaluate(
-            "document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-preview-list').scrollLeft=0"
+            "document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-preview-list').scrollLeft=0"
         )
         multi_output_facts["stripWheelShift"] = bool(strip_scroll_after > strip_scroll_before)
         multi_output_facts["stripScrollBefore"] = strip_scroll_before
@@ -1197,11 +1197,11 @@ def run_viewport(
         ):
             raise AssertionError(f"eight-output history gallery is incomplete or obstructive: {multi_output_facts}")
         browser.native_wheel(
-            '[data-canvas-log-id="integrity-success-one"] .log-output-gallery',
+            '[data-canvas-history-id="integrity-success-one"] .log-output-gallery',
             delta_y=240,
         )
         browser.wait_for(
-            "document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery')?.scrollLeft > 100",
+            "document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-gallery')?.scrollLeft > 100",
             timeout=10,
         )
         browser.evaluate(
@@ -1210,8 +1210,8 @@ def run_viewport(
               const scrolling=document.scrollingElement;
               const body=document.body;
               const shell=document.querySelector('.shell');
-              const list=document.querySelector('#smartLogModal .log-list');
-              const gallery=document.querySelector('[data-canvas-log-id="integrity-success-one"] .log-output-gallery');
+              const list=document.querySelector('#smartHistoryModal .log-list');
+              const gallery=document.querySelector('[data-canvas-history-id="integrity-success-one"] .log-output-gallery');
               root.style.scrollBehavior='auto';
               body.style.scrollBehavior='auto';
               if(scrolling) scrolling.scrollLeft=0;
@@ -1226,7 +1226,7 @@ def run_viewport(
             "Math.abs(window.scrollX)<1 && Math.abs(document.documentElement.scrollLeft)<1 "
             "&& Math.abs(document.body.scrollLeft)<1 "
             "&& Math.abs(document.querySelector('.shell')?.scrollLeft||0)<1 "
-            "&& Math.abs(document.querySelector('#smartLogModal .log-list')?.scrollLeft||0)<1",
+            "&& Math.abs(document.querySelector('#smartHistoryModal .log-list')?.scrollLeft||0)<1",
             timeout=10,
         )
         scroll_state = browser.evaluate(
@@ -1235,8 +1235,8 @@ def run_viewport(
               root:document.documentElement.scrollLeft||0,
               body:document.body.scrollLeft||0,
               shell:document.querySelector('.shell')?.scrollLeft||0,
-              list:document.querySelector('#smartLogModal .log-list')?.scrollLeft||0,
-              gallery:document.querySelector('[data-canvas-log-id="integrity-success-one"] .log-output-gallery')?.scrollLeft||0,
+              list:document.querySelector('#smartHistoryModal .log-list')?.scrollLeft||0,
+              gallery:document.querySelector('[data-canvas-history-id="integrity-success-one"] .log-output-gallery')?.scrollLeft||0,
             }))()"""
         )
         if any(abs(float(scroll_state.get(key) or 0)) > 1 for key in ("window", "root", "body", "shell", "list", "gallery")):
@@ -1251,7 +1251,7 @@ def run_viewport(
                 bodyTransform:getComputedStyle(document.body).transform,
                 bodyWidth:getComputedStyle(document.body).width,
                 shell:rect(document.querySelector('.shell')),
-                panel:rect(document.querySelector('#smartLogModal .log-panel')),
+                panel:rect(document.querySelector('#smartHistoryModal .log-panel')),
               };
             })()"""
         )
@@ -1264,16 +1264,16 @@ def run_viewport(
         history_scene["multiOutputFacts"] = multi_output_facts
 
         browser.native_click(
-            '[data-canvas-log-id="integrity-success-one"] [data-log-output-preview="3"]'
+            '[data-canvas-history-id="integrity-success-one"] [data-history-output-preview="3"]'
         )
         browser.wait_for(
-            "!document.querySelector('#smartLogLightbox.open') "
-            "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]')?.classList.contains('is-selected') "
-            "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-preview=\"3\"]')?.getAttribute('aria-current')==='true' "
-            "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"] .log-history-image')?.complete "
-            "&& document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"] .log-history-image')?.naturalWidth>0 "
-            "&& (()=>{const gallery=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery');"
-            "const selected=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]');"
+            "!document.querySelector('#smartHistoryLightbox.open') "
+            "&& document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"]')?.classList.contains('is-selected') "
+            "&& document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview=\"3\"]')?.getAttribute('aria-current')==='true' "
+            "&& document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"] .log-history-image')?.complete "
+            "&& document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"] .log-history-image')?.naturalWidth>0 "
+            "&& (()=>{const gallery=document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-gallery');"
+            "const selected=document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"]');"
             "if(!gallery||!selected)return false;const outer=gallery.getBoundingClientRect();const inner=selected.getBoundingClientRect();"
             "return Math.abs(inner.left-outer.left)<=2&&inner.right<=outer.right+2;})()",
             timeout=10,
@@ -1281,8 +1281,8 @@ def run_viewport(
         settle(browser)
         browser.evaluate(
             """(() => {
-              const gallery=document.querySelector('[data-canvas-log-id="integrity-success-one"] .log-output-gallery');
-              const selected=document.querySelector('[data-canvas-log-id="integrity-success-one"] [data-log-output-index="3"]');
+              const gallery=document.querySelector('[data-canvas-history-id="integrity-success-one"] .log-output-gallery');
+              const selected=document.querySelector('[data-canvas-history-id="integrity-success-one"] [data-history-output-index="3"]');
               if(gallery && selected){
                 gallery.style.scrollSnapType='none';
                 gallery.scrollLeft=selected.offsetLeft;
@@ -1290,14 +1290,14 @@ def run_viewport(
             })()"""
         )
         browser.wait_for(
-            "(()=>{const gallery=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] .log-output-gallery');"
-            "const selected=document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]');"
+            "(()=>{const gallery=document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] .log-output-gallery');"
+            "const selected=document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"]');"
             "if(!gallery||!selected)return false;const outer=gallery.getBoundingClientRect();const inner=selected.getBoundingClientRect();"
             "return Math.abs(inner.left-outer.left)<=2&&inner.right<=outer.right+2;})()",
             timeout=10,
         )
         selected_preview_src = str(browser.evaluate(
-            "document.querySelector('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-index=\"3\"]')?.dataset.url||''"
+            "document.querySelector('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-index=\"3\"]')?.dataset.url||''"
         ))
         if not selected_preview_src:
             raise AssertionError("selected fourth history preview did not expose its source URL")
@@ -1308,7 +1308,7 @@ def run_viewport(
         snap("history")
         browser.native_press(" ")
         browser.wait_for(
-            "document.querySelector('#smartLogLightbox.open .smart-log-detail') "
+            "document.querySelector('#smartHistoryLightbox.open .smart-log-detail') "
             "&& document.querySelectorAll('.smart-log-detail-output').length===8 "
             "&& document.querySelector('.smart-log-detail-output[aria-current=\"true\"]')?.dataset.outputIndex==='3' "
             "&& document.querySelector('.smart-log-detail-image')?.complete "
@@ -1320,7 +1320,7 @@ def run_viewport(
             browser,
             "generation-detail",
             (
-                "#smartLogLightbox.open .smart-log-detail",
+                "#smartHistoryLightbox.open .smart-log-detail",
                 ".smart-log-detail-stage",
                 ".smart-log-detail-zoom-tools",
                 ".smart-log-detail-info",
@@ -1331,7 +1331,7 @@ def run_viewport(
                 ".smart-log-detail-copy-2k",
                 ".smart-log-detail-delete-original",
             ),
-            ("#smartLogLightbox.open .smart-log-detail",),
+            ("#smartHistoryLightbox.open .smart-log-detail",),
         )
         require_scene(detail_scene)
         detail_facts = browser.evaluate(
@@ -1553,11 +1553,11 @@ def run_viewport(
         browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)>1", timeout=10)
         zoom_after_wheel = float(browser.evaluate("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)"))
         browser.native_drag(".smart-log-detail-stage", dx=54, dy=28, steps=6, relative=(0.5, 0.5))
-        pan_after_drag = browser.evaluate("({...smartLogDetailView.pan})")
+        pan_after_drag = browser.evaluate("({...smartHistoryDetailView.pan})")
         if zoom_after_wheel <= 1 or abs(float(pan_after_drag.get("x", 0))) < 20 or abs(float(pan_after_drag.get("y", 0))) < 10:
             raise AssertionError(f"generation detail did not support native wheel zoom and drag pan: zoom={zoom_after_wheel}, pan={pan_after_drag}")
         browser.native_click('[data-smart-log-detail-zoom="reset"]')
-        browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||0)===1 && smartLogDetailView.pan.x===0 && smartLogDetailView.pan.y===0", timeout=10)
+        browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||0)===1 && smartHistoryDetailView.pan.x===0 && smartHistoryDetailView.pan.y===0", timeout=10)
         detail_facts["wheelZoom"] = zoom_after_wheel
         detail_facts["dragPan"] = pan_after_drag
         detail_facts["sharedPreviewFrame"] = bool(browser.evaluate("Boolean(document.querySelector('.smart-log-detail-stage.preview-stage .smart-log-detail-frame.preview-frame'))"))
@@ -1587,17 +1587,17 @@ def run_viewport(
         write_json(attempt_root / "deletion-revisions.json", deletion_revisions)
         browser.native_click(".smart-log-detail-delete-original", accept_dialog=True)
         browser.wait_for(
-            "smartLogEntryById('integrity-success-one')?.outputs?.length===7 "
+            "smartHistoryEntryById('integrity-success-one')?.outputs?.length===7 "
             "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===7 "
-            "&& document.querySelectorAll('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-preview]').length===7 "
-            "&& document.querySelectorAll('#smartLogLightbox.open .smart-log-detail-output').length===7",
+            "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===7 "
+            "&& document.querySelectorAll('#smartHistoryLightbox.open .smart-log-detail-output').length===7",
             timeout=20,
         )
         expected_after_delete = output_asset_ids_before[:3] + output_asset_ids_before[4:]
         expected_output_ids_after_delete = output_ids_before[:3] + output_ids_before[4:]
         post_delete_facts = browser.evaluate(
             """(() => {
-              const historyCard=document.querySelector('[data-canvas-log-id="integrity-success-one"]');
+              const historyCard=document.querySelector('[data-canvas-history-id="integrity-success-one"]');
               const assetIds=elements=>[...elements].map(element=>String(element.dataset.assetId||''));
               const outputIds=elements=>[...elements].map(element=>String(element.dataset.outputId||''));
               const detailCurrent=document.querySelector('.smart-log-detail-output[aria-current="true"]');
@@ -1608,14 +1608,14 @@ def run_viewport(
                 document.querySelector('.smart-log-detail-delete-original'),
               ].map(element=>String(element?.dataset.assetId||''));
               return {
-                historyAssetIds:smartLogEntryById('integrity-success-one').outputs.map(output=>String(output.asset_id||'')),
-                historyOutputIds:smartLogEntryById('integrity-success-one').outputs.map(output=>String(output.output_id||'')),
+                historyAssetIds:smartHistoryEntryById('integrity-success-one').outputs.map(output=>String(output.asset_id||'')),
+                historyOutputIds:smartHistoryEntryById('integrity-success-one').outputs.map(output=>String(output.output_id||'')),
                 historyDomAssetIds:assetIds(historyCard.querySelectorAll('.log-media-card[data-asset-id]')),
                 historyDomOutputIds:outputIds(historyCard.querySelectorAll('.log-media-card[data-output-id]')),
-                historyPreviewAssetIds:assetIds(historyCard.querySelectorAll('[data-log-output-preview]')),
-                historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-log-output-preview]')),
-                historySelectedAssetId:String(historyCard.querySelector('[data-log-output-preview][aria-current="true"]')?.dataset.assetId||''),
-                historySelectedOutputId:String(historyCard.querySelector('[data-log-output-preview][aria-current="true"]')?.dataset.outputId||''),
+                historyPreviewAssetIds:assetIds(historyCard.querySelectorAll('[data-history-output-preview]')),
+                historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-history-output-preview]')),
+                historySelectedAssetId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.assetId||''),
+                historySelectedOutputId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 detailAssetIds:assetIds(document.querySelectorAll('.smart-log-detail-output')),
                 detailOutputIds:outputIds(document.querySelectorAll('.smart-log-detail-output')),
                 detailSelectedAssetId:String(detailCurrent?.dataset.assetId||''),
@@ -1623,7 +1623,7 @@ def run_viewport(
                 detailPosition:document.querySelector('.smart-log-detail-output-position')?.textContent.trim()||'',
                 actionAssetIds,
                 actionOutputIds:[document.querySelector('.smart-log-detail-image'),document.querySelector('.smart-log-detail-download'),document.querySelector('.smart-log-detail-copy-2k'),document.querySelector('.smart-log-detail-delete-original')].map(element=>String(element?.dataset.outputId||'')),
-                detailStayedOpen:Boolean(document.querySelector('#smartLogLightbox.open')),
+                detailStayedOpen:Boolean(document.querySelector('#smartHistoryLightbox.open')),
                 canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
                 canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
@@ -1635,7 +1635,7 @@ def run_viewport(
                 // 进回收区 7 天可恢复（docs/deletion-mechanism-review.md 入口 6），并非不可逆操作。
                 // 旧断言 destructiveGroupDeleteHiddenWhileRestorable 与本场景及 1193 行
                 // dangerousGroupDeletePresent（同卡片态要求按钮存在）自相矛盾，已废弃。
-                destructiveGroupDeleteVisibleWhileOutputsAlive:!!historyCard.querySelector('[data-log-delete="media"]'),
+                destructiveGroupDeleteVisibleWhileOutputsAlive:!!historyCard.querySelector('[data-history-delete="media"]'),
               };
             })()"""
         )
@@ -1686,18 +1686,18 @@ def run_viewport(
         multi_output_facts["singleAssetSynchronized"] = True
 
         browser.native_press("Escape")
-        browser.wait_for("!document.querySelector('#smartLogLightbox')?.classList.contains('open')", timeout=10)
-        if not browser.evaluate("document.querySelector('#smartLogModal')?.classList.contains('open')"):
+        browser.wait_for("!document.querySelector('#smartHistoryLightbox')?.classList.contains('open')", timeout=10)
+        if not browser.evaluate("document.querySelector('#smartHistoryModal')?.classList.contains('open')"):
             raise AssertionError("Escape closed generation history together with generation detail")
         browser.native_click(
-            '[data-canvas-log-id="integrity-success-one"] [data-log-restore-original]',
+            '[data-canvas-history-id="integrity-success-one"] [data-history-restore-original]',
             relative=(0.18, 0.5),
         )
         try:
             browser.wait_for(
-                "smartLogEntryById('integrity-success-one')?.outputs?.length===8 "
+                "smartHistoryEntryById('integrity-success-one')?.outputs?.length===8 "
                 "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===8 "
-                "&& document.querySelectorAll('[data-canvas-log-id=\"integrity-success-one\"] [data-log-output-preview]').length===8",
+                "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===8",
                 timeout=20,
             )
         except TimeoutError:
@@ -1707,9 +1707,9 @@ def run_viewport(
                   revision:Number(canvas?.revision||0),
                   syncInFlight:Boolean(canvasSyncInFlight),
                   contentDirty:Boolean(contentDirty),
-                  historyOutputs:smartLogEntryById('integrity-success-one')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
+                  historyOutputs:smartHistoryEntryById('integrity-success-one')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
                   canvasImages:nodes.find(node=>node.id==='integrity-multi-output')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
-                  previewCount:document.querySelectorAll('[data-canvas-log-id="integrity-success-one"] [data-log-output-preview]').length,
+                  previewCount:document.querySelectorAll('[data-canvas-history-id="integrity-success-one"] [data-history-output-preview]').length,
                   toast:document.querySelector('#toast')?.textContent||'',
                 }))()"""
             )
@@ -1717,7 +1717,7 @@ def run_viewport(
             restore_diagnostics["storeHistoryOutputs"] = next(
                 (
                     item.get("outputs") or []
-                    for item in store_state.get("canvas", {}).get("logs", [])
+                    for item in store_state.get("canvas", {}).get("history", [])
                     if str(item.get("id") or "") == "integrity-success-one"
                 ),
                 [],
@@ -1734,18 +1734,18 @@ def run_viewport(
             raise
         restore_facts = browser.evaluate(
             """(() => {
-              const historyCard=document.querySelector('[data-canvas-log-id="integrity-success-one"]');
+              const historyCard=document.querySelector('[data-canvas-history-id="integrity-success-one"]');
               const assetIds=elements=>[...elements].map(element=>String(element.dataset.assetId||''));
               const outputIds=elements=>[...elements].map(element=>String(element.dataset.outputId||''));
               return {
-                historyAssetIds:smartLogEntryById('integrity-success-one').outputs.map(output=>String(output.asset_id||'')),
-                historyOutputIds:smartLogEntryById('integrity-success-one').outputs.map(output=>String(output.output_id||'')),
+                historyAssetIds:smartHistoryEntryById('integrity-success-one').outputs.map(output=>String(output.asset_id||'')),
+                historyOutputIds:smartHistoryEntryById('integrity-success-one').outputs.map(output=>String(output.output_id||'')),
                 historyDomAssetIds:assetIds(historyCard.querySelectorAll('.log-media-card[data-asset-id]')),
                 historyDomOutputIds:outputIds(historyCard.querySelectorAll('.log-media-card[data-output-id]')),
-                historyPreviewAssetIds:assetIds(historyCard.querySelectorAll('[data-log-output-preview]')),
-                historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-log-output-preview]')),
-                historySelectedAssetId:String(historyCard.querySelector('[data-log-output-preview][aria-current="true"]')?.dataset.assetId||''),
-                historySelectedOutputId:String(historyCard.querySelector('[data-log-output-preview][aria-current="true"]')?.dataset.outputId||''),
+                historyPreviewAssetIds:assetIds(historyCard.querySelectorAll('[data-history-output-preview]')),
+                historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-history-output-preview]')),
+                historySelectedAssetId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.assetId||''),
+                historySelectedOutputId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
                 canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
@@ -1787,7 +1787,7 @@ def run_viewport(
         multi_output_facts["selectionOutputIdAfterRestore"] = restore_facts["historySelectedOutputId"]
         multi_output_facts["identityOrderPreserved"] = identity_order_preserved
         browser.native_press("Escape")
-        if not browser.evaluate("document.querySelector('#smartLogModal')?.classList.contains('open')"):
+        if not browser.evaluate("document.querySelector('#smartHistoryModal')?.classList.contains('open')"):
             raise AssertionError("Escape closed generation history without a transient detail")
         detail_facts["escapeKeptHistory"] = True
         history_detail_zoom_and_escape = bool(
@@ -1799,7 +1799,7 @@ def run_viewport(
         )
         generation_detail_complete = bool(generation_detail_complete and history_detail_zoom_and_escape)
 
-        browser.evaluate("document.querySelector('[data-canvas-log-id=\"integrity-failed\"] [data-long-content-open=\"history-error\"]').focus(); true")
+        browser.evaluate("document.querySelector('[data-canvas-history-id=\"integrity-failed\"] [data-long-content-open=\"history-error\"]').focus(); true")
         browser.native_press("Enter")
         browser.wait_for("document.querySelector('#longContentReader.open')", timeout=10)
         error_reader = inspect_scene(
@@ -1814,7 +1814,7 @@ def run_viewport(
         browser.native_click('.log-head-actions button[onclick="closeSmartCanvasLog()"]')
         try:
             browser.wait_for(
-                "(() => { const drawer=document.querySelector('#smartLogModal'); const panel=drawer?.querySelector('.log-panel'); if(!drawer || !panel) return false; const style=getComputedStyle(panel); return !drawer.classList.contains('open') && drawer.getAttribute('aria-expanded')==='false' && style.visibility==='hidden' && Number.parseFloat(style.opacity||'0')<=0.01 && style.pointerEvents==='none'; })()",
+                "(() => { const drawer=document.querySelector('#smartHistoryModal'); const panel=drawer?.querySelector('.log-panel'); if(!drawer || !panel) return false; const style=getComputedStyle(panel); return !drawer.classList.contains('open') && drawer.getAttribute('aria-expanded')==='false' && style.visibility==='hidden' && Number.parseFloat(style.opacity||'0')<=0.01 && style.pointerEvents==='none'; })()",
                 timeout=10,
             )
         except TimeoutError:
@@ -1917,21 +1917,21 @@ def run_viewport(
             browser.native_click(f"#projectGrid .project-card:nth-child({duplicate_card_index + 1}) .project-open")
             browser.wait_for("document.querySelector('[data-id=\"integrity-duplicate-node\"]')", timeout=20)
             settle(browser)
-            browser.native_click("#smartLogToggle")
+            browser.native_click("#smartHistoryToggle")
             browser.wait_for(
-                "document.querySelector('#smartLogModal.open') && document.querySelectorAll('[data-canvas-log-id=\"integrity-duplicate-log\"] [data-log-output-preview]').length===4",
+                "document.querySelector('#smartHistoryModal.open') && document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===4",
                 timeout=20,
             )
-            browser.native_click('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview="2"]')
+            browser.native_click('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview="2"]')
             browser.wait_for(
-                "document.querySelector('[data-canvas-log-id=\"integrity-duplicate-log\"] [data-log-output-preview=\"2\"]')?.getAttribute('aria-current')==='true'",
+                "document.querySelector('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview=\"2\"]')?.getAttribute('aria-current')==='true'",
                 timeout=10,
             )
             duplicate_before = browser.evaluate(
                 """(() => ({
-                  history:smartLogEntryById('integrity-duplicate-log').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')})),
+                  history:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')})),
                   canvas:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')})),
-                  selectedOutputId:String(document.querySelector('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview][aria-current="true"]')?.dataset.outputId||''),
+                  selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""
             )
             duplicate_assets = [item["assetId"] for item in duplicate_before["history"]]
@@ -1949,14 +1949,14 @@ def run_viewport(
             duplicate_output_id = duplicate_output_ids[2]
             duplicate_expected_bytes = Path(store.media_record(duplicate_project_id, duplicate_asset_id)["path"]).read_bytes()
             browser.native_click(
-                '[data-canvas-log-id="integrity-duplicate-log"] [data-log-delete-original]',
+                '[data-canvas-history-id="integrity-duplicate-log"] [data-history-delete-original]',
                 accept_dialog=True,
             )
             try:
                 browser.wait_for(
-                    "smartLogEntryById('integrity-duplicate-log')?.outputs?.length===3 "
+                    "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===3 "
                     "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===3 "
-                    "&& document.querySelectorAll('[data-canvas-log-id=\"integrity-duplicate-log\"] [data-log-output-preview]').length===3",
+                    "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===3",
                     timeout=20,
                 )
             except TimeoutError:
@@ -1967,7 +1967,7 @@ def run_viewport(
                       syncInFlight:Boolean(canvasSyncInFlight),
                       contentDirty:Boolean(contentDirty),
                       selected:smartHistorySelectedImage,
-                      history:smartLogEntryById('integrity-duplicate-log')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
+                      history:smartHistoryEntryById('integrity-duplicate-log')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
                       canvasImages:nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
                       toast:document.querySelector('#toast')?.textContent||'',
                     }))()"""
@@ -1976,7 +1976,7 @@ def run_viewport(
                 duplicate_delete_diagnostics["storeHistory"] = next(
                     (
                         item.get("outputs") or []
-                        for item in duplicate_store_state["canvas"].get("logs", [])
+                        for item in duplicate_store_state["canvas"].get("history", [])
                         if str(item.get("id") or "") == "integrity-duplicate-log"
                     ),
                     [],
@@ -1995,12 +1995,12 @@ def run_viewport(
             )
             duplicate_after = browser.evaluate(
                 """(() => ({
-                  historyOutputIds:smartLogEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
+                  historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
                   canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
-                  previewOutputIds:[...document.querySelectorAll('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview]')].map(item=>String(item.dataset.outputId||'')),
-                  selectedOutputId:String(document.querySelector('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview][aria-current="true"]')?.dataset.outputId||''),
-                  survivingDecoded:Boolean(document.querySelector(`[data-canvas-log-id="integrity-duplicate-log"] [data-output-id="${smartLogEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.complete && document.querySelector(`[data-canvas-log-id="integrity-duplicate-log"] [data-output-id="${smartLogEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.naturalWidth>0),
-                  restoreDeletionId:String(document.querySelector('[data-canvas-log-id="integrity-duplicate-log"] [data-log-restore-original]')?.dataset.deletionId||''),
+                  previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
+                  selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
+                  survivingDecoded:Boolean(document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.complete && document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.naturalWidth>0),
+                  restoreDeletionId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-restore-original]')?.dataset.deletionId||''),
                 }))()"""
             )
             duplicate_media_record = store.media_record(duplicate_project_id, duplicate_asset_id)
@@ -2021,21 +2021,21 @@ def run_viewport(
             ):
                 raise AssertionError(f"duplicate occurrence deletion is not exact: {duplicate_after}")
             browser.native_click(
-                '[data-canvas-log-id="integrity-duplicate-log"] [data-log-restore-original]',
+                '[data-canvas-history-id="integrity-duplicate-log"] [data-history-restore-original]',
                 relative=(0.18, 0.5),
             )
             browser.wait_for(
-                "smartLogEntryById('integrity-duplicate-log')?.outputs?.length===4 "
+                "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===4 "
                 "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "
-                "&& document.querySelectorAll('[data-canvas-log-id=\"integrity-duplicate-log\"] [data-log-output-preview]').length===4",
+                "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===4",
                 timeout=20,
             )
             duplicate_restore = browser.evaluate(
                 """(() => ({
-                  historyOutputIds:smartLogEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
+                  historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
                   canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
-                  previewOutputIds:[...document.querySelectorAll('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview]')].map(item=>String(item.dataset.outputId||'')),
-                  selectedOutputId:String(document.querySelector('[data-canvas-log-id="integrity-duplicate-log"] [data-log-output-preview][aria-current="true"]')?.dataset.outputId||''),
+                  previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
+                  selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""
             )
             duplicate_occurrence_facts = {

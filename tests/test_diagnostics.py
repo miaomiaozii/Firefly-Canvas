@@ -201,7 +201,7 @@ class DiagnosticContractTests(unittest.TestCase):
 
     def test_clear_removes_every_stream(self):
         emit("generation.started", project_id="p", task_id="t")
-        emit("deletion.completed", project_id="p", log_id="log-1")
+        emit("deletion.completed", project_id="p", history_id="log-1")
         clear()
         directory = log_dir()
         self.assertEqual(list(directory.glob("diagnostics*.jsonl")), [])
@@ -248,7 +248,7 @@ class DiagnosticLifecycleTests(unittest.TestCase):
         ], base_revision=0)
         revision += 1
         self.apply_mutations(project_id, [
-            {"op": "set_canvas_meta", "logs": [{"id": "history-1", "task_id": "task-1"}]},
+            {"op": "set_canvas_meta", "history": [{"id": "history-1", "task_id": "task-1"}]},
         ], base_revision=1)
         begun = self.store.begin_image_generation(
             project_id, "result",
@@ -292,7 +292,7 @@ class DiagnosticLifecycleTests(unittest.TestCase):
         # Each fake operation produced its verifiable event...
         self.assertEqual([item["task_id"] for item in by_name.get("generation.started", [])], ["task-1"])
         self.assertEqual([item["task_id"] for item in by_name.get("generation.succeeded", [])], ["task-1"])
-        self.assertEqual([item["log_id"] for item in by_name.get("deletion.completed", [])], ["history-1"])
+        self.assertEqual([item["history_id"] for item in by_name.get("deletion.completed", [])], ["history-1"])
         self.assertEqual([item["asset_id"] for item in by_name.get("recovery.restored", [])], [asset_id])
         self.assertEqual(by_name["cleanup.executed"][-1]["deleted_count"], 1)
         self.assertEqual(by_name["cleanup.executed"][-1]["state"], "completed")

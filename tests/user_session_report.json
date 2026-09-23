@@ -564,7 +564,7 @@
         }
       ]
     },
-    "logs": [
+    "history": [
       {
         "id": "agent-generation-agent-task-ff2e710906ed47a68e5ac97422dbe6ce",
         "type": "agent-image",

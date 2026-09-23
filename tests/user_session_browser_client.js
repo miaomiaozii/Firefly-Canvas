@@ -451,18 +451,18 @@
             const planStatus = document.querySelector(`.agent-smart-node[data-id="${agentNodeId}"] [data-agent-plan-status]`)?.textContent || '';
             assertion('Agent 计划状态显示已完成', planStatus.includes('已完成'), planStatus);
             const serverCanvas4 = await fetchProject(result.projectId);
-            const agentLogs = (serverCanvas4?.canvas?.logs || []).filter(item => item.type === 'agent-image');
+            const agentLogs = (serverCanvas4?.canvas?.history || []).filter(item => item.type === 'agent-image');
             assertion('服务端记录 Agent 生图历史', agentLogs.length >= 2, agentLogs.length);
             noteObservation('生图适配器', '测试环境使用离线 fake image 适配器（无真实 API key），线上环境该步骤可能因缺 key 失败');
         }
 
         // Step 14: history drawer
         const step14 = beginStep('打开历史记录侧边栏');
-        document.querySelector('#smartLogToggle')?.click();
-        const drawerOpen = await waitFor(() => document.querySelector('#smartLogModal')?.classList.contains('open') && document.querySelectorAll('#smartLogList .log-item').length >= 2, 12000);
-        assertion('历史侧边栏打开且包含操作记录', drawerOpen, document.querySelectorAll('#smartLogList .log-item').length);
+        document.querySelector('#smartHistoryToggle')?.click();
+        const drawerOpen = await waitFor(() => document.querySelector('#smartHistoryModal')?.classList.contains('open') && document.querySelectorAll('#smartHistoryList .log-item').length >= 2, 12000);
+        assertion('历史侧边栏打开且包含操作记录', drawerOpen, document.querySelectorAll('#smartHistoryList .log-item').length);
         if(drawerOpen){
-            const firstLog = document.querySelector('#smartLogList .log-item');
+            const firstLog = document.querySelector('#smartHistoryList .log-item');
             noteObservation('历史记录样例', firstLog?.textContent?.slice(0, 120) || '');
         }
 

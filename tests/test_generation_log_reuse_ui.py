@@ -23,10 +23,10 @@ class GenerationHistoryDrawerUiTests(unittest.TestCase):
         parser = _CanvasMarkupParser()
         parser.feed((ROOT / "static/smart-canvas.html").read_text(encoding="utf-8"))
         by_id = {attrs.get("id"): (tag, attrs) for tag, attrs in parser.elements if attrs.get("id")}
-        self.assertEqual(by_id["smartLogModal"][0], "div")
-        self.assertIn("history-drawer", by_id["smartLogModal"][1].get("class", ""))
-        self.assertEqual(by_id["smartLogModal"][1].get("role"), "region")
-        self.assertIn("smartLogList", by_id)
+        self.assertEqual(by_id["smartHistoryModal"][0], "div")
+        self.assertIn("history-drawer", by_id["smartHistoryModal"][1].get("class", ""))
+        self.assertEqual(by_id["smartHistoryModal"][1].get("role"), "region")
+        self.assertIn("smartHistoryList", by_id)
         self.assertIn("smartHistoryCollapse", by_id)
 
     def test_history_drawer_behavior_is_exercised_by_the_real_browser_runner(self):

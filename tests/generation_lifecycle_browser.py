@@ -24,11 +24,11 @@ from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
 
 VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 TASK_ID = "task-new"
-PENDING_LOG_ID = f"pending-generation-{TASK_ID}"
+PENDING_HISTORY_ID = f"pending-generation-{TASK_ID}"
 RESULT_NODE_ID = "result-reused"
-RECORD_LOG_ID = "history-record-only"
-ORIGINAL_LOG_ID = "history-original"
-UNRELATED_LOG_ID = "history-unrelated"
+RECORD_HISTORY_ID = "history-record-only"
+ORIGINAL_HISTORY_ID = "history-original"
+UNRELATED_HISTORY_ID = "history-unrelated"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -107,7 +107,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
         "providerId": "fake-provider",
         "model": "fake-model",
         "prompt": "new overlapping generation",
-        "pendingHistoryLogId": PENDING_LOG_ID,
+        "pendingHistoryId": PENDING_HISTORY_ID,
         "referenceAssetIds": [],
         "references": [],
         "progress": {"phase": "queued", "message": "queued"},
@@ -155,7 +155,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
     ]
     logs = [
         {
-            "id": RECORD_LOG_ID,
+            "id": RECORD_HISTORY_ID,
             "kind": "image",
             "status": "succeeded",
             "prompt": "record-only delete",
@@ -164,7 +164,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
             "outputs": [record_ref],
         },
         {
-            "id": ORIGINAL_LOG_ID,
+            "id": ORIGINAL_HISTORY_ID,
             "kind": "image",
             "status": "succeeded",
             "prompt": "original delete and restore",
@@ -182,7 +182,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
             "outputs": [downstream_ref],
         },
         {
-            "id": UNRELATED_LOG_ID,
+            "id": UNRELATED_HISTORY_ID,
             "kind": "text",
             "status": "succeeded",
             "prompt": "unrelated history",
@@ -201,7 +201,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
                     "kind": "flow",
                 },
             },
-            {"op": "set_canvas_meta", "logs": logs},
+            {"op": "set_canvas_meta", "history": logs},
         ]
     )
     registered = store.apply_mutations(project_id, mutations, base_revision=0)
@@ -215,7 +215,7 @@ def seed_project(store: ProjectStore, run_root: Path) -> dict:
     original_record = store.media_record(project_id, original_media["asset_id"])
     original_path = Path(original_record["path"])
     initial_canvas = copy.deepcopy(store.open_project(project_id)["canvas"])
-    original_log = next(item for item in initial_canvas["logs"] if item.get("id") == ORIGINAL_LOG_ID)
+    original_log = next(item for item in initial_canvas["history"] if item.get("id") == ORIGINAL_HISTORY_ID)
     original_output = original_log["outputs"][0]
     original_node = next(item for item in initial_canvas["nodes"] if item.get("id") == RESULT_NODE_ID)
     original_node_output = next(
@@ -295,7 +295,7 @@ def completed_output_snapshot(node: dict) -> dict:
 
 
 def history_ids(canvas: dict) -> list[str]:
-    return [str(item.get("id") or "") for item in canvas.get("logs") or []]
+    return [str(item.get("id") or "") for item in canvas.get("history") or []]
 
 
 def task_snapshot(canvas: dict) -> dict:
@@ -304,7 +304,7 @@ def task_snapshot(canvas: dict) -> dict:
         "task_id": task.get("taskId"),
         "provider_id": task.get("providerId"),
         "model": task.get("model"),
-        "pending_history_log_id": task.get("pendingHistoryLogId"),
+        "pending_history_id": task.get("pendingHistoryId"),
     }
 
 
@@ -327,11 +327,11 @@ def lifecycle_snapshot(store: ProjectStore, fixture: dict) -> dict:
 
 def open_history(browser: NativeBrowser, base_url: str, project_id: str) -> dict:
     browser.navigate(f"{base_url}/static/smart-canvas.html?id={project_id}")
-    browser.wait_for("document.querySelector('#smartLogToggle')")
-    browser.wait_for("typeof canvas !== 'undefined' && canvas && Array.isArray(canvas.logs)")
+    browser.wait_for("document.querySelector('#smartHistoryToggle')")
+    browser.wait_for("typeof canvas !== 'undefined' && canvas && Array.isArray(canvas.history)")
     browser.wait_for("document.querySelector('#projectSaveState')?.dataset.state === 'saved'", timeout=30)
-    operation = browser.native_click("#smartLogToggle")
-    browser.wait_for("document.querySelector('#smartLogModal:not([hidden])')")
+    operation = browser.native_click("#smartHistoryToggle")
+    browser.wait_for("document.querySelector('#smartHistoryModal:not([hidden])')")
     return operation
 
 
@@ -370,16 +370,16 @@ def run_viewport(
         browser = NativeBrowser.launch(browser_path)
         browser.set_environment(viewport)
         open_history(browser, server.base_url, fixture["project_id"])
-        browser.wait_for(f"document.querySelector('[data-canvas-log-id=\"{RECORD_LOG_ID}\"] [data-log-delete=\"record\"]')")
-        browser.wait_for(f"document.querySelector('[data-canvas-log-id=\"{PENDING_LOG_ID}\"]')")
+        browser.wait_for(f"document.querySelector('[data-canvas-history-id=\"{RECORD_HISTORY_ID}\"] [data-history-delete=\"record\"]')")
+        browser.wait_for(f"document.querySelector('[data-canvas-history-id=\"{PENDING_HISTORY_ID}\"]')")
         screenshots.append(screenshot(browser, viewport_root, "01-before.png", artifacts_root))
 
         record_delete_operation = browser.native_click(
-            f'[data-canvas-log-id="{RECORD_LOG_ID}"] [data-log-delete="record"]',
+            f'[data-canvas-history-id="{RECORD_HISTORY_ID}"] [data-history-delete="record"]',
             accept_dialog=True,
         )
         try:
-            browser.wait_for(f"!document.querySelector('[data-canvas-log-id=\"{RECORD_LOG_ID}\"]')")
+            browser.wait_for(f"!document.querySelector('[data-canvas-history-id=\"{RECORD_HISTORY_ID}\"]')")
         except TimeoutError as error:
             raise AssertionError(
                 json.dumps(
@@ -387,10 +387,10 @@ def run_viewport(
                         "record_delete_operation": record_delete_operation,
                         "store_history_ids": history_ids(store.open_project(fixture["project_id"])["canvas"]),
                         "browser_logs": browser.evaluate(
-                            "(canvas.logs || []).map(log => ({id: log.id, status: log.status}))"
+                            "(canvas.history || []).map(log => ({id: log.id, status: log.status}))"
                         ),
                         "dom_cards": browser.evaluate(
-                            "Array.from(document.querySelectorAll('[data-canvas-log-id]')).map(card => card.dataset.canvasLogId)"
+                            "Array.from(document.querySelectorAll('[data-canvas-history-id]')).map(card => card.dataset.canvasHistoryId)"
                         ),
                         "requests": browser.request_summaries[-8:],
                         "console_errors": browser.console_errors[-8:],
@@ -404,7 +404,7 @@ def run_viewport(
         set_fake_task(app, "provider_generating")
         try:
             browser.wait_for(
-                f"(canvas.logs || []).some(log => log.id === '{PENDING_LOG_ID}' && log.progress?.phase === 'provider_generating')",
+                f"(canvas.history || []).some(log => log.id === '{PENDING_HISTORY_ID}' && log.progress?.phase === 'provider_generating')",
                 timeout=25,
             )
         except TimeoutError as error:
@@ -414,7 +414,7 @@ def run_viewport(
                 await_promise=True,
             )
             pending_logs = browser.evaluate(
-                f"(canvas.logs || []).filter(log => log.id === '{PENDING_LOG_ID}')"
+                f"(canvas.history || []).filter(log => log.id === '{PENDING_HISTORY_ID}')"
             )
             registry_state = [
                 {
@@ -434,9 +434,9 @@ def run_viewport(
                 )
             ) from error
         after_record = lifecycle_snapshot(store, fixture)
-        if RECORD_LOG_ID in after_record["history_ids"]:
+        if RECORD_HISTORY_ID in after_record["history_ids"]:
             raise AssertionError("record-only delete retained its target history")
-        for retained in (ORIGINAL_LOG_ID, "history-downstream", UNRELATED_LOG_ID):
+        for retained in (ORIGINAL_HISTORY_ID, "history-downstream", UNRELATED_HISTORY_ID):
             if retained not in after_record["history_ids"]:
                 raise AssertionError(f"record-only delete removed unrelated history: {retained}")
         if after_record["task"] != before["task"]:
@@ -446,8 +446,8 @@ def run_viewport(
         screenshots.append(screenshot(browser, viewport_root, "02-record-deleted.png", artifacts_root))
 
         original_delete_selector = (
-            f'[data-canvas-log-id="{ORIGINAL_LOG_ID}"] '
-            f'[data-log-delete-original="{fixture["original_output_id"]}"]'
+            f'[data-canvas-history-id="{ORIGINAL_HISTORY_ID}"] '
+            f'[data-history-delete-original="{fixture["original_output_id"]}"]'
         )
         try:
             browser.wait_for(
@@ -456,19 +456,19 @@ def run_viewport(
             )
         except TimeoutError as error:
             dom_state = browser.evaluate(
-                """(() => Array.from(document.querySelectorAll('[data-canvas-log-id]')).map(card => ({
-                  id: card.dataset.canvasLogId || '',
-                  record: Boolean(card.querySelector('[data-log-delete="record"]')),
-                  original: Array.from(card.querySelectorAll('[data-log-delete-original]')).map(button => button.dataset.logDeleteOriginal),
-                  restore: Array.from(card.querySelectorAll('[data-log-restore-original]')).map(button => button.dataset.logRestoreOriginal),
+                """(() => Array.from(document.querySelectorAll('[data-canvas-history-id]')).map(card => ({
+                  id: card.dataset.canvasHistoryId || '',
+                  record: Boolean(card.querySelector('[data-history-delete="record"]')),
+                  original: Array.from(card.querySelectorAll('[data-history-delete-original]')).map(button => button.dataset.logDeleteOriginal),
+                  restore: Array.from(card.querySelectorAll('[data-history-restore-original]')).map(button => button.dataset.logRestoreOriginal),
                 })))()"""
             )
             store_state = [
                 {"id": item.get("id"), "outputs": item.get("outputs")}
-                for item in store.open_project(fixture["project_id"])["canvas"].get("logs", [])
+                for item in store.open_project(fixture["project_id"])["canvas"].get("history", [])
             ]
             browser_state = browser.evaluate(
-                "(canvas.logs || []).map(log => ({id: log.id, outputs: log.outputs || []}))"
+                "(canvas.history || []).map(log => ({id: log.id, outputs: log.outputs || []}))"
             )
             raise AssertionError(
                 json.dumps(
@@ -483,8 +483,8 @@ def run_viewport(
             ) from error
         browser.native_click(original_delete_selector, accept_dialog=True)
         restore_selector_before_restart = (
-            f'[data-canvas-log-id="{ORIGINAL_LOG_ID}"] '
-            f'[data-log-restore-original="{fixture["original_asset_id"]}"]'
+            f'[data-canvas-history-id="{ORIGINAL_HISTORY_ID}"] '
+            f'[data-history-restore-original="{fixture["original_asset_id"]}"]'
         )
         try:
             browser.wait_for(
@@ -493,10 +493,10 @@ def run_viewport(
             )
         except TimeoutError as error:
             browser_log = browser.evaluate(
-                f"(canvas.logs || []).find(log => log.id === '{ORIGINAL_LOG_ID}') || null"
+                f"(canvas.history || []).find(log => log.id === '{ORIGINAL_HISTORY_ID}') || null"
             )
             dom_actions = browser.evaluate(
-                f"Array.from(document.querySelectorAll('[data-canvas-log-id=\"{ORIGINAL_LOG_ID}\"] button')).map(button => ({{"
+                f"Array.from(document.querySelectorAll('[data-canvas-history-id=\"{ORIGINAL_HISTORY_ID}\"] button')).map(button => ({{"
                 "text: button.textContent.trim(), disabled: button.disabled, "
                 "restore: button.dataset.logRestoreOriginal || '', "
                 "original: button.dataset.logDeleteOriginal || ''}))"
@@ -504,8 +504,8 @@ def run_viewport(
             store_log = next(
                 (
                     item
-                    for item in store.open_project(fixture["project_id"])["canvas"].get("logs", [])
-                    if item.get("id") == ORIGINAL_LOG_ID
+                    for item in store.open_project(fixture["project_id"])["canvas"].get("history", [])
+                    if item.get("id") == ORIGINAL_HISTORY_ID
                 ),
                 None,
             )
@@ -544,8 +544,8 @@ def run_viewport(
         ):
             raise AssertionError(f"deleted output tombstone identity mismatch: {trash_item}")
         deleted_log = next(
-            item for item in store.open_project(fixture["project_id"])["canvas"]["logs"]
-            if item.get("id") == ORIGINAL_LOG_ID
+            item for item in store.open_project(fixture["project_id"])["canvas"]["history"]
+            if item.get("id") == ORIGINAL_HISTORY_ID
         )
         deleted_tombstones = deleted_log.get("deletedOutputTombstones") or []
         if (
@@ -613,8 +613,8 @@ def run_viewport(
         browser.set_environment(viewport)
         open_history(browser, server.base_url, fixture["project_id"])
         restore_selector = (
-            f'[data-canvas-log-id="{ORIGINAL_LOG_ID}"] '
-            f'[data-log-restore-original="{fixture["original_asset_id"]}"]'
+            f'[data-canvas-history-id="{ORIGINAL_HISTORY_ID}"] '
+            f'[data-history-restore-original="{fixture["original_asset_id"]}"]'
         )
         browser.wait_for(f"document.querySelector({json.dumps(restore_selector)})", timeout=12)
         screenshots.append(screenshot(browser, viewport_root, "04-after-restart.png", artifacts_root))
@@ -633,10 +633,10 @@ def run_viewport(
                         "media_restored": fixture["original_asset_id"]
                         in {item.get("asset_id") for item in store.list_media(fixture["project_id"])},
                         "browser_log": browser.evaluate(
-                            f"(canvas.logs || []).find(log => log.id === '{ORIGINAL_LOG_ID}') || null"
+                            f"(canvas.history || []).find(log => log.id === '{ORIGINAL_HISTORY_ID}') || null"
                         ),
                         "dom_actions": browser.evaluate(
-                            f"Array.from(document.querySelectorAll('[data-canvas-log-id=\"{ORIGINAL_LOG_ID}\"] button')).map(button => ({{disabled: button.disabled, html: button.outerHTML}}))"
+                            f"Array.from(document.querySelectorAll('[data-canvas-history-id=\"{ORIGINAL_HISTORY_ID}\"] button')).map(button => ({{disabled: button.disabled, html: button.outerHTML}}))"
                         ),
                         "requests": browser.request_summaries[-8:],
                     },
@@ -645,7 +645,7 @@ def run_viewport(
             ) from error
         set_fake_task(app, "persisting")
         browser.wait_for(
-            f"(canvas.logs || []).some(log => log.id === '{PENDING_LOG_ID}' && log.progress?.phase === 'persisting')",
+            f"(canvas.history || []).some(log => log.id === '{PENDING_HISTORY_ID}' && log.progress?.phase === 'persisting')",
             timeout=12,
         )
         after_restore = lifecycle_snapshot(store, fixture)
@@ -656,9 +656,9 @@ def run_viewport(
             raise AssertionError("restored original bytes differ from the deleted original")
         if after_restore["trash"]:
             raise AssertionError("restore left the output occurrence in project trash")
-        restored_log = next(item for item in after_restore["history_ids"] if item == ORIGINAL_LOG_ID)
+        restored_log = next(item for item in after_restore["history_ids"] if item == ORIGINAL_HISTORY_ID)
         restored_canvas = store.open_project(fixture["project_id"])["canvas"]
-        restored_record_log = next(item for item in restored_canvas["logs"] if item.get("id") == restored_log)
+        restored_record_log = next(item for item in restored_canvas["history"] if item.get("id") == restored_log)
         restored_output = restored_record_log.get("outputs") or []
         restored_node = node_by_id(restored_canvas, RESULT_NODE_ID)
         if (
@@ -738,17 +738,17 @@ def run_viewport(
                 "lifecycle": {
                     "project_id": fixture["project_id"],
                     "task_id": TASK_ID,
-                    "pending_log_id": PENDING_LOG_ID,
+                    "pending_history_id": PENDING_HISTORY_ID,
                     "result_node_id": RESULT_NODE_ID,
-                    "record_log_id": RECORD_LOG_ID,
-                    "original_log_id": ORIGINAL_LOG_ID,
+                    "record_history_id": RECORD_HISTORY_ID,
+                    "original_history_id": ORIGINAL_HISTORY_ID,
                     "original_asset_id": fixture["original_asset_id"],
                     "original_output_id": fixture["original_output_id"],
                     "deletion_id": trash_item["deletion_id"],
                     "downstream_asset_id": fixture["downstream_asset_id"],
                     "original_sha256": fixture["original_sha256"],
                     "original_bytes": fixture["original_bytes"],
-                    "record_removed_only": RECORD_LOG_ID not in after_record["history_ids"],
+                    "record_removed_only": RECORD_HISTORY_ID not in after_record["history_ids"],
                     "original_retained_after_record_delete": after_record["task"] == before["task"],
                     "task_retained_after_original_delete": after_original_delete["task"] == before["task"],
                     "downstream_retained_after_original_delete": completed_output_snapshot(after_original_delete["downstream"])

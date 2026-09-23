@@ -43,7 +43,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
                 project_id,
                 [
                     {"op": "upsert_node", "node": reused_result_node},
-                    {"op": "set_canvas_meta", "logs": [old_history]},
+                    {"op": "set_canvas_meta", "history": [old_history]},
                 ],
                 base_revision=0,
             )
@@ -57,7 +57,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
                     "providerId": "fake-provider",
                     "model": "fake-model",
                     "prompt": "new concurrent generation",
-                    "pendingHistoryLogId": "pending-generation-task-new",
+                    "pendingHistoryId": "pending-generation-task-new",
                 },
                 base_revision=1,
             )
@@ -77,7 +77,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
 
             after = store.open_project(project_id)
             after_node = after["canvas"]["nodes"][0]
-            self.assertEqual(after["canvas"]["logs"], [])
+            self.assertEqual(after["canvas"]["history"], [])
             self.assertEqual(after_node, before_node)
             self.assertEqual(after_node["pendingTasks"][0]["taskId"], "task-new")
             self.assertEqual(after_node["generationState"], "processing")
@@ -128,7 +128,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
                 project_id,
                 [
                     {"op": "upsert_node", "node": reused_result_node},
-                    {"op": "set_canvas_meta", "logs": [old_history, kept_history]},
+                    {"op": "set_canvas_meta", "history": [old_history, kept_history]},
                 ],
                 base_revision=0,
             )
@@ -144,7 +144,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
                         "providerId": "fake-provider",
                         "model": "fake-model",
                         "prompt": f"concurrent generation {task_id}",
-                        "pendingHistoryLogId": f"pending-generation-{task_id}",
+                        "pendingHistoryId": f"pending-generation-{task_id}",
                     },
                     base_revision=revision,
                 )
@@ -169,7 +169,7 @@ class HistoryDeletionIsolationTest(unittest.TestCase):
             after = store.open_project(project_id)
             after_node = after["canvas"]["nodes"][0]
             # Only the targeted record disappears; the unrelated completed record survives.
-            self.assertEqual([item["id"] for item in after["canvas"]["logs"]], ["history-kept"])
+            self.assertEqual([item["id"] for item in after["canvas"]["history"]], ["history-kept"])
             # Both active task cards, their node projection and originals survive untouched.
             self.assertEqual(after_node, before_node)
             self.assertEqual(

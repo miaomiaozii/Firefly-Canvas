@@ -108,7 +108,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 {"op": "upsert_node", "node": generator},
                 {"op": "upsert_node", "node": downstream},
                 {"op": "upsert_edge", "edge": {"id": "generator-downstream", "from": "generator", "to": "downstream", "kind": "flow"}},
-                {"op": "set_canvas_meta", "logs": [history]},
+                {"op": "set_canvas_meta", "history": [history]},
             ],
             base_revision=0,
         )
@@ -121,7 +121,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         }
         self.store.apply_mutations(
             other_project["id"],
-            [{"op": "set_canvas_meta", "logs": [other_history]}],
+            [{"op": "set_canvas_meta", "history": [other_history]}],
             base_revision=0,
         )
         return project, other_project, original, reference, downstream_media, other_media
@@ -132,12 +132,12 @@ class ProjectHistoryContractTests(unittest.TestCase):
         project_view = self.client.get(f"/api/project-library/{project['id']}")
         other_view = self.client.get(f"/api/project-library/{other_project['id']}")
         self.assertEqual(project_view.status_code, 200)
-        self.assertEqual([item["id"] for item in project_view.json()["canvas"]["logs"]], ["history-original"])
-        self.assertEqual([item["id"] for item in other_view.json()["canvas"]["logs"]], ["history-other-project"])
+        self.assertEqual([item["id"] for item in project_view.json()["canvas"]["history"]], ["history-original"])
+        self.assertEqual([item["id"] for item in other_view.json()["canvas"]["history"]], ["history-other-project"])
 
         deleted_record = self.client.post(
             f"/api/project-library/{project['id']}/history/delete",
-            json={"log_id": "history-original", "base_revision": 1},
+            json={"history_id": "history-original", "base_revision": 1},
         )
         self.assertEqual(deleted_record.status_code, 200, deleted_record.text)
         self.assertEqual(
@@ -203,7 +203,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         restored_nodes = {node["id"]: node for node in restored_canvas["nodes"]}
         self.assertEqual(restored_nodes["generator"]["images"][0]["asset_id"], original["asset_id"])
         self.assertNotIn("needsRegeneration", restored_nodes["generator"])
-        self.assertEqual(restored_canvas["logs"], [])
+        self.assertEqual(restored_canvas["history"], [])
         self.assertEqual(self.client.get(f"/api/project-library/{project['id']}/trash/media").json()["items"], [])
 
         deleted_again = self.client.post(
@@ -418,11 +418,11 @@ class ProjectHistoryContractTests(unittest.TestCase):
 
         response = self.client.post(
             f"/api/project-library/{project['id']}/history/delete",
-            json={"log_id": "history-original", "base_revision": 1},
+            json={"history_id": "history-original", "base_revision": 1},
         )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
-        self.assertEqual(payload["canvas"]["logs"], [])
+        self.assertEqual(payload["canvas"]["history"], [])
         # 记录已移除，但磁盘图片文件原样保留
         self.assertTrue(media_path.is_file())
         self.assertEqual(media_path.read_bytes(), b"generated-original")
@@ -445,13 +445,13 @@ class ProjectHistoryContractTests(unittest.TestCase):
         opened = self.store.open_project(project["id"])
         generator = next(node for node in opened["canvas"]["nodes"] if node["id"] == "generator")
         generator["images"].append({"asset_id": second["asset_id"], "kind": "image", "name": "generated-two.png"})
-        history = opened["canvas"]["logs"][0]
+        history = opened["canvas"]["history"][0]
         history["outputs"].append({"asset_id": second["asset_id"], "kind": "image", "name": "generated-two.png"})
         changed = self.store.apply_mutations(
             project["id"],
             [
                 {"op": "upsert_node", "node": generator},
-                {"op": "set_canvas_meta", "logs": [history]},
+                {"op": "set_canvas_meta", "history": [history]},
             ],
             base_revision=1,
         )
@@ -459,14 +459,14 @@ class ProjectHistoryContractTests(unittest.TestCase):
 
         response = self.client.post(
             f"/api/project-library/{project['id']}/history/delete-with-media",
-            json={"log_id": "history-original", "base_revision": 2},
+            json={"history_id": "history-original", "base_revision": 2},
         )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["canvas"]["revision"], 3)
         self.assertEqual(len(payload["deleted"]), 2)
         self.assertEqual(len(payload["removed_files"]), 2)
-        self.assertEqual(payload["canvas"]["logs"], [])
+        self.assertEqual(payload["canvas"]["history"], [])
         self.assertEqual(
             self.client.get(f"/api/project-library/{project['id']}/media/{original['asset_id']}").status_code,
             404,
@@ -493,7 +493,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         }
         self.store.apply_mutations(
             project["id"],
-            [{"op": "set_canvas_meta", "logs": [downstream_history]}],
+            [{"op": "set_canvas_meta", "history": [downstream_history]}],
             base_revision=1,
         )
 
@@ -504,7 +504,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200, deleted.text)
         deleted_canvas = deleted.json()["canvas"]
         deleted_nodes = {node["id"]: node for node in deleted_canvas["nodes"]}
-        deleted_history = {record["id"]: record for record in deleted_canvas["logs"]}
+        deleted_history = {record["id"]: record for record in deleted_canvas["history"]}
 
         self.assertEqual(deleted_history["history-original"]["status"], "original_deleted")
         self.assertEqual(deleted_history["history-original"]["outputs"], [])
@@ -535,13 +535,13 @@ class ProjectHistoryContractTests(unittest.TestCase):
             [
                 {"op": "upsert_node", "node": generator_edit},
                 {"op": "upsert_node", "node": downstream_edit},
-                {"op": "set_canvas_meta", "logs": [consumer_edit]},
+                {"op": "set_canvas_meta", "history": [consumer_edit]},
             ],
             base_revision=3,
         )
         removed_producer_history = self.client.post(
             f"/api/project-library/{project['id']}/history/delete",
-            json={"log_id": "history-original", "base_revision": 4},
+            json={"history_id": "history-original", "base_revision": 4},
         )
         self.assertEqual(removed_producer_history.status_code, 200, removed_producer_history.text)
 
@@ -552,7 +552,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertEqual(restored.status_code, 200, restored.text)
         restored_canvas = restored.json()["canvas"]
         restored_nodes = {node["id"]: node for node in restored_canvas["nodes"]}
-        restored_history = {record["id"]: record for record in restored_canvas["logs"]}
+        restored_history = {record["id"]: record for record in restored_canvas["history"]}
 
         self.assertNotIn("history-original", restored_history)
         self.assertEqual(restored_history["history-downstream"]["prompt"], "删除之后修改的下游历史提示词")
@@ -635,7 +635,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             self.assertEqual(recovered["revision"], 2)
             self.assertEqual(recovered_nodes["generator"]["images"], [])
             self.assertTrue(recovered_nodes["generator"]["needsRegeneration"])
-            self.assertEqual(recovered["logs"][0]["status"], "original_deleted")
+            self.assertEqual(recovered["history"][0]["status"], "original_deleted")
             with self.assertRaises(ProjectNotFound):
                 reopened.media_record(project["id"], original["asset_id"])
         finally:
@@ -656,7 +656,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         try:
             recovered = reopened.open_project(project["id"])["canvas"]
             recovered_nodes = {node["id"]: node for node in recovered["nodes"]}
-            recovered_history = {record["id"]: record for record in recovered["logs"]}
+            recovered_history = {record["id"]: record for record in recovered["history"]}
 
             self.assertEqual(recovered["revision"], 2)
             self.assertEqual(recovered_nodes["generator"]["images"], [])
@@ -734,7 +734,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             self.assertEqual(recovered["revision"], 1)
             self.assertEqual(recovered_nodes["generator"]["images"][0]["asset_id"], original["asset_id"])
             self.assertNotIn("needsRegeneration", recovered_nodes["generator"])
-            self.assertEqual(recovered["logs"][0]["status"], "succeeded")
+            self.assertEqual(recovered["history"][0]["status"], "succeeded")
             self.assertEqual(reopened.media_record(project["id"], original["asset_id"])["asset_id"], original["asset_id"])
             self.assertEqual(reopened.list_deleted_media(project["id"]), [])
         finally:
@@ -767,7 +767,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             self.assertEqual(recovered["revision"], 2)
             self.assertEqual(recovered_nodes["generator"]["images"], [])
             self.assertTrue(recovered_nodes["generator"]["needsRegeneration"])
-            self.assertEqual(recovered["logs"][0]["status"], "original_deleted")
+            self.assertEqual(recovered["history"][0]["status"], "original_deleted")
             with self.assertRaises(ProjectNotFound):
                 reopened.media_record(project["id"], original["asset_id"])
             self.assertEqual(reopened.list_deleted_media(project["id"])[0]["asset_id"], original["asset_id"])
@@ -851,7 +851,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             self.store.media_record(project["id"], original["asset_id"])["asset_id"],
             original["asset_id"],
         )
-        restored_history = {record["id"]: record for record in restored["canvas"]["logs"]}
+        restored_history = {record["id"]: record for record in restored["canvas"]["history"]}
         self.assertEqual(restored_history["history-original"]["outputs"][0]["asset_id"], original["asset_id"])
 
         deleted_restored_original = self.store.delete_generated_original_project_wide(
@@ -897,7 +897,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 },
                 {
                     "op": "set_canvas_meta",
-                    "logs": [
+                    "history": [
                         {
                             "id": "multi-output-log",
                             "type": "online-image",
@@ -912,15 +912,15 @@ class ProjectHistoryContractTests(unittest.TestCase):
         )
 
         before = self.store.canvas(project["id"])
-        selected_output_id = before["logs"][0]["outputs"][3]["output_id"]
+        selected_output_id = before["history"][0]["outputs"][3]["output_id"]
         deletion = self.store.delete_generated_original(
             project["id"], media[3]["asset_id"], base_revision=1,
-            log_id="multi-output-log",
+            history_id="multi-output-log",
             output_id=selected_output_id,
             output_index=3,
         )
         deleted = deletion["canvas"]
-        deleted_record = deleted["logs"][0]
+        deleted_record = deleted["history"][0]
         deleted_node = deleted["nodes"][0]
         expected_remaining = [item["asset_id"] for item in media[:3] + media[4:]]
         self.assertEqual(
@@ -944,7 +944,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             project["id"], media[3]["asset_id"], base_revision=2,
             deletion_id=deletion["deleted"]["deletion_id"],
         )["canvas"]
-        restored_record = restored["logs"][0]
+        restored_record = restored["history"][0]
         restored_node = restored["nodes"][0]
         self.assertEqual(
             [item["asset_id"] for item in restored_record["outputs"]],
@@ -960,13 +960,13 @@ class ProjectHistoryContractTests(unittest.TestCase):
     def test_restore_preserves_tasks_started_after_output_deletion(self):
         project, _other_project, original, _reference, _downstream_media, _other_media = self._seed_projects()
         before_delete = self.store.canvas(project["id"])
-        output_id = before_delete["logs"][0]["outputs"][0]["output_id"]
+        output_id = before_delete["history"][0]["outputs"][0]["output_id"]
 
         deletion = self.store.delete_generated_original(
             project["id"],
             original["asset_id"],
             base_revision=1,
-            log_id="history-original",
+            history_id="history-original",
             output_id=output_id,
             output_index=0,
         )
@@ -1023,7 +1023,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 },
                 {
                     "op": "set_canvas_meta",
-                    "logs": [
+                    "history": [
                         {
                             "id": "dup-output-log",
                             "type": "online-image",
@@ -1038,7 +1038,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         )
 
         before_delete = self.store.canvas(project["id"])
-        history_output_ids = [item.get("output_id") for item in before_delete["logs"][0]["outputs"]]
+        history_output_ids = [item.get("output_id") for item in before_delete["history"][0]["outputs"]]
         node_output_ids = [item.get("output_id") for item in before_delete["nodes"][0]["images"]]
         self.assertEqual(len(set(history_output_ids)), 4)
         self.assertTrue(all(history_output_ids))
@@ -1050,7 +1050,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             json={
                 "asset_id": a,
                 "base_revision": 1,
-                "log_id": "dup-output-log",
+                "history_id": "dup-output-log",
                 "output_id": selected_output_id,
                 "output_index": 2,
             },
@@ -1058,7 +1058,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         deletion = response.json()
         deleted = deletion["canvas"]
-        deleted_record = deleted["logs"][0]
+        deleted_record = deleted["history"][0]
         deleted_node = deleted["nodes"][0]
         self.assertEqual(
             [item["asset_id"] for item in deleted_record["outputs"]],
@@ -1114,7 +1114,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         )
         self.assertEqual(restore_response.status_code, 200, restore_response.text)
         restored = restore_response.json()["canvas"]
-        restored_record = restored["logs"][0]
+        restored_record = restored["history"][0]
         restored_node = restored["nodes"][0]
         self.assertEqual(
             [item["asset_id"] for item in restored_record["outputs"]],
@@ -1146,7 +1146,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                     "id": "reused-node", "type": "smart-image",
                     "images": [copy.deepcopy(first_output), copy.deepcopy(second_output)],
                 }},
-                {"op": "set_canvas_meta", "logs": [
+                {"op": "set_canvas_meta", "history": [
                     {
                         "id": "first-log", "status": "succeeded",
                         "outputs": [copy.deepcopy(first_output)],
@@ -1162,8 +1162,8 @@ class ProjectHistoryContractTests(unittest.TestCase):
             base_revision=0,
         )
         before = self.store.canvas(project["id"])
-        first_id = before["logs"][0]["outputs"][0]["output_id"]
-        second_id = before["logs"][1]["outputs"][0]["output_id"]
+        first_id = before["history"][0]["outputs"][0]["output_id"]
+        second_id = before["history"][1]["outputs"][0]["output_id"]
         self.assertEqual(
             [item["output_id"] for item in before["nodes"][0]["images"]],
             [first_id, second_id],
@@ -1171,7 +1171,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
 
         deleted = self.store.delete_generated_original(
             project["id"], second["asset_id"], base_revision=1,
-            log_id="second-log", output_id=second_id, output_index=0,
+            history_id="second-log", output_id=second_id, output_index=0,
         )
         self.assertEqual(
             [item["output_id"] for item in deleted["canvas"]["nodes"][0]["images"]],
@@ -1187,7 +1187,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         )
         deleted_first = self.store.delete_generated_original(
             project["id"], first["asset_id"], base_revision=3,
-            log_id="first-log", output_id=first_id, output_index=0,
+            history_id="first-log", output_id=first_id, output_index=0,
         )
         self.assertEqual(
             [item["output_id"] for item in deleted_first["canvas"]["nodes"][0]["images"]],
@@ -1218,7 +1218,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 {"op": "upsert_node", "node": {
                     "id": "shared-node", "type": "smart-image", "images": copy.deepcopy(outputs),
                 }},
-                {"op": "set_canvas_meta", "logs": [{
+                {"op": "set_canvas_meta", "history": [{
                     "id": "shared-log", "status": "succeeded", "outputs": copy.deepcopy(outputs),
                     "result_node_id": "shared-node",
                 }]},
@@ -1226,22 +1226,22 @@ class ProjectHistoryContractTests(unittest.TestCase):
             base_revision=0,
         )
         opened = self.store.canvas(project["id"])
-        first_id, second_id = [item["output_id"] for item in opened["logs"][0]["outputs"]]
+        first_id, second_id = [item["output_id"] for item in opened["history"][0]["outputs"]]
         first = self.store.delete_generated_original(
             project["id"], shared["asset_id"], base_revision=1,
-            log_id="shared-log", output_id=first_id, output_index=0,
+            history_id="shared-log", output_id=first_id, output_index=0,
         )
         second = self.store.delete_generated_original(
             project["id"], shared["asset_id"], base_revision=2,
-            log_id="shared-log", output_id=second_id, output_index=0,
+            history_id="shared-log", output_id=second_id, output_index=0,
         )
-        self.assertEqual(second["canvas"]["logs"][0]["outputs"], [])
+        self.assertEqual(second["canvas"]["history"][0]["outputs"], [])
         first_restored = self.store.restore_deleted_original(
             project["id"], shared["asset_id"], base_revision=3,
             deletion_id=first["deleted"]["deletion_id"],
         )["canvas"]
         self.assertEqual(
-            [item["output_id"] for item in first_restored["logs"][0]["outputs"]],
+            [item["output_id"] for item in first_restored["history"][0]["outputs"]],
             [first_id],
         )
         self.assertEqual(self.store.media_record(project["id"], shared["asset_id"])["asset_id"], shared["asset_id"])
@@ -1250,7 +1250,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             deletion_id=second["deleted"]["deletion_id"],
         )["canvas"]
         self.assertEqual(
-            [item["output_id"] for item in second_restored["logs"][0]["outputs"]],
+            [item["output_id"] for item in second_restored["history"][0]["outputs"]],
             [first_id, second_id],
         )
         self.assertEqual(self.client.get(
@@ -1270,7 +1270,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 {"op": "upsert_node", "node": {
                     "id": "identity-node", "type": "smart-image", "images": [copy.deepcopy(output)],
                 }},
-                {"op": "set_canvas_meta", "logs": [{
+                {"op": "set_canvas_meta", "history": [{
                     "id": "identity-log", "status": "succeeded", "outputs": [copy.deepcopy(output)],
                     "result_node_id": "identity-node",
                 }]},
@@ -1283,7 +1283,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             json={
                 "asset_id": media["asset_id"],
                 "base_revision": 1,
-                "log_id": "identity-log",
+                "history_id": "identity-log",
                 "output_id": "output-00000000000000000000000000000000",
                 "output_index": 0,
             },
@@ -1308,7 +1308,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 {"op": "upsert_node", "node": {
                     "id": "owner-two", "type": "smart-image", "images": [copy.deepcopy(output)],
                 }},
-                {"op": "set_canvas_meta", "logs": [
+                {"op": "set_canvas_meta", "history": [
                     {"id": "log-one", "status": "succeeded", "outputs": [copy.deepcopy(output)], "result_node_id": "owner-one"},
                     {"id": "log-two", "status": "succeeded", "outputs": [copy.deepcopy(output)], "result_node_id": "owner-two"},
                 ]},
@@ -1316,18 +1316,18 @@ class ProjectHistoryContractTests(unittest.TestCase):
             base_revision=0,
         )
         before = self.store.canvas(project["id"])
-        selected_output_id = before["logs"][0]["outputs"][0]["output_id"]
-        untouched_log = copy.deepcopy(before["logs"][1])
+        selected_output_id = before["history"][0]["outputs"][0]["output_id"]
+        untouched_log = copy.deepcopy(before["history"][1])
         untouched_node = copy.deepcopy(before["nodes"][1])
         deleted = self.store.delete_generated_original(
             project["id"],
             media["asset_id"],
             base_revision=1,
-            log_id="log-one",
+            history_id="log-one",
             output_id=selected_output_id,
             output_index=0,
         )["canvas"]
-        self.assertEqual(deleted["logs"][1], untouched_log)
+        self.assertEqual(deleted["history"][1], untouched_log)
         self.assertEqual(deleted["nodes"][1], untouched_node)
         self.assertEqual(self.store.media_record(project["id"], media["asset_id"])["asset_id"], media["asset_id"])
 
@@ -1362,7 +1362,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
                 },
                 {
                     "op": "set_canvas_meta",
-                    "logs": [
+                    "history": [
                         {
                             "id": "old-output-log",
                             "type": "online-image",
@@ -1394,7 +1394,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
         deleted = self.store.delete_generated_original_project_wide(
             project["id"], a, base_revision=1,
         )["canvas"]
-        deleted_record = deleted["logs"][0]
+        deleted_record = deleted["history"][0]
         deleted_node = deleted["nodes"][0]
         self.assertEqual(
             [item["asset_id"] for item in deleted_record["outputs"]],
@@ -1475,7 +1475,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
 
         response = self.client.post(
             f"/api/project-library/{project['id']}/history/delete-with-media",
-            json={"log_id": "history-original", "base_revision": 2},
+            json={"history_id": "history-original", "base_revision": 2},
         )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -1505,14 +1505,14 @@ class ProjectHistoryContractTests(unittest.TestCase):
 
         current = self.store.canvas(project["id"])
         original_output = next(
-            record for record in current["logs"] if record["id"] == "history-original"
+            record for record in current["history"] if record["id"] == "history-original"
         )["outputs"][0]
         blocked = self.client.post(
             f"/api/project-library/{project['id']}/original/delete",
             json={
                 "asset_id": original["asset_id"],
                 "base_revision": 2,
-                "log_id": "history-original",
+                "history_id": "history-original",
                 "output_id": original_output["output_id"],
                 "output_index": 0,
             },
@@ -1540,7 +1540,7 @@ class ProjectHistoryContractTests(unittest.TestCase):
             },
             media_kind="image",
         )
-        self.assertEqual(completed["logs"][-1]["id"], "history-active-completed")
+        self.assertEqual(completed["history"][-1]["id"], "history-active-completed")
 
 
 if __name__ == "__main__":

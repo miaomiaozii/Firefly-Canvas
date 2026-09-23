@@ -145,7 +145,7 @@
             meta:JSON.stringify({
                 title:canvas?.title || '',
                 icon:canvas?.icon || 'sparkles',
-                logs:canvas?.logs || [],
+                history:canvas?.history || [],
             }),
         };
     }
@@ -236,7 +236,7 @@
         // project mutations. Keep accepting the old operation as a no-op so a
         // stale client cannot reintroduce it during conflict replay.
         else if(mutation.op === 'set_canvas_meta'){
-            ['title','icon','logs'].forEach(key => {
+            ['title','icon','history'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(mutation, key)) next[key] = clone(mutation[key]);
             });
         }
@@ -278,15 +278,15 @@
                 const base = parse(baseline?.meta, {});
                 const remote = {
                     title:working.title || '', icon:working.icon || 'sparkles',
-                    logs:working.logs || [],
+                    history:working.history || [],
                 };
                 const local = {...base};
-                ['title','icon','logs'].forEach(key => {
+                ['title','icon','history'].forEach(key => {
                     if(Object.prototype.hasOwnProperty.call(mutation, key)) local[key] = mutation[key];
                 });
                 const meta = mergeThreeWay(base, local, remote);
                 nextMutation = {op:'set_canvas_meta'};
-                ['title','icon','logs'].forEach(key => {
+                ['title','icon','history'].forEach(key => {
                     if(!equal(meta[key], remote[key])) nextMutation[key] = meta[key];
                 });
                 if(Object.keys(nextMutation).length === 1) continue;

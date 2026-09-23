@@ -98,9 +98,9 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
     def test_project_task_cards_expose_scoped_cancel_retry_and_stable_idempotency(self):
         self.assertIn("idempotency_key:", self.source)
         self.assertIn("function projectImageTaskUrl(taskId)", self.source)
-        self.assertIn("data-log-cancel-task", self.source)
-        self.assertIn("data-log-retry-task", self.source)
-        self.assertIn("data-log-download-original", self.source)
+        self.assertIn("data-history-cancel-task", self.source)
+        self.assertIn("data-history-retry-task", self.source)
+        self.assertIn("data-history-download-original", self.source)
         self.assertIn("async function controlProjectImageTask", self.source)
         self.assertIn("task.status === 'cancelled'", self.source)
         self.assertIn("retry_of_task_id", self.source)
@@ -128,7 +128,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("if(resultNode && result.final_node && nodeSnapshotCurrent)", self.source)
         self.assertIn("&& nodeSnapshotCurrent", self.source)
         self.assertIn("result?.project_node_applied", self.source)
-        self.assertIn("if(smartLogModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);", self.source)
+        self.assertIn("if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);", self.source)
 
     def test_project_submission_outcome_is_durable_and_replayed_with_the_same_key(self):
         self.assertIn("function upsertSmartGenerationSubmission(node, submission)", self.source)
@@ -177,7 +177,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
 
     def test_restore_selection_prefers_stable_output_identity_over_a_stale_index(self):
         match = re.search(
-            r"function captureSmartOriginalDeletionUiState\(logId, outputId, outputIndex=-1\)\{.*?\n\}",
+            r"function captureSmartOriginalDeletionUiState\(historyId, outputId, outputIndex=-1\)\{.*?\n\}",
             self.source,
             re.S,
         )
@@ -188,12 +188,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         ]
         script = (
             "const outputs=" + json.dumps(outputs) + ";"
-            + "const smartHistorySelectedImage={logId:'log-1',outputId:'occ-5',outputIndex:3};"
-            + "const smartLogDetailSession={logId:'log-1',outputId:'occ-5',outputIndex:3,outputs};"
+            + "const smartHistorySelectedImage={historyId:'log-1',outputId:'occ-5',outputIndex:3};"
+            + "const smartHistoryDetailSession={historyId:'log-1',outputId:'occ-5',outputIndex:3,outputs};"
             + "const selectedImage={nodeId:'node-1',outputId:'occ-5',index:3};"
             + "const nodes=[{id:'node-1',images:outputs}];"
-            + "const smartLogImageOutputs=()=>outputs;"
-            + "const smartLogEntryById=()=>({id:'log-1',outputs});"
+            + "const smartHistoryImageOutputs=()=>outputs;"
+            + "const smartHistoryEntryById=()=>({id:'log-1',outputs});"
             + "const document={querySelector:()=>({})};"
             + match.group(0)
             + "\nconsole.log(JSON.stringify(captureSmartOriginalDeletionUiState('log-1','')));"
@@ -264,11 +264,11 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("node.pendingTasks = mergeSmartPendingTaskLists(smartPendingTasks(node), registeredTasks);", self.source)
         self.assertIn("currentNode.pendingTasks = smartPendingTasks(currentNode).filter", self.source)
         self.assertIn("function mergeSmartHistoryRecordLists(localLogs, remoteLogs)", self.source)
-        self.assertIn("canvas.logs = mergeSmartHistoryRecordLists(canvas.logs || [], serverCanvas.logs || []);", self.source)
+        self.assertIn("canvas.history = mergeSmartHistoryRecordLists(canvas.history || [], serverCanvas.history || []);", self.source)
         self.assertIn("createdRemoteTaskCards = ensureSmartPendingHistoryLogs", self.source)
         self.assertIn("smartHistoryTaskId(log) === taskId", self.source)
-        self.assertIn("canvas.logs = mergeSmartHistoryRecordLists(canvas.logs, []);", self.source)
-        self.assertIn("const taskLog = (canvas?.logs || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);", self.source)
+        self.assertIn("canvas.history = mergeSmartHistoryRecordLists(canvas.history, []);", self.source)
+        self.assertIn("const taskLog = (canvas?.history || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);", self.source)
 
     def test_loop_archives_old_output_before_task_registration(self):
         pattern = re.compile(
@@ -315,8 +315,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("@keyframes generation-result-enter", self.styles)
 
     def test_history_is_sorted_newest_first_at_every_server_boundary(self):
-        normalized = "canvas.logs = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.logs || []));"
-        merged = "canvas.logs = mergeSmartActiveHistoryTaskLogs("
+        normalized = "canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));"
+        merged = "canvas.history = mergeSmartActiveHistoryTaskLogs("
         self.assertGreaterEqual(self.source.count(normalized), 4)
         # #76（P2-2）：项目画布变更的 409/成功模板统一走 adoptServerCanvas（内部经
         # mergeSmartActiveHistoryTaskLogs 合并，该函数内部 sortSmartHistoryLogs），
@@ -325,7 +325,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){", self.source)
         self.assertIn("async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0} = {}){", self.source)
         self.assertIn("return sortSmartHistoryLogs([", self.source)
-        self.assertIn("canvas.logs = sortSmartHistoryLogs(canvas.logs);", self.source)
+        self.assertIn("canvas.history = sortSmartHistoryLogs(canvas.history);", self.source)
 
     def test_history_pending_card_is_immediate_animated_and_never_persisted(self):
         self.assertIn("function beginSmartPendingHistoryLog(node, defaults={}){", self.source)
@@ -333,7 +333,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defaults={}){", self.source)
         self.assertIn("function absorbProjectGenerationResult(result, taskId=''){", self.source)
         self.assertIn(".filter(log => log?.status !== 'pending')", self.source)
-        self.assertIn("delete node._pendingHistoryLogId;", self.source)
+        self.assertIn("delete node._pendingHistoryId;", self.source)
         self.assertIn("log-history-placeholder", self.source)
         self.assertIn(".log-item.pending", self.styles)
         self.assertIn("@keyframes log-history-placeholder-pulse", self.styles)

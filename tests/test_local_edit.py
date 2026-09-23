@@ -129,13 +129,13 @@ class LocalEditApiTests(unittest.TestCase):
         )
         self.assertEqual(len(self.store.list_media(self.project["id"])), 6)
         self.assertEqual(Path(self.store.media_record(self.project["id"], self.source["asset_id"])["path"]).read_bytes(), source_before)
-        self.assertTrue(any(item.get("type") == "local-edit" and item.get("output_asset_id") for item in self.store.open_project(self.project["id"])["canvas"]["logs"]))
+        self.assertTrue(any(item.get("type") == "local-edit" and item.get("output_asset_id") for item in self.store.open_project(self.project["id"])["canvas"]["history"]))
 
     def test_history_keeps_existing_logs_and_records_selection_contract(self):
         old_log = {"id": "old-log", "type": "prior-operation", "status": "succeeded"}
         revision = self.store.open_project(self.project["id"])["canvas"]["revision"]
         self.store.apply_mutations(
-            self.project["id"], [{"op": "set_canvas_meta", "logs": [old_log]}], base_revision=revision
+            self.project["id"], [{"op": "set_canvas_meta", "history": [old_log]}], base_revision=revision
         )
         revision = self.store.open_project(self.project["id"])["canvas"]["revision"]
         with patch.object(main, "local_edit_adapter", lambda request: png(Image.new("RGBA", (7, 5), (200, 100, 50, 7)))):
@@ -145,7 +145,7 @@ class LocalEditApiTests(unittest.TestCase):
                 "aspect_ratio": "4:3", "feather_radius": 2, "result_node_id": "local-1", "base_revision": revision,
             })
         self.assertEqual(response.status_code, 200, response.text)
-        logs = self.store.open_project(self.project["id"])["canvas"]["logs"]
+        logs = self.store.open_project(self.project["id"])["canvas"]["history"]
         self.assertIn(old_log, logs)
         local_log = next(item for item in logs if item.get("type") == "local-edit")
         self.assertEqual(local_log["selection"], [1, 1, 9, 7])
@@ -186,7 +186,7 @@ class LocalEditApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         node = next(item for item in self.store.open_project(self.project["id"])["canvas"]["nodes"] if item["id"] == "local-1")
         self.assertEqual(node["selection"], [1, 1, 10, 7])
-        local_log = next(item for item in self.store.open_project(self.project["id"])["canvas"]["logs"] if item.get("type") == "local-edit")
+        local_log = next(item for item in self.store.open_project(self.project["id"])["canvas"]["history"] if item.get("type") == "local-edit")
         self.assertEqual(local_log["selection"], [1, 1, 10, 7])
 
     def test_original_role_must_contain_exactly_one_image_resource(self):

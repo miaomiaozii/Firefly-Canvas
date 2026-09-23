@@ -205,7 +205,7 @@ class ProjectDeletionMixin:
         asset_id: str,
         output_id: str,
         deletion_id: str,
-        log_id: str,
+        history_id: str,
         output_index: int,
         record: Dict[str, Any],
     ) -> None:
@@ -215,7 +215,7 @@ class ProjectDeletionMixin:
         tombstone.update({
             "deleted_output_id": output_id,
             "deletion_id": deletion_id,
-            "log_id": log_id,
+            "history_id": history_id,
             "output_index": output_index,
         })
         items.append(tombstone)
@@ -302,14 +302,14 @@ class ProjectDeletionMixin:
         asset_id: str,
         *,
         base_revision: int,
-        log_id: str,
+        history_id: str,
         output_id: str,
         output_index: int,
     ) -> Dict[str, Any]:
         project_id = _store._clean_project_id(project_id)
-        log_id = str(log_id or "").strip()
+        history_id = str(history_id or "").strip()
         output_id = self._valid_output_id(output_id)
-        if not log_id or not output_id:
+        if not history_id or not output_id:
             raise _store.InvalidMutation("删除当前原图需要稳定的生成输出身份")
         try:
             output_index = int(output_index)
@@ -341,7 +341,7 @@ class ProjectDeletionMixin:
                 history = copy.deepcopy(self._histories.get(project_id, []))
                 record_matches = [
                     record for record in history
-                    if isinstance(record, dict) and str(record.get("id") or "") == log_id
+                    if isinstance(record, dict) and str(record.get("id") or "") == history_id
                 ]
                 if len(record_matches) != 1:
                     raise _store.InvalidMutation("生成记录身份已变化，请刷新后重试")
@@ -403,7 +403,7 @@ class ProjectDeletionMixin:
                     asset_id=asset_id,
                     output_id=output_id,
                     deletion_id=deletion_id,
-                    log_id=log_id,
+                    history_id=history_id,
                     output_index=output_index,
                     record=original,
                 )
@@ -421,7 +421,7 @@ class ProjectDeletionMixin:
                         asset_id=asset_id,
                         output_id=output_id,
                         deletion_id=deletion_id,
-                        log_id=log_id,
+                        history_id=history_id,
                         output_index=output_index,
                         record=original,
                     )
@@ -429,7 +429,7 @@ class ProjectDeletionMixin:
                         self._reset_deleted_original_owner_state(target_node)
 
                 canvas = copy.deepcopy(opened["canvas"])
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 canvas["nodes"] = nodes
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_store._now_ms(), int(canvas.get("updated_at") or 0) + 1)
@@ -486,7 +486,7 @@ class ProjectDeletionMixin:
                 trash_item.update({
                     "deletion_id": deletion_id,
                     "output_id": output_id,
-                    "log_id": log_id,
+                    "history_id": history_id,
                     "result_node_id": result_node_id,
                     "output_index": output_index,
                     "asset_id": asset_id,
@@ -501,7 +501,7 @@ class ProjectDeletionMixin:
                         "asset_id": asset_id,
                         "deletion_id": deletion_id,
                         "output_id": output_id,
-                        "log_id": log_id,
+                        "history_id": history_id,
                         "deleted_revision": current_revision + 1,
                         "snapshot_filename": snapshot_filename,
                     },
@@ -523,7 +523,7 @@ class ProjectDeletionMixin:
                     "deletion_id": deletion_id,
                     "output_id": output_id,
                     "asset_id": asset_id,
-                    "log_id": log_id,
+                    "history_id": history_id,
                     "result_node_id": result_node_id,
                     "output_index": output_index,
                     "history_output": copy.deepcopy(selected_output),
@@ -534,7 +534,7 @@ class ProjectDeletionMixin:
                 }
 
                 before_canvas = copy.deepcopy(opened["canvas"])
-                before_canvas.pop("logs", None)
+                before_canvas.pop("history", None)
                 metadata = _store._read_json(self._safe_project_path(project_dir, "project.json"))
                 before_metadata = self._metadata_for_canvas(metadata, before_canvas)
                 after_metadata = self._metadata_for_canvas(metadata, canvas)
@@ -575,7 +575,7 @@ class ProjectDeletionMixin:
                 self._histories[project_id] = history
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(history)
+                result["history"] = copy.deepcopy(history)
                 return {"canvas": result, "deleted": copy.deepcopy(trash_item)}
 
     def delete_generated_original(
@@ -585,7 +585,7 @@ class ProjectDeletionMixin:
         *,
         base_revision: int,
         output_index: int | None = None,
-        log_id: str | None = None,
+        history_id: str | None = None,
         output_id: str | None = None,
     ) -> Dict[str, Any]:
         """Remove exactly one generated output occurrence.
@@ -598,14 +598,14 @@ class ProjectDeletionMixin:
         asset_id = str(asset_id or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
             raise _store.ProjectStoreError("媒体资源标识无效")
-        identity_fields = (log_id, output_id, output_index)
+        identity_fields = (history_id, output_id, output_index)
         if not all(value is not None for value in identity_fields):
             raise _store.InvalidMutation("删除当前原图需要完整的生成输出身份")
         return self._delete_generated_output_occurrence(
             project_id,
             asset_id,
             base_revision=base_revision,
-            log_id=str(log_id or ""),
+            history_id=str(history_id or ""),
             output_id=str(output_id or ""),
             output_index=int(output_index),
         )
@@ -741,12 +741,12 @@ class ProjectDeletionMixin:
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(opened["canvas"])
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 canvas["nodes"] = nodes
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_store._now_ms(), int(canvas.get("updated_at") or 0) + 1)
                 before_canvas = copy.deepcopy(opened["canvas"])
-                before_canvas.pop("logs", None)
+                before_canvas.pop("history", None)
                 metadata = _store._read_json(self._safe_project_path(project_dir, "project.json"))
                 before_metadata = self._metadata_for_canvas(metadata, before_canvas)
                 after_metadata = self._metadata_for_canvas(metadata, canvas)
@@ -787,7 +787,7 @@ class ProjectDeletionMixin:
                 self._histories[project_id] = cleaned_history
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(cleaned_history)
+                result["history"] = copy.deepcopy(cleaned_history)
                 return {"canvas": result, "deleted": copy.deepcopy(trash_item)}
 
     def delete_project_media_asset(
@@ -861,7 +861,7 @@ class ProjectDeletionMixin:
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(source_canvas)
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 canvas["nodes"] = nodes
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_store._now_ms(), int(source_canvas.get("updated_at") or 0) + 1)
@@ -886,7 +886,7 @@ class ProjectDeletionMixin:
                 self._canvases[project_id] = canvas
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(cleaned_history)
+                result["history"] = copy.deepcopy(cleaned_history)
                 return {"canvas": result, "deleted": asset_id}
 
     def _restore_deleted_output_occurrence(
@@ -940,7 +940,8 @@ class ProjectDeletionMixin:
                 ):
                     raise _store.ProjectStoreError("该项目回收记录身份不一致")
 
-                log_id = str(snapshot.get("log_id") or "")
+                # Backward-compatible read: older deletion snapshots used the "log_id" key.
+                history_id = str(snapshot.get("history_id") or snapshot.get("log_id") or "")
                 result_node_id = str(snapshot.get("result_node_id") or "")
                 output_id = self._valid_output_id(snapshot.get("output_id"))
                 try:
@@ -950,7 +951,7 @@ class ProjectDeletionMixin:
                 history = copy.deepcopy(self._histories.get(project_id, []))
                 history_matches = [
                     record for record in history
-                    if isinstance(record, dict) and str(record.get("id") or "") == log_id
+                    if isinstance(record, dict) and str(record.get("id") or "") == history_id
                 ]
                 if len(history_matches) != 1:
                     raise _store.InvalidMutation("生成记录身份已变化，无法安全恢复")
@@ -982,7 +983,7 @@ class ProjectDeletionMixin:
                             target_record.pop(key, None)
 
                 canvas = copy.deepcopy(opened["canvas"])
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 nodes = canvas.get("nodes") or []
                 if result_node_id:
                     node_matches = [
@@ -1061,7 +1062,7 @@ class ProjectDeletionMixin:
                     key: copy.deepcopy(value)
                     for key, value in item.items()
                     if key not in {
-                        "deletion_id", "output_id", "log_id", "result_node_id", "output_index",
+                        "deletion_id", "output_id", "history_id", "log_id", "result_node_id", "output_index",
                         "deleted_at", "expires_at", "media_retained", "media_filename",
                         "preview_filenames", "reason", "undo",
                     }
@@ -1105,7 +1106,7 @@ class ProjectDeletionMixin:
                         key: copy.deepcopy(value)
                         for key, value in physical_owner.items()
                         if key not in {
-                            "deletion_id", "output_id", "log_id", "result_node_id", "output_index",
+                            "deletion_id", "output_id", "history_id", "log_id", "result_node_id", "output_index",
                             "deleted_at", "expires_at", "media_retained", "media_filename",
                             "preview_filenames", "reason", "undo",
                         }
@@ -1128,7 +1129,7 @@ class ProjectDeletionMixin:
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_store._now_ms(), int(canvas.get("updated_at") or 0) + 1)
                 before_canvas = copy.deepcopy(opened["canvas"])
-                before_canvas.pop("logs", None)
+                before_canvas.pop("history", None)
                 before_history = copy.deepcopy(self._histories.get(project_id, []))
                 metadata = _store._read_json(self._safe_project_path(project_dir, "project.json"))
                 before_metadata = self._metadata_for_canvas(metadata, before_canvas)
@@ -1170,7 +1171,7 @@ class ProjectDeletionMixin:
                 self._histories[project_id] = history
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(history)
+                result["history"] = copy.deepcopy(history)
                 return {"canvas": result, "restored": restored_record, "deletion_id": deletion_id}
 
     def restore_deleted_original(
@@ -1292,7 +1293,7 @@ class ProjectDeletionMixin:
                     if not (isinstance(candidate, dict) and str(candidate.get("asset_id") or "") == asset_id)
                 ]
                 canvas = copy.deepcopy(opened["canvas"])
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 current_nodes = self._restore_deleted_nodes(
                     copy.deepcopy(opened["canvas"].get("nodes") or []),
                     undo_snapshot["nodes"],
@@ -1307,7 +1308,7 @@ class ProjectDeletionMixin:
                     asset_id,
                 )
                 before_canvas = copy.deepcopy(opened["canvas"])
-                before_canvas.pop("logs", None)
+                before_canvas.pop("history", None)
                 before_history = copy.deepcopy(self._histories.get(project_id, []))
                 metadata = _store._read_json(self._safe_project_path(project_dir, "project.json"))
                 before_metadata = self._metadata_for_canvas(metadata, before_canvas)
@@ -1349,7 +1350,7 @@ class ProjectDeletionMixin:
                 self._histories[project_id] = history
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(history)
+                result["history"] = copy.deepcopy(history)
                 _diag_emit(
                     "recovery.restored",
                     project_id=project_id,

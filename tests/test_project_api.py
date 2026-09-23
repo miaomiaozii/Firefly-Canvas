@@ -67,7 +67,7 @@ class ProjectApiContractTests(unittest.TestCase):
             f"/api/canvases/{project['canvas_id']}",
             json={
                 "title": "绕过", "nodes": [{"id": "bad", "images": [{"url": "file:///outside.png"}]}],
-                "connections": [], "viewport": {}, "logs": [], "settings": {},
+                "connections": [], "viewport": {}, "history": [], "settings": {},
             },
         )
         self.assertEqual(legacy_write.status_code, 410)
@@ -1470,24 +1470,24 @@ class ProjectApiContractTests(unittest.TestCase):
         project = self.client.post("/api/project-library", json={"name": "历史"}).json()["project"]
         saved = self.client.patch(
             f"/api/project-library/{project['id']}/canvas",
-            json={"base_revision": 0, "mutations": [{"op": "set_canvas_meta", "logs": [{"id": "log-1"}]}]},
+            json={"base_revision": 0, "mutations": [{"op": "set_canvas_meta", "history": [{"id": "log-1"}]}]},
         )
         self.assertEqual(saved.status_code, 200)
         deleted = self.client.post(
             f"/api/project-library/{project['id']}/history/delete",
-            json={"base_revision": 1, "log_id": "log-1"},
+            json={"base_revision": 1, "history_id": "log-1"},
         )
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(deleted.json()["canvas"]["revision"], 2)
-        self.assertEqual(deleted.json()["canvas"]["logs"], [])
+        self.assertEqual(deleted.json()["canvas"]["history"], [])
         project_dir = self.store.root / project["id"]
         self.assertEqual(json.loads((project_dir / "canvas.json").read_text(encoding="utf-8"))["revision"], 2)
         self.assertEqual(json.loads((project_dir / "history.json").read_text(encoding="utf-8"))["records"], [])
         self.assertEqual(self.client.post(f"/api/canvases/{project['id']}/touch").status_code, 410)
         self.assertEqual(
             self.client.post(
-                f"/api/canvases/{project['id']}/logs/delete",
-                json={"log_id": "log-1", "base_updated_at": 0},
+                f"/api/canvases/{project['id']}/history/delete",
+                json={"history_id": "log-1", "base_updated_at": 0},
             ).status_code,
             410,
         )
@@ -1523,7 +1523,7 @@ class ProjectApiContractTests(unittest.TestCase):
             f"/api/project-library/{project['id']}/canvas",
             json={"base_revision": 0, "mutations": [
                 {"op": "upsert_node", "node": {"id": "result", "images": [{"asset_id": media["asset_id"]}]}},
-                {"op": "set_canvas_meta", "logs": [{"id": "run", "outputs": [{"asset_id": media["asset_id"]}]}]},
+                {"op": "set_canvas_meta", "history": [{"id": "run", "outputs": [{"asset_id": media["asset_id"]}]}]},
             ]},
         )
         self.assertEqual(saved.status_code, 200)

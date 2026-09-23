@@ -63,7 +63,7 @@ def iter_canvas_asset_values(value, path=''):
         if url:
             yield (path, value, url)
         for key, child in value.items():
-            if key in {'run', 'runs', 'settings', 'params', 'metadata', 'meta', 'prompt', 'text', 'caption', 'logs'}:
+            if key in {'run', 'runs', 'settings', 'params', 'metadata', 'meta', 'prompt', 'text', 'caption', 'history'}:
                 continue
             yield from iter_canvas_asset_values(child, f'{path}.{key}' if path else str(key))
     elif isinstance(value, list):

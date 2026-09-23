@@ -170,7 +170,7 @@ def wait_task(base_url: str, project_id: str, task_id: str, statuses: set[str], 
 def task_record(store: ProjectStore, project_id: str, task_id: str, status: str | None = None) -> dict:
     matches = [
         item
-        for item in store.open_project(project_id)["canvas"].get("logs") or []
+        for item in store.open_project(project_id)["canvas"].get("history") or []
         if str(item.get("task_id") or "") == task_id and (status is None or item.get("status") == status)
     ]
     if len(matches) != 1:
@@ -195,7 +195,7 @@ def wait_for_retry(store: ProjectStore, project_id: str, failed_id: str, timeout
         match = next(
             (
                 item
-                for item in store.open_project(project_id)["canvas"].get("logs") or []
+                for item in store.open_project(project_id)["canvas"].get("history") or []
                 if item.get("task_id") != failed_id
                 and item.get("status") == "succeeded"
                 and "NATIVE_FAILURE" in str(item.get("prompt") or "")
@@ -326,11 +326,11 @@ def main() -> int:
                 )
                 browser.navigate(url)
                 browser.wait_for("document.querySelector('[data-id=\"cancel-node\"]')", timeout=20)
-                browser.native_click("#smartLogToggle")
+                browser.native_click("#smartHistoryToggle")
                 for task_id in (failed_id, download_id, cancel_id):
-                    browser.wait_for(f"document.querySelector('[data-log-cancel-task=\"{task_id}\"]')", timeout=15)
+                    browser.wait_for(f"document.querySelector('[data-history-cancel-task=\"{task_id}\"]')", timeout=15)
                 status_card_task_ids = browser.evaluate(
-                    "[...document.querySelectorAll('[data-log-cancel-task]')].map(item => item.dataset.logCancelTask)"
+                    "[...document.querySelectorAll('[data-history-cancel-task]')].map(item => item.dataset.logCancelTask)"
                 )
                 if set(status_card_task_ids) != {failed_id, download_id, cancel_id}:
                     raise AssertionError(f"overlapping task cards are not independent: {status_card_task_ids}")
@@ -345,12 +345,12 @@ def main() -> int:
                 snap("overlapping-pending")
                 pass_step("overlapping-pending", task_ids=[failed_id, download_id, cancel_id])
 
-                record_selector = f'[data-canvas-log-id="{old_record["id"]}"] [data-log-delete="record"]'
+                record_selector = f'[data-canvas-history-id="{old_record["id"]}"] [data-history-delete="record"]'
                 browser.wait_for(f"document.querySelector({json.dumps(record_selector)})")
                 browser.native_click(record_selector, accept_dialog=True)
-                browser.wait_for(f"!document.querySelector('[data-canvas-log-id=\"{old_record["id"]}\"]')")
+                browser.wait_for(f"!document.querySelector('[data-canvas-history-id=\"{old_record["id"]}\"]')")
                 canvas_after_record = store.open_project(project_id)["canvas"]
-                if any(item.get("id") == old_record["id"] for item in canvas_after_record.get("logs") or []):
+                if any(item.get("id") == old_record["id"] for item in canvas_after_record.get("history") or []):
                     raise AssertionError("record-only delete retained its history record")
                 if store.media_record(project_id, record_asset_id) is None:
                     raise AssertionError("record-only delete removed its generated asset")
@@ -364,10 +364,10 @@ def main() -> int:
                 snap("record-deleted")
                 pass_step("record-delete-during-pending")
 
-                original_selector = f'[data-canvas-log-id="{old_original["id"]}"] [data-log-delete-original="0"]'
+                original_selector = f'[data-canvas-history-id="{old_original["id"]}"] [data-history-delete-original="0"]'
                 browser.wait_for(f"document.querySelector({json.dumps(original_selector)})")
                 browser.native_click(original_selector, accept_dialog=True)
-                restore_selector = f'[data-log-restore-original="{original_asset_id}"]'
+                restore_selector = f'[data-history-restore-original="{original_asset_id}"]'
                 browser.wait_for(f"document.querySelector({json.dumps(restore_selector)})", timeout=15)
                 trash = store.list_deleted_media(project_id)
                 trash_item = next((item for item in trash if item.get("asset_id") == original_asset_id), None)
@@ -386,12 +386,12 @@ def main() -> int:
                 release_overlapping.set()
                 wait_task(server.base_url, project_id, failed_id, {"failed"})
                 wait_task(server.base_url, project_id, download_id, {"succeeded"})
-                browser.wait_for(f"document.querySelector('[data-log-cancel-task=\"{cancel_id}\"]')", timeout=15)
-                browser.native_click(f'[data-log-cancel-task="{cancel_id}"]')
+                browser.wait_for(f"document.querySelector('[data-history-cancel-task=\"{cancel_id}\"]')", timeout=15)
+                browser.native_click(f'[data-history-cancel-task="{cancel_id}"]')
                 cancelled = wait_task(server.base_url, project_id, cancel_id, {"cancelled"})
                 if any(
                     item.get("task_id") == cancel_id and item.get("status") == "succeeded"
-                    for item in store.open_project(project_id)["canvas"].get("logs") or []
+                    for item in store.open_project(project_id)["canvas"].get("history") or []
                 ):
                     raise AssertionError("cancelled task was forged as completed")
                 pass_step("cancel-target-only", task_status=cancelled["status"])
@@ -404,9 +404,9 @@ def main() -> int:
                 browser.console_errors.clear()
                 browser.navigate(url)
                 browser.wait_for("document.querySelector('[data-id=\"failed-node\"]')", timeout=20)
-                browser.native_click("#smartLogToggle")
-                browser.wait_for(f"document.querySelector('[data-log-retry-task=\"{failed_id}\"]')", timeout=15)
-                browser.native_click(f'[data-log-retry-task="{failed_id}"]')
+                browser.native_click("#smartHistoryToggle")
+                browser.wait_for(f"document.querySelector('[data-history-retry-task=\"{failed_id}\"]')", timeout=15)
+                browser.native_click(f'[data-history-retry-task="{failed_id}"]')
                 retry_id = wait_for_retry(store, project_id, failed_id)
                 if retry_id == failed_id:
                     raise AssertionError("retry reused the failed task identity")
@@ -418,7 +418,7 @@ def main() -> int:
 
                 download_record = task_record(store, project_id, download_id, "succeeded")
                 browser.wait_for(
-                    f"(canvas.logs || []).some(log => log.task_id === {json.dumps(download_id)} && log.status === 'succeeded')",
+                    f"(canvas.history || []).some(log => log.task_id === {json.dumps(download_id)} && log.status === 'succeeded')",
                     timeout=30,
                 )
                 generated_asset_id = output_identity(download_record)
@@ -426,7 +426,7 @@ def main() -> int:
                     raise AssertionError("download action was not bound to a distinct generated asset identity")
                 generated_path = Path(store.media_record(project_id, generated_asset_id)["path"])
                 generated_bytes = generated_path.read_bytes()
-                download_selector = f'[data-canvas-log-id="{download_record["id"]}"] [data-log-download-original]'
+                download_selector = f'[data-canvas-history-id="{download_record["id"]}"] [data-history-download-original]'
                 browser.wait_for(f"document.querySelector({json.dumps(download_selector)})", timeout=15)
                 browser.native_click(download_selector)
                 deadline = time.monotonic() + 10
@@ -449,10 +449,10 @@ def main() -> int:
                 browser.console_errors.clear()
                 browser.navigate(url)
                 browser.wait_for("document.querySelector('[data-id=\"cancel-node\"]')", timeout=20)
-                browser.native_click("#smartLogToggle")
+                browser.native_click("#smartHistoryToggle")
                 for task_id, status in ((failed_id, "failed"), (retry_id, "succeeded"), (cancel_id, "cancelled"), (download_id, "succeeded")):
                     browser.wait_for(
-                        f"(canvas.logs || []).some(log => log.task_id === {json.dumps(task_id)} && log.status === {json.dumps(status)})",
+                        f"(canvas.history || []).some(log => log.task_id === {json.dumps(task_id)} && log.status === {json.dumps(status)})",
                         timeout=15,
                     )
                 browser.wait_for(f"document.querySelector({json.dumps(restore_selector)})", timeout=15)
@@ -461,7 +461,7 @@ def main() -> int:
 
                 browser.native_click(restore_selector, accept_dialog=True)
                 browser.wait_for(
-                    f"document.querySelector('[data-canvas-log-id=\"{old_original["id"]}\"] [data-log-delete-original=\"0\"]')",
+                    f"document.querySelector('[data-canvas-history-id=\"{old_original["id"]}\"] [data-history-delete-original=\"0\"]')",
                     timeout=15,
                 )
                 restored_status, restored_bytes = api_bytes(
@@ -474,7 +474,7 @@ def main() -> int:
                 if {item.get("id") for item in final_canvas.get("nodes") or []} != {"failed-node", "download-node", "cancel-node"}:
                     raise AssertionError("lifecycle actions changed result-node identity")
                 terminal_record_counts = {
-                    task_id: sum(1 for item in final_canvas.get("logs") or [] if str(item.get("task_id") or "") == task_id)
+                    task_id: sum(1 for item in final_canvas.get("history") or [] if str(item.get("task_id") or "") == task_id)
                     for task_id in (failed_id, retry_id, cancel_id, download_id)
                 }
                 if set(terminal_record_counts.values()) != {1}:
@@ -490,8 +490,8 @@ def main() -> int:
                     "retry_task_id": retry_id,
                     "cancel_task_id": cancel_id,
                     "download_task_id": download_id,
-                    "record_log_id": str(old_record["id"]),
-                    "original_log_id": str(old_original["id"]),
+                    "record_history_id": str(old_record["id"]),
+                    "original_history_id": str(old_original["id"]),
                     "record_asset_id": record_asset_id,
                     "original_asset_id": original_asset_id,
                     "independent_status_cards": True,
@@ -506,7 +506,7 @@ def main() -> int:
                     "retry_after_reload": True,
                     "failed_record_retained": task_record(store, project_id, failed_id, "failed")["status"] == "failed",
                     "download_bytes_preserved": downloaded[0].read_bytes() == generated_bytes,
-                    "download_record_log_id": str(download_record["id"]),
+                    "download_record_history_id": str(download_record["id"]),
                     "download_asset_id": generated_asset_id,
                     "download_request_path": f"/api/project-library/{project_id}/media/{generated_asset_id}/preview",
                     "deleted_access_rejected": deleted_status == 404,

@@ -41,10 +41,10 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
     lifecycle = {
         "project_id": "project-fixture",
         "task_id": "task-new",
-        "pending_log_id": "pending-generation-task-new",
+        "pending_history_id": "pending-generation-task-new",
         "result_node_id": "result-shared",
-        "record_log_id": "history-record-only",
-        "original_log_id": "history-original",
+        "record_history_id": "history-record-only",
+        "original_history_id": "history-original",
         "original_asset_id": ASSET_ID,
         "original_output_id": OUTPUT_ID,
         "deletion_id": DELETION_ID,
@@ -74,25 +74,25 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
         folder = root / prefix
         folder.mkdir()
         operations = [
-            _operation("before-restart", 1, "#smartLogToggle", False),
+            _operation("before-restart", 1, "#smartHistoryToggle", False),
             _operation(
                 "before-restart",
                 2,
-                '[data-canvas-log-id="history-record-only"] [data-log-delete="record"]',
+                '[data-canvas-history-id="history-record-only"] [data-history-delete="record"]',
                 True,
             ),
             _operation(
                 "before-restart",
                 3,
-                f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="{lifecycle["original_output_id"]}"]',
+                f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="{lifecycle["original_output_id"]}"]',
                 True,
             ),
-            _operation("after-restart", 1, "#smartLogToggle", False),
+            _operation("after-restart", 1, "#smartHistoryToggle", False),
             _operation(
                 "after-restart",
                 2,
-                '[data-canvas-log-id="history-original"] '
-                f'[data-log-restore-original="{ASSET_ID}"]',
+                '[data-canvas-history-id="history-original"] '
+                f'[data-history-restore-original="{ASSET_ID}"]',
                 True,
             ),
         ]

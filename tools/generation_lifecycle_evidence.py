@@ -50,10 +50,10 @@ def _validate_lifecycle(lifecycle: object, viewport: tuple[int, int]) -> dict:
     identity_keys = (
         "project_id",
         "task_id",
-        "pending_log_id",
+        "pending_history_id",
         "result_node_id",
-        "record_log_id",
-        "original_log_id",
+        "record_history_id",
+        "original_history_id",
         "original_asset_id",
         "original_output_id",
         "deletion_id",
@@ -94,25 +94,25 @@ def _validate_operations(root: Path, attempt: dict, lifecycle: dict, viewport: t
         raise ValueError(f"lifecycle operations are not valid JSON Lines: {error}") from error
     asset_id = lifecycle["original_asset_id"]
     expected = (
-        ("before-restart", 1, "#smartLogToggle", False),
+        ("before-restart", 1, "#smartHistoryToggle", False),
         (
             "before-restart",
             2,
-            f'[data-canvas-log-id="{lifecycle["record_log_id"]}"] [data-log-delete="record"]',
+            f'[data-canvas-history-id="{lifecycle["record_history_id"]}"] [data-history-delete="record"]',
             True,
         ),
         (
             "before-restart",
             3,
-            f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] [data-log-delete-original="{lifecycle["original_output_id"]}"]',
+            f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="{lifecycle["original_output_id"]}"]',
             True,
         ),
-        ("after-restart", 1, "#smartLogToggle", False),
+        ("after-restart", 1, "#smartHistoryToggle", False),
         (
             "after-restart",
             2,
-            f'[data-canvas-log-id="{lifecycle["original_log_id"]}"] '
-            f'[data-log-restore-original="{asset_id}"]',
+            f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] '
+            f'[data-history-restore-original="{asset_id}"]',
             True,
         ),
     )

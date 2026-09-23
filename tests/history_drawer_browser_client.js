@@ -45,8 +45,8 @@
         const rect = element.getBoundingClientRect();
         return {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2};
     }
-    function historyCard(logId){
-        return document.querySelector(`[data-canvas-log-id="${CSS.escape(logId)}"]`);
+    function historyCard(historyId){
+        return document.querySelector(`[data-canvas-history-id="${CSS.escape(historyId)}"]`);
     }
     async function postResult(){
         result.pass = result.errors.length === 0 && result.assertions.every(item => item.pass);
@@ -79,21 +79,21 @@
     }
     async function run(){
         installClipboardProbe();
-        const loaded = await waitFor(() => document.querySelector('#smartLogToggle') && document.title.includes('浏览器历史项目'), 15000);
+        const loaded = await waitFor(() => document.querySelector('#smartHistoryToggle') && document.title.includes('浏览器历史项目'), 15000);
         assertion('real product page loaded its canvas', loaded, document.querySelector('#smartTitle')?.textContent || '');
-        const toggle = document.getElementById('smartLogToggle');
+        const toggle = document.getElementById('smartHistoryToggle');
         toggle?.click();
-        const opened = await waitFor(() => document.getElementById('smartLogModal')?.classList.contains('open') && document.querySelectorAll('.log-history-image').length >= 2);
+        const opened = await waitFor(() => document.getElementById('smartHistoryModal')?.classList.contains('open') && document.querySelectorAll('.log-history-image').length >= 2);
         assertion('history drawer opens with current project records', opened, document.querySelectorAll('.log-history-image').length);
         if(!opened){ await postResult(); return; }
-        const historyRail = document.getElementById('smartLogList');
+        const historyRail = document.getElementById('smartHistoryList');
         const renderedHistoryCount = () => historyRail.querySelectorAll('.log-item').length;
         const representedHistoryCount = () => renderedHistoryCount() + [...historyRail.querySelectorAll('[data-history-spacer]')]
             .reduce((total, spacer) => total + Number(spacer.dataset.historyOmitted || 0), 0);
         assertion('history drawer keeps a 120-to-160-card DOM window for large project history', renderedHistoryCount() >= 120 && renderedHistoryCount() <= 160, renderedHistoryCount());
         assertion('history drawer has no manual pagination controls or status', !document.querySelector('.history-page-nav,[data-history-page-prev],[data-history-page-next],[data-history-page-status]'), document.querySelector('.history-page-nav,[data-history-page-prev],[data-history-page-next],[data-history-page-status]')?.outerHTML || 'none');
         assertion('history spacers preserve all 5000 logical records', Boolean(historyRail.querySelector('[data-history-spacer="before"]')) && Boolean(historyRail.querySelector('[data-history-spacer="after"]')) && representedHistoryCount() === 5000, {represented:representedHistoryCount(), spacers:[...historyRail.querySelectorAll('[data-history-spacer]')].map(spacer => Number(spacer.dataset.historyOmitted || 0))});
-        assertion('history renders the newest record at the far left after loading', historyRail.querySelector('.log-item')?.dataset?.canvasLogId === 'history-first', historyRail.querySelector('.log-item')?.dataset?.canvasLogId || '');
+        assertion('history renders the newest record at the far left after loading', historyRail.querySelector('.log-item')?.dataset?.canvasHistoryId === 'history-first', historyRail.querySelector('.log-item')?.dataset?.canvasHistoryId || '');
         const initialCard = historyCard('history-first');
         const initialThumb = initialCard?.querySelector('.log-thumb-square');
         const initialCardRect = initialCard?.getBoundingClientRect();
@@ -109,7 +109,7 @@
         assertion('history shows exactly one resolution tier that follows the request', resolutionChips.length === 1 && resolutionChips[0].textContent.trim() === '4K', resolutionChips.map(chip => chip.textContent.trim()));
         assertion('history model name uses adaptive space instead of a fixed cap', Boolean(friendlyModelChip) && getComputedStyle(friendlyModelChip).maxWidth === 'none' && getComputedStyle(friendlyModelChip).flexShrink === '1', friendlyModelChip ? {maxWidth:getComputedStyle(friendlyModelChip).maxWidth, flexShrink:getComputedStyle(friendlyModelChip).flexShrink, width:friendlyModelChip.getBoundingClientRect().width} : 'missing');
         const historyButtons = initialCard?.querySelector('.log-buttons');
-        const deleteButton = historyButtons?.querySelector('[data-log-delete="media"]');
+        const deleteButton = historyButtons?.querySelector('[data-history-delete="media"]');
         const duration = historyButtons?.querySelector('.log-duration');
         const deleteRect = deleteButton?.getBoundingClientRect();
         const durationRect = duration?.getBoundingClientRect();
@@ -165,7 +165,7 @@
         const resetHomeKey = new KeyboardEvent('keydown', {key:'Home', bubbles:true, cancelable:true});
         focusedHistoryControl?.dispatchEvent(resetHomeKey);
         await waitFor(() => historyRail.scrollLeft < 1, 600);
-        const drawer = document.getElementById('smartLogModal');
+        const drawer = document.getElementById('smartHistoryModal');
         const shell = document.getElementById('shell');
         const minimap = document.getElementById('minimap');
         const arrange = document.getElementById('smartArrangeBtn');
@@ -197,7 +197,7 @@
         pointer(firstImage, 'pointerdown', firstPoint.x, firstPoint.y, 11);
         pointer(firstImage, 'pointerup', firstPoint.x, firstPoint.y, 11);
         await sleep(360);
-        assertion('single click selects only after the double-click window', firstCard.classList.contains('is-selected') && !document.getElementById('smartLogLightbox')?.classList.contains('open'), firstCard.dataset.historySelected || 'none');
+        assertion('single click selects only after the double-click window', firstCard.classList.contains('is-selected') && !document.getElementById('smartHistoryLightbox')?.classList.contains('open'), firstCard.dataset.historySelected || 'none');
 
         pointer(firstImage, 'pointerdown', firstPoint.x, firstPoint.y, 12);
         pointer(firstImage, 'pointerup', firstPoint.x, firstPoint.y, 12);
@@ -205,7 +205,7 @@
         pointer(firstImage, 'pointerdown', firstPoint.x + 4, firstPoint.y + 3, 13);
         pointer(firstImage, 'pointerup', firstPoint.x + 4, firstPoint.y + 3, 13);
         await sleep(60);
-        assertion('double click opens generation detail', document.getElementById('smartLogLightbox')?.classList.contains('open'), document.getElementById('smartLogLightbox')?.className || 'closed');
+        assertion('double click opens generation detail', document.getElementById('smartHistoryLightbox')?.classList.contains('open'), document.getElementById('smartHistoryLightbox')?.className || 'closed');
         assertion('generation detail exposes shared preview frame, zoom, metadata and sharing actions', ['.smart-log-detail-frame','.smart-log-detail-zoom-tools','.smart-log-detail-model','.smart-log-detail-time','.smart-log-detail-prompt','.smart-log-detail-download','.smart-log-detail-copy-2k'].every(selector => document.querySelector(selector)), document.querySelector('.smart-log-detail')?.innerText || 'missing');
         const detailStage = document.querySelector('.smart-log-detail-stage');
         const detailWheel = new WheelEvent('wheel', {deltaY:-120, clientX:firstPoint.x, clientY:firstPoint.y, bubbles:true, cancelable:true});
@@ -215,7 +215,7 @@
         const detailEscape = new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true});
         document.dispatchEvent(detailEscape);
         await sleep(30);
-        assertion('Escape closes only generation detail and keeps history open', detailEscape.defaultPrevented && !document.getElementById('smartLogLightbox')?.classList.contains('open') && drawer.classList.contains('open'), {defaultPrevented:detailEscape.defaultPrevented, detailOpen:document.getElementById('smartLogLightbox')?.classList.contains('open'), historyOpen:drawer.classList.contains('open')});
+        assertion('Escape closes only generation detail and keeps history open', detailEscape.defaultPrevented && !document.getElementById('smartHistoryLightbox')?.classList.contains('open') && drawer.classList.contains('open'), {defaultPrevented:detailEscape.defaultPrevented, detailOpen:document.getElementById('smartHistoryLightbox')?.classList.contains('open'), historyOpen:drawer.classList.contains('open')});
         const historyEscape = new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true});
         document.dispatchEvent(historyEscape);
         await sleep(30);
@@ -226,18 +226,18 @@
         assertion('keyboard Enter selects a history original', firstCard.classList.contains('is-selected') && firstImage.getAttribute('aria-pressed') === 'true', {selected:firstCard.classList.contains('is-selected'), pressed:firstImage.getAttribute('aria-pressed')});
         firstImage.dispatchEvent(new KeyboardEvent('keydown', {key:' ', bubbles:true, cancelable:true}));
         await sleep(30);
-        assertion('keyboard Space previews a history original', document.getElementById('smartLogLightbox')?.classList.contains('open'), document.getElementById('smartLogLightbox')?.className || 'closed');
-        document.getElementById('smartLogLightbox')?.click();
+        assertion('keyboard Space previews a history original', document.getElementById('smartHistoryLightbox')?.classList.contains('open'), document.getElementById('smartHistoryLightbox')?.className || 'closed');
+        document.getElementById('smartHistoryLightbox')?.click();
         await sleep(30);
 
-        const copyButton = historyCard('history-first')?.querySelector('[data-log-copy-prompt]');
+        const copyButton = historyCard('history-first')?.querySelector('[data-history-copy-prompt]');
         copyButton?.click();
         await sleep(100);
         assertion('copy prompt exposes the recorded prompt to the clipboard boundary', window.__historyCopiedText === '第一条历史提示词', window.__historyCopiedText);
 
         const world = document.getElementById('world');
         const initialNodes = world.querySelectorAll('.image-node').length;
-        historyCard('history-first')?.querySelector('[data-log-send-all]')?.click();
+        historyCard('history-first')?.querySelector('[data-history-send-all]')?.click();
         await waitFor(() => world.querySelectorAll('.image-node').length === initialNodes + 1, 1500);
         assertion('reuse action creates one image node', world.querySelectorAll('.image-node').length === initialNodes + 1, world.querySelectorAll('.image-node').length);
         toggle.click();
@@ -281,7 +281,7 @@
         assertion('only the image element is draggable', nativeImage.draggable === true && nativeImage.closest('.log-media-card').draggable === false, {image:nativeImage.draggable, card:nativeImage.closest('.log-media-card').draggable});
 
         const requestCountsBeforeImportedDelete = await fetch('/__history_request_counts').then(response => response.json());
-        historyCard('history-imported')?.querySelector('[data-log-delete="media"]')?.click();
+        historyCard('history-imported')?.querySelector('[data-history-delete="media"]')?.click();
         const importedRecordDeleted = await waitFor(() => !historyCard('history-imported'), 1800);
         const importedMediaStatus = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.importedAsset)}`).then(response => response.status).catch(() => 0);
         const requestCountsAfterImportedDelete = await fetch('/__history_request_counts').then(response => response.json());
@@ -291,17 +291,17 @@
         const savedAfterReuse = await fetch(`/api/canvases/${encodeURIComponent(expected.projectId)}`).then(response => response.json()).catch(() => ({}));
         const persistedProjectImage = (savedAfterReuse.canvas?.nodes || []).flatMap(node => node.images || []).find(image => image.asset_id === expected.firstAsset || image.asset_id === expected.secondAsset);
         assertion('reused and dragged originals persist as project media IDs without URLs', Boolean(persistedProjectImage?.asset_id) && !persistedProjectImage.url, persistedProjectImage || null);
-        const reusedHistoryNode = (savedAfterReuse.canvas?.nodes || []).find(node => node.historyLogId === 'history-first');
+        const reusedHistoryNode = (savedAfterReuse.canvas?.nodes || []).find(node => node.historyId === 'history-first');
         assertion('send to canvas carries the original prompt and generation settings', reusedHistoryNode?.runPrompt === '第一条历史提示词' && reusedHistoryNode?.runSettings?.model === 'offline-browser-model' && reusedHistoryNode?.runSettings?.size === '1024x1024', reusedHistoryNode || null);
         const h2Card = historyCard('history-second');
-        h2Card?.querySelector('[data-log-delete="media"]')?.click();
+        h2Card?.querySelector('[data-history-delete="media"]')?.click();
         await waitFor(() => !historyCard('history-second'), 1800);
         const removedSecondMediaStatus = expected.secondAsset ? (await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.secondAsset)}`)).status : 0;
         assertion('deleting a history record removes its generated media', !historyCard('history-second') && removedSecondMediaStatus === 404, {card:!!historyCard('history-second'), mediaStatus:removedSecondMediaStatus});
 
         const h1Card = historyCard('history-first');
         const countsBeforeGeneratedDelete = await fetch('/__history_request_counts').then(response => response.json());
-        h1Card?.querySelector('[data-log-delete="media"]')?.click();
+        h1Card?.querySelector('[data-history-delete="media"]')?.click();
         const firstRecordDeleted = await waitFor(() => !historyCard('history-first'), 1800);
         const deletedMediaStatus = expected.firstAsset ? (await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.firstAsset)}`)).status : 0;
         const savedCanvas = await fetch(`/api/canvases/${encodeURIComponent(expected.projectId)}`).then(response => response.json()).catch(() => ({}));
@@ -319,8 +319,8 @@
         const purgedMediaStatus = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.firstAsset)}`).then(response => response.status).catch(() => 0);
         assertion('explicitly emptying project trash permanently removes the deleted original', purgedMediaStatus === 404 && purgeTrash?.hidden === true, {mediaStatus:purgedMediaStatus, trashHidden:purgeTrash?.hidden});
         if(!drawer.classList.contains('open')) toggle.click();
-        await waitFor(() => historyCard('history-third')?.querySelector('[data-log-delete="media"]'));
-        historyCard('history-third')?.querySelector('[data-log-delete="media"]')?.click();
+        await waitFor(() => historyCard('history-third')?.querySelector('[data-history-delete="media"]'));
+        historyCard('history-third')?.querySelector('[data-history-delete="media"]')?.click();
         const thirdRecordDeleted = await waitFor(() => !historyCard('history-third'), 1800);
         const thirdMediaAfterDelete = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.thirdAsset)}`).then(response => response.status).catch(() => 0);
         assertion('a second generated record uses the same combined delete transaction', thirdRecordDeleted && thirdMediaAfterDelete === 404, {recordDeleted:thirdRecordDeleted, mediaStatus:thirdMediaAfterDelete});

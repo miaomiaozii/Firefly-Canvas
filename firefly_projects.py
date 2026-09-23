@@ -211,7 +211,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         persisted = copy.deepcopy(canvas or {})
         persisted.pop("viewport", None)
         persisted.pop("settings", None)
-        persisted.pop("logs", None)
+        persisted.pop("history", None)
         persisted.pop("_recovery", None)
         return persisted
 
@@ -1156,7 +1156,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 self._histories[project_id] = history
             self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
-            opened_canvas["logs"] = copy.deepcopy(history)
+            opened_canvas["history"] = copy.deepcopy(history)
             mark = self._recovery_marks.get(project_id)
             if mark:
                 opened_canvas["_recovery"] = dict(mark)
@@ -1458,7 +1458,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             }
             try:
                 next_canvas = copy.deepcopy(canvas)
-                next_canvas.pop("logs", None)
+                next_canvas.pop("history", None)
                 next_canvas.setdefault("nodes", []).append(node)
                 next_canvas.setdefault("connections", []).append(edge)
                 next_canvas["revision"] = int(next_canvas.get("revision") or 0) + 1
@@ -1912,7 +1912,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             cls._merge_media_source(record, source_info)
         return record
 
-    def delete_history_record(self, project_id: str, log_id: str, *, base_revision: int) -> Dict[str, Any]:
+    def delete_history_record(self, project_id: str, history_id: str, *, base_revision: int) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         with self._lock:
             opened = self.open_project(project_id)["canvas"]
@@ -1920,22 +1920,22 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             if int(base_revision) != current_revision:
                 raise RevisionConflict(opened)
             history = copy.deepcopy(self._histories.get(project_id, []))
-            if not any(str(item.get("id") or "") == log_id for item in history):
+            if not any(str(item.get("id") or "") == history_id for item in history):
                 raise ProjectNotFound("生成历史不存在")
-            history = [item for item in history if str(item.get("id") or "") != log_id]
+            history = [item for item in history if str(item.get("id") or "") != history_id]
             canvas = copy.deepcopy(opened)
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             canvas["revision"] = current_revision + 1
             canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
             self._canvases[project_id] = canvas
             self._histories[project_id] = history
             self._schedule_snapshot(project_id)
             result = copy.deepcopy(canvas)
-            result["logs"] = copy.deepcopy(history)
+            result["history"] = copy.deepcopy(history)
             _diag_emit(
                 "deletion.completed",
                 project_id=project_id,
-                log_id=str(log_id),
+                history_id=str(history_id),
                 revision=canvas["revision"],
                 state="deleted",
             )
@@ -1944,18 +1944,18 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
     def delete_history_record_with_media(
         self,
         project_id: str,
-        log_id: str,
+        history_id: str,
         *,
         base_revision: int,
     ) -> Dict[str, Any]:
         """Delete one generation record and all of its generated originals atomically."""
         project_id = _clean_project_id(project_id)
-        log_id = str(log_id or "").strip()
+        history_id = str(history_id or "").strip()
         with self._project_operation_lock(project_id):
             with self._lock:
                 opened, current_revision = self._open_project_at_revision(project_id, base_revision)
                 history = copy.deepcopy(self._histories.get(project_id, []))
-                target = next((item for item in history if str(item.get("id") or "") == log_id), None)
+                target = next((item for item in history if str(item.get("id") or "") == history_id), None)
                 if not isinstance(target, dict):
                     raise ProjectNotFound("生成历史不存在")
 
@@ -1965,16 +1965,16 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
                 })
                 if not output_asset_ids:
-                    history = [item for item in history if str(item.get("id") or "") != log_id]
+                    history = [item for item in history if str(item.get("id") or "") != history_id]
                     canvas = copy.deepcopy(opened["canvas"])
-                    canvas.pop("logs", None)
+                    canvas.pop("history", None)
                     canvas["revision"] = current_revision + 1
                     canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
                     self._canvases[project_id] = canvas
                     self._histories[project_id] = history
                     self._schedule_snapshot(project_id)
                     result = copy.deepcopy(canvas)
-                    result["logs"] = copy.deepcopy(history)
+                    result["history"] = copy.deepcopy(history)
                     return {"canvas": result, "deleted": [], "removed_files": [], "reset_node_ids": []}
 
                 self._cleanup_expired_deleted_media_locked(project_id)
@@ -1991,7 +1991,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 deleted_items = []
                 deleted_ids = set()
                 deleted_at = _now_ms()
-                snapshot_filename = f"history-{log_id or uid('delete')}-{deleted_at}.json"
+                snapshot_filename = f"history-{history_id or uid('delete')}-{deleted_at}.json"
                 for asset_id in output_asset_ids:
                     original = media_index["items"].get(asset_id)
                     if not isinstance(original, dict) or not self._is_generated_original(original):
@@ -2051,13 +2051,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 original_nodes = copy.deepcopy(opened["canvas"].get("nodes") or [])
                 undo_snapshot = {
                     "nodes": [node for node in original_nodes if deleted_ids.intersection(self._collect_asset_ids(node))],
-                    "history": [record for record in old_history if deleted_ids.intersection(self._collect_asset_ids(record)) or str(record.get("id") or "") == log_id],
+                    "history": [record for record in old_history if deleted_ids.intersection(self._collect_asset_ids(record)) or str(record.get("id") or "") == history_id],
                 }
                 history_producer_ids = self._history_producer_ids_for_assets(old_history, deleted_ids)
 
                 cleaned_history = []
                 for record in old_history:
-                    if str(record.get("id") or "") == log_id:
+                    if str(record.get("id") or "") == history_id:
                         continue
                     matching = deleted_ids.intersection(self._collect_asset_ids(record))
                     if not matching:
@@ -2090,13 +2090,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     nodes.append(cleaned_node)
 
                 canvas = copy.deepcopy(opened["canvas"])
-                canvas.pop("logs", None)
+                canvas.pop("history", None)
                 canvas["nodes"] = nodes
                 canvas["revision"] = current_revision + 1
                 canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
                 metadata = _read_json(self._safe_project_path(project_dir, "project.json"))
                 before_canvas = copy.deepcopy(opened["canvas"])
-                before_canvas.pop("logs", None)
+                before_canvas.pop("history", None)
                 before_metadata = self._metadata_for_canvas(metadata, before_canvas)
                 after_metadata = self._metadata_for_canvas(metadata, canvas)
                 files = [
@@ -2106,7 +2106,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 self._commit_original_media_transaction(
                     project_id,
                     "delete",
-                    log_id,
+                    history_id,
                     files,
                     snapshot_filename,
                     {
@@ -2132,7 +2132,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 self._histories[project_id] = cleaned_history
                 self._saved_revisions[project_id] = int(canvas["revision"])
                 result = copy.deepcopy(canvas)
-                result["logs"] = copy.deepcopy(cleaned_history)
+                result["history"] = copy.deepcopy(cleaned_history)
                 return {
                     "canvas": result,
                     "deleted": copy.deepcopy(deleted_items),
@@ -2162,7 +2162,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             if int(base_revision) != int(opened.get("revision") or 0):
                 raise RevisionConflict(opened)
             canvas = copy.deepcopy(opened)
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
             if node is None or str(node.get("type") or "") not in {"image", "smart-image"}:
                 raise InvalidMutation("媒体生成任务必须绑定已保存的媒体节点")
@@ -2224,7 +2224,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         with self._lock:
             opened = self.open_project(project_id)["canvas"]
             canvas = copy.deepcopy(opened)
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             found = False
             for node in canvas.get("nodes") or []:
                 if not isinstance(node, dict):
@@ -2256,7 +2256,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         with self._lock:
             opened = self.open_project(project_id)["canvas"]
             canvas = copy.deepcopy(opened)
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
             history = copy.deepcopy(self._histories.get(project_id, []))
             replaced_prior_id = ""
@@ -2296,7 +2296,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                         raise InvalidMutation("生成任务已结束，无法写入另一个终态")
                     if clean_task_id not in pending_ids:
                         result = copy.deepcopy(opened)
-                        result["logs"] = history
+                        result["history"] = history
                         return result
                     if merged_terminal is not None:
                         clean_history = merged_terminal
@@ -2413,7 +2413,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         self._canvases[project_id] = canvas
         self._schedule_snapshot(project_id)
         result = copy.deepcopy(canvas)
-        result["logs"] = copy.deepcopy(self._histories.get(project_id, []))
+        result["history"] = copy.deepcopy(self._histories.get(project_id, []))
         return result
 
     def _persist_history(self, project_id: str) -> None:
@@ -2476,7 +2476,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 except ProjectStoreError as exc:
                     raise InvalidMutation(f"项目媒体不存在: {asset_id}") from exc
             canvas = copy.deepcopy(opened)
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             nodes = canvas.setdefault("nodes", [])
             node = next((item for item in nodes if str(item.get("id") or "") == node_id), None)
             if node is not None and str(node.get("type") or "") not in {"image", "smart-image"}:
@@ -2617,7 +2617,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             }
             self._ensure_output_occurrence_ids(canvas, history)
             # Bug fix (T4): 回写 Store 分配的 output_id/output_order 到调用方的
-            # history_record（任务结果会把它返回给前端合并进 canvas.logs）。
+            # history_record（任务结果会把它返回给前端合并进 canvas.history）。
             # 此前任务结果携带的是 deepcopy 前的无 ID 副本，导致刚生成的图
             # 在画布历史里无法删除（output_id 为空），刷新后才会恢复。
             # #83: 累加合并后 canonical 记录的 outputs 顺序与调用方不一致（旧 partial
@@ -2713,17 +2713,17 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             # that failed to load its canvas otherwise autosaves an empty
             # node set and silently overwrites the server's real canvas.
             original_node_count = len(canvas.get("nodes") or [])
-            canvas.pop("logs", None)
+            canvas.pop("history", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
             for mutation in items:
                 normalized = copy.deepcopy(mutation)
-                if normalized.get("op") == "set_canvas_meta" and "logs" in normalized:
-                    logs = normalized.pop("logs")
-                    if not isinstance(logs, list):
-                        raise InvalidMutation("logs 必须是数组")
-                    if self._contains_external_media_reference(logs):
+                if normalized.get("op") == "set_canvas_meta" and "history" in normalized:
+                    incoming_history = normalized.pop("history")
+                    if not isinstance(incoming_history, list):
+                        raise InvalidMutation("生成历史必须是数组")
+                    if self._contains_external_media_reference(incoming_history):
                         raise InvalidMutation("生成历史只能引用项目媒体资源 ID")
-                    for asset_id in self._collect_asset_ids(logs):
+                    for asset_id in self._collect_asset_ids(incoming_history):
                         try:
                             self.media_record(project_id, asset_id)
                         except ProjectStoreError as exc:
@@ -2754,7 +2754,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                         if isinstance(task, dict) and str(task.get("taskId") or task.get("task_id") or "")
                     }
                     incoming = []
-                    for item in copy.deepcopy(logs[-5000:]):
+                    for item in copy.deepcopy(incoming_history[-5000:]):
                         if not isinstance(item, dict):
                             incoming.append(item)
                             continue
@@ -3113,7 +3113,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             }
         if canvas.get("project_id") != project_id or canvas.get("id") != project_id:
             raise ProjectStoreError("画布不属于请求的项目")
-        legacy_logs = canvas.pop("logs", None)
+        # Backward-compatible: older canvas.json files stored the generation
+        # history under the legacy "logs" key; accept both on load.
+        legacy_history = canvas.pop("logs", None) or canvas.pop("history", None)
         had_application_state = "viewport" in canvas or "settings" in canvas
         canvas.pop("viewport", None)
         canvas.pop("settings", None)
@@ -3127,8 +3129,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 canonical,
                 keep_backup=False,
             )
-        if isinstance(legacy_logs, list) and project_id not in self._histories:
-            self._histories[project_id] = copy.deepcopy(legacy_logs[-5000:])
+        if isinstance(legacy_history, list) and project_id not in self._histories:
+            self._histories[project_id] = copy.deepcopy(legacy_history[-5000:])
         return canvas
 
     def _load_history(self, project_id: str) -> List[Dict[str, Any]]:

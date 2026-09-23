@@ -72,13 +72,13 @@
   async function restorePreservesEdit() {
     window.confirm = () => true;
     await waitFor('restore fixture', () => document.querySelector('.image-node[data-id="p0-editable-prompt"]'));
-    document.getElementById('smartLogToggle')?.click();
-    await waitFor('history restore card', () => document.querySelector('[data-canvas-log-id="p0-restore-history"] [data-log-delete-original]'));
-    const deleteButton = document.querySelector('[data-canvas-log-id="p0-restore-history"] [data-log-delete-original]');
+    document.getElementById('smartHistoryToggle')?.click();
+    await waitFor('history restore card', () => document.querySelector('[data-canvas-history-id="p0-restore-history"] [data-history-delete-original]'));
+    const deleteButton = document.querySelector('[data-canvas-history-id="p0-restore-history"] [data-history-delete-original]');
     check('restore fixture exposes an original-delete action', Boolean(deleteButton));
     deleteButton?.click();
     const beforeDelete = await canvasSnapshot();
-    const restoreAssetId = beforeDelete.logs?.find(log => log.id === 'p0-restore-history')?.outputs?.[0]?.asset_id || '';
+    const restoreAssetId = beforeDelete.history?.find(log => log.id === 'p0-restore-history')?.outputs?.[0]?.asset_id || '';
     check('restore fixture exposes the original asset id', Boolean(restoreAssetId), restoreAssetId || 'missing');
     await waitFor('original moved to project trash', async () => Boolean(restoreAssetId) && await trashHasAsset(restoreAssetId), 15000);
 
@@ -96,7 +96,7 @@
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
     await waitFor('original restore request', async () => {
       const canvas = await canvasSnapshot();
-      return !(await trashHasAsset(restoreAssetId)) && canvas.logs?.some(log => log.id === 'p0-restore-history' && log.outputs?.length);
+      return !(await trashHasAsset(restoreAssetId)) && canvas.history?.some(log => log.id === 'p0-restore-history' && log.outputs?.length);
     }, 15000);
     try {
       await waitFor('restore save settles', () => document.getElementById('projectSaveState')?.dataset.state === 'saved', 20000);
@@ -223,11 +223,11 @@
       if (failedCanvasPatches > 0 || failedFlushRequests > 0 || state === 'error') return true;
       const snapshot = await canvasSnapshot();
       const output = nodeFrom(snapshot, 'p0-reference-generator');
-      return taskRequests > 0 && ((snapshot.logs || []).some(log => log.result_node_id === 'p0-reference-generator' && ['succeeded', 'failed'].includes(log.status)) || Boolean(output?.images?.length));
+      return taskRequests > 0 && ((snapshot.history || []).some(log => log.result_node_id === 'p0-reference-generator' && ['succeeded', 'failed'].includes(log.status)) || Boolean(output?.images?.length));
     }, 20000, 250).catch(() => null);
     const canvas = await canvasSnapshot();
     const node = nodeFrom(canvas, 'p0-reference-generator');
-    const success = (canvas.logs || []).some(log => log.result_node_id === 'p0-reference-generator' && log.status === 'succeeded');
+    const success = (canvas.history || []).some(log => log.result_node_id === 'p0-reference-generator' && log.status === 'succeeded');
     check('generation pre-flight canvas save succeeds', canvasPatches > 0 && failedCanvasPatches === 0, { state: document.getElementById('projectSaveState')?.dataset.state, canvasPatches, failedCanvasPatches, canvasPatchStatuses, canvasPatchErrors });
     check('generation pre-flight flush completes before task submission', flushRequests > 0 && failedFlushRequests === 0, { state: document.getElementById('projectSaveState')?.dataset.state, canvasPatches, flushRequests, failedFlushRequests });
     check('reference-backed generation task is submitted', taskRequests > 0, { taskRequests, canvasPatches, flushRequests });

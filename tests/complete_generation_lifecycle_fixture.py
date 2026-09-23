@@ -26,15 +26,15 @@ original_asset = "asset-original"
 download_record = "record-download"
 download_asset = "asset-download"
 selectors = [
-    "#smartLogToggle",
-    f'[data-canvas-log-id="{record}"] [data-log-delete="record"]',
-    f'[data-canvas-log-id="{original_record}"] [data-log-delete-original="0"]',
-    f'[data-log-cancel-task="{cancel}"]',
-    "#smartLogToggle",
-    f'[data-log-retry-task="{failed}"]',
-    f'[data-canvas-log-id="{download_record}"] [data-log-download-original]',
-    "#smartLogToggle",
-    f'[data-log-restore-original="{original_asset}"]',
+    "#smartHistoryToggle",
+    f'[data-canvas-history-id="{record}"] [data-history-delete="record"]',
+    f'[data-canvas-history-id="{original_record}"] [data-history-delete-original="0"]',
+    f'[data-history-cancel-task="{cancel}"]',
+    "#smartHistoryToggle",
+    f'[data-history-retry-task="{failed}"]',
+    f'[data-canvas-history-id="{download_record}"] [data-history-download-original]',
+    "#smartHistoryToggle",
+    f'[data-history-restore-original="{original_asset}"]',
 ]
 (root / "operations.jsonl").write_text(
     "".join(json.dumps({
@@ -75,13 +75,13 @@ lifecycle = {
     "retry_task_id": retry,
     "cancel_task_id": cancel,
     "download_task_id": download,
-    "record_log_id": record,
-    "original_log_id": original_record,
+    "record_history_id": record,
+    "original_history_id": original_record,
     "record_asset_id": "asset-record",
     "original_asset_id": original_asset,
     "status_card_task_ids": [failed, download, cancel],
     "terminal_record_counts": {failed: 1, retry: 1, cancel: 1, download: 1},
-    "download_record_log_id": download_record,
+    "download_record_history_id": download_record,
     "download_asset_id": download_asset,
     "download_request_path": f"/api/project-library/project-1/media/{download_asset}/preview",
     "retention_ms": 604800000,

@@ -148,9 +148,9 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
         operations = [
             operation("click", ".model-control > .smart-pill"),
             operation("click", ".size-picker-control > .smart-pill"),
-            operation("click", "#smartLogToggle"),
+            operation("click", "#smartHistoryToggle"),
             operation("click", "#composerFlowBtn"),
-            operation("click", '[data-canvas-log-id="integrity-success-one"] [data-log-output-preview="3"]'),
+            operation("click", '[data-canvas-history-id="integrity-success-one"] [data-history-output-preview="3"]'),
             operation("click", '.smart-log-detail-output[data-output-index="1"]'),
             operation("click", ".smart-log-detail-copy-2k"),
             operation("click", ".smart-log-detail-delete-original"),
@@ -180,7 +180,7 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
             operation("wheel", ".size-picker-control.pinned .smart-popover"),
             operation("wheel", "#promptInput"),
             operation("wheel", ".composer-head"),
-            operation("wheel", "#smartLogModal .log-list", delta_x=240, delta_y=0),
+            operation("wheel", "#smartHistoryModal .log-list", delta_x=240, delta_y=0),
             operation("wheel", ".smart-log-detail-stage"),
             operation("drag", ".smart-log-detail-stage"),
         ]

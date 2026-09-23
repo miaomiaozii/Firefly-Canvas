@@ -36,7 +36,7 @@ def apply_canvas(store: ProjectStore, project_id: str, nodes, *, edges=(), logs=
     mutations = [{"op": "upsert_node", "node": node} for node in nodes]
     mutations.extend({"op": "upsert_edge", "edge": edge} for edge in edges)
     if logs is not None:
-        mutations.append({"op": "set_canvas_meta", "logs": logs})
+        mutations.append({"op": "set_canvas_meta", "history": logs})
     store.apply_mutations(project_id, mutations, base_revision=0)
     store.flush(project_id)
 

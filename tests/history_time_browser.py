@@ -72,7 +72,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
     ]
     store.apply_mutations(
         project["id"],
-        [{"op": "set_canvas_meta", "logs": history_records}],
+        [{"op": "set_canvas_meta", "history": history_records}],
         base_revision=0,
     )
     store.flush(project["id"])
@@ -187,7 +187,7 @@ class HistoryTimeServer:
                         self.send_json(owner.store.save_status(project_id))
                         return
                     if project_id and len(parts) == 5 and parts[3] == "history" and parts[4] == "delete":
-                        canvas = owner.store.delete_history_record(project_id, body["log_id"], base_revision=body["base_revision"])
+                        canvas = owner.store.delete_history_record(project_id, body["history_id"], base_revision=body["base_revision"])
                         owner.store.flush(project_id)
                         self.send_json({"ok": True, "canvas": canvas})
                         return
