@@ -6591,7 +6591,23 @@ function smartProjectId(){
 // 一处两份、其他路径各写各的轻量版，已漂移）。
 async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){
     if(!serverCanvasData) return Number(canvas?.revision || 0);
-    const nextCanvas = hydrateProjectMediaReferences(serverCanvasData);
+    const serverCanvas = hydrateProjectMediaReferences(serverCanvasData);
+    // #144: 不再整体替换本地画布，而是把本地未保存的 mutation rebase 到服务端
+    // 画布上。否则在 autosave 防抖窗口内画的连线/节点（本地独有、尚未落库）
+    // 会被历史删除等返回的服务端画布静默丢弃（数据丢失）。
+    let nextCanvas = serverCanvas;
+    let nextBaseline = null;
+    const adoptMutationClient = window.FireflyProjectCanvasMutations;
+    if(canvas && persistedCoreSnapshot && adoptMutationClient?.rebaseProjectCanvasResponse){
+        try {
+            const localStorageCanvas = await materializeProjectMediaReferences(canvasForStorage());
+            const rebased = adoptMutationClient.rebaseProjectCanvasResponse(serverCanvas, persistedCoreSnapshot, localStorageCanvas);
+            if(!rebased.ignored && rebased.canvas){
+                nextCanvas = rebased.canvas;
+                nextBaseline = rebased.baseline;
+            }
+        } catch(_){ /* rebase 异常回退整体替换，保证不阻断同步 */ }
+    }
     canvas = nextCanvas;
     canvas.history = activeTaskLogs !== null
         ? mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs)
@@ -6604,7 +6620,7 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
     canvas.updated_at = Number(canvas.updated_at || Date.now());
     canvas.revision = Number(canvas.revision ?? 0);
     const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-    persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
+    persistedCoreSnapshot = nextBaseline || projectCanvasSnapshot(savedCanvas);
     persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
     render();
     if(settleMs > 0) await new Promise(resolve => setTimeout(resolve, settleMs));
