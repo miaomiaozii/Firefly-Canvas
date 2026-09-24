@@ -13011,7 +13011,8 @@ function render(){
         const isGroup = isImageNode && imgs.length > 1;
         const isPending = Boolean(node.pending || isQueued || isJimengPending);
         const body = nodeBodyHtml(node, layout);
-        const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
+        // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
+        const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
         const hint = isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
         const deletedInputCount = Array.isArray(node.deletedInputTombstones) ? node.deletedInputTombstones.length : 0;
         const deletedInputMarker = deletedInputCount
@@ -13636,6 +13637,17 @@ function handlePortDrop(drag, e){
             render();
             scheduleSave();
         } else {
+            // #149 C6: 连线被拒时 toast 提示原因（不再静默）
+            const toNode = nodes.find(n => n.id === toId);
+            if(toNode){
+                if(toNode.type === 'local-edit' && !toNode.localEditActiveRole){
+                    toast(tr('smart.connectLocalEditNoRole'));
+                } else if(toNode.type === 'smart-loop' && !toNode.imageInput && !toNode.showPrompt){
+                    toast(tr('smart.connectLoopNoInput'));
+                } else {
+                    toast(tr('smart.connectRejected'));
+                }
+            }
             discardPendingUndo();
             render();
         }
@@ -15077,6 +15089,11 @@ function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(sourceNode.type === 'smart-prompt') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
     if(sourceNode.type === 'smart-loop') return isSmartImageNode(targetNode);
     if(sourceNode.type === 'smart-group') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
+    // #149 C7: 补齐 local-edit/conversation/agent 源类型（与端口拖拽 connectInputNode 一致）
+    if(sourceNode.type === 'local-edit') return isSmartImageNode(targetNode);
+    if(sourceNode.type === 'smart-conversation') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
+    if(sourceNode.type === 'agent') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
+    // agent-task 是只读结果卡，不接受输入连线（#149 C8）
     return false;
 }
 function restoreDraggedNodePosition(){
@@ -15187,7 +15204,7 @@ function deleteNodeFromButton(id){
     // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
     const buttonNode = nodes.find(n => n.id === id);
     if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
-    if(clearNodeMediaBeforeDelete(id)) return;
+    // #149 B5: 统一为一步直接删节点（与 Delete 键行为一致），不再对有图节点两步清图
     deleteNode(id);
 }
 // 断开一条或多条连线（合并到分组的连线会一次性断开其下所有成员连线）。spec 可为索引数组或逗号分隔字符串。
@@ -19232,6 +19249,16 @@ function connectInputNode(fromId, toId){
     const from = nodes.find(n => n.id === fromId);
     const to = nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
+    // #149 C8: agent-task 是只读结果卡，不接受输入连线
+    if(to.type === 'agent-task'){
+        toast(tr('smart.connectAgentTaskReadOnly'));
+        return false;
+    }
+    // #149 C8: Prompt→Conversation 连线不生效（Conversation 只把图片类上游当参考图，Prompt 文本被忽略）
+    if(from.type === 'smart-prompt' && to.type === 'smart-conversation'){
+        toast(tr('smart.connectPromptToConversationIgnored'));
+        return false;
+    }
     if(to.type === 'local-edit'){
         const role = ['original','references','prompt'].includes(to.localEditActiveRole) ? to.localEditActiveRole : '';
         if(!role) return false; // role must be explicitly selected before connecting
