@@ -17,6 +17,12 @@
 - **batch-5**：#142 会话分支（fork）—— ✅ 完成（commit 见 git log；twin 实现 + 主会话审查修复 + 13 单测 + 13 浏览器断言 + 全量回归 1030 绿）
 - **batch-6**：#143 并行 Agent（并发验证 + 修复）—— ✅ 完成（commit e3ebe00；9 并发测试 + 修复 revision conflict retry bug + 全量回归 1039 绿）
 
+## 节点交互 bug 修复（2026-09-24，QA 彻查后按文件冲突分批）
+- **Batch A（#145+#146，commit 3e35430）**：`smartNodeInFlight` 加 agent-task 判定（status queued/running → in-flight，4 处删除入口拦截生成中卡片）；删除带媒体节点后归档延迟 2.5s + undo/redo 取消（`scheduleMediaArchive`/`cancelPendingMediaArchives`），修撤销后图片 404。Playwright 15/15。
+- **Batch B（#147+#148，commit 019ce46）**：新增 `isSmartGroupableNode`，agent/conversation/local-edit/agent-task 拒绝进组（入口过滤 + toast `smart.groupUnsupportedType`）；`deleteNode` 对 smart-group 改走 `ungroupNode`（删除=解散，无数据丢失）。Playwright 15/15。
+- **#150（commit 9766204）**：回收站预览 z-index 80→95，修缩略图被历史抽屉遮挡。
+- 待后续：#144（批量删历史丢连线竞态，需系统化 QA）、#149（9 项交互一致性）、#151/#152（历史抽屉/上传面板重叠）。
+
 ## 关键入口（侦察所得）
 - 节点数据：`project['canvas']['nodes']` 列表，agent 节点 type=smart-agent，属性直接存节点 dict
 - 会话宿主：`app/services/agent_host.py`（416 行）——spawn_session(session, model) 已支持 model 参数
