@@ -304,6 +304,22 @@ let conversationExtractionReturnFocus = null;
 const UNDO_LIMIT = 40;
 const undoStack = [];
 const redoStack = [];
+// #146: 删除节点后媒体归档延迟到撤销窗口结束（用户不太可能再撤销时）才执行；
+// 若用户在窗口内撤销，则取消待归档，避免撤销恢复的节点引用已归档资产 → 404。
+const ARCHIVE_DELAY_MS = 2500; // 延迟 2.5s（> 450ms 保存防抖 + 网络往返）
+let pendingMediaArchives = []; // [{ images: [...], timer: number }]
+function scheduleMediaArchive(images){
+    if(!images.length) return;
+    const timer = setTimeout(() => {
+        pendingMediaArchives = pendingMediaArchives.filter(entry => entry.timer !== timer);
+        void cascadeArchiveDeletedMedia(images);
+    }, ARCHIVE_DELAY_MS);
+    pendingMediaArchives.push({ images, timer });
+}
+function cancelPendingMediaArchives(){
+    pendingMediaArchives.forEach(entry => clearTimeout(entry.timer));
+    pendingMediaArchives = [];
+}
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
 let redoPushing = false;
@@ -356,6 +372,8 @@ function pushUndo(extra=null){
     syncUndoRedoButtons();
 }
 async function performUndo(){
+    // #146: 撤销时取消所有待归档，避免撤销恢复的节点引用已归档资产 → 404。
+    cancelPendingMediaArchives();
     while(undoStack.length){
         const snap = undoStack.pop();
         if(snap.projectOriginalDelete){
@@ -399,6 +417,8 @@ async function performUndo(){
     syncUndoRedoButtons();
 }
 async function performRedo(){
+    // #146: 重做时同样取消待归档（重做删除会让节点再次消失，归档应重新调度）。
+    cancelPendingMediaArchives();
     while(redoStack.length){
         const snap = redoStack.pop();
         if(snap.projectOriginalDelete) continue;
@@ -411,6 +431,18 @@ async function performRedo(){
         if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
             restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
         }
+        // #146: 计算重做后丢失的图片（当前有、恢复后无），重新调度归档。
+        const currentImages = [];
+        nodes.forEach(n => currentImages.push(...(n.images || [])));
+        const restoredImageIds = new Set();
+        restoredNodes.nodes.forEach(n => (n.images || []).forEach(img => {
+            const id = img?.asset_id || '';
+            if(id) restoredImageIds.add(id);
+        }));
+        const lostImages = currentImages.filter(img => {
+            const id = img?.asset_id || '';
+            return id && !restoredImageIds.has(id);
+        });
         nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
         if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
@@ -421,6 +453,8 @@ async function performRedo(){
         lastComposerNodeId = '';
         render();
         scheduleSave();
+        // #146: 重做删除后，对丢失的图片重新调度归档。
+        if(lostImages.length) scheduleMediaArchive(lostImages);
         undoSuppressed = false;
         toast(tr('smart.toastRedone'));
         syncUndoRedoButtons();
@@ -5671,6 +5705,9 @@ function smartGenerationSubmissions(node){
 }
 function smartNodeInFlight(node){
     if(smartNodeHasCompletedResult(node)) return false;
+    // #145: agent-task 节点用 node.status（'queued'/'running'/'succeeded'/'failed'/'uncertain'/'planned'），
+    // 不映射到 running/pending 字段，需单独判定。'planned' 未派发不算 in-flight。
+    if(isSmartAgentTaskNode(node)) return node.status === 'queued' || node.status === 'running';
     return Boolean(node && (node.running || node.pending || node.queued || node.jimengPending || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
 }
 function smartNodeHasDisplayResult(node){
@@ -15076,8 +15113,9 @@ function deleteNode(id){
     if(deleteIds.has(selectedImage.nodeId)) selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
-    // #74 (D1): 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
-    void cascadeArchiveDeletedMedia(removedNodes.flatMap(node => node.images || []));
+    // #74 (D1) + #146: 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
+    // #146: 延迟到撤销窗口结束才归档，撤销时取消，避免撤销恢复的节点引用已归档资产 → 404。
+    scheduleMediaArchive(removedNodes.flatMap(node => node.images || []));
 }
 function clearNodeMediaBeforeDelete(id){
     const node = nodes.find(n => n.id === id);
@@ -15102,8 +15140,9 @@ function clearNodeMediaBeforeDelete(id){
     selectedIds = [];
     render();
     scheduleSave();
-    // #74 (D1): 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
-    void cascadeArchiveDeletedMedia(clearedImages);
+    // #74 (D1) + #146: 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
+    // #146: 延迟归档，撤销时取消，避免撤销后图片 404。
+    scheduleMediaArchive(clearedImages);
     return true;
 }
 function deleteNodeFromButton(id){
@@ -15355,8 +15394,9 @@ async function deleteImage(id, imageIndex){
     if(alsoDeleteOriginal){
         void deleteSmartProjectOriginal(logCtx.historyId, logCtx.outputIndex, {skipConfirm:true});
     } else if(removedImage){
-        // #74 (D1): 被删的单图若无其他引用 → 移入回收区。
-        void cascadeArchiveDeletedMedia([removedImage]);
+        // #74 (D1) + #146: 被删的单图若无其他引用 → 移入回收区。
+        // #146: 延迟归档，撤销时取消，避免撤销后图片 404。
+        scheduleMediaArchive([removedImage]);
     }
 }
 async function renameSmartNodeImage(nodeId, imageIndex){
