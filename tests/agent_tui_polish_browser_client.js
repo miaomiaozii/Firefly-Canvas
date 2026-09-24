@@ -109,6 +109,47 @@
     record('markdown safe link keeps https href', safeOk, safeOk ? 'href=https://example.com/a' : 'missing/wrong');
     record('markdown javascript: link neutralized', evilOk, evilOk ? 'href neutralized' : 'DANGEROUS href present');
 
+    // Verify input stays enabled while busy (story 18: queue input during run)
+    const busyInputTest = evalFn(`(function() {
+      if (typeof getAgentTuiState !== 'function') return 'no getAgentTuiState';
+      const state = getAgentTuiState('tui-agent');
+      if (!state) return 'no state';
+      state.status = 'busy';
+      if (typeof renderAgentNode === 'function') renderAgentNode('tui-agent');
+      return 'ok';
+    })()`);
+    record('busy input test setup', busyInputTest === 'ok', busyInputTest);
+    await sleep(500);
+    const busyInput = document.querySelector('.agent-smart-node[data-id="tui-agent"] .agent-tui-input');
+    record('input enabled while busy (queueable)', Boolean(busyInput) && !busyInput.disabled, busyInput ? 'disabled=' + busyInput.disabled : 'missing');
+
+    // Verify thinking is hidden by default and toggleable (story 26)
+    const thinkTest = evalFn(`(function() {
+      if (typeof getAgentTuiState !== 'function') return 'no getAgentTuiState';
+      const state = getAgentTuiState('tui-agent');
+      if (!state) return 'no state';
+      state.status = 'idle';
+      state.thinking = [{ text: 'let me think about the layout', streaming: false }];
+      if (typeof renderAgentNode === 'function') renderAgentNode('tui-agent');
+      return 'ok';
+    })()`);
+    record('thinking test setup', thinkTest === 'ok', thinkTest);
+    await sleep(500);
+    let thinkEl = document.querySelector('.agent-smart-node[data-id="tui-agent"] .agent-tui-thinking');
+    record('thinking hidden by default', !thinkEl, thinkEl ? 'visible unexpectedly' : 'hidden');
+    const thinkBtn = document.querySelector('.agent-smart-node[data-id="tui-agent"] [data-agent-thinking]');
+    record('thinking toggle button exists', Boolean(thinkBtn), thinkBtn ? 'present' : 'missing');
+    if (thinkBtn) {
+      thinkBtn.click();
+      await sleep(500);
+      thinkEl = document.querySelector('.agent-smart-node[data-id="tui-agent"] .agent-tui-thinking');
+      record('thinking visible after toggle', Boolean(thinkEl) && thinkEl.textContent.includes('let me think'), thinkEl ? 'text=' + thinkEl.textContent.slice(0, 40) : 'missing');
+      thinkBtn.click();
+      await sleep(500);
+      thinkEl = document.querySelector('.agent-smart-node[data-id="tui-agent"] .agent-tui-thinking');
+      record('thinking hidden after second toggle', !thinkEl, thinkEl ? 'still visible' : 'hidden');
+    }
+
     // Verify collapsible tool activity rows
     const toolTest = evalFn(`(function() {
       if (typeof getAgentTuiState !== 'function') return 'no getAgentTuiState';

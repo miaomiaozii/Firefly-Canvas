@@ -11706,6 +11706,15 @@ function agentNodeBodyHtml(node) {
             break;
     }
 
+    // Render thinking (hidden by default, toggleable via 💭 button)
+    let thinkingHtml = '';
+    if (state.thinkingVisible && state.thinking && state.thinking.length > 0) {
+        const thinkingText = state.thinking.map(t => t.text || '').join('');
+        if (thinkingText) {
+            thinkingHtml = `<div class="agent-tui-thinking"><span class="agent-tui-thinking-label">💭 thinking</span><div class="agent-tui-thinking-text">${escapeHtml(thinkingText)}</div></div>`;
+        }
+    }
+
     // Render messages
     let messagesHtml = '';
     for (const msg of state.messages) {
@@ -11764,6 +11773,7 @@ function agentNodeBodyHtml(node) {
         </div>
         <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
+                ${thinkingHtml}
                 ${messagesHtml || '<div class="agent-tui-empty">输入自然语言描述你的创作目标...</div>'}
                 ${toolsHtml}
                 ${confirmHtml}
@@ -11771,8 +11781,9 @@ function agentNodeBodyHtml(node) {
         </div>
         <div class="agent-tui-input-row">
             <span class="agent-tui-prompt">&gt;</span>
-            <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" rows="1" ${state.status === 'busy' ? 'disabled' : ''}></textarea>
+            <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行，运行中 Enter 排队)" rows="1"></textarea>
             <div class="agent-tui-action-buttons">
+                <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="Abort (中止当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
@@ -13821,9 +13832,28 @@ function bindAgentNodeControls(el, node){
                 event.preventDefault();
                 const message = inputEl.value.trim();
                 if (message) {
-                    sendAgentPrompt(nodeId, projectId, message);
+                    const inputState = getAgentTuiState(nodeId);
+                    if (inputState && inputState.status === 'busy') {
+                        sendAgentFollowUp(nodeId, projectId, message);
+                    } else {
+                        sendAgentPrompt(nodeId, projectId, message);
+                    }
                     inputEl.value = '';
                 }
+            }
+        });
+    }
+
+    // Bind thinking toggle
+    const thinkingBtn = el.querySelector('[data-agent-thinking]');
+    if (thinkingBtn) {
+        thinkingBtn.addEventListener('mousedown', event => event.stopPropagation());
+        thinkingBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            const tState = getAgentTuiState(nodeId);
+            if (tState) {
+                tState.thinkingVisible = !tState.thinkingVisible;
+                renderAgentNode(nodeId);
             }
         });
     }

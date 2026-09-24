@@ -3920,6 +3920,38 @@ button.prompt-flow-context-image { cursor:pointer; }
     cursor: not-allowed;
 }
 
+.agent-tui-btn-thinking.agent-tui-btn-active {
+    background: #414868;
+    border-color: #9ece6a;
+    color: #9ece6a;
+}
+
+.agent-tui-thinking {
+    margin: 4px 0;
+    padding: 6px 8px;
+    border-left: 2px solid #565f89;
+    background: #1a1e2e;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #565f89;
+    font-style: italic;
+    max-height: 160px;
+    overflow-y: auto;
+    word-break: break-word;
+}
+
+.agent-tui-thinking-label {
+    display: block;
+    margin-bottom: 4px;
+    font-style: normal;
+    color: #7aa2f7;
+    user-select: none;
+}
+
+.agent-tui-thinking-text {
+    white-space: pre-wrap;
+}
+
 .agent-tui-btn-steer:hover:not(:disabled) {
     color: #e0af68;
 }

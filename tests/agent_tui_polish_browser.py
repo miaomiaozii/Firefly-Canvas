@@ -116,6 +116,10 @@ def launch(browser: Path, server, viewport: tuple[int, int], fixture: dict):
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     viewports = [(1424, 900)]
     browser = harness.find_browser()
     for index, viewport in enumerate(viewports):
