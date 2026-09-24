@@ -145,11 +145,12 @@ FORBIDDEN_PATTERNS = {
 # A hit is exempt if the file path starts with file_prefix (or "*" for any)
 # AND the term/pattern matches.
 WHITELIST = [
-    # smart-* implementation identifiers (see #136, migration decision pending)
-    ("*", "smart-prompt", "#136 implementation identifier, migration decision pending"),
-    ("*", "smart-image", "#136 implementation identifier, migration decision pending"),
-    ("*", "smart-agent", "#136 implementation identifier, migration decision pending"),
-    ("*", "smart-conversation", "#136 implementation identifier, migration decision pending"),
+    # smart-* implementation identifiers (#136 decided 2026-09-24: zero-migration,
+    # documented mapping in CONTEXT.md "节点类型标识符" + app/constants.py NODE_TYPE_*)
+    ("*", "smart-prompt", "#136 implementation identifier, zero-migration decision"),
+    ("*", "smart-image", "#136 implementation identifier, zero-migration decision"),
+    ("*", "smart-agent", "#136 implementation identifier, zero-migration decision"),
+    ("*", "smart-conversation", "#136 implementation identifier, zero-migration decision"),
     # Real logging (not history)
     ("*", "logger", "Real logging, not history"),
     ("*", "logging", "Real logging module"),

@@ -22,3 +22,13 @@ CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 LOCAL_IMAGE_IMPORT_MAX_BYTES = int(os.getenv('LOCAL_IMAGE_IMPORT_MAX_BYTES', str(50 * 1024 * 1024)))
 LOCAL_IMAGE_IMPORT_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 RUNNINGHUB_THUMBNAIL_EXTS = ('.jpg',)
+
+# Canvas node type identifiers (implementation identifiers, part of stored data).
+# Domain mapping (see CONTEXT.md "节点类型标识符", #136): smart-prompt=提示词节点,
+# smart-image=图片节点, smart-agent=Agent 节点, smart-conversation=对话节点.
+# Exempt from terminology consistency checks; new code should reference these
+# constants instead of raw strings.
+NODE_TYPE_PROMPT = 'smart-prompt'
+NODE_TYPE_IMAGE = 'smart-image'
+NODE_TYPE_AGENT = 'smart-agent'
+NODE_TYPE_CONVERSATION = 'smart-conversation'
