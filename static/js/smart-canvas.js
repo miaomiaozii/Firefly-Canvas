@@ -1886,6 +1886,10 @@ function smartGroupCompactMembers(node){
 function isSmartGroupCompactMember(node){
     return Boolean(node && (node.type === 'smart-prompt' || node.type === 'smart-loop') && smartGroupContainingNode(node.id));
 }
+// 可作为分组"画布成员节点"的类型（图片走网格吸收，prompt/loop 走成员节点，分组走合并）。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
+function isSmartGroupableNode(node){
+    return Boolean(node && (isSmartImageNode(node) || node.type === 'smart-prompt' || node.type === 'smart-loop' || isSmartGroupNode(node)));
+}
 // 分组当前缩放比例（1=原始）。分组就像“画布中的画布”：缩放分组时组内所有成员（含提示词）整体等比缩放+
 // 重排。缩放过程用每次手势开始时的快照实时计算（见 resize 处理），不存持久基准，避免移动成员后再缩放位置回退。
 // _memberZoom 仅用于：新入组的成员按它缩小，以匹配已经缩小的分组。
@@ -1951,7 +1955,8 @@ function addNodeToSmartGroup(group, child){
     }
     // 图片节点：收进卡片内的缩略图网格（不再作为画布上的独立节点）。
     if(isSmartImageNode(child)) return absorbImageNodeIntoSmartGroup(group, child);
-    // 提示词 / 循环：仍作为画布上的成员节点。
+    // 提示词 / 循环：仍作为画布上的成员节点。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
+    if(child.type !== 'smart-prompt' && child.type !== 'smart-loop') return false;
     if(items.includes(child.id)) return false;
     group.items = [...items, child.id];
     scaleSmartGroupMemberToZoom(group, child, zoom);
@@ -15090,6 +15095,13 @@ function cleanupAgentTuiState(nodeId) {
 }
 
 function deleteNode(id){
+    // #147: 删除智能分组 = 解散分组（图片拆回画布、成员保留、只删容器），与"解散分组"入口行为一致，无数据丢失。
+    // ungroupNode 内部已 pushUndo，这里不再重复。
+    const groupNode = nodes.find(n => n.id === id);
+    if(groupNode && isSmartGroupNode(groupNode)){
+        ungroupNode(id);
+        return;
+    }
     pushUndo();
     const deleteIds = new Set([id]);
     nodes.forEach(node => {
@@ -22686,8 +22698,13 @@ function groupSelectedNodes(){
     const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
     const selected = ids.map(id => nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
     if(selected.length < 1){ toast(tr('smart.groupSelectRequired')); return; }
+    // #148: 过滤掉不能进组的节点类型（agent/conversation/local-edit/agent-task），并 toast 提示。
+    const groupable = selected.filter(n => isSmartGroupableNode(n));
+    const rejected = selected.filter(n => !isSmartGroupableNode(n));
+    if(rejected.length > 0){ toast(tr('smart.groupUnsupportedType')); }
+    if(groupable.length < 1){ return; }
     pushUndo();
-    const rects = selected.map(nodeRect);
+    const rects = groupable.map(nodeRect);
     const minX = Math.min(...rects.map(r => r.x));
     const minY = Math.min(...rects.map(r => r.y));
     const maxX = Math.max(...rects.map(r => r.x + r.width));
@@ -22706,7 +22723,7 @@ function groupSelectedNodes(){
     };
     nodes.push(group);
     // 图片成员吸收进分组网格，提示词/循环作为成员节点；随后自动整理。
-    selected.forEach(node => addNodeToSmartGroup(group, node));
+    groupable.forEach(node => addNodeToSmartGroup(group, node));
     arrangeSmartGroupMembers(group, {skipUndo:true});
     selectedIds = [];
     selectedId = group.id;
@@ -22864,8 +22881,13 @@ function addDraggedNodesToSmartGroup(draggedNodes, group){
     if(!group || !isSmartGroupNode(group)) return false;
     const list = (draggedNodes || []).filter(n => n && n.id !== group.id);
     if(!list.length) return false;
+    // #148: 过滤掉不能进组的节点类型（agent/conversation/local-edit/agent-task），并 toast 提示。
+    const groupable = list.filter(n => isSmartGroupableNode(n));
+    const rejected = list.filter(n => !isSmartGroupableNode(n));
+    if(rejected.length > 0){ toast(tr('smart.groupUnsupportedType')); }
+    if(!groupable.length) return false;
     let added = false;
-    list.forEach(n => {
+    groupable.forEach(n => {
         if(addNodeToSmartGroup(group, n)) added = true;
     });
     if(!added) return false;

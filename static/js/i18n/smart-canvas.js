@@ -785,6 +785,7 @@
         "smart.noRetryableRequest": { zh: "没有可重试的请求，请重新发起生成", en: "No retryable request — please start a new generation" },
         "smart.recoverSubmitFailed": { zh: "恢复生图提交失败", en: "Failed to recover the image generation submit" },
         "smart.groupSelectRequired": { zh: "请选择要放入分组的节点", en: "Select the nodes to group" },
+        "smart.groupUnsupportedType": { zh: "Agent/对话/本地编辑/任务节点不能加入分组", en: "Agent/conversation/local-edit/task nodes cannot be added to a group" },
         "smart.folderCreateFailed": { zh: "新建文件夹失败", en: "Failed to create folder" },
         "smart.folderRenameFailed": { zh: "重命名文件夹失败", en: "Failed to rename folder" }
     });
