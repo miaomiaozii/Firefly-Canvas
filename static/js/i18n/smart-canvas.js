@@ -428,6 +428,7 @@
         "smart.trashLoadFailed": { zh: "回收区加载失败", en: "Failed to load trash" },
         "smart.trashRestore": { zh: "恢复", en: "Restore" },
         "smart.trashRestoreFailed": { zh: "恢复失败", en: "Restore failed" },
+        "smart.trashRestoredToLibrary": { zh: "已恢复到资源库（该媒体无生图历史记录，未还原历史条目）", en: "Restored to library (no generation history record; history entry not restored)" },
         "smart.trashDeleteForever": { zh: "彻底删除", en: "Delete forever" },
         "smart.trashPreview": { zh: "点击预览", en: "Click to preview" },
         "smart.imageDeleteScopeTitle": { zh: "删除范围", en: "Deletion scope" },

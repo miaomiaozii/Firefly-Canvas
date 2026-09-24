@@ -7001,7 +7001,8 @@ async function smartTrashRestoreItem(assetId, deletionId){
             return;
         }
         if(res.data?.canvas) await adoptServerCanvas(res.data.canvas);
-        toast(tr('canvas.originalRestored'));
+        // #151: 明确恢复去向——有 deletion_id 还原到画布+历史，无则只回资源库
+        toast(deletionId ? tr('canvas.originalRestored') : tr('smart.trashRestoredToLibrary'));
         renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
         await openSmartTrashPanel();
