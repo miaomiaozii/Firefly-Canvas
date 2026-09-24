@@ -15,7 +15,7 @@
 ## 批次划分（顺序执行，文件重叠：agent_host.py / api_agent_nodes.py / smart-canvas.js）
 - **batch-4**：#140 模型覆盖 + #141 自治级别 —— ✅ 完成（commit 2762c85，审查修复 2 处：后端重试/去重 + 前端刷新持久化）
 - **batch-5**：#142 会话分支（fork）—— ✅ 完成（commit 见 git log；twin 实现 + 主会话审查修复 + 13 单测 + 13 浏览器断言 + 全量回归 1030 绿）
-- **batch-6**：#143 并行 Agent（并发验证 + 修复）—— 🔄 进行中
+- **batch-6**：#143 并行 Agent（并发验证 + 修复）—— ✅ 完成（commit e3ebe00；9 并发测试 + 修复 revision conflict retry bug + 全量回归 1039 绿）
 
 ## 关键入口（侦察所得）
 - 节点数据：`project['canvas']['nodes']` 列表，agent 节点 type=smart-agent，属性直接存节点 dict
