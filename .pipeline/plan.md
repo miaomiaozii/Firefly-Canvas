@@ -25,3 +25,12 @@ M1/M2/M3 大部分已实现（前几轮会话完成）：
 
 ## 收尾
 全部批次 PASS 后：主会话逐条核对 28 故事 → 全量回归 → 提交（每批次一个 commit，引用 #117）→ 合 main 推送 → 关 issue
+
+## 完成（2026-09-24）
+- batch-3（TUI 规格细节：活动行折叠/状态灯+预览/流式 markdown/多行输入）已提交 cf07258
+- 28 故事终验发现 2 缺口并补齐（c5f366e）：
+  - 故事 18：输入框运行中不再禁用，Enter 自动排队 follow-up
+  - 故事 26：💭 按钮切换思考过程（默认隐藏）
+- 清理 4 对旧 Agent UI 浏览器死测试（agent_browser / agent_ui_browser / agent_deps_browser / user_session_browser，batch-1 移除旧 UI 后遗留，质量门/CI 不引用）
+- 浏览器测试 agent_tui_polish_browser.py 扩至 25 断言全过；全量回归全绿
+- i117 分支已合 main 并推送；issue #117 已关闭（M4 按 Out of Scope 不做）
