@@ -128,7 +128,6 @@ PROJECT_AGENT_EXECUTION_LOCKS: Dict[Tuple[str, str], Lock] = {}
 PROJECT_AGENT_EXECUTION_LOCKS_GUARD = Lock()
 PROJECT_AGENT_ADMISSION_LOCK = Lock()
 PROJECT_AGENT_MAX_PER_PROJECT = 8
-PROJECT_AGENT_MAX_TASKS_PER_PLAN = 8
 FLY_IMPORT_UPLOAD_LOCK = Lock()
 PHOTOSHOP_ROUND_TRIP_REQUESTS: Dict[str, Dict[str, Any]] = {}
 PHOTOSHOP_ROUND_TRIP_LOCK = RLock()
@@ -990,28 +989,6 @@ class ProjectVideoGenerationRequest(BaseModel):
     media_type: str = 'video'
     result_node_id: str = Field(min_length=1, max_length=200)
     base_revision: int = Field(ge=0)
-
-class ProjectAgentPlanRequest(BaseModel):
-    """User-authored Agent goal and explicit task specification.
-
-    The task list is intentionally an opaque JSON object at this boundary.  A
-    plan is a reviewable contract, so the server normalizes and validates every
-    field before persisting it rather than accepting a free-form tool call.
-    ``task_specs``/``prompt`` are accepted as compatibility aliases for early
-    clients; the persisted representation always uses ``tasks`` and ``goal``.
-    """
-    goal: str = Field(default='', max_length=VIDEO_PROMPT_MAX_LENGTH)
-    prompt: str = Field(default='', max_length=VIDEO_PROMPT_MAX_LENGTH)
-    tasks: List[Dict[str, Any]] = Field(default_factory=list)
-    task_specs: List[Dict[str, Any]] = Field(default_factory=list)
-    request_id: str = Field(default='', max_length=240)
-    base_revision: int = Field(default=0, ge=0)
-
-class ProjectAgentExecuteRequest(BaseModel):
-    plan_id: str = Field(min_length=1, max_length=240)
-    execution_id: str = Field(default='', max_length=240)
-    plan_hash: str = Field(default='', max_length=128)
-    tasks: List[Dict[str, Any]] = Field(default_factory=list)
 
 class ImageTaskQueryRequest(BaseModel):
     provider_id: str = 'comfly'
@@ -5420,8 +5397,8 @@ def _agent_task_specs(payload: ProjectAgentPlanRequest) -> List[Dict[str, Any]]:
     values = payload.tasks if payload.tasks else payload.task_specs
     if not values:
         values = [{'kind': 'image', 'count': 1, 'params': {}}]
-    if not isinstance(values, list) or len(values) > PROJECT_AGENT_MAX_TASKS_PER_PLAN:
-        raise HTTPException(status_code=400, detail={'code': 'agent_plan_task_limit', 'message': f'Agent 单个计划最多包含 {PROJECT_AGENT_MAX_TASKS_PER_PLAN} 个任务'})
+    if not isinstance(values, list) or len(values) > 8:
+        raise HTTPException(status_code=400, detail={'code': 'agent_plan_task_limit', 'message': 'Agent 单个计划最多包含 8 个任务'})
     if any((not isinstance(item, dict) for item in values)):
         raise HTTPException(status_code=400, detail='Agent 计划任务必须是对象')
     return [copy.deepcopy(item) for item in values]

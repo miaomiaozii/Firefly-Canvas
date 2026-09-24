@@ -20,7 +20,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_MAX_TASKS_PER_PLAN, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectAgentExecuteRequest, ProjectAgentPlanRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
+from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.project_activity import (
     ProjectCleanupActive,
@@ -291,29 +291,6 @@ def _agent_active_counts(project_id: str, agent_id: str='') -> Tuple[int, int, i
                 if str(node.get('agent_id') or '') == str(agent_id):
                     node_count += 1
     return (global_count, project_count, node_count)
-
-@router.get('/api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}')
-async def get_project_agent_task(project_id: str, node_id: str, task_id: str):
-    with PROJECT_AGENT_TASKS_LOCK:
-        current = PROJECT_AGENT_TASKS.get(str(task_id))
-        if current and str(current.get('project_id') or '') == str(project_id) and (str(current.get('agent_id') or '') == str(node_id)):
-            return _agent_public_task(current)
-    try:
-        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
-        project_agent_node(opened['canvas'], node_id)
-        node = _agent_find_task_node(opened['canvas'], task_id)
-        if not node or str(node.get('agent_id') or '') != str(node_id):
-            raise HTTPException(status_code=404, detail='Agent 任务不存在')
-        result = _agent_public_task(node)
-        result_node_id = str(node.get('result_node_id') or '')
-        result_node = next((item for item in opened['canvas'].get('nodes') or [] if str(item.get('id') or '') == result_node_id), None)
-        if result_node is not None:
-            result['result_node'] = copy.deepcopy(result_node)
-        history_id = f'agent-generation-{task_id}'
-        result['history_record'] = next((item for item in opened['canvas'].get('history') or [] if str(item.get('id') or '') == history_id), None)
-        return result
-    except ProjectNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 async def generate_project_video(request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None, on_provider_task=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Adapt project-owned references to the existing online video adapters."""
@@ -1392,32 +1369,6 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
     content['retry_of_task_id'] = str(task_id)
     return JSONResponse(status_code=202, content=content)
 
-
-@router.post('/api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}/cancel')
-async def cancel_project_agent_task(project_id: str, node_id: str, task_id: str, request: Request):
-    ensure_same_origin_request(request)
-    with PROJECT_AGENT_TASKS_LOCK:
-        current = PROJECT_AGENT_TASKS.get(str(task_id))
-        if not current or str(current.get('project_id') or '') != str(project_id) or str(current.get('agent_id') or '') != str(node_id):
-            raise HTTPException(status_code=404, detail='Agent 任务不存在')
-    cancelled = await asyncio.to_thread(_app_main.project_agent_cancel_task, project_id, node_id, task_id)
-    if not cancelled:
-        raise HTTPException(status_code=409, detail='任务已结束，无法取消')
-    await asyncio.to_thread(_app_main._agent_set_task_node, project_id, task_id, status='cancelled', completed_at=_app_main.now_ms(), result=None, error='任务已取消')
-    return {'task_id': task_id, 'status': 'cancelled'}
-
-@router.post('/api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}/retry')
-async def retry_project_agent_task(project_id: str, node_id: str, task_id: str, request: Request):
-    ensure_same_origin_request(request)
-    with PROJECT_AGENT_TASKS_LOCK:
-        current = PROJECT_AGENT_TASKS.get(str(task_id))
-        if not current or str(current.get('project_id') or '') != str(project_id) or str(current.get('agent_id') or '') != str(node_id):
-            raise HTTPException(status_code=404, detail='Agent 任务不存在')
-    retried = await asyncio.to_thread(_app_main.project_agent_retry_task, project_id, node_id, task_id)
-    if not retried:
-        raise HTTPException(status_code=409, detail='只有失败的任务可以重试')
-    await asyncio.to_thread(_app_main._agent_set_task_node, project_id, task_id, status='queued', completed_at=_app_main.now_ms(), result=None, error='')
-    return {'task_id': task_id, 'status': 'queued'}
 
 @router.post('/api/project-library/{project_id}/image-generation-tasks')
 async def create_project_image_task(project_id: str, payload: ProjectImageGenerationRequest, request: Request):

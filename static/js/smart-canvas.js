@@ -7972,9 +7972,6 @@ function createAgentNode(x, y, options={}){
         h:360,
         title:'Agent',
         agentGoal:'',
-        agentTaskDraft:{kind:'image', count:1, params:{}},
-        agentTaskDrafts:[{kind:'image', count:1, params:{}, prompt:''}],
-        agent_plan:null,
         created_at:Date.now()
     };
     nodes.push(node);
@@ -11696,6 +11693,9 @@ function agentNodeBodyHtml(node) {
         </div>
     </div>`;
 }
+function agentTaskStatusText(status){
+    return status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.failed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusPlanning');
+}
 function agentTaskNodeBodyHtml(node){
     const taskId = String(node?.task_id || node?.id || '');
     const status = String(node?.status || 'planned');
@@ -11707,7 +11707,7 @@ function agentTaskNodeBodyHtml(node){
     const resultLink = resultNodeId
         ? `<a class="agent-task-result-link" data-agent-result-link="${escapeAttr(resultNodeId)}" href="#${escapeAttr(resultNodeId)}">${escapeHtml(tr('smart.viewResultNode'))}</a>`
         : '<span class="agent-task-result-link muted">' + escapeHtml(tr('smart.waitingResultNode')) + '</span>';
-    return `<div class="agent-task-card" data-agent-task-card="${escapeAttr(taskId)}">
+    return `<div class="agent-task-card agent-task-card-readonly" data-agent-task-card="${escapeAttr(taskId)}">
         <div class="agent-task-heading">
             <div><div class="agent-task-title">${escapeHtml(trf('smart.agentTaskTitle', {kind: kind}))}</div><div class="agent-task-id">${escapeHtml(taskId)}</div></div>
             <span class="agent-task-status" data-agent-task-status="${escapeAttr(taskId)}" data-status="${escapeAttr(status)}" role="status">${escapeHtml(agentTaskStatusText(status))}</span>
@@ -11717,10 +11717,6 @@ function agentTaskNodeBodyHtml(node){
         <div class="agent-task-params" title="${escapeHtml(tr('smart.taskParams'))}">${escapeHtml(trf('smart.agentTaskParams', {p: paramsText}))}</div>
         ${error ? `<div class="agent-task-error" data-agent-task-error role="alert">${escapeHtml(error)}</div>` : ''}
         <div class="agent-task-result">${resultLink}</div>
-        <div class="agent-task-actions" data-agent-task-actions>
-            ${['queued', 'running'].includes(status) ? `<button type="button" class="agent-task-cancel agent-node-control" data-agent-cancel-task="${escapeAttr(taskId)}">${escapeHtml(tr('smart.cancelTask'))}</button>` : ''}
-            ${['failed', 'uncertain'].includes(status) ? `<button type="button" class="agent-task-retry agent-node-control" data-agent-retry-task="${escapeAttr(taskId)}">${escapeHtml(tr('smart.retryTask'))}</button>` : ''}
-        </div>
     </div>`;
 }
 function promptNodeBodyHtml(node){
@@ -13824,49 +13820,7 @@ function renderAgentNode(nodeId) {
     }
 }
 
-async function agentTaskControlAction(node, taskId, action){
-    if(!node || !taskId) return;
-    const projectId = canvas?.project_id || canvas?.project || canvasId;
-    const agentId = String(node?.agent_id || node?.id || '');
-    const btn = null;
-    try {
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/agent/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/${action}`, {method:'POST'});
-        if(!response.ok){
-            const detail = await response.json().catch(() => ({}));
-            showToast((detail?.detail) || (action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed')), 'error');
-            return;
-        }
-        showToast(action === 'cancel' ? tr('smart.taskCancelled') : tr('smart.taskRequeued'), 'success');
-        refreshAgentPlanState(agentId);
-    } catch(_){
-        showToast(action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed'), 'error');
-    }
-}
-async function refreshAgentPlanState(agentId){
-    const node = nodes.find(item => item.id === agentId);
-    if(!node) return;
-    const projectId = agentProjectId();
-    try {
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}`).then(r => r.ok ? r.json() : null).catch(() => null);
-        if(response?.canvas) applyConversationCanvasResponse(response.canvas);
-    } catch(_){}
-    render();
-}
 function bindAgentTaskNodeControls(el, node){
-    el.querySelectorAll('[data-agent-cancel-task]').forEach(btn => {
-        btn.addEventListener('click', async event => {
-            event.preventDefault();
-            event.stopPropagation();
-            await agentTaskControlAction(node, btn.dataset.agentCancelTask, 'cancel');
-        });
-    });
-    el.querySelectorAll('[data-agent-retry-task]').forEach(btn => {
-        btn.addEventListener('click', async event => {
-            event.preventDefault();
-            event.stopPropagation();
-            await agentTaskControlAction(node, btn.dataset.agentRetryTask, 'retry');
-        });
-    });
     el.querySelectorAll('[data-agent-result-link]').forEach(link => {
         link.addEventListener('mousedown', event => event.stopPropagation());
         link.addEventListener('click', event => {
