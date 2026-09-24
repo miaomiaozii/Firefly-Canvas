@@ -7,8 +7,23 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.services.agent_host import agent_host_manager
+from app.routers.api_agent_tools import _find_node, _apply_mutations
+
+# Resolve the main module without re-importing it (isolated-module test design).
+import sys as _sys
+import os as _os
+_app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"])
+
+
+def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
+    """Update a single field on a node and persist (reuses retry-on-conflict helper)."""
+    node = _find_node(project_id, node_id)
+    node[field] = value
+    node["updated_at"] = _app_main.now_ms()
+    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    return node
 
 
 @router.post("")
@@ -16,14 +31,39 @@ async def create_agent_node(
     project_id: str,
     node_id: str = Body(...),
     model: str = Body(default=""),
+    autonomy: str = Body(default=""),
     x_agent_project: str = Header(default=""),
 ):
-    """Create or resume an agent node session."""
-    session = await agent_host_manager.get_or_create_session(project_id, node_id, model)
+    """Create or resume an agent node session.
+
+    If model/autonomy are not provided, reads them from the node's attributes.
+    """
+    # Read node attributes if not explicitly provided
+    if not model:
+        try:
+            node = _find_node(project_id, node_id)
+            model = node.get("model", "") or ""
+        except HTTPException:
+            pass  # Node not found or not yet created; use default
+
+    if not autonomy:
+        try:
+            node = _find_node(project_id, node_id)
+            autonomy = node.get("autonomy", "") or "cautious"
+        except HTTPException:
+            autonomy = "cautious"
+
+    session = await agent_host_manager.get_or_create_session(project_id, node_id, model, autonomy)
+
+    # Update session model/autonomy if they were read from node attributes
+    if model and not session.model:
+        session.model = model
+    if autonomy and session.autonomy == "cautious" and autonomy != "cautious":
+        session.autonomy = autonomy
 
     # If not running, spawn it
     if not session.is_running:
-        success = await agent_host_manager.spawn_session(session, model)
+        success = await agent_host_manager.spawn_session(session, model, autonomy)
         if not success:
             raise HTTPException(status_code=500, detail="Failed to start agent session")
 
@@ -33,6 +73,7 @@ async def create_agent_node(
         "session_id": session.session_id,
         "status": session.status,
         "model": session.model or model,
+        "autonomy": session.autonomy or autonomy,
     }
 
 
@@ -62,9 +103,74 @@ async def get_agent_status(
         "status": session.status,
         "session_id": session.session_id,
         "model": session.model,
+        "autonomy": session.autonomy,
         "is_running": session.is_running,
         "started_at": session._started_at,
         "last_activity": session._last_activity,
+    }
+
+
+@router.post("/{node_id}/model")
+async def set_agent_model(
+    project_id: str,
+    node_id: str,
+    body: dict = Body(...),
+    x_agent_project: str = Header(default=""),
+):
+    """Set the model for an agent node.
+
+    If the session is running, switches the model via pi RPC set_model command.
+    Always persists the model to the node's attributes.
+    """
+    model = body.get("model", "")
+    # Persist to node attributes
+    node = _update_node_field(project_id, node_id, "model", model)
+
+    # If session is running, switch model via RPC
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    if session.is_running:
+        await agent_host_manager.set_model(session, model)
+    else:
+        # Update session model for next spawn
+        session.model = model
+
+    return {
+        "success": True,
+        "node_id": node_id,
+        "model": model,
+        "is_running": session.is_running,
+    }
+
+
+@router.post("/{node_id}/autonomy")
+async def set_agent_autonomy(
+    project_id: str,
+    node_id: str,
+    body: dict = Body(...),
+    x_agent_project: str = Header(default=""),
+):
+    """Set the autonomy level for an agent node.
+
+    Valid values: cautious, standard, autonomous.
+    Persists to node attributes. For running sessions, the confirmation gate
+    scope changes immediately (next tool call); the system prompt suffix takes
+    effect on next spawn.
+    """
+    autonomy = body.get("autonomy", "")
+    if autonomy not in ("cautious", "standard", "autonomous"):
+        raise HTTPException(status_code=400, detail=f"Invalid autonomy level: {autonomy}")
+
+    # Persist to node attributes
+    node = _update_node_field(project_id, node_id, "autonomy", autonomy)
+
+    # Update session autonomy (affects confirm gate scope immediately)
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    session.autonomy = autonomy
+
+    return {
+        "success": True,
+        "node_id": node_id,
+        "autonomy": autonomy,
     }
 
 

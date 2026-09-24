@@ -40,6 +40,19 @@ DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执�
 - media.upload / media.list（媒体操作）
 - viewport.focus（视口聚焦）"""
 
+# Autonomy level system prompt suffixes (appended to DEFAULT_SYSTEM_PROMPT at spawn)
+# cautious: current behavior (plan-first for multi-step)
+# standard: execute directly, report as you go
+# autonomous: execute directly, only safety-floor operations trigger confirmation
+AUTONOMY_SYSTEM_PROMPT_SUFFIXES = {
+    "cautious": "",
+    "standard": "\n\n自治级别：标准——多步任务直接执行，边做边报，不要先给计划等确认。",
+    "autonomous": "\n\n自治级别：自主——直接执行任务，不要先给计划等确认。仅项目级删除等真正不可逆操作会触发用户确认（工具层已处理）。",
+}
+
+# Safety floor tools: always require confirmation even in autonomous mode
+SAFETY_FLOOR_TOOLS = frozenset()  # Currently no project-level delete tool in canvas-tools
+
 
 @dataclass
 class AgentSession:
@@ -50,6 +63,7 @@ class AgentSession:
     session_id: Optional[str] = None
     session_file: Optional[str] = None
     model: str = ""
+    autonomy: str = "cautious"  # cautious | standard | autonomous
     status: str = "stopped"  # stopped, starting, running, busy, waiting_confirm, crashed
     event_handlers: List[Callable] = field(default_factory=list)
     confirm_handlers: List[Callable] = field(default_factory=list)
@@ -77,7 +91,7 @@ class AgentHostManager:
     def _session_key(self, project_id: str, node_id: str) -> str:
         return f"{project_id}:{node_id}"
 
-    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "") -> AgentSession:
+    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "cautious") -> AgentSession:
         """Get existing session or create a new one."""
         key = self._session_key(project_id, node_id)
         async with self._lock:
@@ -86,16 +100,17 @@ class AgentHostManager:
                 return session
 
             # Create new session
-            session = AgentSession(project_id=project_id, node_id=node_id, model=model)
+            session = AgentSession(project_id=project_id, node_id=node_id, model=model, autonomy=autonomy)
             self.sessions[key] = session
             return session
 
-    async def spawn_session(self, session: AgentSession, model: str = "", continue_session: bool = False) -> bool:
+    async def spawn_session(self, session: AgentSession, model: str = "", autonomy: str = "", continue_session: bool = False) -> bool:
         """Spawn a pi --mode rpc subprocess for the session.
 
         Args:
             session: The agent session to spawn.
             model: Optional model override.
+            autonomy: Optional autonomy level override (cautious/standard/autonomous).
             continue_session: If True, use --continue to restore previous session.
         """
         if session.is_running:
@@ -107,6 +122,14 @@ class AgentHostManager:
             session_dir = os.path.join(project_dir, session.session_dir)
             os.makedirs(session_dir, exist_ok=True)
 
+            # Determine effective autonomy level
+            effective_autonomy = autonomy or session.autonomy
+            if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
+                effective_autonomy = "cautious"
+
+            # Build system prompt with autonomy suffix
+            system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
+
             # Build command
             cmd = [
                 PI_CLI, "--mode", "rpc",
@@ -116,7 +139,7 @@ class AgentHostManager:
                 "--tools", "canvas.*,generate.*,media.*,viewport.*",
                 "--session-dir", session_dir,
                 "--name", f"firefly-agent-{session.node_id[:8]}",
-                "--system-prompt", DEFAULT_SYSTEM_PROMPT,
+                "--system-prompt", system_prompt,
             ]
 
             # If continuing an existing session, add --continue flag
@@ -269,6 +292,21 @@ class AgentHostManager:
     async def send_abort(self, session: AgentSession) -> None:
         """Abort the current turn."""
         await self.send_command(session, {"type": "abort"})
+
+    async def set_model(self, session: AgentSession, model: str) -> None:
+        """Switch the model for a running session via pi RPC set_model command.
+
+        Args:
+            session: The agent session.
+            model: Model identifier (e.g., "vllm-remote/qwen3.8-27b-w8a16-mtp2" or "gpt-4").
+        """
+        if "/" in model:
+            provider, model_id = model.split("/", 1)
+            command = {"type": "set_model", "provider": provider, "modelId": model_id}
+        else:
+            command = {"type": "set_model", "modelId": model}
+        await self.send_command(session, command)
+        session.model = model
 
     async def get_session_state(self, session: AgentSession, timeout: float = 10.0) -> Optional[dict]:
         """Query the session state."""

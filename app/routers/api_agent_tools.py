@@ -510,6 +510,9 @@ async def request_confirmation(project_id: str, request: Request, x_agent_projec
     Sends a confirm event to the frontend via the agent's WS stream and blocks
     waiting for the user's decision (with timeout).
 
+    For nodes with autonomy="autonomous", destructive tools are auto-approved
+    (except safety-floor tools which always require confirmation).
+
     Body: {"node_id": "...", "tool": "...", "params": {...}, "message": "..."}
     Returns: {"approved": true} or {"approved": false, "reason": "timeout"|"rejected"}
     """
@@ -524,10 +527,16 @@ async def request_confirmation(project_id: str, request: Request, x_agent_projec
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
-    from app.services.agent_host import agent_host_manager
+    from app.services.agent_host import agent_host_manager, SAFETY_FLOOR_TOOLS
 
     # Get the agent session
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
+
+    # Check autonomy level: auto-approve destructive tools in autonomous mode
+    # (except safety-floor tools which always require confirmation)
+    autonomy = session.autonomy or "cautious"
+    if autonomy == "autonomous" and tool not in SAFETY_FLOOR_TOOLS:
+        return {"approved": True}
 
     # Generate a unique confirm ID
     confirm_id = f"confirm-{uuid.uuid4().hex[:12]}"

@@ -3735,6 +3735,29 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #565f89;
 }
 
+.agent-tui-settings {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.agent-tui-model-select,
+.agent-tui-autonomy-select {
+    background: #2f3549;
+    color: #c0caf5;
+    border: 1px solid #3b4261;
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 10px;
+    cursor: pointer;
+    outline: none;
+}
+
+.agent-tui-model-select:hover,
+.agent-tui-autonomy-select:hover {
+    background: #3b4261;
+}
+
 @keyframes agent-tui-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }

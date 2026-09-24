@@ -3228,6 +3228,18 @@ function resolveChatProviderId(providerId=''){
     if(providers.some(p => p.id === providerId)) return providerId;
     return providers[0]?.id || 'comfly';
 }
+function getChatModels(){
+    // Return a list of chat model IDs across all providers
+    const models = [];
+    for (const provider of chatApiProviders()) {
+        const providerModels = providerChatModels(provider.id);
+        for (const model of providerModels) {
+            models.push({ id: model, name: model });
+        }
+    }
+    return models;
+}
+
 function providerChatModels(providerId){
     const provider = chatApiProviders().find(p => p.id === providerId);
     return mergeSpecModels('chat', orderedProviderModels(provider, 'chat_models', 'chat'), provider);
@@ -11356,7 +11368,7 @@ function conversationNodeBodyHtml(node){
     </div>`;
 }
 // Agent TUI state management
-const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model }
+const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model, autonomy }
 
 function getAgentTuiState(nodeId) {
     if (!agentTuiState.has(nodeId)) {
@@ -11365,6 +11377,7 @@ function getAgentTuiState(nodeId) {
             messages: [],
             status: 'idle',
             model: '',
+            autonomy: 'cautious',
             toolActivities: new Map(),
             thinkingVisible: false,
         });
@@ -11597,6 +11610,34 @@ function sendAgentAbort(nodeId, projectId) {
     });
 }
 
+function setAgentModel(nodeId, projectId, model) {
+    const state = getAgentTuiState(nodeId);
+    state.model = model;
+    // Optimistically update the local node (source of truth for rendering)
+    const node = nodes.find(n => n.id === nodeId);
+    if (node) node.model = model;
+    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model }),
+    }).catch(e => console.error('Failed to set agent model:', e));
+    renderAgentNode(nodeId);
+}
+
+function setAgentAutonomy(nodeId, projectId, autonomy) {
+    const state = getAgentTuiState(nodeId);
+    state.autonomy = autonomy;
+    // Optimistically update the local node (source of truth for rendering)
+    const node = nodes.find(n => n.id === nodeId);
+    if (node) node.autonomy = autonomy;
+    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/autonomy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autonomy: autonomy }),
+    }).catch(e => console.error('Failed to set agent autonomy:', e));
+    renderAgentNode(nodeId);
+}
+
 function sendAgentConfirm(nodeId, projectId, approved) {
     const state = getAgentTuiState(nodeId);
     if (!state.confirm) return;
@@ -11766,10 +11807,34 @@ function agentNodeBodyHtml(node) {
         </div>`;
     }
 
+    // Model select options — node is the source of truth for the persisted value
+    const currentModel = node.model || '';
+    let modelOptionsHtml = `<option value="" ${!currentModel ? 'selected' : ''}>默认</option>`;
+    const chatModels = getChatModels();
+    for (const model of chatModels) {
+        const modelValue = model.id || model;
+        const modelLabel = model.name || model.id || model;
+        const selected = currentModel === modelValue ? 'selected' : '';
+        modelOptionsHtml += `<option value="${escapeAttr(modelValue)}" ${selected}>${escapeHtml(modelLabel)}</option>`;
+    }
+    const modelSelectHtml = `<select class="agent-tui-model-select" data-agent-model="${escapeAttr(nodeId)}" title="模型">${modelOptionsHtml}</select>`;
+
+    // Autonomy select options — node is the source of truth
+    const currentAutonomy = node.autonomy || 'cautious';
+    const autonomySelectHtml = `<select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治级别">
+        <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>谨慎</option>
+        <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>标准</option>
+        <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>自主</option>
+    </select>`;
+
     return `<div class="agent-tui-card">
         <div class="agent-tui-header">
             <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
             <span class="agent-tui-status ${statusClass}">${statusText}</span>
+            <span class="agent-tui-settings">
+                ${modelSelectHtml}
+                ${autonomySelectHtml}
+            </span>
         </div>
         <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
@@ -13915,6 +13980,28 @@ function bindAgentNodeControls(el, node){
         rejectBtn.addEventListener('click', event => {
             event.stopPropagation();
             sendAgentConfirm(nodeId, projectId, false);
+        });
+    }
+
+    // Bind model select
+    const modelSelect = el.querySelector('[data-agent-model]');
+    if (modelSelect) {
+        modelSelect.addEventListener('mousedown', event => event.stopPropagation());
+        modelSelect.addEventListener('change', event => {
+            event.stopPropagation();
+            const model = modelSelect.value;
+            setAgentModel(nodeId, projectId, model);
+        });
+    }
+
+    // Bind autonomy select
+    const autonomySelect = el.querySelector('[data-agent-autonomy]');
+    if (autonomySelect) {
+        autonomySelect.addEventListener('mousedown', event => event.stopPropagation());
+        autonomySelect.addEventListener('change', event => {
+            event.stopPropagation();
+            const autonomy = autonomySelect.value;
+            setAgentAutonomy(nodeId, projectId, autonomy);
         });
     }
 
