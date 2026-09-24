@@ -44,6 +44,8 @@ def _validate_project(project_id: str):
 
 def _apply_mutations(project_id: str, mutations: list):
     """Apply canvas mutations with retry on revision conflict."""
+    from firefly_projects import RevisionConflict
+
     store = _app_main.FIREFLY_PROJECT_STORE
     for attempt in range(8):
         try:
@@ -52,11 +54,14 @@ def _apply_mutations(project_id: str, mutations: list):
             revision = int(canvas.get("revision") or 0)
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
             return result
-        except Exception as e:
-            if "revision" in str(e).lower() and attempt < 7:
+        except RevisionConflict:
+            # Revision conflict: another writer updated the canvas.
+            # Retry with the latest revision (up to 8 attempts).
+            if attempt < 7:
                 continue
+            raise HTTPException(status_code=409, detail="Canvas mutation failed after retries")
+        except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))
-    raise HTTPException(status_code=409, detail="Canvas mutation failed after retries")
 
 
 def _open_canvas(project_id: str) -> dict:
