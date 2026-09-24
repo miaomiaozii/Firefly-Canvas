@@ -914,5 +914,96 @@ class TestAgentConfirmation(unittest.TestCase):
         self.assertEqual(data["reason"], "timeout")
 
 
+class TestCleanupProject(unittest.TestCase):
+    """Tests for AgentHostManager.cleanup_project (US-27)."""
+
+    def setUp(self):
+        pass
+
+    def run_async(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_cleanup_project_kills_sessions(self):
+        """cleanup_project kills all sessions for the project."""
+        project_id = "proj-cleanup-1"
+        node_id = "node-cleanup-1"
+
+        # Create a session
+        session = self.run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+
+        # Replace real process with fake
+        fake = FakeAgentProcess()
+        session.process = fake
+        session.status = "running"
+
+        # Verify session is tracked
+        key = f"{project_id}:{node_id}"
+        self.assertIn(key, agent_host_manager.sessions)
+        self.assertTrue(session.is_running)
+
+        # Cleanup the project
+        self.run_async(agent_host_manager.cleanup_project(project_id))
+
+        # Verify session was stopped and removed
+        self.assertFalse(fake.poll() is None)  # process should be terminated
+        self.assertNotIn(key, agent_host_manager.sessions)
+
+    def test_cleanup_project_multi_project_isolation(self):
+        """Cleaning up project A doesn't affect project B's sessions."""
+        project_a = "proj-a"
+        project_b = "proj-b"
+
+        session_a = self.run_async(agent_host_manager.get_or_create_session(project_a, "node-a"))
+        session_b = self.run_async(agent_host_manager.get_or_create_session(project_b, "node-b"))
+
+        fake_a = FakeAgentProcess()
+        fake_b = FakeAgentProcess()
+        session_a.process = fake_a
+        session_b.process = fake_b
+        session_a.status = "running"
+        session_b.status = "running"
+
+        # Cleanup only project A
+        self.run_async(agent_host_manager.cleanup_project(project_a))
+
+        # Project A's session should be gone
+        self.assertNotIn(f"{project_a}:node-a", agent_host_manager.sessions)
+        self.assertFalse(fake_a.poll() is None)
+
+        # Project B's session should still be running
+        self.assertIn(f"{project_b}:node-b", agent_host_manager.sessions)
+        self.assertTrue(fake_b.poll() is None)  # still running
+
+        # Cleanup project B
+        self.run_async(agent_host_manager.cleanup_project(project_b))
+        self.assertNotIn(f"{project_b}:node-b", agent_host_manager.sessions)
+
+    def test_cleanup_project_idempotent(self):
+        """Calling cleanup_project multiple times is safe."""
+        project_id = "proj-idem"
+        node_id = "node-idem"
+
+        session = self.run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+        fake = FakeAgentProcess()
+        session.process = fake
+        session.status = "running"
+
+        # Call cleanup twice
+        self.run_async(agent_host_manager.cleanup_project(project_id))
+        self.run_async(agent_host_manager.cleanup_project(project_id))
+
+        # Should not raise, session should be gone
+        self.assertNotIn(f"{project_id}:{node_id}", agent_host_manager.sessions)
+
+    def test_cleanup_project_no_sessions(self):
+        """Cleanup on project with no sessions is safe."""
+        # Should not raise
+        self.run_async(agent_host_manager.cleanup_project("proj-nonexistent"))
+
+
 if __name__ == "__main__":
     unittest.main()

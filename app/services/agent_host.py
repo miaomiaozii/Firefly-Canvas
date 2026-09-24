@@ -377,6 +377,30 @@ class AgentHostManager:
                 logger.error(f"Failed to restore agent session {node_id}: {e}")
         return restored
 
+    async def cleanup_project(self, project_id: str):
+        """Stop all agent sessions for a project (called on project trash/purge).
+
+        Kills all running pi subprocesses for the project and removes their
+        session records from the manager. Safe to call multiple times (idempotent).
+        """
+        key_prefix = f"{project_id}:"
+        async with self._lock:
+            # Collect sessions to stop and their keys
+            keys_to_remove = [
+                k for k in self.sessions.keys()
+                if k.startswith(key_prefix)
+            ]
+            sessions_to_stop = [self.sessions[k] for k in keys_to_remove]
+            # Remove from tracking immediately so concurrent get_or_create
+            # doesn't race with cleanup
+            for k in keys_to_remove:
+                del self.sessions[k]
+        # Stop outside the lock to avoid holding it during process I/O
+        for session in sessions_to_stop:
+            await self.stop_session(session)
+        if sessions_to_stop:
+            logger.info(f"Cleaned up {len(sessions_to_stop)} agent session(s) for project {project_id}")
+
     async def cleanup_all(self):
         """Stop all sessions (called on shutdown)."""
         for session in list(self.sessions.values()):

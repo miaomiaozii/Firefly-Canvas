@@ -680,6 +680,21 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     media_index["items"][asset_id] = record
                     media_files.append((archive_path, source_path))
 
+                # Collect agent_nodes/ session files (US-27: sessions travel with project)
+                agent_files: List[tuple[str, Path]] = []
+                agent_root = directory / "agent_nodes"
+                if agent_root.is_dir():
+                    for agent_dir in agent_root.iterdir():
+                        if not agent_dir.is_dir():
+                            continue
+                        sessions_dir = agent_dir / "sessions"
+                        if not sessions_dir.is_dir():
+                            continue
+                        for session_file in sessions_dir.rglob("*"):
+                            if session_file.is_file():
+                                relative = session_file.relative_to(agent_root).as_posix()
+                                agent_files.append((f"agent_nodes/{relative}", session_file))
+
                 json_files = {
                     "project.json": json.dumps(project_payload, ensure_ascii=False, indent=2).encode("utf-8"),
                     "canvas.json": json.dumps(canvas_payload, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -694,6 +709,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 {"path": path, "size": source.stat().st_size, "sha256": _file_sha256(source)}
                 for path, source in media_files
             )
+            declared.extend(
+                {"path": path, "size": source.stat().st_size, "sha256": _file_sha256(source)}
+                for path, source in agent_files
+            )
             manifest = {
                 "format": "firefly-package-v1",
                 "version": 1,
@@ -706,6 +725,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                         archive.writestr(path, content, compress_type=zipfile.ZIP_DEFLATED)
                     for path, source in media_files:
                         archive.write(source, path, compress_type=zipfile.ZIP_STORED)
+                    for path, source in agent_files:
+                        archive.write(source, path, compress_type=zipfile.ZIP_DEFLATED)
                     archive.writestr(
                         "manifest.json",
                         json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -944,7 +965,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             if set(declared) != actual_files:
                 raise ProjectStoreError("Fly 项目清单与实际文件不一致")
             fixed_files = {"project.json", "canvas.json", "history.json", "media/index.json"}
-            if any(path not in fixed_files and not path.startswith("media/") for path in actual_files):
+            if any(path not in fixed_files and not path.startswith("media/") and not path.startswith("agent_nodes/") for path in actual_files):
                 raise ProjectStoreError("Fly 项目包含格式未声明的文件")
             media_members = [
                 (name, safe_members[name]) for name in actual_files
@@ -1110,6 +1131,18 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                         "created_at": created_at,
                     }
                 _write_json_atomic(directory / "media" / "index.json", media_index, keep_backup=False)
+                # Extract agent_nodes/ session files (US-27)
+                for name, member in safe_members.items():
+                    if member.is_dir() or not name.startswith("agent_nodes/"):
+                        continue
+                    relative = Path(*name.split("/")[1:])
+                    agent_root = (directory / "agent_nodes").resolve()
+                    target = (agent_root / relative).resolve()
+                    if os.path.commonpath([str(agent_root), str(target)]) != str(agent_root):
+                        raise ProjectStoreError("Fly 项目包含不安全 Agent 会话路径")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(member) as source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination)
                 self._canvases[project_id] = canvas
                 self._histories[project_id] = history
                 self.flush(project_id)
