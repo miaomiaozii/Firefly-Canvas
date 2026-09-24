@@ -614,6 +614,8 @@ video.node-img { object-fit:cover; background:#0f172a; }
 @keyframes dash-flow { to { stroke-dashoffset:-13; } }
 @keyframes dash-flow-pending { to { stroke-dashoffset:-9; } }
 .image-node { z-index:2; }
+/* #152: 历史抽屉打开时，节点提升到抽屉之上（87 > 86），底部节点的提示词框不被遮挡 */
+body:has(.log-modal.open) .image-node { z-index:87; }
 .image-node.smart-group-node { z-index:0; }
 .image-node.selected:not(.smart-group-node) { z-index:10; }
 .image-node.dragging:not(.smart-group-node) { z-index:12; }
