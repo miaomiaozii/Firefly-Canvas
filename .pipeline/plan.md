@@ -21,7 +21,8 @@
 - **Batch A（#145+#146，commit 3e35430）**：`smartNodeInFlight` 加 agent-task 判定（status queued/running → in-flight，4 处删除入口拦截生成中卡片）；删除带媒体节点后归档延迟 2.5s + undo/redo 取消（`scheduleMediaArchive`/`cancelPendingMediaArchives`），修撤销后图片 404。Playwright 15/15。
 - **Batch B（#147+#148，commit 019ce46）**：新增 `isSmartGroupableNode`，agent/conversation/local-edit/agent-task 拒绝进组（入口过滤 + toast `smart.groupUnsupportedType`）；`deleteNode` 对 smart-group 改走 `ungroupNode`（删除=解散，无数据丢失）。Playwright 15/15。
 - **#150（commit 9766204）**：回收站预览 z-index 80→95，修缩略图被历史抽屉遮挡。
-- 待后续：#144（批量删历史丢连线竞态，需系统化 QA）、#149（9 项交互一致性）、#151/#152（历史抽屉/上传面板重叠）。
+- 待后续：#149（9 项交互一致性体验优化）、#151（历史抽屉与生成中节点/资源库冲突）、#152（上传面板与历史抽屉重叠）。
+- **#144 已修复（commit 9290109）**：`adoptServerCanvas` 整体替换丢本地未保存 mutation → 改用 `rebaseProjectCanvasResponse` 3-way rebase 保留本地工作。Playwright 回归 8/8 + 后端 112 测试通过。issue 已关闭。
 
 ## 关键入口（侦察所得）
 - 节点数据：`project['canvas']['nodes']` 列表，agent 节点 type=smart-agent，属性直接存节点 dict
