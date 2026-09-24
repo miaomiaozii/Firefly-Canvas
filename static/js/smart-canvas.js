@@ -723,6 +723,37 @@ function refreshIcons(root=document){
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
 function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 const escapeAttr = escapeHtml;
+
+// Lightweight XSS-safe markdown renderer for agent TUI messages
+// Escapes HTML first, then renders markdown syntax.
+// Supports: code blocks, inline code, bold, italic, links, unordered lists.
+function renderMarkdown(text){
+    if(text == null) return '';
+    let html = escapeHtml(String(text));
+    // Code blocks (```) - must be done before inline code
+    html = html.replace(/```([\s\S]*?)```/g, '<pre class="agent-md-code-block"><code>$1</code></pre>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code class="agent-md-inline-code">$1</code>');
+    // Bold (**text**)
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Italic (*text*) - must be after bold
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // Links [text](url) - only allow safe protocols (block javascript: etc.)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+        const safeUrl = /^(https?:|mailto:|\/|#|\.\/|\.\.\/)/i.test(url) ? url : '#';
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    });
+    // Unordered lists (- item)
+    html = html.replace(/(^|\n)- (.+)/g, '$1<li>$2</li>');
+    html = html.replace(/(<li>.*?<\/li>)(\s*(?:<li>.*?<\/li>))+/g, '<ul class="agent-md-list">$1</ul>');
+    // Paragraphs (double newline)
+    html = html.replace(/\n\n/g, '</p><p>');
+    html = html.replace(/\n/g, '<br>');
+    html = '<p>' + html + '</p>';
+    // Clean up empty paragraphs
+    html = html.replace(/<p><\/p>/g, '');
+    return html;
+}
 function smartOriginalMediaUrl(itemOrUrl){
     const raw = typeof itemOrUrl === 'string' ? itemOrUrl : (itemOrUrl?.url || '');
     const text = String(raw || '');
@@ -11593,6 +11624,53 @@ function sendAgentConfirm(nodeId, projectId, approved) {
     renderAgentNode(nodeId);
 }
 
+// Get status light + last line preview HTML for agent node card
+function agentCardStatusHtml(nodeId) {
+    const state = agentTuiState.get(nodeId);
+    if (!state) {
+        return '<span class="agent-card-status agent-tui-status-idle">空闲</span>';
+    }
+    
+    // Determine status class and text
+    let statusClass = 'agent-tui-status-idle';
+    let statusText = '空闲';
+    if (state.status === 'busy') {
+        statusClass = 'agent-tui-status-busy';
+        statusText = '运行中';
+    } else if (state.status === 'connecting') {
+        statusClass = 'agent-tui-status-connecting';
+        statusText = '连接中';
+    } else if (state.status === 'error') {
+        statusClass = 'agent-tui-status-error';
+        statusText = '错误';
+    } else if (state.status === 'disconnected') {
+        statusClass = 'agent-tui-status-disconnected';
+        statusText = '已断开';
+    }
+    
+    // Waiting for confirmation overrides other statuses
+    if (state.confirm) {
+        statusClass = 'agent-tui-status-busy';
+        statusText = '等待确认';
+    }
+    
+    // Get last message/activity for preview
+    let lastLine = '';
+    if (state.messages && state.messages.length > 0) {
+        const lastMsg = state.messages[state.messages.length - 1];
+        lastLine = lastMsg.text ? lastMsg.text.slice(0, 40) : '';
+        if (lastMsg.text && lastMsg.text.length > 40) lastLine += '…';
+    } else if (state.toolActivities && state.toolActivities.size > 0) {
+        const lastActivity = [...state.toolActivities.values()].pop();
+        if (lastActivity) {
+            lastLine = `${lastActivity.name}(${lastActivity.status})`;
+        }
+    }
+    
+    const previewHtml = lastLine ? `<span class="agent-card-preview">${escapeHtml(lastLine)}</span>` : '';
+    return `<span class="agent-card-status ${statusClass}">${statusText}</span>${previewHtml}`;
+}
+
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
@@ -11635,13 +11713,13 @@ function agentNodeBodyHtml(node) {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderMarkdown(msg.text)}</span></div>`;
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         }
     }
 
-    // Render tool activities
+    // Render tool activities (collapsible)
     let toolsHtml = '';
     for (const [toolCallId, activity] of state.toolActivities) {
         let icon = '⚙';
@@ -11650,10 +11728,19 @@ function agentNodeBodyHtml(node) {
         else if (activity.status === 'running') icon = '⏳';
 
         const argsPreview = activity.args ? JSON.stringify(activity.args).slice(0, 80) : '';
-        toolsHtml += `<div class="agent-tui-tool" data-tool-call-id="${escapeAttr(toolCallId)}">
-            <span class="agent-tui-tool-icon">${icon}</span>
-            <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
-            <span class="agent-tui-tool-args">${escapeHtml(argsPreview)}</span>
+        const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
+        const resultPreview = activity.result ? String(activity.result).slice(0, 120) : '';
+        const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
+        toolsHtml += `<div class="agent-tui-tool${expandedClass}" data-tool-call-id="${escapeAttr(toolCallId)}">
+            <div class="agent-tui-tool-header">
+                <span class="agent-tui-tool-toggle">${activity.expanded ? '▾' : '▸'}</span>
+                <span class="agent-tui-tool-icon">${icon}</span>
+                <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
+            </div>
+            <div class="agent-tui-tool-details">
+                ${argsFull ? `<div class="agent-tui-tool-args"><pre>${escapeHtml(argsFull)}</pre></div>` : ''}
+                ${resultPreview ? `<div class="agent-tui-tool-result"><pre>${escapeHtml(resultPreview)}</pre></div>` : ''}
+            </div>
         </div>`;
     }
 
@@ -11684,7 +11771,7 @@ function agentNodeBodyHtml(node) {
         </div>
         <div class="agent-tui-input-row">
             <span class="agent-tui-prompt">&gt;</span>
-            <input type="text" class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" ${state.status === 'busy' ? 'disabled' : ''}>
+            <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行)" rows="1" ${state.status === 'busy' ? 'disabled' : ''}></textarea>
             <div class="agent-tui-action-buttons">
                 <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
@@ -12686,8 +12773,9 @@ function render(){
         const deletedInputMarker = deletedInputCount
             ? `<div class="node-upstream-deleted-marker" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
             : '';
+        const agentCardStatus = isAgent ? agentCardStatusHtml(node.id) : '';
         const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
-            <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-actions">${deleteBtn}</div></div>
+            <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${deleteBtn}</div></div>
             ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
@@ -13708,6 +13796,21 @@ function bindAgentNodeControls(el, node){
     // Connect WebSocket when node is rendered
     connectAgentWebSocket(nodeId, projectId);
 
+    // Bind tool activity row toggle (collapsible)
+    const toolRows = el.querySelectorAll('[data-tool-call-id]');
+    toolRows.forEach(row => {
+        row.addEventListener('click', event => {
+            event.stopPropagation();
+            const toolCallId = row.getAttribute('data-tool-call-id');
+            const state = getAgentTuiState(nodeId);
+            const activity = state.toolActivities.get(toolCallId);
+            if (activity) {
+                activity.expanded = !activity.expanded;
+                renderAgentNode(nodeId);
+            }
+        });
+    });
+
     // Bind input
     const inputEl = el.querySelector('[data-agent-tui-input]');
     if (inputEl) {
@@ -13794,7 +13897,7 @@ function bindAgentNodeControls(el, node){
 
 function renderAgentNode(nodeId) {
     // Find the rendered element for this node and re-render its body
-    const el = document.querySelector(`[data-node-id="${nodeId}"]`);
+    const el = document.querySelector(`[data-id="${nodeId}"]`);
     if (!el) return;
 
     // Find the node data
@@ -13802,7 +13905,9 @@ function renderAgentNode(nodeId) {
     if (!node) return;
 
     // Get the layout
-    const layout = nodeLayout(node);
+    const imgs = node.images || [];
+    const scale = nodeScale(node);
+    const layout = imageLayout(imgs, scale, node);
     if (!layout) return;
 
     // Re-render just the body
@@ -13817,6 +13922,12 @@ function renderAgentNode(nodeId) {
         if (messagesEl) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
+    }
+
+    // Update node card status light + last line preview
+    const headMeta = el.querySelector('.node-head-meta');
+    if (headMeta) {
+        headMeta.innerHTML = agentCardStatusHtml(nodeId);
     }
 }
 

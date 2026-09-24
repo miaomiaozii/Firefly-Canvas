@@ -3936,3 +3936,135 @@ button.prompt-flow-context-image { cursor:pointer; }
     0%, 100% { border-right: 2px solid #56d364; }
     50% { border-right: 2px solid transparent; }
 }
+
+/* Agent node card status light + last line preview */
+.node-head-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-end;
+}
+.agent-card-status {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.agent-card-preview {
+    font-size: 10px;
+    color: #7aa2f7;
+    opacity: 0.7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
+/* Collapsible tool activity rows */
+.agent-tui-tool {
+    cursor: pointer;
+    user-select: none;
+}
+.agent-tui-tool-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.agent-tui-tool-toggle {
+    font-size: 10px;
+    color: #565f89;
+    width: 12px;
+    text-align: center;
+}
+.agent-tui-tool-details {
+    display: none;
+    margin-top: 4px;
+    padding-left: 16px;
+}
+.agent-tui-tool-expanded .agent-tui-tool-details {
+    display: block;
+}
+.agent-tui-tool-details pre {
+    margin: 0;
+    padding: 4px 6px;
+    background: #1a1b26;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #9ece6a;
+    overflow-x: auto;
+    max-height: 100px;
+}
+.agent-tui-tool-args {
+    margin-bottom: 4px;
+}
+.agent-tui-tool-result pre {
+    color: #7aa2f7;
+}
+
+/* Markdown rendering in TUI messages */
+.agent-tui-msg-text {
+    line-height: 1.5;
+}
+.agent-tui-msg-text p {
+    margin: 0 0 8px 0;
+}
+.agent-tui-msg-text p:last-child {
+    margin-bottom: 0;
+}
+.agent-md-code-block {
+    margin: 6px 0;
+    padding: 8px;
+    background: #1a1b26;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 11px;
+}
+.agent-md-code-block code {
+    font-family: inherit;
+    color: #9ece6a;
+}
+.agent-md-inline-code {
+    padding: 1px 4px;
+    background: #2f3549;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #9ece6a;
+}
+.agent-md-list {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+.agent-md-list li {
+    margin: 2px 0;
+}
+.agent-tui-msg-text a {
+    color: #7aa2f7;
+    text-decoration: underline;
+}
+
+/* Textarea input for TUI */
+.agent-tui-input {
+    flex: 1;
+    min-width: 0;
+    background: #1a1b26;
+    border: 1px solid #3b4261;
+    border-radius: 6px;
+    color: #c0caf5;
+    font-size: 12px;
+    font-family: inherit;
+    padding: 6px 10px;
+    resize: none;
+    overflow-y: auto;
+    max-height: 80px;
+    line-height: 1.4;
+}
+.agent-tui-input:focus {
+    outline: none;
+    border-color: #7aa2f7;
+}
+.agent-tui-input::placeholder {
+    color: #565f89;
+}
