@@ -13638,9 +13638,12 @@ function handlePortDrop(drag, e){
             render();
             scheduleSave();
         } else {
-            // #149 C6: 连线被拒时 toast 提示原因（不再静默）
+            // #149 C6: 连线被拒时 toast 提示原因（不再静默）。
+            // C8 的 agent-task / prompt→conversation 已在 connectInputNode 内 toast，此处跳过避免重复。
             const toNode = nodes.find(n => n.id === toId);
-            if(toNode){
+            const fromNode = nodes.find(n => n.id === fromId);
+            const c8Handled = Boolean(toNode) && (toNode.type === 'agent-task' || (fromNode?.type === 'smart-prompt' && toNode.type === 'smart-conversation'));
+            if(toNode && !c8Handled){
                 if(toNode.type === 'local-edit' && !toNode.localEditActiveRole){
                     toast(tr('smart.connectLocalEditNoRole'));
                 } else if(toNode.type === 'smart-loop' && !toNode.imageInput && !toNode.showPrompt){
