@@ -2396,11 +2396,12 @@ function promptNodeLayoutSize(node){
 function conversationNodeLayoutSize(node){
     const width = Number(node?.w);
     const height = Number(node?.h);
+    // 拖小低于阈值时钳制到阈值（280/240），不弹回默认值（390/430）
     return {
-        width:Math.round(Number.isFinite(width) && width > 280 ? width : 390),
+        width:Math.round(Number.isFinite(width) ? Math.max(280, width) : 390),
         height:node?.conversation_collapsed === true
             ? 96
-            : Math.round(Number.isFinite(height) && height > 240 ? height : 430),
+            : Math.round(Number.isFinite(height) ? Math.max(240, height) : 430),
     };
 }
 // 智能分组的图片网格布局：跟多图节点一致，但可见排数上限为 4（超过出现滚动），且缩略图无放大上限
@@ -2423,7 +2424,8 @@ function isLockedBatchGenNode(node){
     if(node.id && smartGroupContainingNode(node.id)) return false;
     const count = Array.isArray(node?.images) ? node.images.length : 0;
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
-    if(count === 0 || pending) return true;
+    // #149 A3：生成中（pending/queued）才锁尺寸；空节点（未生成）允许用户预设大小。
+    if(pending) return true;
     if(count === 1) return false; // singleImageLayout 尊重用户拉伸尺寸，手柄有效
     const genAspect = node?._generationAspect || null;
     const batchTotal = Math.max(0, Math.min(8, Number(node?._batchTotal) || 0));
@@ -13025,7 +13027,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${(imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -13098,7 +13100,7 @@ function render(){
             ${runTimePillHtml(node)}
             <div class="node-body">${body}</div>
             <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
-            ${(imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="${escapeHtml(tr('smart.portIn'))}"></div>
             <div class="node-port port-out" data-port="out" title="${escapeHtml(tr('smart.portOut'))}"></div>
         </div>`;
@@ -14000,7 +14002,15 @@ function bindConversationNodeControls(el, node){
     el.querySelectorAll('.conversation-node-message-text').forEach(messageEl => {
         messageEl.addEventListener('pointerdown', event => event.stopPropagation());
         messageEl.addEventListener('mousedown', event => event.stopPropagation());
-        messageEl.addEventListener('click', event => event.stopPropagation());
+        messageEl.addEventListener('click', event => {
+            event.stopPropagation();
+            if(selectedId !== node.id){
+                selectedId = node.id;
+                selectedIds = [];
+                selectedImage = {nodeId:'', index:-1};
+                render();
+            }
+        });
         messageEl.addEventListener('contextmenu', event => {
             const liveSelection = conversationSelectionFromDom(messageEl);
             const messageId = messageEl.dataset.messageId || '';
@@ -23315,7 +23325,8 @@ window.onmousemove = e => {
         const dx = (e.clientX - resizeState.startX) / viewport.scale;
         const dy = (e.clientY - resizeState.startY) / viewport.scale;
         const minW = node.type === 'smart-prompt' ? 260 : node.type === 'smart-loop' ? 252 : node.type === 'smart-agent' ? 330 : node.type === 'agent-task' ? 280 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_WIDTH : 48;
-        const minH = node.type === 'smart-prompt' ? 170 : node.type === 'smart-loop' ? 132 : node.type === 'smart-agent' ? 270 : node.type === 'agent-task' ? 210 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_HEIGHT : 48;
+        // 拖拽预览阶段就用内容最小高度钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
+        const minH = node.type === 'smart-prompt' ? promptNodeMinHeight(node) : node.type === 'smart-loop' ? smartLoopHeight(node) : node.type === 'smart-agent' ? 270 : node.type === 'agent-task' ? 210 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_HEIGHT : 48;
         if(node.type === 'smart-group' && smartGroupImageRefs(node).some(ref => ref.item?.url)){
             // 图片分组：和普通节点一样直接改 w/h，缩略图网格按新尺寸实时重排。不要走下面的“成员缩放”那套，
             // 否则拖动过程里会按成员包围盒/缩放比例收缩，松手才回到拖动宽度（用户反馈的“变宽时先缩小”）。
@@ -23397,7 +23408,9 @@ window.onmousemove = e => {
         const node = nodes.find(n => n.id === promptSplitResizeState.id);
         if(!node) return;
         const dy = (e.clientY - promptSplitResizeState.startY) / viewport.scale;
-        const newPreviewH = Math.max(PROMPT_SPLIT_PREVIEW_MIN_H, Math.min(PROMPT_SPLIT_PREVIEW_MAX_H, Math.round(promptSplitResizeState.startH + dy)));
+        // 让拖拽预览阶段就用 promptNodeMinHeight 钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
+        const minPreviewH = Math.max(PROMPT_SPLIT_PREVIEW_MIN_H, promptNodeMinHeight(node) - promptSplitResizeState.startNodeH + promptSplitResizeState.startH);
+        const newPreviewH = Math.max(minPreviewH, Math.min(PROMPT_SPLIT_PREVIEW_MAX_H, Math.round(promptSplitResizeState.startH + dy)));
         node.promptSplitPreviewHeight = newPreviewH;
         node.h = Math.max(promptNodeMinHeight(node), Math.round(promptSplitResizeState.startNodeH + (newPreviewH - promptSplitResizeState.startH)));
         node.w = Math.max(Number(node.w) || 0, 316);
