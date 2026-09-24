@@ -390,6 +390,20 @@ async def agent_event_stream(
 
     agent_host_manager.on_event(session, ws_event_handler)
 
+    # Send a session-confirmation event so the client can leave the transient
+    # 'connecting' state. The pi subprocess only emits agent lifecycle events
+    # (agent_start / turn_start / message_update ...) and never a 'session'
+    # event, so without this the node's status badge is stuck on "连接中" until
+    # the user happens to send a prompt. Emit it after the handler is
+    # registered (so it can't be missed) and before the receive loop.
+    await websocket.send_json({
+        "type": "session",
+        "session_id": session.session_id,
+        "status": session.status,
+        "model": session.model,
+        "autonomy": session.autonomy,
+    })
+
     try:
         while True:
             # Receive commands from frontend

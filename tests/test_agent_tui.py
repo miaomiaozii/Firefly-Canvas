@@ -699,6 +699,34 @@ class TestMultiNodeIsolation(unittest.TestCase):
         self.assertEqual(len(b_tools), 1, f"Node B should receive 1 tool event. Got: {len(b_tools)}")
         self.assertEqual(b_tools[0]["toolName"], "canvas.update_node")
 
+    def test_ws_stream_sends_session_confirmation_first(self):
+        """The WS stream must emit a 'session' confirmation event first so the
+        client's status badge leaves the transient 'connecting' state.
+
+        Regression: the pi subprocess only emits agent lifecycle events
+        (agent_start / turn_start / message_update ...) and never a 'session'
+        event, so without the server-side confirmation the node badge is stuck
+        on "连接中" until the user happens to send a prompt.
+        """
+        project = self.store.create_project("Session Confirm Test")
+        project_id = project["id"]
+        node_id = "node-session-confirm"
+
+        # Pre-create a running session so the WS endpoint does not spawn a real pi process.
+        session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+        session.process = FakeAgentProcess(script=[])
+
+        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/{node_id}/stream") as ws:
+            first = self._receive_with_timeout(ws)
+            self.assertEqual(
+                first.get("type"), "session",
+                f"First WS event must be the 'session' confirmation, got: {first}",
+            )
+            self.assertIn("session_id", first)
+            self.assertIn("status", first)
+            self.assertIn("model", first)
+            self.assertIn("autonomy", first)
+
 
 class TestAgentConfirmation(unittest.TestCase):
     """Test the confirmation gate for destructive operations."""

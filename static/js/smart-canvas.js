@@ -2410,6 +2410,21 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
+    if(node?.type === 'smart-agent'){
+        // Agent 节点是 TUI 型节点：尺寸由节点自身 w/h 决定（可拖拽拉伸），
+        // 不走媒体节点的图片网格占位布局，否则 resize 设置的 w/h 不生效
+        // （用户反馈"agent 节点没法拉伸"——渲染尺寸恒为占位图大小，与 w/h 无关）。
+        const explicitW = Number(node.w);
+        const explicitH = Number(node.h);
+        return {
+            cols:1,
+            rows:1,
+            width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : 382),
+            height:Math.round(Number.isFinite(explicitH) && explicitH > 24 ? explicitH : 360),
+            thumb:96,
+            single:true,
+        };
+    }
     if(node?.type === 'local-edit'){
         // 局部编辑是表单型节点：尺寸由节点自身 w/h 决定（可拖拽调大小），
         // 不走媒体节点的单图/批量布局，否则卡片会溢出外框。
