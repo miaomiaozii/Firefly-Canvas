@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -238,6 +239,126 @@ async def send_agent_abort(
 
     await agent_host_manager.send_abort(session)
     return {"success": True, "node_id": node_id}
+
+
+@router.get("/{node_id}/fork-messages")
+async def get_fork_messages(
+    project_id: str,
+    node_id: str,
+    x_agent_project: str = Header(default=""),
+):
+    """Get the list of user messages available for forking."""
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    if not session.is_running:
+        raise HTTPException(status_code=400, detail="Agent is not running")
+
+    messages = await agent_host_manager.get_fork_messages(session)
+    return {"success": True, "node_id": node_id, "messages": messages}
+
+
+@router.post("/{node_id}/fork")
+async def fork_session(
+    project_id: str,
+    node_id: str,
+    entry_id: str = Body(...),
+    name: str = Body(default=""),
+    x_agent_project: str = Header(default=""),
+):
+    """Fork the conversation from a specific user message.
+
+    Creates a new branch and persists the branch list to the node's attributes.
+    """
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    if not session.is_running:
+        raise HTTPException(status_code=400, detail="Agent is not running")
+
+    # Get existing branches from node attributes
+    node = _find_node(project_id, node_id)
+    branches = node.get("branches") or []
+
+    # Track the original branch on the first fork (so it can be switched back to)
+    if not branches:
+        branches.append({
+            "id": "branch-original",
+            "name": "原始",
+            "session_file": session.session_file,
+            "session_id": session.session_id,
+            "fork_from_entry_id": None,
+            "created_at": _app_main.now_ms(),
+        })
+
+    # Perform the fork
+    fork_info = await agent_host_manager.fork(session, entry_id)
+    if fork_info.get("cancelled"):
+        raise HTTPException(status_code=409, detail="Fork was cancelled")
+
+    # Build the new branch record
+    import time as _time
+    branch_id = f"branch-{uuid.uuid4().hex[:8]}"
+    branch = {
+        "id": branch_id,
+        "name": name or f"分支 {int(_time.time() * 1000) % 10000}",
+        "session_file": fork_info.get("session_file"),
+        "session_id": fork_info.get("session_id"),
+        "fork_from_entry_id": entry_id,
+        "created_at": _app_main.now_ms(),
+    }
+    branches.append(branch)
+
+    # Persist updated branches list and current_branch
+    node["branches"] = branches
+    node["current_branch"] = branch_id
+    node["updated_at"] = _app_main.now_ms()
+    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+
+    return {
+        "success": True,
+        "node_id": node_id,
+        "branch": branch,
+        "branches": branches,
+        "current_branch": branch_id,
+    }
+
+
+@router.post("/{node_id}/switch-branch")
+async def switch_branch(
+    project_id: str,
+    node_id: str,
+    branch_id: str = Body(...),
+    x_agent_project: str = Header(default=""),
+):
+    """Switch to a different conversation branch."""
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    if not session.is_running:
+        raise HTTPException(status_code=400, detail="Agent is not running")
+
+    # Find the branch in node attributes
+    node = _find_node(project_id, node_id)
+    branches = node.get("branches") or []
+    branch = None
+    for b in branches:
+        if b.get("id") == branch_id:
+            branch = b
+            break
+    if branch is None:
+        raise HTTPException(status_code=404, detail=f"Branch not found: {branch_id}")
+
+    # Switch to the branch's session file
+    session_file = branch.get("session_file")
+    if session_file:
+        await agent_host_manager.switch_branch(session, session_file)
+
+    # Update current_branch in node attributes
+    node["current_branch"] = branch_id
+    node["updated_at"] = _app_main.now_ms()
+    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+
+    return {
+        "success": True,
+        "node_id": node_id,
+        "current_branch": branch_id,
+        "branch": branch,
+    }
 
 
 @router.websocket("/{node_id}/stream")

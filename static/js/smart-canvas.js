@@ -11638,6 +11638,81 @@ function setAgentAutonomy(nodeId, projectId, autonomy) {
     renderAgentNode(nodeId);
 }
 
+async function forkAgentSession(nodeId, projectId, entryId, name) {
+    const state = getAgentTuiState(nodeId);
+    const node = nodes.find(n => n.id === nodeId);
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entry_id: entryId, name: name }),
+        });
+        if (!response.ok) throw new Error('Fork failed');
+        const data = await response.json();
+        // Update local node with new branches
+        if (node) {
+            node.branches = data.branches;
+            node.current_branch = data.current_branch;
+        }
+        // Clear messages (new branch starts fresh from fork point)
+        state.messages = [];
+        state.toolActivities.clear();
+        renderAgentNode(nodeId);
+    } catch (e) {
+        console.error('Failed to fork agent session:', e);
+    }
+}
+
+async function switchAgentBranch(nodeId, projectId, branchId) {
+    const state = getAgentTuiState(nodeId);
+    const node = nodes.find(n => n.id === nodeId);
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/switch-branch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ branch_id: branchId }),
+        });
+        if (!response.ok) throw new Error('Switch branch failed');
+        const data = await response.json();
+        // Update local node
+        if (node) {
+            node.current_branch = data.current_branch;
+        }
+        // Clear messages (switching to a different branch)
+        state.messages = [];
+        state.toolActivities.clear();
+        renderAgentNode(nodeId);
+    } catch (e) {
+        console.error('Failed to switch agent branch:', e);
+    }
+}
+
+async function showForkPicker(nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork-messages`);
+        if (!response.ok) throw new Error('Failed to get fork messages');
+        const data = await response.json();
+        const messages = data.messages || [];
+        if (messages.length === 0) {
+            // No forkable messages
+            return;
+        }
+        // Show a simple prompt to select which message to fork from
+        // (In a full implementation, this would be a UI picker)
+        const messageTexts = messages.map((m, i) => `${i + 1}. ${m.text}`).join('\n');
+        const choice = prompt(`从哪轮分叉？\n${messageTexts}\n\n输入序号：`);
+        if (!choice) return;
+        const index = parseInt(choice, 10) - 1;
+        if (index < 0 || index >= messages.length) return;
+        const message = messages[index];
+        const branchName = prompt('分支名称：', message.text.slice(0, 30));
+        await forkAgentSession(nodeId, projectId, message.entryId, branchName || '');
+    } catch (e) {
+        console.error('Failed to show fork picker:', e);
+    }
+}
+
 function sendAgentConfirm(nodeId, projectId, approved) {
     const state = getAgentTuiState(nodeId);
     if (!state.confirm) return;
@@ -11827,6 +11902,22 @@ function agentNodeBodyHtml(node) {
         <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>自主</option>
     </select>`;
 
+    // Branch select (if node has branches)
+    const branches = node.branches || [];
+    const currentBranchId = node.current_branch || '';
+    let branchSelectHtml = '';
+    if (branches.length > 0) {
+        let branchOptionsHtml = '';
+        for (const branch of branches) {
+            const selected = branch.id === currentBranchId ? 'selected' : '';
+            branchOptionsHtml += `<option value="${escapeAttr(branch.id)}" ${selected}>${escapeHtml(branch.name)}</option>`;
+        }
+        branchSelectHtml = `<select class="agent-tui-branch-select" data-agent-branch="${escapeAttr(nodeId)}" title="切换分支">${branchOptionsHtml}</select>`;
+    }
+
+    // Fork button
+    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉">🌿</button>`;
+
     return `<div class="agent-tui-card">
         <div class="agent-tui-header">
             <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
@@ -11834,6 +11925,8 @@ function agentNodeBodyHtml(node) {
             <span class="agent-tui-settings">
                 ${modelSelectHtml}
                 ${autonomySelectHtml}
+                ${branchSelectHtml}
+                ${forkButtonHtml}
             </span>
         </div>
         <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
@@ -14002,6 +14095,27 @@ function bindAgentNodeControls(el, node){
             event.stopPropagation();
             const autonomy = autonomySelect.value;
             setAgentAutonomy(nodeId, projectId, autonomy);
+        });
+    }
+
+    // Bind fork button
+    const forkBtn = el.querySelector('[data-agent-fork]');
+    if (forkBtn) {
+        forkBtn.addEventListener('mousedown', event => event.stopPropagation());
+        forkBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            showForkPicker(nodeId, projectId);
+        });
+    }
+
+    // Bind branch select
+    const branchSelect = el.querySelector('[data-agent-branch]');
+    if (branchSelect) {
+        branchSelect.addEventListener('mousedown', event => event.stopPropagation());
+        branchSelect.addEventListener('change', event => {
+            event.stopPropagation();
+            const branchId = branchSelect.value;
+            if (branchId) switchAgentBranch(nodeId, projectId, branchId);
         });
     }
 

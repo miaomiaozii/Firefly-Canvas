@@ -308,6 +308,127 @@ class AgentHostManager:
         await self.send_command(session, command)
         session.model = model
 
+    async def get_fork_messages(self, session: AgentSession, timeout: float = 10.0) -> List[dict]:
+        """Get the list of user messages available for forking.
+
+        Returns a list of {entryId, text} dicts.
+        """
+        command_id = f"fork-msgs-{uuid.uuid4().hex[:8]}"
+        await self.send_command(session, {"id": command_id, "type": "get_fork_messages"})
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        response = None
+
+        def capture_response(sess, event):
+            nonlocal response
+            if event.get("type") == "response" and event.get("command") == "get_fork_messages":
+                response = event
+
+        session.event_handlers.append(capture_response)
+        try:
+            while loop.time() < deadline and response is None:
+                await asyncio.sleep(0.1)
+        finally:
+            if capture_response in session.event_handlers:
+                session.event_handlers.remove(capture_response)
+
+        if response and response.get("success"):
+            data = response.get("data", {})
+            return data.get("messages", [])
+        return []
+
+    async def fork(self, session: AgentSession, entry_id: str, timeout: float = 15.0) -> dict:
+        """Fork the conversation from a specific user message.
+
+        Sends the fork RPC command and waits for the response. The session_start
+        event only carries previousSessionFile (the OLD file), not the new one,
+        so after the fork response we query get_state to capture the new session file.
+
+        Returns {session_id, session_file, cancelled}.
+        """
+        command_id = f"fork-{uuid.uuid4().hex[:8]}"
+        await self.send_command(session, {"id": command_id, "type": "fork", "entryId": entry_id})
+
+        # Wait for the fork response
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        response = None
+
+        def capture_response(sess, event):
+            nonlocal response
+            if event.get("type") == "response" and event.get("command") == "fork":
+                response = event
+
+        session.event_handlers.append(capture_response)
+        try:
+            while loop.time() < deadline and response is None:
+                await asyncio.sleep(0.1)
+        finally:
+            if capture_response in session.event_handlers:
+                session.event_handlers.remove(capture_response)
+
+        if response is None:
+            raise TimeoutError(f"Fork did not complete within {timeout}s for agent {session.node_id}")
+        if not response.get("success"):
+            raise RuntimeError(f"Fork failed: {response.get('error')}")
+
+        data = response.get("data", {})
+        if data.get("cancelled"):
+            return {"cancelled": True, "session_id": None, "session_file": None}
+
+        # The session has switched to the new fork; query get_state for the new file
+        state = await self.get_session_state(session, timeout=timeout) or {}
+        session_id = state.get("sessionId")
+        session_file = state.get("sessionFile")
+        if not session_file:
+            raise RuntimeError(f"Could not determine new session file after fork for agent {session.node_id}")
+        if session_id:
+            session.session_id = session_id
+        session.session_file = session_file
+        return {"cancelled": False, "session_id": session_id, "session_file": session_file}
+
+    async def switch_branch(self, session: AgentSession, session_file: str, timeout: float = 10.0) -> None:
+        """Switch to a different session file (branch).
+
+        Sends the switch_session RPC command (uses sessionPath per pi RPC).
+        """
+        command_id = f"switch-{uuid.uuid4().hex[:8]}"
+        await self.send_command(session, {
+            "id": command_id,
+            "type": "switch_session",
+            "sessionPath": session_file,
+        })
+
+        # Wait for the response
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        response = None
+
+        def capture_response(sess, event):
+            nonlocal response
+            if event.get("type") == "response" and event.get("command") == "switch_session":
+                response = event
+
+        session.event_handlers.append(capture_response)
+        try:
+            while loop.time() < deadline and response is None:
+                await asyncio.sleep(0.1)
+        finally:
+            if capture_response in session.event_handlers:
+                session.event_handlers.remove(capture_response)
+
+        if response is None:
+            raise TimeoutError(f"switch_session did not complete within {timeout}s for agent {session.node_id}")
+        if not response.get("success"):
+            raise RuntimeError(f"switch_session failed: {response.get('error')}")
+        if response.get("data", {}).get("cancelled"):
+            raise RuntimeError("switch_session was cancelled by an extension")
+
+        # Update session state
+        if session_file:
+            session.session_file = session_file
+
     async def get_session_state(self, session: AgentSession, timeout: float = 10.0) -> Optional[dict]:
         """Query the session state."""
         if not session.is_running:
