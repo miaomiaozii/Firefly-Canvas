@@ -21602,7 +21602,7 @@ async function runGeneration(){
             // 扩图激活时，使用扩图的比例
             const outpaintForWriteback = validOutpaintSize(node);
             pendingNode._generationAspect = outpaintForWriteback 
-                ? {w: outpaintForAspect2.width, h: outpaintForAspect2.height}
+                ? {w: outpaintForWriteback.width, h: outpaintForWriteback.height}
                 : parseSizeAspect(String(sizeForRun(settings) || '')) || parseSizeAspect('1:1');
             // 节点尺寸已在上方 pendingBoxSize 处固化，这里不再重复设置
             ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'image'});
