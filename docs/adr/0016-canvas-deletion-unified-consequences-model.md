@@ -26,7 +26,7 @@ date: 2026-09-08
 
 ## 决策记录（D1–D4）
 
-- **D1 级联媒体（✅ 2026-08-30 拍板，选 b）**：节点/单图删除时，媒体若**无其他引用**（画布节点 + 历史记录，规则同 `ProjectStore._collect_asset_ids`）则移入回收区（7 天可恢复）；有引用则保留在库。实现：`ProjectStore.archive_unreferenced_media`（`firefly_projects_cleanup.py`，与生成孤儿回收共用 `_archive_unreferenced_media_locked`）+ `POST /media/{asset_id}/archive`（被引用 → 409，前端保留在库并继续）+ 前端 `cascadeArchiveDeletedMedia`（`deleteNode` / `clearNodeMediaBeforeDelete` / `deleteImage` 三处调用）。
+- **D1 级联媒体（✅ 2026-08-30 拍板，选 b）**：节点/单图删除时，媒体若**无其他引用**（画布节点 + 历史记录，规则同 `ProjectStore._collect_asset_ids`）则移入回收区（7 天可恢复）；有引用则保留在库。实现：`ProjectStore.archive_unreferenced_media`（`firefly_projects_cleanup.py`，与生成孤儿回收共用 `_archive_unreferenced_media_locked`）+ `POST /media/{asset_id}/archive`（被引用 → 409，前端保留在库并继续）+ 前端 `scheduleMediaArchive` 包装（内部调用 `cascadeArchiveDeletedMedia`；`deleteNode` / `clearNodeMediaBeforeDelete` / `deleteImage` 三处经它触发）。
 - **D2 节点 × 按钮 vs Delete 键（✅ 拍板：维持现状）**：× 按钮 = 删图片、留节点和内部提示词；Delete 键 = 整节点删除（提示词随节点移除，画布 undo 可找回）。本 ADR 将此三级语义（单图 × / 节点 × / Delete 键）定为规范。
 - **D3 静默孤儿回收（✅ 拍板，选 a）**：生成失败/取消/超时产生的无引用媒体移入回收区（`reason: "generation-orphan"`），可见可恢复，7 天过期照旧；配合 #83（终态记录保留已下载 outputs，使「被历史引用」成立）。
 - **D4 项目范围删原图入口（✅ 拍板，选 a）**：`POST /original/delete-project-wide`（ADR 0014 后端能力）补前端入口——资源库单删对话框中，当该原图被**多个节点**引用时显示「删除原图及全部引用」按钮 + 二次确认。
@@ -39,7 +39,7 @@ date: 2026-09-08
 | `deletedOutputTombstones` | 删除的媒体是该节点的**生成输出**（`output_id` 身份或历史 producer 命中） | 「生成结果已被删除」——节点回退无结果状态（`_reset_deleted_original_owner_state`），可重新生成 |
 | `deletedReferenceTombstones` | 历史记录 inputs/outputs 中的引用被清理 | 「上游已删除」展示 |
 
-**输出所有者判定**统一使用 `ProjectStore._node_owns_generated_output(node, asset_id, history_producer_ids)`（= 节点 images 展示该 asset 且（历史 producer 命中 或（节点带生成 run 元数据且 images 含 `output_id`））），`delete_project_media_asset`（T9）、`delete_generated_original_project_wide`、`delete_history_record_with_media` 三处共用（#63/#65 修复：此前 run 状态机给所有 smart-image 节点盖 `runStartedAt` 戳，裸 run 字段判定会把普通拖入图节点误判为生成节点，写错墓碑类型并错误重置节点状态）。
+**输出所有者判定**统一使用 `ProjectStore._node_owns_generated_output(node, asset_id, history_producer_ids)`（= 节点 images 展示该 asset 且（历史 producer 命中 或（节点带生成 run 元数据且 images 含 `output_id`））），判定集中在 `_node_owns_generated_output`，由 `delete_history_record_with_media` 节点清理路径与共享助手 `_apply_node_asset_removal`（`delete_project_media_asset` T9 / `delete_generated_original_project_wide` 均经它）统一调用（#63/#65 修复：此前 run 状态机给所有 smart-image 节点盖 `runStartedAt` 戳，裸 run 字段判定会把普通拖入图节点误判为生成节点，写错墓碑类型并错误重置节点状态）。
 
 ## 防护规则
 
