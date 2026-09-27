@@ -9,7 +9,7 @@ class LongContentReaderUiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8") + "\n" + (ROOT / "static" / "js" / "canvas-media-history.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
         cls.i18n = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
 

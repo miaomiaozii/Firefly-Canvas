@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProjectImageGenerationUiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8") + "\n" + (ROOT / "static" / "js" / "canvas-media-history.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 
     def test_core_canvas_uses_project_generation_endpoint_and_result_node(self):

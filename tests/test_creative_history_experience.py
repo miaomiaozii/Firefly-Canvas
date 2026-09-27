@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CANVAS_HTML = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-SCRIPT = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+SCRIPT = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8") + "\n" + (ROOT / "static" / "js" / "canvas-media-history.js").read_text(encoding="utf-8")
 I18N = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
 CANVAS_CSS = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 SETTINGS_HTML = (ROOT / "static" / "global-settings.html").read_text(encoding="utf-8")

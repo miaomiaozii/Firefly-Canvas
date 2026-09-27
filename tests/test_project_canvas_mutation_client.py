@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MUTATION_CLIENT = ROOT / "static" / "js" / "project-canvas-mutations.js"
 SMART_CANVAS = ROOT / "static" / "js" / "smart-canvas.js"
+CANVAS_MEDIA_HISTORY = ROOT / "static" / "js" / "canvas-media-history.js"
 SMART_CANVAS_HTML = ROOT / "static" / "smart-canvas.html"
 
 
@@ -172,7 +173,7 @@ console.log(JSON.stringify({{calls, result}}));
         self.assertIn("local", [node["id"] for node in payload["result"]["canvas"]["nodes"]])
 
     def test_save_core_requeues_original_mutations_after_conflict_limit(self):
-        source = SMART_CANVAS.read_text(encoding="utf-8")
+        source = SMART_CANVAS.read_text(encoding="utf-8") + "\n" + CANVAS_MEDIA_HISTORY.read_text(encoding="utf-8")
         self.assertIn(
             "if(flushResult.mutations.length || lateChangeSet.mutations.length) scheduleStateSave();",
             source,
@@ -399,7 +400,7 @@ console.log(JSON.stringify({{result, confirmations}}));
         self.assertEqual(payload["result"]["canvas"]["revision"], 3)
 
     def test_non_image_project_media_uses_original_resource_instead_of_image_preview(self):
-        script = SMART_CANVAS.read_text(encoding="utf-8")
+        script = SMART_CANVAS.read_text(encoding="utf-8") + "\n" + CANVAS_MEDIA_HISTORY.read_text(encoding="utf-8")
         page = SMART_CANVAS_HTML.read_text(encoding="utf-8")
         self.assertIn("function smartVideoPreviewHtml", script)
         self.assertIn("return smartVideoFallbackHtml(original, attrs);", script)
