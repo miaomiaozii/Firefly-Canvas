@@ -1,6 +1,6 @@
 // 画布节点操作模块（从 smart-canvas.js 抽离，#160 P2c）。
 // 节点创建/删除/移动/缩放/重命名操作函数。
-// 引用主脚本全局（nodes/canvas/selectedId/selectedIds/selectedImage/toast/tr/render
+// 引用主脚本全局（canvasState.nodes/canvas/canvasState.selectedId/canvasState.selectedIds/canvasState.selectedImage/toast/tr/render
 // scheduleSave/pushUndo/uid/imageLayout/nodeScale/mediaNodeDefaultScale 等），
 // 本文件只含函数定义，先于 smart-canvas.js 加载，所有调用都发生在主脚本全局
 // 初始化之后，安全。
@@ -25,8 +25,8 @@ function createNode(x, y, images=[], options={}){
     if(options.needsRegeneration != null) node.needsRegeneration = Boolean(options.needsRegeneration);
     if(options.generationState) node.generationState = String(options.generationState);
     inheritNodeMetaFromImage(node);
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -56,8 +56,8 @@ function createPromptNode(x, y, options={}){
     };
     if(options.sourceNodeId) node.source_node_id = String(options.sourceNodeId);
     if(options.sourceMessageId) node.source_message_id = String(options.sourceMessageId);
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -76,8 +76,8 @@ function createConversationNode(x, y, options={}){
         messages:[],
         created_at:Date.now()
     };
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -96,8 +96,8 @@ function createAgentNode(x, y, options={}){
         agentGoal:'',
         created_at:Date.now()
     };
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -107,8 +107,8 @@ function createLocalEditNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {id:uid('local-edit'), type:'local-edit', x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
         original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -117,7 +117,7 @@ function createLocalEditNode(x, y, options={}){
 // 用户只需要画选区+写提示词，不需要先学端口连线。
 
 function createLocalEditNodeFromImage(nodeId, imageIndex=null){
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return;
     const source = imageIndex == null ? (node.images || [])[0] : (node.images || [])[imageIndex];
     if(!source){ toast(tr('smart.noExportableMedia')); return; }
@@ -134,8 +134,8 @@ function createLocalEditNodeFromImage(nodeId, imageIndex=null){
 function createLoopNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {id:uid('loop'), type:'smart-loop', x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -144,8 +144,8 @@ function createLoopNode(x, y, options={}){
 function createSmartGroupNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {id:uid('group'), type:'smart-group', x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
+    canvasState.nodes.push(node);
+    if(options.select !== false) canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -155,7 +155,7 @@ function moveNodeElementsDuringDrag(){
     if(!dragState) return;
     const groupItems = dragState.group || [{id:dragState.id}];
     groupItems.map(item => item.id).forEach(id => {
-        const n = nodes.find(x => x.id === id);
+        const n = canvasState.nodes.find(x => x.id === id);
         const el = world.querySelector(`.image-node[data-id="${CSS.escape(id)}"]`);
         if(n && el){
             el.style.left = `${n.x || 0}px`;
@@ -241,32 +241,32 @@ function updateNodeElementDuringResize(node){
 function deleteNode(id){
     // #147: 删除智能分组 = 解散分组（图片拆回画布、成员保留、只删容器），与"解散分组"入口行为一致，无数据丢失。
     // ungroupNode 内部已 pushUndo，这里不再重复。
-    const groupNode = nodes.find(n => n.id === id);
+    const groupNode = canvasState.nodes.find(n => n.id === id);
     if(groupNode && isSmartGroupNode(groupNode)){
         ungroupNode(id);
         return;
     }
     pushUndo();
     const deleteIds = new Set([id]);
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
-    const removedNodes = nodes.filter(node => deleteIds.has(node.id));
-    // Clean up agent TUI state for deleted agent nodes
+    const removedNodes = canvasState.nodes.filter(node => deleteIds.has(node.id));
+    // Clean up agent TUI state for deleted agent canvasState.nodes
     removedNodes.forEach(node => {
         if (isSmartAgentNode(node)) {
             cleanupAgentTuiState(node.id);
         }
     });
-    nodes = nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = nodes;
+    canvasState.nodes = canvasState.nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = canvasState.nodes;
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(inputId => !deleteIds.has(inputId));
         if(isSmartGroupNode(node) && Array.isArray(node.items)) node.items = node.items.filter(itemId => !deleteIds.has(itemId));
     });
-    if(selectedId === id) selectedId = '';
-    selectedIds = selectedIds.filter(selected => !deleteIds.has(selected));
-    if(deleteIds.has(selectedImage.nodeId)) selectedImage = {nodeId:'', index:-1};
+    if(canvasState.selectedId === id) canvasState.selectedId = '';
+    canvasState.selectedIds = canvasState.selectedIds.filter(selected => !deleteIds.has(selected));
+    if(deleteIds.has(canvasState.selectedImage.nodeId)) canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
     // #74 (D1) + #146: 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
@@ -275,7 +275,7 @@ function deleteNode(id){
 }
 
 function clearNodeMediaBeforeDelete(id){
-    const node = nodes.find(n => n.id === id);
+    const node = canvasState.nodes.find(n => n.id === id);
     if(!node || (node.type && node.type !== 'smart-image')) return false;
     const hadMedia = Boolean((node.images || []).length || node.pending);
     if(!hadMedia) return false;
@@ -289,12 +289,12 @@ function clearNodeMediaBeforeDelete(id){
     delete node.h;
     const history = historyGroupForNode(node);
     if(history){
-        nodes = nodes.filter(n => n.id !== history.id); if(canvas) canvas.nodes = nodes;
+        canvasState.nodes = canvasState.nodes.filter(n => n.id !== history.id); if(canvas) canvas.nodes = canvasState.nodes;
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== history.id && c.to !== history.id);
     }
-    if(selectedImage.nodeId === id) selectedImage = {nodeId:'', index:-1};
-    selectedId = id;
-    selectedIds = [];
+    if(canvasState.selectedImage.nodeId === id) canvasState.selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = id;
+    canvasState.selectedIds = [];
     render();
     scheduleSave();
     // #74 (D1) + #146: 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
@@ -305,7 +305,7 @@ function clearNodeMediaBeforeDelete(id){
 
 function deleteNodeFromButton(id){
     // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
-    const buttonNode = nodes.find(n => n.id === id);
+    const buttonNode = canvasState.nodes.find(n => n.id === id);
     if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
     // #149 B5: 统一为一步直接删节点（与 Delete 键行为一致），不再对有图节点两步清图
     deleteNode(id);
@@ -313,7 +313,7 @@ function deleteNodeFromButton(id){
 // 断开一条或多条连线（合并到分组的连线会一次性断开其下所有成员连线）。spec 可为索引数组或逗号分隔字符串。
 
 async function renameSmartNodeImage(nodeId, imageIndex){
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     const index = Math.max(0, Number(imageIndex) || 0);
     const image = node?.images?.[index];
     if(!node || !image) return;
@@ -324,16 +324,16 @@ async function renameSmartNodeImage(nodeId, imageIndex){
     if(!next || next === current) return;
     pushUndo();
     image.name = next;
-    selectedId = node.id;
-    selectedIds = [];
-    selectedImage = {nodeId:node.id, index};
+    canvasState.selectedId = node.id;
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:node.id, index};
     render();
     scheduleSave();
 }
 
 function createNodeFromMenu(type){
     const p = createMenuPoint || viewportCenter();
-    const groupId = createMenuGroupId;
+    const groupId = canvasState.createMenuGroupId;
     closeCreateMenu();
     if(type === 'group') return createSmartGroupNode(p.x - 170, p.y - 110);
     let created = null;
@@ -343,8 +343,8 @@ function createNodeFromMenu(type){
     else if(type === 'local-edit') created = createLocalEditNode(p.x - 180, p.y - 165);
     else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
     else created = createImageNodeAt(p);
-    createMenuGroupId = groupId;
+    canvasState.createMenuGroupId = groupId;
     addCreatedNodeToMenuGroup(created);
-    createMenuGroupId = '';
+    canvasState.createMenuGroupId = '';
     return created;
 }

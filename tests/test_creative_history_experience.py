@@ -34,7 +34,7 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         # Selection is now an IIFE that keys on both historyId and outputId so a
         # specific output within a multi-output log can be addressed.
         self.assertIn("const selectedIndex = (() => {", SCRIPT)
-        self.assertIn("smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId", SCRIPT)
+        self.assertIn("canvasState.smartHistorySelectedImage?.historyId === historyId && canvasState.smartHistorySelectedImage?.outputId", SCRIPT)
         runner = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")
         self.assertIn("multiOutputIndependentDeleteRestore", runner)
         self.assertIn("rootScrollStable", runner)

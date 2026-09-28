@@ -1,7 +1,7 @@
 // 画布撤销/重做模块（从 smart-canvas.js 抽离，#159 P2b）。
 // 撤销/重做栈管理、快照、按钮同步、媒体悬空引用过滤。
-// 引用主脚本全局（canvas/nodes/selectedId/selectedIds/selectedImage/toast/tr/render
-// scheduleSave/activeComposerSubject/lastComposerNodeId/projectMediaLibrary 等），
+// 引用主脚本全局（canvas/nodes/canvasState.selectedId/canvasState.selectedIds/canvasState.selectedImage/toast/tr/render
+// scheduleSave/canvasState.activeComposerSubject/canvasState.lastComposerNodeId/canvasState.projectMediaLibrary 等），
 // 本文件含顶层状态声明与函数定义，先于 smart-canvas.js 加载，
 // 所有调用都发生在主脚本全局初始化之后，安全。
 // 注意：媒体归档延迟（scheduleMediaArchive/cancelPendingMediaArchives）属 P2d 领域，
@@ -35,11 +35,11 @@ function discardPendingUndo(){ pendingUndoSnapshot = null; }
 
 function snapshotForUndo(){
     return {
-        nodes: JSON.parse(JSON.stringify(nodes)),
+        nodes: JSON.parse(JSON.stringify(canvasState.nodes)),
         connections: JSON.parse(JSON.stringify(canvas?.connections || [])),
-        selectedId,
-        selectedIds: selectedIds.slice(),
-        selectedImage: {...selectedImage}
+        selectedId: canvasState.selectedId,
+        selectedIds: canvasState.selectedIds.slice(),
+        selectedImage: {...canvasState.selectedImage}
     };
 }
 
@@ -81,14 +81,14 @@ async function performUndo(){
             // 内存库可能陈旧（本会话新生产的媒体尚未登记）→ 重新拉取后再验，避免误删存活图片
             restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
         }
-        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
+        canvasState.nodes = restoredNodes.nodes; if(canvas) canvas.nodes = canvasState.nodes;
         if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
-        selectedId = snap.selectedId;
-        selectedIds = snap.selectedIds;
-        selectedImage = snap.selectedImage;
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
+        canvasState.selectedId = snap.selectedId;
+        canvasState.selectedIds = snap.selectedIds;
+        canvasState.selectedImage = snap.selectedImage;
+        canvasState.activeComposerSubject = null;
+        canvasState.lastComposerNodeId = '';
         render();
         scheduleSave();
         undoSuppressed = false;
@@ -117,7 +117,7 @@ async function performRedo(){
         }
         // #146: 计算重做后丢失的图片（当前有、恢复后无），重新调度归档。
         const currentImages = [];
-        nodes.forEach(n => currentImages.push(...(n.images || [])));
+        canvasState.nodes.forEach(n => currentImages.push(...(n.images || [])));
         const restoredImageIds = new Set();
         restoredNodes.nodes.forEach(n => (n.images || []).forEach(img => {
             const id = img?.asset_id || '';
@@ -127,14 +127,14 @@ async function performRedo(){
             const id = img?.asset_id || '';
             return id && !restoredImageIds.has(id);
         });
-        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
+        canvasState.nodes = restoredNodes.nodes; if(canvas) canvas.nodes = canvasState.nodes;
         if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
         if(canvas) canvas.connections = snap.connections;
-        selectedId = snap.selectedId;
-        selectedIds = snap.selectedIds;
-        selectedImage = snap.selectedImage;
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
+        canvasState.selectedId = snap.selectedId;
+        canvasState.selectedIds = snap.selectedIds;
+        canvasState.selectedImage = snap.selectedImage;
+        canvasState.activeComposerSubject = null;
+        canvasState.lastComposerNodeId = '';
         render();
         scheduleSave();
         // #146: 重做删除后，对丢失的图片重新调度归档。
@@ -151,7 +151,7 @@ async function performRedo(){
 // #62 B-5(L2): 应用 undo/redo 快照前，剔除项目媒体已不存在（已硬删）的 image 引用。
 // 资源库未加载（空）时无法判定，跳过过滤——由保存 400 自愈（C-4）兜底。
 function filterDanglingProjectMediaImages(snapshotNodes){
-    const libraryItems = projectMediaLibrary?.items || [];
+    const libraryItems = canvasState.projectMediaLibrary?.items || [];
     if(!Array.isArray(snapshotNodes) || !libraryItems.length) return {nodes: snapshotNodes, dropped: 0};
     const liveAssets = new Set(libraryItems.map(item => String(item?.asset_id || '')).filter(Boolean));
     let dropped = 0;
@@ -169,7 +169,7 @@ function filterDanglingProjectMediaImages(snapshotNodes){
 }
 
 // 内存媒体库刷新（仅项目媒体列表）：页面加载后新生产的媒体未登记进
-// projectMediaLibrary，悬空过滤会把存活媒体误判为悬空而剥离（复制→撤回丢光图片事故）。
+// canvasState.projectMediaLibrary，悬空过滤会把存活媒体误判为悬空而剥离（复制→撤回丢光图片事故）。
 async function refreshProjectMediaLibraryItems(){
     const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
     if(!projectId) return false;
@@ -177,7 +177,7 @@ async function refreshProjectMediaLibraryItems(){
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media`);
         if(!res.ok) return false;
         const data = await res.json();
-        if(data && Array.isArray(data.items)) projectMediaLibrary = {items: data.items};
+        if(data && Array.isArray(data.items)) canvasState.projectMediaLibrary = {items: data.items};
         return true;
     } catch { return false; }
 }

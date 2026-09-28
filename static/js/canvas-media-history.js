@@ -1,6 +1,6 @@
 // 画布媒体/历史模块（从 smart-canvas.js 抽离，#161 P2d）。
 // 媒体归档、回收站面板、历史面板、标记面板、未使用媒体面板、媒体 URL/存储。
-// 引用主脚本全局（nodes/canvas/selectedId/toast/tr/render/scheduleSave/pushUndo/
+// 引用主脚本全局（canvasState.nodes/canvas/canvasState.selectedId/toast/tr/render/scheduleSave/pushUndo/
 // smartPendingTasks/smartLoopContext 等），本文件只含函数定义和状态声明，
 // 先于 smart-canvas.js 加载，所有调用都发生在主脚本全局初始化之后，安全。
 // 注意：undo 栈操作函数（stripDeletedMediaFromUndoStacks/removeProjectOriginalUndoTokens）
@@ -148,14 +148,14 @@ function syncLiveProjectMediaReferences(storageCanvas, materializedCanvas){
     if(!canvas || !materializedCanvas) return;
     const beforeNodes = new Map((storageCanvas?.nodes || []).map(node => [String(node?.id || ''), node]));
     const savedNodes = new Map((materializedCanvas?.nodes || []).map(node => [String(node?.id || ''), node]));
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         const id = String(node?.id || '');
         const savedNode = savedNodes.get(id);
         if(!savedNode) return;
         const merged = reconcileMaterializedMediaReferences(node, beforeNodes.get(id), savedNode);
         Object.assign(node, merged);
     });
-    canvas.nodes = nodes;
+    canvas.nodes = canvasState.nodes;
     const beforeLogs = new Map((storageCanvas?.history || []).map(log => [String(log?.id || ''), log]));
     const savedLogs = new Map((materializedCanvas?.history || []).map(log => [String(log?.id || ''), log]));
     canvas.history = (canvas.history || []).map(log => {
@@ -174,7 +174,7 @@ function isHistoryGroupNode(node){
 function recoverStuckLoopOutputsFromHistory(){
     const used = usedCanvasOutputUrls();
     let changed = false;
-    const slots = (nodes || [])
+    const slots = (canvasState.nodes || [])
         .filter(node => node && isSmartImageNode(node) && !isHistoryGroupNode(node))
         .filter(node => (node.loopSourceId || node.loopRootId || Number.isFinite(Number(node.loopSlotIndex))) && !smartNodeHasDisplayResult(node))
         .filter(node => (node.pending || node.running || node.queued) && !smartPendingTasks(node).length)
@@ -194,7 +194,7 @@ function recoverStuckLoopOutputsFromHistory(){
         delete slot.h;
         used.add(output.url);
         changed = true;
-        clearSourceBusyStateIfDownstreamDone(nodes.find(n => n.id === sourceId));
+        clearSourceBusyStateIfDownstreamDone(canvasState.nodes.find(n => n.id === sourceId));
     });
     return changed;
 }
@@ -368,7 +368,7 @@ async function cascadeArchiveDeletedMedia(images){
     (images || []).forEach(img => { const id = img?.asset_id || ''; if(id) assetIds.add(id); });
     if(!assetIds.size) return;
     const stillReferenced = new Set();
-    nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
+    canvasState.nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
     // #88：生成历史（canvas.history）引用的原图不在节点集合里——仅删画布图时也要豁免，
     // 否则会把历史里还挂着的原图归档进回收区，历史缩略图 404。
     (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
@@ -411,9 +411,9 @@ function setMarkedImage(assetId, marked){
     const at = ids.indexOf(assetId);
     if(marked && at < 0) ids.push(assetId);
     if(!marked && at >= 0) ids.splice(at, 1);
-    // #89 第四轮：节点级 flagged 才是持久载体——项目增量快照只抓 nodes/edges/title/icon/logs，
+    // #89 第四轮：节点级 flagged 才是持久载体——项目增量快照只抓 canvasState.nodes/edges/title/icon/logs，
     // canvas.markedAssetIds 顶层字段永不被保存；只有 upsert_node 携带的 images[].marked 能落盘。
-    nodes.forEach(node => (node.images || []).forEach(img => {
+    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
         if(img && String(img.asset_id || '') === assetId){
             if(marked) img.marked = true;
             else delete img.marked;
@@ -430,13 +430,13 @@ function setMarkedImage(assetId, marked){
 function rebuildMarkedAssetIdsFromNodes(){
     if(!canvas) return;
     const found = new Set();
-    nodes.forEach(node => (node.images || []).forEach(img => {
+    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
         if(img && img.marked && img.asset_id) found.add(String(img.asset_id));
     }));
     canvas.markedAssetIds = [...found];
     syncCuratedFromMarks(); // #53/#58：加载/rebase 后保证 curated 与星标一致（历史画布可能缺 curated 字段）
 }
-// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-nodes
+// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-canvasState.nodes
 // 与 pi 收集工具据此筛选）；全部取消星标 ⇒ curated=false。只改有星标图的节点。
 
 function syncMarkedImageButtons(){
@@ -455,7 +455,7 @@ function smartHistoryDetailNodeImageRef(item){
     const url = String(item?.url || '');
     let ref = null;
     let urlRef = null;
-    for(const node of nodes){
+    for(const node of canvasState.nodes){
         (node.images || []).forEach((img, index) => {
             if(!img) return;
             if(assetId && String(img.asset_id || '') === assetId) ref = {nodeId:node.id, index};
@@ -483,7 +483,7 @@ function markedImageItems(){
             if(id && output?.url && !found.has(id)) found.set(id, output);
         });
     });
-    nodes.forEach(node => (node.images || []).forEach(img => {
+    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
         const id = String(img?.asset_id || '');
         if(id && img?.url && !found.has(id)) found.set(id, img);
     }));
@@ -756,7 +756,7 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
     if(!canvas) return;
     canvas.history = canvas.history || [];
     const runNodeId = String(run?.nodeId || '');
-    const runNode = nodes.find(node => String(node?.id || '') === runNodeId);
+    const runNode = canvasState.nodes.find(node => String(node?.id || '') === runNodeId);
     const pendingId = String(run?.pendingHistoryId || runNode?._pendingHistoryId || '');
     const pendingEntry = canvas.history.find(log =>
         log?.status === 'pending'
@@ -874,14 +874,14 @@ function setSmartHistoryDragState(active, card=null){
 }
 
 function clearSmartHistoryTap(){
-    if(smartHistoryTap?.timer) clearTimeout(smartHistoryTap.timer);
-    smartHistoryTap = null;
+    if(canvasState.smartHistoryTap?.timer) clearTimeout(canvasState.smartHistoryTap.timer);
+    canvasState.smartHistoryTap = null;
 }
 
 function selectSmartHistoryImage(card){
     if(!card) return;
     const logItem = card.closest('[data-canvas-history-id]');
-    smartHistorySelectedImage = {
+    canvasState.smartHistorySelectedImage = {
         historyId:logItem?.dataset.canvasHistoryId || '',
         outputIndex:Number(card.dataset.historyOutputIndex || 0),
         outputId:String(card.dataset.outputId || '')
@@ -898,7 +898,7 @@ function selectSmartHistoryImage(card){
     card.classList.add('is-selected');
     card.dataset.historySelected = 'true';
     card.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'true');
-    const preview = logItem?.querySelector(`.log-output-preview[data-history-output-preview="${smartHistorySelectedImage.outputIndex}"]`);
+    const preview = logItem?.querySelector(`.log-output-preview[data-history-output-preview="${canvasState.smartHistorySelectedImage.outputIndex}"]`);
     preview?.classList.add('is-selected');
     preview?.setAttribute('aria-current', 'true');
 }
@@ -916,7 +916,7 @@ function smartHistoryCanvasDropPoint(clientX, clientY){
 
 function handleSmartHistoryTap(image, historyId, outputIndex, clientX, clientY){
     const now = performance.now();
-    const previous = smartHistoryTap;
+    const previous = canvasState.smartHistoryTap;
     const sameImage = previous
         && previous.historyId === historyId
         && previous.outputIndex === outputIndex
@@ -932,18 +932,18 @@ function handleSmartHistoryTap(image, historyId, outputIndex, clientX, clientY){
     const tap = {historyId, outputIndex, clientX, clientY, time:now, timer:null};
     tap.timer = setTimeout(() => {
         selectSmartHistoryImage(card);
-        if(smartHistoryTap === tap) smartHistoryTap = null;
+        if(canvasState.smartHistoryTap === tap) canvasState.smartHistoryTap = null;
     }, 320);
-    smartHistoryTap = tap;
+    canvasState.smartHistoryTap = tap;
 }
 
 function clearSmartHistoryPointerState(){
-    const state = smartHistoryPointerState;
+    const state = canvasState.smartHistoryPointerState;
     if(!state) return;
     state.image?.classList.remove('is-dragging');
     try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) {}
     setSmartHistoryDragState(false);
-    smartHistoryPointerState = null;
+    canvasState.smartHistoryPointerState = null;
     scheduleSmartHistoryWindowRender();
 }
 
@@ -970,7 +970,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         event.stopPropagation();
         const pointerId = event.pointerId ?? 1;
         try { image.setPointerCapture?.(pointerId); } catch(_) {}
-        smartHistoryPointerState = {
+        canvasState.smartHistoryPointerState = {
             image,
             card:image.closest('.log-media-card'),
             historyId,
@@ -983,7 +983,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         };
     };
     image.onpointermove = event => {
-        const state = smartHistoryPointerState;
+        const state = canvasState.smartHistoryPointerState;
         if(!state || state.image !== image || state.pointerId !== (event.pointerId ?? 1)) return;
         const distance = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
         if(!state.moved && distance >= 8){
@@ -995,7 +995,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         event.stopPropagation();
     };
     image.onpointerup = event => {
-        const state = smartHistoryPointerState;
+        const state = canvasState.smartHistoryPointerState;
         if(!state || state.image !== image) return;
         event.stopPropagation();
         if(state.moved){
@@ -1017,7 +1017,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         clearSmartHistoryPointerState();
     };
     image.ondragstart = event => {
-        const state = smartHistoryPointerState || {
+        const state = canvasState.smartHistoryPointerState || {
             image,
             card:image.closest('.log-media-card'),
             historyId,
@@ -1030,7 +1030,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         };
         state.moved = true;
         state.nativeDrag = true;
-        smartHistoryPointerState = state;
+        canvasState.smartHistoryPointerState = state;
         clearSmartHistoryTap();
         setSmartHistoryDragPayload(event, item);
         setSmartHistoryDragState(true, state.card);
@@ -1098,10 +1098,10 @@ function smartHistorySizeSummary(log, outputs=[]){
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
 
 function cleanupSmartHistoryPreviewNode(){
-    if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)){ nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID); if(canvas) canvas.nodes = nodes; }
+    if(canvasState.nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)){ canvasState.nodes = canvasState.nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID); if(canvas) canvas.nodes = canvasState.nodes; }
     if(smartHistoryPreviewRestore){
-        selectedId = smartHistoryPreviewRestore.selectedId;
-        selectedImage = smartHistoryPreviewRestore.selectedImage;
+        canvasState.selectedId = smartHistoryPreviewRestore.selectedId;
+        canvasState.selectedImage = smartHistoryPreviewRestore.selectedImage;
         smartHistoryPreviewRestore = null;
     }
 }
@@ -1519,11 +1519,11 @@ function captureSmartOriginalDeletionUiState(historyId, outputId, outputIndex=-1
     const normalizedOutputId = String(outputId || '');
     const logOutputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
     const deletionPosition = logOutputs.findIndex(output => String(output.output_id || '') === normalizedOutputId);
-    const historySelectedOutputId = String(smartHistorySelectedImage?.outputId || '');
-    const historyOutput = smartHistorySelectedImage?.historyId === String(historyId || '')
+    const historySelectedOutputId = String(canvasState.smartHistorySelectedImage?.outputId || '');
+    const historyOutput = canvasState.smartHistorySelectedImage?.historyId === String(historyId || '')
         ? historySelectedOutputId
             ? logOutputs.find(output => String(output.output_id || '') === historySelectedOutputId)
-            : logOutputs.find(output => output.outputIndex === Number(smartHistorySelectedImage.outputIndex))
+            : logOutputs.find(output => output.outputIndex === Number(canvasState.smartHistorySelectedImage.outputIndex))
         : null;
     const detailOpen = Boolean(document.querySelector('#smartHistoryLightbox.open'));
     const detailSelectedOutputId = String(smartHistoryDetailSession.outputId || '');
@@ -1533,12 +1533,12 @@ function captureSmartOriginalDeletionUiState(historyId, outputId, outputIndex=-1
     const detailPosition = detailSelectedOutputId
         ? smartHistoryDetailSession.outputs.findIndex(output => String(output.output_id || '') === detailSelectedOutputId)
         : smartHistoryDetailSession.outputs.findIndex(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
-    const selectedNode = nodes.find(node => String(node?.id || '') === String(selectedImage.nodeId || ''));
+    const selectedNode = canvasState.nodes.find(node => String(node?.id || '') === String(canvasState.selectedImage.nodeId || ''));
     const selectedCanvasImages = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
-    const canvasSelectedOutputId = String(selectedImage.outputId || '');
+    const canvasSelectedOutputId = String(canvasState.selectedImage.outputId || '');
     const canvasPosition = canvasSelectedOutputId
         ? selectedCanvasImages.findIndex(image => String(image?.output_id || '') === canvasSelectedOutputId)
-        : Number(selectedImage.index);
+        : Number(canvasState.selectedImage.index);
     const selectedCanvasItem = selectedCanvasImages[canvasPosition];
     return {
         deletionPosition:deletionPosition >= 0 ? deletionPosition : Number(outputIndex),
@@ -1548,20 +1548,20 @@ function captureSmartOriginalDeletionUiState(historyId, outputId, outputIndex=-1
         detailPosition,
         detailSelectedOutputId:String(detailOutput?.output_id || ''),
         canvasNodeId:String(selectedNode?.id || ''),
-        canvasPosition:canvasPosition >= 0 ? canvasPosition : Number(selectedImage.index),
+        canvasPosition:canvasPosition >= 0 ? canvasPosition : Number(canvasState.selectedImage.index),
         canvasSelectedOutputId:String(selectedCanvasItem?.output_id || ''),
     };
 }
 
 function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
     const outputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
-    if(smartHistorySelectedImage?.historyId === String(historyId || '') || state.historySelectedOutputId){
+    if(canvasState.smartHistorySelectedImage?.historyId === String(historyId || '') || state.historySelectedOutputId){
         const nextHistory = smartOutputAtPreservedPosition(
             outputs,
             state.historySelectedOutputId === String(deletedOutputId || '') ? '' : state.historySelectedOutputId,
             state.deletionPosition,
         );
-        smartHistorySelectedImage = nextHistory
+        canvasState.smartHistorySelectedImage = nextHistory
             ? {
                 historyId:String(historyId || ''),
                 outputIndex:nextHistory.outputIndex,
@@ -1570,7 +1570,7 @@ function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
             : null;
     }
     if(state.canvasNodeId){
-        const selectedNode = nodes.find(node => String(node?.id || '') === state.canvasNodeId);
+        const selectedNode = canvasState.nodes.find(node => String(node?.id || '') === state.canvasNodeId);
         const images = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
         const preservedIndex = images.findIndex(image =>
             String(image?.output_id || '') === state.canvasSelectedOutputId
@@ -1579,7 +1579,7 @@ function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
         const nextIndex = preservedIndex >= 0
             ? preservedIndex
             : Math.max(0, Math.min(images.length - 1, state.canvasPosition));
-        selectedImage = images.length
+        canvasState.selectedImage = images.length
             ? {
                 nodeId:state.canvasNodeId,
                 index:nextIndex,
@@ -1664,8 +1664,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
                 const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
                 const label = imageResolutionLabel(item);
                 const name = item.name || smartImageNameFromUrl(item.url);
-                const selected = smartHistorySelectedImage?.historyId === String(log.id || '')
-                    && smartHistorySelectedImage.outputIndex === outputIndex;
+                const selected = canvasState.smartHistorySelectedImage?.historyId === String(log.id || '')
+                    && canvasState.smartHistorySelectedImage.outputIndex === outputIndex;
                 const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
                 const attrs = kind === 'image'
                     ? `class="log-history-image" role="button" tabindex="0" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
@@ -1679,8 +1679,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
             const outputPreviews = outputs.length > 1 ? outputs.map((item, index) => {
                 const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
                 const preview = smartPreviewImgHtml(item, 192, `alt="${escapeAttr(position)}" draggable="false"`);
-                const previewSelected = smartHistorySelectedImage?.historyId === String(log.id || '')
-                    && smartHistorySelectedImage.outputIndex === item.outputIndex;
+                const previewSelected = canvasState.smartHistorySelectedImage?.historyId === String(log.id || '')
+                    && canvasState.smartHistorySelectedImage.outputIndex === item.outputIndex;
                 const previewHint = `${position} · ${tr('smart.generationOutputPreviewHint')}`;
                 return `<button class="log-output-preview${previewSelected ? ' is-selected' : ''}" type="button" data-history-output-preview="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="${previewSelected ? 'true' : 'false'}" aria-label="${escapeAttr(previewHint)}" title="${escapeAttr(previewHint)}">${preview}</button>`;
             }).join('') : '';
@@ -2064,8 +2064,8 @@ function bindSmartHistoryWindow(){
             const images = smartHistoryImageOutputs(log);
             // Bug fix: 删除当前选中的图片（通过 output_id 匹配），否则删除第一张
             const selectedIndex = (() => {
-                if(smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId){
-                    const matched = images.find(img => String(img.output_id || '') === smartHistorySelectedImage.outputId);
+                if(canvasState.smartHistorySelectedImage?.historyId === historyId && canvasState.smartHistorySelectedImage?.outputId){
+                    const matched = images.find(img => String(img.output_id || '') === canvasState.smartHistorySelectedImage.outputId);
                     if(matched) return matched.outputIndex;
                 }
                 return images[0]?.outputIndex ?? 0;
@@ -2108,10 +2108,10 @@ function bindSmartHistoryWindow(){
                 pointerId:1,
                 actionButton:button,
             };
-            smartHistoryPointerState = state;
+            canvasState.smartHistoryPointerState = state;
             window.addEventListener('mouseup', () => {
                 setTimeout(() => {
-                    if(smartHistoryPointerState === state) clearSmartHistoryPointerState();
+                    if(canvasState.smartHistoryPointerState === state) clearSmartHistoryPointerState();
                 }, 0);
             }, {once:true});
         };
@@ -2121,7 +2121,7 @@ function bindSmartHistoryWindow(){
 
 function renderSmartHistoryWindow(force=false){
     if(!smartHistoryList) return;
-    if(smartHistoryPointerState){
+    if(canvasState.smartHistoryPointerState){
         smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
         return;
     }
@@ -2137,8 +2137,8 @@ function renderSmartHistoryWindow(force=false){
         refreshIcons();
         return;
     }
-    if(smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === smartHistorySelectedImage.historyId)){
-        smartHistorySelectedImage = null;
+    if(canvasState.smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === canvasState.smartHistorySelectedImage.historyId)){
+        canvasState.smartHistorySelectedImage = null;
     }
     const focused = smartHistoryFocusedCard(logs);
     let bounds = smartHistoryWindowBounds(logs.length, SMART_HISTORY_DOM_LIMIT);
@@ -2193,21 +2193,21 @@ function scheduleSmartHistoryWindowRender(force=false){
 }
 
 function updateSmartHistoryDrawerCollapseUi(){
-    smartHistoryModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
-    smartHistoryModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartHistoryModal.classList.contains('open')));
+    smartHistoryModal?.classList.toggle('collapsed', canvasState.smartHistoryDrawerCollapsed);
+    smartHistoryModal?.setAttribute('aria-expanded', String(!canvasState.smartHistoryDrawerCollapsed && smartHistoryModal.classList.contains('open')));
     if(smartHistoryCollapse){
-        smartHistoryCollapse.title = smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
+        smartHistoryCollapse.title = canvasState.smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
         smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
-        smartHistoryCollapse.innerHTML = `<i data-lucide="${smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
+        smartHistoryCollapse.innerHTML = `<i data-lucide="${canvasState.smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
         refreshIcons();
     }
 }
 
 function toggleSmartHistoryDrawerCollapsed(){
     if(!smartHistoryModal?.classList.contains('open')) openSmartCanvasLog();
-    smartHistoryDrawerCollapsed = !smartHistoryDrawerCollapsed;
+    canvasState.smartHistoryDrawerCollapsed = !canvasState.smartHistoryDrawerCollapsed;
     updateSmartHistoryDrawerCollapseUi();
-    if(!smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
+    if(!canvasState.smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
 }
 
 function scrollSmartHistoryRailTo(value, immediate=false){
@@ -2294,7 +2294,7 @@ function historyGroupForNode(node){
     if(!node?.id) return null;
     // #85：候选池不再绘制 history 连线（视觉上无连线），关联唯一以 historyFor 字段为准；
     // 级联删除/撤销/保存恢复均依赖 historyFor，不依赖连线。
-    return nodes.find(n => isHistoryGroupNode(n) && n.historyFor === node.id) || null;
+    return canvasState.nodes.find(n => isHistoryGroupNode(n) && n.historyFor === node.id) || null;
 }
 
 function positionHistoryGroupForNode(node, group){
@@ -2327,7 +2327,7 @@ function ensureHistoryGroupForNode(node){
             scale:MEDIA_GROUP_DEFAULT_SCALE,
             created_at:Date.now()
         };
-        nodes.push(group);
+        canvasState.nodes.push(group);
     }
     group.type = 'smart-image';
     group.title = tr('smart.historyGroupTitle');
@@ -2368,6 +2368,6 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
     const afterRight = (Number(node.x) || 0) + nodeRect(node).width;
     const skipShift = options.skipShift || Boolean(smartLoopContext?.nodeId);
     if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedImage = {nodeId:'', index:-1};
     return next;
 }

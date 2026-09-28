@@ -195,6 +195,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
             + "const smartHistoryImageOutputs=()=>outputs;"
             + "const smartHistoryEntryById=()=>({id:'log-1',outputs});"
             + "const document={querySelector:()=>({})};"
+            + "const canvasState={smartHistorySelectedImage,selectedImage,nodes,selectedIds:[]};"
             + match.group(0)
             + "\nconsole.log(JSON.stringify(captureSmartOriginalDeletionUiState('log-1','')));"
         )

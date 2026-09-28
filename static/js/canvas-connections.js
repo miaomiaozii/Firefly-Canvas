@@ -1,6 +1,6 @@
 // 画布节点连线模块（从 smart-canvas.js 抽离，#158 P2a）。
 // 连线渲染/操作函数：渲染、刷新、事件绑定、拖拽连线、擦除、断开、
-// reroute、级联键等。引用主脚本全局（canvas/nodes/shell/world 等），
+// reroute、级联键等。引用主脚本全局（canvas/canvasState.nodes/shell/world 等），
 // 本文件只含函数定义（无顶层执行代码），先于 smart-canvas.js 加载，
 // 所有调用都发生在主脚本全局初始化之后，安全。
 // 注意：WebSocket 的 connectAssetLibrarySyncSocket / connectAgentWebSocket
@@ -15,13 +15,13 @@ function rerouteSmartConnections(fromId, toId){
             return conn;
         }).filter((c, i, arr) => c.from !== c.to && arr.findIndex(x => x.from === c.from && x.to === c.to && (x.kind || 'flow') === (c.kind || 'flow')) === i);
     }
-    nodes.forEach(n => {
+    canvasState.nodes.forEach(n => {
         if(Array.isArray(n.inputNodeIds)) n.inputNodeIds = Array.from(new Set(n.inputNodeIds.map(id => id === fromId ? toId : id).filter(id => id !== n.id)));
     });
 }
 
 function connectedSmartClusterIds(seedId){
-    const ids = new Set(nodes.map(n => n.id));
+    const ids = new Set(canvasState.nodes.map(n => n.id));
     if(!ids.has(seedId)) return [];
     const seen = new Set([seedId]);
     const queue = [seedId];
@@ -40,7 +40,7 @@ function connectedSmartClusterIds(seedId){
 
 function arrangeSmartIdsByConnections(ids){
     const idSet = new Set(smartArrangeAtomicIds(ids));
-    const selectedNodes = [...idSet].map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    const selectedNodes = [...idSet].map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(selectedNodes.length < 2) return false;
     const rects = selectedNodes.map(node => ({node, rect:nodeRect(node)}));
     const startX = Math.min(...rects.map(item => item.rect.x));
@@ -101,7 +101,7 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 }
 
 function renderConnections(){
-    const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => nodes.some(n => n.id === c.from) && nodes.some(n => n.id === c.to));
+    const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => canvasState.nodes.some(n => n.id === c.from) && canvasState.nodes.some(n => n.id === c.to));
     const cascadeKeys = cascadeConnectionKeys();
     const activeRunPath = [...smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
     const activeCascadeCount = (activeRunPath?.states && Object.values(activeRunPath.states).filter(state => state && state !== 'done').length) || 0;
@@ -133,8 +133,8 @@ function renderConnections(){
         }
     });
     const paths = items.map(item => {
-        const fromNode = nodes.find(n => n.id === item.from);
-        const toNode = nodes.find(n => n.id === item.toId);
+        const fromNode = canvasState.nodes.find(n => n.id === item.from);
+        const toNode = canvasState.nodes.find(n => n.id === item.toId);
         if(!fromNode || !toNode) return '';
         const fr = nodeRect(fromNode), tr = nodeRect(toNode);
         const kind = item.kind;
@@ -148,7 +148,7 @@ function renderConnections(){
         else if(states.some(s => s !== 'done')) cascadeState = states.find(s => s !== 'done');
         else if(states.length) cascadeState = 'done';
         const isCascade = !isHistory && (edgeKeys.some(k => cascadeKeys.has(k)) || Boolean(cascadeState) || isInsertPreview);
-        const isPendingLine = !isCascade && item.targets.some(t => nodes.find(n => n.id === t)?.pending);
+        const isPendingLine = !isCascade && item.targets.some(t => canvasState.nodes.find(n => n.id === t)?.pending);
         const isSelectedLine = selectedConnIds.size > 0 && (selectedConnIds.has(item.from) || selectedConnIds.has(item.toId) || item.targets.some(t => selectedConnIds.has(t)));
         const fx = isHistory ? fr.x + fr.width / 2 : fr.x + fr.width;
         const fy = isHistory ? fr.y + fr.height : fr.y + fr.height / 2;
@@ -178,7 +178,7 @@ function renderConnections(){
 }
 
 function refreshConnectionLayer(){
-    connectionLayerRaf = 0;
+    canvasState.connectionLayerRaf = 0;
     const oldSvg = world.querySelector('svg.connection-layer');
     if(!oldSvg) return;
     const tpl = document.createElement('template');
@@ -189,8 +189,8 @@ function refreshConnectionLayer(){
 }
 
 function scheduleConnectionLayerRefresh(){
-    if(connectionLayerRaf) return;
-    connectionLayerRaf = requestAnimationFrame(refreshConnectionLayer);
+    if(canvasState.connectionLayerRaf) return;
+    canvasState.connectionLayerRaf = requestAnimationFrame(refreshConnectionLayer);
 }
 
 function bindConnectionEvents(){
@@ -246,14 +246,14 @@ function disconnectConnections(spec){
     pushUndo();
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
-        const toNode = nodes.find(n => n.id === conn.to);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
         if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
-            const group = nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
+            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
             demoteHistoryGroupNode(group);
         }
     });
@@ -294,14 +294,14 @@ function finishConnectionErase(){
     pushUndo();
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
-        const toNode = nodes.find(n => n.id === conn.to);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
         if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
-            const group = nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
+            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
             demoteHistoryGroupNode(group);
         }
     });
@@ -361,8 +361,8 @@ function clearConnectionEraseTrail(){
 }
 
 function connectionMidpoint(conn){
-    const fromNode = nodes.find(n => n.id === conn?.from);
-    const toNode = nodes.find(n => n.id === conn?.to);
+    const fromNode = canvasState.nodes.find(n => n.id === conn?.from);
+    const toNode = canvasState.nodes.find(n => n.id === conn?.to);
     if(!fromNode || !toNode) return null;
     const fr = nodeRect(fromNode), tr = nodeRect(toNode);
     if((conn.kind || 'flow') === 'history'){
@@ -381,8 +381,8 @@ function insertionConnectionForNode(node){
         const kind = conn.kind || 'flow';
         if(!['input','flow'].includes(kind)) return;
         if(conn.from === node.id || conn.to === node.id) return;
-        const fromNode = nodes.find(n => n.id === conn.from);
-        const toNode = nodes.find(n => n.id === conn.to);
+        const fromNode = canvasState.nodes.find(n => n.id === conn.from);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(!fromNode || !toNode || isHistoryGroupNode(fromNode) || isHistoryGroupNode(toNode)) return;
         const mid = connectionMidpoint(conn);
         if(!mid) return;
@@ -402,8 +402,8 @@ function addConnection(fromId, toId, kind='flow'){
 }
 
 function connectInputNode(fromId, toId){
-    const from = nodes.find(n => n.id === fromId);
-    const to = nodes.find(n => n.id === toId);
+    const from = canvasState.nodes.find(n => n.id === fromId);
+    const to = canvasState.nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
     // #149 C8: agent-task 是只读结果卡，不接受输入连线
     if(to.type === 'agent-task'){
@@ -471,8 +471,8 @@ function cascadeConnectionKeys(){
     };
     const activeLoopIds = new Set(smartCascadeRuns.keys());
     const loops = activeLoopIds.size
-        ? nodes.filter(n => n?.type === 'smart-loop' && activeLoopIds.has(n.id))
-        : nodes.filter(n => n?.type === 'smart-loop');
+        ? canvasState.nodes.filter(n => n?.type === 'smart-loop' && activeLoopIds.has(n.id))
+        : canvasState.nodes.filter(n => n?.type === 'smart-loop');
     loops.forEach(loop => {
         const tail = cascadeTailForLoop(loop.id);
         if(!tail) return;
@@ -482,7 +482,7 @@ function cascadeConnectionKeys(){
         graph.edges.forEach(edge => addKey(edge.source.id, edge.target.id));
         (canvas?.connections || []).forEach(conn => {
             if((conn.kind || 'flow') === 'history') return;
-            const toNode = nodes.find(n => n.id === conn.to);
+            const toNode = canvasState.nodes.find(n => n.id === conn.to);
             if(conn.from === loop.id && (chainIds.has(conn.to) || downstreamNodesForId(conn.to).some(n => chainIds.has(n.id)))) addKey(conn.from, conn.to);
             if(toNode && chainIds.has(toNode.id)){
                 inputNodesFor(toNode).filter(n => n?.type === 'smart-loop' && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
