@@ -32,7 +32,7 @@
 
   const revealVisible = () => evalFn('() => document.getElementById("smartEdgeReveal").classList.contains("visible")')();
   const nodeInViewport = () => evalFn(`() => {
-    const n = nodes.find(n => n.id === 'edge-prompt');
+    const n = canvasState.nodes.find(n => n.id === 'edge-prompt');
     if (!n) return null;
     const r = nodeRect(n);
     const cx = (r.x + r.width / 2) * viewport.scale + viewport.x;
@@ -42,7 +42,7 @@
 
   function resetNodeForReuse(x, y) {
     evalFn(`() => {
-      const n = nodes.find(n => n.id === 'edge-prompt');
+      const n = canvasState.nodes.find(n => n.id === 'edge-prompt');
       if (!n) return;
       n.images = [];
       n.pending = 0;
@@ -70,14 +70,14 @@
     await waitFor('运行按钮可用', () => !runButton.disabled, 12000);
     runButton.click();
     await waitFor('生成完成', () => {
-      const n = evalFn('() => nodes.find(n => n.id === "edge-prompt")')();
+      const n = evalFn('() => canvasState.nodes.find(n => n.id === "edge-prompt")')();
       window.__diagLast = n ? { images: (n.images || []).length, pending: n.pending, fin: n.runFinishedAt, title: n.title } : null;
       return n && (n.images || []).some(img => img?.url) && !n.pending && n.runFinishedAt ? true : null;
     }, 60000, 250);
   }
 
   try {
-    await waitFor('画布加载', () => evalFn('() => nodes.some(n => n.id === "edge-prompt")')(), 20000);
+    await waitFor('画布加载', () => evalFn('() => canvasState.nodes.some(n => n.id === "edge-prompt")')(), 20000);
 
     const foundationLink = document.querySelector('link[href*="/static/css/studio-foundation.css"]');
     check('画布加载共享 UI foundation', Boolean(foundationLink), foundationLink?.getAttribute('href') || 'missing');
@@ -166,7 +166,7 @@
     resetNodeForReuse(9000, 9000);
     await runNode('edge reveal prompt 2');
     const diag3 = evalFn(`() => {
-      const n = nodes.find(n => n.id === 'edge-prompt');
+      const n = canvasState.nodes.find(n => n.id === 'edge-prompt');
       const r = n && nodeRect ? nodeRect(n) : null;
       const el = document.getElementById('smartEdgeReveal');
       return { x: n && n.x, y: n && n.y, rect: r, nodeId: smartEdgeRevealNodeId, timer: smartEdgeRevealTimer > 0, cls: el && el.className, vp: { x: viewport.x, y: viewport.y, s: viewport.scale } };

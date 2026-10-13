@@ -32,7 +32,7 @@
     function evalFn(fn){
         return Function('"use strict";return (' + fn + ')')();
     }
-    function nodes(){ return (0, eval)('nodes'); }
+    function nodes(){ return (0, eval)('canvasState.nodes'); }
     function findNode(id){ return nodes().find(n => n && n.id === id); }
     function nodeName(nodeId){ const n = findNode(nodeId); return n && n.images && n.images[0] ? n.images[0].name : null; }
     function editMode(){ return (0, eval)('imageEditMode'); }
@@ -196,7 +196,7 @@
                 if(applied){
                     const imgs = findNode('edit-node').images;
                     assertion('mask image role', imgs[1] && imgs[1].role === 'mask', imgs[1] && imgs[1].role);
-                    const selIdx = evalFn('() => { const s = eval("selectedImage"); return s && s.index; }')();
+                    const selIdx = evalFn('() => { const s = eval("canvasState.selectedImage"); return s && s.index; }')();
                     assertion('selectedImage index after mask', selIdx === 1, String(selIdx));
                 }
             }

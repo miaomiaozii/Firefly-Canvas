@@ -136,7 +136,7 @@
         const absorbGeneration = evalFn('absorbProjectGenerationResult');
         const probeNode = {id:'revision-probe', type:'smart-image', images:[{url:'project-media://revision-probe/local.png'}], runFinishedAt:10, pending:0};
         try {
-            eval('nodes').push(probeNode);
+            eval('canvasState.nodes').push(probeNode);
             applyMergedCanvas?.({
                 revision:40,
                 updated_at:Date.now(),
@@ -158,8 +158,8 @@
                 && !revisionProbe?.images?.some(item => item.url === 'project-media://revision-probe/stale.png')
             ), revisionProbe?.images);
         } finally {
-            eval('nodes').splice(0, eval('nodes').length, ...eval('nodes').filter(item => item.id !== 'revision-probe'));
-            evalCanvas().nodes = eval('nodes');
+            eval('canvasState.nodes').splice(0, eval('canvasState.nodes').length, ...eval('canvasState.nodes').filter(item => item.id !== 'revision-probe'));
+            evalCanvas().nodes = eval('canvasState.nodes');
             evalCanvas().history = (evalCanvas().history || []).filter(item => item.id !== 'revision-probe-history');
         }
 
@@ -413,7 +413,7 @@
         assertion('generated image downloadable', downloadResult.ok && downloadResult.size >= 60 && downloadResult.png, JSON.stringify(downloadResult));
 
         const autoReset = await evalFn(`(p) => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
             n.pending = false;
             n.queued = false;
@@ -422,9 +422,9 @@
             return true;
         }`)();
         const reSelect = await evalFn(`(p) => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
-            selectedId = n.id;
+            canvasState.selectedId = n.id;
             updateComposer();
             renderDynamicParams();
             return true;
@@ -534,9 +534,9 @@
         assertion('node count grew by 4', finalCount === beforeCount + 4, `${beforeCount} -> ${finalCount}`);
 
         const recoverySelected = await evalFn(`() => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
-            selectedId = n.id;
+            canvasState.selectedId = n.id;
             n.runSettings = {...(n.runSettings || {}), engine:'api', apiKind:'image', routingMode:'auto', count:1};
             updateComposer();
             renderDynamicParams();

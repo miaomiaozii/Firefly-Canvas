@@ -142,9 +142,9 @@
             const mu = new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:bx, clientY:by, button:0, buttons:0, ctrlKey:true});
             window.dispatchEvent(mu);
             await sleep(150);
-            const selected = (function(){ try { return eval('selectedIds'); } catch(_) { return []; } })() || [];
+            const selected = (function(){ try { return eval('canvasState.selectedIds'); } catch(_) { return []; } })() || [];
             const diagSel = () => {
-                try { return `selState=${JSON.stringify(eval('selectionState'))} selIds=${JSON.stringify(eval('selectedIds'))}`; } catch(_) { return 'diag-error'; }
+                try { return `selState=${JSON.stringify(eval('selectionState'))} selIds=${JSON.stringify(eval('canvasState.selectedIds'))}`; } catch(_) { return 'diag-error'; }
             };
             result.diagnostics.push(`after box-select: ${diagSel()}`);
             assertion('box-select picks 2 nodes', selected.length === 2, JSON.stringify(selected));
@@ -179,7 +179,7 @@
             }
             const diag = () => {
                 try {
-                    const selId = eval('selectedId'), selIds = JSON.stringify(eval('selectedIds'));
+                    const selId = eval('canvasState.selectedId'), selIds = JSON.stringify(eval('canvasState.selectedIds'));
                     const uStack = eval('undoStack.length');
                     return `selId=${selId} selIds=${selIds} undoStack=${uStack} nodes=${evalCanvas()?.nodes?.length}`;
                 } catch(_) { return 'diag-error'; }
@@ -222,14 +222,14 @@
             const c = evalCanvas();
             const images = c.nodes.filter(n => n.type === 'smart-image' && String(n.id).startsWith('seed-'));
             if(images.length === 2){
-                eval('selectedIds.splice(0, selectedIds.length, ' + images.map(node => JSON.stringify(node.id)).join(', ') + ')');
-                eval('selectedId = ' + JSON.stringify(images[0].id));
+                eval('canvasState.selectedIds.splice(0, canvasState.selectedIds.length, ' + images.map(node => JSON.stringify(node.id)).join(', ') + ')');
+                eval('canvasState.selectedId = ' + JSON.stringify(images[0].id));
             }
             await sleep(80);
             groupSelectedNodes();
             const group = (evalCanvas()?.nodes || []).find(n => n.type === 'smart-group');
             const groupCount = group ? 1 : 0;
-            result.diagnostics.push(`group diag: count=${groupCount} selId=${eval('selectedId')} selIds=${JSON.stringify(eval('selectedIds'))}`);
+            result.diagnostics.push(`group diag: count=${groupCount} selId=${eval('canvasState.selectedId')} selIds=${JSON.stringify(eval('canvasState.selectedIds'))}`);
             assertion('group creates smart-group node', groupCount > 0, `groups=${groupCount}`);
             const thumbsReady = await waitFor(() => {
                 const thumbs = [...document.querySelectorAll('.smart-group-node .smart-group-thumb-grid .thumb-item')];

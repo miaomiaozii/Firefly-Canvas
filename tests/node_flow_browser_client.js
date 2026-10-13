@@ -56,7 +56,7 @@
         const c = evalCanvas();
         if(c){
             result.diagnostics.push(`canvas nodes: ${c.nodes.map(n => `${n.id}:${n.type}`).join(',')}`);
-            const moduleNodes = eval('nodes');
+            const moduleNodes = eval('canvasState.nodes');
             const mn = moduleNodes?.map(n => n.id);
             result.diagnostics.push(`module nodes (${moduleNodes?.length}): ${mn ? mn.join(',') : 'N/A'}`);
             c.nodes.forEach((node, i) => {
