@@ -23,6 +23,7 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-undo.js",
     "canvas-node-ops.js",
     "canvas-image-editor.js",
+    "canvas-generation-cascade.js",
     "smart-canvas.js",
 )
 
