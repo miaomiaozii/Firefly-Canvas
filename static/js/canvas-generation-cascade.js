@@ -1,7 +1,7 @@
-// 画布级联/循环生成调度（从 smart-canvas.js 抽离，#154）。
-// 本文件只含函数定义与状态声明，无顶层执行代码；引用主脚本全局（nodes/canvas/selectedId/
-// toast/tr/render/scheduleSave/canvasState 等）。先于 smart-canvas.js 加载，函数声明整体提升，
-// 所有调用都发生在主脚本全局初始化之后。
+// 画布级联与循环生成调度：输出槽位、下游目标解析、并行上限与停止请求（从 smart-canvas.js 抽离，#154）。
+// invariant: classic script，按 HTML 顺序先于 smart-canvas.js 加载；本文件顶层只有声明，
+// 初始化器只取空容器或字面量，不读其他模块的状态。函数声明整体提升，实际调用都发生在
+// 主脚本初始化之后。跨模块可变状态一律走 canvasState（window.canvasState），不要引用裸 nodes/selectedId。
 
 let smartCascadeSilentSelection = false;
 

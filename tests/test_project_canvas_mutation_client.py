@@ -7,8 +7,6 @@ from tests.canvas_frontend_sources import canvas_source
 
 ROOT = Path(__file__).resolve().parents[1]
 MUTATION_CLIENT = ROOT / "static" / "js" / "project-canvas-mutations.js"
-SMART_CANVAS = ROOT / "static" / "js" / "smart-canvas.js"
-CANVAS_MEDIA_HISTORY = ROOT / "static" / "js" / "canvas-media-history.js"
 SMART_CANVAS_HTML = ROOT / "static" / "smart-canvas.html"
 
 

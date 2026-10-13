@@ -33,6 +33,11 @@ def canvas_path(name: str) -> Path:
     return JS_DIR / name
 
 
+def is_canvas_module(name: str) -> bool:
+    """判断一个 /static/js/ 脚本是否属于按 #154 拆分的画布前端模块。"""
+    return name.startswith("canvas-") or name in ("smart-canvas.js", "project-canvas-mutations.js")
+
+
 def canvas_source(*names: str) -> str:
     """Concatenate canvas frontend sources (defaults to every module in load order)."""
     return "\n".join(canvas_path(name).read_text(encoding="utf-8") for name in (names or CANVAS_SCRIPTS))
