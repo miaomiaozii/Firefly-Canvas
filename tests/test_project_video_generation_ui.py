@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+from tests.canvas_frontend_sources import canvas_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -8,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProjectVideoGenerationUiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        cls.source = canvas_source()
         cls.i18n_source = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
 
     def test_core_canvas_posts_project_owned_video_request_and_polls_video_task(self):
