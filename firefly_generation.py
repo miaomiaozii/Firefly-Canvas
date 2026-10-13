@@ -392,6 +392,26 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     return capability
 
 
+def _resolve_display_model_name(provider: Mapping[str, Any], model: str) -> str:
+    """Map a friendly display name (provider.model_names) back to the raw model id.
+
+    The canvas renders model options with provider display names (e.g. "Nano
+    Banana 2.1") while keeping the raw id as the value; generation requests may
+    still carry the friendly name (manual entry, agent instructions), so routing
+    resolves it against the provider's own name map before matching known models.
+    """
+    names = provider.get("model_names")
+    if not isinstance(names, Mapping):
+        return ""
+    target = str(model or "").strip().lower()
+    if not target:
+        return ""
+    for raw_id, label in names.items():
+        if str(label or "").strip().lower() == target:
+            return str(raw_id).strip()
+    return ""
+
+
 def route_image_generation(
     request: ImageGenerationRequest,
     providers: Sequence[Mapping[str, Any]],
@@ -419,16 +439,19 @@ def route_image_generation(
         resolution_tag = str(request_snapshot.get("resolution") or "").strip().lower()
         candidates_to_check: list[str] = []
         if pinned_model:
+            effective_model = pinned_model
+            if effective_model not in known_models:
+                effective_model = _resolve_display_model_name(provider, effective_model) or effective_model
             variant = ""
             if resolution_tag in {"2k", "4k"}:
-                if pinned_model == "nano-banana":
+                if effective_model == "nano-banana":
                     variant = "nano-banana-hd"
-                elif not re.search(r"-(?:1k|2k|4k)$", pinned_model):
-                    variant = f"{pinned_model}-{resolution_tag}"
+                elif not re.search(r"-(?:1k|2k|4k)$", effective_model):
+                    variant = f"{effective_model}-{resolution_tag}"
             if variant in known_models:
                 candidates_to_check.append(variant)
-            if pinned_model in known_models:
-                candidates_to_check.append(pinned_model)
+            if effective_model in known_models:
+                candidates_to_check.append(effective_model)
         else:
             candidates_to_check.extend(models)
         for current_model in candidates_to_check:

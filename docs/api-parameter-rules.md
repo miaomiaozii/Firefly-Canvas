@@ -96,6 +96,7 @@ POST /v1/images/generations
 - 模型 ID：`gemini-nano-banana-2.1`、`gemini-nano-banana-2.1-2k`、`gemini-nano-banana-2.1-4k`（NEW）
 - 参数与 banana2 相同：`aspect_ratio`（14 种）、`image_size`（1K/2K/4K）、`response_format`、`image`（参考图数组）
 - 后端路由：`app/core.py` `banana_model_family` 已识别 2.1 家族，按分辨率自动路由到 `-2k`/`-4k` 变体（无变体时回退基础模型 + `image_size` 参数）
+- 友好名（参考 Nano Banana 2 模式）：comfly 服务商 `model_names` 映射 `gemini-nano-banana-2.1` → "Nano Banana 2.1"（`-2k`/`-4k` 变体分别为 "Nano Banana 2.1 2K"/"4K"）；画布模型下拉展示友好名，且 `firefly_generation.route_image_generation` 支持直接用友好名作为路由模型名（经服务商 `model_names` 反解回原始 ID 后匹配）
 - 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，supports_vision/async_mode）
 
 ### 图生图/改图（Edits）
