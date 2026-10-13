@@ -332,7 +332,7 @@ def _inferred_video_model_capabilities(model: str) -> dict[str, Any]:
 def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     identifier = str(model or "").strip().lower()
     capability: dict[str, Any] = {"media_types": ["image"]}
-    banana = re.fullmatch(r"nano-banana-(?:pro|2)(?:-(1k|2k|4k))?", identifier)
+    banana = re.fullmatch(r"(?:gemini-)?nano-banana-(?:pro|2\.1|2)(?:-(1k|2k|4k))?", identifier)
     if identifier == "nano-banana":
         capability.update({
             "aspect_ratios": list(GEMINI_ASPECT_RATIOS),

@@ -169,6 +169,11 @@ class ImageGenerationRoutingTests(unittest.TestCase):
             ("nano-banana", ("nano-banana", "nano-banana-hd", "nano-banana-hd")),
             ("nano-banana-pro", ("nano-banana-pro", "nano-banana-pro-2k", "nano-banana-pro-4k")),
             ("nano-banana-2", ("nano-banana-2", "nano-banana-2-2k", "nano-banana-2-4k")),
+            ("gemini-nano-banana-2.1", (
+                "gemini-nano-banana-2.1",
+                "gemini-nano-banana-2.1-2k",
+                "gemini-nano-banana-2.1-4k",
+            )),
             ("gemini-3.1-flash-image-preview", (
                 "gemini-3.1-flash-image-preview",
                 "gemini-3.1-flash-image-preview-2k",

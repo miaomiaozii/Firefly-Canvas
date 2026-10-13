@@ -1,7 +1,7 @@
 {
   "_schema_version": "1.0",
   "_description": "Firefly-Canvas 模型参数规范。运行时读取此文件作为参数/能力的权威数据源（size/宽高比/vision/参数默认值）。新增模型优先在此添加条目。CLI 与 jimeng 官方为独立补充入口，不依赖本文件。",
-  "_last_updated": "2026-08-25",
+  "_last_updated": "2026-10-13",
   "chat_models": {
     "gpt-4o-mini": {
       "display_name": "GPT-4o mini",
@@ -579,6 +579,116 @@
           "description": "参考图数组（图生图）。每项为 URL 或 base64"
         }
       }
+    },
+    "gemini-nano-banana-2.1": {
+      "display_name": "Nano Banana 2.1",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "4:3",
+            "3:4",
+            "16:9",
+            "9:16",
+            "2:3",
+            "3:2",
+            "1:1",
+            "4:5",
+            "5:4",
+            "21:9",
+            "1:4",
+            "4:1",
+            "8:1",
+            "1:8"
+          ],
+          "default": "1:1",
+          "note": "14 种宽高比（与 nano-banana-2 相同的 Gemini image 系列集合）"
+        },
+        "image_size": {
+          "type": "enum",
+          "options": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "基础模型支持 1K/2K/4K 三档；2K/4K 亦可路由到 -2k/-4k 变体"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（支持图生图），每项为 URL 或 b64_json"
+        }
+      },
+      "notes": "Nano-banana 2.1（Gemini image 系列，nano-banana-2 的升级），支持参考图生成"
+    },
+    "gemini-nano-banana-2.1-2k": {
+      "display_name": "Nano Banana 2.1 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "2K"
+          ],
+          "default": "2K",
+          "note": "固定 2K 分辨率变体（Nano-banana 系列 size 为 1K/2K/4K 档位）"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（图生图），每项为 URL 或 base64"
+        }
+      },
+      "notes": "Nano-banana 2.1 固定 2K 变体，支持参考图输入"
+    },
+    "gemini-nano-banana-2.1-4k": {
+      "display_name": "Nano Banana 2.1 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "4K"
+          ],
+          "default": "4K",
+          "note": "固定 4K 分辨率变体（Nano-banana 系列 size 为 1K/2K/4K 档位）"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（图生图），每项为 URL 或 base64"
+        }
+      },
+      "notes": "Nano-banana 2.1 固定 4K 变体，支持参考图输入"
     },
     "nano-banana-hd": {
       "display_name": "nano-banana-hd",

@@ -1,7 +1,7 @@
 # 模型参数规范 (MODEL_PARAMETERS)
 
 > 本文档从 `app/data/model_specs.json` 自动生成，请勿手动编辑。
-> 最后更新: 2026-08-25 17:44:37
+> 最后更新: 2026-10-13 16:58:35
 
 ## 概述
 
@@ -28,6 +28,13 @@
 | claude-sonnet-4-5 | Claude Sonnet 4.5 | responses | ✅ |
 | claude-opus-4-1 | Claude Opus 4.1 | responses | ✅ |
 | gemini-3.1-flash-image-preview-2k | Gemini 3.1 Flash Image 2K | responses | ✅ |
+| gpt-5.6-luna | gpt-5.6-luna | responses | ✅ |
+| gpt-5.6-sol | gpt-5.6-sol | responses | ✅ |
+| gpt-5.6-terra | gpt-5.6-terra | responses | ✅ |
+| claude-opus-4-20250514 | claude-opus-4-20250514 | responses | ✅ |
+| claude-opus-4-8 | claude-opus-4-8 | responses | ✅ |
+| qwen3-235b-a22b | qwen3-235b-a22b | responses | ✅ |
+| qwen3-coder-plus | qwen3-coder-plus | responses | ✅ |
 
 ### 对话模型参数详情
 
@@ -105,6 +112,62 @@
   - `stream`: boolean (默认: False)
   - `temperature`: number (默认: 1.0)
 
+#### gpt-5.6-luna
+- **模型 ID**: `gpt-5.6-luna`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### gpt-5.6-sol
+- **模型 ID**: `gpt-5.6-sol`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### gpt-5.6-terra
+- **模型 ID**: `gpt-5.6-terra`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### claude-opus-4-20250514
+- **模型 ID**: `claude-opus-4-20250514`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### claude-opus-4-8
+- **模型 ID**: `claude-opus-4-8`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### qwen3-235b-a22b
+- **模型 ID**: `qwen3-235b-a22b`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
+#### qwen3-coder-plus
+- **模型 ID**: `qwen3-coder-plus`
+- **API 类型**: responses
+- **支持视觉**: 是
+- **参数**:
+  - `stream`: boolean (默认: False)
+  - `temperature`: number (默认: 1.0)
+
 ---
 
 ## 图像模型 (Image Models)
@@ -114,6 +177,26 @@
 | nano-banana-pro | Nano Banana Pro | images_generations | ✅ | ✅ |
 | nano-banana-2 | Nano Banana 2 | images_generations | ✅ | ✅ |
 | gpt-image-2 | GPT Image 2 | images_generations | ✅ | ✅ |
+| nano-banana-pro-2k | nano-banana-pro-2k | images_generations | ✅ | ✅ |
+| nano-banana-pro-4k | nano-banana-pro-4k | images_generations | ✅ | ✅ |
+| nano-banana-2-2k | nano-banana-2-2k | images_generations | ✅ | ✅ |
+| nano-banana-2-4k | nano-banana-2-4k | images_generations | ✅ | ✅ |
+| gemini-nano-banana-2.1 | Nano Banana 2.1 | images_generations | ✅ | ✅ |
+| gemini-nano-banana-2.1-2k | Nano Banana 2.1 2K | images_generations | ✅ | ✅ |
+| gemini-nano-banana-2.1-4k | Nano Banana 2.1 4K | images_generations | ✅ | ✅ |
+| nano-banana-hd | nano-banana-hd | images_generations | ✅ | ✅ |
+| gpt-image-2-all | gpt-image-2-all | images_generations | ✅ | ✅ |
+| gpt-image-1.5-2025-12-16 | gpt-image-1.5-2025-12-16 | images_generations | ✅ | ✅ |
+| gemini-3.1-flash-image-512px | gemini-3.1-flash-image-512px | images_generations | ✅ | ✅ |
+| gemini-3.1-flash-image-preview-512px | gemini-3.1-flash-image-preview-512px | images_generations | ✅ | ✅ |
+| gemini-3.1-flash-image-4k | gemini-3.1-flash-image-4k | images_generations | ✅ | ✅ |
+| flux-2-pro | flux-2-pro | images_generations | ✅ | ✅ |
+| flux-2-max | flux-2-max | images_generations | ✅ | ✅ |
+| gpt-4o-image | gpt-4o-image | images_generations | ✅ | ✅ |
+| seedream-v5-pro | seedream-v5-pro | images_generations | ✅ | ✅ |
+| qwen-image-max-2025-12-30 | qwen-image-max-2025-12-30 | images_generations | ✅ | ✅ |
+| qwen-image-edit-max-2026-01-16 | qwen-image-edit-max-2026-01-16 | images_generations | ✅ | ✅ |
+| grok-imagine-image-2.0 | grok-imagine-image-2.0 | images_generations | ✅ | ✅ |
 
 ### 图像模型参数详情
 
@@ -161,6 +244,232 @@
   - `image`: array (默认: N/A)
 - **备注**: OpenAI 原生生图模型。支持任意分辨率（满足约束），支持图生图
 
+#### nano-banana-pro-2k
+- **模型 ID**: `nano-banana-pro-2k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### nano-banana-pro-4k
+- **模型 ID**: `nano-banana-pro-4k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### nano-banana-2-2k
+- **模型 ID**: `nano-banana-2-2k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### nano-banana-2-4k
+- **模型 ID**: `nano-banana-2-4k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### Nano Banana 2.1
+- **模型 ID**: `gemini-nano-banana-2.1`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `aspect_ratio`: 枚举类型 (默认: 1:1)
+    - 可选值: 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 1:1, 4:5, 5:4, 21:9, 1:4, 4:1, 8:1, 1:8
+  - `image_size`: 枚举类型 (默认: 1K)
+    - 可选值: 1K, 2K, 4K
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+- **备注**: Nano-banana 2.1（Gemini image 系列，nano-banana-2 的升级），支持参考图生成
+
+#### Nano Banana 2.1 2K
+- **模型 ID**: `gemini-nano-banana-2.1-2k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 2K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+- **备注**: Nano-banana 2.1 固定 2K 变体，支持参考图输入
+
+#### Nano Banana 2.1 4K
+- **模型 ID**: `gemini-nano-banana-2.1-4k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 4K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+- **备注**: Nano-banana 2.1 固定 4K 变体，支持参考图输入
+
+#### nano-banana-hd
+- **模型 ID**: `nano-banana-hd`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gpt-image-2-all
+- **模型 ID**: `gpt-image-2-all`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gpt-image-1.5-2025-12-16
+- **模型 ID**: `gpt-image-1.5-2025-12-16`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gemini-3.1-flash-image-512px
+- **模型 ID**: `gemini-3.1-flash-image-512px`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gemini-3.1-flash-image-preview-512px
+- **模型 ID**: `gemini-3.1-flash-image-preview-512px`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gemini-3.1-flash-image-4k
+- **模型 ID**: `gemini-3.1-flash-image-4k`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1K)
+  - `response_format`: 枚举类型 (默认: url)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### flux-2-pro
+- **模型 ID**: `flux-2-pro`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### flux-2-max
+- **模型 ID**: `flux-2-max`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### gpt-4o-image
+- **模型 ID**: `gpt-4o-image`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### seedream-v5-pro
+- **模型 ID**: `seedream-v5-pro`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### qwen-image-max-2025-12-30
+- **模型 ID**: `qwen-image-max-2025-12-30`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### qwen-image-edit-max-2026-01-16
+- **模型 ID**: `qwen-image-edit-max-2026-01-16`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
+#### grok-imagine-image-2.0
+- **模型 ID**: `grok-imagine-image-2.0`
+- **API 类型**: images_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `size`: string (默认: 1024x1024)
+  - `response_format`: 枚举类型 (默认: b64_json)
+    - 可选值: url, b64_json
+  - `image`: array (默认: N/A)
+
 ---
 
 ## 视频模型 (Video Models)
@@ -170,6 +479,19 @@
 | doubao-seedance-2-0-260128 | Seedance 2.0 | jimeng_video | ✅ | ✅ |
 | doubao-seedance-2-0-fast-260128 | Seedance 2.0 Fast | jimeng_video | ✅ | ✅ |
 | doubao-seedance-2.0-mini | Seedance 2.0 Mini | jimeng_video | ✅ | ✅ |
+| sora-2 | sora-2 | openai_video | ✅ | ✅ |
+| gpt-video-2 | gpt-video-2 | openai_video | ✅ | ✅ |
+| kling-video-v3 | kling-video-v3 | openai_video | ✅ | ✅ |
+| kling-video-v2-6 | kling-video-v2-6 | openai_video | ✅ | ✅ |
+| grok-video-3 | grok-video-3 | openai_video | ✅ | ✅ |
+| MiniMax-Hailuo-2.3 | MiniMax-Hailuo-2.3 | openai_video | ✅ | ✅ |
+| doubao-seedance-2.5 | doubao-seedance-2.5 | openai_video | ✅ | ✅ |
+| pixverse-video | pixverse-video | openai_video | ✅ | ✅ |
+| seedance2.0 | 即梦 Seedance 2.0 | jimeng_video | ✅ | ✅ |
+| seedance2.0fast | 即梦 Seedance 2.0 Fast | jimeng_video | ✅ | ✅ |
+| seedance2.0_vip | 即梦 Seedance 2.0 VIP | jimeng_video | ✅ | ✅ |
+| seedance2.0fast_vip | 即梦 Seedance 2.0 Fast VIP | jimeng_video | ✅ | ✅ |
+| veo3-fast | Veo 3 Fast | v2_generations | ✅ | ✅ |
 
 ### 视频模型参数详情
 
@@ -232,6 +554,151 @@
   - `videos`: array (默认: N/A)
   - `audios`: array (默认: N/A)
 - **备注**: 即梦 Seedance 2.0 Mini 轻量版
+
+#### sora-2
+- **模型 ID**: `sora-2`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### gpt-video-2
+- **模型 ID**: `gpt-video-2`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### kling-video-v3
+- **模型 ID**: `kling-video-v3`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### kling-video-v2-6
+- **模型 ID**: `kling-video-v2-6`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### grok-video-3
+- **模型 ID**: `grok-video-3`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### MiniMax-Hailuo-2.3
+- **模型 ID**: `MiniMax-Hailuo-2.3`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### doubao-seedance-2.5
+- **模型 ID**: `doubao-seedance-2.5`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### pixverse-video
+- **模型 ID**: `pixverse-video`
+- **API 类型**: openai_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 整数类型 (默认: 4，范围: 4-10，单位: seconds)
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `aspect_ratio`: 枚举类型 (默认: 16:9)
+    - 可选值: 16:9, 9:16, 1:1, 4:3, 3:4, auto
+  - `images`: array (默认: N/A)
+
+#### 即梦 Seedance 2.0
+- **模型 ID**: `seedance2.0`
+- **API 类型**: jimeng_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **备注**: 即梦 CLI 模型 ID（app/core.py JIMENG_DEFAULT_VIDEO_MODELS），与 doubao-seedance-2-0-260128 同模型
+
+#### 即梦 Seedance 2.0 Fast
+- **模型 ID**: `seedance2.0fast`
+- **API 类型**: jimeng_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **备注**: 即梦 CLI 模型 ID，快速版，同 seedance2.0
+
+#### 即梦 Seedance 2.0 VIP
+- **模型 ID**: `seedance2.0_vip`
+- **API 类型**: jimeng_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **备注**: 即梦 CLI 模型 ID，1080P 档，同 seedance2.0
+
+#### 即梦 Seedance 2.0 Fast VIP
+- **模型 ID**: `seedance2.0fast_vip`
+- **API 类型**: jimeng_video
+- **支持视觉**: 是
+- **异步模式**: 是
+- **备注**: 即梦 CLI 模型 ID，快速 1080P 档，同 seedance2.0
+
+#### Veo 3 Fast
+- **模型 ID**: `veo3-fast`
+- **API 类型**: v2_generations
+- **支持视觉**: 是
+- **异步模式**: 是
+- **参数**:
+  - `duration`: 枚举类型 (默认: 8)
+    - 可选值: 5, 8
+  - `resolution`: 枚举类型 (默认: 720p)
+    - 可选值: 720p, 1080p
+  - `generate_audio`: boolean (默认: True)
+- **备注**: Google Veo 3 快速版，v2generations 端点；比例通过请求体 aspectRatio 传递（不在 parameters 登记）
 
 ---
 

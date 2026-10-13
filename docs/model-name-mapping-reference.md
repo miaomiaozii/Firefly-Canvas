@@ -67,6 +67,7 @@
 | veo3 / veo3-fast / veo3-pro | Veo 3 / Fast / Pro | 视频 | ✅ |
 | veo3.1 / veo3.1-fast / veo3.1-quality / veo3.1-lite | Veo 3.1 系列 | 视频 | ✅ |
 | nano-banana-pro | Nano Banana Pro | 图像 | ✅📄 |
+| gemini-nano-banana-2.1 / -2k / -4k | Nano Banana 2.1（1K/2K/4K） | 图像 | ✅ |
 | nano-banana/text-to-image-official-stable | Nano Banana（文生图） | 图像 | ✅ |
 | nano-banana/edit-official-stable | Nano Banana（编辑） | 图像 | ✅ |
 | google/veo3.1-fast/text-to-video-channel-low-price | Veo 3.1 Fast（低价通道） | 视频 | ✅ |

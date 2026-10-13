@@ -4351,7 +4351,7 @@ def banana_model_family(model):
         return 'nano-banana'
     if value in {'banana', 'nano-banana-pro'}:
         return 'nano-banana-pro'
-    match = re.fullmatch('(nano-banana-(?:pro|2))(?:-(?:1k|2k|4k))?', value)
+    match = re.fullmatch(r'((?:gemini-)?nano-banana-(?:pro|2\.1|2))(?:-(?:1k|2k|4k))?', value)
     return match.group(1) if match else ''
 
 def looks_like_gemini_image_model(model):
@@ -5297,7 +5297,7 @@ def recommend_upstream_models(grouped):
     The upstream list is still returned in full; these values only tell the
     canvas which model to select first after a provider is fetched.
     """
-    priorities = {'image': ('nano-banana-pro', 'nano-banana-2', 'nano-banana', 'gpt-image', 'imagen', 'seedream', 'qwen-image', 'dall-e', 'flux', 'image'), 'chat': ('gpt-5.4', 'chatgpt-5.4', 'gpt-5.', 'gpt-', 'claude', 'gemini', 'qwen', 'deepseek', 'glm', 'llama', 'chat'), 'video': ('veo', 'sora', 'seedance', 'wan', 'kling', 'hailuo', 'video')}
+    priorities = {'image': ('nano-banana-pro', 'nano-banana-2.1', 'nano-banana-2', 'nano-banana', 'gpt-image', 'imagen', 'seedream', 'qwen-image', 'dall-e', 'flux', 'image'), 'chat': ('gpt-5.4', 'chatgpt-5.4', 'gpt-5.', 'gpt-', 'claude', 'gemini', 'qwen', 'deepseek', 'glm', 'llama', 'chat'), 'video': ('veo', 'sora', 'seedance', 'wan', 'kling', 'hailuo', 'video')}
     result = {}
     for kind, values in (grouped or {}).items():
         models = [str(value or '').strip() for value in values or [] if str(value or '').strip()]

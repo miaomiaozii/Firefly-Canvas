@@ -91,6 +91,13 @@ POST /v1/images/generations
 - `image`：参考图数组（url/b64），可空
 - 映射确认：友好名 "Nano Banana Pro" → `nano-banana-2`
 
+### 2a. nano-banana-2.1（2026-10 新增，服务商新模型）
+
+- 模型 ID：`gemini-nano-banana-2.1`、`gemini-nano-banana-2.1-2k`、`gemini-nano-banana-2.1-4k`（NEW）
+- 参数与 banana2 相同：`aspect_ratio`（14 种）、`image_size`（1K/2K/4K）、`response_format`、`image`（参考图数组）
+- 后端路由：`app/core.py` `banana_model_family` 已识别 2.1 家族，按分辨率自动路由到 `-2k`/`-4k` 变体（无变体时回退基础模型 + `image_size` 参数）
+- 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，supports_vision/async_mode）
+
 ### 图生图/改图（Edits）
 ```
 POST /v1/images/edits   (multipart/form-data)

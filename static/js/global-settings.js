@@ -30,7 +30,7 @@
     const recommendation = String(recommended || '').trim();
     if(recommendation && available.includes(recommendation)) return recommendation;
     const hints = {
-      image: ['nano-banana-pro', 'nano-banana-2', 'nano-banana', 'gpt-image'],
+      image: ['nano-banana-pro', 'nano-banana-2.1', 'gemini-nano-banana-2.1', 'nano-banana-2', 'nano-banana', 'gpt-image'],
       chat: ['gpt-5.4', 'chatgpt-5.4', 'gpt-5.'],
       video: [],
     }[kind] || [];
