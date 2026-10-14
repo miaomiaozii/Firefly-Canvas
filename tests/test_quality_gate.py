@@ -1469,6 +1469,77 @@ class QualityGateTests(unittest.TestCase):
             report["guard_events"],
         )
 
+    # issue #174：并行组里一个步骤产生的 S0 边界事件，绝不能把同组其它步骤改红。
+    def write_parallel_boundary_fixture(self) -> dict:
+        """fixture：只有 unit-contract-quality-gate 那一步会越界（SELF_TEST=1 才触发），
+        越界后它自己仍然 exit 0，所以只有归因正确的步骤应该被改红。"""
+        violation = {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()}
+        (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
+            "import os\n"
+            "import subprocess\n"
+            "import sys\n"
+            "import unittest\n\n"
+            "class ParallelBoundaryContract(unittest.TestCase):\n"
+            "    def test_denied_subprocess_is_attributed_to_its_own_step(self):\n"
+            "        if os.environ.get('FIREFLY_QUALITY_GATE_SELF_TEST') != '1':\n"
+            "            return\n"
+            "        try:\n"
+            "            subprocess.run([sys.executable, '-c', 'print(1)'], check=False)\n"
+            "        except PermissionError:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+        return violation
+
+    def test_parallel_group_boundary_event_does_not_redden_sibling_steps(self):
+        violation = self.write_parallel_boundary_fixture()
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        steps = {step["name"]: step for step in report["steps"]}
+        offender = steps["unit-contract-quality-gate"]
+        self.assertEqual(offender["status"], "failed", offender.get("stderr_tail") or "")
+        self.assertEqual(offender["exit_code"], 1)
+        self.assertIn(
+            (violation["kind"], violation["target"]),
+            {(event["kind"], event["target"]) for event in offender["guard_events"]},
+        )
+        for name in (
+            "unit-contract-remainder",
+            "unit-contract-browser",
+            "excel-import-evidence",
+            "canvas-boundaries-evidence",
+        ):
+            step = steps[name]
+            self.assertEqual(
+                step["status"],
+                "passed",
+                f"{name} 被同组其它步骤的越界事件改红：{step.get('stderr_tail') or ''}",
+            )
+            self.assertEqual(step["exit_code"], 0, name)
+            self.assertNotIn(
+                (violation["kind"], violation["target"]),
+                {(event["kind"], event["target"]) for event in step["guard_events"]},
+                f"{name} 的 guard_events 里出现了不属于它的边界事件",
+            )
+        # 执法不能放松：越界事件仍完整进入全局证据，整个门仍然是红的。
+        self.assertIn(violation, report["guard_events"])
+
+    def test_blocking_guard_event_attribution_is_visible_in_verdict_reasons(self):
+        violation = self.write_parallel_boundary_fixture()
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        reasons = "\n".join(report["verdict_reasons"])
+        self.assertIn(violation["kind"], reasons)
+        self.assertIn(violation["target"], reasons)
+        self.assertIn("unit-contract-quality-gate", reasons)
+
     def test_javascript_syntax_uses_trusted_node_instead_of_path(self):
         fake_bin = Path(self.temp_dir.name) / "fake-bin"
         fake_bin.mkdir()

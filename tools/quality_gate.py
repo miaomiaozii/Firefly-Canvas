@@ -915,6 +915,55 @@ def append_event(path: Path, kind: str, target: str) -> None:
         os.close(descriptor)
 
 
+def step_event_sinks(evidence_parent: Path, name: str) -> dict[str, Path]:
+    """Step-scoped boundary-event files (issue #174).
+
+    Parallel steps used to share one guard/child/retry sink, so a single
+    violation recorded by one step was copied onto every sibling and forced
+    their exit code to 1.  Each step now records into its own file, which keeps
+    attribution exact; the group merges the files back into the run-level sinks
+    afterwards so the run-level audit trail and every S0 finding stay complete.
+    """
+    slug = "".join(character if character.isalnum() else "-" for character in name)
+    return {
+        "guard": evidence_parent / f"guard-events-{slug}.jsonl",
+        "retry": evidence_parent / f"retry-events-{slug}.jsonl",
+        "child": evidence_parent / f"child-events-{slug}.jsonl",
+    }
+
+
+def merge_event_lines(source: Path, target: Path) -> None:
+    """Append one step sink to the run-level sink, preserving the raw records."""
+    if not source.is_file():
+        return
+    with source.open("r", encoding="utf-8", errors="replace") as handle:
+        lines = [line.rstrip("\n") for line in handle if line.strip()]
+    if not lines:
+        return
+    descriptor = os.open(target, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        for line in lines:
+            os.write(descriptor, (line + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
+
+
+def attribute_blocking_guard_events(steps: list[dict]) -> list[dict]:
+    """Blocking guard events paired with the step that produced them (issue #174)."""
+    attributed: list[dict] = []
+    for step in steps:
+        for event in step.get("guard_events") or []:
+            if blocking_guard_events([event]):
+                attributed.append(
+                    {
+                        "kind": event.get("kind"),
+                        "target": event.get("target"),
+                        "step": step.get("name"),
+                    }
+                )
+    return attributed
+
+
 class BrowserDenyProxy:
     def __init__(self, event_file: Path):
         self.event_file = event_file
@@ -1763,12 +1812,20 @@ def build_severity_findings(
     never change an exit code that honest step execution already produced; they
     make the auditable severity record explicit."""
     findings: list[dict] = []
+    attributed_steps = {
+        (event.get("kind"), str(event.get("target"))): step.get("name")
+        for step in steps
+        for event in step.get("guard_events") or []
+    }
     for event in guard_events:
         if blocking_guard_events([event]):
             findings.append(
                 {
                     "severity": "S0",
                     "source": "guard",
+                    "step": attributed_steps.get(
+                        (event.get("kind"), str(event.get("target"))), "unattributed"
+                    ),
                     "frequency": "FU",
                     "observations": 1,
                     "message": (
@@ -1821,6 +1878,7 @@ def verdict_reasons(
     final_exit_code: int,
     accept_s2: bool,
     s2_findings: list[dict],
+    blocking_events: list[dict] | None = None,
 ) -> list[str]:
     reasons = [
         "fully offline dry run; no real provider traffic is possible inside the isolated envelope",
@@ -1842,6 +1900,14 @@ def verdict_reasons(
                 f"{len(s2_findings)} S2 finding(s) block release by default; set "
                 "FIREFLY_QUALITY_GATE_ACCEPT_S2=1 to accept them explicitly"
             )
+    # Issue #174: a blocking boundary event must name the step that produced it,
+    # otherwise the report blames whichever step happened to share the group.
+    for event in blocking_events or []:
+        reasons.append(
+            "S0 boundary violation "
+            f"{event.get('kind')} {event.get('target') or ''}".strip()
+            + f" attributed to step {event.get('step') or 'unattributed'}"
+        )
     return reasons
 
 
@@ -2758,6 +2824,8 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[dict] = []
     accept_s2 = False
     s2_findings: list[dict] = []
+    unattributed_blocking_events: list[dict] = []
+    blocking_event_attribution: list[dict] = []
 
     with tempfile.TemporaryDirectory(prefix="firefly-quality-gate-run-") as temporary:
         run_root = Path(temporary)
@@ -2899,14 +2967,15 @@ def main(argv: list[str] | None = None) -> int:
                     # Parallel group: isolated unit shards and browser journeys
                     # share one wall-clock deadline. Queued work recalculates its
                     # timeout when a worker becomes available.
+                    #
+                    # Issue #174: the group used to share one guard/child/retry sink,
+                    # so a single violation recorded by one member was copied onto all
+                    # twelve siblings and rewrote their exit codes.  Each member now
+                    # records into its own sink; the group merges those records back
+                    # into the run-level evidence afterwards, so the audit trail and
+                    # every S0 finding stay complete while attribution stays exact.
                     previous_guard_count = len(
                         read_guard_events(guard_events_file, sensitive_values)
-                    )
-                    previous_retry_count = len(
-                        read_retry_events(retry_events_file, sensitive_values)
-                    )
-                    previous_child_count = len(
-                        read_child_events(child_events_file, sensitive_values)
                     )
                     specs = {}
                     commands = {}
@@ -2914,6 +2983,10 @@ def main(argv: list[str] | None = None) -> int:
                         command, spec = resolve_step_command(name)
                         specs[name] = spec
                         commands[name] = command
+                    step_sinks = {
+                        name: step_event_sinks(guard_events_file.parent, name)
+                        for name in group_names
+                    }
 
                     def run_group_step(name):
                         step_remaining = run_budget - (time.monotonic() - started)
@@ -2929,9 +3002,12 @@ def main(argv: list[str] | None = None) -> int:
                                 "stdout_tail": "",
                                 "stderr_tail": "mode budget exhausted before parallel worker started",
                             }
-                        step_environment = environment
+                        step_environment = dict(environment)
+                        sinks = step_sinks[name]
+                        step_environment["FIREFLY_QUALITY_GATE_GUARD_EVENTS"] = str(sinks["guard"])
+                        step_environment["FIREFLY_QUALITY_GATE_RETRY_EVENTS"] = str(sinks["retry"])
+                        step_environment["FIREFLY_QUALITY_GATE_CHILD_EVENTS"] = str(sinks["child"])
                         if name == "unit-contract-quality-gate":
-                            step_environment = dict(environment)
                             step_environment["FIREFLY_QUALITY_GATE_SELF_TEST"] = "1"
                             step_environment["FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT"] = str(
                                 (workspace_root / "tools" / "quality_gate.py").resolve()
@@ -2970,34 +3046,40 @@ def main(argv: list[str] | None = None) -> int:
                             name: collect_group_step(name, future)
                             for name, future in futures.items()
                         }
-                    group_child_events = read_child_events(
-                        child_events_file,
-                        sensitive_values,
-                    )[previous_child_count:]
-                    stop_leaked_children(group_child_events, guard_events_file)
-                    group_guard_events = read_guard_events(
-                        guard_events_file,
-                        sensitive_values,
-                    )[previous_guard_count:]
-                    group_retry_events = read_retry_events(
-                        retry_events_file,
-                        sensitive_values,
-                    )[previous_retry_count:]
+                    # Events the orchestrator itself recorded while the group ran
+                    # (the browser deny-proxy is process-wide, so its records cannot
+                    # be attributed to one member) stay run-level: they still fail the
+                    # gate through the final boundary check, but they no longer turn
+                    # passing siblings red.
+                    unattributed_blocking_events.extend(
+                        blocking_guard_events(
+                            read_guard_events(guard_events_file, sensitive_values)[
+                                previous_guard_count:
+                            ]
+                        )
+                    )
                     group_failed = False
                     for name in group_names:
                         step = group_steps[name]
                         spec = specs[name]
+                        sinks = step_sinks[name]
+                        step_child_events = read_child_events(sinks["child"], sensitive_values)
+                        stop_leaked_children(step_child_events, sinks["guard"])
+                        step_guard_events = read_guard_events(sinks["guard"], sensitive_values)
                         step_retry_events = (
-                            group_retry_events
+                            read_retry_events(sinks["retry"], sensitive_values)
                             if name in BROWSER_EVIDENCE_STEP_NAMES
                             else []
                         )
-                        step["guard_events"] = group_guard_events
+                        merge_event_lines(sinks["guard"], guard_events_file)
+                        merge_event_lines(sinks["child"], child_events_file)
+                        merge_event_lines(sinks["retry"], retry_events_file)
+                        step["guard_events"] = step_guard_events
                         step["retry_events"] = step_retry_events
-                        step["child_events"] = group_child_events
+                        step["child_events"] = step_child_events
                         step["parallel_group"] = True
                         if (
-                            blocking_guard_events(group_guard_events)
+                            blocking_guard_events(step_guard_events)
                             or step_retry_events
                         ) and step["status"] == "passed":
                             step["status"] = "failed"
@@ -3052,6 +3134,15 @@ def main(argv: list[str] | None = None) -> int:
             findings = build_severity_findings(steps, guard_events, retry_events)
             accept_s2 = os.environ.get("FIREFLY_QUALITY_GATE_ACCEPT_S2") == "1"
             s2_findings = [finding for finding in findings if finding["severity"] == "S2"]
+            blocking_event_attribution = attribute_blocking_guard_events(steps)
+            blocking_event_attribution.extend(
+                {
+                    "kind": event.get("kind"),
+                    "target": event.get("target"),
+                    "step": None,
+                }
+                for event in unattributed_blocking_events
+            )
 
     after = git_state(repo_root)
     changed_during_run = before != after
@@ -3113,7 +3204,13 @@ def main(argv: list[str] | None = None) -> int:
         },
         "support_matrix": SUPPORT_MATRIX,
         "offline_dry_run": True,
-        "verdict_reasons": verdict_reasons(args.mode, final_exit_code, accept_s2, s2_findings),
+        "verdict_reasons": verdict_reasons(
+            args.mode,
+            final_exit_code,
+            accept_s2,
+            s2_findings,
+            blocking_event_attribution,
+        ),
         "severity_frequency_findings": findings,
         "severity_policy": SEVERITY_POLICY,
         "s2_accepted": accept_s2 and bool(s2_findings),
