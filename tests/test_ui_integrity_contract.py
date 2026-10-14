@@ -10,6 +10,21 @@ HTML = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
 SCRIPT = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
 STYLES = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 RUNNER = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")
+MEDIA_HISTORY = (ROOT / "static" / "js" / "canvas-media-history.js").read_text(encoding="utf-8")
+FRONTEND = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in [
+        *sorted((ROOT / "static").glob("*.html")),
+        *sorted((ROOT / "static" / "js").rglob("*.js")),
+        *sorted((ROOT / "static" / "css").glob("*.css")),
+    ]
+)
+
+
+def kebab(key: str) -> str:
+    """DOM 契约名：`dataset.fooBar` 读取对应的属性是 `data-foo-bar`。"""
+    return "data-" + re.sub(r"([a-z0-9])([A-Z])", lambda match: f"{match.group(1)}-{match.group(2).lower()}", key)
+
 
 
 class UiIntegrityContractTests(unittest.TestCase):
@@ -123,6 +138,44 @@ class UiIntegrityContractTests(unittest.TestCase):
             SCRIPT,
             r"function refreshIcons\(root=document\)\{[^}]*syncIconButtonAccessibility\(root\)",
         )
+
+
+    def test_runner_dataset_reads_match_frontend_attributes(self):
+        # #168：runner 里每个 `dataset.<camelCase>` 读取都必须在前端真实存在
+        # （写成 `data-<kebab>` 属性，或用 `.dataset.<camelCase> =` 赋值）。
+        # 0b1e249（#137 术语 log→history）把 `data-log-output-preview` 改名成
+        # `data-history-output-preview`，runner 里的 `dataset.logOutputPreview` 没跟上，
+        # `previewsDiscoverable` 从此恒假，ui-integrity-evidence 长期红。
+        # 这条静态契约把“前端改名、浏览器 runner 落后”这类脱钩钉死。
+        frontend = HTML + "\n" + "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / "static" / "js").rglob("*.js"))
+        )
+        reads = set(re.findall(r"\bdataset\.([A-Za-z0-9_]+)", RUNNER))
+        self.assertTrue(reads)
+        missing = []
+        for key in sorted(reads):
+            attribute = kebab(key)
+            if attribute in frontend or f".dataset.{key}" in frontend:
+                continue
+            missing.append(f"dataset.{key} -> {attribute}")
+        self.assertEqual([], missing)
+
+    def test_detail_lightbox_dataset_reads_match_emitted_attributes(self):
+        # #168：同一个改名脱钩也打在产品代码里。0b1e249（#137 log→history）把详情灯箱
+        # 三个按钮组的 dataset 读取改成 `dataset.smartHistoryDetail*`，但模板发出的属性
+        # 仍是 `data-smart-log-detail-*`（`git show 0b1e249` 可见只改了读取一侧）。
+        # 结果 `action` 恒为 undefined：灯箱里的缩放（含 reset）、上下一个输出、
+        # 模式按钮全部失效，ui-integrity-evidence 的“点 reset 后缩放复位”永远超时。
+        reads = set(re.findall(r"\bdataset\.(smart(?:History|Log)Detail[A-Za-z0-9]*)", MEDIA_HISTORY))
+        self.assertTrue(reads)
+        missing = []
+        for key in sorted(reads):
+            attribute = kebab(key)
+            if attribute in FRONTEND:
+                continue
+            missing.append(f"dataset.{key} -> {attribute}")
+        self.assertEqual([], missing)
 
 
 if __name__ == "__main__":

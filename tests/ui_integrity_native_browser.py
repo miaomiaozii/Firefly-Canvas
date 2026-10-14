@@ -1046,7 +1046,7 @@ def run_viewport(
                 return {frame:itemRect?.height>0 ? itemRect.width/itemRect.height : 0,natural,width:itemRect?.width||0,height:itemRect?.height||0};
               });
               const previews=outputPreviews.map((preview,index)=>({
-                outputIndex:Number(preview.dataset.logOutputPreview),
+                outputIndex:Number(preview.dataset.historyOutputPreview),
                 outputId:String(preview.dataset.outputId||''),
                 assetId:String(preview.dataset.assetId||''),
                 ariaLabel:preview.getAttribute('aria-label')||'',

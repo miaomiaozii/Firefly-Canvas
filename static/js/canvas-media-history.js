@@ -1195,7 +1195,7 @@ function setupSmartHistoryDetailInteractions(box){
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            const action = button.dataset.smartHistoryDetailZoom;
+            const action = button.dataset.smartLogDetailZoom;
             if(action === 'reset') resetSmartHistoryDetailView();
             else zoomSmartHistoryDetail(action === 'in' ? 1.12 : 1 / 1.12);
         });
@@ -1264,7 +1264,7 @@ function ensureSmartHistoryDetail(){
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            switchSmartHistoryDetailOutput(button.dataset.smartHistoryDetailOutputNav === 'previous' ? -1 : 1);
+            switchSmartHistoryDetailOutput(button.dataset.smartLogDetailOutputNav === 'previous' ? -1 : 1);
         });
     });
     // #89 第四轮：详情面板工具排——与预览大图同一套编辑器（openImageEditor + setImageEditMode）。
@@ -1278,7 +1278,7 @@ function ensureSmartHistoryDetail(){
             const ref = smartHistoryDetailNodeImageRef(item);
             if(!ref){ toast(tr('smart.markNotOnCanvas')); return; }
             openImageEditor(ref.nodeId, ref.index);
-            if(button.dataset.smartHistoryDetailMode !== 'preview') setImageEditMode(button.dataset.smartHistoryDetailMode, true);
+            if(button.dataset.smartLogDetailMode !== 'preview') setImageEditMode(button.dataset.smartLogDetailMode, true);
         });
     });
     box.querySelector('[data-smart-log-detail-mark]')?.addEventListener('click', event => {
