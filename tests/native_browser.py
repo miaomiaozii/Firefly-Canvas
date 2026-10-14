@@ -96,7 +96,15 @@ class AsgiBrowserServer:
             if self.thread is not None:
                 self.thread.join(timeout=10)
                 if self.thread.is_alive():
-                    raise RuntimeError("ASGI browser server failed to stop")
+                    # 把 uvicorn 自己的状态带进异常，否则下次只能看到「关不掉」而看不到为什么关不掉：
+                    # tasks=0 但 connections>0 是卡在连接收尾；两者都>0 是有 handler 还在跑
+                    # （典型是阻塞在 asyncio.to_thread 里，拖住 loop.shutdown_default_executor）。
+                    state = self.server.server_state
+                    raise RuntimeError(
+                        "ASGI browser server failed to stop: "
+                        f"connections={len(state.connections)} tasks={len(state.tasks)} "
+                        f"force_exit={self.server.force_exit} started={self.server.started}"
+                    )
         finally:
             if self.socket is not None:
                 self.socket.close()

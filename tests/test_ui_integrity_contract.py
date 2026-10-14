@@ -161,6 +161,33 @@ class UiIntegrityContractTests(unittest.TestCase):
             missing.append(f"dataset.{key} -> {attribute}")
         self.assertEqual([], missing)
 
+    def test_generation_runner_dataset_reads_match_frontend_attributes(self):
+        # #182：同一类脱钩在生成旅程 runner 里又红了一次。0b1e249（#137 log→history）把
+        # `data-log-cancel-task` 改名成 `data-history-cancel-task`，但
+        # tests/generation_task_native_browser.py 里的 `item.dataset.logCancelTask` 没跟上，
+        # 读回 [None, None, None]，`overlapping task cards are not independent` 从此恒假，
+        # complete-generation-lifecycle-evidence 长期红。
+        # #168 的同类守卫只扫 ui_integrity_native_browser.py，把覆盖面扩到生成旅程 runner。
+        frontend = HTML + "\n" + "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / "static" / "js").rglob("*.js"))
+        )
+        runners = [
+            ROOT / "tests" / "generation_task_native_browser.py",
+            ROOT / "tests" / "generation_lifecycle_browser.py",
+        ]
+        missing: list[str] = []
+        reads = 0
+        for runner in runners:
+            for key in sorted(set(re.findall(r"\bdataset\.([A-Za-z0-9_]+)", runner.read_text(encoding="utf-8")))):
+                reads += 1
+                attribute = kebab(key)
+                if attribute in frontend or f".dataset.{key}" in frontend:
+                    continue
+                missing.append(f"{runner.name}: dataset.{key} -> {attribute}")
+        self.assertTrue(reads)
+        self.assertEqual([], missing)
+
     def test_detail_lightbox_dataset_reads_match_emitted_attributes(self):
         # #168：同一个改名脱钩也打在产品代码里。0b1e249（#137 log→history）把详情灯箱
         # 三个按钮组的 dataset 读取改成 `dataset.smartHistoryDetail*`，但模板发出的属性

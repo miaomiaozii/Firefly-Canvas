@@ -459,8 +459,8 @@ def run_viewport(
                 """(() => Array.from(document.querySelectorAll('[data-canvas-history-id]')).map(card => ({
                   id: card.dataset.canvasHistoryId || '',
                   record: Boolean(card.querySelector('[data-history-delete="record"]')),
-                  original: Array.from(card.querySelectorAll('[data-history-delete-original]')).map(button => button.dataset.logDeleteOriginal),
-                  restore: Array.from(card.querySelectorAll('[data-history-restore-original]')).map(button => button.dataset.logRestoreOriginal),
+                  original: Array.from(card.querySelectorAll('[data-history-delete-original]')).map(button => button.dataset.historyDeleteOriginal),
+                  restore: Array.from(card.querySelectorAll('[data-history-restore-original]')).map(button => button.dataset.historyRestoreOriginal),
                 })))()"""
             )
             store_state = [
@@ -498,8 +498,8 @@ def run_viewport(
             dom_actions = browser.evaluate(
                 f"Array.from(document.querySelectorAll('[data-canvas-history-id=\"{ORIGINAL_HISTORY_ID}\"] button')).map(button => ({{"
                 "text: button.textContent.trim(), disabled: button.disabled, "
-                "restore: button.dataset.logRestoreOriginal || '', "
-                "original: button.dataset.logDeleteOriginal || ''}))"
+                "restore: button.dataset.historyRestoreOriginal || '', "
+                "original: button.dataset.historyDeleteOriginal || ''}))"
             )
             store_log = next(
                 (
