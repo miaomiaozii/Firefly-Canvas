@@ -436,7 +436,7 @@ function rebuildMarkedAssetIdsFromNodes(){
     canvas.markedAssetIds = [...found];
     syncCuratedFromMarks(); // #53/#58：加载/rebase 后保证 curated 与星标一致（历史画布可能缺 curated 字段）
 }
-// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-canvasState.nodes
+// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-nodes
 // 与 pi 收集工具据此筛选）；全部取消星标 ⇒ curated=false。只改有星标图的节点。
 
 function syncMarkedImageButtons(){

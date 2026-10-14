@@ -37,7 +37,7 @@ function connectAgentWebSocket(nodeId, projectId) {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/projects/${encodeURIComponent(projectId)}/agent-canvasState.nodes/${encodeURIComponent(nodeId)}/stream`;
+    const wsUrl = `${protocol}//${host}/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/stream`;
 
     try {
         state.socket = new WebSocket(wsUrl);
@@ -202,7 +202,7 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
         }));
     } else {
         // WebSocket not connected, use HTTP API
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-canvasState.nodes/${encodeURIComponent(nodeId)}/prompt`, {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, images }),
@@ -215,7 +215,7 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
 function sendAgentCommand(nodeId, projectId, command, options = {}) {
     const state = getAgentTuiState(nodeId);
     const { body, wsPayload, onSuccess } = options;
-    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-canvasState.nodes/${encodeURIComponent(nodeId)}/${command}`;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${command}`;
     // WebSocket not connected, use HTTP API
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
         const fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
@@ -260,7 +260,7 @@ function setAgentModel(nodeId, projectId, model) {
     // Optimistically update the local node (source of truth for rendering)
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if (node) node.model = model;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-canvasState.nodes/${encodeURI(nodeId)}/model`, {
+    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/model`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model }),
@@ -274,7 +274,7 @@ function setAgentAutonomy(nodeId, projectId, autonomy) {
     // Optimistically update the local node (source of truth for rendering)
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if (node) node.autonomy = autonomy;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-canvasState.nodes/${encodeURI(nodeId)}/autonomy`, {
+    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/autonomy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ autonomy: autonomy }),
@@ -286,7 +286,7 @@ async function forkAgentSession(nodeId, projectId, entryId, name) {
     const state = getAgentTuiState(nodeId);
     const node = canvasState.nodes.find(n => n.id === nodeId);
     try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-canvasState.nodes/${encodeURI(nodeId)}/fork`, {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ entry_id: entryId, name: name }),
@@ -311,7 +311,7 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
     const state = getAgentTuiState(nodeId);
     const node = canvasState.nodes.find(n => n.id === nodeId);
     try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-canvasState.nodes/${encodeURI(nodeId)}/switch-branch`, {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/switch-branch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ branch_id: branchId }),
@@ -334,7 +334,7 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
 async function showForkPicker(nodeId, projectId) {
     const state = getAgentTuiState(nodeId);
     try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-canvasState.nodes/${encodeURI(nodeId)}/fork-messages`);
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork-messages`);
         if (!response.ok) throw new Error('Failed to get fork messages');
         const data = await response.json();
         const messages = data.messages || [];
@@ -372,7 +372,7 @@ function sendAgentConfirm(nodeId, projectId, approved) {
         }));
     } else {
         // WS not connected, send via HTTP (fire-and-forget)
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-canvasState.nodes/${encodeURIComponent(nodeId)}/confirm`, {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ confirm_id: confirmId, approved: approved }),

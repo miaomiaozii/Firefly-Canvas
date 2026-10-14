@@ -252,7 +252,7 @@ function deleteNode(id){
         if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
     });
     const removedNodes = canvasState.nodes.filter(node => deleteIds.has(node.id));
-    // Clean up agent TUI state for deleted agent canvasState.nodes
+    // Clean up agent TUI state for deleted agent nodes
     removedNodes.forEach(node => {
         if (isSmartAgentNode(node)) {
             cleanupAgentTuiState(node.id);

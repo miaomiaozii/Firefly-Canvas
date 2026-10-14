@@ -12695,8 +12695,8 @@ function reorderInputSourceNodes(currentNode, movedId, targetId, placement='befo
     return true;
 }
 function reorderInputThumb(currentNode, items, from, to, placement='before'){
-    // items are already sourced from inputImagesFor → multiple source canvasState.nodes possible.
-    // Reorder within a source group's images first; separate input canvasState.nodes use the
+    // items are already sourced from inputImagesFor → multiple source nodes possible.
+    // Reorder within a source group's images first; separate input nodes use the
     // current node's input order, with a visual-position swap as a final fallback.
     if(from < 0 || to < 0 || from >= items.length || to >= items.length) return;
     // 强制让缩略图条在重排后重建（绕过 renderInputThumbsRow 的“无变化跳过”缓存），否则顺序看起来没变。
@@ -12746,7 +12746,7 @@ function reorderInputThumb(currentNode, items, from, to, placement='before'){
         scheduleSave();
         return;
     }
-    // Cross-node fallback: swap X positions of source canvasState.nodes
+    // Cross-node fallback: swap X positions of source nodes
     const ax = a.x, ay = a.y;
     a.x = b.x; a.y = b.y;
     b.x = ax; b.y = ay;
