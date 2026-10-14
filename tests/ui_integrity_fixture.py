@@ -11,6 +11,7 @@ from tools.ui_integrity_evidence import (
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
     REQUIRED_FLAGS,
+    product_node_action_ids,
 )
 
 
@@ -191,12 +192,16 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
         )
         write_json(attempt_root / "console-errors.json", [])
         write_json(attempt_root / "requests.json", [])
+        # #176: expected is the declared contract, actual is read out of the
+        # product toolbar source. Echoing the same constant into both fields made
+        # the validator's exact-set check unfalsifiable.
+        observed_action_ids = product_node_action_ids()
         selection_actions = {
             "expectedActionIds": list(EXPECTED_NODE_ACTION_IDS),
-            "actualActionIds": list(EXPECTED_NODE_ACTION_IDS),
+            "actualActionIds": observed_action_ids,
             "actions": [
                 {"action": action_id, "visible": True, "inViewport": True, "hit": True}
-                for action_id in EXPECTED_NODE_ACTION_IDS
+                for action_id in observed_action_ids
             ],
             "allReachable": True,
         }

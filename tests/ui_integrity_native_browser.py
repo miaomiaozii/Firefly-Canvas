@@ -25,7 +25,12 @@ from PIL import Image, ImageDraw
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
-from tools.ui_integrity_evidence import EXPECTED_SCENES, EXPECTED_VIEWPORTS, REQUIRED_FLAGS
+from tools.ui_integrity_evidence import (
+    EXPECTED_NODE_ACTION_IDS,
+    EXPECTED_SCENES,
+    EXPECTED_VIEWPORTS,
+    REQUIRED_FLAGS,
+)
 
 VIEWPORTS = EXPECTED_VIEWPORTS
 FONT_FAMILIES = ("Inter", "JetBrains Mono", "Space Grotesk")
@@ -586,7 +591,7 @@ def inspect_scene(
               * Math.max(0,Math.min(selectionMenuRect.bottom,selectionNameRect.bottom)-Math.max(selectionMenuRect.top,selectionNameRect.top))
             : 0;
           const selectionMenuAvoidsName=!selectionName || !visible(selectionName) || selectionMenuNameOverlap<=1;
-          const expectedActionIds=['preview','detail','crop','outpaint','mask','local-edit','brush','grid','send-ps','download'];
+          const expectedActionIds={json.dumps(list(EXPECTED_NODE_ACTION_IDS))};
           const selectionButtons=[...(selectionMenu?.querySelectorAll('button[data-smart-node-action]')||[])];
           const selectionActions=selectionButtons.map(button=>{{
             const rect=button.getBoundingClientRect();

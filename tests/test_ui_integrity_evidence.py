@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from PIL import Image
 from tests.ui_integrity_fixture import write_valid_ui_integrity_artifact
 from tests.ui_integrity_native_browser import capture_setup_failure
 from tools.ui_integrity_evidence import (
+    EXPECTED_NODE_ACTION_IDS,
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
     accept_baseline,
@@ -18,6 +20,22 @@ from tools.ui_integrity_evidence import (
     validate,
     validate_candidate,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def product_toolbar_action_ids() -> list[str]:
+    """Read the node toolbar action keys straight out of the product source.
+
+    Independent of the validator's declared list, so it can witness drift in
+    either direction (issue #176).
+    """
+    source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+    start = source.index("function smartNodeToolbarHtml(")
+    array_start = re.compile(r"const actions\s*=\s*\[").search(source, start)
+    assert array_start is not None
+    array = source[array_start.end() : source.index("]", array_start.end())]
+    return re.findall(r"\{\s*key\s*:\s*'([^']+)'", array)
 
 
 class UiIntegrityEvidenceTests(unittest.TestCase):
@@ -646,6 +664,29 @@ class UiIntegrityEvidenceTests(unittest.TestCase):
         baseline_manifest_path.write_text(json.dumps(baseline, ensure_ascii=False), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "outside the evidence root"):
             validate(self.artifacts, self.baselines)
+
+    def test_declared_node_action_manifest_matches_the_product_toolbar(self):
+        """#176: the declared selection-action list must match what the product renders."""
+        self.assertEqual(list(EXPECTED_NODE_ACTION_IDS), product_toolbar_action_ids())
+
+    def test_fixture_actual_action_ids_are_read_from_the_product_toolbar(self):
+        """#176: evidence must not compare the declared list against itself."""
+        drifted = [action for action in product_toolbar_action_ids() if action != "detail"]
+        with mock.patch(
+            "tests.ui_integrity_fixture.product_node_action_ids", return_value=drifted
+        ):
+            write_valid_ui_integrity_artifact(self.artifacts)
+        manifest = json.loads((self.artifacts / "manifest.json").read_text(encoding="utf-8"))
+        geometry_path = self.artifacts / manifest["attempts"][0]["geometry"]
+        geometry = json.loads(geometry_path.read_text(encoding="utf-8"))
+        scene = next(item for item in geometry if item["scene"] == "canvas-composer")
+        self.assertEqual(scene["selectionActions"]["actualActionIds"], drifted)
+        self.assertNotEqual(
+            scene["selectionActions"]["expectedActionIds"],
+            scene["selectionActions"]["actualActionIds"],
+        )
+        with self.assertRaisesRegex(ValueError, "exact selection-action set"):
+            validate_candidate(self.artifacts)
 
 
 if __name__ == "__main__":

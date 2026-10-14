@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -79,16 +80,37 @@ SCREENSHOT_GEOMETRY_MIN_LENGTH = 20
 SCREENSHOT_GEOMETRY_MAX_THICKNESS = 2
 SCREENSHOT_GEOMETRY_MIN_OVERLAP = 0.80
 SCREENSHOT_GEOMETRY_MAX_SEPARATION = 96
+PRODUCT_SMART_CANVAS_JS = ROOT / "static" / "js" / "smart-canvas.js"
+# Issue #176: this list had drifted to 8 entries while the product toolbar
+# (static/js/smart-canvas.js, smartNodeToolbarHtml) rendered 10, so the gate
+# rejected evidence that the browser itself considered complete. It is the
+# declared contract; the evidence side must read the product toolbar instead of
+# echoing this tuple back, otherwise the check compares the list with itself.
 EXPECTED_NODE_ACTION_IDS = (
     "preview",
+    "detail",
     "crop",
     "outpaint",
     "mask",
+    "local-edit",
     "brush",
     "grid",
     "send-ps",
     "download",
 )
+
+
+def product_node_action_ids(source_path: Path = PRODUCT_SMART_CANVAS_JS) -> list[str]:
+    """Return the selection-action keys the product toolbar actually renders."""
+    source = Path(source_path).read_text(encoding="utf-8")
+    start = source.find("function smartNodeToolbarHtml(")
+    if start < 0:
+        raise ValueError("smartNodeToolbarHtml is missing from static/js/smart-canvas.js")
+    array = re.compile(r"const actions\s*=\s*\[").search(source, start)
+    if array is None:
+        raise ValueError("the node toolbar action list is missing from static/js/smart-canvas.js")
+    end = source.index("]", array.end())
+    return re.findall(r"\{\s*key\s*:\s*'([^']+)'", source[array.end() : end])
 
 
 def write_json(path: Path, value) -> None:
