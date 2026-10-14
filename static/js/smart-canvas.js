@@ -8404,33 +8404,6 @@ function conversationNodeBodyHtml(node){
     </div>`;
 }
 
-function sendAgentConfirm(nodeId, projectId, approved) {
-    const state = getAgentTuiState(nodeId);
-    if (!state.confirm) return;
-    const confirmId = state.confirm.confirm_id;
-    state.confirm = null;
-    state.status = 'busy';
-
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-        state.socket.send(JSON.stringify({
-            type: 'confirm',
-            confirm_id: confirmId,
-            approved: approved,
-        }));
-    } else {
-        // WS not connected, send via HTTP (fire-and-forget)
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-canvasState.nodes/${encodeURIComponent(nodeId)}/confirm`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
-        }).catch(e => console.error('Failed to send agent confirm:', e));
-    }
-
-    const text = approved ? '✅ 已批准' : '❌ 已取消';
-    state.messages.push({ role: 'system', text });
-    renderAgentNode(nodeId);
-}
-
 function promptNodeBodyHtml(node){
     node.llmProvider = resolveChatProviderId(node.llmProvider || '');
     node.llmModel = resolveChatModel(node.llmModel || '', node.llmProvider);
