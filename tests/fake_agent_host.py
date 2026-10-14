@@ -23,8 +23,16 @@ Usage:
 """
 import asyncio
 import json
+import os
 import time
+from pathlib import Path
+from unittest import mock
 from typing import Any, Dict, List, Optional
+
+# Inert stand-in for the pi CLI (see tests/stubs/pi_cli_stub.cmd). Pointing the
+# agent host at it keeps a stray test spawn from ever launching a real agent
+# subprocess, which the quality gate records as a subprocess-executable event.
+STUB_PI_CLI = Path(__file__).resolve().parent / "stubs" / "pi_cli_stub.cmd"
 
 
 class FakeAgentProcess:
@@ -164,6 +172,69 @@ class FakeAgentProcess:
         for event in events:
             self.script.append(event)
             self._stdout_queue.put_nowait(json.dumps(event) + "\n")
+
+
+def install_stub_pi_cli() -> Dict[str, Optional[str]]:
+    """Point the agent host's pi CLI path at the inert stub executable.
+
+    ``app.services.agent_host.PI_CLI`` is read from ``FIREFLY_PI_CLI`` at import
+    time and defaults to a bare ``"pi"``, which Windows resolves through PATH to
+    ``pi.cmd``. Call this from ``setUpModule`` and pass the return value to
+    ``restore_stub_pi_cli`` in ``tearDownModule`` so no test in the module can
+    start the real CLI, even if it reaches ``spawn_session`` by accident.
+    """
+    from app.services import agent_host
+
+    previous = {
+        "module": agent_host.PI_CLI,
+        "env": os.environ.get("FIREFLY_PI_CLI"),
+    }
+    agent_host.PI_CLI = str(STUB_PI_CLI)
+    os.environ["FIREFLY_PI_CLI"] = str(STUB_PI_CLI)
+    return previous
+
+
+def restore_stub_pi_cli(previous: Dict[str, Optional[str]]) -> None:
+    """Undo :func:`install_stub_pi_cli`."""
+    from app.services import agent_host
+
+    agent_host.PI_CLI = previous["module"]
+    if previous["env"] is None:
+        os.environ.pop("FIREFLY_PI_CLI", None)
+    else:
+        os.environ["FIREFLY_PI_CLI"] = previous["env"]
+
+
+def install_fake_spawn(
+    manager,
+    script: Optional[List[Dict[str, Any]]] = None,
+):
+    """Replace ``manager.spawn_session`` with a subprocess-free fake.
+
+    ``AgentHostManager._read_events`` auto-respawns a crashed session, so any
+    test that drives a crash through the reader task also drives the spawn path.
+    The fake attaches a :class:`FakeAgentProcess` instead of calling
+    ``subprocess.Popen`` and records every call for assertions.
+
+    Returns ``(patcher, calls)``; call ``patcher.stop()`` in ``tearDown``.
+    """
+    calls: List[Dict[str, Any]] = []
+
+    async def fake_spawn(session, model: str = "", autonomy: str = "", continue_session: bool = False) -> bool:
+        calls.append({
+            "session": session,
+            "model": model,
+            "autonomy": autonomy,
+            "continue_session": continue_session,
+        })
+        if session.process is None or session.process.poll() is not None:
+            session.process = FakeAgentProcess(script=list(script or []))
+        session.status = "running"
+        return True
+
+    patcher = mock.patch.object(manager, "spawn_session", side_effect=fake_spawn)
+    patcher.start()
+    return patcher, calls
 
 
 def make_streaming_response_script(text: str, chunk_size: int = 2) -> List[Dict[str, Any]]:

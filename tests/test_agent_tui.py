@@ -29,7 +29,14 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
-from tests.fake_agent_host import FakeAgentProcess, make_streaming_response_script, make_tool_call_script
+from tests.fake_agent_host import (
+    FakeAgentProcess,
+    install_fake_spawn,
+    install_stub_pi_cli,
+    make_streaming_response_script,
+    make_tool_call_script,
+    restore_stub_pi_cli,
+)
 
 
 def run_async(coro):
@@ -39,6 +46,16 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def setUpModule():
+    """#179: never let this module resolve the real pi CLI ("pi" -> pi.cmd)."""
+    global _PREVIOUS_PI_CLI
+    _PREVIOUS_PI_CLI = install_stub_pi_cli()
+
+
+def tearDownModule():
+    restore_stub_pi_cli(_PREVIOUS_PI_CLI)
 
 
 class TestAgentHostManager(unittest.TestCase):
@@ -249,6 +266,9 @@ class TestAgentCrashRecovery(unittest.TestCase):
         self.project_id = "test-project"
         self.node_id = "agent-crash"
         self.manager = AgentHostManager()
+        # The reader task auto-respawns crashed sessions, which would otherwise
+        # reach the real spawn_session -> subprocess.Popen path (#179).
+        self.spawn_patcher, self.spawn_calls = install_fake_spawn(self.manager)
         self.session = asyncio.get_event_loop().run_until_complete(
             self.manager.get_or_create_session(self.project_id, self.node_id)
         )
@@ -258,6 +278,9 @@ class TestAgentCrashRecovery(unittest.TestCase):
         ])
         self.session.process = self.process
         self.session.status = "running"
+
+    def tearDown(self):
+        self.spawn_patcher.stop()
 
     def test_process_exit_sets_crashed_status(self):
         """Test that when the process exits with non-zero code, status is crashed."""
