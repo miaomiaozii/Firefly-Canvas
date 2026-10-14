@@ -361,7 +361,7 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
                         "canvasDomAssetIds": ["asset-1", "asset-2", "asset-3", "asset-5", "asset-6", "asset-7", "asset-8"],
                         "canvasDomOutputIds": ["occ-1", "occ-2", "occ-3", "occ-5", "occ-6", "occ-7", "occ-8"],
                         "canvasSelectedOutputId": "occ-5",
-                        "destructiveGroupDeleteHiddenWhileRestorable": True,
+                        "destructiveGroupDeleteVisibleWhileOutputsAlive": True,
                         "singleAssetSynchronized": True,
                     },
                     "viewportWidthShare": 0.84,

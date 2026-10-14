@@ -468,7 +468,7 @@ def _validate_scene_facts(geometry: list[dict]) -> None:
         and post_delete.get("actionAssetIds") == [before_assets[4]] * 4
         and post_delete.get("actionOutputIds") == [before_output_ids[4]] * 4
         and post_delete.get("detailStayedOpen") is True
-        and post_delete.get("destructiveGroupDeleteHiddenWhileRestorable") is True
+        and post_delete.get("destructiveGroupDeleteVisibleWhileOutputsAlive") is True
         and post_delete.get("singleAssetSynchronized") is True
     ) if isinstance(before_assets, list) and len(before_assets) == 8 else False
     if not isinstance(detail, dict) or not isinstance(clipboard, dict) or not (

@@ -178,5 +178,35 @@ class UiIntegrityContractTests(unittest.TestCase):
         self.assertEqual([], missing)
 
 
+    def test_validator_post_delete_keys_are_produced_by_the_runner(self):
+        # #176：校验器 `tools/ui_integrity_evidence.py` 用 `post_delete.get("<key>")` 读
+        # runner 产出的证据；runner 在 0b1e2498 把 `destructiveGroupDeleteHiddenWhileRestorable`
+        # 改名成 `destructiveGroupDeleteVisibleWhileOutputsAlive`（旧断言与产品合同及同文件
+        # dangerousGroupDeletePresent 自相矛盾），但校验器没跟上。校验器读到 None →
+        # `post_delete_synchronized` 恒假 → 整个巨型条件失败 → 报出一条指向剪贴板的
+        # 误导性错误，`ui-integrity-evidence` 自 2026-09-23 起长期红。
+        # fixture 还伪造着旧键名，所以校验器自己的单元测试一直是绿的。
+        validator = (ROOT / "tools" / "ui_integrity_evidence.py").read_text(encoding="utf-8")
+        required = set(re.findall(r"\bpost_delete\.get\(\"([A-Za-z0-9_]+)\"\)", validator))
+        self.assertTrue(required)
+
+        start = RUNNER.index("post_delete_facts = browser.evaluate(")
+        block = RUNNER[start:RUNNER.index('"""', RUNNER.index('"""', start) + 1) + 3]
+        produced = set()
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("#"):
+                continue
+            stripped = stripped.split("//")[0]
+            produced.update(re.findall(r"([A-Za-z_][A-Za-z0-9_]*):", stripped))
+            shorthand = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*),?", stripped)
+            if shorthand:
+                produced.add(shorthand.group(1))
+        produced |= set(re.findall(r'post_delete_facts\["([A-Za-z0-9_]+)"\]', RUNNER))
+        self.assertTrue(produced)
+
+        self.assertEqual([], sorted(required - produced))
+
+
 if __name__ == "__main__":
     unittest.main()
