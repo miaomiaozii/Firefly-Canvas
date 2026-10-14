@@ -25,6 +25,7 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-image-editor.js",
     "canvas-generation-cascade.js",
     "canvas-generation-tasks.js",
+    "canvas-agent-tui.js",
     "smart-canvas.js",
 )
 

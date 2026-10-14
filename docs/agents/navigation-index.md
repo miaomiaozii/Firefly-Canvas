@@ -113,6 +113,7 @@
 | `canvas-image-editor.js` | 图片编辑器：裁剪、旋转、预览导航与对比 | `tests/image_editor_browser.py`、`tests/image_editor_func_browser.py`、`tests/fly_fixes_browser.py` |
 | `canvas-generation-cascade.js` | 级联与循环生成调度（输出槽位、下游目标、并行上限与停止） | `tests/node_flow_browser.py`、`tests/generation_failure_browser.py`、`tests/video_failure_browser.py` |
 | `canvas-generation-tasks.js` | 生成任务提交、即梦轮询、待恢复任务续跑与失败重试 | `tests/generation_task_native_browser.py`、`tests/test_project_image_generation_ui.py`、`tests/test_project_video_generation_ui.py`（ADR-0017） |
+| `canvas-agent-tui.js` | Agent TUI 会话节点：WebSocket 事件、会话控制（模型/自主度/fork/分支）与卡片渲染 | `tests/agent_tui_polish_browser.py`、`tests/agent_node_settings_browser.py`、`tests/agent_fork_browser.py` |
 | `smart-canvas.js` | 主脚本：节点体渲染、提示词构建、`runGeneration` 编排与启动初始化 | 其余画布浏览器测试 |
 
 ## 注释规范
