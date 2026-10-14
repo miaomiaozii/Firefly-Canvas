@@ -1132,7 +1132,7 @@ def run_viewport(
             "smartHistoryEntryById('integrity-success-one').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))"
         )
         canvas_identity_before = browser.evaluate(
-            "nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))"
+            "canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))"
         )
         output_asset_ids_before = [item["assetId"] for item in output_identity_before]
         output_ids_before = [item["outputId"] for item in output_identity_before]
@@ -1571,7 +1571,7 @@ def run_viewport(
         expected_selected_output_id = output_ids_before[4]
         expected_selected_asset_id = output_asset_ids_before[4]
         browser.evaluate(
-            "selectedId='integrity-multi-output'; selectedImage={nodeId:'integrity-multi-output',index:3}; render(); true"
+            "canvasState.selectedId='integrity-multi-output'; canvasState.selectedImage={nodeId:'integrity-multi-output',index:3}; render(); true"
         )
         browser.wait_for(
             f"document.querySelector('[data-id=\"integrity-multi-output\"] [data-image-index=\"3\"]')?.dataset.outputId==={json.dumps(deleted_output_id)}",
@@ -1588,7 +1588,7 @@ def run_viewport(
         browser.native_click(".smart-log-detail-delete-original", accept_dialog=True)
         browser.wait_for(
             "smartHistoryEntryById('integrity-success-one')?.outputs?.length===7 "
-            "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===7 "
+            "&& canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===7 "
             "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===7 "
             "&& document.querySelectorAll('#smartHistoryLightbox.open .smart-log-detail-output').length===7",
             timeout=20,
@@ -1624,8 +1624,8 @@ def run_viewport(
                 actionAssetIds,
                 actionOutputIds:[document.querySelector('.smart-log-detail-image'),document.querySelector('.smart-log-detail-download'),document.querySelector('.smart-log-detail-copy-2k'),document.querySelector('.smart-log-detail-delete-original')].map(element=>String(element?.dataset.outputId||'')),
                 detailStayedOpen:Boolean(document.querySelector('#smartHistoryLightbox.open')),
-                canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
-                canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
+                canvasAssetIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
+                canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
                 canvasDomOutputIds:outputIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-output-id]')),
                 canvasSelectedOutputId:String(document.querySelector('[data-id="integrity-multi-output"] .image-selected')?.dataset.outputId||''),
@@ -1696,7 +1696,7 @@ def run_viewport(
         try:
             browser.wait_for(
                 "smartHistoryEntryById('integrity-success-one')?.outputs?.length===8 "
-                "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===8 "
+                "&& canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===8 "
                 "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===8",
                 timeout=20,
             )
@@ -1708,7 +1708,7 @@ def run_viewport(
                   syncInFlight:Boolean(canvasSyncInFlight),
                   contentDirty:Boolean(contentDirty),
                   historyOutputs:smartHistoryEntryById('integrity-success-one')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
-                  canvasImages:nodes.find(node=>node.id==='integrity-multi-output')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
+                  canvasImages:canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
                   previewCount:document.querySelectorAll('[data-canvas-history-id="integrity-success-one"] [data-history-output-preview]').length,
                   toast:document.querySelector('#toast')?.textContent||'',
                 }))()"""
@@ -1746,8 +1746,8 @@ def run_viewport(
                 historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-history-output-preview]')),
                 historySelectedAssetId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.assetId||''),
                 historySelectedOutputId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
-                canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
-                canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
+                canvasAssetIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
+                canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
                 canvasDomOutputIds:outputIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-output-id]')),
                 canvasSelectedOutputId:String(document.querySelector('[data-id="integrity-multi-output"] .image-selected')?.dataset.outputId||''),
@@ -1930,7 +1930,7 @@ def run_viewport(
             duplicate_before = browser.evaluate(
                 """(() => ({
                   history:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')})),
-                  canvas:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')})),
+                  canvas:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')})),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""
             )
@@ -1955,7 +1955,7 @@ def run_viewport(
             try:
                 browser.wait_for(
                     "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===3 "
-                    "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===3 "
+                    "&& canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===3 "
                     "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===3",
                     timeout=20,
                 )
@@ -1968,7 +1968,7 @@ def run_viewport(
                       contentDirty:Boolean(contentDirty),
                       selected:smartHistorySelectedImage,
                       history:smartHistoryEntryById('integrity-duplicate-log')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
-                      canvasImages:nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
+                      canvasImages:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
                       toast:document.querySelector('#toast')?.textContent||'',
                     }))()"""
                 )
@@ -1996,7 +1996,7 @@ def run_viewport(
             duplicate_after = browser.evaluate(
                 """(() => ({
                   historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
-                  canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
+                  canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
                   previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                   survivingDecoded:Boolean(document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.complete && document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.naturalWidth>0),
@@ -2026,14 +2026,14 @@ def run_viewport(
             )
             browser.wait_for(
                 "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===4 "
-                "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "
+                "&& canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "
                 "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===4",
                 timeout=20,
             )
             duplicate_restore = browser.evaluate(
                 """(() => ({
                   historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
-                  canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
+                  canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
                   previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""

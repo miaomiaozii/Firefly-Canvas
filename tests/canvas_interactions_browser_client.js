@@ -188,7 +188,7 @@
             const beforeCount = evalCanvas()?.nodes?.length || 0;
             const prevented = dispatchKey('Delete', {});
             await sleep(150);
-            result.diagnostics.push(`after delete: ${diag()} prevented=${prevented} sameArray=${(function(){ try { return eval('nodes === canvas.nodes'); } catch(_) { return 'err'; } })()}`);
+            result.diagnostics.push(`after delete: ${diag()} prevented=${prevented} sameArray=${(function(){ try { return eval('canvasState.nodes === canvas.nodes'); } catch(_) { return 'err'; } })()}`);
             const afterCount = evalCanvas()?.nodes?.length || 0;
             const deletedCount = beforeCount - afterCount;
             assertion('delete removes selected nodes', deletedCount >= 1, `${beforeCount} -> ${afterCount}`);

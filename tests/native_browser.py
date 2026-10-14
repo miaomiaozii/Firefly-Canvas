@@ -423,7 +423,11 @@ class NativeBrowser:
             },
         )
         if response.get("exceptionDetails"):
-            raise RuntimeError(f"browser evaluation failed: {response['exceptionDetails']}")
+            # 带上出错表达式：只报 exceptionDetails 时无法定位是哪一句 evaluate 挂了。
+            raise RuntimeError(
+                f"browser evaluation failed: expression={expression[:200]!r} "
+                f"details={response['exceptionDetails']}"
+            )
         return (response.get("result") or {}).get("value")
 
     def navigate(self, url: str, *, timeout: float = 30) -> None:

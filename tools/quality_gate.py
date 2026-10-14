@@ -351,6 +351,10 @@ BROWSER_CONTROL_PLANE_TARGETS = frozenset(
         "content-autofill.googleapis.com",
         "optimizationguide-pa.googleapis.com",
         "redirector.gvt1.com",
+        # Chrome's own update / component updater.  Like the Edge update checks
+        # below it is browser control-plane traffic, never a product call, so it
+        # stays an S3 observation instead of an S0 isolation violation.
+        "update.googleapis.com",
         "www.google.com",
         "www.gstatic.com",
     }

@@ -97,7 +97,7 @@
                 } catch (e) { result.diagnostics.push('toast patch: ' + e.message); }
             }
 
-            try { eval('selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch (_) {}
+            try { eval('canvasState.selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch (_) {}
             await sleep(200);
             const canRun = evalFn('canRunSmartCascade');
             if (canRun && smartImage) {

@@ -20,7 +20,7 @@
   }
 
   function canvasState() { return evalFn('canvas'); }
-  function nodes() { return evalFn('nodes'); }
+  function nodes() { return evalFn('canvasState.nodes'); }
 
   async function saveAndWait() {
     await sleep(400);

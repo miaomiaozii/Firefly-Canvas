@@ -186,7 +186,7 @@ def run_image_organization(
     )
     browser.wait_for(
         "typeof canvas !== 'undefined' && canvas?.format === 'firefly-canvas-v1' "
-        "&& Array.isArray(nodes) && document.querySelector('#projectSaveState')?.dataset.state === 'saved'",
+        "&& Array.isArray(canvasState.nodes) && document.querySelector('#projectSaveState')?.dataset.state === 'saved'",
         timeout=30,
     )
     browser.native_click("#canvasEmptyImport")
@@ -194,13 +194,13 @@ def run_image_organization(
     browser.wait_for(f"document.querySelector({json.dumps(upload_selector)})")
     browser.native_upload(upload_selector, source_paths[:2])
     browser.wait_for(
-        "nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 2 "
+        "canvasState.nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 2 "
         "&& node.images.every(image => Boolean(image.asset_id))).length === 1",
         timeout=30,
     )
     multi_id = str(
         browser.evaluate(
-            "nodes.find(node => node.type === 'smart-image' && (node.images || []).length === 2)?.id || ''"
+            "canvasState.nodes.find(node => node.type === 'smart-image' && (node.images || []).length === 2)?.id || ''"
         )
         or ""
     )
@@ -209,7 +209,7 @@ def run_image_organization(
     multi_selector = f'.image-node[data-id={json.dumps(multi_id)}]'
     ordinary_ratios = browser.evaluate(
         f"""(() => {{
-          const node = nodes.find(item => item.id === {json.dumps(multi_id)});
+          const node = canvasState.nodes.find(item => item.id === {json.dumps(multi_id)});
           const element = document.querySelector({json.dumps(multi_selector)});
           const thumbs = [...element.querySelectorAll('.thumb-item')];
           return (node.images || []).map((image, index) => {{
@@ -310,12 +310,12 @@ def run_image_organization(
     browser.wait_for("document.querySelector('#createMenu')?.classList.contains('open') === true")
     browser.native_click('#createMenu [data-create-type="image"]')
     browser.wait_for(
-        f"nodes.some(node => node.type === 'smart-image' && node.id !== {json.dumps(multi_id)} "
+        f"canvasState.nodes.some(node => node.type === 'smart-image' && node.id !== {json.dumps(multi_id)} "
         "&& !(node.images || []).length)"
     )
     square_id = str(
         browser.evaluate(
-            f"nodes.find(node => node.type === 'smart-image' && node.id !== {json.dumps(multi_id)} "
+            f"canvasState.nodes.find(node => node.type === 'smart-image' && node.id !== {json.dumps(multi_id)} "
             "&& !(node.images || []).length)?.id || ''"
         )
         or ""
@@ -352,8 +352,8 @@ def run_image_organization(
     browser.wait_for(f"document.querySelector({json.dumps(upload_selector)})")
     browser.native_upload(upload_selector, source_paths[2:])
     browser.wait_for(
-        f"(nodes.find(node => node.id === {json.dumps(square_id)})?.images || []).length === 1 "
-        f"&& Boolean(nodes.find(node => node.id === {json.dumps(square_id)})?.images?.[0]?.asset_id)",
+        f"(canvasState.nodes.find(node => node.id === {json.dumps(square_id)})?.images || []).length === 1 "
+        f"&& Boolean(canvasState.nodes.find(node => node.id === {json.dumps(square_id)})?.images?.[0]?.asset_id)",
         timeout=30,
     )
     square_drag_distance = 54
@@ -438,23 +438,23 @@ def run_image_organization(
         modifiers=("Control",),
         release_selector="#shell",
     )
-    selected = browser.evaluate("[...selectedIds].sort()")
+    selected = browser.evaluate("[...canvasState.selectedIds].sort()")
     if selected != sorted((multi_id, square_id)):
         raise AssertionError(f"native box selection did not select both image nodes: {selected!r}")
     browser.native_press("g", modifiers=("Control",))
     try:
         browser.wait_for(
-            "nodes.filter(node => node.type === 'smart-group').length === 1 "
-            "&& nodes.filter(node => node.type === 'smart-image').length === 0"
+            "canvasState.nodes.filter(node => node.type === 'smart-group').length === 1 "
+            "&& canvasState.nodes.filter(node => node.type === 'smart-image').length === 0"
         )
     except Exception as error:
         key_state = browser.evaluate(
             "({active:document.activeElement?.tagName+'#'+(document.activeElement?.id||''), "
-            "selected:[...selectedIds].sort(), groups:nodes.filter(node=>node.type==='smart-group').length, "
-            "images:nodes.filter(node=>node.type==='smart-image').length})"
+            "selected:[...canvasState.selectedIds].sort(), groups:canvasState.nodes.filter(node=>node.type==='smart-group').length, "
+            "images:canvasState.nodes.filter(node=>node.type==='smart-image').length})"
         )
         raise AssertionError(f"native group shortcut did not create a smart group: {key_state!r}") from error
-    group_id = str(browser.evaluate("nodes.find(node => node.type === 'smart-group')?.id || ''") or "")
+    group_id = str(browser.evaluate("canvasState.nodes.find(node => node.type === 'smart-group')?.id || ''") or "")
     group_selector = f'.image-node.smart-group-node[data-id={json.dumps(group_id)}]'
     browser.evaluate(
         "(async () => { await new Promise(resolve => requestAnimationFrame(() => "
@@ -499,8 +499,8 @@ def run_image_organization(
                 group:asRect(element),
                 composer:asRect(composer),
                 handle:asRect(handle),
-                selectedId,
-                selectedIds:[...selectedIds],
+                selectedId: canvasState.selectedId,
+                selectedIds:[...canvasState.selectedIds],
                 composerStyle:{{left:composer?.style.left, top:composer?.style.top, maxWidth:composer?.style.maxWidth}},
                 worldTransform:getComputedStyle(world).transform,
                 viewport:{{innerWidth:window.innerWidth, innerHeight:window.innerHeight, shellWidth:shell.clientWidth, shellHeight:shell.clientHeight}},
@@ -514,7 +514,7 @@ def run_image_organization(
         group_selector,
         relative=(group_select_point["xFraction"], group_select_point["yFraction"]),
     )
-    browser.wait_for(f"selectedId === {json.dumps(group_id)}")
+    browser.wait_for(f"canvasState.selectedId === {json.dumps(group_id)}")
     browser.wait_for("imageClickTimer === null && composerUpdateTimer === 0")
     browser.wait_for("!document.body.classList.contains('smart-node-drag-settling')")
     browser.wait_for(
@@ -544,7 +544,7 @@ def run_image_organization(
         raise AssertionError("composer geometry did not settle before native group resize")
     group_ratios = browser.evaluate(
         f"""(() => {{
-          const node = nodes.find(item => item.id === {json.dumps(group_id)});
+          const node = canvasState.nodes.find(item => item.id === {json.dumps(group_id)});
           const element = document.querySelector({json.dumps(group_selector)});
           const thumbs = [...element.querySelectorAll('.thumb-item, .smart-group-single-thumb')];
           return (node.images || []).map((image, index) => {{
@@ -557,7 +557,7 @@ def run_image_organization(
     )
     group_size_before = browser.evaluate(
         f"(() => {{ const el=document.querySelector({json.dumps(group_selector)}); const id=el?.dataset?.id; "
-        "const node=(nodes||[]).find(n=>n.id===id); "
+        "const node=(canvasState.nodes||[]).find(n=>n.id===id); "
         "return node ? {width:node.w,height:node.h} : null; })()"
     )
     group_resize_layout = browser.evaluate(
@@ -656,18 +656,18 @@ def run_image_organization(
     )
     group_size_after = browser.evaluate(
         f"(() => {{ const el=document.querySelector({json.dumps(group_selector)}); const id=el?.dataset?.id; "
-        "const node=(nodes||[]).find(n=>n.id===id); "
+        "const node=(canvasState.nodes||[]).find(n=>n.id===id); "
         "return node ? {width:node.w,height:node.h} : null; })()"
     )
     organized_screenshot = browser.capture_screenshot(viewport_root / "03-image-organized.png")
 
     browser.native_press("g", modifiers=("Control", "Shift"))
     browser.wait_for(
-        "nodes.filter(node => node.type === 'smart-group').length === 0 "
-        "&& nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 1).length === 3"
+        "canvasState.nodes.filter(node => node.type === 'smart-group').length === 0 "
+        "&& canvasState.nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 1).length === 3"
     )
     ungrouped = browser.evaluate(
-        """(() => nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 1).map(node => {
+        """(() => canvasState.nodes.filter(node => node.type === 'smart-image' && (node.images || []).length === 1).map(node => {
           const element = document.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
           const image = element?.querySelector('.image-wrap, .thumb-item');
           const nodeRect = element?.getBoundingClientRect();
@@ -883,7 +883,7 @@ def run_project_roundtrip(
         raise AssertionError(f"project create did not expose durable identity: {identity!r}")
 
     browser.wait_for(
-        "typeof canvas !== 'undefined' && canvas?.format === 'firefly-canvas-v1' && Array.isArray(nodes) "
+        "typeof canvas !== 'undefined' && canvas?.format === 'firefly-canvas-v1' && Array.isArray(canvasState.nodes) "
         "&& document.querySelector('#projectSaveState')?.dataset.state === 'saved'",
         timeout=30,
     )
@@ -898,13 +898,13 @@ def run_project_roundtrip(
     browser.native_click(f"{node_selector} .prompt-node-text")
     browser.native_type("durable project roundtrip")
     position_before = browser.evaluate(
-        f"(() => {{ const node = nodes.find(item => item.id === {json.dumps(node_id)}); "
+        f"(() => {{ const node = canvasState.nodes.find(item => item.id === {json.dumps(node_id)}); "
         "return node ? {x: Number(node.x), y: Number(node.y)} : null; })()"
     )
     # Prompt controls consume mousedown; the left padding is the stable node drag surface.
     browser.native_drag(node_selector, dx=52, dy=34, relative=(0.03, 0.3))
     position_after_drag = browser.evaluate(
-        f"(() => {{ const node = nodes.find(item => item.id === {json.dumps(node_id)}); "
+        f"(() => {{ const node = canvasState.nodes.find(item => item.id === {json.dumps(node_id)}); "
         "return node ? {x: Number(node.x), y: Number(node.y)} : null; })()"
     )
     if not isinstance(position_before, dict) or not isinstance(position_after_drag, dict):

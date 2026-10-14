@@ -1155,6 +1155,66 @@ class QualityGateTests(unittest.TestCase):
                 guard_events,
             )
 
+    def test_chrome_update_control_plane_noise_is_a_background_observation(self):
+        # Chrome 自身的更新/组件检查（update.googleapis.com）属于浏览器控制面，
+        # 不是产品发起的网络调用；必须记为 S3 观察，不能当作 S0 隔离守卫违规。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class ChromeUpdateControlPlaneContract(unittest.TestCase):\n"
+            "    def test_blocked_chrome_update_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT update.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: update.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "update.googleapis.com"},
+            self.report()["guard_events"],
+        )
+
+    def test_google_update_look_alike_host_is_still_a_blocking_network_target(self):
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class GoogleUpdateLookAlikeContract(unittest.TestCase):\n"
+            "    def test_blocked_look_alike_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT evil-update.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: evil-update.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "network", "target": "evil-update.googleapis.com"},
+            self.report()["guard_events"],
+        )
+
     def test_microsoft_look_alike_host_is_still_a_blocking_network_target(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
             "import os\n"
