@@ -24,6 +24,7 @@
     "provider": "offline-none",
     "animations": "disabled-for-baseline"
   },
+  "accepted_browser_versions": [151, 155],
   "screenshots": [
     {
       "viewport": [

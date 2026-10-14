@@ -16,12 +16,14 @@ from tools.ui_integrity_evidence import (
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
     accept_baseline,
+    chrome_major,
     failed_ui_integrity_evidence,
     validate,
     validate_candidate,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_UI_BASELINE_MANIFEST = ROOT / "tests" / "baselines" / "ui-integrity" / "manifest.json"
 
 
 def product_toolbar_action_ids() -> list[str]:
@@ -627,6 +629,104 @@ class UiIntegrityEvidenceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "fixed font-availability contract"):
             validate_candidate(self.artifacts)
+
+    # --- #180: the accepted baseline pins the environment, except an explicitly
+    # allowed stable-Chrome version bump ---
+
+    def _patch_candidate_environment(self, mutate) -> None:
+        manifest_path = self.artifacts / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutate(manifest["environment"])
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def _allow_baseline_browser_versions(self, majors: list[int]) -> None:
+        manifest_path = self.baselines / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["accepted_browser_versions"] = majors
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def _patch_baseline_environment(self, mutate) -> None:
+        manifest_path = self.baselines / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutate(manifest["environment"])
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def test_accepted_baseline_tolerates_an_allowed_stable_chrome_version_bump(self):
+        self.accept()
+        self._allow_baseline_browser_versions([151, 155])
+        self._patch_candidate_environment(
+            lambda environment: environment["browser"].__setitem__("version", "Chrome/155.0.8059.40")
+        )
+        self.assertEqual(validate(self.artifacts, self.baselines)["status"], "passed")
+
+    def test_accepted_baseline_still_requires_the_same_browser_name_and_channel(self):
+        self.accept()
+        self._allow_baseline_browser_versions([151, 155])
+        self._patch_baseline_environment(
+            lambda environment: environment["browser"].__setitem__("channel", "dev")
+        )
+        with self.assertRaisesRegex(ValueError, "browser name and channel"):
+            validate(self.artifacts, self.baselines)
+
+        self._patch_baseline_environment(
+            lambda environment: environment["browser"].__setitem__("channel", "stable")
+        )
+        self._patch_baseline_environment(
+            lambda environment: environment["browser"].__setitem__("name", "Microsoft Edge")
+        )
+        with self.assertRaisesRegex(ValueError, "browser name and channel"):
+            validate(self.artifacts, self.baselines)
+
+    def test_accepted_baseline_still_requires_every_other_environment_field(self):
+        self.accept()
+        self._allow_baseline_browser_versions([151, 155])
+        self._patch_baseline_environment(lambda environment: environment.__setitem__("locale", "en-US"))
+        with self.assertRaisesRegex(ValueError, "does not exactly match"):
+            validate(self.artifacts, self.baselines)
+
+        self._patch_baseline_environment(lambda environment: environment.__setitem__("locale", "zh-CN"))
+        self._patch_baseline_environment(lambda environment: environment.__setitem__("dpr", 2))
+        with self.assertRaisesRegex(ValueError, "does not exactly match"):
+            validate(self.artifacts, self.baselines)
+
+        self._patch_baseline_environment(lambda environment: environment.__setitem__("dpr", 1))
+        self._patch_baseline_environment(lambda environment: environment.__setitem__("animations", "enabled"))
+        with self.assertRaisesRegex(ValueError, "does not exactly match"):
+            validate(self.artifacts, self.baselines)
+
+    def test_accepted_baseline_rejects_a_chrome_major_outside_the_allow_list(self):
+        self.accept()
+        self._allow_baseline_browser_versions([151, 155])
+        self._patch_candidate_environment(
+            lambda environment: environment["browser"].__setitem__("version", "Chrome/160.0.0.0")
+        )
+        with self.assertRaisesRegex(ValueError, "outside the accepted UI baseline browser versions"):
+            validate(self.artifacts, self.baselines)
+
+    def test_baseline_without_an_explicit_allow_list_stays_exact_on_version(self):
+        self.accept()
+        manifest_path = self.baselines / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("accepted_browser_versions")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        self._patch_candidate_environment(
+            lambda environment: environment["browser"].__setitem__("version", "Chrome/155.0.8059.40")
+        )
+        with self.assertRaisesRegex(ValueError, "does not exactly match"):
+            validate(self.artifacts, self.baselines)
+
+    def test_accept_baseline_records_the_captured_chrome_major_as_the_default_allow_list(self):
+        self.accept()
+        manifest = json.loads((self.baselines / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["accepted_browser_versions"], [151])
+
+    def test_repo_ui_baseline_declares_an_explicit_browser_version_allow_list(self):
+        manifest = json.loads(REPO_UI_BASELINE_MANIFEST.read_text(encoding="utf-8"))
+        majors = manifest.get("accepted_browser_versions")
+        self.assertIsInstance(majors, list)
+        self.assertTrue(majors, "the accepted UI baseline must declare a non-empty version allow list")
+        self.assertTrue(all(isinstance(item, int) and item > 0 for item in majors))
+        self.assertIn(chrome_major(manifest["environment"]["browser"]["version"]), majors)
 
     def test_setup_failure_always_creates_self_contained_first_failure_artifacts(self):
         attempt, failure = capture_setup_failure(
