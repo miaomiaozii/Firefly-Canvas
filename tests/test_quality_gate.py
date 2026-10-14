@@ -24,6 +24,7 @@ from tools.quality_gate import (
     expected_native_focus,
     failed_native_browser_evidence,
     stop_leaked_children,
+    trusted_node_executable,
     unit_contract_shards,
     wait_for_process_exit,
 )
@@ -92,21 +93,94 @@ class QualityGateTests(unittest.TestCase):
         (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
             "import time, unittest\n"
             "class SlowQualityGateContract(unittest.TestCase):\n"
-            "    def test_slow(self): time.sleep(5)\n",
+            "    def test_slow(self): time.sleep(20)\n",
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        # 预算从 1 秒提到 3 秒后，trial 会跑到最后的 browser-tracer；
+        # fixture 必须提供 conversation_browser.py 桩，否则它会以“文件不存在”的 exit 2 先把门弄红。
+        (self.fixture_root / "tests" / "conversation_browser.py").write_text(
+            "import socket\n"
+            "server = socket.socket()\n"
+            "server.bind(('127.0.0.1', 0))\n"
+            "server.listen(1)\n"
+            "client = socket.create_connection(('127.0.0.1', server.getsockname()[1]))\n"
+            "connection, _ = server.accept()\n"
+            "client.close()\n"
+            "connection.close()\n"
+            "server.close()\n",
+            encoding="utf-8",
+        )
 
+        # #167 后 javascript-syntax 是一个真的 unittest 步骤（约 1 秒），
+        # 预算必须给到 3 秒，否则超时的是语法步骤而不是分片。
         result = self.run_gate(
             mode="trial",
             FIREFLY_TEST_MODE="1",
-            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="1",
+            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="3",
         )
 
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
         report = self.report()
         self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
         self.assertEqual(report["first_failure"]["status"], "timed-out")
+
+    def test_javascript_syntax_step_covers_every_canvas_module(self):
+        # #167：javascript-syntax 以前只 `node --check static/js/smart-canvas.js`，
+        # 拆出去的 canvas-*.js 语法错误在 fast/domain 完全漏网。
+        command = STEP_DEFINITIONS["javascript-syntax"](sys.executable)
+        joined = " ".join(command)
+        self.assertIn("tests.test_canvas_frontend_sources", joined)
+        self.assertNotIn("static/js/smart-canvas.js", joined)
+        for mode in ("fast", "domain", "trial", "release"):
+            self.assertIn("javascript-syntax", MODE_STEPS[mode])
+
+    def test_canvas_boundaries_evidence_runs_only_in_trial_and_release(self):
+        # #167：runner 长期游离在门禁之外，只能手动跑。
+        step = "canvas-boundaries-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "tests/canvas_boundaries_browser.py"],
+        )
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
+    def test_video_failure_evidence_runs_only_in_trial_and_release(self):
+        step = "video-failure-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "tests/video_failure_browser.py"],
+        )
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
+    def test_wired_canvas_browser_runners_resolve_their_repo_root(self):
+        # 门在临时 workspace 里执行步骤；runner 里硬编码的仓库根会读到工作区外的源码，
+        # 在非本机（例如 CI）上直接带不动。
+        repo_root = Path(__file__).resolve().parents[1]
+        for name in ("canvas-boundaries-evidence", "video-failure-evidence"):
+            command = STEP_DEFINITIONS[name](sys.executable)
+            runner = repo_root / command[1]
+            self.assertTrue(runner.is_file(), f"missing {command[1]}")
+            self.assertNotIn("Firefly-Canvas", runner.read_text(encoding="utf-8"))
+            self.assertIn("Path(__file__).resolve().parents[1]", runner.read_text(encoding="utf-8"))
+
+    def test_canvas_interactions_evidence_stays_out_of_the_gate(self):
+        # #172：canvas_interactions_browser.py 长期红（两条布局断言），
+        # 接入只会让门常红并掩盖真实回归；那张票判定完再接。
+        for name in ("canvas-interactions-evidence", "canvas-interactions"):
+            self.assertNotIn(name, STEP_DEFINITIONS)
+            self.assertNotIn(name, BROWSER_EVIDENCE_STEP_NAMES)
+            for mode in MODE_STEPS.values():
+                self.assertNotIn(name, mode)
 
     def test_ui_integrity_runs_only_in_trial_and_release(self):
         step = "ui-integrity-evidence"
@@ -197,6 +271,34 @@ class QualityGateTests(unittest.TestCase):
             "const qualityGateFixture = true;\n",
             encoding="utf-8",
         )
+        # #167：javascript-syntax 步骤现在跑 tests/test_canvas_frontend_sources.py，
+        # 所以 fixture 里的桩必须真的对 static/js/*.js 跑 node --check：
+        # 下面两个 S2 测试靠写坏 smart-canvas.js 来验证语法门会红。
+        # node 路径用受信路径写进桩里，不能拿 PATH 上的 node（伪造 node 测试会误报）。
+        (self.fixture_root / "tests" / "test_canvas_frontend_sources.py").write_text(
+            "import subprocess\n"
+            "import unittest\n"
+            "from pathlib import Path\n\n"
+            f"NODE = {trusted_node_executable()!r}\n"
+            "ROOT = Path(__file__).resolve().parents[1]\n\n"
+            "class CanvasFrontendSourceListTests(unittest.TestCase):\n"
+            "    def test_every_canvas_module_passes_node_syntax_check(self):\n"
+            "        for script in sorted((ROOT / 'static' / 'js').glob('*.js')):\n"
+            "            result = subprocess.run(\n"
+            "                [NODE, '--check', str(script)], capture_output=True, text=True,\n"
+            "            )\n"
+            "            self.assertEqual(result.returncode, 0, script.name + ': ' + result.stderr.strip())\n",
+            encoding="utf-8",
+        )
+        # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
+        # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
+        for runner_name in ("canvas_boundaries_browser.py", "video_failure_browser.py"):
+            (self.fixture_root / "tests" / runner_name).write_text(
+                "import sys\n"
+                f"print('{runner_name} fixture ok')\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
         (self.fixture_root / "tests" / "__init__.py").write_text("", encoding="utf-8")
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
             "import unittest\n\n"
@@ -1728,7 +1830,7 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ["javascript-syntax", "excel-api-smoke", "surface-contract"]),
             "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "unit-contract-browser", "browser-tracer"]),
+            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "unit-contract-browser", "browser-tracer"]),
             "release": (
                 900,
                 [
@@ -1744,6 +1846,8 @@ class QualityGateTests(unittest.TestCase):
                     "ui-integrity-evidence",
                     "excel-import-evidence",
                     "edge-compatibility",
+                    "canvas-boundaries-evidence",
+                    "video-failure-evidence",
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",

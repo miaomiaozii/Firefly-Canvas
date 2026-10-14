@@ -12,11 +12,12 @@ import urllib.parse
 import base64
 from pathlib import Path
 
-ROOT = Path(r'D:\Firefly-Canvas')
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tests import conversation_browser as harness
+from tests import canvas_browser_runner_support as runner_support
 from firefly_projects import ProjectStore
 
 CLIENT_SCRIPT = ROOT / "tests" / "video_failure_browser_client.js"
@@ -156,13 +157,8 @@ def main():
                 'assertions': len(result.get('assertions') or []),
                 'fake_calls': len(calls),
             }))
-    summary = {
-        'pass': all(item.get('pass') for item in results),
-        'failures': [item for item in results if not item.get('pass')],
-    }
-    print(json.dumps(summary))
-    raise SystemExit(0 if summary['pass'] else 1)
+    return runner_support.finish_run('video failure', results)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

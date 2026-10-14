@@ -10,12 +10,13 @@ import tempfile
 import urllib.parse
 from pathlib import Path
 
-ROOT = Path(r'D:\Firefly-Canvas')
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
+from tests import canvas_browser_runner_support as runner_support
 
 CLIENT_SCRIPT = ROOT / 'tests' / 'canvas_boundaries_browser_client.js'
 VIEWPORTS = [(1424, 900)]
@@ -67,6 +68,7 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
 
 def main():
     browser = harness.find_browser()
+    results = []
     with tempfile.TemporaryDirectory(prefix='canvas-boundaries-') as root:
         store = ProjectStore(Path(root) / 'projects', snapshot_delay=0)
         project_id = seed_store(store)
@@ -78,10 +80,12 @@ def main():
             for viewport in VIEWPORTS:
                 result = launch(browser, server, viewport, project_id)
                 assert result is not None, f'no result for {viewport}'
-                print(f'{viewport} PASS: {result.get("assertions")}/{result.get("total")} assertions')
+                results.append(result)
+                print(f'{viewport} RESULT: {result.get("assertions")}/{result.get("total")} assertions')
         finally:
             server.close()
+    return runner_support.finish_run('canvas boundaries', results)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

@@ -9,8 +9,23 @@ import re
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 from tests.canvas_frontend_sources import CANVAS_SCRIPTS, ROOT, is_canvas_module
+from tools.quality_gate import trusted_node_executable
+
+
+def _node_for_syntax_check() -> str:
+    """#167：语法检查用的 node 先取质量门的受信路径，而不是 PATH 上的 node。
+
+    门会验证 PATH 里的 node 不是伪造的（test_javascript_syntax_uses_trusted_node_instead_of_path），
+    所以这里不能先 `shutil.which("node")`；也不能因为找不到 node 就静默跳过。
+    """
+    trusted = trusted_node_executable()
+    if Path(trusted).is_file():
+        return trusted
+    found = shutil.which("node")
+    return found if found else trusted
 
 
 def _html_canvas_scripts() -> list[str]:
@@ -32,10 +47,13 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual(CANVAS_SCRIPTS[-1], "smart-canvas.js")
 
     def test_every_canvas_module_passes_node_syntax_check(self):
-        # 质量门的 javascript-syntax 步骤只查 smart-canvas.js；拆出的模块在此补上。
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("node 不可用")
+        # #167：这条测试就是质量门的 javascript-syntax 步骤（fast/domain 都跑），
+        # 所以不能因为 PATH 上没 node 就静默跳过，否则门会变成假绿。
+        node = _node_for_syntax_check()
+        self.assertTrue(
+            Path(node).is_file(),
+            f"node 不可用（{node}）：javascript-syntax 门必须真跑，不能静默跳过",
+        )
         for name in CANVAS_SCRIPTS:
             result = subprocess.run(
                 [node, "--check", str(ROOT / "static" / "js" / name)],

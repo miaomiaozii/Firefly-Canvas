@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
+from tests import canvas_browser_runner_support as runner_support
 
 CLIENT_SCRIPT = ROOT / 'tests' / 'canvas_interactions_browser_client.js'
 VIEWPORTS = [(1424, 900)]
@@ -81,7 +82,7 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
 def main():
     browser = harness.find_browser()
     harness.CLIENT_SCRIPT = CLIENT_SCRIPT
-    failed = []
+    results = []
     for viewport in VIEWPORTS:
         root = Path(tempfile.mkdtemp(prefix='firefly-ci-run-'))
         store = ProjectStore(root / 'projects', snapshot_delay=0)
@@ -100,15 +101,9 @@ def main():
             except Exception:
                 pass
         print(json.dumps(result, ensure_ascii=False))
-        if not result.get('pass'):
-            failed.append((viewport, result))
-    if failed:
-        print('FAILURES:', len(failed))
-        for viewport, result in failed:
-            print(json.dumps({'viewport': viewport, 'result': result}, ensure_ascii=False))
-        sys.exit(1)
-    print('ALL PASS')
+        results.append(result)
+    return runner_support.finish_run('canvas interactions', results)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -170,10 +170,15 @@ def executed_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
 
 
 STEP_DEFINITIONS = {
+    # #167：语法门必须覆盖全部画布前端模块。以前只 `node --check static/js/smart-canvas.js`，
+    # 拆出去的 canvas-*.js 语法错误在 fast/domain 完全漏网。
+    # 直接跑 tests/test_canvas_frontend_sources.py：文件列表（CANVAS_SCRIPTS）只维护一处。
     "javascript-syntax": lambda python: [
-        trusted_node_executable(),
-        "--check",
-        "static/js/smart-canvas.js",
+        python,
+        "-m",
+        "unittest",
+        "-b",
+        "tests.test_canvas_frontend_sources",
     ],
     "excel-api-smoke": lambda python: [
         python,
@@ -215,6 +220,10 @@ STEP_DEFINITIONS = {
     "long-content-evidence": lambda python: [python, "tests/long_content_native_browser.py"],
     "ui-integrity-evidence": lambda python: [python, "tests/ui_integrity_native_browser.py"],
     "excel-import-evidence": lambda python: [python, "tests/excel_import_browser.py"],
+    # #167：两个画布浏览器 runner 以前只能手动跑，零断言假绿也没人接。现在接进 trial/release
+    # （fast/domain 要保持快）。canvas_interactions_browser.py 因 #172 长期红，判定完再接。
+    "canvas-boundaries-evidence": lambda python: [python, "tests/canvas_boundaries_browser.py"],
+    "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
     "browser-tracer": lambda python: [python, "tests/conversation_browser.py"],
     "browser-harness-contract": lambda python: [python, "-m", "unittest", "tests.test_conversation_browser_harness"],
@@ -242,6 +251,8 @@ MODE_STEPS = {
         "long-content-evidence",
         "ui-integrity-evidence",
         "excel-import-evidence",
+        "canvas-boundaries-evidence",
+        "video-failure-evidence",
         "unit-contract-browser",
         "browser-tracer",
     ),
@@ -258,6 +269,8 @@ MODE_STEPS = {
         "ui-integrity-evidence",
         "excel-import-evidence",
         "edge-compatibility",
+        "canvas-boundaries-evidence",
+        "video-failure-evidence",
         "unit-contract-browser",
         "browser-tracer",
         "browser-harness-contract",
@@ -281,6 +294,8 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "excel-import-evidence",
         "edge-compatibility",
         "browser-tracer",
+        "canvas-boundaries-evidence",
+        "video-failure-evidence",
     )
 )
 PARALLEL_STEP_NAMES = BROWSER_EVIDENCE_STEP_NAMES | frozenset(
