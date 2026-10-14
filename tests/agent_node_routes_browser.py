@@ -39,6 +39,7 @@ os.environ.setdefault('FIREFLY_TEST_MODE', '1')
 import uvicorn  # noqa: E402
 from firefly_projects import ProjectStore  # noqa: E402
 from tests import conversation_browser as harness  # noqa: E402
+from tests.fake_agent_host import STUB_PI_CLI  # noqa: E402
 
 CLIENT_SCRIPT = ROOT / 'tests' / 'agent_node_routes_browser_client.js'
 CLIENT_SCRIPT_URL = '/tests/agent_node_routes_browser_client.js'
@@ -149,6 +150,9 @@ def load_app(root: Path, store: ProjectStore):
     production_main.sync_static_html_versions = lambda: None
 
     agent_host_module = sys.modules['app.services.agent_host']
+    # #179: belt-and-braces so a stray spawn can never reach the real CLI
+    # ("pi" resolves through PATH to pi.cmd on Windows).
+    agent_host_module.PI_CLI = str(STUB_PI_CLI)
     manager = agent_host_module.agent_host_manager
 
     async def fake_spawn(session, model='', autonomy='', continue_session=False):
