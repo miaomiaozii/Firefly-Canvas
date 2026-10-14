@@ -23,12 +23,13 @@ download = "task-download"
 record = "record-old"
 original_record = "record-original"
 original_asset = "asset-original"
+original_output = "output-original"
 download_record = "record-download"
 download_asset = "asset-download"
 selectors = [
     "#smartHistoryToggle",
     f'[data-canvas-history-id="{record}"] [data-history-delete="record"]',
-    f'[data-canvas-history-id="{original_record}"] [data-history-delete-original="0"]',
+    f'[data-canvas-history-id="{original_record}"] [data-history-delete-original="{original_output}"]',
     f'[data-history-cancel-task="{cancel}"]',
     "#smartHistoryToggle",
     f'[data-history-retry-task="{failed}"]',
@@ -79,6 +80,7 @@ lifecycle = {
     "original_history_id": original_record,
     "record_asset_id": "asset-record",
     "original_asset_id": original_asset,
+    "original_output_id": original_output,
     "status_card_task_ids": [failed, download, cancel],
     "terminal_record_counts": {failed: 1, retry: 1, cancel: 1, download: 1},
     "download_record_history_id": download_record,

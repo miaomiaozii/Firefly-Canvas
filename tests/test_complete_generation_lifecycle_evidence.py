@@ -30,6 +30,7 @@ class CompleteGenerationLifecycleEvidenceTests(unittest.TestCase):
             "original_history_id": "record-original",
             "record_asset_id": "asset-record",
             "original_asset_id": "asset-original",
+            "original_output_id": "output-original",
             "status_card_task_ids": ["task-failed", "task-download", "task-cancel"],
             "terminal_record_counts": {
                 "task-failed": 1,
@@ -61,7 +62,7 @@ class CompleteGenerationLifecycleEvidenceTests(unittest.TestCase):
         selectors = [
             "#smartHistoryToggle",
             '[data-canvas-history-id="record-old"] [data-history-delete="record"]',
-            '[data-canvas-history-id="record-original"] [data-history-delete-original="0"]',
+            '[data-canvas-history-id="record-original"] [data-history-delete-original="output-original"]',
             '[data-history-cancel-task="task-cancel"]',
             "#smartHistoryToggle",
             '[data-history-retry-task="task-failed"]',
@@ -134,6 +135,28 @@ class CompleteGenerationLifecycleEvidenceTests(unittest.TestCase):
         result = validate_complete_generation_lifecycle_artifacts(self.root)
         self.assertEqual(result["status"], "validated")
         self.assertEqual(result["step_count"], 8)
+
+    def test_rejects_delete_original_selector_that_ignores_the_recorded_output_item(self):
+        # 前端把 data-history-delete-original 写成 output_id（static/js/canvas-media-history.js:1738），
+        # 证据里写死列表位置 "0" 的选择器在真实 DOM 上选不到按钮。
+        operations = [
+            json.loads(line)
+            for line in (self.root / "operations.jsonl").read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        recorded = '[data-canvas-history-id="record-original"] [data-history-delete-original="output-original"]'
+        stale = '[data-canvas-history-id="record-original"] [data-history-delete-original="0"]'
+        self.assertIn(recorded, [item.get("selector") for item in operations])
+        for item in operations:
+            if item.get("selector") == recorded:
+                item["selector"] = stale
+        (self.root / "operations.jsonl").write_text(
+            "".join(json.dumps(item) + "\n" for item in operations),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError) as caught:
+            validate_complete_generation_lifecycle_artifacts(self.root)
+        self.assertIn("destructive product entry", str(caught.exception))
 
     def test_rejects_click_evidence_without_a_browser_semantic_event(self):
         operations_path = self.root / "operations.jsonl"

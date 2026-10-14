@@ -192,11 +192,11 @@ def output_identity(record: dict) -> str:
 
 
 def output_item_id(record: dict) -> str:
-    """生成输出项身份（output_id），不是数组下标。
+    """生成输出项身份（output_id），不是列表位置。
 
     前端删除原件按钮把 `data-history-delete-original` 写成 output_id
     （static/js/canvas-media-history.js 的 historyDeleteOriginal 赋值），
-    runner 用下标 "0" 选不到按钮。
+    runner 以前用列表位置 "0" 选不到按钮。
     """
     outputs = record.get("outputs") or []
     if len(outputs) != 1:
@@ -519,6 +519,7 @@ def main() -> int:
                     "original_history_id": str(old_original["id"]),
                     "record_asset_id": record_asset_id,
                     "original_asset_id": original_asset_id,
+                    "original_output_id": original_output_id,
                     "independent_status_cards": True,
                     "status_card_task_ids": status_card_task_ids,
                     "old_output_retained_with_new_task": old_output_retained,

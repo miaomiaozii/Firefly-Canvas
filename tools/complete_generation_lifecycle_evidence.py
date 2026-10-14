@@ -89,6 +89,7 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
     identity_keys = (
         "project_id", "failed_task_id", "retry_task_id", "cancel_task_id", "download_task_id",
         "record_history_id", "original_history_id", "record_asset_id", "original_asset_id",
+        "original_output_id",
     )
     if not all(isinstance(lifecycle.get(key), str) and lifecycle[key] for key in identity_keys):
         raise ValueError("lifecycle identities are missing")
@@ -137,7 +138,7 @@ def validate_complete_generation_lifecycle_artifacts(artifact_root: Path) -> dic
         f'[data-history-cancel-task="{lifecycle["cancel_task_id"]}"]',
         f'[data-history-retry-task="{lifecycle["failed_task_id"]}"]',
         f'[data-canvas-history-id="{lifecycle["record_history_id"]}"] [data-history-delete="record"]',
-        f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="0"]',
+        f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="{lifecycle["original_output_id"]}"]',
         f'[data-history-restore-original="{lifecycle["original_asset_id"]}"]',
         f'[data-canvas-history-id="{lifecycle["download_record_history_id"]}"] [data-history-download-original]',
     }
