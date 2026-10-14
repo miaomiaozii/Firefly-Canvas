@@ -1,4 +1,7 @@
 """Tests for agent generate/media/viewport tools API endpoints (issue #123)."""
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -15,6 +18,26 @@ import main
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from firefly_projects import ProjectStore
 
+# Issue #175: the quality gate builds its isolated execution workspace from
+# ``git ls-files --cached --others --exclude-standard`` (tools/quality_gate.py:
+# create_execution_workspace), so the gitignored ``data/api_providers.json``
+# (.gitignore:22) is never copied in. A test that reads the developer's real
+# platform config therefore passes locally and 400s in the gate with
+# ``image_model_not_found``. This batch pins its own deterministic provider
+# config instead; see AgentGenerateToolsIsolationTests for the guard.
+FIXTURE_PROVIDERS = [
+    {
+        "id": "test-offline",
+        "name": "Offline Test Provider",
+        # Loopback + discard port: routing succeeds, and the background
+        # generation attempt fails fast without touching any real provider.
+        "base_url": "http://127.0.0.1:9/v1",
+        "protocol": "openai",
+        "enabled": True,
+        "image_models": ["test-image-model"],
+    }
+]
+
 
 class AgentGenerateToolsTests(unittest.TestCase):
     """Test the generate/media/viewport tools API endpoints used by the Pi agent."""
@@ -24,6 +47,12 @@ class AgentGenerateToolsTests(unittest.TestCase):
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
+        # #175: pin the platform config to a fixture inside the temp dir so the
+        # batch is independent of the machine's data/api_providers.json.
+        self.previous_api_providers_file = main.API_PROVIDERS_FILE
+        providers_file = Path(self.temp_dir.name) / "api_providers.json"
+        providers_file.write_text(json.dumps(FIXTURE_PROVIDERS), encoding="utf-8")
+        main.API_PROVIDERS_FILE = str(providers_file)
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
 
         # Create a test project with nodes
@@ -48,6 +77,7 @@ class AgentGenerateToolsTests(unittest.TestCase):
         self.client.close()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
+        main.API_PROVIDERS_FILE = self.previous_api_providers_file
         self.temp_dir.cleanup()
 
     def test_trigger_generation(self):
@@ -279,6 +309,42 @@ class AgentGenerateToolsTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["focus_node_id"], "image-1")
         self.assertEqual(data["scale"], 2.0)
+
+
+class AgentGenerateToolsIsolationTests(unittest.TestCase):
+    """#175 guard: the batch above must not depend on machine platform config.
+
+    ``tools/quality_gate.py`` builds its isolated execution workspace with
+    ``git ls-files --cached --others --exclude-standard``, which never copies the
+    gitignored ``data/api_providers.json``. Pointing ``FIREFLY_RUNTIME_ROOT`` at
+    an empty directory reproduces exactly that condition (``DATA_DIR`` then has
+    no provider config), so this guard turns red the moment a test in this file
+    starts reading the developer's real platform config again.
+    """
+
+    NESTED_ENV_FLAG = "FIREFLY_AGENT_GENERATE_TOOLS_NESTED"
+
+    def test_batch_passes_without_api_providers_file(self):
+        if os.environ.get(self.NESTED_ENV_FLAG):
+            self.skipTest("nested guard run: this test is the guard itself")
+        with tempfile.TemporaryDirectory(prefix="firefly-no-provider-config-") as empty_root:
+            self.assertFalse((Path(empty_root) / "data" / "api_providers.json").exists())
+            env = dict(os.environ)
+            env["FIREFLY_RUNTIME_ROOT"] = empty_root
+            env[self.NESTED_ENV_FLAG] = "1"
+            process = subprocess.run(
+                [sys.executable, "-m", "unittest", "-b", "tests.test_agent_generate_tools"],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+            )
+        output = (process.stdout + process.stderr).decode("utf-8", errors="replace")
+        self.assertEqual(
+            process.returncode,
+            0,
+            "tests/test_agent_generate_tools.py is not isolated from "
+            f"data/api_providers.json:\n{output[-4000:]}",
+        )
 
 
 if __name__ == "__main__":
