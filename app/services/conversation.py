@@ -1,6 +1,7 @@
 # conversation domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+from app.constants import NODE_TYPE_CONVERSATION
 
 def load_conversation(user_id, conversation_id):
     path = _svc._main('conversation_path')(user_id, conversation_id)
@@ -469,7 +470,7 @@ async def persist_project_conversation_pending(project_id: str, node_id: str, us
                         opened = _svc._main('project_store_call')('open_project', project_id)
                         current_canvas = opened['canvas']
                         conversation = conversation_node_by_id(current_canvas, node_id)
-                        if not isinstance(conversation, dict) or conversation.get('type') != 'smart-conversation':
+                        if not isinstance(conversation, dict) or conversation.get('type') != NODE_TYPE_CONVERSATION:
                             raise HTTPException(status_code=400, detail='目标节点不是对话节点')
                         existing = conversation_task_snapshot(current_canvas, node_id, request_id)
                         if existing:

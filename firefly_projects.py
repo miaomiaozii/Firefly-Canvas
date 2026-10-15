@@ -13,6 +13,7 @@ import io
 import json
 import mimetypes
 import os
+from app.constants import NODE_TYPE_IMAGE
 import re
 import shutil
 import stat
@@ -2197,7 +2198,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas = copy.deepcopy(opened)
             canvas.pop("history", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
-            if node is None or str(node.get("type") or "") not in {"image", "smart-image"}:
+            if node is None or str(node.get("type") or "") not in {"image", NODE_TYPE_IMAGE}:
                 raise InvalidMutation("媒体生成任务必须绑定已保存的媒体节点")
             existing_tasks = list(node.get("pendingTasks") or [])
             if not existing_tasks:
@@ -2512,12 +2513,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas.pop("history", None)
             nodes = canvas.setdefault("nodes", [])
             node = next((item for item in nodes if str(item.get("id") or "") == node_id), None)
-            if node is not None and str(node.get("type") or "") not in {"image", "smart-image"}:
+            if node is not None and str(node.get("type") or "") not in {"image", NODE_TYPE_IMAGE}:
                 raise InvalidMutation("生成结果只能写入图片节点")
             if node is None:
                 node = {
                     "id": node_id,
-                    "type": "smart-image",
+                    "type": NODE_TYPE_IMAGE,
                     "x": 0,
                     "y": 0,
                     "created_at": _now_ms(),
@@ -2782,7 +2783,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     active_generation_task_ids = {
                         str(task.get("taskId") or task.get("task_id") or "")
                         for node in canvas.get("nodes") or []
-                        if isinstance(node, dict) and str(node.get("type") or "") in {"image", "smart-image"}
+                        if isinstance(node, dict) and str(node.get("type") or "") in {"image", NODE_TYPE_IMAGE}
                         for task in node.get("pendingTasks") or []
                         if isinstance(task, dict) and str(task.get("taskId") or task.get("task_id") or "")
                     }
@@ -3218,9 +3219,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             incoming_tasks = node.get("pendingTasks")
             existing_type = str(existing.get("type") or "") if isinstance(existing, dict) else ""
             incoming_type = str(node.get("type") or "")
-            server_owned_generation_node = existing_type in {"image", "smart-image"} or incoming_type in {"image", "smart-image"}
+            server_owned_generation_node = existing_type in {"image", NODE_TYPE_IMAGE} or incoming_type in {"image", NODE_TYPE_IMAGE}
             if server_owned_generation_node and (isinstance(existing_tasks, list) or isinstance(incoming_tasks, list)):
-                if existing_type in {"image", "smart-image"}:
+                if existing_type in {"image", NODE_TYPE_IMAGE}:
                     node["type"] = existing_type
                 terminal_task_ids = {
                     str(record.get("task_id") or "")

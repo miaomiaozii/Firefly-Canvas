@@ -1,6 +1,7 @@
 # media domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+from app.constants import NODE_TYPE_IMAGE
 import logging
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,9 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
             if len(kept_outputs) != len(outputs):
                 node['generatedOutputs'] = kept_outputs
                 changed = True
-        if node_type in {'smart-image', 'output'} and isinstance(node.get('images'), list):
+        if node_type in {NODE_TYPE_IMAGE, 'output'} and isinstance(node.get('images'), list):
             images = list(node.get('images') or [])
-            if node_type == 'smart-image':
+            if node_type == NODE_TYPE_IMAGE:
                 owned_items = _svc.smart_owned_result_items(images, paths)
             else:
                 owned_items = images
@@ -32,7 +33,7 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
                 if node_type == 'output':
                     node['_pending'] = []
                     node['imageComparisons'] = {}
-                if node_type == 'smart-image':
+                if node_type == NODE_TYPE_IMAGE:
                     node['pending'] = 0
                     node['running'] = False
                     node['queued'] = False
@@ -313,7 +314,7 @@ def expand_canvas_generated_media_paths(canvas: Dict[str, Any], paths: List[str]
         images = list(node.get('images') or [])
         if node_type == 'output':
             owned_items = images
-        elif node_type == 'smart-image':
+        elif node_type == NODE_TYPE_IMAGE:
             owned_items = _svc.smart_owned_result_items(images, paths)
         else:
             owned_items = []
