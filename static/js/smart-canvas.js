@@ -1441,11 +1441,13 @@ function smartGroupThumbLayout(node){
         };
     }
     
-    // 批量：固定 4:3 缩略图网格（与生图历史一致）
+    // 批量：固定 136px 宽的缩略图网格（与生图历史一致），但行高按每张图的实际显示比例
+    // 计算（#172：fe9adb9 把组卡片改成固定 4:3 盒，横图卡片比例从 1.5 被拉成 1.3333）。
     const grid = getBatchThumbGridSize(count);
     const maxVisibleRows = compactMembers.length ? count : SMART_GROUP_MAX_VISIBLE_ROWS;
     const visibleRows = Math.min(maxVisibleRows, grid.rows);
-    
+    const gridHeight = mediaGroupGridHeight(refs.map(ref => ref.item), grid.cols, visibleRows, BATCH_THUMB.WIDTH);
+
     return {
         refs,
         compactMembers,
@@ -1454,9 +1456,9 @@ function smartGroupThumbLayout(node){
         visibleRows,
         thumb:BATCH_THUMB.WIDTH,
         thumbH:BATCH_THUMB.HEIGHT,
-        gridHeight:grid.gridH,
+        gridHeight,
         width:grid.boxW,
-        height:grid.boxH + pendingExtra
+        height:grid.boxH - grid.gridH + gridHeight + pendingExtra
     };
 }
 const SMART_GROUP_ARRANGE_PADDING = 18;
@@ -8649,13 +8651,12 @@ function smartGroupBodyHtml(node){
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
         const visibleRows = Math.max(1, Math.min(groupMaxVisibleRows, Number(groupThumbLayout.visibleRows || groupThumbLayout.rows || 1)));
         const thumbW = BATCH_THUMB.WIDTH;
-        const thumbH = BATCH_THUMB.HEIGHT;
         const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight));
         return `<div class="smart-group-card has-thumbs">
             <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
             <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${thumbW}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--thumb-w:${thumbW}px;--thumb-h:${thumbH}px">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
+                return `<div class="thumb-item ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, thumbW)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
             }).join('')}</div>
         </div>`;
     }

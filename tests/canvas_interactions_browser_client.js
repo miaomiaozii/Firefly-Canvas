@@ -96,8 +96,15 @@
         // Ordinary multi-image nodes must preserve each image card's aspect ratio.
         {
             const node = evalCanvas()?.nodes?.find(item => item.id === 'seed-img-a');
+            const seededW = node?.w;
+            const seededH = node?.h;
             if(node?.images?.[0]){
                 node.images = [node.images[0], {...node.images[0], name:'landscape-copy.png'}];
+                // #172：fixture 里的 316x194 是显式尺寸（等价于用户拖拽过的框），
+                // 产品按 #89 规则永不把显式框弹回内容尺寸；要测「外框贴合图片行」必须用
+                // 自动尺寸路径，所以这里临时清掉显式 w/h 让 imageLayout 重算。
+                delete node.w;
+                delete node.h;
                 evalFn('render')?.();
             }
             const thumbsReady = await waitFor(() => {
@@ -119,6 +126,8 @@
             assertion('ordinary multi-image outer frame fits image rows', bottomGap >= 0 && bottomGap <= 20, `outerH=${outerRect?.height} gridTop=${gridRect && outerRect ? gridRect.top - outerRect.top : 'n/a'} gridH=${gridRect?.height} bottomGap=${bottomGap}`);
             if(node){
                 node.images = node.images.slice(0, 1);
+                node.w = seededW;
+                node.h = seededH;
                 evalFn('render')?.();
                 await sleep(80);
             }
