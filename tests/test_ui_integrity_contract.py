@@ -176,6 +176,13 @@ class UiIntegrityContractTests(unittest.TestCase):
             ROOT / "tests" / "generation_task_native_browser.py",
             ROOT / "tests" / "generation_lifecycle_browser.py",
         ]
+        # #177：同一类脱钩已经反复四次（#170 路径字面量、#168 dataset、
+        # f51d185 裸 nodes 引用、#182 生成旅程 dataset）。逐个点名补太慢，
+        # 这里把扫描面扩到 tests 下所有浏览器 runner，新增 runner 自动进入契约。
+        runners += sorted(
+            path for path in (ROOT / "tests").glob("*browser*.py")
+            if path not in runners and path.name != "test_ui_integrity_contract.py"
+        )
         missing: list[str] = []
         reads = 0
         for runner in runners:
