@@ -614,12 +614,11 @@ video.node-img { object-fit:cover; background:#0f172a; }
 @keyframes dash-flow { to { stroke-dashoffset:-13; } }
 @keyframes dash-flow-pending { to { stroke-dashoffset:-9; } }
 .image-node { z-index:2; }
-/* #152: 历史抽屉打开时，节点提升到抽屉之上（87 > 86），底部节点的提示词框不被遮挡 */
-/* #163: 生成分组框（.smart-group-node）是最底层背板，不参与该抬升——
-   否则抽屉打开后组框会盖住提示词框（z30）并吃掉其点击；
-   提示词框是浮在画布上的操作层，抽屉打开时抬到 88（> 87）保持位于所有画布节点之上 */
-body:has(.log-modal.open) .image-node:not(.smart-group-node) { z-index:87; }
-body:has(.log-modal.open) .composer { z-index:88; }
+/* #163 + #164: 层级契约只有一套，与历史抽屉关闭/打开/折叠无关：
+生成分组框（.smart-group-node，最底层背板）< 普通节点 < 选中 < 拖动中 < 提示词框
+< 面板类浮层 < 历史抽屉 < 提示词流。
+历史抽屉始终浮在画布之上；提示词框的可达性由平移画布保证（keepComposerReachableByPanningCanvas），
+不再靠抽屉开态改写 z-index——那会把选中(10)/拖动中(12)压平到同一个值，并把提示词流(120)压到 88。*/
 .image-node.smart-group-node { z-index:0; }
 .image-node.selected:not(.smart-group-node) { z-index:10; }
 .image-node.dragging:not(.smart-group-node) { z-index:12; }

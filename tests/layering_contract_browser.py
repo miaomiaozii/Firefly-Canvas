@@ -1,26 +1,31 @@
-"""Verify the canvas layering contract in real headless Chrome (#163).
+"""Verify the canvas layering contract in real headless Chrome (#163 + #164).
 
-Regression: with the history drawer open, the #152 elevation rule
-(`body:has(.log-modal.open) .image-node { z-index:87 }`) lifted *all* image
-nodes — including the generation group box (.smart-group-node) — above the
-composer (z-index:30), so the prompt box inside/next to a group box became
-unclickable and untypeable.
+#152 added `body:has(.log-modal.open) .image-node { z-index:87 }` so canvas
+nodes would stay above the history drawer. #163 excluded the generation group
+frame from that lift and raised the composer to 88 while the drawer was open.
+#164: both drawer-open rules made the contract state dependent — the rule's
+specificity (0,4,1) also flattened the selected (10) and dragging (12) states
+onto 87, so with the drawer open a selected node was no longer above an
+ordinary node (painting fell back to DOM order), and the composer lift crushed
+the prompt-flow composer (120) down to 88.
 
-Contract asserted (bottom → top, per #163):
-连线 < 生成分组框（背板） < 普通节点 < 选中/拖动中的节点 < 提示词框 < 面板类浮层 < 历史抽屉
+Contract asserted (bottom → top, one single ladder in every drawer state):
+连线 < 生成分组框（背板） < 普通节点 < 选中节点 < 提示词框 < 面板类浮层 < 历史抽屉
 
-Scenario:
-- a normal node inside a smart group is selected → composer opens
+Scenario (assertions are real `document.elementFromPoint` hits and rectangle
+containment — never computed z-index values, which is the #152 test mistake
+#164 calls out):
+- a smart-image node is selected → composer opens; an ordinary node overlaps it
 - the group frame is moved to cover the composer's top band (the #163 overlap)
-- the history drawer is opened, then collapsed — the user's persistent state
-  ("开过一次历史抽屉后长期存在（折叠不解，关闭才解）"): the `.open` class
-  (and therefore the #152 node lift) stays active while the panel shrinks to
-  a bottom strip that does not cover the composer
-- with the drawer open+collapsed, the composer (not the group frame) must be
-  the topmost hit target at the overlap, and z-order inside world must stay
-  group frame < node < composer
-- fully open, the drawer panel remains the topmost surface where it paints
-- with the drawer closed, the composer still beats the group frame
+- the history drawer is opened and collapsed through the real product entry
+  points (openSmartCanvasLog / toggleSmartHistoryDrawerCollapsed / closeSmartCanvasLog)
+- in all three states (closed / open / open+collapsed):
+  * the composer is the topmost hit target at the group-frame overlap;
+  * the selected node is the topmost hit target over the ordinary node;
+  * the composer rectangle lies fully inside the visible band, i.e. above the
+    drawer's top edge when the drawer is open or collapsed
+- the drawer stays the topmost surface where it paints, including over the
+  composer when the canvas is panned so the two overlap
 """
 
 from __future__ import annotations
@@ -106,7 +111,7 @@ def seed_store(store: ProjectStore) -> str:
                     "id": "layer-node",
                     "type": "smart-image",
                     "x": 320,
-                    "y": 240,
+                    "y": 100,
                     "w": 260,
                     "h": 220,
                     "images": [],
@@ -129,6 +134,19 @@ def seed_store(store: ProjectStore) -> str:
                             "name": "layer-member.png",
                         }
                     ],
+                    "runSettings": run_settings(),
+                },
+            },
+            {
+                "op": "upsert_node",
+                "node": {
+                    "id": "layer-node-b",
+                    "type": "smart-image",
+                    "x": 340,
+                    "y": 300,
+                    "w": 240,
+                    "h": 140,
+                    "images": [],
                     "runSettings": run_settings(),
                 },
             },
