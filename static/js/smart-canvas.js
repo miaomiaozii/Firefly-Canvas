@@ -5163,13 +5163,41 @@ function smartNodeUsesGenerationMerge(node){
         || Object.prototype.hasOwnProperty.call(node, 'queued')
         || Object.prototype.hasOwnProperty.call(node, 'jimengPending');
 }
+function markNodePositionsLocallyUpdated(group){
+    // #165: once a drag is released the new position only exists locally until
+    // the debounced automatic save lands. Stamp the dragged nodes so
+    // mergeSmartNode can tell a stale remote snapshot from a fresh one.
+    (group || []).forEach(item => {
+        const node = canvasState.nodes.find(n => n.id === item?.id);
+        if(node) node.positionUpdatedAt = nowMs();
+    });
+}
+function applyLocalNodePosition(merged, local, remote){
+    // #165: position is adjudicated on its own with last-write-wins. A local
+    // position stamped by a drag that has not been saved yet must survive a
+    // stale remote snapshot, and the stamp travels with the merge result so
+    // repeated merges before the save lands cannot bounce the node back again.
+    const localPositionAt = Number(local?.positionUpdatedAt || 0);
+    if(!localPositionAt) return merged;
+    const remotePositionAt = Number(remote?.positionUpdatedAt || 0);
+    if(localPositionAt <= (remotePositionAt || Number(remote?.updated_at || 0))) return merged;
+    const x = Number(local.x);
+    const y = Number(local.y);
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return merged;
+    merged.x = x;
+    merged.y = y;
+    merged.positionUpdatedAt = localPositionAt;
+    return merged;
+}
 function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     // Remote task broadcasts pass every canvas node through this merge.  Nodes
     // that do not own media/task state must keep their exact persisted shape;
     // otherwise a read-only poll invents images:[] and busy flags that the next
-    // authoritative save writes back as unrelated user changes.
+    // authoritative save writes back as unrelated user changes.  The one
+    // exception is an unsaved local drag: only its x/y is restored (#165), the
+    // persisted media/busy shape still comes from the remote copy verbatim.
     if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote)){
-        return {...remote};
+        return applyLocalNodePosition({...remote}, local, remote);
     }
     const images = mergeSmartImageLists(local.images, remote.images);
     const localDone = smartNodeHasCompletedResult(local);
@@ -5182,7 +5210,7 @@ function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     }else if(!remoteDone && smartNodeInFlight(local)){
         base = local;
     }
-    const merged = {...base, images};
+    const merged = applyLocalNodePosition({...base, images}, local, remote);
     const pendingTasks = mergeSmartPendingTaskLists(local, remote, terminalTaskIds);
     const submissions = mergeSmartSubmissionLists(local, remote, terminalTaskIds);
     if(pendingTasks.length){
@@ -15254,6 +15282,7 @@ window.onmouseup = e => {
             scheduleSave();
         }
         if(stateChanged || dragState.thumbDetached) suppressNodeClickUntil = Date.now() + 180;
+        if(stateChanged) markNodePositionsLocallyUpdated(dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]);
         clearDropHighlight();
         loopInsertPreview = null;
         dragState = null;
