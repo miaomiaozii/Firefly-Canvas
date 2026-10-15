@@ -9,6 +9,7 @@ import zipfile
 import io
 from pathlib import Path
 from urllib.parse import quote
+from app.constants import NODE_TYPE_PROMPT
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
@@ -143,7 +144,7 @@ async def collect_nodes(payload: CollectNodesRequest) -> Response:
     collected_at = int(_app_main.now_ms())
     collect_node = {
         'id': 'excel_collect',
-        'type': 'smart-prompt',
+        'type': NODE_TYPE_PROMPT,
         'title': 'Excel 收集结果',
         'x': 80,
         'y': max_y + 80,
