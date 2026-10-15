@@ -768,8 +768,8 @@ function canvasForStorage(){
         delete node._pendingHistoryId;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
-        if(node.type === 'smart-conversation') delete node.conversationSending;
-        if(node.type === 'local-edit') delete node._leBusy;
+        if(node.type === NODE_TYPE_CONVERSATION) delete node.conversationSending;
+        if(node.type === NODE_TYPE_LOCAL_EDIT) delete node._leBusy;
     });
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
     clean.history = mediaReferencesForStorage((clean.history || []).filter(log => log?.status !== 'pending'));
@@ -892,7 +892,7 @@ function clearVolcengineSelectionOutsideVolcengine(target=settings){
     return target;
 }
 function isSmartConversationNode(node){
-    return Boolean(node && node.type === 'smart-conversation');
+    return Boolean(node && node.type === NODE_TYPE_CONVERSATION);
 }
 function isSmartRunnableNode(node){
     return Boolean(isSmartImageNode(node) || isSmartGroupNode(node));
@@ -918,7 +918,7 @@ function normalizeLegacySmartNode(node){
             : (fallbackImage ? [fallbackImage] : []);
         const normalized = {
             ...node,
-            type:'smart-image',
+            type:NODE_TYPE_IMAGE,
             title:images.length > 1 ? 'Group' : (images.length ? 'Image' : tr('smart.createImportNode')),
             images
         };
@@ -928,9 +928,9 @@ function normalizeLegacySmartNode(node){
         delete normalized.resultGrouping;
         return normalized;
     }
-    if(!node.type) node.type = 'smart-image';
-    if(node.type === 'smart-image') delete node.imageMode;
-    if(node.type === 'smart-image' && node.historyFor) node.isHistoryGroup = true;
+    if(!node.type) node.type = NODE_TYPE_IMAGE;
+    if(node.type === NODE_TYPE_IMAGE) delete node.imageMode;
+    if(node.type === NODE_TYPE_IMAGE && node.historyFor) node.isHistoryGroup = true;
     return node;
 }
 function parseSizePair(value){
@@ -1195,14 +1195,14 @@ function smartGroupMembers(node){
     });
 }
 function smartGroupCompactMembers(node){
-    return smartGroupMembers(node).filter(member => member?.type === 'smart-prompt' || member?.type === 'smart-loop');
+    return smartGroupMembers(node).filter(member => member?.type === NODE_TYPE_PROMPT || member?.type === NODE_TYPE_LOOP);
 }
 function isSmartGroupCompactMember(node){
-    return Boolean(node && (node.type === 'smart-prompt' || node.type === 'smart-loop') && smartGroupContainingNode(node.id));
+    return Boolean(node && (node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP) && smartGroupContainingNode(node.id));
 }
 // 可作为分组"画布成员节点"的类型（图片走网格吸收，prompt/loop 走成员节点，分组走合并）。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
 function isSmartGroupableNode(node){
-    return Boolean(node && (isSmartImageNode(node) || node.type === 'smart-prompt' || node.type === 'smart-loop' || isSmartGroupNode(node)));
+    return Boolean(node && (isSmartImageNode(node) || node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP || isSmartGroupNode(node)));
 }
 // 分组当前缩放比例（1=原始）。分组就像“画布中的画布”：缩放分组时组内所有成员（含提示词）整体等比缩放+
 // 重排。缩放过程用每次手势开始时的快照实时计算（见 resize 处理），不存持久基准，避免移动成员后再缩放位置回退。
@@ -1253,7 +1253,7 @@ function addNodeToSmartGroup(group, child){
     // 图片节点：收进卡片内的缩略图网格（不再作为画布上的独立节点）。
     if(isSmartImageNode(child)) return absorbImageNodeIntoSmartGroup(group, child);
     // 提示词 / 循环：仍作为画布上的成员节点。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
-    if(child.type !== 'smart-prompt' && child.type !== 'smart-loop') return false;
+    if(child.type !== NODE_TYPE_PROMPT && child.type !== NODE_TYPE_LOOP) return false;
     if(items.includes(child.id)) return false;
     group.items = [...items, child.id];
     scaleSmartGroupMemberToZoom(group, child, zoom);
@@ -1603,12 +1603,12 @@ function promptNodeMinHeight(node){
 }
 function promptTextItemsForNode(node, ctx=smartLoopContext){
     if(!node) return [];
-    if(node.type === 'smart-prompt') return promptNodePromptItems(node);
-    if(node.type === 'smart-loop'){
+    if(node.type === NODE_TYPE_PROMPT) return promptNodePromptItems(node);
+    if(node.type === NODE_TYPE_LOOP){
         const text = smartLoopPrompt(node, ctx);
         return text ? [text] : [];
     }
-    if(node.type === 'smart-group') return smartGroupMembers(node).flatMap(member => promptTextItemsForNode(member, ctx));
+    if(node.type === NODE_TYPE_GROUP) return smartGroupMembers(node).flatMap(member => promptTextItemsForNode(member, ctx));
     return [];
 }
 function promptNodeUpstreamPromptItems(node, ctx=smartLoopContext){
@@ -1676,7 +1676,7 @@ function parseSizeAspect(sizeText){
 // - 批量完成分支：按 _batchTotal / _generationAspect 锁网格几何（防几何漂移，有意锁定）
 // 这类节点的 resize 手柄拖拽会被 imageLayout 静默拉回 → 不渲染手柄，避免用户误以为 bug
 function isLockedBatchGenNode(node){
-    if(!node || node.type !== 'smart-image' || node.smartGroupMember) return false;
+    if(!node || node.type !== NODE_TYPE_IMAGE || node.smartGroupMember) return false;
     if(node.id && smartGroupContainingNode(node.id)) return false;
     const count = Array.isArray(node?.images) ? node.images.length : 0;
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
@@ -1688,14 +1688,14 @@ function isLockedBatchGenNode(node){
     return batchTotal > 1 || (Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0);
 }
 function imageLayout(images, scale=1, node=null){
-    if(node?.type === 'smart-group'){
+    if(node?.type === NODE_TYPE_GROUP){
         const groupThumbLayout = smartGroupThumbLayout(node);
         if(groupThumbLayout) return groupThumbLayout;
         return {cols:1, rows:1, ...smartGroupLayoutSize(node), thumb:96, single:true};
     }
     if(isSmartConversationNode(node)) return {cols:1, rows:1, ...conversationNodeLayoutSize(node), thumb:96, single:true};
-    if(node?.type === 'smart-prompt') return {cols:1, rows:1, ...promptNodeLayoutSize(node), thumb:96, single:true};
-    if(node?.type === 'agent-task'){
+    if(node?.type === NODE_TYPE_PROMPT) return {cols:1, rows:1, ...promptNodeLayoutSize(node), thumb:96, single:true};
+    if(node?.type === NODE_TYPE_TASK){
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
         return {
@@ -1707,7 +1707,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'smart-agent'){
+    if(node?.type === NODE_TYPE_AGENT){
         // Agent 节点是 TUI 型节点：尺寸由节点自身 w/h 决定（可拖拽拉伸），
         // 不走媒体节点的图片网格占位布局，否则 resize 设置的 w/h 不生效
         // （用户反馈"agent 节点没法拉伸"——渲染尺寸恒为占位图大小，与 w/h 无关）。
@@ -1722,7 +1722,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'local-edit'){
+    if(node?.type === NODE_TYPE_LOCAL_EDIT){
         // 局部编辑是表单型节点：尺寸由节点自身 w/h 决定（可拖拽调大小），
         // 不走媒体节点的单图/批量布局，否则卡片会溢出外框。
         const explicitW = Number(node.w);
@@ -1736,7 +1736,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'smart-loop'){
+    if(node?.type === NODE_TYPE_LOOP){
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
         if(isSmartGroupCompactMember(node) && Number.isFinite(explicitW) && explicitW > 24 && Number.isFinite(explicitH) && explicitH > 24){
@@ -1745,7 +1745,7 @@ function imageLayout(images, scale=1, node=null){
         return {cols:1, rows:1, width:Math.round(Number(node.w) || smartLoopWidth(node)), height:Math.round(Math.max(Number(node.h) || 0, smartLoopHeight(node))), thumb:96, single:true};
     }
     const count = (images || []).length;
-    const s = node?.type === 'smart-image' || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
+    const s = node?.type === NODE_TYPE_IMAGE || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
     if(count === 0 || pending){
         // 生成中（含逐张写回期间）：使用统一布局计算，占位图与完成图尺寸一致。
@@ -1880,7 +1880,7 @@ function smartLoopHeight(node){
     return h;
 }
 function fitSmartLoopNode(node){
-    if(!node || node.type !== 'smart-loop') return;
+    if(!node || node.type !== NODE_TYPE_LOOP) return;
     node.w = smartLoopWidth(node);
     node.h = smartLoopHeight(node);
 }
@@ -4967,7 +4967,7 @@ function clearCompletedSourceBusyStates(){
 function hideCompletedRunTimers(){
     let changed = false;
     (canvasState.nodes || []).forEach(node => {
-        if(!node || node.type === 'smart-prompt') return;
+        if(!node || node.type === NODE_TYPE_PROMPT) return;
         if(node.pending || node.running || node.jimengPending || !node.runFinishedAt || node.runTimerHidden) return;
         node.runTimerHidden = true;
         changed = true;
@@ -7007,20 +7007,20 @@ function inheritNodeMetaFromImage(node){
 function cloneSmartNode(node, dx=0, dy=0){
     const copy = JSON.parse(JSON.stringify(node));
     copy.id = uid(
-        node.type === 'smart-prompt'
+        node.type === NODE_TYPE_PROMPT
             ? 'prompt'
-            : node.type === 'smart-loop'
+            : node.type === NODE_TYPE_LOOP
             ? 'loop'
-            : node.type === 'smart-agent'
+            : node.type === NODE_TYPE_AGENT
             ? 'agent'
-            : node.type === 'smart-group'
+            : node.type === NODE_TYPE_GROUP
             ? 'group'
             : 'smart'
     );
     copy.x = (Number(node.x) || 0) + dx;
     copy.y = (Number(node.y) || 0) + dy;
     clearSmartNodeTransientRunState(copy, {clearRunHistory:true});
-    if(copy.type === 'smart-group') copy.title = copy.title || '智能分组';
+    if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
 function copySelectedNodes(){
@@ -7650,7 +7650,7 @@ function smartRunSnapshot(node, prompt, refs=[], kind='image'){
     if(kind === 'image' && !apiImageUsesExplicitResolution(settingsSnapshot)) settingsSnapshot.resolution = '';
     return {
         nodeId:node?.id || '',
-        nodeType:node?.type || 'smart-image',
+        nodeType:node?.type || NODE_TYPE_IMAGE,
         kind,
         settings:settingsSnapshot,
         runSettings:cloneSmartSettings(settingsSnapshot),
@@ -8239,7 +8239,7 @@ function conversationConnectedReferences(node){
         const sourceId = connection?.from ?? connection?.source ?? connection?.fromNode ?? connection?.sourceNodeId;
         if(String(target || '') !== String(node.id) || !sourceId || !['input', 'flow'].includes(connection?.kind || 'flow')) return;
         const source = nodesById.get(String(sourceId));
-        if(!source || !['', 'image', 'smart-image'].includes(String(source.type || ''))) return;
+        if(!source || !['', 'image', NODE_TYPE_IMAGE].includes(String(source.type || ''))) return;
         (source?.images || []).forEach(item => {
             const assetId = String(item?.asset_id || '').trim();
             const kind = mediaKindForItem(item);
@@ -8487,8 +8487,8 @@ function smartGroupBodyHtml(node){
     const refThumbs = groupThumbLayout?.refs || [];
     const members = smartGroupMembers(node);
     const counts = members.reduce((acc, member) => {
-        if(member.type === 'smart-prompt') acc.prompt += 1;
-        else if(member.type === 'smart-loop') acc.loop += 1;
+        if(member.type === NODE_TYPE_PROMPT) acc.prompt += 1;
+        else if(member.type === NODE_TYPE_LOOP) acc.loop += 1;
         return acc;
     }, {prompt:0, media:refThumbs.length, loop:0});
     const summary = [
@@ -8530,7 +8530,7 @@ function smartGroupBodyHtml(node){
 const LOCAL_EDIT_NODE_W = 400;
 const LOCAL_EDIT_NODE_H = 520;
 function syncLocalEditInputRoles(node){
-    if(!node || node.type !== 'local-edit') return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
+    if(!node || node.type !== NODE_TYPE_LOCAL_EDIT) return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     const map = {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     const edges = canvas.connections.filter(edge => edge?.to === node.id && edge?.kind === 'input' && ['original','references','prompt'].includes(edge?.role));
@@ -8871,12 +8871,12 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
 }
 function nodeBodyHtml(node, layout){
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
-    if(node.type === 'smart-group') return smartGroupBodyHtml(node);
+    if(node.type === NODE_TYPE_GROUP) return smartGroupBodyHtml(node);
     if(isSmartConversationNode(node)) return conversationNodeBodyHtml(node);
     if(isSmartAgentNode(node)) return agentNodeBodyHtml(node);
-    if(node.type === 'smart-prompt') return promptNodeBodyHtml(node);
-    if(node.type === 'smart-loop') return smartLoopBodyHtml(node);
-    if(node.type === 'local-edit') return localEditBodyHtml(node);
+    if(node.type === NODE_TYPE_PROMPT) return promptNodeBodyHtml(node);
+    if(node.type === NODE_TYPE_LOOP) return smartLoopBodyHtml(node);
+    if(node.type === NODE_TYPE_LOCAL_EDIT) return localEditBodyHtml(node);
     const imgs = (node.images || []).map(imageForDisplay);
     if(node.jimengPending && node.jimengPending.submitId && imgs.length === 0){
         return jimengPendingBodyHtml(node, layout);
@@ -8989,7 +8989,7 @@ function smartNodeToolbarImageIndex(node){
     return 0;
 }
 function smartNodeToolbarHtml(node){
-    const isImageNode = node?.type === 'smart-image' || !node?.type;
+    const isImageNode = node?.type === NODE_TYPE_IMAGE || !node?.type;
     const images = node?.images || [];
     if(!isImageNode || !images.some(img => img?.url || img?.asset_id)) return '';
     const source = images[smartNodeToolbarImageIndex(node)] || images.find(img => img?.url || img?.asset_id);
@@ -9163,7 +9163,7 @@ function nodeRunElapsedMs(node){
     return 0;
 }
 function runTimePillHtml(node){
-    if(!node || node.runTimerHidden || node.type === 'smart-prompt') return '';
+    if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) return '';
     const running = Boolean(node.pending || node.running || node.jimengPending);
     if(!running && !node.runFinishedAt) return '';
     const elapsed = nodeRunElapsedMs(node);
@@ -9179,10 +9179,10 @@ function hideRunTimerForNode(node){
     return true;
 }
 function refreshRunTimerPills(){
-    const active = canvasState.nodes.some(n => n.type !== 'smart-prompt' && !n.runTimerHidden && (n.pending || n.running || n.jimengPending || n.runFinishedAt));
+    const active = canvasState.nodes.some(n => n.type !== NODE_TYPE_PROMPT && !n.runTimerHidden && (n.pending || n.running || n.jimengPending || n.runFinishedAt));
     document.querySelectorAll('[data-run-timer]').forEach(el => {
         const node = canvasState.nodes.find(n => n.id === el.dataset.runTimer);
-        if(!node || node.runTimerHidden || node.type === 'smart-prompt') {
+        if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) {
             el.remove();
             return;
         }
@@ -9232,20 +9232,20 @@ function render(){
         // Keep persisted titles raw until the final text interpolation.  The
         // Agent/group/conversation titles can be user-controlled; escaping
         // here and again in the template would render entities literally.
-        const title = node.type === 'local-edit' ? (node.title || tr('smart.localEditTitle')) : node.type === 'smart-group' ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === 'smart-conversation' ? (node.title || 'Conversation') : node.type === 'smart-agent' ? (node.title || 'Agent') : node.type === 'agent-task' ? 'Agent Task' : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
+        const title = node.type === NODE_TYPE_LOCAL_EDIT ? (node.title || tr('smart.localEditTitle')) : node.type === NODE_TYPE_GROUP ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === NODE_TYPE_CONVERSATION ? (node.title || 'Conversation') : node.type === NODE_TYPE_AGENT ? (node.title || 'Agent') : node.type === NODE_TYPE_TASK ? 'Agent Task' : node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
-        const isPrompt = node.type === 'smart-prompt';
-        const isLoop = node.type === 'smart-loop';
+        const isPrompt = node.type === NODE_TYPE_PROMPT;
+        const isLoop = node.type === NODE_TYPE_LOOP;
         const isConversation = isSmartConversationNode(node);
         const isAgent = isSmartAgentNode(node);
         const isAgentTask = isSmartAgentTaskNode(node);
-        const isLocalEdit = node.type === 'local-edit';
+        const isLocalEdit = node.type === NODE_TYPE_LOCAL_EDIT;
         const sourceNodeId = isPrompt ? String(node.source_node_id || node.sourceNodeId || '') : '';
         const sourceMessageId = isPrompt ? String(node.source_message_id || node.sourceMessageId || '') : '';
-        const isSmartGroup = node.type === 'smart-group';
+        const isSmartGroup = node.type === NODE_TYPE_GROUP;
         const isCompactMember = isSmartGroupCompactMember(node);
-        const isImageNode = node.type === 'smart-image' || !node.type;
+        const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
         const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
@@ -9270,7 +9270,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -9324,12 +9324,12 @@ function render(){
     world.insertAdjacentHTML('beforeend', renderConnections());
     const nodesHtml = canvasState.nodes.map(node => {
         const imgs = node.images || [];
-        const title = node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : 'Image');
+        const title = node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : 'Image');
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
-        const isPrompt = node.type === 'smart-prompt';
-        const isLoop = node.type === 'smart-loop';
-        const isImageNode = node.type === 'smart-image' || !node.type;
+        const isPrompt = node.type === NODE_TYPE_PROMPT;
+        const isLoop = node.type === NODE_TYPE_LOOP;
+        const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued;
         const isGroup = isImageNode && imgs.length > 1;
@@ -9343,7 +9343,7 @@ function render(){
             ${runTimePillHtml(node)}
             <div class="node-body">${body}</div>
             <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
-            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="${escapeHtml(tr('smart.portIn'))}"></div>
             <div class="node-port port-out" data-port="out" title="${escapeHtml(tr('smart.portOut'))}"></div>
         </div>`;
@@ -9868,11 +9868,11 @@ function handlePortDrop(drag, e){
             // C8 的 agent-task / prompt→conversation 已在 connectInputNode 内 toast，此处跳过避免重复。
             const toNode = canvasState.nodes.find(n => n.id === toId);
             const fromNode = canvasState.nodes.find(n => n.id === fromId);
-            const c8Handled = Boolean(toNode) && (toNode.type === 'agent-task' || (fromNode?.type === 'smart-prompt' && toNode.type === 'smart-conversation'));
+            const c8Handled = Boolean(toNode) && (toNode.type === NODE_TYPE_TASK || (fromNode?.type === NODE_TYPE_PROMPT && toNode.type === NODE_TYPE_CONVERSATION));
             if(toNode && !c8Handled){
-                if(toNode.type === 'local-edit' && !toNode.localEditActiveRole){
+                if(toNode.type === NODE_TYPE_LOCAL_EDIT && !toNode.localEditActiveRole){
                     toast(tr('smart.connectLocalEditNoRole'));
-                } else if(toNode.type === 'smart-loop' && !toNode.imageInput && !toNode.showPrompt){
+                } else if(toNode.type === NODE_TYPE_LOOP && !toNode.imageInput && !toNode.showPrompt){
                     toast(tr('smart.connectLoopNoInput'));
                 } else {
                     toast(tr('smart.connectRejected'));
@@ -10659,10 +10659,10 @@ function bindNodeEvents(){
         if(isSmartConversationNode(nodeForControls)) bindConversationNodeControls(el, nodeForControls);
         if(isSmartAgentNode(nodeForControls)) bindAgentNodeControls(el, nodeForControls);
         if(isSmartAgentTaskNode(nodeForControls)) bindAgentTaskNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'local-edit') bindLocalEditNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-prompt') bindPromptNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-loop') bindLoopNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-group') {
+        if(nodeForControls?.type === NODE_TYPE_LOCAL_EDIT) bindLocalEditNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_PROMPT) bindPromptNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_LOOP) bindLoopNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_GROUP) {
             el.ondblclick = e => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -10689,7 +10689,7 @@ function bindNodeEvents(){
             }
             render();
         };
-        if(nodeForControls?.type !== 'smart-group') el.ondblclick = e => e.stopPropagation();
+        if(nodeForControls?.type !== NODE_TYPE_GROUP) el.ondblclick = e => e.stopPropagation();
         const nodeDrop = el.querySelector('.node-drop');
         nodeDrop?.addEventListener('mousedown', e => {
             if(e.button !== 0) return;
@@ -11114,7 +11114,7 @@ function setDropHighlight(targetId){
 }
 
 function insertLoopNodeIntoConnection(loopNode, hit){
-    if(!loopNode || loopNode.type !== 'smart-loop' || !hit?.conn) return false;
+    if(!loopNode || loopNode.type !== NODE_TYPE_LOOP || !hit?.conn) return false;
     const conn = hit.conn;
     const kind = conn.kind || 'flow';
     canvas.connections = (canvas.connections || []).filter((c, index) => index !== hit.index);
@@ -11127,7 +11127,7 @@ function insertLoopNodeIntoConnection(loopNode, hit){
 }
 function updateLoopInsertPreview(){
     const node = dragState ? canvasState.nodes.find(n => n.id === dragState.id) : null;
-    const next = node?.type === 'smart-loop' && dragState.ctrlGroup && (dragState.group || []).length <= 1
+    const next = node?.type === NODE_TYPE_LOOP && dragState.ctrlGroup && (dragState.group || []).length <= 1
         ? insertionConnectionForNode(node)
         : null;
     const nextPreview = next ? {index:next.index} : null;
@@ -13199,7 +13199,7 @@ function isSmartLoopDefaultPrompt(text){
         || value === 'Generate selling-point image 《计数》';
 }
 function setSmartLoopPromptFieldValues(node, values){
-    if(!node || node.type !== 'smart-loop') return;
+    if(!node || node.type !== NODE_TYPE_LOOP) return;
     const fields = (values || []).map(text => String(text || '').trim());
     node.variablePrompts = fields.length ? fields : [''];
     node.variablePrompt = fields.filter(Boolean).join('\n');
@@ -13257,7 +13257,7 @@ function smartLoopPrompt(node, ctx=smartLoopContext){
 function smartLoopInputImages(node, ctx=smartLoopContext){
     if(!node?.imageInput) return [];
     const refs = inputNodesFor(node).flatMap(input => {
-        if(input?.type === 'smart-loop') return smartLoopInputImages(input, ctx);
+        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, ctx);
         return imagesForNode(input);
     }).filter(img => img?.url);
     if(!refs.length) return [];
@@ -13270,13 +13270,13 @@ function smartLoopInputImages(node, ctx=smartLoopContext){
 function smartLoopPreviewImages(node){
     if(!node?.imageInput) return [];
     return inputNodesFor(node).flatMap(input => {
-        if(input?.type === 'smart-loop') return smartLoopInputImages(input, {index:Number(node.loopStart) || 1});
+        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, {index:Number(node.loopStart) || 1});
         return imagesForNode(input);
     }).filter(img => img?.url);
 }
 function outputImagesForNode(node, consume=false, ctx=smartLoopContext){
-    if(node?.type === 'smart-group') return imagesForNode(node).filter(img => img?.url);
-    if(node?.type === 'smart-loop') return smartLoopInputImages(node, ctx);
+    if(node?.type === NODE_TYPE_GROUP) return imagesForNode(node).filter(img => img?.url);
+    if(node?.type === NODE_TYPE_LOOP) return smartLoopInputImages(node, ctx);
     const roundOutputs = ctx?.roundOutputs;
     if(node?.id && roundOutputs && typeof roundOutputs.get === 'function' && roundOutputs.has(node.id)){
         return (roundOutputs.get(node.id) || []).filter(img => img?.url);
@@ -13288,13 +13288,13 @@ function selfReferenceImagesForNode(node, consume=false, ctx=smartLoopContext){
 }
 function textForNode(node, ctx=smartLoopContext){
     if(!node) return '';
-    if(node.type === 'smart-prompt') return promptNodePromptItems(node).join('\n\n');
-    if(node.type === 'smart-loop') return smartLoopPrompt(node, ctx);
-    if(node.type === 'smart-group') return smartGroupMembers(node).map(member => textForNode(member, ctx)).filter(Boolean).join('\n\n');
+    if(node.type === NODE_TYPE_PROMPT) return promptNodePromptItems(node).join('\n\n');
+    if(node.type === NODE_TYPE_LOOP) return smartLoopPrompt(node, ctx);
+    if(node.type === NODE_TYPE_GROUP) return smartGroupMembers(node).map(member => textForNode(member, ctx)).filter(Boolean).join('\n\n');
     return '';
 }
 function promptInputNodesFor(node){
-    return inputNodesFor(node).filter(input => input?.type === 'smart-prompt' || input?.type === 'smart-loop' || input?.type === 'smart-group');
+    return inputNodesFor(node).filter(input => input?.type === NODE_TYPE_PROMPT || input?.type === NODE_TYPE_LOOP || input?.type === NODE_TYPE_GROUP);
 }
 function inputPromptTextFor(node, ctx=smartLoopContext){
     const directText = promptInputNodesFor(node).map(input => textForNode(input, ctx)).filter(Boolean);
@@ -13310,7 +13310,7 @@ function inputPromptTextFor(node, ctx=smartLoopContext){
     }).join('\n\n');
 }
 function upstreamLoopPromptNodesFor(node){
-    return promptInputNodesFor(node).filter(input => input?.type === 'smart-loop' && input.showPrompt);
+    return promptInputNodesFor(node).filter(input => input?.type === NODE_TYPE_LOOP && input.showPrompt);
 }
 function inputImagesFor(node, consume=false, ctx=smartLoopContext){
     return inputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
@@ -14206,7 +14206,7 @@ function groupSelectedNodes(){
     const maxY = Math.max(...rects.map(r => r.y + r.height));
     const group = {
         id:uid('group'),
-        type:'smart-group',
+        type:NODE_TYPE_GROUP,
         x:Math.round(minX - 18),
         y:Math.round(minY - 44),
         w:Math.max(340, Math.round(maxX - minX + 36)),
@@ -14266,7 +14266,7 @@ function ungroupNode(groupId){
                 const size = sizes[index];
                 const x = Math.round(Number(group.x || 0) + pad + colWidths.slice(0, col).reduce((sum, w) => sum + w + gap, 0));
                 const y = Math.round(Number(group.y || 0) + pad + rowHeights.slice(0, row).reduce((sum, h) => sum + h + gap, 0));
-                const node = {id:uid('smart'), type:'smart-image', x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
+                const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
                 inheritNodeMetaFromImage(node);
                 clearDetachedRunInputRefs(node);
                 return node;
@@ -14300,7 +14300,7 @@ function ungroupNode(groupId){
         const y = Math.round(Number(group.y || 0) + pad + row * (cell + gap) + Math.max(0, (cell - size.height) / 2));
         const node = {
             id:uid('smart'),
-            type:'smart-image',
+            type:NODE_TYPE_IMAGE,
             x,
             y,
             w:size.width,
@@ -14775,10 +14775,10 @@ window.onmousemove = e => {
         if(!node) return;
         const dx = (e.clientX - resizeState.startX) / viewport.scale;
         const dy = (e.clientY - resizeState.startY) / viewport.scale;
-        const minW = node.type === 'smart-prompt' ? 260 : node.type === 'smart-loop' ? 252 : node.type === 'smart-agent' ? 330 : node.type === 'agent-task' ? 280 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_WIDTH : 48;
+        const minW = node.type === NODE_TYPE_PROMPT ? 260 : node.type === NODE_TYPE_LOOP ? 252 : node.type === NODE_TYPE_AGENT ? 330 : node.type === NODE_TYPE_TASK ? 280 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_WIDTH : 48;
         // 拖拽预览阶段就用内容最小高度钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
-        const minH = node.type === 'smart-prompt' ? promptNodeMinHeight(node) : node.type === 'smart-loop' ? smartLoopHeight(node) : node.type === 'smart-agent' ? 270 : node.type === 'agent-task' ? 210 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_HEIGHT : 48;
-        if(node.type === 'smart-group' && smartGroupImageRefs(node).some(ref => ref.item?.url)){
+        const minH = node.type === NODE_TYPE_PROMPT ? promptNodeMinHeight(node) : node.type === NODE_TYPE_LOOP ? smartLoopHeight(node) : node.type === NODE_TYPE_AGENT ? 270 : node.type === NODE_TYPE_TASK ? 210 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_HEIGHT : 48;
+        if(node.type === NODE_TYPE_GROUP && smartGroupImageRefs(node).some(ref => ref.item?.url)){
             // 图片分组：和普通节点一样直接改 w/h，缩略图网格按新尺寸实时重排。不要走下面的“成员缩放”那套，
             // 否则拖动过程里会按成员包围盒/缩放比例收缩，松手才回到拖动宽度（用户反馈的“变宽时先缩小”）。
             node.w = Math.max(minW, Math.round(resizeState.startW + dx));
@@ -14787,7 +14787,7 @@ window.onmousemove = e => {
             updateNodeElementDuringResize(node);
             return;
         }
-        if(node.type === 'smart-group'){
+        if(node.type === NODE_TYPE_GROUP){
             // 分组当“画布中的画布”：拖手柄按宽度方向算出统一缩放比例，组内所有成员（图片+提示词）按相对手势
             // 起点的快照整体缩放+重排，然后把分组框自动收紧到成员的包围盒——盒子始终贴合内容，右侧不会留空白。
             const startZoom = resizeState.startZoom || 1;
@@ -14938,7 +14938,7 @@ window.onmousemove = e => {
     }
     const draggedRect = nodeRect(node);
     const rawTarget = dragState.ctrlGroup
-        ? (['smart-prompt','smart-loop'].includes(node.type)
+        ? ([NODE_TYPE_PROMPT,NODE_TYPE_LOOP].includes(node.type)
             ? dragConnectTargetFor(node, screenToWorld(e))
             : rectOverlapNode(node.id, draggedRect.x, draggedRect.y, draggedRect.width, draggedRect.height, dragState.groupIds))
         : null;
@@ -15050,7 +15050,7 @@ window.onmouseup = e => {
             return;
         }
         const autoTarget = draggedNode && dragState.ctrlGroup ? dragConnectTargetFor(draggedNode, screenToWorld(e)) : null;
-        const insertHit = draggedNode?.type === 'smart-loop' && dragState.ctrlGroup && (dragState.group || []).length <= 1
+        const insertHit = draggedNode?.type === NODE_TYPE_LOOP && dragState.ctrlGroup && (dragState.group || []).length <= 1
             ? insertionConnectionForNode(draggedNode)
             : null;
         const draggedRect = draggedNode ? nodeRect(draggedNode) : null;
