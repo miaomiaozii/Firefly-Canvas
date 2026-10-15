@@ -12421,7 +12421,12 @@ function updateComposer(){
     scheduleDynamicParamsRefresh(140);
     syncRunButtonState(node);
     requestAnimationFrame(() => {
-        if(activeComposerNode()?.id === node.id) positionComposerForNode(node);
+        if(activeComposerNode()?.id === node.id){
+            positionComposerForNode(node);
+            // #164: 历史抽屉打开时选中节点，提示词框会落在抽屉顶边之下。
+            // 沿用产品已有的平移让位机制（safeBottom 已把抽屉顶边算进去），不新增交互概念。
+            if(smartHistoryModal?.classList.contains('open')) keepComposerReachableByPanningCanvas();
+        }
     });
 }
 function renderInputPromptPreview(node){
@@ -15116,6 +15121,8 @@ window.onmouseup = e => {
         composerDragSettleTimer = setTimeout(() => {
             composerDragSettleTimer = 0;
             document.body.classList.remove('smart-node-drag-settling');
+            // #164: 节点拖动结束后提示词框跟着节点走，抽屉打开时同样沿用平移让位机制回到可见带。
+            if(smartHistoryModal?.classList.contains('open')) keepComposerReachableByPanningCanvas();
         }, 180);
     }
     if(connectionEraseState){
