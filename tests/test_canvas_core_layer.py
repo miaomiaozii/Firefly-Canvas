@@ -51,26 +51,29 @@ MODULE_OWNED = {
     "canvas-connections.js": ("connectionEraseState",),
 }
 
-# 棘轮上限：模块 -> smart-canvas.js 的反向引用处数。只能降。
-# 2026-10-15 实测：下沉前 1836；#173 三步下沉后 686（降 63%）。
+# 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
+# 2026-10-15 实测：下沉前 1836；#173 三步下沉后 654（降 64%）。
+# 按模块记是为了让回归可归因：以前只有一个全局单值，红了也不知道是谁。
+# 口径（见 reverse_references）：去注释行，且排除该模块自己声明过的名字。
+# 不去掉后者会在 smart-canvas.js 新增一个常见顶层名时凭空打红：
+# 实测只加一行 `let node = null;`、不改任何模块，计数就从 686 到 1504。
 # 剩下的主要是 render / scheduleSave / shell / world 这类行为枢纽与 DOM 节点，
 # 它们本来就该被模块调用；要继续降，得先判明哪些该注入、哪些该留在核心。
-REVERSE_REFERENCE_CEILING = 686
-
-MODULES = (
-    "canvas-state.js",
-    "project-canvas-mutations.js",
-    "canvas-layout-utils.js",
-    "canvas-connections.js",
-    "canvas-media-history.js",
-    "canvas-undo.js",
-    "canvas-node-ops.js",
-    "canvas-image-editor.js",
-    "canvas-generation-cascade.js",
-    "canvas-generation-tasks.js",
-    "canvas-agent-tui.js",
-    "canvas-core.js",
-)
+REVERSE_REFERENCE_CEILINGS = {
+    "canvas-generation-cascade.js": 160,
+    "canvas-media-history.js": 125,
+    "canvas-generation-tasks.js": 124,
+    "canvas-image-editor.js": 110,
+    "canvas-node-ops.js": 63,
+    "canvas-connections.js": 46,
+    "canvas-undo.js": 14,
+    "canvas-agent-tui.js": 12,
+    "canvas-state.js": 0,
+    "project-canvas-mutations.js": 0,
+    "canvas-layout-utils.js": 0,
+    # canvas-core.js 是最早加载的那层，它不该反向引用任何东西；0 是设约束，不是实测巧合。
+    "canvas-core.js": 0,
+}
 
 
 def _top_level_names(text: str) -> set[str]:
@@ -81,7 +84,9 @@ def _top_level_names(text: str) -> set[str]:
 
 
 def _is_canvas_script(name: str) -> bool:
-    return name.startswith("canvas-") or name in ("smart-canvas.js", "project-canvas-mutations.js")
+    from tests.canvas_frontend_sources import is_canvas_module
+
+    return is_canvas_module(name)
 
 
 def _script_order() -> list[str]:
@@ -91,21 +96,76 @@ def _script_order() -> list[str]:
     ]
 
 
-def reverse_references() -> int:
-    """已拆出模块引用 smart-canvas.js 顶层定义的处数。"""
+def _strip_comment_lines(text: str) -> str:
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.strip().startswith(("//", "/*", "*"))
+    )
+
+
+_DECL = re.compile(r"(?:const|let|var|class|function)\s+([A-Za-z_$][\w$]*)")
+_ARROW_ARG = re.compile(r"([A-Za-z_$][\w$]*)\s*=>")
+_FUNC_PARAMS = re.compile(r"function\s*[A-Za-z_$][\w$]*\s*\(([^)]*)\)")
+_ARROW_PARAMS = re.compile(r"\(([^()]*)\)\s*=>")
+
+
+def _locally_declared_names(text: str) -> set[str]:
+    """一个文件里任何位置声明过的名字（顶层、局部、函数参数、箭头参数）。"""
+    names: set[str] = set()
+    for rx in (_DECL, _ARROW_ARG):
+        names.update(m.group(1) for m in rx.finditer(text))
+    for rx in (_FUNC_PARAMS, _ARROW_PARAMS):
+        for m in rx.finditer(text):
+            for word in m.group(1).split(","):
+                word = word.strip().split("=")[0].strip()
+                if word:
+                    names.add(word)
+    return names
+
+
+def reverse_references() -> dict[str, int]:
+    """每个已拆出模块引用 smart-canvas.js 顶层定义的处数。
+
+    只算真耦合：去掉注释行，并且排除该模块自己声明过的同名标识符。
+    不排除同名局部变量时，这个指标会把模块内部的 `node`/`item` 之类
+    误计成对核心的耦合。
+    """
     core = _top_level_names((JS_DIR / "smart-canvas.js").read_text(encoding="utf-8"))
-    total = 0
-    for module in MODULES:
+    counts: dict[str, int] = {}
+    for module in _canvas_modules():
         path = JS_DIR / module
         if not path.exists():
+            counts[module] = 0
             continue
-        text = path.read_text(encoding="utf-8")
+        text = _strip_comment_lines(path.read_text(encoding="utf-8"))
+        local = _locally_declared_names(text)
+        total = 0
         for name in core:
+            if name in local:
+                continue
             total += len(re.findall(r"\b" + re.escape(name) + r"\b", text))
-    return total
+        counts[module] = total
+    return counts
+
+
+def _canvas_modules() -> tuple[str, ...]:
+    """已拆出模块清单，从 `CANVAS_SCRIPTS` 推导，不再手拄。
+
+    以前 `MODULES` 是手写的，与 `canvas_frontend_sources.is_canvas_module` 之间
+    没有任何一致性守卫：新增一个模块只改了 HTML 和 `CANVAS_SCRIPTS`，
+    就会静默地不参与反向引用计数。
+    """
+    from tests.canvas_frontend_sources import CANVAS_SCRIPTS
+
+    return tuple(name for name in CANVAS_SCRIPTS if name != "smart-canvas.js")
 
 
 class CanvasCoreLayerTests(unittest.TestCase):
+    def test_module_ceilings_cover_exactly_the_derived_module_set(self):
+        # 新增模块时，这里会先红，逼你显式给它记一个上限，而不是静默少计。
+        self.assertEqual(sorted(_canvas_modules()), sorted(REVERSE_REFERENCE_CEILINGS))
+
     def test_canvas_core_is_loaded_first_among_canvas_scripts(self):
         order = _script_order()
         canvas_scripts = [name for name in order if _is_canvas_script(name)]
@@ -154,12 +214,18 @@ class CanvasCoreLayerTests(unittest.TestCase):
         self.assertEqual({}, duplicates)
 
     def test_reverse_reference_count_does_not_grow(self):
-        count = reverse_references()
-        self.assertLessEqual(
-            count,
-            REVERSE_REFERENCE_CEILING,
-            f"模块反向引用 smart-canvas.js 的处数从 {REVERSE_REFERENCE_CEILING} 升到 {count}；"
-            "按功能继续拆分之前，先把被回调的名字下沉到 canvas-core.js。",
+        counts = reverse_references()
+        self.assertEqual(sorted(REVERSE_REFERENCE_CEILINGS), sorted(counts))
+        regressions = [
+            f"{module}: {counts[module]} > {REVERSE_REFERENCE_CEILINGS[module]}"
+            for module in sorted(counts)
+            if counts[module] > REVERSE_REFERENCE_CEILINGS[module]
+        ]
+        self.assertEqual(
+            [],
+            regressions,
+            "模块反向引用 smart-canvas.js 的处数上升；按功能继续拆分之前，"
+            "先把被回调的名字下沉到 canvas-core.js。",
         )
 
 
