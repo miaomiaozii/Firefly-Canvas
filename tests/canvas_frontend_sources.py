@@ -15,6 +15,7 @@ JS_DIR = ROOT / "static" / "js"
 
 # 顺序与 static/smart-canvas.html 里的 <script src> 一致（classic script，靠加载顺序共享全局词法作用域）。
 CANVAS_SCRIPTS: tuple[str, ...] = (
+    "canvas-core.js",
     "canvas-state.js",
     "project-canvas-mutations.js",
     "canvas-layout-utils.js",

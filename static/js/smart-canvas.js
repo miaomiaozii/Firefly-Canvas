@@ -408,7 +408,6 @@ const SIZE_MAP = {
 };
 const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
 const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
-function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
 function trf(key, values={}){
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
 }
@@ -486,9 +485,6 @@ function refreshIcons(root=document){
     if(window.lucide) lucide.createIcons();
     syncIconButtonAccessibility(root);
 }
-function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
-function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
-const escapeAttr = escapeHtml;
 
 // Lightweight XSS-safe markdown renderer for agent TUI messages
 // Escapes HTML first, then renders markdown syntax.
@@ -685,13 +681,6 @@ function syncSmartSelectedImageResolution(root=null){
             if(smartSelectedHighResLoaded.has(target) && img.getAttribute('src') !== target) img.src = target;
         });
     }, SMART_SELECTED_HIGH_RES_DELAY);
-}
-function cloneSmartSettings(source=settings){
-    try {
-        return JSON.parse(JSON.stringify(source || {}));
-    } catch(e) {
-        return {...(source || {})};
-    }
 }
 function settingsForStorage(source=settings){
     const clean = cloneSmartSettings(source);
@@ -975,14 +964,8 @@ function clearVolcengineSelectionOutsideVolcengine(target=settings){
     if(target.videoProvider === 'volcengine') target.videoProvider = '';
     return target;
 }
-function isSmartImageNode(node){
-    return Boolean(node && (node.type === 'smart-image' || !node.type));
-}
 function isSmartConversationNode(node){
     return Boolean(node && node.type === 'smart-conversation');
-}
-function isSmartGroupNode(node){
-    return Boolean(node && node.type === 'smart-group');
 }
 function isSmartRunnableNode(node){
     return Boolean(isSmartImageNode(node) || isSmartGroupNode(node));
@@ -1167,7 +1150,6 @@ function playGenerationCompleteSound(){
         else play();
     } catch(e) {}
 }
-function selectedNode(){ return canvasState.nodes.find(n => n.id === canvasState.selectedId) || null; }
 // 任务等待期间，服务端 WebSocket 可能用最新画布替换 canvasState.nodes 数组；不要继续读旧的节点对象。
 function liveNode(node){ return node?.id ? (canvasState.nodes.find(item => item.id === node.id) || node) : node; }
 function clearSelection(){
@@ -1221,14 +1203,7 @@ function safeScale(value){
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : 1;
 }
-function nodeScale(node){
-    const v = Number(node?.scale);
-    if((node?.images || []).length > 1 && v === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE) return MEDIA_GROUP_DEFAULT_SCALE;
-    return Number.isFinite(v) && v > 0 ? v : 1;
-}
 const MEDIA_NODE_DEFAULT_SCALE = 2;
-const MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE = 1.6;
-const MEDIA_GROUP_DEFAULT_SCALE = 0.8;
 const ZOOM_PREVIEW_NODE_DEFAULT_SCALE = 1;
 const ZOOM_PREVIEW_NODE_MAX_SCALE = 1.15;
 const MEDIA_GROUP_THUMB_BASE = 224;
@@ -7348,48 +7323,6 @@ function imageForDisplay(img){
         originalLocalUrl:img.originalLocalUrl || localUrl
     };
 }
-function resultMediaUrls(result){
-    const urls = [];
-    const add = value => {
-        if(!value) return;
-        if(typeof value === 'string'){
-            urls.push(value);
-            return;
-        }
-        if(Array.isArray(value)){
-            value.forEach(add);
-            return;
-        }
-        if(typeof value === 'object'){
-            if(value.url || value.path || value.src || value.uri){
-                const url = value.url || value.path || value.src || value.uri;
-                if(url){
-                    const item = {url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''};
-                    if(value.mime_type) item.mime_type = value.mime_type;
-                    if(value.asset_id) item.asset_id = value.asset_id;
-                    ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
-                        const n = Number(value[key]);
-                        if(Number.isFinite(n) && n > 0) item[key] = n;
-                    });
-                    urls.push(item);
-                }
-            }
-            ['image_items','media_items','items','outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
-            ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
-        }
-    };
-    add(result);
-    ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
-    const seen = new Set();
-    return urls.map(item => {
-        const url = typeof item === 'string' ? item : item?.url || item?.path || '';
-        if(!url) return null;
-        return typeof item === 'object' ? {...item, url} : url;
-    }).filter(item => {
-        const url = typeof item === 'string' ? item : item?.url || '';
-        return url && !seen.has(url) && seen.add(url);
-    });
-}
 function mediaKindForUrls(urls, fallback='image'){
     const items = (urls || []).map(item => typeof item === 'string' ? {url:item} : (item || {}));
     if(fallback && fallback !== 'image') return fallback;
@@ -9290,7 +9223,6 @@ function runSmartGroupToolbarAction(nodeId, action){
         return;
     }
 }
-function nowMs(){ return Date.now(); }
 function formatRunDuration(ms){
     const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
     const min = Math.floor(total / 60);

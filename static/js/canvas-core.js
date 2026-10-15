@@ -1,0 +1,84 @@
+// canvas-core.js — 画布前端的共享底层（#173 核心下沉，classic 脚本，必须最先加载）
+// 只放两类东西：无状态工具，以及跨模块共享的可变状态。
+// 判据：名字被多个已拆出模块回调，且它自己不依赖 smart-canvas.js 的任何定义，才允许搬进来。
+
+function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
+
+function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
+
+function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+
+const escapeAttr = escapeHtml;
+
+function nowMs(){ return Date.now(); }
+
+function selectedNode(){ return canvasState.nodes.find(n => n.id === canvasState.selectedId) || null; }
+
+function isSmartImageNode(node){
+    return Boolean(node && (node.type === 'smart-image' || !node.type));
+}
+
+function isSmartGroupNode(node){
+    return Boolean(node && node.type === 'smart-group');
+}
+
+const MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE = 1.6;
+
+const MEDIA_GROUP_DEFAULT_SCALE = 0.8;
+
+function nodeScale(node){
+    const v = Number(node?.scale);
+    if((node?.images || []).length > 1 && v === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE) return MEDIA_GROUP_DEFAULT_SCALE;
+    return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+function cloneSmartSettings(source=settings){
+    try {
+        return JSON.parse(JSON.stringify(source || {}));
+    } catch(e) {
+        return {...(source || {})};
+    }
+}
+
+function resultMediaUrls(result){
+    const urls = [];
+    const add = value => {
+        if(!value) return;
+        if(typeof value === 'string'){
+            urls.push(value);
+            return;
+        }
+        if(Array.isArray(value)){
+            value.forEach(add);
+            return;
+        }
+        if(typeof value === 'object'){
+            if(value.url || value.path || value.src || value.uri){
+                const url = value.url || value.path || value.src || value.uri;
+                if(url){
+                    const item = {url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''};
+                    if(value.mime_type) item.mime_type = value.mime_type;
+                    if(value.asset_id) item.asset_id = value.asset_id;
+                    ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
+                        const n = Number(value[key]);
+                        if(Number.isFinite(n) && n > 0) item[key] = n;
+                    });
+                    urls.push(item);
+                }
+            }
+            ['image_items','media_items','items','outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
+            ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
+        }
+    };
+    add(result);
+    ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
+    const seen = new Set();
+    return urls.map(item => {
+        const url = typeof item === 'string' ? item : item?.url || item?.path || '';
+        if(!url) return null;
+        return typeof item === 'object' ? {...item, url} : url;
+    }).filter(item => {
+        const url = typeof item === 'string' ? item : item?.url || '';
+        return url && !seen.has(url) && seen.add(url);
+    });
+}
