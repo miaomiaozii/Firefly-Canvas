@@ -74,11 +74,11 @@ function nowMs(){ return Date.now(); }
 function selectedNode(){ return canvasState.nodes.find(n => n.id === canvasState.selectedId) || null; }
 
 function isSmartImageNode(node){
-    return Boolean(node && (node.type === 'smart-image' || !node.type));
+    return Boolean(node && (node.type === NODE_TYPE_IMAGE || !node.type));
 }
 
 function isSmartGroupNode(node){
-    return Boolean(node && node.type === 'smart-group');
+    return Boolean(node && node.type === NODE_TYPE_GROUP);
 }
 
 const MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE = 1.6;

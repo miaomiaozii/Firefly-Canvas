@@ -4,11 +4,11 @@
 // 主脚本初始化之后。跨模块可变状态一律走 canvasState（window.canvasState），不要引用裸 nodes/selectedId。
 
 function isSmartAgentNode(node){
-    return Boolean(node && node.type === 'smart-agent');
+    return Boolean(node && node.type === NODE_TYPE_AGENT);
 }
 
 function isSmartAgentTaskNode(node){
-    return Boolean(node && node.type === 'agent-task');
+    return Boolean(node && node.type === NODE_TYPE_TASK);
 }
 
 // Agent TUI state management

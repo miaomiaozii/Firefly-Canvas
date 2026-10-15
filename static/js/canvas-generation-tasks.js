@@ -15,7 +15,7 @@ const smartGenerationRegistrationQueues = new Map();
 
 async function runPromptLLMNode(nodeId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
-    if(!node || node.type !== 'smart-prompt') return;
+    if(!node || node.type !== NODE_TYPE_PROMPT) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId || '';
     const message = promptNodeLLMInputText(node).trim();
     if(!message){ toast(tr('smart.promptLlmNeedText')); return; }
