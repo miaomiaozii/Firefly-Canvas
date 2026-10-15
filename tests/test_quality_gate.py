@@ -162,6 +162,18 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn(step, MODE_STEPS["release"])
         self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
 
+    def test_all_browser_runners_resolve_their_repo_root(self):
+        # 门在临时 workspace 里执行步骤（create_execution_workspace），runner 里硬编码的
+        # 仓库根会读到工作区外的源码：证据看起来绿，测的却是另一份代码。
+        # 这个坑在 #172 里实测到：在 git worktree 里跑 canvas_interactions_browser.py
+        # 仍然加载主仓 static/，导致「修复前」对照无效。
+        offenders = []
+        for runner in sorted((Path(__file__).resolve().parents[1] / "tests").glob("*browser*.py")):
+            text = runner.read_text(encoding="utf-8")
+            if "Firefly-Canvas" in text:
+                offenders.append(runner.name)
+        self.assertEqual([], offenders)
+
     def test_wired_canvas_browser_runners_resolve_their_repo_root(self):
         # 门在临时 workspace 里执行步骤；runner 里硬编码的仓库根会读到工作区外的源码，
         # 在非本机（例如 CI）上直接带不动。
