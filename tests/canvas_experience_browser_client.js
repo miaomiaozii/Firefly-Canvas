@@ -31,6 +31,10 @@
   const evalFn = fn => Function('"use strict";return (' + fn + ')')();
 
   const revealVisible = () => evalFn('() => document.getElementById("smartEdgeReveal").classList.contains("visible")')();
+  // #172：节点完成态（images / runFinishedAt）与边缘指示挂到 DOM 不在同一个任务里
+  // （canvas-generation-tasks.js 的 finalizeSmartPendingTask 晚于节点状态写回），
+  // 所以断言前必须等指示出现，而不是在轮询到完成态的那一刻直接读 class。
+  const revealShown = (timeout = 3000) => waitFor('边缘指示出现', () => revealVisible(), timeout, 50);
   const nodeInViewport = () => evalFn(`() => {
     const n = canvasState.nodes.find(n => n.id === 'edge-prompt');
     if (!n) return null;
@@ -103,14 +107,18 @@
       toolbarControls[6]?.id === 'assetToggle',
       toolbarControls[7]?.id === 'smartSaveButton',
     ];
-    check('八个画布控件位于唯一工具栏并保持规范顺序', toolbarControls.length === 8 && toolbarOrder.every(Boolean), toolbarControls.map(control => control.id || control.className).join(' > '));
+    // #172：工具栏控件集合随产品功能增长（整理选中 / 导出选中结果 / 已标记），
+    // 规范约束的是「唯一工具栏 + 规范控件的相对顺序」，不是控件总数。
+    const canonicalToolbarSelectors = ['.smart-back', '#smartUndoButton', '#smartRedoButton', '#smartSettingsLink', '#smartShortcutToggle', '#smartHistoryToggle', '#assetToggle', '#smartSaveButton'];
+    const canonicalIndices = canonicalToolbarSelectors.map(selector => toolbarControls.findIndex(control => control.matches(selector)));
+    check('画布控件位于唯一工具栏并保持规范顺序', canonicalIndices.every(index => index >= 0) && canonicalIndices.every((index, order) => order === 0 || index > canonicalIndices[order - 1]) && toolbarControls.every(control => control.tagName === 'BUTTON'), toolbarControls.map(control => control.id || control.className).join(' > '));
     const allChromeControls = [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle')];
     check('顶部右侧没有第二工具栏', allChromeControls.length === 8 && allChromeControls.every(control => control.closest('.smart-toolbar') === toolbar), allChromeControls.length);
     const toolbarRect = toolbar?.getBoundingClientRect();
     const controlRects = toolbarControls.map(control => control.getBoundingClientRect());
     const controlStyles = toolbarControls.map(control => getComputedStyle(control));
     const toolbarStyle = toolbar && getComputedStyle(toolbar);
-    check('工具栏控件共享 30px 几何与 12px 字号', controlRects.length === 8 && controlRects.every((rect, index) => Math.abs(Number.parseFloat(controlStyles[index].height) - 30) <= 0.5 && Math.abs(rect.top - controlRects[0].top) <= 0.5) && controlStyles.every(style => style.fontSize === '12px'), JSON.stringify(controlRects.map((rect, index) => ({renderedHeight: rect.height, cssHeight: controlStyles[index]?.height, top: rect.top, font: controlStyles[index]?.fontSize}))));
+    check('工具栏控件共享 30px 几何与 12px 字号', controlRects.length >= 8 && controlRects.every((rect, index) => Math.abs(Number.parseFloat(controlStyles[index].height) - 30) <= 0.5 && Math.abs(rect.top - controlRects[0].top) <= 0.5) && controlStyles.every(style => style.fontSize === '12px'), JSON.stringify(controlRects.map((rect, index) => ({renderedHeight: rect.height, cssHeight: controlStyles[index]?.height, top: rect.top, font: controlStyles[index]?.fontSize}))));
     check('工具栏使用左上安全边距', Boolean(toolbarStyle) && Number.parseFloat(toolbarStyle.left) >= 12 && Number.parseFloat(toolbarStyle.left) <= 16.5 && Number.parseFloat(toolbarStyle.top) >= 12 && Number.parseFloat(toolbarStyle.top) <= 16.5, toolbarStyle && JSON.stringify({left: toolbarStyle.left, top: toolbarStyle.top}));
     check('所有图标工具控件有可访问名称', toolbarControls.every(control => Boolean(control.getAttribute('aria-label') || control.textContent.trim())), toolbarControls.map(control => control.getAttribute('aria-label') || '').join('|'));
     const toolbarLabelsHidden = toolbarControls.every(control => getComputedStyle(control.querySelector('span')).display === 'none');
@@ -152,10 +160,14 @@
     check('快捷键面板从左侧展开并避开顶部状态区', shortcutRect.left >= 11 && shortcutRect.left <= 16.5 && shortcutRect.top >= leftChromeBottom + 8, JSON.stringify({shortcut:{left:shortcutRect.left, top:shortcutRect.top}, leftChromeBottom}));
     check('快捷键面板选择重叠更少的左侧垂直位置', actualShortcutOverlap <= baselineShortcutOverlap + 1, JSON.stringify({actualShortcutOverlap, baselineShortcutOverlap, top:shortcutRect.top}));
     check('快捷键面板不遮挡右上小地图', !shortcutMinimapOverlap, JSON.stringify({shortcut:{right:shortcutRect.right, bottom:shortcutRect.bottom}, minimap:minimapRect && {left:minimapRect.left, top:minimapRect.top}}));
-    check('桌面快捷键面板作为左侧抽屉让画布内容让位', innerWidth < 901 || (document.getElementById('shell')?.classList.contains('shortcut-panel-open') && worldWhileShortcutOpen !== 'none'), JSON.stringify({viewport:innerWidth, translate:worldWhileShortcutOpen}));
+    // #172：桌面抽屉不再平移画布（tests/test_ui_integrity_contract.py::
+    // test_shortcut_panel_does_not_translate_the_canvas_world 钉住该契约），
+    // 让位方式改为打开期间禁用画布指针交互。
+    const worldPointerWhileShortcutOpen = evalFn('() => getComputedStyle(document.getElementById("world")).pointerEvents')();
+    check('桌面快捷键面板作为左侧抽屉禁用画布指针交互', innerWidth < 901 || (document.getElementById('shell')?.classList.contains('shortcut-panel-open') && worldPointerWhileShortcutOpen === 'none'), JSON.stringify({viewport:innerWidth, pointerEvents:worldPointerWhileShortcutOpen, translate:worldWhileShortcutOpen}));
     shortcut.querySelector('.shortcut-head button')?.click();
     await waitFor('快捷键面板关闭', () => !document.querySelector('.shortcut-modal.open'));
-    check('关闭快捷键抽屉后画布恢复原位', !document.getElementById('shell')?.classList.contains('shortcut-panel-open') && getComputedStyle(document.getElementById('world')).translate === 'none', getComputedStyle(document.getElementById('world')).translate);
+    check('关闭快捷键抽屉后画布恢复可交互', !document.getElementById('shell')?.classList.contains('shortcut-panel-open') && getComputedStyle(document.getElementById('world')).pointerEvents !== 'none' && getComputedStyle(document.getElementById('world')).translate === 'none', getComputedStyle(document.getElementById('world')).pointerEvents);
 
     const diag = evalFn('() => { const el = document.getElementById("smartEdgeReveal"); return el ? { found: true, cls: el.className } : { found: false }; }')();
     check('初始无边缘指示', !revealVisible(), 'diag=' + JSON.stringify(diag));
@@ -171,7 +183,8 @@
       const el = document.getElementById('smartEdgeReveal');
       return { x: n && n.x, y: n && n.y, rect: r, nodeId: smartEdgeRevealNodeId, timer: smartEdgeRevealTimer > 0, cls: el && el.className, vp: { x: viewport.x, y: viewport.y, s: viewport.scale } };
     }`)();
-    check('视口外完成显示边缘指示', revealVisible(), 'visible=' + revealVisible() + ' diag=' + JSON.stringify(diag3));
+    const reveal2 = await revealShown().then(() => true).catch(() => false);
+    check('视口外完成显示边缘指示', reveal2, 'visible=' + revealVisible() + ' diag=' + JSON.stringify(diag3));
     const label = evalFn('() => document.getElementById("smartEdgeRevealLabel").textContent')();
     check('指示文本为新结果', /新图片已生成/.test(label), label);
     const pos = evalFn('() => { const el = document.getElementById("smartEdgeReveal"); return {left: el.style.left, top: el.style.top}; }')();
@@ -183,7 +196,8 @@
 
     resetNodeForReuse(12000, 12000);
     await runNode('edge reveal prompt 3');
-    check('再次显示边缘指示', revealVisible(), 'visible=' + revealVisible());
+    const reveal3 = await revealShown().then(() => true).catch(() => false);
+    check('再次显示边缘指示', reveal3, 'visible=' + revealVisible());
     check('节点仍在视口外', nodeInViewport() === false, 'inViewport=' + nodeInViewport());
     document.getElementById('smartEdgeReveal').click();
     await waitFor('点击后指示关闭', () => !revealVisible(), 5000);
@@ -191,7 +205,8 @@
 
     resetNodeForReuse(15000, 15000);
     await runNode('edge reveal prompt 4');
-    check('第四次显示边缘指示', revealVisible(), 'visible=' + revealVisible());
+    const reveal4 = await revealShown().then(() => true).catch(() => false);
+    check('第四次显示边缘指示', reveal4, 'visible=' + revealVisible());
     await sleep(8500);
     check('8 秒后自动隐藏', !revealVisible(), 'visible=' + revealVisible());
   } catch (error) {
