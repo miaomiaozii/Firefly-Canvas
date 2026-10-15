@@ -327,7 +327,7 @@ def _conversation_pending_task_keys_from_canvas(project_id: str, canvas: Optiona
     if not isinstance(canvas, dict):
         return keys
     for node in canvas.get('nodes') or []:
-        if not isinstance(node, dict) or node.get('type') != 'smart-conversation':
+        if not isinstance(node, dict) or node.get('type') != NODE_TYPE_CONVERSATION:
             continue
         node_id = str(node.get('id') or '')
         if not node_id:
@@ -5334,7 +5334,7 @@ def _agent_nodes_by_id(canvas: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def project_agent_node(canvas: Mapping[str, Any], node_id: str) -> Dict[str, Any]:
     node = _agent_nodes_by_id(canvas).get(str(node_id or ''))
-    if not isinstance(node, dict) or str(node.get('type') or '') != 'smart-agent':
+    if not isinstance(node, dict) or str(node.get('type') or '') != NODE_TYPE_AGENT:
         raise HTTPException(status_code=400, detail='目标节点不是 Agent 节点')
     return node
 
@@ -5505,7 +5505,7 @@ def _agent_history_output(project_id: str, item: Mapping[str, Any], kind: str) -
     return output
 
 def _agent_find_task_node(canvas: Mapping[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
-    return next((node for node in canvas.get('nodes') or [] if isinstance(node, dict) and str(node.get('type') or '') == 'agent-task' and (str(node.get('task_id') or node.get('id') or '') == str(task_id))), None)
+    return next((node for node in canvas.get('nodes') or [] if isinstance(node, dict) and str(node.get('type') or '') == NODE_TYPE_TASK and (str(node.get('task_id') or node.get('id') or '') == str(task_id))), None)
 
 def _agent_task_layout(canvas: Mapping[str, Any], agent: Mapping[str, Any], count: int) -> List[Dict[str, float]]:
     """Place task/result pairs next to the Agent without covering canvas nodes."""
@@ -5521,8 +5521,8 @@ def _agent_task_layout(canvas: Mapping[str, Any], agent: Mapping[str, Any], coun
         if not isinstance(node, dict) or str(node.get('id') or '') == str(agent.get('id') or ''):
             continue
         node_type = str(node.get('type') or '')
-        width = float(node.get('w') or (300 if node_type == 'agent-task' else 340 if node_type == 'smart-agent' else 226))
-        height = float(node.get('h') or (236 if node_type == 'agent-task' else 360 if node_type == 'smart-agent' else 180))
+        width = float(node.get('w') or (300 if node_type == NODE_TYPE_TASK else 340 if node_type == NODE_TYPE_AGENT else 226))
+        height = float(node.get('h') or (236 if node_type == NODE_TYPE_TASK else 360 if node_type == NODE_TYPE_AGENT else 180))
         occupied.append((float(node.get('x') or 0), float(node.get('y') or 0), width, height))
     x_candidates = [agent_x, agent_x - (task_w + result_w + gap * 2), agent_x + agent_w + gap]
     layouts: List[Dict[str, float]] = []
@@ -6112,7 +6112,7 @@ def project_has_active_video_generation(project_id: str) -> bool:
         return any((task.get('type') == 'project-online-video' and task.get('project_id') == project_id and (task.get('status') in {'queued', 'running'}) for task in CANVAS_TASKS.values()))
 
 def canvas_has_pending_conversation(canvas: Dict[str, Any]) -> bool:
-    return any((node.get('type') == 'smart-conversation' and any((isinstance(message, dict) and message.get('role') == 'user' and (message.get('status') == 'pending') for message in node.get('messages') or [])) for node in canvas.get('nodes') or [] if isinstance(node, dict)))
+    return any((node.get('type') == NODE_TYPE_CONVERSATION and any((isinstance(message, dict) and message.get('role') == 'user' and (message.get('status') == 'pending') for message in node.get('messages') or [])) for node in canvas.get('nodes') or [] if isinstance(node, dict)))
 
 def project_has_recoverable_conversation_sidecars(store: ProjectStore, project_dir: Path, project_id: str, canvas: Dict[str, Any]) -> bool:
     sidecar_root = store._safe_project_path(project_dir, '.conversation-tasks')
@@ -6210,7 +6210,7 @@ def conversation_node_by_id(canvas: Dict[str, Any], node_id: str) -> Optional[Di
 
 def conversation_task_snapshot(canvas: Dict[str, Any], node_id: str, request_id: str) -> Optional[Dict[str, Any]]:
     node = conversation_node_by_id(canvas, node_id)
-    if not isinstance(node, dict) or node.get('type') != 'smart-conversation':
+    if not isinstance(node, dict) or node.get('type') != NODE_TYPE_CONVERSATION:
         return None
     messages = [item for item in node.get('messages') or [] if isinstance(item, dict)]
     user_message = next((item for item in messages if str(item.get('request_id') or '') == request_id and item.get('role') == 'user'), None)
