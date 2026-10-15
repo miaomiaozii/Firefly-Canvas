@@ -680,7 +680,7 @@ function beginSmartPendingHistoryLog(node, defaults={}){
         kind:String(defaults.kind || runSettings.apiKind || 'image'),
         platform:String(defaults.providerName || providerId || ''),
         nodeId:node.id || '',
-        nodeType:node.type || 'smart-image',
+        nodeType:node.type || NODE_TYPE_IMAGE,
         model,
         actual_provider_id:providerId,
         request:{provider_id:providerId, model},
@@ -739,7 +739,7 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
             kind,
             platform:String(task?.providerName || task?.provider_name || defaults.providerName || providerId || ''),
             nodeId:node.id || '',
-            nodeType:node.type || 'smart-image',
+            nodeType:node.type || NODE_TYPE_IMAGE,
             model,
             actual_provider_id:providerId,
             request:{task_id:taskId, provider_id:providerId, model},
@@ -805,7 +805,7 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
         kind:run?.kind || 'image',
         platform:smartRunPlatformLabel(run),
         nodeId:run?.nodeId || '',
-        nodeType:run?.nodeType || 'smart-image',
+        nodeType:run?.nodeType || NODE_TYPE_IMAGE,
         model:smartRunTaskLabel(run),
         request:smartRunRequestMeta(run),
         prompt:run?.prompt || '',
@@ -2337,7 +2337,7 @@ function ensureHistoryGroupForNode(node){
         const pos = candidatePoolPosition(node, estW, estH);
         group = {
             id:uid('smart'),
-            type:'smart-image',
+            type:NODE_TYPE_IMAGE,
             x:pos.x,
             y:pos.y,
             title:tr('smart.historyGroupTitle'),
@@ -2349,7 +2349,7 @@ function ensureHistoryGroupForNode(node){
         };
         canvasState.nodes.push(group);
     }
-    group.type = 'smart-image';
+    group.type = NODE_TYPE_IMAGE;
     group.title = tr('smart.historyGroupTitle');
     group.isHistoryGroup = true;
     group.historyFor = node.id;

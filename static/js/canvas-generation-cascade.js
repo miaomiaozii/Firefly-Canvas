@@ -33,7 +33,7 @@ function createPendingOutputFromSource(sourceNode, expectedCount, meta, options=
     const pos = nextOutputPositionForSource(sourceNode, pendingBox);
     const output = {
         id:uid('smart'),
-        type:'smart-image',
+        type:NODE_TYPE_IMAGE,
         x:pos.x,
         y:pos.y,
         title:'Image',
@@ -94,7 +94,7 @@ function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
     const rootRect = nodeRect(rootNode);
     const output = cloneSmartNode(rootNode, 0, 0);
     output.id = uid('smart');
-    output.type = 'smart-image';
+    output.type = NODE_TYPE_IMAGE;
     output.x = (Number(rootNode.x) || 0) + (Number(rootRect.width) || 260) + 80;
     output.title = `Image ${roundIndex}`;
     output.images = [];
@@ -288,7 +288,7 @@ function primaryImageInputFor(node, options={}){
         : directImageInputsFor(node)[0];
     if(direct) return direct;
     const inputs = options.includeFlow ? upstreamNodesForKinds(node, ['input', 'flow']) : (smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : inputNodesFor(node));
-    const loop = inputs.find(n => n?.type === 'smart-loop');
+    const loop = inputs.find(n => n?.type === NODE_TYPE_LOOP);
     if(loop?.imageInput){
         const upstream = upstreamNodesForKinds(loop, options.includeFlow ? ['input', 'flow'] : ['input']).find(n => isSmartImageNode(n) && (n.images || []).some(img => img?.url));
         if(upstream) return upstream;
@@ -342,7 +342,7 @@ function upstreamNodesForId(nodeId, kinds=['input']){
 }
 
 function resolveSmartCascadeLoop(nodeId){
-    const loops = upstreamNodesForId(nodeId, ['input', 'flow']).filter(n => n.type === 'smart-loop');
+    const loops = upstreamNodesForId(nodeId, ['input', 'flow']).filter(n => n.type === NODE_TYPE_LOOP);
     if(!loops.length) return null;
     const loop = loops[loops.length - 1];
     return {node:loop, count:smartLoopCount(loop), mode:loop.mode === 'parallel' ? 'parallel' : 'serial'};
@@ -350,14 +350,14 @@ function resolveSmartCascadeLoop(nodeId){
 
 function relayLoopPromptNodesForEdge(sourceNode, targetNode){
     if(!sourceNode?.id || !targetNode?.id) return [];
-    const directLoopIds = new Set(promptInputNodesFor(targetNode).filter(n => n?.type === 'smart-loop' && n.showPrompt).map(n => n.id));
+    const directLoopIds = new Set(promptInputNodesFor(targetNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).map(n => n.id));
     return inputNodesFor(sourceNode)
-        .filter(n => n?.type === 'smart-loop' && n.showPrompt && !directLoopIds.has(n.id));
+        .filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt && !directLoopIds.has(n.id));
 }
 
 function relayLoopPromptNodesForTarget(node){
     if(!node?.id) return [];
-    return inputNodesFor(node).filter(n => n?.type === 'smart-loop' && n.showPrompt);
+    return inputNodesFor(node).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt);
 }
 
 function downstreamNodesForId(nodeId){
@@ -397,7 +397,7 @@ function downstreamCascadeTargetsFor(node){
     return (canvas?.connections || [])
         .filter(conn => conn.from === node.id && ['input','flow'].includes(conn.kind || 'flow'))
         .map(conn => canvasState.nodes.find(n => n.id === conn.to))
-        .filter(n => n && !isHistoryGroupNode(n) && (isSmartImageNode(n) || n.type === 'smart-loop'))
+        .filter(n => n && !isHistoryGroupNode(n) && (isSmartImageNode(n) || n.type === NODE_TYPE_LOOP))
         .sort((a, b) => {
             const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
             if(ax !== bx) return ax - bx;
@@ -442,7 +442,7 @@ function smartCascadeGraphForTail(tail){
 }
 
 function cascadeTailForLoop(loopId){
-    const loop = canvasState.nodes.find(n => n.id === loopId && n.type === 'smart-loop');
+    const loop = canvasState.nodes.find(n => n.id === loopId && n.type === NODE_TYPE_LOOP);
     const directTargets = directLoopRunTargets(loop);
     if(directTargets.length) return directTargets[directTargets.length - 1];
     const directImages = downstreamImageTargetsFor({id:loopId});
@@ -680,12 +680,12 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
 async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=smartLoopContext){
     const outputNode = targetNode || sourceNode;
     if(!sourceNode || !targetNode || !outputNode) return [];
-    const requestNode = sourceNode?.type === 'smart-loop' ? targetNode : sourceNode;
+    const requestNode = sourceNode?.type === NODE_TYPE_LOOP ? targetNode : sourceNode;
     const previousSettings = cloneSmartSettings(settings);
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(requestNode) || {})}, ctx);
     settings = runSettings;
     const outpaintSize = validOutpaintSize(requestNode);
-    const selfRefs = sourceNode?.type === 'smart-loop' ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
+    const selfRefs = sourceNode?.type === NODE_TYPE_LOOP ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
     const sourceRefs = (selfRefs.length ? selfRefs : defaultReferenceImagesFor(requestNode, false, ctx)).filter(img => img?.url);
     const refsForRequest = sourceRefs.length
         ? sourceRefs
@@ -1154,8 +1154,8 @@ async function runSmartCascade(targetNode=null){
                     const target = targets[index];
                     const edgeKey = `${source.id}->${target.id}`;
                     let outputs = [];
-                    const targetChildren = (graph.children.get(target.id) || []).filter(child => child && child.type !== 'smart-loop');
-                    const targetIsLeaf = target.type !== 'smart-loop' && targetChildren.length === 0;
+                    const targetChildren = (graph.children.get(target.id) || []).filter(child => child && child.type !== NODE_TYPE_LOOP);
+                    const targetIsLeaf = target.type !== NODE_TYPE_LOOP && targetChildren.length === 0;
                     const relayLoops = isSmartImageNode(source) && isSmartImageNode(target)
                         ? relayLoopPromptNodesForEdge(source, target)
                         : [];
@@ -1173,7 +1173,7 @@ async function runSmartCascade(targetNode=null){
                             runState.runPath.states[edgeKey] = 'active';
                             scheduleConnectionLayerRefresh();
                         }
-                        if(target.type === 'smart-loop'){
+                        if(target.type === NODE_TYPE_LOOP){
                             outputs = outputImagesForNode(source, true, ctx).filter(img => img?.url);
                             sharedRefs = cascadeRefsFromOutputs(outputs, source);
                         } else if(index === 0){
@@ -1196,7 +1196,7 @@ async function runSmartCascade(targetNode=null){
                         runState.runPath.states[edgeKey] = 'done';
                         scheduleConnectionLayerRefresh();
                     }
-                    const refs = target.type === 'smart-loop' ? sharedRefs : (index === 0 ? sharedRefs : cascadeRefsFromOutputs(outputs, target));
+                    const refs = target.type === NODE_TYPE_LOOP ? sharedRefs : (index === 0 ? sharedRefs : cascadeRefsFromOutputs(outputs, target));
                     producedRefs.set(target.id, refs);
                     throwIfSmartCascadeStopRequested(runState);
                     await runBranch(target, refs);
@@ -1253,7 +1253,7 @@ async function runSmartCascade(targetNode=null){
 }
 
 function runSmartCascadeFromLoop(loopId){
-    const loop = canvasState.nodes.find(n => n.id === loopId && n.type === 'smart-loop');
+    const loop = canvasState.nodes.find(n => n.id === loopId && n.type === NODE_TYPE_LOOP);
     if(!loop){ toast(tr('smart.loopNodeNotFound')); return; }
     const tail = cascadeTailForLoop(loop.id);
     if(!tail){ toast(tr('smart.loopNeedsTail')); return; }
