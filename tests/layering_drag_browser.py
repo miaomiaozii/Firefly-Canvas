@@ -55,6 +55,19 @@ def rect_of(browser, selector: str) -> dict:
     )
 
 
+def dom_order(browser) -> list[str]:
+    return browser.evaluate(
+        """(() => Array.from(document.querySelectorAll('.image-node')).map(n => n.dataset.id))()"""
+    )
+
+
+def viewport_rect(browser) -> dict:
+    return browser.evaluate(
+        """(() => ({left:0, top:0, right:window.innerWidth, bottom:window.innerHeight,
+                    width:window.innerWidth, height:window.innerHeight}))()"""
+    )
+
+
 def world_of(browser, node_id: str) -> dict | None:
     """World coordinates from app state - distinguishes a real move from a canvas re-pan."""
     return browser.evaluate(
@@ -262,10 +275,17 @@ def scenario_02_drawer_open(runner: Runner) -> None:
     runner.select(NODE)
     composer = rect_of(runner.browser, ".composer")
     drawer = rect_of(runner.browser, "#smartHistoryModal")
-    runner.check("02 抽屉打开后选中节点：提示词框完整落在抽屉顶边之上（矩形包含）",
-                 composer["top"] >= 16 - 0.5 and composer["bottom"] <= drawer["top"] + 0.5,
-                 f"composer={composer} band=[16,{drawer['top']}]")
-    target = {"x": composer["left"] + 120, "y": composer["top"] + 12}
+    overlap = intersect(composer, drawer)
+    runner.observe("composerDrawerOverlap", overlap)
+    if overlap:
+        ox, oy = center(overlap)
+        runner.check("02 抽屉打开后选中节点：提示词框与抽屉重叠处命中抽屉（抽屉浮在最上层；内容可出视口，不强制拉回）",
+                     hit_is(runner.browser, ox, oy, "#smartHistoryModal"),
+                     f"overlap={overlap} hit={hit_label(runner.browser, ox, oy)}")
+    # 测试点必须落在提示词框上、在视口内、且不被抽屉盖住；
+    # 否则“组框不能抢走提示词框命中点”没有意义（抽屉抢中是正确行为）。
+    target = pick_point(intersect(composer, viewport_rect(runner.browser)) or composer, [drawer])
+    runner.observe("composerTargetPoint", target)
     runner.observe("groupBeforeWorld", world_of(runner.browser, GROUP))
     handle = runner.drag_start(f".image-node[data-id=\"{GROUP}\"]", (0.95, 0.2))
     dx, dy = target["x"] - handle["x"], target["y"] - handle["y"]
@@ -300,9 +320,13 @@ def scenario_02_drawer_open(runner: Runner) -> None:
                  hit_is(runner.browser, target["x"], target["y"], ".composer"),
                  f"hit={hit_label(runner.browser, target['x'], target['y'])}")
     drawer_after = rect_of(runner.browser, "#smartHistoryModal")
-    runner.check("02 释放后：提示词框仍完整落在抽屉顶边之上",
-                 composer_after["bottom"] <= drawer_after["top"] + 0.5,
-                 f"composer={composer_after} band=[16,{drawer_after['top']}]")
+    overlap_after = intersect(composer_after, drawer_after)
+    runner.observe("composerDrawerOverlapAfterDrop", overlap_after)
+    if overlap_after:
+        ox, oy = center(overlap_after)
+        runner.check("02 释放后：提示词框与抽屉重叠处仍命中抽屉（层级不变）",
+                     hit_is(runner.browser, ox, oy, "#smartHistoryModal"),
+                     f"overlap={overlap_after} hit={hit_label(runner.browser, ox, oy)}")
     runner.observe("groupAfterWorld", world_of(runner.browser, GROUP))
     runner.observe("groupAfterDrop", after)
 
@@ -311,47 +335,53 @@ def scenario_03_drag_selected(runner: Runner) -> None:
     """#164 core: the selected/dragged node must stay above ordinary nodes."""
     runner.open_canvas()
     runner.open_drawer()
-    runner.select(NODE_B)
-    before = rect_of(runner.browser, f".image-node[data-id=\"{NODE_B}\"]")
-    before_world = world_of(runner.browser, NODE_B)
+    # 必须拖 DOM 靠前的那个普通节点：压平后两个节点 z-index 相同，
+    # 靠后的那个靠 DOM 顺序就会赢，断言将抓不到 bug。
+    order = [n for n in dom_order(runner.browser) if n in (NODE, NODE_B)]
+    dragged, other = (order[0], order[1]) if len(order) == 2 else (NODE_B, NODE)
+    runner.observe("domOrder", order)
+    runner.observe("draggedIsDomEarlier", dragged == order[0] if order else None)
+    runner.select(dragged)
+    before = rect_of(runner.browser, f".image-node[data-id=\"{dragged}\"]")
+    before_world = world_of(runner.browser, dragged)
     runner.observe("nodeBBeforeDrag", before)
-    handle = runner.drag_start(f".image-node[data-id=\"{NODE_B}\"]", (0.5, 0.05))
+    handle = runner.drag_start(f".image-node[data-id=\"{dragged}\"]", (0.5, 0.05))
     dx, dy = 60, 160
     runner.drag_move(handle, dx / 2, dy / 2)
-    dragging = rect_of(runner.browser, f".image-node[data-id=\"{NODE_B}\"]")
+    dragging = rect_of(runner.browser, f".image-node[data-id=\"{dragged}\"]")
     cx, cy = center(dragging)
     runner.shot("03-drawer-open-dragging-selected.png",
-                "抽屉打开：正在拖动选中节点 layer-node-b，它压在普通节点 layer-node 之上（#164 压平问题核心）")
+                f"抽屉打开：正在拖动选中节点 {dragged}（DOM 靠前），它压在普通节点 {other} 之上（#164 压平问题核心）")
     runner.check("03 拖动中：选中节点中心命中它自己",
-                 hit_is(runner.browser, cx, cy, f".image-node[data-id=\"{NODE_B}\"]"),
+                 hit_is(runner.browser, cx, cy, f".image-node[data-id=\"{dragged}\"]"),
                  f"point=({cx:.0f},{cy:.0f}) hit={hit_label(runner.browser, cx, cy)}")
-    overlap = intersect(dragging, rect_of(runner.browser, f".image-node[data-id=\"{NODE}\"]"))
+    overlap = intersect(dragging, rect_of(runner.browser, f".image-node[data-id=\"{other}\"]"))
     if overlap:
         ox, oy = center(overlap)
-        runner.check("03 拖动中：与普通节点重叠处命中被拖的选中节点",
-                     hit_is(runner.browser, ox, oy, f".image-node[data-id=\"{NODE_B}\"]"),
+        runner.check("03 拖动中：与普通节点重叠处命中被拖的选中节点（不被 DOM 靠后节点抢走）",
+                     hit_is(runner.browser, ox, oy, f".image-node[data-id=\"{dragged}\"]"),
                      f"point=({ox:.0f},{oy:.0f}) hit={hit_label(runner.browser, ox, oy)}")
     else:
         runner.check("03 拖动中：被拖节点与普通节点存在重叠区", False, f"dragging={dragging}")
     runner.drag_move(handle, dx / 2, dy / 2)
     runner.drag_release(handle)
-    after = rect_of(runner.browser, f".image-node[data-id=\"{NODE_B}\"]")
+    after = rect_of(runner.browser, f".image-node[data-id=\"{dragged}\"]")
     runner.shot("03-drawer-open-after-drop-selected.png",
                 "释放后：选中节点仍压在普通节点之上；抽屉仍浮在最上层")
     cx, cy = center(after)
     runner.check("03 释放后：选中节点中心命中它自己（选中节点不被抽屉/背板盖住）",
-                 hit_is(runner.browser, cx, cy, f".image-node[data-id=\"{NODE_B}\"]"),
+                 hit_is(runner.browser, cx, cy, f".image-node[data-id=\"{dragged}\"]"),
                  f"point=({cx:.0f},{cy:.0f}) hit={hit_label(runner.browser, cx, cy)}")
-    overlap_after = intersect(after, rect_of(runner.browser, f".image-node[data-id=\"{NODE}\"]"))
+    overlap_after = intersect(after, rect_of(runner.browser, f".image-node[data-id=\"{other}\"]"))
     if overlap_after:
         ox, oy = center(overlap_after)
         runner.check("03 释放后：重叠处仍命中选中节点",
-                     hit_is(runner.browser, ox, oy, f".image-node[data-id=\"{NODE_B}\"]"),
+                     hit_is(runner.browser, ox, oy, f".image-node[data-id=\"{dragged}\"]"),
                      f"point=({ox:.0f},{oy:.0f}) hit={hit_label(runner.browser, ox, oy)}")
     else:
-        runner.observe("noOverlapAfterDrop", {"nodeB": after, "node": rect_of(runner.browser, f".image-node[data-id=\"{NODE}\"]")})
+        runner.observe("noOverlapAfterDrop", {"dragged": after, "other": rect_of(runner.browser, f".image-node[data-id=\"{other}\"]")})
     runner.observe("nodeBBeforeWorld", before_world)
-    runner.observe("nodeBAfterWorld", world_of(runner.browser, NODE_B))
+    runner.observe("nodeBAfterWorld", world_of(runner.browser, dragged))
     runner.observe("nodeBAfterDrop", after)
 
 
@@ -383,13 +413,21 @@ def scenario_04_bottom_composer(runner: Runner) -> None:
     composer = rect_of(runner.browser, ".composer")
     drawer = rect_of(runner.browser, "#smartHistoryModal")
     runner.shot("04-drawer-open-after-drop-bottom-node.png",
-                "释放后：底部节点的提示词框完整落在抽屉顶边之上，不被抽屉盖住")
-    runner.check("04 释放后：提示词框完整落在可见带内（矩形包含）",
-                 composer["top"] >= 16 - 0.5 and composer["bottom"] <= drawer["top"] + 0.5,
-                 f"composer={composer} band=[16,{drawer['top']}]")
-    cx, cy = center(composer)
-    runner.check("04 释放后：提示词框中心命中提示词框本身（不命中抽屉）",
-                 hit_is(runner.browser, cx, cy, ".composer"), f"hit={hit_label(runner.browser, cx, cy)}")
+                "释放后：底部节点的提示词框可以落在抽屉之下（内容允许出视口）；抽屉浮在最上层")
+    overlap = intersect(composer, drawer)
+    runner.observe("composerDrawerOverlap", overlap)
+    if overlap:
+        ox, oy = center(overlap)
+        runner.check("04 释放后：提示词框与抽屉重叠处命中抽屉（抽屉浮在最上层，不强制把提示词框拉回可见带）",
+                     hit_is(runner.browser, ox, oy, "#smartHistoryModal"),
+                     f"overlap={overlap} hit={hit_label(runner.browser, ox, oy)}")
+    free = pick_point(intersect(composer, viewport_rect(runner.browser)) or composer, [drawer])
+    if free:
+        runner.check("04 释放后：未被抽屉盖住的提示词框区域仍命中提示词框本身",
+                     hit_is(runner.browser, free["x"], free["y"], ".composer"),
+                     f"point=({free['x']:.0f},{free['y']:.0f}) hit={hit_label(runner.browser, free['x'], free['y'])}")
+    else:
+        runner.observe("composerFullyCoveredByDrawer", {"center": center(composer)})
     runner.observe("nodeBAfterWorld", world_of(runner.browser, NODE_B))
     runner.observe("composerAfterDrag", composer)
 
@@ -402,9 +440,15 @@ def scenario_05_collapsed(runner: Runner) -> None:
     runner.select(NODE)
     composer = rect_of(runner.browser, ".composer")
     strip = rect_of(runner.browser, "#smartHistoryModal")
-    runner.check("05 折叠态：提示词框完整落在折叠条带之上",
-                 composer["bottom"] <= strip["top"] + 0.5, f"composer={composer} stripTop={strip['top']}")
-    target = {"x": composer["left"] + 120, "y": composer["top"] + 12}
+    strip_overlap = intersect(composer, strip)
+    runner.observe("composerStripOverlap", strip_overlap)
+    if strip_overlap:
+        ox, oy = center(strip_overlap)
+        runner.check("05 折叠态：提示词框与折叠条带重叠处命中条带（层级不变）",
+                     hit_is(runner.browser, ox, oy, "#smartHistoryModal"),
+                     f"overlap={strip_overlap} hit={hit_label(runner.browser, ox, oy)}")
+    target = pick_point(intersect(composer, viewport_rect(runner.browser)) or composer, [strip])
+    runner.observe("composerTargetPoint", target)
     runner.observe("groupBeforeWorld", world_of(runner.browser, GROUP))
     handle = runner.drag_start(f".image-node[data-id=\"{GROUP}\"]", (0.95, 0.2))
     dx, dy = target["x"] - handle["x"], target["y"] - handle["y"]

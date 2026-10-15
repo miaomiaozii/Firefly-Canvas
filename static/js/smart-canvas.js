@@ -8254,8 +8254,6 @@ function openSmartCanvasLog(){
     renderSmartCanvasHistory();
     smartHistoryModal.classList.add('open');
     updateSmartHistoryDrawerCollapseUi();
-    // #164: 抽屉顶边是新的安全底边，沿用已有的平移让位机制把提示词框让到抽屉之上。
-    keepComposerReachableByPanningCanvas();
     refreshSmartProjectMediaTrashButton();
 }
 function closeSmartCanvasLog(){
@@ -12317,23 +12315,12 @@ function positionComposerForNode(node){
     composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`;
     composer.style.top = `${modelRect.y + modelRect.height + 14}px`;
 }
-function composerSafeBottom(frame){
-    const safeBottom = frame.bottom - 16;
-    // #164: 历史抽屉（.log-modal）打开时，它的顶边就是画布内容的安全底边；
-    // 折叠态（.collapsed，46px 条带）仍然遮挡画布，所以同样参与计算。
-    // 量 .log-modal 而不是 .log-panel：面板带 transform 过渡，打开瞬间面板矩形还在屏幕外，
-    // 而 .log-modal 的布局盒就是面板的最终顶边（面板 width/height:100%）。
-    if(!smartHistoryModal?.classList.contains('open')) return safeBottom;
-    const drawerRect = smartHistoryModal.getBoundingClientRect();
-    if(!(drawerRect.height > 0)) return safeBottom;
-    return Math.min(safeBottom, drawerRect.top);
-}
 function keepComposerReachableByPanningCanvas(){
     if(!shell || !composer?.classList.contains('open') || composerPromptView.mode === 'flow') return false;
     const frame = shell.getBoundingClientRect();
     const rect = composer.getBoundingClientRect();
     const safeTop = frame.top + 16;
-    const safeBottom = composerSafeBottom(frame);
+    const safeBottom = frame.bottom - 16;
     let contentTop = rect.top;
     let contentBottom = rect.bottom;
     const node = activeComposerNode();
@@ -12421,12 +12408,7 @@ function updateComposer(){
     scheduleDynamicParamsRefresh(140);
     syncRunButtonState(node);
     requestAnimationFrame(() => {
-        if(activeComposerNode()?.id === node.id){
-            positionComposerForNode(node);
-            // #164: 历史抽屉打开时选中节点，提示词框会落在抽屉顶边之下。
-            // 沿用产品已有的平移让位机制（safeBottom 已把抽屉顶边算进去），不新增交互概念。
-            if(smartHistoryModal?.classList.contains('open')) keepComposerReachableByPanningCanvas();
-        }
+        if(activeComposerNode()?.id === node.id) positionComposerForNode(node);
     });
 }
 function renderInputPromptPreview(node){
@@ -15121,8 +15103,6 @@ window.onmouseup = e => {
         composerDragSettleTimer = setTimeout(() => {
             composerDragSettleTimer = 0;
             document.body.classList.remove('smart-node-drag-settling');
-            // #164: 节点拖动结束后提示词框跟着节点走，抽屉打开时同样沿用平移让位机制回到可见带。
-            if(smartHistoryModal?.classList.contains('open')) keepComposerReachableByPanningCanvas();
         }, 180);
     }
     if(connectionEraseState){

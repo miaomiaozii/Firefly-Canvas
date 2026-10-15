@@ -22,7 +22,10 @@ containment — never computed z-index values, which is the #152 test mistake
 - in all three states (closed / open / open+collapsed):
   * the composer is the topmost hit target at the group-frame overlap;
   * the selected node is the topmost hit target over the ordinary node;
-  * the composer rectangle lies fully inside the visible band, i.e. above the
+  * the composer is NOT forced back into the visible band (canvas content may
+    legitimately leave the viewport; the user pans to reach it). Where the composer
+    and the drawer overlap the drawer must win the hit test; where it does not, the
+    composer must win.
     drawer's top edge when the drawer is open or collapsed
 - the drawer stays the topmost surface where it paints, including over the
   composer when the canvas is panned so the two overlap

@@ -29,7 +29,9 @@
 //   * the drawer panel stays the topmost surface where it paints, and it stays
 //     above the composer when the canvas is panned so they overlap (correct:
 //     the drawer floats above the canvas);
-//   * the composer rectangle lies fully inside the visible band, i.e. above the
+//   * the composer is NOT pulled back into the visible band: canvas content may
+//   legitimately leave the viewport (the user pans). Where composer and drawer
+//   overlap the drawer wins the hit test; elsewhere the composer must win.
 //     drawer's top edge when the drawer is open/collapsed — rectangle
 //     containment, not a z-index comparison.
 //
@@ -126,6 +128,18 @@
   };
   const bandContains = (band, rect) => rect.top >= band.top - 0.5 && rect.bottom <= band.bottom + 0.5
     && rect.left >= -0.5 && rect.right <= innerWidth + 0.5;
+  // 节点与提示词框都允许出当前画布视口（平移画布就能看到），所以产品不会把它们“拉回”可见区。
+  // 因此需要命中测试时，只能选一既在目标元素内、又不被面板类浮层盖住的点。
+  const freePointIn = (rect, avoid, step = 10) => {
+    const view = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const area = intersect(rect, view) || rect;
+    for (let y = area.top + step / 2; y < area.bottom; y += step) {
+      for (let x = area.left + step / 2; x < area.right; x += step) {
+        if (!avoid.some(r => r && containsPoint(r, x, y))) return { x, y };
+      }
+    }
+    return null;
+  }
   const domSnapshot = () => ({
     worldChildren: world?.children?.length ?? null,
     imageNodes: Array.from(document.querySelectorAll('#world .image-node')).map(n => n.dataset.id),
@@ -218,9 +232,7 @@
       overlapClosed && hitInside(overlapClosed, nodeEl()),
       `point=${JSON.stringify(overlapClosed)} hit=${describe(hitAt(overlapClosed))} z(node)=${zOf(nodeEl())} z(node-b)=${zOf(nodeBEl())}`);
     const composerRectClosed = rectOf(composer);
-    check('关闭: 提示词框完整落在可见带内',
-      bandContains(bandClosed, composerRectClosed),
-      `band=${JSON.stringify(bandClosed)} composer=${JSON.stringify(composerRectClosed)}`);
+    diag.composerRectClosed = composerRectClosed;
 
     // 6) 打开历史抽屉（走产品入口 openSmartCanvasLog，不是手工加 class）
     evalFn('() => openSmartCanvasLog()')();
@@ -236,12 +248,11 @@
     check('展开: 抽屉面板在其绘制区域是最上层（面板类浮层高于画布）',
       hitInside(panelPoint, drawer), `point=${JSON.stringify(panelPoint)} hit=${describe(hitAt(panelPoint))}`);
     const composerRectOpen = rectOf(composer);
-    check('展开: 提示词框完整落在抽屉之上的可见带内（矩形包含判定）',
-      bandContains(bandOpen, composerRectOpen),
-      `band=${JSON.stringify(bandOpen)} composer=${JSON.stringify(composerRectOpen)}`);
-    const composerCenterOpen = rectCenter(composerRectOpen);
-    check('展开: 提示词框中心命中提示词框本身（不被抽屉/组框抢走）',
-      hitInside(composerCenterOpen, composer), `hit=${describe(hitAt(composerCenterOpen))}`);
+    const composerFreeOpen = freePointIn(composerRectOpen, [drawerRectOpen]);
+    diag.composerFreeOpen = composerFreeOpen;
+    check('展开: 未被抽屉盖住的提示词框区域命中提示词框本身（不被组框抢走）',
+      composerFreeOpen && hitInside(composerFreeOpen, composer),
+      `point=${JSON.stringify(composerFreeOpen)} hit=${describe(hitAt(composerFreeOpen))} composer=${JSON.stringify(composerRectOpen)}`);
     const overlapOpen = nodeOverlapPoint(bandOpen);
     diag.nodeOverlapOpen = overlapOpen;
     check('展开: 选中节点仍压在普通节点之上（命中选中节点，不被压平）',
@@ -274,12 +285,11 @@
     diag.drawerRectCollapsed = drawerRectCollapsed;
     diag.bandCollapsed = bandCollapsed;
     const composerRectCollapsed = rectOf(composer);
-    check('折叠: 提示词框完整落在折叠条带之上的可见带内（矩形包含判定）',
-      bandContains(bandCollapsed, composerRectCollapsed),
-      `band=${JSON.stringify(bandCollapsed)} composer=${JSON.stringify(composerRectCollapsed)}`);
-    const composerCenterCollapsed = rectCenter(composerRectCollapsed);
-    check('折叠: 提示词框中心命中提示词框本身',
-      hitInside(composerCenterCollapsed, composer), `hit=${describe(hitAt(composerCenterCollapsed))}`);
+    const composerFreeCollapsed = freePointIn(composerRectCollapsed, [drawerRectCollapsed]);
+    diag.composerFreeCollapsed = composerFreeCollapsed;
+    check('折叠: 未被折叠条带盖住的提示词框区域命中提示词框本身',
+      composerFreeCollapsed && hitInside(composerFreeCollapsed, composer),
+      `point=${JSON.stringify(composerFreeCollapsed)} hit=${describe(hitAt(composerFreeCollapsed))} composer=${JSON.stringify(composerRectCollapsed)}`);
     const overlapCollapsed = nodeOverlapPoint(bandCollapsed);
     diag.nodeOverlapCollapsed = overlapCollapsed;
     check('折叠: 选中节点仍压在普通节点之上（命中选中节点，不被压平）',
