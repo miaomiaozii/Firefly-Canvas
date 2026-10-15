@@ -213,7 +213,7 @@ function bindConnectionEvents(){
 
 function dragConnectTargetFor(sourceNode, point=lastMouseWorld){
     if(!sourceNode || (dragState?.group || []).length > 1) return null;
-    if(['smart-prompt', 'smart-loop'].includes(sourceNode.type) && point){
+    if([NODE_TYPE_PROMPT, NODE_TYPE_LOOP].includes(sourceNode.type) && point){
         return rectOverlapNode(sourceNode.id, point.x - 1, point.y - 1, 2, 2, dragState?.groupIds || []);
     }
     const r = nodeRect(sourceNode);
@@ -224,14 +224,14 @@ function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     if(isHistoryGroupNode(sourceNode) || isHistoryGroupNode(targetNode)) return false;
     if(isSmartGroupNode(targetNode)) return false;
-    if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt' || targetNode.type === 'smart-conversation';
-    if(sourceNode.type === 'smart-prompt') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
-    if(sourceNode.type === 'smart-loop') return isSmartImageNode(targetNode);
-    if(sourceNode.type === 'smart-group') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
+    if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT || targetNode.type === NODE_TYPE_CONVERSATION;
+    if(sourceNode.type === NODE_TYPE_PROMPT) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP;
+    if(sourceNode.type === NODE_TYPE_LOOP) return isSmartImageNode(targetNode);
+    if(sourceNode.type === NODE_TYPE_GROUP) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP;
     // #149 C7: 补齐 local-edit/conversation/agent 源类型（与端口拖拽 connectInputNode 一致）
-    if(sourceNode.type === 'local-edit') return isSmartImageNode(targetNode);
-    if(sourceNode.type === 'smart-conversation') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
-    if(sourceNode.type === 'agent') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
+    if(sourceNode.type === NODE_TYPE_LOCAL_EDIT) return isSmartImageNode(targetNode);
+    if(sourceNode.type === NODE_TYPE_CONVERSATION) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT;
+    if(sourceNode.type === 'agent') return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT;
     // agent-task 是只读结果卡，不接受输入连线（#149 C8）
     return false;
 }
@@ -252,7 +252,7 @@ function disconnectConnections(spec){
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
-        if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
+        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
             const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
@@ -300,7 +300,7 @@ function finishConnectionErase(){
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
-        if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
+        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
             const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
@@ -374,7 +374,7 @@ function connectionMidpoint(conn){
 }
 
 function insertionConnectionForNode(node){
-    if(!node || node.type !== 'smart-loop' || !canvas?.connections?.length) return null;
+    if(!node || node.type !== NODE_TYPE_LOOP || !canvas?.connections?.length) return null;
     const r = nodeRect(node);
     const cx = (Number(r.x) || 0) + (Number(r.width) || 0) / 2;
     const cy = (Number(r.y) || 0) + (Number(r.height) || 0) / 2;
@@ -408,16 +408,16 @@ function connectInputNode(fromId, toId){
     const to = canvasState.nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
     // #149 C8: agent-task 是只读结果卡，不接受输入连线
-    if(to.type === 'agent-task'){
+    if(to.type === NODE_TYPE_TASK){
         toast(tr('smart.connectAgentTaskReadOnly'));
         return false;
     }
     // #149 C8: Prompt→Conversation 连线不生效（Conversation 只把图片类上游当参考图，Prompt 文本被忽略）
-    if(from.type === 'smart-prompt' && to.type === 'smart-conversation'){
+    if(from.type === NODE_TYPE_PROMPT && to.type === NODE_TYPE_CONVERSATION){
         toast(tr('smart.connectPromptToConversationIgnored'));
         return false;
     }
-    if(to.type === 'local-edit'){
+    if(to.type === NODE_TYPE_LOCAL_EDIT){
         const role = ['original','references','prompt'].includes(to.localEditActiveRole) ? to.localEditActiveRole : '';
         if(!role) return false; // role must be explicitly selected before connecting
         to.localEditInputRoles = to.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
@@ -435,11 +435,11 @@ function connectInputNode(fromId, toId){
         if(!canvas.connections.some(c => c.from === from.id && c.to === to.id && (c.role || '') === role)) canvas.connections.push({from:from.id, to:to.id, kind:'input', role});
         return true;
     }
-    if(to.type === 'smart-loop'){
+    if(to.type === NODE_TYPE_LOOP){
         const groupImages = isSmartGroupNode(from) ? imagesForNode(from).filter(img => img?.url) : [];
         const groupPrompts = isSmartGroupNode(from) ? promptTextItemsForNode(from).filter(Boolean) : [];
-        const looksImage = isSmartImageNode(from) || groupImages.length > 0 || (from.type === 'smart-loop' && from.imageInput);
-        const looksPrompt = from.type === 'smart-prompt' || groupPrompts.length > 0 || (from.type === 'smart-loop' && from.showPrompt);
+        const looksImage = isSmartImageNode(from) || groupImages.length > 0 || (from.type === NODE_TYPE_LOOP && from.imageInput);
+        const looksPrompt = from.type === NODE_TYPE_PROMPT || groupPrompts.length > 0 || (from.type === NODE_TYPE_LOOP && from.showPrompt);
         if(looksImage && !to.imageInput) to.imageInput = true;
         if(looksPrompt && !to.showPrompt) to.showPrompt = true;
         if(looksImage || looksPrompt) fitSmartLoopNode(to);
@@ -473,8 +473,8 @@ function cascadeConnectionKeys(){
     };
     const activeLoopIds = new Set(smartCascadeRuns.keys());
     const loops = activeLoopIds.size
-        ? canvasState.nodes.filter(n => n?.type === 'smart-loop' && activeLoopIds.has(n.id))
-        : canvasState.nodes.filter(n => n?.type === 'smart-loop');
+        ? canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP && activeLoopIds.has(n.id))
+        : canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP);
     loops.forEach(loop => {
         const tail = cascadeTailForLoop(loop.id);
         if(!tail) return;
@@ -487,7 +487,7 @@ function cascadeConnectionKeys(){
             const toNode = canvasState.nodes.find(n => n.id === conn.to);
             if(conn.from === loop.id && (chainIds.has(conn.to) || downstreamNodesForId(conn.to).some(n => chainIds.has(n.id)))) addKey(conn.from, conn.to);
             if(toNode && chainIds.has(toNode.id)){
-                inputNodesFor(toNode).filter(n => n?.type === 'smart-loop' && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
+                inputNodesFor(toNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
             }
         });
     });
