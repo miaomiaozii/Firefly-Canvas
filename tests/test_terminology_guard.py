@@ -76,7 +76,7 @@ FORBIDDEN_TERMS = {
     # 生成原件 _Avoid_ (生成输出项 is a formal term, excluded)
     "缓存图", "缩略图", "节点副本",
     # 生成输出项 _Avoid_ (生成原件 is a formal term, excluded)
-    "数组下标", "缩略图 DOM",
+    "数组下标", "输出槽位", "缩略图 DOM",
     # 生成任务 _Avoid_ (生成记录, 生成原件 are formal terms, excluded)
     "结果节点",
     # 任务状态卡 _Avoid_ (生成记录, 生成历史 are formal terms, excluded)
@@ -124,6 +124,10 @@ FORBIDDEN_TERMS = {
     "独立视频应用", "本地视频工作流",
     # 音频素材 _Avoid_
     "独立音频项目", "音频工作站",
+    # Intentionally NOT curated from new _Avoid_ lines (#171): 待恢复任务 的
+    # "重试"/"重新生成" and 循环生成 的 "批量生成" are legitimate words for
+    # other concepts elsewhere in the codebase, so enforcing them would be wrong.
+    # Only "输出槽位" (above) is enforced among the #171 additions.
 }
 
 # English patterns that indicate terminology drift (e.g., log used for history).

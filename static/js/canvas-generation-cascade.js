@@ -1,4 +1,4 @@
-// 画布级联与循环生成调度：输出槽位、下游目标解析、并行上限与停止请求（从 smart-canvas.js 抽离，#154）。
+// 画布级联与循环生成调度：生成输出项、下游目标解析、并行上限与停止请求（从 smart-canvas.js 抽离，#154）。
 // invariant: classic script，按 HTML 顺序先于 smart-canvas.js 加载；本文件顶层只有声明，
 // 初始化器只取空容器或字面量，不读其他模块的状态。函数声明整体提升，实际调用都发生在
 // 主脚本初始化之后。跨模块可变状态一律走 canvasState（window.canvasState），不要引用裸 nodes/selectedId。
