@@ -253,7 +253,17 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
             "if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote))",
             self.source,
         )
-        self.assertIn("return {...remote};", self.source)
+        # #165：这条分支仍逐字段返回远端副本，唯一允许的本地覆盖是节点位置。
+        self.assertIn("return applyLocalNodePosition({...remote}, local, remote);", self.source)
+        helper = self.source[
+            self.source.index("function applyLocalNodePosition("):
+            self.source.index("function mergeSmartNode(")
+        ]
+        self.assertEqual(
+            sorted(set(re.findall(r"merged\.(\w+) = ", helper))),
+            ["positionUpdatedAt", "x", "y"],
+            "位置守卫只能写 x/y/positionUpdatedAt，不得把本地媒体或 busy 形状写回",
+        )
 
     def test_project_merge_preserves_independent_pending_task_identities(self):
         self.assertIn("function mergeSmartPendingTaskLists(local, remote, terminalTaskIds=new Set())", self.source)
