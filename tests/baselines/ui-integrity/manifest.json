@@ -2,15 +2,15 @@
   "schema_version": 1,
   "contract": "desktop-ui-integrity",
   "accepted": true,
-  "accepted_by": "miaomiaozii",
-  "reason": "用户实测验收通过；重采基线消除toast时序噪声，比较器降采样吸收Chrome光栅抖动",
-  "accepted_at": "2026-08-13T03:55:58.325476+00:00",
+  "accepted_by": "pi-agent #183",
+  "reason": "refresh stale UI baselines after #173 canvas modularisation; journey is now raster-deterministic (two consecutive five-viewport runs produced 40 byte-identical screenshots)",
+  "accepted_at": "2026-10-15T15:40:33.713101+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
       "name": "Google Chrome",
       "channel": "stable",
-      "version": "Chrome/151.0.7922.77"
+      "version": "Chrome/155.0.8059.40"
     },
     "dpr": 1,
     "color_scheme": "light",
@@ -24,7 +24,9 @@
     "provider": "offline-none",
     "animations": "disabled-for-baseline"
   },
-  "accepted_browser_versions": [151, 155],
+  "accepted_browser_versions": [
+    155
+  ],
   "screenshots": [
     {
       "viewport": [
@@ -33,7 +35,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1920x1080/canvas-composer.png",
-      "sha256": "362d3a671635ceb5998e82aa5d5b4ba15d409b0a2232c28dbcde671c05e8699a"
+      "sha256": "ec30d932c403520755a9331487dfc258185b89d0a5934bde7db61fc29bbc49f7"
     },
     {
       "viewport": [
@@ -42,7 +44,7 @@
       ],
       "scene": "composer-size",
       "path": "1920x1080/composer-size.png",
-      "sha256": "59a8dc0a68b9826ec82d413fa96db226d3062f8b0570afa5018c64a619f51fd0"
+      "sha256": "977b1629f997b496156479e1f3eeacdbbc59ba6e4fad3dbc50ab0a19395a01ab"
     },
     {
       "viewport": [
@@ -51,7 +53,7 @@
       ],
       "scene": "composer-flow",
       "path": "1920x1080/composer-flow.png",
-      "sha256": "38a3b836a810a64bebfa6f2a62347e09d89df511b3fd484c953e83c1c759c9eb"
+      "sha256": "1bbcb4c6e8f31826d92a010d9a05df45e8b106c7509f0fde8262f0d017a00d3d"
     },
     {
       "viewport": [
@@ -60,7 +62,7 @@
       ],
       "scene": "create-menu",
       "path": "1920x1080/create-menu.png",
-      "sha256": "d02f654643655e6e5668cebf2e0154d22b3a7dd69ba6a37cddf9503e01a229bf"
+      "sha256": "9b5973b9515806147b4cd63e788282fd57e229469b41f38fb56098e287def6a1"
     },
     {
       "viewport": [
@@ -69,7 +71,7 @@
       ],
       "scene": "history",
       "path": "1920x1080/history.png",
-      "sha256": "789e2c74c437280a8d9905dd4bb48020581920b01bd9463c410765ddef217d88"
+      "sha256": "e3db2792a551cf1684a841b4e6af7e455682770e442493bf5e5257c77d341d47"
     },
     {
       "viewport": [
@@ -78,7 +80,7 @@
       ],
       "scene": "generation-detail",
       "path": "1920x1080/generation-detail.png",
-      "sha256": "d5e4ce8a1d538126ec9c0cd87bfb7e22564059d6ae1405c81c0568797964a5c0"
+      "sha256": "04e2159c563b270a9014b576d13863bd77fb625c1a85a00d71e12309c65224f0"
     },
     {
       "viewport": [
@@ -87,7 +89,7 @@
       ],
       "scene": "settings",
       "path": "1920x1080/settings.png",
-      "sha256": "a5c309f86cbf375e3abeb6e24149fa7d5ff308dfb6eb65773f15adfbeb0a85f2"
+      "sha256": "269e51d56e4aef8d99dfcc8a8b5ac1cab73c402487a39259a400a5bc24e493a7"
     },
     {
       "viewport": [
@@ -96,7 +98,7 @@
       ],
       "scene": "shortcuts",
       "path": "1920x1080/shortcuts.png",
-      "sha256": "9285654e95c2e2577269ce3ce101e3e3203593c763dae4fcec037e52cf1cb73e"
+      "sha256": "ee5cb6cb3e478185a75eadfee04a721cbe9691337ae27f6a9e5af6173ce3e9de"
     },
     {
       "viewport": [
@@ -105,7 +107,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1440x900/canvas-composer.png",
-      "sha256": "47cc1e99d2fe034cdfc45740ca87db4ef14e66ea244aa756258a71d422f469d8"
+      "sha256": "82fc22addbec7752775cc32f248a578c40e572753969b2df917b33221b1685a8"
     },
     {
       "viewport": [
@@ -114,7 +116,7 @@
       ],
       "scene": "composer-size",
       "path": "1440x900/composer-size.png",
-      "sha256": "8e1bbe9aba0d1bf30f47c3945b389c5e52efdd07944a199ed9cf57add69cff4c"
+      "sha256": "24e6fb6bdcf13d6b869fc54880dee7fc3e24cb1ed3663a1e7afd9be44e859917"
     },
     {
       "viewport": [
@@ -123,7 +125,7 @@
       ],
       "scene": "composer-flow",
       "path": "1440x900/composer-flow.png",
-      "sha256": "cfd402a3c677e9b81cc6fa480ab48f2883cd3c0d61b0ebe6e0af17f58f58740c"
+      "sha256": "a170f0b204e30af199216a824c5e13cd55f21bd2ef649e49533319bc7d6ace33"
     },
     {
       "viewport": [
@@ -132,7 +134,7 @@
       ],
       "scene": "create-menu",
       "path": "1440x900/create-menu.png",
-      "sha256": "f673306c252858bf94fffb09f7cb150c6860362c5a8258b7d755e9f2fbd82240"
+      "sha256": "712e04668afbe8a02e66eb902911300dee6292a82aa22d1f6cc8545ebeee47ad"
     },
     {
       "viewport": [
@@ -141,7 +143,7 @@
       ],
       "scene": "history",
       "path": "1440x900/history.png",
-      "sha256": "210637c9e09b7ea59c3e1b7b1346f98b40e5c40d99cc58fe942e77174248d741"
+      "sha256": "e481080056591fb2383d7495083b05556b32ce38bb1eb6479c92243cdf082da3"
     },
     {
       "viewport": [
@@ -150,7 +152,7 @@
       ],
       "scene": "generation-detail",
       "path": "1440x900/generation-detail.png",
-      "sha256": "f9cc8d725f0dc7ff267732952149b9cbe54f0c565f1675273ff1224ef566d485"
+      "sha256": "ed00f3a6b293cc6ee2dd6522909c7c72b559a1744170b867674cdf841404051f"
     },
     {
       "viewport": [
@@ -159,7 +161,7 @@
       ],
       "scene": "settings",
       "path": "1440x900/settings.png",
-      "sha256": "59f2312332d4127c6747eb799f61e30f5348bfd49668500df38bde85e18d465b"
+      "sha256": "5aea19d0f5cb98fabd3cf442da431fa193d375c45236323f9186767d9c949878"
     },
     {
       "viewport": [
@@ -168,7 +170,7 @@
       ],
       "scene": "shortcuts",
       "path": "1440x900/shortcuts.png",
-      "sha256": "7e31dd1bbcb88e08423529f96bc9f6c56170318183d2ca9363e08061a40ff26c"
+      "sha256": "0363233ad8e0753f8ce2cd86022912f9b7acd3955b8c0290ef8c77dfac81366c"
     },
     {
       "viewport": [
@@ -177,7 +179,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1280x720/canvas-composer.png",
-      "sha256": "a953167aed1a1430d81c10d378cebedb4c6f677f13bcda0c54ea3cc772c414f0"
+      "sha256": "57c6d1b1fcd03510653beb41d06dbbaca7eb4cc8d431759def03736c5d7d2196"
     },
     {
       "viewport": [
@@ -186,7 +188,7 @@
       ],
       "scene": "composer-size",
       "path": "1280x720/composer-size.png",
-      "sha256": "53170b4cfd19e44124b7380e1219fc53c1709fb9623fe0c4712d57e0ae02d276"
+      "sha256": "60d04836d2c50e4908b31a43ecbf51cedf474da3f0ba277a407180c2fa134fb2"
     },
     {
       "viewport": [
@@ -195,7 +197,7 @@
       ],
       "scene": "composer-flow",
       "path": "1280x720/composer-flow.png",
-      "sha256": "96031ec78837dddafcf7ed58bbecdaeb0d6506a4921694326a5a3c21a3efbb89"
+      "sha256": "ce52dc89a1fee61737747f24f0186e6d59ffe1b5dc60d3f448fa3202285737a6"
     },
     {
       "viewport": [
@@ -204,7 +206,7 @@
       ],
       "scene": "create-menu",
       "path": "1280x720/create-menu.png",
-      "sha256": "8258458d18e20006081b3e4fd1ec98db6c9045cba27f02fe94bd69d2902a46ff"
+      "sha256": "9a1ea2d750c1341cd33a09bc05437c892db239c4e065aa3ee85132d3c4f59f01"
     },
     {
       "viewport": [
@@ -213,7 +215,7 @@
       ],
       "scene": "history",
       "path": "1280x720/history.png",
-      "sha256": "a1ec18e4b32f311c66f93a605ec3685a57f065d47989835e39043a1b0edf0369"
+      "sha256": "22f4a0edb50a017db4b02f3b4adcb052fc31f2c2624d60a3e7d3d47e1d8e473f"
     },
     {
       "viewport": [
@@ -222,7 +224,7 @@
       ],
       "scene": "generation-detail",
       "path": "1280x720/generation-detail.png",
-      "sha256": "a6797936690ef334ebb8a51d8488b32ee2db4dda32abf7debac2249e08fbf38d"
+      "sha256": "6eae54d35890a30e5005d4f16c97f0a560e219579caf98eca6c84e7f8e898d09"
     },
     {
       "viewport": [
@@ -231,7 +233,7 @@
       ],
       "scene": "settings",
       "path": "1280x720/settings.png",
-      "sha256": "7fdc844a980469b68dc3d22b44ce07156af320336a9cf8aa8d55c3f33730d3e4"
+      "sha256": "11617547164b11bf0b5bd732523159647008fdb5e2a7f242ca03331cca6dc0cb"
     },
     {
       "viewport": [
@@ -240,7 +242,7 @@
       ],
       "scene": "shortcuts",
       "path": "1280x720/shortcuts.png",
-      "sha256": "ef362cffa54ccbc4bb2f1d9ee253934663c1b482066f22f153889301b6d62500"
+      "sha256": "b2e04f6cf17d5e45ae639b65c0d19edc19cc566510e318b8f5b813cedf0f2774"
     },
     {
       "viewport": [
@@ -249,7 +251,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1024x768/canvas-composer.png",
-      "sha256": "afb2bede31b1c9f7862402f321fc8b64c13b39e487e69f0d9e4576cb01761dd4"
+      "sha256": "bd2cc89524fabf655b24cb17d36318822aeae997b484804b5ac71ccf5d20a51a"
     },
     {
       "viewport": [
@@ -258,7 +260,7 @@
       ],
       "scene": "composer-size",
       "path": "1024x768/composer-size.png",
-      "sha256": "4768d2b92f70f023c46bdcf932f1678c324e455d5fde34c80b6ee1382c63a5ea"
+      "sha256": "a999ef7b2f493aee7f5f5bf3262ee0350a90361202fdf6942d16308c259a6c56"
     },
     {
       "viewport": [
@@ -267,7 +269,7 @@
       ],
       "scene": "composer-flow",
       "path": "1024x768/composer-flow.png",
-      "sha256": "603d5f7ff63d53740ac78f72ecf4d792d879923b5666fde77fbaf240cf49989b"
+      "sha256": "5163d6f4fe91ae037c13079cece8104a42aff1887a1e4402219c50e301ba0d98"
     },
     {
       "viewport": [
@@ -276,7 +278,7 @@
       ],
       "scene": "create-menu",
       "path": "1024x768/create-menu.png",
-      "sha256": "5228398283e2ef7956a092168a933b036f316c4aedb547435587685e9684858b"
+      "sha256": "06e8bef62459f90a9962161110524427e9422155dd14fcff3e6f268071a045e9"
     },
     {
       "viewport": [
@@ -285,7 +287,7 @@
       ],
       "scene": "history",
       "path": "1024x768/history.png",
-      "sha256": "1ce251136c6ecba2dda6f7c450f4583c481ac2eed8cc9604eac0787f589c16f3"
+      "sha256": "daaab2b7f1a6cab6c1168326f42a4def0bc455c3a5f7f3c6efc0b893ad3e3443"
     },
     {
       "viewport": [
@@ -294,7 +296,7 @@
       ],
       "scene": "generation-detail",
       "path": "1024x768/generation-detail.png",
-      "sha256": "a50da375d834ccb1032d26884bfd2ab87ee5f789c874ed6ccd88686e411f2d68"
+      "sha256": "90474fa2e03c9c23b57bfc8e61a417d326fdf2aac13abe7f4cdb97c5e17af5e6"
     },
     {
       "viewport": [
@@ -303,7 +305,7 @@
       ],
       "scene": "settings",
       "path": "1024x768/settings.png",
-      "sha256": "175c58276918019058b723edce1d3101f8c4a7888b42dbb77250900766a69778"
+      "sha256": "94213cea0ca609dbc76b504e715b1d03c82afeff8711eddb3f966792cd4d5848"
     },
     {
       "viewport": [
@@ -312,7 +314,7 @@
       ],
       "scene": "shortcuts",
       "path": "1024x768/shortcuts.png",
-      "sha256": "c89a3f2aa5477e4c9b86cda5037ea22f145c8ab098c7ad512be0b68c584b0194"
+      "sha256": "1eb7c129bd4e2d93781dcb24da6c22631887c2196a0ed4dea027e53797dbcb0d"
     },
     {
       "viewport": [
@@ -321,7 +323,7 @@
       ],
       "scene": "canvas-composer",
       "path": "800x600/canvas-composer.png",
-      "sha256": "02e552f0b03b6c5c7d6902ded4162f1f31551df76e5a9e568e3199e0c3fb05a2"
+      "sha256": "fc7c4b62f1569dc14371f37aea145443e0ce851914477a27d1ca6ecef8135180"
     },
     {
       "viewport": [
@@ -330,7 +332,7 @@
       ],
       "scene": "composer-size",
       "path": "800x600/composer-size.png",
-      "sha256": "bd359352058b6182b4c4beeae22224430a18286de926d781adace26db7b3f1a6"
+      "sha256": "3865a5878ad01db5115dd8460607eafb489b594b3432e6af7d596309e2428f87"
     },
     {
       "viewport": [
@@ -339,7 +341,7 @@
       ],
       "scene": "composer-flow",
       "path": "800x600/composer-flow.png",
-      "sha256": "51dd010d9c11afda2ac2e8430c115445eb8c2a1bdf4688402114ba68ddac60c8"
+      "sha256": "bf7b92f842341eb56e98d7d3194d22ed16b8ae7288da5ee7bf2a0ef5a00201e5"
     },
     {
       "viewport": [
@@ -348,7 +350,7 @@
       ],
       "scene": "create-menu",
       "path": "800x600/create-menu.png",
-      "sha256": "168c3ba452525ce6175989da0e28b002f81a62e2a27066eb22eb51bfe03c4664"
+      "sha256": "0d0996bfbca40105ba38bac9775a529f65ac679f4b651bf5c130f5fbcaed704c"
     },
     {
       "viewport": [
@@ -357,7 +359,7 @@
       ],
       "scene": "history",
       "path": "800x600/history.png",
-      "sha256": "d1d8f77c43f85d8cfd457af32c80cac3aa9dd2184347ea6eac37b1c753a20b04"
+      "sha256": "7222bfb8f7b1417aa491673a0e4222405da847b548c52e1e62253ee5fb6ba638"
     },
     {
       "viewport": [
@@ -366,7 +368,7 @@
       ],
       "scene": "generation-detail",
       "path": "800x600/generation-detail.png",
-      "sha256": "2493ee14d275afe0c86462d02d9aea60a27d429666c056e19105106c7c795b63"
+      "sha256": "63f3badf0f001d6b3ed721d74ec6f044803fb899dd1c0bf22983fcf5deb6aa9a"
     },
     {
       "viewport": [
@@ -375,7 +377,7 @@
       ],
       "scene": "settings",
       "path": "800x600/settings.png",
-      "sha256": "291348af5ba9e724199d3ce016c86daf63a1fa99f29f64be1a800111cac950d0"
+      "sha256": "a311f14e7171f668059825c3b1d5aa07e1f2dfd48619c20b6434af23fb613838"
     },
     {
       "viewport": [
@@ -384,7 +386,7 @@
       ],
       "scene": "shortcuts",
       "path": "800x600/shortcuts.png",
-      "sha256": "5b878921bb7141c9e8eb3264132f8aac5f2991cb545f38d226c9be6b982b6755"
+      "sha256": "d759a946aed540023e2684bebed9b07d9bd3a6a62b9e4442456fd094b72a9bc6"
     }
   ]
 }
