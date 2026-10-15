@@ -3,8 +3,8 @@
   "contract": "desktop-ui-integrity",
   "accepted": true,
   "accepted_by": "pi-agent #183",
-  "reason": "refresh stale UI baselines after #173 canvas modularisation; journey is now raster-deterministic (two consecutive five-viewport runs produced 40 byte-identical screenshots)",
-  "accepted_at": "2026-10-15T15:40:33.713101+00:00",
+  "reason": "refresh UI baselines with the pointer parked before every capture, so :hover state cannot leak into the visual contract",
+  "accepted_at": "2026-10-15T15:56:39.614532+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
@@ -71,7 +71,7 @@
       ],
       "scene": "history",
       "path": "1920x1080/history.png",
-      "sha256": "e3db2792a551cf1684a841b4e6af7e455682770e442493bf5e5257c77d341d47"
+      "sha256": "b4e1a0b4b8586b96f1ef599664c5ae2611e36c95f46876a34d1989fa27976b3c"
     },
     {
       "viewport": [
@@ -80,7 +80,7 @@
       ],
       "scene": "generation-detail",
       "path": "1920x1080/generation-detail.png",
-      "sha256": "04e2159c563b270a9014b576d13863bd77fb625c1a85a00d71e12309c65224f0"
+      "sha256": "cf744d96878a9413a30dd2e48e8e6618123757b2f49f6d51940f708de6ebac43"
     },
     {
       "viewport": [
@@ -98,7 +98,7 @@
       ],
       "scene": "shortcuts",
       "path": "1920x1080/shortcuts.png",
-      "sha256": "ee5cb6cb3e478185a75eadfee04a721cbe9691337ae27f6a9e5af6173ce3e9de"
+      "sha256": "9f372bb65a56909b50e2f2ae14e33dcdf718d9e1462c6636c1ad4bbc57a24a68"
     },
     {
       "viewport": [
@@ -143,7 +143,7 @@
       ],
       "scene": "history",
       "path": "1440x900/history.png",
-      "sha256": "e481080056591fb2383d7495083b05556b32ce38bb1eb6479c92243cdf082da3"
+      "sha256": "098c3d9e1d7b93484ccaac8a46c63f69ffadaa0aae37a768bb522b25eb46face"
     },
     {
       "viewport": [
@@ -152,7 +152,7 @@
       ],
       "scene": "generation-detail",
       "path": "1440x900/generation-detail.png",
-      "sha256": "ed00f3a6b293cc6ee2dd6522909c7c72b559a1744170b867674cdf841404051f"
+      "sha256": "15931322cfa79c4b92c8b1da7078d5389cdd702767bb7751596dd54e6496c35e"
     },
     {
       "viewport": [
@@ -170,7 +170,7 @@
       ],
       "scene": "shortcuts",
       "path": "1440x900/shortcuts.png",
-      "sha256": "0363233ad8e0753f8ce2cd86022912f9b7acd3955b8c0290ef8c77dfac81366c"
+      "sha256": "2b60c2dbee405f65b5d360b6bed91e221c3f1034d3c68f738647d9d3c1d09d08"
     },
     {
       "viewport": [
@@ -215,7 +215,7 @@
       ],
       "scene": "history",
       "path": "1280x720/history.png",
-      "sha256": "22f4a0edb50a017db4b02f3b4adcb052fc31f2c2624d60a3e7d3d47e1d8e473f"
+      "sha256": "d6c5789c51be31fd0b3f56c4af5d19086ca06103c4a964f70a1717688a907e48"
     },
     {
       "viewport": [
@@ -224,7 +224,7 @@
       ],
       "scene": "generation-detail",
       "path": "1280x720/generation-detail.png",
-      "sha256": "6eae54d35890a30e5005d4f16c97f0a560e219579caf98eca6c84e7f8e898d09"
+      "sha256": "dfe4fde54d1f4a2929ad22aabae1b55b245815758f678b91c3253224c222c933"
     },
     {
       "viewport": [
@@ -242,7 +242,7 @@
       ],
       "scene": "shortcuts",
       "path": "1280x720/shortcuts.png",
-      "sha256": "b2e04f6cf17d5e45ae639b65c0d19edc19cc566510e318b8f5b813cedf0f2774"
+      "sha256": "e41404f31c6452d6a0b643932a2bef0014ab0024575c3a433cc829393d3f18be"
     },
     {
       "viewport": [
@@ -287,7 +287,7 @@
       ],
       "scene": "history",
       "path": "1024x768/history.png",
-      "sha256": "daaab2b7f1a6cab6c1168326f42a4def0bc455c3a5f7f3c6efc0b893ad3e3443"
+      "sha256": "fba2c0cd89223609de525d8432e145a85eafe000602bc18939b991f895041e0e"
     },
     {
       "viewport": [
@@ -296,7 +296,7 @@
       ],
       "scene": "generation-detail",
       "path": "1024x768/generation-detail.png",
-      "sha256": "90474fa2e03c9c23b57bfc8e61a417d326fdf2aac13abe7f4cdb97c5e17af5e6"
+      "sha256": "be5438bf89820ea584f948fc40db6c964f52d469e0c09b408cb8170d511ac3c8"
     },
     {
       "viewport": [
@@ -314,7 +314,7 @@
       ],
       "scene": "shortcuts",
       "path": "1024x768/shortcuts.png",
-      "sha256": "1eb7c129bd4e2d93781dcb24da6c22631887c2196a0ed4dea027e53797dbcb0d"
+      "sha256": "a12d419ff4f3468aa2c20ee25f482bf78409bee65dc2a96070db7daa816ac398"
     },
     {
       "viewport": [
@@ -350,7 +350,7 @@
       ],
       "scene": "create-menu",
       "path": "800x600/create-menu.png",
-      "sha256": "0d0996bfbca40105ba38bac9775a529f65ac679f4b651bf5c130f5fbcaed704c"
+      "sha256": "7f0654103a3fb627bc7afc4ee19ea71f48ae089e6b60e5dd0cb7709dde2b088b"
     },
     {
       "viewport": [
@@ -359,7 +359,7 @@
       ],
       "scene": "history",
       "path": "800x600/history.png",
-      "sha256": "7222bfb8f7b1417aa491673a0e4222405da847b548c52e1e62253ee5fb6ba638"
+      "sha256": "03c7f3d0c5ea0a8c4e5dda71b7c3acdaadbafb94bd4e61e0d095ade6353516c2"
     },
     {
       "viewport": [
@@ -386,7 +386,7 @@
       ],
       "scene": "shortcuts",
       "path": "800x600/shortcuts.png",
-      "sha256": "d759a946aed540023e2684bebed9b07d9bd3a6a62b9e4442456fd094b72a9bc6"
+      "sha256": "98b9d422dbdc84ffd1151e0cbdc88e9eb5b7ed3442a48c1c26f2c1df85177db9"
     }
   ]
 }
