@@ -173,14 +173,20 @@ class CanvasCoreLayerTests(unittest.TestCase):
         order = _script_order()
         canvas_scripts = [name for name in order if _is_canvas_script(name)]
         self.assertIn("canvas-core.js", canvas_scripts)
-        self.assertEqual(canvas_scripts[0], "canvas-core.js")
+        # canvas-node-types.js 是唯一可以排在它前面的脚本：canvas-core.js 里的
+        # isSmartImageNode/isSmartGroupNode 要读 NODE_TYPE_*（见 test_node_type_constants）。
+        self.assertEqual(
+            canvas_scripts[:canvas_scripts.index("canvas-core.js")],
+            [n for n in canvas_scripts[:canvas_scripts.index("canvas-core.js")] if n == "canvas-node-types.js"],
+            "only canvas-node-types.js may load before canvas-core.js; got: %r" % canvas_scripts)
         self.assertEqual(canvas_scripts[-1], "smart-canvas.js")
 
     def test_canvas_core_is_first_in_the_test_aggregator(self):
         from tests.canvas_frontend_sources import CANVAS_SCRIPTS
 
         canvas_scripts = [name for name in CANVAS_SCRIPTS if name.startswith("canvas-")]
-        self.assertEqual(canvas_scripts[0], "canvas-core.js")
+        self.assertIn(canvas_scripts[0], ("canvas-core.js", "canvas-node-types.js"))
+        self.assertEqual(canvas_scripts[1], "canvas-core.js")
 
     def test_shared_helpers_live_in_canvas_core_not_smart_canvas(self):
         core_text = (JS_DIR / "canvas-core.js").read_text(encoding="utf-8")

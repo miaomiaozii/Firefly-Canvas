@@ -86,6 +86,16 @@ class NodeTypeConstantsConsistencyTests(unittest.TestCase):
             'canvas-node-types.js', list(CANVAS_SCRIPTS),
             'canvas-node-types.js missing from tests/canvas_frontend_sources.py CANVAS_SCRIPTS')
 
+    def test_node_type_constants_load_before_every_consumer(self):
+        # canvas-core.js 里 isSmartImageNode/isSmartGroupNode 直接引用 NODE_TYPE_*。
+        # 现在它们只在函数体内，靠调用时机侥幸安全；一旦有人在顶层引用就会撞 TDZ，
+        # 而 classic script 的 TDZ 报错在 Python 侧看不到。把常量模块提到最前，
+        # 并用本守卫锁住这个顺序。
+        scripts = list(CANVAS_SCRIPTS)
+        self.assertEqual(
+            scripts[0], 'canvas-node-types.js',
+            'canvas-node-types.js must be the first canvas script; got order: %r' % scripts)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -97,7 +97,8 @@
 
 画布前端是 classic `<script>`（非 ES module），按 `static/smart-canvas.html` 的 `<script src>` 顺序加载，
 共享同一全局词法作用域。拆出的模块**只含顶层函数/类/状态声明，不含顶层可执行代码**，因此可以先于
-`smart-canvas.js` 加载；最早加载的是 `canvas-core.js`，它承载无状态工具与跨模块共享的
+`smart-canvas.js` 加载；最先加载的是 `canvas-node-types.js`（节点类型常量，因为 `canvas-core.js`
+也要读它），其次是 `canvas-core.js`，它承载无状态工具与跨模块共享的
 可变状态（`canvas`、`settings`、`params`、`selectedNode`）；`canvas-state.js` 的
 `window.canvasState` 是状态容器属性，不是词法绑定。
 按源码文本断言画布前端行为的测试，一律通过 `tests/canvas_frontend_sources.py::canvas_source()` 读取全部模块，
@@ -106,7 +107,7 @@
 | 模块 | 职责 | 最相关测试 |
 | --- | --- | --- |
 | `canvas-core.js` | 最早加载的核心层：无状态工具（`tr`/`escapeHtml`/`uid`/`nowMs` 等）与跨模块共享状态（`canvas`/`settings`/`params`） | `tests/test_canvas_core_layer.py` |
-| `canvas-node-types.js` | 节点类型常量（8 种 NODE_TYPE_*，与 app/constants.py 逐值对齐，紧跟核心层之后加载） | `tests/test_node_type_constants.py` |
+| `canvas-node-types.js` | 节点类型常量（8 种 NODE_TYPE_*，与 app/constants.py 逐值对齐；最先加载，因为 `canvas-core.js` 也要读它） | `tests/test_node_type_constants.py` |
 | `canvas-state.js` | 跨模块可变状态容器（`window.canvasState`） | `tests/test_project_canvas_mutation_client.py` |
 | `project-canvas-mutations.js` | 项目画布 mutation 客户端封装 | `tests/test_project_canvas_mutation_client.py` |
 | `canvas-layout-utils.js` | 布局计算纯函数 | `tests/canvas_boundaries_browser.py` |
