@@ -12220,7 +12220,6 @@ function exitPromptFlow(){
         promptInput.scrollTop = Math.min(scrollTop, Math.max(0, promptInput.scrollHeight - promptInput.clientHeight));
         const node = activeComposerNode();
         if(node) positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
         requestAnimationFrame(() => { composerPromptView.applyingScrollRestore = false; });
     });
     return true;
@@ -12236,7 +12235,6 @@ function collapseExpandedPrompt(){
     syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
     return true;
 }
@@ -12259,7 +12257,6 @@ function expandPromptToContent(){
     syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
     return true;
 }
@@ -12277,7 +12274,6 @@ function refreshExpandedPromptHeight(){
     const node = activeComposerNode();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
 }
 function bindComposerPromptViewToNode(node){
@@ -12314,34 +12310,6 @@ function positionComposerForNode(node){
     // one transform. Viewport zoom/pan must never flip or clamp it elsewhere.
     composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`;
     composer.style.top = `${modelRect.y + modelRect.height + 14}px`;
-}
-function keepComposerReachableByPanningCanvas(){
-    if(!shell || !composer?.classList.contains('open') || composerPromptView.mode === 'flow') return false;
-    const frame = shell.getBoundingClientRect();
-    const rect = composer.getBoundingClientRect();
-    const safeTop = frame.top + 16;
-    const safeBottom = frame.bottom - 16;
-    let contentTop = rect.top;
-    let contentBottom = rect.bottom;
-    const node = activeComposerNode();
-    const nodeElement = node?.id
-        ? world?.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`)
-        : null;
-    const nodeRect = nodeElement?.getBoundingClientRect?.();
-    if(nodeRect?.height > 0){
-        const unionTop = Math.min(contentTop, nodeRect.top);
-        const unionBottom = Math.max(contentBottom, nodeRect.bottom);
-        if(unionBottom - unionTop <= safeBottom - safeTop){
-            contentTop = unionTop;
-            contentBottom = unionBottom;
-        }
-    }
-    let shiftY = contentBottom > safeBottom ? safeBottom - contentBottom : 0;
-    if(contentTop + shiftY < safeTop) shiftY += safeTop - (contentTop + shiftY);
-    if(Math.abs(shiftY) < 0.5) return false;
-    viewport.y += shiftY;
-    applyViewport();
-    return true;
 }
 let composerUpdateTimer = 0;
 let composerUpdateSeq = 0;
@@ -14866,7 +14834,6 @@ window.onmousemove = e => {
         }
         const node = activeComposerNode();
         if(node) positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
         return;
     }
     if(selectionState){

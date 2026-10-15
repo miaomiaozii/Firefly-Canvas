@@ -18,9 +18,13 @@ open and collapsed (bottom → top):
 连线 < 生成分组框（背板） < 普通节点 < 选中节点 < 拖动中的节点 < 提示词框
 < 面板类浮层 < 历史抽屉 < 提示词流
 
-The drawer stays the topmost surface over the canvas — keeping the prompt
-composer reachable is done by panning the canvas (see
-keepComposerReachableByPanningCanvas), never by re-stacking it above the drawer.
+The drawer stays the topmost surface over the canvas. Keeping the prompt
+composer reachable is NOT done by re-stacking it above the drawer and NOT done
+by auto-panning the canvas either: canvas content (nodes, the composer) is
+allowed to leave the visible viewport, and the user pans to look at it. The
+former `keepComposerReachableByPanningCanvas` mechanism was removed for #164 —
+it moved the whole canvas underneath the user, which is why panning to inspect
+another node felt like the canvas fighting back.
 
 Static half of the contract, asserted on the CSS text:
 1. no drawer-open rule restacks canvas nodes or the composer at all;
@@ -44,6 +48,7 @@ if str(ROOT) not in sys.path:
 
 CANVAS_CSS = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 CONTEXT_MD = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
+PRODUCT_JS_DIR = ROOT / "static" / "js"
 
 
 def rule_body(css: str, selector: str) -> str:
@@ -140,6 +145,31 @@ class LayeringContractTests(unittest.TestCase):
         ordered = [ladder[key] for key in expected]
         self.assertEqual(
             ordered, sorted(ordered), f"z-index ladder is not monotonic: {ladder}"
+        )
+
+    def test_no_auto_pan_rescue_of_the_composer(self):
+        """#164: canvas content may leave the viewport; the app must not auto-pan it back."""
+        hits = []
+        for path in sorted(PRODUCT_JS_DIR.glob("*.js")):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "keepComposerReachableByPanningCanvas" in line:
+                    hits.append(f"static/js/{path.name}:{lineno}")
+        self.assertEqual(
+            hits,
+            [],
+            "auto-pan rescue mechanism must not come back (it moves the whole canvas "
+            "underneath the user): " + ", ".join(hits),
+        )
+        entry = re.search(
+            r"\*\*画布视口\*\*：\n(?P<def>.+?)\n_Avoid_:", CONTEXT_MD, re.S
+        )
+        self.assertIsNotNone(
+            entry, "CONTEXT.md is missing the 画布视口 term that pins this contract"
+        )
+        self.assertIn(
+            "不会自动平移",
+            entry.group("def"),
+            "画布视口 definition must state the app never auto-pans content back into view",
         )
 
     def test_context_md_documents_the_generation_group_frame_term(self):

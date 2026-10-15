@@ -126,10 +126,10 @@
     const hit = hitAt(point);
     return Boolean(hit) && owner.contains(hit);
   };
-  const bandContains = (band, rect) => rect.top >= band.top - 0.5 && rect.bottom <= band.bottom + 0.5
-    && rect.left >= -0.5 && rect.right <= innerWidth + 0.5;
-  // 节点与提示词框都允许出当前画布视口（平移画布就能看到），所以产品不会把它们“拉回”可见区。
-  // 因此需要命中测试时，只能选一既在目标元素内、又不被面板类浮层盖住的点。
+  // 节点与提示词框都允许出当前画布视口（平移画布就能看到），产品不会把它们“拉回”可见区；
+  // 所以这里不再断言“必须落在可见带内”，需要命中测试时只现选一个没被浮层盖住的点。
+  // 节点与提示词框都允许出当前画布视口（平移画布就能看到），产品不会把它们“拉回”可见区；
+  // 所以这里不再断言“必须落在可见带内”，需要命中测试时只现选一个没被浮层盖住的点。
   const freePointIn = (rect, avoid, step = 10) => {
     const view = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     const area = intersect(rect, view) || rect;
@@ -139,7 +139,7 @@
       }
     }
     return null;
-  }
+  };
   const domSnapshot = () => ({
     worldChildren: world?.children?.length ?? null,
     imageNodes: Array.from(document.querySelectorAll('#world .image-node')).map(n => n.dataset.id),

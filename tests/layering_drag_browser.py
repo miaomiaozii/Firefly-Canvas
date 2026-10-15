@@ -78,6 +78,13 @@ def world_of(browser, node_id: str) -> dict | None:
     )
 
 
+def pan_of(browser) -> dict:
+    """画布平移量。#164 契约：节点与提示词框允许出当前视口，产口不得自动平移画布把它们拉回。"""
+    return browser.evaluate(
+        """(() => ({ x: viewport.x, y: viewport.y, transform: world.style.transform }))()"""
+    )
+
+
 def hit_label(browser, x: float, y: float) -> str:
     return browser.evaluate(
         f"""(() => {{
@@ -342,6 +349,8 @@ def scenario_03_drag_selected(runner: Runner) -> None:
     runner.observe("domOrder", order)
     runner.observe("draggedIsDomEarlier", dragged == order[0] if order else None)
     runner.select(dragged)
+    pan_before = pan_of(runner.browser)
+    runner.observe("panBeforeDrag", pan_before)
     before = rect_of(runner.browser, f".image-node[data-id=\"{dragged}\"]")
     before_world = world_of(runner.browser, dragged)
     runner.observe("nodeBBeforeDrag", before)
@@ -383,13 +392,20 @@ def scenario_03_drag_selected(runner: Runner) -> None:
     runner.observe("nodeBBeforeWorld", before_world)
     runner.observe("nodeBAfterWorld", world_of(runner.browser, dragged))
     runner.observe("nodeBAfterDrop", after)
+    pan_after = pan_of(runner.browser)
+    runner.observe("panAfterDrag", pan_after)
+    runner.check("03 释放后：画布没有被自动平移（节点允许出视口，不强制拉回）",
+                 pan_after == pan_before,
+                 f"before={pan_before} after={pan_after}")
 
 
 def scenario_04_bottom_composer(runner: Runner) -> None:
-    """Drawer open + the bottom node's composer: after the drag it must be fully visible."""
+    """Drawer open + the bottom node's composer: it may fall under the drawer; the canvas must not auto-pan."""
     runner.open_canvas()
     runner.open_drawer()
     runner.select(NODE_B)
+    pan_before = pan_of(runner.browser)
+    runner.observe("panBeforeDrag", pan_before)
     composer_before = rect_of(runner.browser, ".composer")
     drawer_before = rect_of(runner.browser, "#smartHistoryModal")
     runner.observe("composerBeforeDrag", composer_before)
@@ -428,6 +444,11 @@ def scenario_04_bottom_composer(runner: Runner) -> None:
                      f"point=({free['x']:.0f},{free['y']:.0f}) hit={hit_label(runner.browser, free['x'], free['y'])}")
     else:
         runner.observe("composerFullyCoveredByDrawer", {"center": center(composer)})
+    pan_after = pan_of(runner.browser)
+    runner.observe("panAfterDrag", pan_after)
+    runner.check("04 释放后：画布没有被自动平移把提示词框拉回可见区（#164 契约）",
+                 pan_after == pan_before,
+                 f"before={pan_before} after={pan_after}")
     runner.observe("nodeBAfterWorld", world_of(runner.browser, NODE_B))
     runner.observe("composerAfterDrag", composer)
 
@@ -438,6 +459,8 @@ def scenario_05_collapsed(runner: Runner) -> None:
     runner.open_drawer()
     runner.collapse_drawer()
     runner.select(NODE)
+    pan_before = pan_of(runner.browser)
+    runner.observe("panBeforeDrag", pan_before)
     composer = rect_of(runner.browser, ".composer")
     strip = rect_of(runner.browser, "#smartHistoryModal")
     strip_overlap = intersect(composer, strip)
@@ -486,14 +509,78 @@ def scenario_05_collapsed(runner: Runner) -> None:
                  f"hit={hit_label(runner.browser, strip_point['x'], strip_point['y'])}")
     runner.observe("groupAfterWorld", world_of(runner.browser, GROUP))
     runner.observe("groupAfterDrop", rect_of(runner.browser, f".image-node[data-id=\"{GROUP}\"]"))
+    pan_after = pan_of(runner.browser)
+    runner.observe("panAfterDrag", pan_after)
+    runner.check("05 释放后：画布没有被自动平移（折叠态同样不拉回）",
+                 pan_after == pan_before,
+                 f"before={pan_before} after={pan_after}")
+
+
+def scenario_06_prompt_view_state(runner: Runner) -> None:
+    """#164: changing the prompt view must never pan the canvas, drawer open.
+
+    `keepComposerReachableByPanningCanvas` was only ever called from prompt-view
+    state changes (exitPromptFlow / collapseExpandedPrompt / expandPromptToContent /
+    refreshExpandedPromptHeight / the prompt-height resize drag) - never from node
+    dragging - so this scenario drives the prompt view instead of the node.
+
+    Only the expand step is driven natively: for the old mechanism to engage, the
+    composer bottom has to pass the canvas bottom, and the expand/collapse button
+    sits at that bottom edge, so in exactly that state the button is under the
+    drawer and cannot be clicked again. The remaining call sites are covered by
+    tests/test_layering_contract.py::test_no_auto_pan_rescue_of_the_composer,
+    which asserts the mechanism is absent from the product source entirely.
+    """
+    runner.open_canvas()
+    runner.open_drawer()
+    runner.select(NODE_B)
+    pan_before = pan_of(runner.browser)
+    composer_before = rect_of(runner.browser, ".composer")
+    shell_bottom = runner.browser.evaluate(
+        "(() => Math.round(document.querySelector('#shell').getBoundingClientRect().bottom))()"
+    )
+    runner.observe("panBeforePromptView", pan_before)
+    runner.observe("composerBeforePromptView", composer_before)
+    runner.observe("shellBottom", shell_bottom)
+
+    # Drive the prompt view: taller prompt box, then expand to full text. With the
+    # old keepComposerReachableByPanningCanvas in place this panned the whole
+    # canvas by 30px (measured twice: viewport.y 0 -> 30), which is exactly the
+    # behaviour #164 removes - the canvas moved underneath the user.
+    resize = runner.drag_start("#promptResize", (0.5, 0.5))
+    runner.drag_move(resize, 0, 200)
+    runner.drag_release(resize)
+    time.sleep(0.5)
+    runner.observe("composerAfterResize", rect_of(runner.browser, ".composer"))
+    runner.observe("panAfterResize", pan_of(runner.browser))
+
+    runner.browser.native_click("#composerExpandBtn")
+    runner.wait("composerPromptView.mode === 'expanded'")
+    time.sleep(0.6)
+    composer_expanded = rect_of(runner.browser, ".composer")
+    pan_expanded = pan_of(runner.browser)
+    runner.observe("composerAfterExpand", composer_expanded)
+    runner.observe("composerBottomVsCanvasBottom", {
+        "composerBottom": composer_expanded["bottom"], "shellBottom": shell_bottom,
+    })
+    runner.shot("06-drawer-open-prompt-expanded.png",
+                "抽屉打开 + 调高并展开全文提示词框：画布本身没有平移"
+                "（旧机制在这个操作序列里把整个画布平移了 30px，见 #164）")
+    runner.check("06 调高并展开全文后：画布没有被自动平移把提示词框拉回（#164 契约）",
+                 pan_expanded == pan_before,
+                 f"before={pan_before} after={pan_expanded}")
+    runner.observe("panAfterPromptView", pan_expanded)
+
+
 
 
 SCENARIOS = [
     ("01-drawer-closed", scenario_01_closed),
     ("02-drawer-open", scenario_02_drawer_open),
-    ("03-drawer-open-drag-selected", scenario_03_drag_selected),
-    ("04-drawer-open-bottom-composer", scenario_04_bottom_composer),
+    ("03-drag-selected", scenario_03_drag_selected),
+    ("04-bottom-composer", scenario_04_bottom_composer),
     ("05-drawer-collapsed", scenario_05_collapsed),
+    ("06-prompt-view-state", scenario_06_prompt_view_state),
 ]
 
 
