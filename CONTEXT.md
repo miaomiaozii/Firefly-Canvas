@@ -33,7 +33,7 @@ _Avoid_: Agent 会话节点、新节点类型、隐藏工具调用、全局 Agen
 _Avoid_: 对话节点、聊天记录、消息节点
 
 **节点类型标识符**：
-画布节点 type 字段的实现标识符（已存数据的一部分），属实现细节而非领域术语。固定映射：smart-prompt=提示词节点、smart-image=图片节点、smart-agent=Agent 节点、smart-conversation=对话节点。豁免术语一致性检查（#136 决策：不做全量数据迁移）；新代码引用 app/constants.py 的 NODE_TYPE_* 常量。已知缺口：agent-task 在前后端都按字符串比较使用，但尚未登记为 NODE_TYPE_* 常量（#185）。
+画布节点 type 字段的实现标识符（已存数据的一部分），属实现细节而非领域术语。固定映射：smart-prompt=提示词节点、smart-image=图片节点、smart-agent=Agent 节点、smart-conversation=对话节点。豁免术语一致性检查（#136 决策：不做全量数据迁移）；新代码引用 app/constants.py 的 NODE_TYPE_* 常量。已知缺口：agent-task 在前后端都按字符串比较使用，但尚未登记为 NODE_TYPE_* 常量（#184）。
 _Avoid_: 把 smart-* 当作领域术语使用、全量迁移节点类型数据
 
 **提示词提取**：
