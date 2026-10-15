@@ -78,6 +78,10 @@ def _top_level_names(text: str) -> set[str]:
     }
 
 
+def _is_canvas_script(name: str) -> bool:
+    return name.startswith("canvas-") or name in ("smart-canvas.js", "project-canvas-mutations.js")
+
+
 def _script_order() -> list[str]:
     return [
         Path(src).name
@@ -102,7 +106,7 @@ def reverse_references() -> int:
 class CanvasCoreLayerTests(unittest.TestCase):
     def test_canvas_core_is_loaded_first_among_canvas_scripts(self):
         order = _script_order()
-        canvas_scripts = [name for name in order if name.startswith("canvas-")]
+        canvas_scripts = [name for name in order if _is_canvas_script(name)]
         self.assertIn("canvas-core.js", canvas_scripts)
         self.assertEqual(canvas_scripts[0], "canvas-core.js")
         self.assertEqual(canvas_scripts[-1], "smart-canvas.js")
@@ -130,6 +134,20 @@ class CanvasCoreLayerTests(unittest.TestCase):
             self.assertEqual([], missing, f"{module} 缺少自己的状态定义")
             leaked = sorted(name for name in names if name in smart_names)
             self.assertEqual([], leaked, f"{module} 的状态仍留在 smart-canvas.js")
+
+    def test_no_top_level_name_is_declared_twice_across_canvas_scripts(self):
+        # classic 脚本共享同一个全局词法作用域：同一个 `let`/`const` 名字在两个文件里
+        # 各声明一次，不会在 Python 侧报错，而是整份 smart-canvas.js 解析失败，
+        # 表现是画布一个节点都不渲染。#173 下沉过程中实测踩过这个坑。
+        seen: dict[str, list[str]] = {}
+        for name in _script_order():
+            path = JS_DIR / name
+            if not _is_canvas_script(name) or not path.exists():
+                continue
+            for m in re.finditer(r"^(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", path.read_text(encoding="utf-8"), re.M):
+                seen.setdefault(m.group(1), []).append(name)
+        duplicates = {name: files for name, files in seen.items() if len(files) > 1}
+        self.assertEqual({}, duplicates)
 
     def test_reverse_reference_count_does_not_grow(self):
         count = reverse_references()

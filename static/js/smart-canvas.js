@@ -90,25 +90,9 @@ function setupSmartTitleEdit(){
     smartTitle?.addEventListener('click', event => { if(!event.target.closest?.('#smartTitleEdit')) openSmartTitleEdit(); });
     smartTitle?.addEventListener('dblclick', event => { event.preventDefault(); openSmartTitleEdit(); });
 }
-const smartHistoryModal = document.getElementById('smartHistoryModal');
-const smartHistoryList = document.getElementById('smartHistoryList');
-const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
-const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
 const SMART_HISTORY_DOM_LIMIT = 140;
 const SMART_HISTORY_OVERSCAN = 48;
 const SMART_HISTORY_RENDER_BUFFER = 24;
-const smartHistoryVirtualState = {
-    start:0,
-    end:0,
-    count:0,
-    stride:0,
-    gap:0,
-    signature:'',
-    frame:0,
-    force:false,
-    focusCard:null,
-    focusElement:null
-};
 let smartProjectMediaTrashRefreshVersion = 0;
 const smartShortcutModal = document.getElementById('smartShortcutModal');
 const smartSettingsLink = document.getElementById('smartSettingsLink');
@@ -206,7 +190,6 @@ let mentionInsertMode = 'token';
 let panState = null;
 let didPan = false;
 let portDragState = null;
-let connectionEraseState = null;
 const DEBOUNCED_SAVE_MS = 3000;
 let debouncedSaveTimer = null;
 let contentDirty = false;

@@ -6,7 +6,27 @@
 // 注意：undo 栈操作函数（stripDeletedMediaFromUndoStacks/removeProjectOriginalUndoTokens）
 // 属 canvas-undo.js，本批不碰；拖拽事件接线属核心状态机，留主脚本。
 
+// 这些状态本来属于本模块，#173 核心下沉第 2 步从 smart-canvas.js 搬回此处。
+const smartHistoryModal = document.getElementById('smartHistoryModal');
 
+const smartHistoryList = document.getElementById('smartHistoryList');
+
+const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
+
+const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
+
+const smartHistoryVirtualState = {
+    start:0,
+    end:0,
+    count:0,
+    stride:0,
+    gap:0,
+    signature:'',
+    frame:0,
+    force:false,
+    focusCard:null,
+    focusElement:null
+};
 const ARCHIVE_DELAY_MS = 2500; // 延迟 2.5s（> 450ms 保存防抖 + 网络往返）
 let pendingMediaArchives = []; // [{ images: [...], timer: number }]
 

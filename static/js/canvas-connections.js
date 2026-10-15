@@ -6,6 +6,8 @@
 // 注意：WebSocket 的 connectAssetLibrarySyncSocket / connectAgentWebSocket
 // 不是画布连线，仍留在主脚本。
 
+// 这些状态本来属于本模块，#173 核心下沉第 2 步从 smart-canvas.js 搬回此处。
+let connectionEraseState = null;
 function rerouteSmartConnections(fromId, toId){
     if(canvas){
         canvas.connections = (canvas.connections || []).map(c => {
