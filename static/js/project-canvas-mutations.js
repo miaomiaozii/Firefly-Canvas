@@ -75,20 +75,20 @@
         if(!isObject(local) || !isObject(remote)) return result;
         const remoteType = String(remote.type || '');
         const localType = String(local.type || '');
-        const remoteStatus = remoteType === 'smart-agent'
+        const remoteStatus = remoteType === NODE_TYPE_AGENT
             ? String(remote.agent_plan?.status || '')
-            : remoteType === 'smart-image' && remote.generationState ? String(remote.generationState) : String(remote.status || '');
-        const localStatus = localType === 'smart-agent'
+            : remoteType === NODE_TYPE_IMAGE && remote.generationState ? String(remote.generationState) : String(remote.status || '');
+        const localStatus = localType === NODE_TYPE_AGENT
             ? String(local.agent_plan?.status || '')
-            : localType === 'smart-image' && local.generationState ? String(local.generationState) : String(local.status || '');
+            : localType === NODE_TYPE_IMAGE && local.generationState ? String(local.generationState) : String(local.status || '');
         if(!isAgentTerminalStatus(remoteStatus) || !isAgentTransientStatus(localStatus)) return result;
-        if(remoteType === 'smart-agent' && remote.agent_plan) result.agent_plan = clone(remote.agent_plan);
-        if(remoteType === 'agent-task' || localType === 'agent-task'){
+        if(remoteType === NODE_TYPE_AGENT && remote.agent_plan) result.agent_plan = clone(remote.agent_plan);
+        if(remoteType === NODE_TYPE_TASK || localType === NODE_TYPE_TASK){
             ['status', 'error', 'result', 'completed_at', 'uncertain', 'dispatch_state'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(remote, key)) result[key] = clone(remote[key]);
             });
         }
-        if(remoteType === 'smart-image' && remote.generationState){
+        if(remoteType === NODE_TYPE_IMAGE && remote.generationState){
             ['images', 'pending', 'running', 'generationState', 'error', 'updated_at'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(remote, key)) result[key] = clone(remote[key]);
             });

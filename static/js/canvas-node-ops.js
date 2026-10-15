@@ -10,14 +10,14 @@
 // duplicateForAltDrag）属剪贴板操作，留主脚本。
 
 function createImageNodeAt(point, images=[], options={}){
-    const layout = imageLayout(images || [], mediaNodeDefaultScale({type:'smart-image', images:images || []}), {type:'smart-image', images:images || []});
+    const layout = imageLayout(images || [], mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:images || []}), {type:NODE_TYPE_IMAGE, images:images || []});
     return createNode((point?.x || 0) - Math.round(layout.width / 2), (point?.y || 0) - Math.round(layout.height / 2), images, options);
 }
 
 function createNode(x, y, images=[], options={}){
     if(!options.skipUndo) pushUndo();
     const nodeImages = (images || []).map(img => ({...img}));
-    const node = {id:uid('smart'), type:'smart-image', x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
+    const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
     node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : mediaNodeDefaultScale(node);
     if(options.title) node.title = String(options.title);
     if(options.runMeta) attachRunMeta(node, options.runMeta);
@@ -37,7 +37,7 @@ function createPromptNode(x, y, options={}){
     const providerId = resolveChatProviderId();
     const node = {
         id:uid('prompt'),
-        type:'smart-prompt',
+        type:NODE_TYPE_PROMPT,
         x,
         y,
         w:316,
@@ -67,7 +67,7 @@ function createConversationNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {
         id:uid('conversation'),
-        type:'smart-conversation',
+        type:NODE_TYPE_CONVERSATION,
         x,
         y,
         w:390,
@@ -87,7 +87,7 @@ function createAgentNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {
         id:uid('agent'),
-        type:'smart-agent',
+        type:NODE_TYPE_AGENT,
         x,
         y,
         w:382,
@@ -105,7 +105,7 @@ function createAgentNode(x, y, options={}){
 
 function createLocalEditNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('local-edit'), type:'local-edit', x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
+    const node = {id:uid('local-edit'), type:NODE_TYPE_LOCAL_EDIT, x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
         original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
@@ -133,7 +133,7 @@ function createLocalEditNodeFromImage(nodeId, imageIndex=null){
 
 function createLoopNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('loop'), type:'smart-loop', x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
+    const node = {id:uid('loop'), type:NODE_TYPE_LOOP, x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     render();
@@ -143,7 +143,7 @@ function createLoopNode(x, y, options={}){
 
 function createSmartGroupNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('group'), type:'smart-group', x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
+    const node = {id:uid('group'), type:NODE_TYPE_GROUP, x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     render();
@@ -276,7 +276,7 @@ function deleteNode(id){
 
 function clearNodeMediaBeforeDelete(id){
     const node = canvasState.nodes.find(n => n.id === id);
-    if(!node || (node.type && node.type !== 'smart-image')) return false;
+    if(!node || (node.type && node.type !== NODE_TYPE_IMAGE)) return false;
     const hadMedia = Boolean((node.images || []).length || node.pending);
     if(!hadMedia) return false;
     const clearedImages = (node.images || []).slice();
