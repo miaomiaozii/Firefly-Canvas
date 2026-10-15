@@ -46,6 +46,14 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         # smart-canvas.js 依赖前面模块的全局绑定，必须最后加载。
         self.assertEqual(CANVAS_SCRIPTS[-1], "smart-canvas.js")
 
+    def test_navigation_index_module_table_covers_every_canvas_script(self):
+        # #173 下沉时实际发生了文档漂移：navigation-index.md 的模块表里没有
+        # canvas-core.js，正文还写「跨模块可变状态集中在 canvas-state.js」。
+        # AGENTS.md 把这份索引当入口用，漏登记会让人按错的图景改代码。
+        doc = (ROOT / "docs" / "agents" / "navigation-index.md").read_text(encoding="utf-8")
+        listed = re.findall(r"^\|\s*`([A-Za-z0-9_-]+\.js)`", doc, re.M)
+        self.assertEqual(sorted(set(CANVAS_SCRIPTS)), sorted(set(listed)))
+
     def test_every_canvas_module_passes_node_syntax_check(self):
         # #167：这条测试就是质量门的 javascript-syntax 步骤（fast/domain 都跑），
         # 所以不能因为 PATH 上没 node 就静默跳过，否则门会变成假绿。

@@ -97,12 +97,15 @@
 
 画布前端是 classic `<script>`（非 ES module），按 `static/smart-canvas.html` 的 `<script src>` 顺序加载，
 共享同一全局词法作用域。拆出的模块**只含顶层函数/类/状态声明，不含顶层可执行代码**，因此可以先于
-`smart-canvas.js` 加载；跨模块可变状态集中在 `canvas-state.js` 的 `window.canvasState`。
+`smart-canvas.js` 加载；最早加载的是 `canvas-core.js`，它承载无状态工具与跨模块共享的
+可变状态（`canvas`、`settings`、`params`、`selectedNode`）；`canvas-state.js` 的
+`window.canvasState` 是状态容器属性，不是词法绑定。
 按源码文本断言画布前端行为的测试，一律通过 `tests/canvas_frontend_sources.py::canvas_source()` 读取全部模块，
 不要只读 `smart-canvas.js`；新增模块时同步 `CANVAS_SCRIPTS`，`tests/test_canvas_frontend_sources.py` 会守住它与 HTML 顺序一致。
 
 | 模块 | 职责 | 最相关测试 |
 | --- | --- | --- |
+| `canvas-core.js` | 最早加载的核心层：无状态工具（`tr`/`escapeHtml`/`uid`/`nowMs` 等）与跨模块共享状态（`canvas`/`settings`/`params`） | `tests/test_canvas_core_layer.py` |
 | `canvas-state.js` | 跨模块可变状态容器（`window.canvasState`） | `tests/test_project_canvas_mutation_client.py` |
 | `project-canvas-mutations.js` | 项目画布 mutation 客户端封装 | `tests/test_project_canvas_mutation_client.py` |
 | `canvas-layout-utils.js` | 布局计算纯函数 | `tests/canvas_boundaries_browser.py` |
@@ -111,7 +114,7 @@
 | `canvas-undo.js` | 撤销/重做 | `tests/undo_redo_browser.py` |
 | `canvas-node-ops.js` | 节点增删、替换、分组等单节点操作 | `tests/node_replace_browser.py`、`tests/canvas_interactions_browser.py` |
 | `canvas-image-editor.js` | 图片编辑器：裁剪、旋转、预览导航与对比 | `tests/image_editor_browser.py`、`tests/image_editor_func_browser.py`、`tests/fly_fixes_browser.py` |
-| `canvas-generation-cascade.js` | 级联与循环生成调度（输出槽位、下游目标、并行上限与停止） | `tests/node_flow_browser.py`、`tests/generation_failure_browser.py`、`tests/video_failure_browser.py` |
+| `canvas-generation-cascade.js` | 级联与循环生成调度（生成输出项、下游目标、并行上限与停止） | `tests/node_flow_browser.py`、`tests/generation_failure_browser.py`、`tests/video_failure_browser.py` |
 | `canvas-generation-tasks.js` | 生成任务提交、即梦轮询、待恢复任务续跑与失败重试 | `tests/generation_task_native_browser.py`、`tests/test_project_image_generation_ui.py`、`tests/test_project_video_generation_ui.py`（ADR-0017） |
 | `canvas-agent-tui.js` | Agent TUI 会话节点：WebSocket 事件、会话控制（模型/自主度/fork/分支）与卡片渲染 | `tests/agent_tui_polish_browser.py`、`tests/agent_node_settings_browser.py`、`tests/agent_fork_browser.py` |
 | `smart-canvas.js` | 主脚本：节点体渲染、提示词构建、`runGeneration` 编排与启动初始化 | 其余画布浏览器测试 |
