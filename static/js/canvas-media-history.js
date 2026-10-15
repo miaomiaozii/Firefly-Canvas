@@ -2207,6 +2207,8 @@ function toggleSmartHistoryDrawerCollapsed(){
     if(!smartHistoryModal?.classList.contains('open')) openSmartCanvasLog();
     canvasState.smartHistoryDrawerCollapsed = !canvasState.smartHistoryDrawerCollapsed;
     updateSmartHistoryDrawerCollapseUi();
+    // #164: 折叠/展开改变了抽屉顶边（安全底边），沿用已有的平移让位机制重算提示词框可达性。
+    if(typeof keepComposerReachableByPanningCanvas === 'function') keepComposerReachableByPanningCanvas();
     if(!canvasState.smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
 }
 
