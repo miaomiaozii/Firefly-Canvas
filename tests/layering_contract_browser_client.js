@@ -109,7 +109,16 @@
     return right > left && bottom > top ? { left, top, right, bottom } : null;
   };
   const intersectAll = (...rects) => rects.reduce((acc, rect) => (acc ? intersect(acc, rect) : rect), rects[0]);
-  const describe = elm => elm ? `${elm.tagName.toLowerCase()}.${String(elm.className).trim().split(/\s+/).slice(0, 3).join('.')}${elm.dataset?.id ? `[data-id=${elm.dataset.id}]` : ''}` : 'none';
+  const describe = elm => {
+    if(!elm) return 'none';
+    const self = `${elm.tagName.toLowerCase()}.${String(elm.className).trim().split(/\s+/).slice(0, 3).join('.')}${elm.dataset?.id ? `[data-id=${elm.dataset.id}]` : ''}`;
+    // 命中子元素时补上所属层（哪个节点 / 提示词框 / 抽屉），否则 hit=div.node-drop 无法区分。
+    const owner = elm.closest?.('.image-node[data-id],.composer,.log-modal');
+    const suffix = owner?.dataset?.id ? `@${owner.dataset.id}`
+      : owner?.classList?.contains('composer') ? '@composer'
+        : owner?.classList?.contains('log-modal') ? '@log-modal' : '';
+    return self + suffix;
+  };
   const hitAt = point => (point ? document.elementFromPoint(point.x, point.y) : null);
   const hitInside = (point, owner) => {
     const hit = hitAt(point);
@@ -207,7 +216,7 @@
     diag.nodeOverlapClosed = overlapClosed;
     check('关闭: 选中节点压在普通节点之上（命中选中节点）',
       overlapClosed && hitInside(overlapClosed, nodeEl()),
-      `point=${JSON.stringify(overlapClosed)} hit=${describe(hitAt(overlapClosed))}`);
+      `point=${JSON.stringify(overlapClosed)} hit=${describe(hitAt(overlapClosed))} z(node)=${zOf(nodeEl())} z(node-b)=${zOf(nodeBEl())}`);
     const composerRectClosed = rectOf(composer);
     check('关闭: 提示词框完整落在可见带内',
       bandContains(bandClosed, composerRectClosed),
@@ -275,7 +284,7 @@
     diag.nodeOverlapCollapsed = overlapCollapsed;
     check('折叠: 选中节点仍压在普通节点之上（命中选中节点，不被压平）',
       overlapCollapsed && hitInside(overlapCollapsed, nodeEl()),
-      `point=${JSON.stringify(overlapCollapsed)} hit=${describe(hitAt(overlapCollapsed))}`);
+      `point=${JSON.stringify(overlapCollapsed)} hit=${describe(hitAt(overlapCollapsed))} z(node)=${zOf(nodeEl())} z(node-b)=${zOf(nodeBEl())}`);
     const stripPoint = { x: drawerRectCollapsed.left + 20, y: (drawerRectCollapsed.top + drawerRectCollapsed.bottom) / 2 };
     check('折叠: 底部条带仍是最上层（折叠不解除遮挡）',
       hitInside(stripPoint, drawer), `point=${JSON.stringify(stripPoint)} hit=${describe(hitAt(stripPoint))}`);
@@ -290,7 +299,7 @@
     const overlapClosedAgain = nodeOverlapPoint(shellBand());
     check('关闭后: 选中节点仍压在普通节点之上',
       overlapClosedAgain && hitInside(overlapClosedAgain, nodeEl()),
-      `point=${JSON.stringify(overlapClosedAgain)} hit=${describe(hitAt(overlapClosedAgain))}`);
+      `point=${JSON.stringify(overlapClosedAgain)} hit=${describe(hitAt(overlapClosedAgain))} z(node)=${zOf(nodeEl())} z(node-b)=${zOf(nodeBEl())}`);
   }
 
   await postClientLoaded();
