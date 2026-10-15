@@ -44,6 +44,17 @@ if str(ROOT) not in sys.path:
 
 CANVAS_CSS = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 CONTEXT_MD = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
+CANVAS_JS = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+
+
+def function_body(js: str, name: str) -> str:
+    """Source of a top-level `function name(...)` up to the next top-level function."""
+    start = js.find(f"function {name}(")
+    if start < 0:
+        raise AssertionError(f"function not found: {name}")
+    following = re.search(r"\nfunction \w+\(", js[start + 1:])
+    end = start + 1 + following.start() if following else len(js)
+    return js[start:end]
 
 
 def rule_body(css: str, selector: str) -> str:
@@ -140,6 +151,46 @@ class LayeringContractTests(unittest.TestCase):
         ordered = [ladder[key] for key in expected]
         self.assertEqual(
             ordered, sorted(ordered), f"z-index ladder is not monotonic: {ladder}"
+        )
+
+    def test_composer_reachability_measures_the_open_drawer(self):
+        """#164: the pan-away mechanism must treat the open drawer's top edge as safeBottom."""
+        safe = function_body(CANVAS_JS, "composerSafeBottom")
+        self.assertIn(
+            "smartHistoryModal",
+            safe,
+            "safeBottom must be derived from the history drawer, not only the viewport",
+        )
+        self.assertRegex(
+            safe,
+            r"Math\.min\(\s*safeBottom\s*,\s*drawerRect\.top\s*\)",
+            "safeBottom must clamp to the drawer's top edge: Math.min(safeBottom, drawerRect.top)",
+        )
+        reach = function_body(CANVAS_JS, "keepComposerReachableByPanningCanvas")
+        self.assertIn(
+            "composerSafeBottom(frame)",
+            reach,
+            "keepComposerReachableByPanningCanvas must derive safeBottom from composerSafeBottom",
+        )
+        self.assertNotIn(
+            "frame.bottom - 16",
+            reach,
+            "safeBottom must not be hardcoded to the viewport bottom inside the mechanism",
+        )
+
+    def test_composer_reachability_runs_after_select_and_after_drag(self):
+        """#164: selecting a node, and dropping a dragged node, must re-check reachability."""
+        update = function_body(CANVAS_JS, "updateComposer")
+        self.assertIn(
+            "keepComposerReachableByPanningCanvas()",
+            update,
+            "opening the composer on a node must re-check reachability against the open drawer",
+        )
+        settle = CANVAS_JS[CANVAS_JS.find("composerDragSettleTimer = setTimeout("):][:400]
+        self.assertIn(
+            "keepComposerReachableByPanningCanvas()",
+            settle,
+            "finishing a node drag must re-check reachability against the open drawer",
         )
 
     def test_context_md_documents_the_generation_group_frame_term(self):
