@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,6 +60,87 @@ class UiIntegrityEvidenceTests(unittest.TestCase):
             accepted_by="fixture-reviewer",
             reason="unit-test accepted visual contract",
         )
+
+    def test_cli_exposes_the_baseline_acceptance_entry_point(self):
+        """Issue #183: a stale baseline must be refreshable through the CLI.
+
+        The acceptance routine is only useful if a human can reach it, so the
+        subcommand itself is locked here: it writes the 40 candidate PNGs plus a
+        manifest that records the Chrome major the baseline was captured with.
+        """
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "ui_integrity_evidence.py"),
+                "accept",
+                "--artifacts-dir",
+                str(self.artifacts),
+                "--baselines-dir",
+                str(self.baselines),
+                "--accepted-by",
+                "cli-guard-test",
+                "--reason",
+                "issue #183 baseline refresh entry",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["status"], "accepted")
+        manifest = json.loads((self.baselines / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIs(manifest["accepted"], True)
+        self.assertEqual(manifest["accepted_by"], "cli-guard-test")
+        self.assertEqual(
+            manifest["accepted_browser_versions"],
+            [chrome_major(manifest["environment"]["browser"]["version"])],
+        )
+        self.assertEqual(
+            len(manifest["screenshots"]), len(EXPECTED_VIEWPORTS) * len(EXPECTED_SCENES)
+        )
+        for entry in manifest["screenshots"]:
+            self.assertTrue((self.baselines / entry["path"]).is_file(), entry["path"])
+
+    def test_cli_validate_command_consumes_the_accepted_baseline(self):
+        accepted = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "ui_integrity_evidence.py"),
+                "accept",
+                "--artifacts-dir",
+                str(self.artifacts),
+                "--baselines-dir",
+                str(self.baselines),
+                "--accepted-by",
+                "cli-guard-test",
+                "--reason",
+                "issue #183 baseline refresh entry",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "ui_integrity_evidence.py"),
+                "validate",
+                "--artifacts-dir",
+                str(self.artifacts),
+                "--baselines-dir",
+                str(self.baselines),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "passed")
 
     def test_candidate_is_valid_but_cannot_validate_without_explicitly_accepted_baseline(self):
         candidate = validate_candidate(self.artifacts)
