@@ -38,6 +38,9 @@ EXPECTED_SCENES = (
     "settings",
     "shortcuts",
 )
+# The generation-detail lightbox pan is part of the geometry evidence, so it is
+# pinned to the exact displacement the journey performs instead of a range.
+DETAIL_PAN_CONTRACT = {"x": 54, "y": 28}
 REQUIRED_FLAGS = (
     "no_horizontal_scroll",
     "critical_surfaces_in_viewport",
@@ -501,8 +504,7 @@ def _validate_scene_facts(geometry: list[dict]) -> None:
         and float(detail.get("viewportHeightShare") or 0) >= 0.8
         and detail.get("sharedPreviewFrame") is True
         and float(detail.get("wheelZoom") or 0) > 1
-        and abs(float((detail.get("dragPan") or {}).get("x") or 0)) >= 20
-        and abs(float((detail.get("dragPan") or {}).get("y") or 0)) >= 10
+        and (detail.get("dragPan") or {}) == DETAIL_PAN_CONTRACT
         and detail.get("escapeKeptHistory") is True
         and clipboard.get("png") is True
         and clipboard.get("longest") == 2048

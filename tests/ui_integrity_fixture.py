@@ -7,6 +7,7 @@ from PIL import Image
 
 from tests.native_input_fixture import selector_owner_click_evidence
 from tools.ui_integrity_evidence import (
+    DETAIL_PAN_CONTRACT,
     EXPECTED_NODE_ACTION_IDS,
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
@@ -368,7 +369,7 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
                     "viewportHeightShare": 0.85,
                     "sharedPreviewFrame": True,
                     "wheelZoom": 1.12,
-                    "dragPan": {"x": 54, "y": 28},
+                    "dragPan": dict(DETAIL_PAN_CONTRACT),
                     "escapeKeptHistory": True,
                 },
                 "clipboardFacts": {"png": True, "width": 2048, "height": 1117, "longest": 2048, "centerPixel": [156, 112, 64, 255], "matchesSelectedOutput": True},

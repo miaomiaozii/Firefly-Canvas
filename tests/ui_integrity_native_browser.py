@@ -26,6 +26,7 @@ from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
 from tools.ui_integrity_evidence import (
+    DETAIL_PAN_CONTRACT,
     EXPECTED_NODE_ACTION_IDS,
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
@@ -417,6 +418,19 @@ def settle(browser: NativeBrowser) -> dict:
           await Promise.all(visibleImages.map(image => image.complete ? Promise.resolve() : new Promise(resolve => {image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});})));
           await Promise.all(visibleImages.map(image => typeof image.decode === 'function' ? image.decode().catch(() => {}) : Promise.resolve()));
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          // Chrome reuses the raster it already holds for a composited <img>, and
+          // whether an image layer was promoted (and how its sub-pixel object-fit
+          // offset was snapped) depends on the paint history of the session.  Two
+          // runs of byte-identical DOM then antialias the same thumbnail edges
+          // differently (Chrome 155.0.8059.40: 60-91 pixels over the Δ>16 gate in
+          // the composer thumbnail strip).  Hiding and restoring the document
+          // forces one clean full-viewport re-raster, which makes the capture
+          // reproducible: two consecutive five-viewport journeys then produce 40
+          // byte-identical screenshots.
+          document.documentElement.style.visibility='hidden';
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          document.documentElement.style.visibility='';
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           const toastEl=document.getElementById('toast');
           if(toastEl && toastEl.classList.contains('show')){
             await new Promise(resolve=>{
@@ -1558,8 +1572,13 @@ def run_viewport(
         browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)>1", timeout=10)
         zoom_after_wheel = float(browser.evaluate("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)"))
         browser.native_drag(".smart-log-detail-stage", dx=54, dy=28, steps=6, relative=(0.5, 0.5))
+        browser.wait_for(
+            "smartHistoryDetailView.pan.x===%d && smartHistoryDetailView.pan.y===%d"
+            % (DETAIL_PAN_CONTRACT["x"], DETAIL_PAN_CONTRACT["y"]),
+            timeout=10,
+        )
         pan_after_drag = browser.evaluate("({...smartHistoryDetailView.pan})")
-        if zoom_after_wheel <= 1 or abs(float(pan_after_drag.get("x", 0))) < 20 or abs(float(pan_after_drag.get("y", 0))) < 10:
+        if zoom_after_wheel <= 1 or pan_after_drag != DETAIL_PAN_CONTRACT:
             raise AssertionError(f"generation detail did not support native wheel zoom and drag pan: zoom={zoom_after_wheel}, pan={pan_after_drag}")
         browser.native_click('[data-smart-log-detail-zoom="reset"]')
         browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||0)===1 && smartHistoryDetailView.pan.x===0 && smartHistoryDetailView.pan.y===0", timeout=10)
@@ -1798,8 +1817,7 @@ def run_viewport(
         history_detail_zoom_and_escape = bool(
             detail_facts.get("sharedPreviewFrame")
             and float(detail_facts.get("wheelZoom", 0)) > 1
-            and abs(float(detail_facts.get("dragPan", {}).get("x", 0))) >= 20
-            and abs(float(detail_facts.get("dragPan", {}).get("y", 0))) >= 10
+            and detail_facts.get("dragPan", {}) == DETAIL_PAN_CONTRACT
             and detail_facts.get("escapeKeptHistory")
         )
         generation_detail_complete = bool(generation_detail_complete and history_detail_zoom_and_escape)
