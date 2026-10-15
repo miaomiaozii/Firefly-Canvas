@@ -106,6 +106,7 @@
 | 模块 | 职责 | 最相关测试 |
 | --- | --- | --- |
 | `canvas-core.js` | 最早加载的核心层：无状态工具（`tr`/`escapeHtml`/`uid`/`nowMs` 等）与跨模块共享状态（`canvas`/`settings`/`params`） | `tests/test_canvas_core_layer.py` |
+| `canvas-node-types.js` | 节点类型常量（8 种 NODE_TYPE_*，与 app/constants.py 逐值对齐，紧跟核心层之后加载） | `tests/test_node_type_constants.py` |
 | `canvas-state.js` | 跨模块可变状态容器（`window.canvasState`） | `tests/test_project_canvas_mutation_client.py` |
 | `project-canvas-mutations.js` | 项目画布 mutation 客户端封装 | `tests/test_project_canvas_mutation_client.py` |
 | `canvas-layout-utils.js` | 布局计算纯函数 | `tests/canvas_boundaries_browser.py` |

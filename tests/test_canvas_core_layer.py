@@ -73,6 +73,9 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-layout-utils.js": 0,
     # canvas-core.js 是最早加载的那层，它不该反向引用任何东西；0 是设约束，不是实测巧合。
     "canvas-core.js": 0,
+    # #184 新增的节点类型常量层：只声明常量，不引用 smart-canvas.js 的任何顶层名；
+    # 必须紧跟 canvas-core.js 之后加载（见 test_canvas_core_is_loaded_first_among_canvas_scripts）。
+    "canvas-node-types.js": 0,
 }
 
 
