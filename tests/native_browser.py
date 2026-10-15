@@ -1194,6 +1194,23 @@ class NativeBrowser:
         path.write_bytes(base64.b64decode(response["data"]))
         return path
 
+    def park_pointer(self, *, x: float = -80.0, y: float = -80.0) -> None:
+        """Move the native pointer off the rendered page.
+
+        Chrome keeps ``:hover`` on whatever the last processed mouse event was
+        over, and which element that is depends on the whole interaction
+        history of the session: two runs of the same journey left the pointer on
+        ``.smart-log-detail-zoom-tools button`` in one run (hover background
+        painted, 722 pixels over the Δ>16 gate in ``generation-detail``
+        @800x600) and on a long-closed create-menu card in the next.  A visual
+        baseline must not encode where the pointer happens to rest, so park it
+        outside the viewport before every capture.
+        """
+        self.cdp.command(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0},
+        )
+
     def browser_version(self) -> dict:
         return self.cdp.command("Browser.getVersion")
 

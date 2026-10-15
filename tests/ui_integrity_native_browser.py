@@ -704,6 +704,7 @@ def run_viewport(
         def snap(scene: str) -> None:
             if scene != EXPECTED_SCENES[len(screenshots)]:
                 raise AssertionError(f"non-canonical screenshot order: {scene}")
+            browser.park_pointer()
             settle(browser)
             path = browser.capture_screenshot(screenshot_root / f"{scene}.png")
             screenshots.append({"scene": scene, "path": relative(path, artifacts_root)})
