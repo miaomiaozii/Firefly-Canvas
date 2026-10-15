@@ -137,14 +137,16 @@ class CanvasCoreLayerTests(unittest.TestCase):
             leaked = sorted(name for name in names if name in smart_names)
             self.assertEqual([], leaked, f"{module} 的状态仍留在 smart-canvas.js")
 
-    def test_no_top_level_name_is_declared_twice_across_canvas_scripts(self):
+    def test_no_top_level_name_is_declared_twice_across_loaded_scripts(self):
         # classic 脚本共享同一个全局词法作用域：同一个 `let`/`const` 名字在两个文件里
         # 各声明一次，不会在 Python 侧报错，而是整份 smart-canvas.js 解析失败，
         # 表现是画布一个节点都不渲染。#173 下沉过程中实测踩过这个坑。
+        # 扫描面是 smart-canvas.html 加载的全部脚本，不只画布模块：
+        # 跟 i18n.js 这类非画布脚本撞名，坏法一模一样。
         seen: dict[str, list[str]] = {}
         for name in _script_order():
             path = JS_DIR / name
-            if not _is_canvas_script(name) or not path.exists():
+            if not path.exists():
                 continue
             for m in re.finditer(r"^(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", path.read_text(encoding="utf-8"), re.M):
                 seen.setdefault(m.group(1), []).append(name)
