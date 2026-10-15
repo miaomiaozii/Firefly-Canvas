@@ -1,5 +1,4 @@
 console.log("smart-canvas.js loading...");
-const params = new URLSearchParams(location.search);
 const canvasId = params.get('id') || '';
 const sourceProjectId = params.get('project') || '';
 window.canvasId = canvasId;
@@ -141,7 +140,6 @@ const longContentReaderTitle = document.getElementById('longContentReaderTitle')
 const longContentReaderBody = document.getElementById('longContentReaderBody');
 const longContentReaderClose = document.getElementById('longContentReaderClose');
 let minimapViewport = document.getElementById('minimapViewport');
-let canvas = null;
 let canvasUsesConnections = true;
 let dragState = null;
 let composerDragSettleTimer = 0;
@@ -321,60 +319,6 @@ function persistProjectViewport(){
     if(!key) return;
     try { localStorage.setItem(key, JSON.stringify(normalizeProjectViewport(viewport))); } catch(error) {}
 }
-let settings = {
-    engine:'api',
-    apiKind:'image',
-    routingMode:'auto',
-    anglePreset:'none',
-    provider_id:'',
-    model:'',
-    ratio:'square',
-    resolution:'4k',
-    customRatio:'',
-    customRatioWidth:'',
-    customRatioHeight:'',
-    customSize:'',
-    customWidth:'',
-    customHeight:'',
-    quality:'auto',
-    count:1,
-    videoRoutingMode:'auto',
-    videoProvider:'',
-    videoModel:'',
-    videoDuration:5,
-    videoAspect:'16:9',
-    videoResolution:'',
-    videoEnhancePrompt:false,
-    videoEnableUpsample:false,
-    videoWatermark:false,
-    videoCameraFixed:false,
-    videoReturnLastFrame:false,
-    videoGenerateAudio:false,
-    videoMultimodal:true,
-    _videoMultimodalUserSet:false,
-    videoUseFrameRoles:false,
-    videoTrustedAsset:false,
-    videoTrustedSource:'library',
-    videoTempShLinks:[],
-    msgenModel:'custom',
-    msCustomModel:'',
-    msRatio:'square',
-    msResolution:'1k',
-    msCustomRatio:'',
-    msCustomRatioWidth:'',
-    msCustomRatioHeight:'',
-    msCustomSize:'',
-    msCustomWidth:'',
-    msCustomHeight:'',
-    rhConfigKey:'',
-    rhPayment:'free',
-    rhInstanceType:'',
-    rhParams:{},
-    rhRandomActive:{},
-    width:1024,
-    height:1024,
-    promptH:84
-};
 const MS_GEN_MODELS = {
     custom: { label:tr('smart.custom'), modelId:'', acceptsImage:true }
 };

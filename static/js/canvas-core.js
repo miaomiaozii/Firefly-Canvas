@@ -2,6 +2,65 @@
 // 只放两类东西：无状态工具，以及跨模块共享的可变状态。
 // 判据：名字被多个已拆出模块回调，且它自己不依赖 smart-canvas.js 的任何定义，才允许搬进来。
 
+// 跨模块共享的可变状态。放在最前，因为后面的工具（如 cloneSmartSettings 的默认参数）会读它们。
+const params = new URLSearchParams(location.search);
+
+let settings = {
+    engine:'api',
+    apiKind:'image',
+    routingMode:'auto',
+    anglePreset:'none',
+    provider_id:'',
+    model:'',
+    ratio:'square',
+    resolution:'4k',
+    customRatio:'',
+    customRatioWidth:'',
+    customRatioHeight:'',
+    customSize:'',
+    customWidth:'',
+    customHeight:'',
+    quality:'auto',
+    count:1,
+    videoRoutingMode:'auto',
+    videoProvider:'',
+    videoModel:'',
+    videoDuration:5,
+    videoAspect:'16:9',
+    videoResolution:'',
+    videoEnhancePrompt:false,
+    videoEnableUpsample:false,
+    videoWatermark:false,
+    videoCameraFixed:false,
+    videoReturnLastFrame:false,
+    videoGenerateAudio:false,
+    videoMultimodal:true,
+    _videoMultimodalUserSet:false,
+    videoUseFrameRoles:false,
+    videoTrustedAsset:false,
+    videoTrustedSource:'library',
+    videoTempShLinks:[],
+    msgenModel:'custom',
+    msCustomModel:'',
+    msRatio:'square',
+    msResolution:'1k',
+    msCustomRatio:'',
+    msCustomRatioWidth:'',
+    msCustomRatioHeight:'',
+    msCustomSize:'',
+    msCustomWidth:'',
+    msCustomHeight:'',
+    rhConfigKey:'',
+    rhPayment:'free',
+    rhInstanceType:'',
+    rhParams:{},
+    rhRandomActive:{},
+    width:1024,
+    height:1024,
+    promptH:84
+};
+
+let canvas = null;
 function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
 
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }

@@ -52,8 +52,10 @@ MODULE_OWNED = {
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数。只能降。
-# 2026-10-15 实测：下沉前 1836；三步下沉后见下方常量。
-REVERSE_REFERENCE_CEILING = 1836
+# 2026-10-15 实测：下沉前 1836；#173 三步下沉后 686（降 63%）。
+# 剩下的主要是 render / scheduleSave / shell / world 这类行为枢纽与 DOM 节点，
+# 它们本来就该被模块调用；要继续降，得先判明哪些该注入、哪些该留在核心。
+REVERSE_REFERENCE_CEILING = 686
 
 MODULES = (
     "canvas-state.js",
