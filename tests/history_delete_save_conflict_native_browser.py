@@ -501,14 +501,13 @@ def run_journey(
                 exhausted_now = any(f.get("limitReached") for f in flushes_now)
                 result["exhausted"] = exhausted_now
                 if exhausted_now:
-                    # --- step 5.5: IMMEDIATELY after the budget is spent (before the
-                    # debounced self-heal can win the race), the user makes a fresh
-                    # edit and clicks save. The issue claims this is impossible
-                    # without a force refresh.
+                    # --- step 5.5: IMMEDIATELY after the budget is spent, the user
+                    # types a fresh edit and clicks save — kept as fast as possible
+                    # so the manual save starts inside the pre-recovery window (the
+                    # debounced self-heal fires ~2s later and would otherwise win
+                    # the race). The issue claims this is impossible without a
+                    # force refresh. The node is still selected from step 1.
                     close_history_drawer(browser)
-                    browser.native_click(f'.image-node[data-id="{NODE_ID}"]')
-                    time.sleep(0.8)
-                    wait_prompt_clickable(browser, shot=run_shots / "debug-prompt-blocked-e.png")
                     browser.native_click("#promptInput", relative=(0.02, 0.5))
                     browser.native_press("End")
                     browser.native_type(EDIT_E)
@@ -518,6 +517,7 @@ def run_journey(
                     wait_state(browser, "canvasSyncInFlight===false", 30, "edit-e save flight cleared")
                     time.sleep(2.0)  # let the save chain finish writing
                     result["edit-e-persisted-immediately-after-exhaustion"] = EDIT_E in server_prompt(store, project_id)
+                    result["exhausted-at-t"] = max((f.get("t", 0) for f in flushes_now if f.get("limitReached")), default=None)
                     result["rev-trace"].append({"phase": "edit-e-after-exhaustion", "server": server_revision(store, project_id), "page": state(browser, "canvas && canvas.revision"), "prompt": server_prompt(store, project_id)[-60:]})
                 time.sleep(4.0)  # beyond the 3s debounce, so a self-heal retry already fired
                 stuck = state(browser, "(function(){var el=document.getElementById('projectSaveState');return {state:el?el.dataset.state:null,text:el?el.textContent:''};})()")
