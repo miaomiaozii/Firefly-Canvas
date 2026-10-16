@@ -502,18 +502,22 @@ def run_journey(
                 result["exhausted"] = exhausted_now
                 if exhausted_now:
                     # --- step 5.5: IMMEDIATELY after the budget is spent, the user
-                    # types a fresh edit and clicks save — kept as fast as possible
-                    # so the manual save starts inside the pre-recovery window (the
+                    # types a fresh edit and saves — kept as fast as possible so the
+                    # manual save starts inside the pre-recovery window (the
                     # debounced self-heal fires ~2s later and would otherwise win
-                    # the race). The issue claims this is impossible without a
-                    # force refresh. The node is still selected from step 1.
+                    # the race). The conflict toast (1.8s) is showing right now and
+                    # covers the prompt area, so the prompt gets its focus via JS
+                    # (a native click would wait for an unobscured point and lose
+                    # the window); all keyboard input stays native, and the save is
+                    # triggered with the app's own Ctrl+S shortcut
+                    # (window keydown -> manualSaveCanvas, smart-canvas.js:15250).
                     close_history_drawer(browser)
-                    browser.native_click("#promptInput", relative=(0.02, 0.5))
+                    browser.evaluate("document.getElementById('promptInput').focus()")
                     browser.native_press("End")
                     browser.native_type(EDIT_E)
                     wait_state(browser, "contentDirty===true", 10, "edit-e marks canvas dirty")
                     browser.capture_screenshot(run_shots / "04a-edit-e-after-exhaustion.png")
-                    browser.native_click("#smartSaveButton")
+                    browser.native_press("s", modifiers=("Control",))
                     wait_state(browser, "canvasSyncInFlight===false", 30, "edit-e save flight cleared")
                     time.sleep(2.0)  # let the save chain finish writing
                     result["edit-e-persisted-immediately-after-exhaustion"] = EDIT_E in server_prompt(store, project_id)
