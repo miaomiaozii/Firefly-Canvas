@@ -56,6 +56,23 @@ class CleanupDrift(ProjectStoreError):
     """A cleanup confirmation no longer matches the project's current state."""
 
 
+def _canonical_drive_key(path_text: str) -> str:
+    """返回用于包含比较的路径形式（规范化大小写，并去掉 Windows 扩展长度前缀）。
+
+    ``Path.resolve()``（``ntpath.realpath``）在非严格解析时可能保留 ``\\?\\``
+    前缀：它对同一目标做两次 ``_getfinalpathname`` 查询，仅当两次 winerror
+    一致才剥离前缀；父目录被并发创建时 winerror 由 3 变为 2，前缀残留。
+    ``splitdrive`` 把 ``\\?\\c:`` 当作与 ``c:`` 不同的盘，会把同盘的合法
+    路径误判为越界，因此比较前先把两侧都归一化。
+    """
+    text = os.path.normcase(path_text)
+    if text.startswith("\\\\?\\unc\\"):
+        return "\\\\" + text[len("\\\\?\\unc\\"):]
+    if text.startswith("\\\\?\\"):
+        return text[len("\\\\?\\"):]
+    return text
+
+
 def _validated_projects_root(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
@@ -259,12 +276,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 raise ProjectStoreError("项目路径不能经过符号链接或重解析点")
         try:
             candidate = (project_dir / relative).resolve(strict=False)
-            if os.path.commonpath(
-                [os.path.normcase(str(resolved_root)), os.path.normcase(str(candidate))]
-            ) != os.path.normcase(str(resolved_root)):
-                raise ProjectStoreError("项目媒体路径越界")
+            root_key = _canonical_drive_key(str(resolved_root))
+            candidate_key = _canonical_drive_key(str(candidate))
+            if os.path.commonpath([root_key, candidate_key]) != root_key:
+                raise ProjectStoreError(f"项目媒体路径越界: {candidate_key} 不在 {root_key} 内")
         except (OSError, ValueError) as exc:
-            raise ProjectStoreError("项目媒体路径无效") from exc
+            raise ProjectStoreError(f"项目媒体路径无效: {exc.__class__.__name__}: {exc}") from exc
         return candidate
 
     def _project_directory(self, project_id: str) -> Path:
