@@ -378,6 +378,19 @@ def read_inject_state(browser: NativeBrowser) -> dict | None:
     return json.loads(raw) if isinstance(raw, str) and raw and raw != "null" else None
 
 
+def wait_prompt_contains(browser: NativeBrowser, text: str, timeout: float = 10) -> None:
+    """Verify the typed text actually landed in the contenteditable prompt
+    (a lost key event — locked prompt / lost focus — must fail the run, not
+    pass silently against the already-dirty canvas)."""
+    deadline = time.time() + timeout
+    js = f"document.getElementById('promptInput').textContent.indexOf({json.dumps(text)}) !== -1"
+    while time.time() < deadline:
+        if browser.evaluate(js):
+            return
+        time.sleep(0.05)
+    raise TimeoutError(f"prompt never contained {text!r}; the keystrokes were lost")
+
+
 def run_journey(
     run_id: str,
     artifacts: pathlib.Path,
@@ -504,17 +517,19 @@ def run_journey(
                     # --- step 5.5: IMMEDIATELY after the budget is spent, the user
                     # types a fresh edit and saves — kept as fast as possible so the
                     # manual save starts inside the pre-recovery window (the
-                    # debounced self-heal fires ~2s later and would otherwise win
-                    # the race). The conflict toast (1.8s) is showing right now and
-                    # covers the prompt area, so the prompt gets its focus via JS
-                    # (a native click would wait for an unobscured point and lose
-                    # the window); all keyboard input stays native, and the save is
-                    # triggered with the app's own Ctrl+S shortcut
-                    # (window keydown -> manualSaveCanvas, smart-canvas.js:15250).
+                    # pre-delete flush / debounced self-heal fires ~2-3s later and
+                    # would otherwise win the race). The node click re-selects the
+                    # node (the prompt unlocks with selection); all keyboard input
+                    # stays native, and the save is triggered with the app's own
+                    # Ctrl+S shortcut (window keydown -> manualSaveCanvas,
+                    # smart-canvas.js:15250) — the toast (top-right, 1.8s) and the
+                    # drawer close animation would delay native button clicks.
                     close_history_drawer(browser)
-                    browser.evaluate("document.getElementById('promptInput').focus()")
+                    browser.native_click(f'.image-node[data-id="{NODE_ID}"]')
+                    browser.native_click("#promptInput", relative=(0.02, 0.5))
                     browser.native_press("End")
                     browser.native_type(EDIT_E)
+                    wait_prompt_contains(browser, EDIT_E)
                     wait_state(browser, "contentDirty===true", 10, "edit-e marks canvas dirty")
                     browser.capture_screenshot(run_shots / "04a-edit-e-after-exhaustion.png")
                     browser.native_press("s", modifiers=("Control",))
