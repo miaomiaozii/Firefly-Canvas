@@ -58,6 +58,9 @@ N_RECORDS = 12
 EDIT_A = "[edit-190-a]"
 EDIT_B = "[edit-190-b]"
 EDIT_C = "[edit-190-c]"
+# typed IMMEDIATELY after the budget-exhaustion detection (step 5.5), before
+# the debounced self-heal can fire: the exact user action the issue says fails
+EDIT_E = "[edit-190-e]"
 SAVE_SETTLE_S = 8.0        # wait after the manual save before the readback
 RETRY_WAIT_S = 15.0        # extra wait to see whether anything self-heals
 
@@ -494,6 +497,28 @@ def run_journey(
 
                 # --- step 5: let the save attempts settle, capture the stuck state
                 wait_state(browser, "canvasSyncInFlight===false", 30, "save flight cleared")
+                flushes_now = read_flush_spy(browser)
+                exhausted_now = any(f.get("limitReached") for f in flushes_now)
+                result["exhausted"] = exhausted_now
+                if exhausted_now:
+                    # --- step 5.5: IMMEDIATELY after the budget is spent (before the
+                    # debounced self-heal can win the race), the user makes a fresh
+                    # edit and clicks save. The issue claims this is impossible
+                    # without a force refresh.
+                    close_history_drawer(browser)
+                    browser.native_click(f'.image-node[data-id="{NODE_ID}"]')
+                    time.sleep(0.8)
+                    wait_prompt_clickable(browser, shot=run_shots / "debug-prompt-blocked-e.png")
+                    browser.native_click("#promptInput", relative=(0.02, 0.5))
+                    browser.native_press("End")
+                    browser.native_type(EDIT_E)
+                    wait_state(browser, "contentDirty===true", 10, "edit-e marks canvas dirty")
+                    browser.capture_screenshot(run_shots / "04a-edit-e-after-exhaustion.png")
+                    browser.native_click("#smartSaveButton")
+                    wait_state(browser, "canvasSyncInFlight===false", 30, "edit-e save flight cleared")
+                    time.sleep(2.0)  # let the save chain finish writing
+                    result["edit-e-persisted-immediately-after-exhaustion"] = EDIT_E in server_prompt(store, project_id)
+                    result["rev-trace"].append({"phase": "edit-e-after-exhaustion", "server": server_revision(store, project_id), "page": state(browser, "canvas && canvas.revision"), "prompt": server_prompt(store, project_id)[-60:]})
                 time.sleep(4.0)  # beyond the 3s debounce, so a self-heal retry already fired
                 stuck = state(browser, "(function(){var el=document.getElementById('projectSaveState');return {state:el?el.dataset.state:null,text:el?el.textContent:''};})()")
                 result["stuck_state"] = stuck
@@ -568,6 +593,8 @@ def run_journey(
                 result["conflict_409_count"] = len(conflict_409s)
                 result["conflict_observed"] = bool(conflict_409s)
                 result["passed"] = bool(result.get("edit-b-persisted-no-refresh")) and result.get("conflict_observed", False)
+                if result["exhausted"]:
+                    result["passed"] = result["passed"] and bool(result.get("edit-e-persisted-immediately-after-exhaustion"))
     except Exception as error:  # noqa: BLE001 — journey evidence must capture any failure
         result["failure"] = {"message": str(error), "traceback": traceback.format_exc()}
         print(f"FAILED [{run_id}]: {error}", file=sys.stderr)
@@ -614,7 +641,7 @@ def run_journey(
         write_jsonl(run_artifacts / "state-samples.jsonl", result["samples"])
         write_jsonl(run_artifacts / "server-log.jsonl", result["server"])
         write_json(run_artifacts / "manifest.json", {k: v for k, v in result.items() if k not in ("net", "server", "samples")})
-        print(json.dumps({k: result.get(k) for k in ("run", "mode", "passed", "conflict_observed", "conflict_409_count", "edit-a-persisted", "edit-b-persisted-no-refresh", "final_state_no_refresh", "edit-c-persisted-after-reload", "failure", "inject-state", "flush-spy")}, ensure_ascii=False))
+        print(json.dumps({k: result.get(k) for k in ("run", "mode", "passed", "exhausted", "conflict_observed", "conflict_409_count", "edit-a-persisted", "edit-e-persisted-immediately-after-exhaustion", "edit-b-persisted-no-refresh", "final_state_no_refresh", "edit-c-persisted-after-reload", "failure", "inject-state", "flush-spy")}, ensure_ascii=False))
     return result
 
 
@@ -640,12 +667,18 @@ def main() -> int:
         ))
     dead = [r for r in results if r.get("conflict_observed") and not r.get("edit-b-persisted-no-refresh")]
     conflicted = [r for r in results if r.get("conflict_observed")]
+    exhausted_runs = [r for r in results if r.get("exhausted")]
+    edit_e = [r.get("edit-e-persisted-immediately-after-exhaustion") for r in exhausted_runs]
+    edit_b = [r["edit-b-persisted-no-refresh"] for r in results if r.get("edit-b-persisted-no-refresh") is not None]
     summary = {
         "status": "passed" if results and all(r["passed"] for r in results) else "failed",
         "runs": len(results),
         "conflicts": len(conflicted),
+        "exhausted": len(exhausted_runs),
+        "edit-b-persisted-no-refresh": f"{sum(edit_b)}/{len(edit_b)}",
+        "edit-e-immediately-after-exhaustion": f"{sum(1 for v in edit_e if v)}/{len(edit_e)}",
         "dead_states": len(dead),
-        "results": [{k: r.get(k) for k in ("run", "mode", "passed", "conflict_observed", "edit-b-persisted-no-refresh", "final_state_no_refresh")} for r in results],
+        "results": [{k: r.get(k) for k in ("run", "mode", "passed", "exhausted", "conflict_observed", "edit-e-persisted-immediately-after-exhaustion", "edit-b-persisted-no-refresh", "final_state_no_refresh")} for r in results],
     }
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if summary["status"] == "passed" else 1
