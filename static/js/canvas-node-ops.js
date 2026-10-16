@@ -249,7 +249,13 @@ function deleteNode(id){
     pushUndo();
     const deleteIds = new Set([id]);
     canvasState.nodes.forEach(node => {
-        if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
+        if(isHistoryGroupNode(node) && node.historyFor === id){
+            // #188: 候选池是画布上的独立内容（归档历史图/扩图红底合成图），
+            // 删除源节点不再连带删池——解绑 history 关联、降级为普通图片节点，池内图片全部保留。
+            // 与用户手动断开 history 连线时的 demoteHistoryGroupNode 行为一致；
+            // 撤销由上方 pushUndo 的深快照恢复原关联（池重新成为候选池）。
+            demoteHistoryGroupNode(node);
+        }
     });
     const removedNodes = canvasState.nodes.filter(node => deleteIds.has(node.id));
     // Clean up agent TUI state for deleted agent nodes
