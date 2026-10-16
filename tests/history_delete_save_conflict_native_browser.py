@@ -232,6 +232,23 @@ def server_revision(store: ProjectStore, project_id: str) -> int:
     return int(store.open_project(project_id)["canvas"].get("revision") or 0)
 
 
+def http_readback(base_url: str, project_id: str) -> dict:
+    """HTTP cross-check of the persisted canvas with a same-origin Origin header
+    (plain Python requests get 403 from ensure_same_origin_request)."""
+    import urllib.request
+
+    url = f"{base_url.rstrip('/')}/api/canvases/{urllib.parse.quote(project_id)}"
+    req = urllib.request.Request(url, headers={"Origin": base_url.rstrip("/")})
+    with urllib.request.urlopen(req, timeout=20) as res:
+        body = json.loads(res.read().decode("utf-8"))
+    canvas = body.get("canvas") or body
+    prompt = ""
+    for node in canvas.get("nodes") or []:
+        if node.get("id") == NODE_ID:
+            prompt = str(node.get("runPrompt") or "") + "\n" + str(node.get("promptDraftText") or "")
+    return {"http_status": res.status, "revision": int(canvas.get("revision") or 0), "prompt": prompt}
+
+
 class RequestLogger:
     """ASGI middleware that records /api/ request method/path/status/elapsed."""
 
@@ -499,6 +516,8 @@ def run_journey(
                 browser.native_click("#smartSaveButton")
                 time.sleep(SAVE_SETTLE_S)
                 saved_b = EDIT_B in server_prompt(store, project_id)
+                http_b = http_readback(server.base_url, project_id)
+                result["edit-b-http-readback"] = {"http_status": http_b["http_status"], "revision": http_b["revision"], "edit-b-present": EDIT_B in http_b["prompt"]}
                 time.sleep(RETRY_WAIT_S)  # give any debounced/manual retry a real chance
                 saved_b_late = EDIT_B in server_prompt(store, project_id)
                 result["rev-trace"].append({"phase": "after-retry-wait", "server": server_revision(store, project_id), "page": state(browser, "canvas && canvas.revision")})
@@ -536,6 +555,8 @@ def run_journey(
                 browser.native_click("#smartSaveButton")
                 time.sleep(SAVE_SETTLE_S)
                 result["edit-c-persisted-after-reload"] = EDIT_C in server_prompt(store, project_id)
+                http_c = http_readback(server.base_url, project_id)
+                result["edit-c-http-readback"] = {"http_status": http_c["http_status"], "revision": http_c["revision"], "edit-c-present": EDIT_C in http_c["prompt"]}
                 browser.capture_screenshot(run_shots / "06-after-reload.png")
 
                 # --- verdict
