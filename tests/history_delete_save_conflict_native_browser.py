@@ -391,6 +391,9 @@ def wait_prompt_contains(browser: NativeBrowser, text: str, timeout: float = 10)
     raise TimeoutError(f"prompt never contained {text!r}; the keystrokes were lost")
 
 
+PILL_JS = "(function(){var el=document.getElementById('projectSaveState');return {state:el?el.dataset.state:null,text:el?el.textContent:''};})()"
+
+
 def run_journey(
     run_id: str,
     artifacts: pathlib.Path,
@@ -398,6 +401,7 @@ def run_journey(
     *,
     slow_apply_ms: int,
     inject_stale: int = 0,
+    no_user_edit: bool = False,
 ) -> dict:
     run_artifacts = artifacts / run_id
     run_shots = shots_dir / run_id
@@ -514,6 +518,26 @@ def run_journey(
                 exhausted_now = any(f.get("limitReached") for f in flushes_now)
                 result["exhausted"] = exhausted_now
                 if exhausted_now:
+                    result["exhausted-at-t"] = max((f.get("t", 0) for f in flushes_now if f.get("limitReached")), default=None)
+                    if no_user_edit:
+                        # --- observational variant: after the budget is spent the
+                        # user does NOTHING. Watch the pill state + read the server
+                        # back to see exactly what the user observes and whether
+                        # the page recovers on its own (no refresh, no input).
+                        result["no-user-edit-observed"] = True
+                        for label, delay in (("04x-obs-1s", 1.0), ("04x-obs-3s", 2.0), ("04x-obs-8s", 5.0), ("04x-obs-15s", 7.0)):
+                            time.sleep(delay)
+                            browser.capture_screenshot(run_shots / f"{label}.png")
+                            result[f"obs-{label}"] = {
+                                "pill": state(browser, PILL_JS),
+                                "server": server_revision(store, project_id),
+                                "prompt": server_prompt(store, project_id)[-60:],
+                            }
+                        result["edit-a-persisted"] = EDIT_A in server_prompt(store, project_id)
+                        result["final_state_no_refresh"] = state(browser, PILL_JS)
+                        result["rev-trace"].append({"phase": "obs-final", "server": server_revision(store, project_id), "page": state(browser, "canvas && canvas.revision")})
+                        result["passed"] = True
+                        return result  # finally still runs (cleanup + artifact writes)
                     # --- step 5.5: IMMEDIATELY after the budget is spent, the user
                     # types a fresh edit and saves — kept as fast as possible so the
                     # manual save starts inside the pre-recovery window (the
@@ -536,7 +560,6 @@ def run_journey(
                     wait_state(browser, "canvasSyncInFlight===false", 30, "edit-e save flight cleared")
                     time.sleep(2.0)  # let the save chain finish writing
                     result["edit-e-persisted-immediately-after-exhaustion"] = EDIT_E in server_prompt(store, project_id)
-                    result["exhausted-at-t"] = max((f.get("t", 0) for f in flushes_now if f.get("limitReached")), default=None)
                     result["rev-trace"].append({"phase": "edit-e-after-exhaustion", "server": server_revision(store, project_id), "page": state(browser, "canvas && canvas.revision"), "prompt": server_prompt(store, project_id)[-60:]})
                 time.sleep(4.0)  # beyond the 3s debounce, so a self-heal retry already fired
                 stuck = state(browser, "(function(){var el=document.getElementById('projectSaveState');return {state:el?el.dataset.state:null,text:el?el.textContent:''};})()")
@@ -674,6 +697,9 @@ def main() -> int:
     parser.add_argument("--inject-stale", type=int, default=0,
                         help="rewrite the first N canvas-save PATCHes to a stale base_revision "
                              "so the real server returns authentic 409s (0 = no injection)")
+    parser.add_argument("--no-user-edit", action="store_true",
+                        help="after the budget is spent the user does nothing; sample the UI "
+                             "state and read the server back to observe the residual error state")
     args = parser.parse_args()
     artifacts = args.artifacts_dir.resolve()
     shots_dir = args.shots_dir.resolve()
@@ -683,6 +709,7 @@ def main() -> int:
             f"run{i:02d}", artifacts, shots_dir,
             slow_apply_ms=0 if args.inject_stale else args.slow_apply_ms,
             inject_stale=args.inject_stale,
+            no_user_edit=args.no_user_edit,
         ))
     dead = [r for r in results if r.get("conflict_observed") and not r.get("edit-b-persisted-no-refresh")]
     conflicted = [r for r in results if r.get("conflict_observed")]
