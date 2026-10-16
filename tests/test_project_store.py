@@ -1,6 +1,7 @@
 import json
 import io
 import hashlib
+import os
 import sys
 import tempfile
 import threading
@@ -2223,6 +2224,50 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(self.store.purge_deleted_media(project["id"], trash_media["asset_id"]), 1)
         remaining = self.store.list_deleted_media(project["id"])
         self.assertFalse(any(item["asset_id"] == trash_media["asset_id"] for item in remaining))
+
+
+    def test_safe_project_path_survives_concurrent_parent_creation_prefix_race(self):
+        """#194: 父目录在两次 C 级查询之间被并发创建时，候选路径仍须通过包含检查。
+
+        ``Path.resolve(strict=False)``（``ntpath.realpath``）对不存在的路径先做严格
+        查询记录 ``initial_winerror``，最后用去前缀路径再查询一次，仅当两次 winerror
+        一致才剥离 ``\\\\?\\`` 扩展前缀。质量门里 worker 线程并发创建
+        ``.conversation-tasks`` 目录时，父目录缺席→存在使 winerror 由 3 变为 2
+        （本机实测），前缀残留，``os.path.commonpath`` 把 ``\\\\?\\c:`` 当作与
+        ``c:`` 不同的盘而抛出 ``ValueError: Paths don't have the same drive``。
+        本测试用与实测一致的 winerror 序列（先 3 后 2）确定性地重建该竞态。
+        """
+        import ntpath
+        if not hasattr(ntpath, "_getfinalpathname"):
+            self.skipTest("ntpath._getfinalpathname 不可用")
+        real_getfinalpathname = ntpath._getfinalpathname
+        project = self.store.create_project("前缀竞态回归")
+        project_dir = self.store._project_directory(project["id"])
+        relative = ".conversation-tasks/" + "a" * 64 + ".json"
+        target = os.path.normcase(str(project_dir / relative))
+        state = {"parent_created": False}
+
+        def racing_getfinalpathname(path):
+            key = str(path)
+            if key.startswith("\\\\?\\"):
+                key = key[4:]
+            if os.path.normcase(key) == target:
+                winerror = 2 if state["parent_created"] else 3
+                state["parent_created"] = True
+                exc = OSError(winerror, "模拟并发父目录状态")
+                exc.winerror = winerror
+                raise exc
+            return real_getfinalpathname(path)
+
+        def strip_extended_prefix(path_text):
+            normalized = os.path.normcase(str(path_text))
+            return normalized[4:] if normalized.startswith("\\\\?\\") else normalized
+
+        expected = strip_extended_prefix(project_dir / relative)
+        with patch("ntpath._getfinalpathname", side_effect=racing_getfinalpathname):
+            result = self.store._safe_project_path(project_dir, relative)
+        self.assertEqual(strip_extended_prefix(result), expected)
+        self.assertTrue(state["parent_created"], "竞态模拟未被触发")
 
 
 class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
