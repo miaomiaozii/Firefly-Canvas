@@ -5180,6 +5180,11 @@ function applyMergedServerCanvas(serverCanvas){
     });
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromHistory();
+    // #192: 在覆盖 canvas.updated_at 之前采样——本次合并是否带来了比本地更新的状态。
+    // 自身变更的广播可能在响应到达前先到（服务端先广播后返回响应），客户端先按旧状态
+    // 调度了延迟拉取；拉取回来的画布与本地一致时就是 no-op 合并，若仍强制历史 rail
+    // 重建，会把用户正要点击的元素换掉（原生点击守卫会报 owner 被替换）。
+    const remoteStateNewer = Number(serverCanvas.updated_at || 0) > Number(canvas.updated_at || 0);
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
     const serverRev = Number(serverCanvas.revision || 0);
     if(serverRev > 0) canvas.revision = Math.max(serverRev, Number(canvas.revision || 0));
@@ -5190,7 +5195,8 @@ function applyMergedServerCanvas(serverCanvas){
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
     if(recoveredLoopOutputs || createdRemoteTaskCards) scheduleSave();
-    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    // #192: 只有合并真正带来了更新的状态才强制历史 rail 重建；no-op 合并不替换 rail 的 DOM。
+    if(remoteStateNewer && smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
     resumeJimengPendingNodes();
     return true;
@@ -5215,9 +5221,16 @@ window.refreshSmartCanvas = () => mergeReloadCanvasNow();
 window.waitForCanvasRefresh = () => mergeReloadCanvasNow();
 window.fitBoundsViewport = fitBoundsViewport;
 
-function scheduleCanvasMergeReload(delay=200){
+function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
     clearTimeout(canvasSyncTimer);
-    canvasSyncTimer = setTimeout(() => { mergeReloadCanvasNow(); }, delay);
+    canvasSyncTimer = setTimeout(() => {
+        // #192: 自身变更的广播可能在响应到达前先到——那一刻本地状态还是旧的，于是调度了
+        // 拉取合并；等定时器的 fire 时刻，响应可能已被 adopt、本地已追上。fire 时复核：
+        // 本地不再旧于触发本次合并的更新就不必再拉——no-op 合并除了多一次 fetch，还会
+        // 触发整体重绘与强制历史 rail 重建，替换用户正要点击的元素。
+        if(minUpdatedAt && Number(canvas?.updated_at || 0) >= minUpdatedAt) return;
+        mergeReloadCanvasNow();
+    }, delay);
 }
 function handleCanvasUpdatedMessage(data={}){
     if(!data || data.type !== 'canvas_updated') return;
@@ -5230,7 +5243,7 @@ function handleCanvasUpdatedMessage(data={}){
         return;
     }
     if(remoteUpdatedAt && remoteUpdatedAt <= Number(canvas?.updated_at || 0)) return;
-    scheduleCanvasMergeReload(200);
+    scheduleCanvasMergeReload(200, remoteUpdatedAt);
 }
 function startCanvasMetaPoll(){
     // WS / iframe 转发不可靠时的兜底：定期看服务器 updated_at 是否变新，变新就合并拉取
