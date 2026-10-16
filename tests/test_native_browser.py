@@ -285,6 +285,40 @@ class NativeBrowserContractTests(unittest.TestCase):
         self.assertEqual(result, {"released": True})
         self.assertEqual(websocket.sent[1]["method"], "Page.handleJavaScriptDialog")
 
+    def test_drain_collects_events_that_arrived_between_commands(self):
+        # #191: cdp.events is only appended inside a command's recv loop, so a
+        # sleep-only poller misses events that land after the command returned.
+        # drain() must pull whatever is already on the wire.
+        class Websocket:
+            def __init__(self):
+                self.responses = [
+                    '{"method":"Fetch.requestPaused","params":{"requestId":"1"}}',
+                    '{"method":"Fetch.requestPaused","params":{"requestId":"2"}}',
+                ]
+
+            def recv(self, timeout):
+                if not self.responses:
+                    raise TimeoutError("no more messages")
+                return self.responses.pop(0)
+
+        cdp = CdpConnection(Websocket())
+        cdp.drain(0.05)
+        self.assertEqual(
+            [event["method"] for event in cdp.events],
+            ["Fetch.requestPaused", "Fetch.requestPaused"],
+        )
+
+    def test_drain_returns_without_blocking_when_nothing_is_queued(self):
+        class Websocket:
+            def recv(self, timeout):
+                raise TimeoutError("nothing queued")
+
+        cdp = CdpConnection(Websocket())
+        started = time.monotonic()
+        cdp.drain(5.0)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(cdp.events, [])
+
     def test_quality_gate_browser_uses_host_profile_identity_without_changing_test_home(self):
         with patch.dict(
             os.environ,

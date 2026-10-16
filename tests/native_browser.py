@@ -142,6 +142,23 @@ class CdpConnection:
         self.next_id = 1
         self.events: list[dict] = []
 
+    def drain(self, timeout: float) -> None:
+        """Collect CDP events that already arrived on the wire (issue #191).
+
+        ``events`` is only appended while a ``command`` recv loop is active,
+        so a sleep-only poller cannot see events that arrive between commands.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                message = json.loads(self.websocket.recv(timeout=remaining))
+            except TimeoutError:
+                return
+            self.events.append(message)
+
     def command(self, method: str, params: dict | None = None) -> dict:
         command_id = self.next_id
         self.next_id += 1

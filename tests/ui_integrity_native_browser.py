@@ -1470,6 +1470,9 @@ def run_viewport(
         handled_requests: set[str] = set()
         download_url = ""
         while time.monotonic() < download_deadline and not downloaded:
+            # #191: cdp.events 只会在 CDP 命令的 recv 窗口内被追加；纯 sleep 轮询
+            # 看不到 native_click 返回后才到达的暂停下载请求。每轮先排空 socket。
+            browser.cdp.drain(0.05)
             for event in browser.cdp.events:
                 if event.get("method") != "Fetch.requestPaused":
                     continue
