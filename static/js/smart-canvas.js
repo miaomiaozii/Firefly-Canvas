@@ -4889,11 +4889,6 @@ function mergeSmartImageLists(localImgs, remoteImgs){
     }
     return images;
 }
-function smartGenerationSubmissions(node){
-    return Array.isArray(node?.generationSubmissions)
-        ? node.generationSubmissions.filter(item => item && item.idempotencyKey)
-        : [];
-}
 function smartNodeInFlight(node){
     if(smartNodeHasCompletedResult(node)) return false;
     // #145: agent-task 节点用 node.status（'queued'/'running'/'succeeded'/'failed'/'uncertain'/'planned'），
@@ -6679,6 +6674,11 @@ function markAutosaveSaved(){
     debouncedSaveTimer = null;
     if(canvas?.format === 'firefly-canvas-v1' && !persistedDurableSnapshot) refreshPersistedDurableSnapshot(canvasForStorage());
     setProjectSaveState('saved', tr('smart.projectSaved'));
+    // #189: a settled canvas save is the moment a pending generation request may be replayed.
+    // Only requests whose pre-generation flush failed (keys in smartPendingPersistenceKeys)
+    // are replayed; the normal path self-registers, so this is a no-op there. The
+    // server-side idempotency key keeps any race with the normal path single-task.
+    if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
 }
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
@@ -14130,6 +14130,15 @@ async function runGeneration(){
         scheduleSave();
     } catch(e) {
         settings = previousSettings;
+        if(e?.smartSavePendingResume){
+            // #189: the pre-generation flush failed. The request stays pending and is replayed
+            // automatically once the canvas save settles (see markAutosaveSaved).
+            pendingNode.running = false;
+            pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
+            scheduleSave();
+            toast((e.message || tr('smart.submitUnknownRecover')).slice(0, 160));
+            return;
+        }
         if(e?.smartSubmissionUnknown){
             pendingNode.running = false;
             pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);

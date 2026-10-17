@@ -717,6 +717,7 @@
         "smart.agentGoalRequired": { zh: "请先描述 Agent 目标", en: "Describe the Agent goal first" },
         "smart.agentMissingProject": { zh: "Agent 节点缺少项目归属", en: "Agent node has no project" },
         "smart.canvasUnsavedPlanNotCreated": { zh: "画布尚未保存，计划未创建", en: "Canvas not saved yet — plan not created" },
+        "smart.canvasSavePendingResume": { zh: "画布保存中，保存完成后将自动继续生成", en: "Canvas is saving — generation will continue automatically once saved" },
         "smart.agentPlanCreateFailed": { zh: "Agent 计划创建失败", en: "Failed to create Agent plan" },
         "smart.agentPlanGeneratedConfirm": { zh: "Agent 计划已生成，请确认后执行", en: "Agent plan generated — confirm to run" },
         "smart.agentRunFailed": { zh: "Agent 执行失败", en: "Agent execution failed" },

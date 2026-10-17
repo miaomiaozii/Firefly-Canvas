@@ -25,6 +25,7 @@ from tools.quality_gate import trusted_node_executable
 
 
 SMART_CANVAS_JS = ROOT / "static" / "js" / "smart-canvas.js"
+CORE_JS = ROOT / "static" / "js" / "canvas-core.js"
 GENERATION_TASKS_JS = ROOT / "static" / "js" / "canvas-generation-tasks.js"
 AGENT_TUI_JS = ROOT / "static" / "js" / "canvas-agent-tui.js"
 
@@ -39,7 +40,6 @@ SMART_CANVAS_FUNCTIONS = (
     "smartNodeInFlight",
     "mergeSmartPendingTaskLists",
     "mergeSmartSubmissionLists",
-    "smartGenerationSubmissions",
     "completeSmartNodeWithImages",
     "markSmartNodeComplete",
     "clearSmartNodeBusyState",
@@ -66,6 +66,7 @@ def _merge_harness() -> str:
     smart_canvas = SMART_CANVAS_JS.read_text(encoding="utf-8")
     functions = [_top_level_function(smart_canvas, name) for name in SMART_CANVAS_FUNCTIONS]
     functions.append(_top_level_function(GENERATION_TASKS_JS.read_text(encoding="utf-8"), "smartPendingTasks"))
+    functions.append(_top_level_function(CORE_JS.read_text(encoding="utf-8"), "smartGenerationSubmissions"))
     functions.append(_top_level_function(AGENT_TUI_JS.read_text(encoding="utf-8"), "isSmartAgentTaskNode"))
     return "\n\n".join([
         "// mergeSmartNode 的运行时依赖（画布全局）在单元守卫里给最小替身。",

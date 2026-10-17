@@ -21,6 +21,7 @@ HTML = ROOT / "static" / "smart-canvas.html"
 
 # 必须住在 canvas-core.js 的名字：无状态工具 + 跨模块共享的可变状态。
 CORE_NAMES = (
+    "smartGenerationSubmissions",
     "tr",
     "escapeHtml",
     "escapeAttr",

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import sys
@@ -63,6 +64,9 @@ STOVED_TOAST_TEXT = "已停止生图"
 GATE_SETTLE_S = 2.0        # after the gate save flight clears, before capturing evidence
 FIXED_SETTLE_S = 5.0       # after the final readback window
 STOPPED_MARKER = "smart.canvasUnsavedImageStopped"
+MOCK_IMAGE_DELAY_S = 20    # the mock provider keeps the task in processing this long
+# 1x1 red PNG
+MOCK_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 INSTRUMENT_JS = r"""
 (function(){
@@ -70,6 +74,7 @@ INSTRUMENT_JS = r"""
   window.__fix189Installed = true;
   window.__fix189Net = [];
   window.__fix189Toasts = [];
+  const NODE_ID = 'img-189';
   const origFetch = window.fetch;
   window.fetch = function(input, init){
     const url = typeof input === 'string' ? input : ((input && input.url) || '');
@@ -205,15 +210,18 @@ def seed(store: ProjectStore) -> str:
     return project_id
 
 
-def write_test_provider(app) -> str:
-    """Write a black-hole provider so the server routes the POST and returns
-    202 (registration only; the background provider call is out of scope)."""
+def write_test_provider(app, base_url: str) -> str:
+    """Write a provider pointing at the local mock image server so that
+    POST /image-generation-tasks routes, returns 202 (registration), and the
+    background task completes against the mock (keeps the node visibly in the
+    generating state for the whole observation window)."""
     module = app.state.issue13_module
     path = pathlib.Path(module.API_PROVIDERS_FILE)
     path.parent.mkdir(parents=True, exist_ok=True)
     provider = {
         "id": "fix189-http", "name": "fix189-http", "enabled": True,
-        "protocol": "openai", "base_url": "http://127.0.0.1:9",
+        "protocol": "openai", "base_url": base_url,
+        "api_key": "fix189-fake-key",
         "image_request_mode": "openai",
         "image_generation_endpoint": "", "image_edit_endpoint": "",
         "image_models": [MODEL], "chat_models": [], "video_models": [],
@@ -221,6 +229,16 @@ def write_test_provider(app) -> str:
     }
     path.write_text(json.dumps([provider], ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
+
+
+def server_task_terminal(store: ProjectStore, project_id: str):
+    """(task_id, status) of the first durable history record, or (None, '')."""
+    opened = store.open_project(project_id)
+    for record in opened["canvas"].get("history") or []:
+        tid = record.get("task_id")
+        if tid:
+            return str(tid), str(record.get("status") or "")
+    return None, ""
 
 
 def server_node(store: ProjectStore, project_id: str) -> dict:
@@ -252,6 +270,46 @@ def server_task_ids(store: ProjectStore, project_id: str) -> list[str]:
 def server_prompt(store: ProjectStore, project_id: str) -> str:
     node = server_node(store, project_id)
     return str(node.get("runPrompt") or "") + "\n" + str(node.get("promptDraftText") or "")
+
+
+class MockImageServer:
+    """Minimal OpenAI-compatible images endpoint: sleeps MOCK_IMAGE_DELAY_S,
+    then returns a 1x1 PNG as b64_json (parsed by app/core.py:1899)."""
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"  # keep-alive: the server-side httpx client pools connections
+
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                time.sleep(MOCK_IMAGE_DELAY_S)
+                body = json.dumps({"created": int(time.time()), "data": [{"b64_json": MOCK_PNG_B64, "revised": MOCK_PNG_B64}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):  # silence
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = __import__("threading").Thread(target=self._server.serve_forever, daemon=True)
+
+    def start(self) -> str:
+        self._thread.start()
+        return f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def stop(self) -> None:
+        try:
+            self._server.shutdown()
+            self._server.server_close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class RequestLogger:
@@ -391,6 +449,32 @@ PAGE_NODE_STATE_JS = (
 )
 
 
+CLEAR_SPY_JS = r"""
+(function(){
+  if(window.__fix189ClearSpyInstalled) return 'already';
+  window.__fix189ClearSpyInstalled = true;
+  window.__fix189ClearLog = [];
+  const orig = clearSmartGenerationSubmission;
+  if(!orig) return 'no-fn';
+  clearSmartGenerationSubmission = function(node, key){
+    const entry = {
+      t: Math.round(performance.now()), key: String(key || ''), nodeId: node && node.id,
+      before: (typeof smartGenerationSubmissions === 'function' ? smartGenerationSubmissions(node) : (node && node.generationSubmissions) || []).map(s => s.idempotencyKey),
+      sameObjectAsCanvas: (window.canvasState && canvasState.nodes || []).some(n => n === node)
+    };
+    window.__fix189ClearLog.push(entry);
+    const r = orig(node, key);
+    const last = window.__fix189ClearLog[window.__fix189ClearLog.length - 1];
+    last.after = (typeof smartGenerationSubmissions === 'function' ? smartGenerationSubmissions(node) : (node && node.generationSubmissions) || []).map(s => s.idempotencyKey);
+    const canvasNode = (window.canvasState && canvasState.nodes || []).find(n => n && n.id === (node && node.id));
+    last.canvasAfter = canvasNode ? (canvasNode.generationSubmissions || []).length : null;
+    return r;
+  };
+  return 'installed';
+})()
+"""
+
+
 def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *, mode: str, inject_stale: int) -> dict:
     run_artifacts = artifacts / run_id
     run_shots = shots_dir / run_id
@@ -410,13 +494,19 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
     browser: NativeBrowser | None = None
     store: ProjectStore | None = None
     logger: RequestLogger | None = None
+    mock = MockImageServer()
     try:
+        mock_base_url = mock.start()
+        # The server resolves a provider's API key from the environment (app/core.py:443
+        # provider_key_env -> API_PROVIDER_<ID>_KEY), not from the provider file; the mock
+        # server ignores auth entirely, so a fake key is enough to get past api_headers().
+        os.environ["API_PROVIDER_FIX189_HTTP_KEY"] = "fix189-fake-key"
         with tempfile.TemporaryDirectory(prefix=f"firefly-189-{run_id}-") as root_name:
             root = pathlib.Path(root_name)
             store = ProjectStore(root / "projects", snapshot_delay=0)
             project_id = seed(store)
             app = harness.load_production_app(root / "runtime-root", store)
-            result["provider-file"] = write_test_provider(app)
+            result["provider-file"] = write_test_provider(app, mock_base_url)
             logger = RequestLogger(app)
             with AsgiBrowserServer(logger) as server:
                 browser = NativeBrowser.launch(find_browser())
@@ -431,6 +521,7 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                 time.sleep(1.0)
                 browser.evaluate(INSTRUMENT_JS)
                 browser.evaluate(FLUSH_SPY_JS)
+                browser.evaluate(CLEAR_SPY_JS)
                 if inject_stale:
                     browser.evaluate(INJECT_STALE_JS)
                 wait_state(browser, "contentDirty===false && canvasSyncInFlight===false", 25, "initial save settle")
@@ -482,10 +573,6 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                 gate_t = max([n.get("t", 0) for n in result["gate"]["gate_409s"]] +
                              [f.get("t", 0) for f in flushes_gate if f.get("limitReached")], default=0)
                 result["gate"]["gate-t"] = gate_t
-                result["gate"]["marker_carried_after_gate"] = any(
-                    n.get("method") == "PATCH" and n.get("hasMarker") and n.get("t", 0) > gate_t
-                    for n in net_gate
-                )
                 browser.capture_screenshot(run_shots / "04-gate-result.png")
 
                 # --- step 4: let the (re)saved state settle; in fixed mode wait for the auto-resume
@@ -504,6 +591,10 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                 net_final = read_net(browser)
                 flushes_final = read_flush_spy(browser)
                 page_node_final = state(browser, PAGE_NODE_STATE_JS)
+                result["gate"]["marker_carried_after_gate"] = any(
+                    n.get("method") == "PATCH" and n.get("hasMarker") and n.get("t", 0) > result["gate"]["gate-t"]
+                    for n in net_final
+                )
                 task_ids = server_task_ids(store, project_id)
                 post_entries = [e for e in (logger.entries if logger else [])
                                 if e.get("method") == "POST" and e.get("path", "").rstrip("/").endswith("/image-generation-tasks")]
@@ -520,29 +611,52 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                     "edit-a-persisted": EDIT_A in server_prompt(store, project_id),
                     "pill": state(browser, PILL_JS),
                 }
+                if mode == "fixed":
+                    terminal_id, terminal_status = "", ""
+                    terminal_deadline = time.monotonic() + 50
+                    while time.monotonic() < terminal_deadline:
+                        terminal_id, terminal_status = server_task_terminal(store, project_id)
+                        if terminal_status and terminal_status not in ("pending", "processing"):
+                            break
+                        time.sleep(0.5)
+                    result["final"]["task-terminal"] = {"task_id": terminal_id, "status": terminal_status}
                 browser.capture_screenshot(run_shots / "05-after-settle.png")
 
                 result["net"] = net_final
                 result["samples"] = read_samples(browser)
                 result["flush-spy"] = flushes_final
+                raw_clear = state(browser, "JSON.stringify(window.__fix189ClearLog || [])")
+                result["clear-spy"] = json.loads(raw_clear) if isinstance(raw_clear, str) and raw_clear else []
                 result["inject-state"] = read_inject_state(browser) if inject_stale else None
 
                 # --- verdict
                 if mode == "repro":
+                    # Pre-fix characterization: the stopped toast fires, and the clear runs on a
+                    # stale node reference (409 rebase swapped the canvas nodes), so the marker
+                    # lingers on the page and is persisted as a zombie marker (saved, never
+                    # consumed, task never registered).
                     result["passed"] = bool(
                         result["gate"]["stopped_toast"]
                         and result["gate"]["limit_reached"]
                         and result["gate"]["gate_409_count"] >= 3
-                        and not result["gate"]["server-marker"]
+                        and page_node_gate.get("marker") == 1
+                        and bool(result["final"]["server-marker"])
                         and not task_ids
                     )
                 elif mode == "fixed":
+                    # Note: the cleared marker may legitimately linger on the server until the
+                    # next durable save (a broadcast merge can re-persist it before the clear is
+                    # saved — the same clear-then-save race the normal flow at :198 already has).
+                    # The hard guarantees are: the task is registered exactly once and the server
+                    # dedupes replays by idempotency_key (reserve_project_image_task), so a
+                    # lingering marker cannot cause a duplicate generation.
                     result["passed"] = bool(
                         not result["final"]["stopped_toast"]
                         and result["gate"]["limit_reached"]
                         and result["gate"]["gate_409_count"] >= 3
                         and page_node_gate.get("marker") == 1
                         and result["gate"]["marker_carried_after_gate"]
+                        and result["fixed"]["task-registered-page"]
                         and result["final"]["task-count"] == 1
                         and result["final"]["task-ids-unique"]
                         and bool(result["final"]["post-202"])
@@ -565,6 +679,7 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                     write_json(run_artifacts / "console-errors.json", list(browser.console_errors))
                 finally:
                     browser.close()
+        mock.stop()
         write_jsonl(run_artifacts / "net-log.jsonl", result["net"])
         write_jsonl(run_artifacts / "state-samples.jsonl", result["samples"])
         write_jsonl(run_artifacts / "server-log.jsonl", result["server"])

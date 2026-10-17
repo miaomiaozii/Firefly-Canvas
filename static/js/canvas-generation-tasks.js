@@ -10,6 +10,11 @@ const activeSmartTaskPolls = new Map();
 const smartGenerationNodeRevisions = new Map();
 
 const activeSmartSubmissionRecoveries = new Set();
+// #189: idempotency keys of generation requests whose pre-generation flush failed.
+// They stay pending until the canvas save settles, when markAutosaveSaved() replays
+// them (the server dedupes by key). In-memory only: after a page reload the persisted
+// marker is recovered by the existing load-path resumeSmartPendingTasks() instead.
+const smartPendingPersistenceKeys = new Set();
 
 const smartGenerationRegistrationQueues = new Map();
 
@@ -176,9 +181,19 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         });
         scheduleSave();
         if(!await flushProjectCanvasBeforeGeneration()){
-            clearSmartGenerationSubmission(resultNode, payload.idempotency_key);
+            // #189: a failed pre-generation flush no longer cancels the request. Keep the durable
+            // submission marker and let the debounced autosave carry it to disk; once the canvas
+            // save settles, markAutosaveSaved() replays the same idempotency key, so the task
+            // registers exactly once (the server dedupes by key) and the node moves straight
+            // into the generating state instead of failing.
+            // The pending state is tracked in the module-level key set (not a marker field)
+            // because a 409 rebase (applyMergedServerCanvas) can swap the canvas nodes for
+            // server copies and wipe in-memory marker annotations before they are persisted.
+            smartPendingPersistenceKeys.add(payload.idempotency_key);
             scheduleSave();
-            throw new Error(tr('smart.canvasUnsavedImageStopped'));
+            const pendingError = new Error(tr('smart.canvasSavePendingResume'));
+            pendingError.smartSavePendingResume = true;
+            throw pendingError;
         }
         // The durable submission marker was saved at the previous revision.
         // A first-time replay uses the latest revision; duplicate resolution
@@ -1083,4 +1098,20 @@ function resumeSmartPendingTasks(){
     canvasState.nodes.filter(node => smartPendingTasks(node).length).forEach(node => {
         void resumeSmartPendingNode(node).catch(() => {});
     });
+}
+// #189: after a settled canvas save, replay only the generation requests whose
+// pre-generation flush failed (keys recorded in smartPendingPersistenceKeys). Markers on
+// the normal submit path are not in the set and self-register; replaying them here would
+// double-POST the same idempotency key on the happy path.
+function resumeSmartPersistencePendingTasks(canvasNodes){
+    if(!smartPendingPersistenceKeys.size) return;
+    (canvasNodes || []).forEach(node => {
+        smartGenerationSubmissions(node).filter(s => smartPendingPersistenceKeys.has(s.idempotencyKey)).forEach(submission => {
+            void resumeSmartGenerationSubmission(node, submission);
+        });
+    });
+    // Drop keys whose marker is gone (replayed and cleared, or node removed).
+    const liveKeys = new Set();
+    (canvasNodes || []).forEach(node => smartGenerationSubmissions(node).forEach(s => liveKeys.add(s.idempotencyKey)));
+    for(const key of [...smartPendingPersistenceKeys]) if(!liveKeys.has(key)) smartPendingPersistenceKeys.delete(key);
 }

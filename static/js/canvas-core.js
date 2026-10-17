@@ -141,3 +141,11 @@ function resultMediaUrls(result){
         return url && !seen.has(url) && seen.add(url);
     });
 }
+
+// 生成提交标记读取器（#189 下沉：smart-canvas.js 顶层名被 canvas-generation-tasks.js
+// 反向引用，按 tests/test_canvas_core_layer.py 的守卫要求下沉到 core 层）。
+function smartGenerationSubmissions(node){
+    return Array.isArray(node?.generationSubmissions)
+        ? node.generationSubmissions.filter(item => item && item.idempotencyKey)
+        : [];
+}
