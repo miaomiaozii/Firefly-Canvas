@@ -1039,13 +1039,6 @@ function applyTheme(theme){
     document.body?.classList.toggle('theme-dark', dark);
     document.body?.classList.toggle('studio-theme-dark', dark);
 }
-function toast(text){
-    const el = document.getElementById('toast');
-    el.textContent = text;
-    el.classList.add('show');
-    clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => el.classList.remove('show'), 1800);
-}
 let generationCompleteSoundAt = 0;
 function playGenerationCompleteSound(){
     const now = Date.now();

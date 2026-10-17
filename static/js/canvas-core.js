@@ -149,3 +149,12 @@ function smartGenerationSubmissions(node){
         ? node.generationSubmissions.filter(item => item && item.idempotencyKey)
         : [];
 }
+
+// 提示条（#189 四道关卡下沉：canvas-generation-tasks.js 与 smart-canvas.js 都反向引用它，按 tests/test_canvas_core_layer.py 的守卫要求下沉到 core 层。只碰 #toast 元素与 setTimeout，无核心依赖。）
+function toast(text){
+    const el = document.getElementById('toast');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => el.classList.remove('show'), 1800);
+}

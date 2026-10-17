@@ -38,6 +38,7 @@ CORE_NAMES = (
     "canvas",
     "settings",
     "params",
+    "toast",
 )
 
 # 必须住在自己模块里的名字：模块自己的状态，不该留在核心。
@@ -60,14 +61,16 @@ MODULE_OWNED = {
 # 实测只加一行 `let node = null;`、不改任何模块，计数就从 686 到 1504。
 # 剩下的主要是 render / scheduleSave / shell / world 这类行为枢纽与 DOM 节点，
 # 它们本来就该被模块调用；要继续降，得先判明哪些该注入、哪些该留在核心。
+# 2026-10-17 实测：#189 四道关卡把 canvas-generation-tasks.js 顶到 126（超当时上限 124，
+# 守卫当时是红的）；把共享提示条 toast 下沉到 canvas-core.js 后全表重测，收紧到下列值。
 REVERSE_REFERENCE_CEILINGS = {
-    "canvas-generation-cascade.js": 160,
-    "canvas-media-history.js": 125,
-    "canvas-generation-tasks.js": 124,
-    "canvas-image-editor.js": 110,
-    "canvas-node-ops.js": 63,
-    "canvas-connections.js": 46,
-    "canvas-undo.js": 14,
+    "canvas-generation-cascade.js": 153,
+    "canvas-media-history.js": 119,
+    "canvas-generation-tasks.js": 106,
+    "canvas-image-editor.js": 106,
+    "canvas-node-ops.js": 60,
+    "canvas-connections.js": 44,
+    "canvas-undo.js": 6,
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
