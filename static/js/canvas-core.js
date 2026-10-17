@@ -158,3 +158,24 @@ function toast(text){
     clearTimeout(toast._timer);
     toast._timer = setTimeout(() => el.classList.remove('show'), 1800);
 }
+
+// #197: pending-action persistence support (used by canvas-generation-tasks.js).
+// A persisted mark survives the page reload, but its live `replay` closure does not:
+// each gate's own module registers a rebuild closure (kind -> (entry, liveNode) => replayFn)
+// here at load time, and registers the persister that commits the "entry cleared" node
+// state to disk BEFORE the corresponding fetch fires (clear-on-send protocol). This file
+// is the core layer and must not reference any smart-canvas.js symbol (layer guard).
+const smartPendingActionRebuilders = new Map();
+let smartPendingActionPersisterFn = null;
+function registerSmartPendingActionRebuilder(kind, rebuild){
+    if(kind && typeof rebuild === 'function') smartPendingActionRebuilders.set(String(kind), rebuild);
+}
+function smartPendingActionRebuilderFor(kind){
+    return smartPendingActionRebuilders.get(String(kind || '')) || null;
+}
+function registerSmartPendingActionPersister(persister){
+    if(typeof persister === 'function') smartPendingActionPersisterFn = persister;
+}
+function smartPendingActionPersister(){
+    return smartPendingActionPersisterFn;
+}

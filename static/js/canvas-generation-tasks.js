@@ -309,29 +309,18 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
             queueSmartPendingActionResume('video', resultNode.id, live => (async () => {
                 const freshNode = canvasState.nodes.find(n => n.id === live.id) || live;
                 const videoResult = await runApiVideoGeneration(prompt, refs, runSettings, freshNode);
-                if(!Array.isArray(videoResult?.taskIds)) return;
-                const taskIds = videoResult.taskIds.filter(Boolean);
-                if(!taskIds.length) return;
-                // Mirror the main caller's success path so the client applies the
-                // server-side registration (pendingTasks) and tracks the task to
-                // completion (resumeSmartPendingNode polls and writes the output).
-                const newTasks = taskIds.map(taskId => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:''}));
-                freshNode.pendingTasks = [...smartPendingTasks(freshNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
-                ensureSmartPendingHistoryLogs(freshNode, newTasks, {prompt, kind:'video'});
-                freshNode.pending = Math.max(freshNode.pendingTasks.length, freshNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
-                freshNode.runTimerHidden = false;
-                freshNode.running = false;
-                render();
+                // Mirror the main caller's success path (shared helper so the reload
+                // rebuilder applies the exact same result handling). Fire-and-forget
+                // completion tracking: the dispatcher's 'replayed' event must be logged
+                // as soon as the request has been re-sent and registered; polling the
+                // video task to completion must not gate the resume log.
+                const taskIds = applyApiVideoGenerationResult(freshNode, videoResult, prompt);
                 if(!await acceptProjectGenerationRegistration(videoResult)){
                     scheduleSave();
                     await saveCanvas();
                 }
-                // Fire-and-forget completion tracking (same pattern as the load-time
-                // resume at :1139): the dispatcher's 'replayed' event must be logged as
-                // soon as the request has been re-sent and registered; polling the video
-                // task to completion must not gate the resume log.
-                void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
-            })());
+                if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+            })(), {prompt, refs, runSettings});
             const pendingError = new Error(tr('smart.canvasVideoPendingAfterSave'));
             pendingError.smartSavePendingResume = true;
             toast(pendingError.message);
@@ -1175,14 +1164,41 @@ function resumeSmartPersistencePendingTasks(canvasNodes){
 // scheduleSave() is called here: the failed gate flush left the canvas dirty, and the
 // debounced autosave that then succeeds settles the save (markAutosaveSaved), which calls
 // resumeSmartPendingActionResumes().
-function queueSmartPendingActionResume(kind, nodeId, replay){
+function queueSmartPendingActionResume(kind, nodeId, replay, payload){
     if(!nodeId || typeof replay !== 'function') return null;
     smartPendingActionResumeSeq += 1;
     const actionId = `action-${kind}-${smartPendingActionResumeSeq}`;
-    smartPendingActionResumes.set(actionId, {actionId, kind:String(kind || ''), nodeId:String(nodeId), replay, createdAt:Date.now()});
-    smartPendingActionResumeLog.push({t:Date.now(), event:'queued', kind:String(kind || ''), nodeId:String(nodeId)});
+    const entry = {actionId, kind:String(kind || ''), nodeId:String(nodeId), replay, payload:payload === undefined ? null : payload, createdAt:Date.now(), releasing:false};
+    smartPendingActionResumes.set(actionId, entry);
+    mirrorPendingActionToStorage(entry);
+    smartPendingActionResumeLog.push({t:Date.now(), event:'queued', kind:entry.kind, nodeId:entry.nodeId});
     if(typeof scheduleSave === 'function') scheduleSave();
     return actionId;
+}
+// #197: mirror the in-memory queue entry onto the anchored node so the next successful
+// save persists it. The incremental save path carries whole nodes via upsert_node
+// mutations, while top-level canvas fields are NOT in the mutation snapshot (meta
+// whitelist is {title, icon, history} only — project-canvas-mutations.js), so the mark
+// must live on the node. Best-effort: if the mirror fails, the in-memory entry stays
+// authoritative and the next dispatch pass re-mirrors (the node is still dirty then).
+function mirrorPendingActionToStorage(entry){
+    try {
+        const node = (typeof canvasState !== 'undefined' && canvasState?.nodes || []).find(n => n && n.id === entry.nodeId);
+        if(!node) return;
+        if(!Array.isArray(node.pendingActionResumes)) node.pendingActionResumes = [];
+        if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)){
+            node.pendingActionResumes.push({actionId:entry.actionId, kind:entry.kind, payload:entry.payload, enqueuedAt:entry.createdAt});
+        }
+    } catch(error){ /* mirror is best-effort; in-memory entry remains authoritative */ }
+}
+// #197: drop the persisted mark from the anchored node (used when the entry can no
+// longer be replayed — node gone). The next save lands the removal.
+function clearPendingActionFromStorage(entry){
+    try {
+        const node = (typeof canvasState !== 'undefined' && canvasState?.nodes || []).find(n => n && n.id === entry.nodeId);
+        if(!node || !Array.isArray(node.pendingActionResumes)) return;
+        node.pendingActionResumes = node.pendingActionResumes.filter(rec => rec?.actionId !== entry.actionId);
+    } catch(error){ /* best-effort */ }
 }
 function hasSmartPendingActionResume(kind, nodeId){
     for(const entry of smartPendingActionResumes.values()){
@@ -1194,23 +1210,75 @@ function hasSmartPendingActionResume(kind, nodeId){
 // still alive. Each entry is removed BEFORE its fetch fires, so a user action can never
 // send twice (these endpoints have no server-side dedup). Node deleted => entry dropped.
 async function resumeSmartPendingActionResumes(canvasNodes){
-    if(!smartPendingActionResumes.size) return;
     const nodes = Array.isArray(canvasNodes) ? canvasNodes : [];
+    // #197: seed the in-memory queue from marks persisted on nodes. After a reload the
+    // Map is empty and the persisted mark on the node IS the "not-yet-sent" ledger
+    // (clear-on-send removes it from disk the moment the fetch fires — no mark means
+    // already sent, and the gate's own recovery path picks it up). In-session entries
+    // already carry their live replay closure: they match their persisted record by
+    // actionId and are not seeded twice.
+    for(const node of nodes){
+        const records = Array.isArray(node?.pendingActionResumes) ? node.pendingActionResumes : [];
+        for(const rec of records){
+            if(!rec || !rec.kind || !node?.id) continue;
+            const alreadyQueued = [...smartPendingActionResumes.values()].some(e => e.kind === rec.kind && e.nodeId === node.id && (rec.actionId ? e.actionId === rec.actionId : true));
+            if(alreadyQueued) continue;
+            const actionId = rec.actionId || `action-${rec.kind}-seeded-${smartPendingActionResumeSeq}`;
+            smartPendingActionResumes.set(actionId, {actionId, kind:String(rec.kind), nodeId:String(node.id), replay:null, payload:rec.payload || null, createdAt:Number(rec.enqueuedAt || Date.now()), releasing:false, seededFromStorage:true});
+            smartPendingActionResumeLog.push({t:Date.now(), event:'seeded', kind:String(rec.kind), nodeId:String(node.id)});
+        }
+    }
+    if(!smartPendingActionResumes.size) return;
+    // #197 clear-on-send: the persister commits "entry cleared" to disk BEFORE the
+    // fetch fires. While it is pending or fails, the entry stays in the Map and on the
+    // node, so a reload in that window still replays it; once it lands, a reload finds
+    // no mark and the already-sent request is picked up by the gate's own recovery path.
+    const persister = smartPendingActionPersister();
     for(const entry of [...smartPendingActionResumes.values()]){
+        if(entry.releasing) continue; // another pass is already persisting this entry's clear
         const live = nodes.find(n => n && n.id === entry.nodeId);
         if(!live){
             smartPendingActionResumes.delete(entry.actionId);
+            clearPendingActionFromStorage(entry);
             smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-node-gone', kind:entry.kind, nodeId:entry.nodeId});
             continue;
         }
-        // Single-shot: remove BEFORE running so the in-flight replay can never be
-        // re-fired by a later save settle. Fire-and-forget (void) like
-        // resumeSmartGenerationSubmission: replays can run for minutes (video task
-        // polling) and must not block the markAutosaveSaved save hook.
+        if(persister){
+            entry.releasing = true;
+            let cleared = false;
+            try { cleared = (await persister(entry)) === true; } catch(error) { cleared = false; }
+            if(!cleared){
+                entry.releasing = false;
+                smartPendingActionResumeLog.push({t:Date.now(), event:'clear-persist-pending', kind:entry.kind, nodeId:entry.nodeId});
+                continue; // mark still on disk; retry on the next save settle
+            }
+        }
+        // Single-shot: remove BEFORE running so a later save settle can never
+        // re-fire it.
         smartPendingActionResumes.delete(entry.actionId);
+        let replay = entry.replay;
+        if(typeof replay !== 'function'){
+            // #197: seeded from a persisted mark after a reload — the live closure is
+            // gone; rebuild it from the serializable payload registered by the gate.
+            const rebuild = smartPendingActionRebuilderFor(entry.kind);
+            if(typeof rebuild !== 'function'){
+                smartPendingActionResumeLog.push({t:Date.now(), event:'replay-missing-rebuilder', kind:entry.kind, nodeId:entry.nodeId});
+                continue;
+            }
+            try { replay = rebuild(entry, live); } catch(error){
+                smartPendingActionResumeLog.push({t:Date.now(), event:'replay-rebuild-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
+                continue;
+            }
+        }
+        if(typeof replay !== 'function'){
+            smartPendingActionResumeLog.push({t:Date.now(), event:'replay-missing', kind:entry.kind, nodeId:entry.nodeId});
+            continue;
+        }
+        // Fire-and-forget (void) like resumeSmartGenerationSubmission: replays can run
+        // for minutes (video task polling) and must not block the markAutosaveSaved hook.
         void (async () => {
             try {
-                await entry.replay(live);
+                await replay(live);
                 smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
             } catch(error){
                 smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
