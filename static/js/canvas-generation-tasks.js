@@ -289,7 +289,43 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
     if(canvas?.format === 'firefly-canvas-v1'){
         if(!resultNode?.id) throw new Error(tr('smart.projectVideoMissingResult'));
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedVideoStopped'));
+        if(!await flushProjectCanvasBeforeGeneration()){
+            // #189 gate (m03364/m03420): the video request was never sent. Do not drop it:
+            // queue a single-shot replay that re-runs this function once the canvas save
+            // settles (markAutosaveSaved → resumeSmartPendingActionResumes); on that pass the
+            // flush succeeds. The video endpoint has no server-side dedup and the dispatcher
+            // removes the entry before running it, so one click sends at most one request.
+            queueSmartPendingActionResume('video', resultNode.id, live => (async () => {
+                const freshNode = canvasState.nodes.find(n => n.id === live.id) || live;
+                const videoResult = await runApiVideoGeneration(prompt, refs, runSettings, freshNode);
+                if(!Array.isArray(videoResult?.taskIds)) return;
+                const taskIds = videoResult.taskIds.filter(Boolean);
+                if(!taskIds.length) return;
+                // Mirror the main caller's success path so the client applies the
+                // server-side registration (pendingTasks) and tracks the task to
+                // completion (resumeSmartPendingNode polls and writes the output).
+                const newTasks = taskIds.map(taskId => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:''}));
+                freshNode.pendingTasks = [...smartPendingTasks(freshNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
+                ensureSmartPendingHistoryLogs(freshNode, newTasks, {prompt, kind:'video'});
+                freshNode.pending = Math.max(freshNode.pendingTasks.length, freshNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
+                freshNode.runTimerHidden = false;
+                freshNode.running = false;
+                render();
+                if(!await acceptProjectGenerationRegistration(videoResult)){
+                    scheduleSave();
+                    await saveCanvas();
+                }
+                // Fire-and-forget completion tracking (same pattern as the load-time
+                // resume at :1139): the dispatcher's 'replayed' event must be logged as
+                // soon as the request has been re-sent and registered; polling the video
+                // task to completion must not gate the resume log.
+                void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+            })());
+            const pendingError = new Error(tr('smart.canvasVideoPendingAfterSave'));
+            pendingError.smartSavePendingResume = true;
+            toast(pendingError.message);
+            throw pendingError;
+        }
         const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(mediaKindForItem(ref)));
         const ownedRefs = await Promise.all(projectRefs.map(ref => importProjectMediaReference(ref)));
         if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error(tr('smart.videoRefsNotInProject'));
@@ -1156,14 +1192,20 @@ async function resumeSmartPendingActionResumes(canvasNodes){
             smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-node-gone', kind:entry.kind, nodeId:entry.nodeId});
             continue;
         }
+        // Single-shot: remove BEFORE running so the in-flight replay can never be
+        // re-fired by a later save settle. Fire-and-forget (void) like
+        // resumeSmartGenerationSubmission: replays can run for minutes (video task
+        // polling) and must not block the markAutosaveSaved save hook.
         smartPendingActionResumes.delete(entry.actionId);
-        try {
-            await entry.replay(live);
-            smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
-        } catch(error){
-            smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
-            if(typeof toast === 'function') toast(String(error?.message || '').slice(0, 160) || tr('smart.errRunFailed'));
-        }
+        void (async () => {
+            try {
+                await entry.replay(live);
+                smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
+            } catch(error){
+                smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
+                if(typeof toast === 'function') toast(String(error?.message || '').slice(0, 160) || tr('smart.errRunFailed'));
+            }
+        })();
     }
 }
 if(typeof window !== 'undefined'){

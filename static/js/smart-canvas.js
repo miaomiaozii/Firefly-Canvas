@@ -9058,17 +9058,25 @@ async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     const assetId = String(item?.asset_id || '').trim();
     const projectId = canvas?.project_id || canvas?.project || canvasId || '';
     if(!projectId || !node?.id || !assetId){ toast(tr('smart.noProjectMediaOriginal')); return; }
-    try{
-        if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
-            throw new Error(tr('smart.canvasNotSavedPs'));
-        }
+    const psSend = async (live) => {
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({source_node_id:node.id, source_media_id:assetId, ttl_seconds:300})
+            body:JSON.stringify({source_node_id:live.id, source_media_id:assetId, ttl_seconds:300})
         });
         if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
         const binding = await response.json();
         toast(trf('smart.sentToPs', {id: binding.request_id}));
+    };
+    try{
+        if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
+            // #189 gate (m03364/m03420): do not cancel the request. Queue a single-shot
+            // replay (the round-trip endpoint has no server-side dedup); the canvas is
+            // still dirty, so the queued save settles and markAutosaveSaved replays it.
+            queueSmartPendingActionResume('photoshop', node.id, live => psSend(live));
+            toast(tr('smart.canvasPsPendingAfterSave'));
+            return;
+        }
+        await psSend(node);
     }catch(error){ toast(error.message || tr('smart.sendPsFailed')); }
 }
 function runSmartNodeToolbarAction(nodeId, action){
@@ -10175,44 +10183,76 @@ async function sendConversationMessage(node, input, button){
     const requestId = conversationRequestId();
     let controller = null;
     let timeoutId = null;
-    try {
+    let requestSent = false;
+    let queued = false;
+    const sendConversationRequest = async (live) => {
+        requestSent = true;
         const projectId = conversationProjectId();
         if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
-        const mutationClient = projectCanvasMutationClient();
-        const response = await mutationClient.requestAfterProjectCanvasFlush({
-            flush:flushProjectCanvasBeforeGeneration,
-            failureMessage:tr('smart.canvasUnsavedMessageNotSent'),
-            request:async () => {
-                controller = new AbortController();
-                timeoutId = setTimeout(() => controller.abort(), 15000);
-                return fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(node.id)}/messages`, {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({text, request_id:requestId}),
-                    signal:controller.signal,
-                });
-            },
+        controller = new AbortController();
+        timeoutId = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text, request_id:requestId}),
+            signal:controller.signal,
         });
         if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
         const data = await response.json();
+        const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
         if(data.canvas) applyConversationCanvasResponse(data.canvas);
-        else if(data.message) node.messages = [...(node.messages || []), data.message].slice(-500);
-        input.value = '';
-        if(data.status === 'pending') startConversationTaskPolling(node, requestId);
+        else if(data.message) fresh.messages = [...(fresh.messages || []).filter(m => String(m?.request_id || '') !== requestId), data.message].slice(-500);
+        const currentInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
+        if(currentInput) currentInput.value = '';
+        fresh.conversationSending = false;
+        if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
         render();
+    };
+    try {
+        const mutationClient = projectCanvasMutationClient();
+        await mutationClient.requestAfterProjectCanvasFlush({
+            flush:flushProjectCanvasBeforeGeneration,
+            failureMessage:tr('smart.canvasUnsavedMessageNotSent'),
+            request:() => sendConversationRequest(node),
+        });
     } catch(error) {
         if(error?.name === 'AbortError'){
             ensureLocalPendingConversationMessage(node, text, requestId);
             startConversationTaskPolling(node, requestId);
             toast(tr('smart.conversationTimeoutStillRunning'));
             render();
+        } else if(!requestSent){
+            // #189 gate (m03364/m03420): the flush before the request failed, so the message
+            // was never sent — do not drop it. Keep a visible local pending bubble (which
+            // also blocks a double send), queue a single-shot replay with the SAME request_id
+            // (the server dedupes by request_id, so even a pathological double send cannot
+            // duplicate the task), and let the queued save settle so markAutosaveSaved replays
+            // it (canvas-generation-tasks.js: resumeSmartPendingActionResumes).
+            queued = true;
+            ensureLocalPendingConversationMessage(node, text, requestId);
+            queueSmartPendingActionResume('conversation', node.id, async live => {
+                try {
+                    await sendConversationRequest(live);
+                } catch(replayError){
+                    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+                    fresh.conversationSending = false;
+                    const failInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
+                    if(failInput) failInput.value = text;
+                    render();
+                    throw replayError;
+                }
+            });
+            toast(tr('smart.canvasMessagePendingAfterSave'));
+            render();
         } else {
             toast(error?.message || tr('smart.conversationSendFailed'));
         }
     } finally {
         if(timeoutId !== null) clearTimeout(timeoutId);
-        node.conversationSending = false;
-        if(button) button.disabled = false;
+        if(!queued){
+            node.conversationSending = false;
+            if(button) button.disabled = false;
+        }
     }
 }
 function bindConversationNodeControls(el, node){
@@ -10640,32 +10680,47 @@ function bindLocalEditNodeControls(el, node){
         button.disabled = true;
         const statusEl = el.querySelector('[data-local-edit-status]');
         if(statusEl) statusEl.textContent = tr('smart.localEditGenerating');
+        const submitLocalEditRequest = async (live) => {
+            try {
+                const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+                    original_asset_id:live.original_asset_id, reference_asset_ids:live.reference_asset_ids || [], prompt:live.prompt,
+                    mode:live.mode, aspect_ratio:live.aspect_ratio || '', size:live.generation_size || '1024x1024', resolution:live.generation_resolution || '1k', selection:live.mode === 'modify' ? live.selection : {type:live.selectionType || 'freehand', points:live.selection}, feather_radius:live.feather_radius, result_node_id:live.id, base_revision:Number(canvas?.revision || 0)
+                })});
+                if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
+                const data = await response.json();
+                live.output_asset_id = data.assets?.output?.asset_id || '';
+                live.model_result_asset_id = data.assets?.model_result?.asset_id || '';
+                live.images = live.output_asset_id ? [{asset_id:live.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(live.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
+                // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
+                // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
+                live._leBusy = false;
+                if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
+                const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+                fresh._leBusy = false;
+                if(!fresh.output_asset_id){ fresh.output_asset_id = live.output_asset_id; fresh.model_result_asset_id = live.model_result_asset_id; fresh.images = live.images; }
+                toast(tr('smart.localEditDone'));
+                render();
+            } catch(error){
+                live._leBusy = false;
+                toast(error.message || tr('smart.localEditFailed'));
+                render();
+            }
+        };
         try {
-            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedLocalEdit'));
-            const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-                original_asset_id:node.original_asset_id, reference_asset_ids:node.reference_asset_ids || [], prompt:node.prompt,
-                mode:node.mode, aspect_ratio:node.aspect_ratio || '', size:node.generation_size || '1024x1024', resolution:node.generation_resolution || '1k', selection:node.mode === 'modify' ? node.selection : {type:node.selectionType || 'freehand', points:node.selection}, feather_radius:node.feather_radius, result_node_id:node.id, base_revision:Number(canvas?.revision || 0)
-            })});
-            if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
-            const data = await response.json();
-            node.output_asset_id = data.assets?.output?.asset_id || '';
-            node.model_result_asset_id = data.assets?.model_result?.asset_id || '';
-            node.images = node.output_asset_id ? [{asset_id:node.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(node.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
-            // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
-            // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
-            node._leBusy = false;
-            if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
-            const live = canvasState.nodes.find(n => n.id === node.id) || node;
-            live._leBusy = false;
-            if(!live.output_asset_id){ live.output_asset_id = node.output_asset_id; live.model_result_asset_id = node.model_result_asset_id; live.images = node.images; }
-            toast(tr('smart.localEditDone')); render();
-        } catch(error){
-            const live = canvasState.nodes.find(n => n.id === node.id) || node;
-            live._leBusy = false;
-            toast(error.message || tr('smart.localEditFailed'));
-            render();
-        }
-        finally { button.disabled = false; }
+            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
+                // #189 gate (m03364/m03420): do not cancel the request. Keep the node in its
+                // visible busy state and queue a single-shot replay (the local-edit endpoint
+                // has no server-side dedup); the canvas is still dirty, so the queued save
+                // settles and markAutosaveSaved replays it.
+                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live));
+                toast(tr('smart.canvasLocalEditPendingAfterSave'));
+                render();
+                const freshButton = document.querySelector(`.local-edit-node[data-id="${node.id}"] [data-local-edit-submit]`);
+                if(freshButton) freshButton.disabled = true;
+                return;
+            }
+            await submitLocalEditRequest(node);
+        } finally { button.disabled = false; }
     });
     sync();
 }

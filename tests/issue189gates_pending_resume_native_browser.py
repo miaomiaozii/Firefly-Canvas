@@ -165,7 +165,7 @@ def seed(store: ProjectStore, gate: str) -> str:
     nodes: list[dict] = []
     if gate == "conversation":
         nodes = [
-            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 40, "y": 40, "w": 300, "h": 200,
+            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 800, "y": 40, "w": 300, "h": 200,
              "runPrompt": "issue189 gates dirty node",
              "runSettings": {"engine": "api", "apiKind": "image", "model": IMAGE_MODEL,
                              "ratio": "square", "resolution": "1k", "count": 1}},
@@ -179,7 +179,7 @@ def seed(store: ProjectStore, gate: str) -> str:
         asset = store.import_media(pid, image_bytes("G189", (46, 92, 138)), "g189.png", "image/png",
                                    source_info={"type": "issue-189-gates-fixture", "name": "g189.png"})
         nodes = [
-            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 40, "y": 40, "w": 300, "h": 200,
+            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 800, "y": 40, "w": 300, "h": 200,
              "runPrompt": "issue189 gates dirty node",
              "runSettings": {"engine": "api", "apiKind": "image", "model": IMAGE_MODEL,
                              "ratio": "square", "resolution": "1k", "count": 1}},
@@ -190,7 +190,7 @@ def seed(store: ProjectStore, gate: str) -> str:
         asset = store.import_media(pid, image_bytes("G189", (46, 92, 138)), "g189.png", "image/png",
                                    source_info={"type": "issue-189-gates-fixture", "name": "g189.png"})
         nodes = [
-            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 40, "y": 40, "w": 300, "h": 200,
+            {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 800, "y": 40, "w": 300, "h": 200,
              "runPrompt": "issue189 gates dirty node",
              "runSettings": {"engine": "api", "apiKind": "image", "model": IMAGE_MODEL,
                              "ratio": "square", "resolution": "1k", "count": 1}},
@@ -199,7 +199,7 @@ def seed(store: ProjectStore, gate: str) -> str:
             {"id": LE_NODE, "type": "local-edit", "name": "LE target", "x": 380, "y": 300, "w": 460, "h": 220,
              "original_asset_id": asset["asset_id"],
              "localEditInputRoles": {"originalNode": LE_SRC, "referenceNodes": [], "promptNode": "", "promptNodes": []},
-             "prompt": LE_PROMPT, "selection": [12, 18, 120, 96], "mode": "modify",
+             "prompt": LE_PROMPT, "selection": [12, 18, 112, 118], "mode": "modify",
              "selectionType": "polygon", "feather_radius": 8, "generation_size": "1024x1024",
              "generation_resolution": "1k", "aspect_ratio": "1:1",
              "runSettings": {"engine": "api", "apiKind": "image", "model": IMAGE_MODEL,
@@ -207,7 +207,7 @@ def seed(store: ProjectStore, gate: str) -> str:
         ]
     elif gate == "video":
         nodes = [
-            {"id": VID_NODE, "type": "smart-image", "name": "Video", "x": 40, "y": 40, "w": 320, "h": 240,
+            {"id": VID_NODE, "type": "smart-image", "name": "Video", "x": 800, "y": 40, "w": 320, "h": 240,
              "runPrompt": "issue189 gates video prompt",
              "runSettings": {"engine": "api", "apiKind": "video", "model": VIDEO_MODEL,
                              "videoModel": VIDEO_MODEL, "videoRoutingMode": "manual",
@@ -217,6 +217,16 @@ def seed(store: ProjectStore, gate: str) -> str:
     else:
         raise ValueError(f"unknown gate: {gate}")
     store.apply_mutations(pid, [{"op": "upsert_node", "node": n} for n in nodes], base_revision=0)
+    if gate == "local-edit":
+        # syncLocalEditInputRoles (smart-canvas.js) re-derives the role map from
+        # canvas.connection edges on every render and OVERWRITES the node field;
+        # without the edge the original role resolves empty, the submit button
+        # stays disabled, and native clicks on a disabled button never produce
+        # an observable mousedown.
+        store.apply_mutations(pid, [{
+            "op": "upsert_edge",
+            "edge": {"from": LE_SRC, "to": LE_NODE, "kind": "input", "role": "original"},
+        }], base_revision=1)
     store.flush(pid)
     return pid
 
@@ -282,6 +292,77 @@ def server_readback(store: ProjectStore, project_id: str, gate: str) -> dict:
             "video-task-ids-unique": len(set(ids)) == len(ids)}
 
 
+def wait_rect_stable(browser: NativeBrowser, selector: str, timeout: float = 8.0,
+                     settle_polls: int = 3, interval: float = 0.2) -> None:
+    encoded = json.dumps(selector)
+    rect_js = (
+        "(function(){var el=document.querySelector(" + encoded + ");"
+        "if(!el)return 'null';"
+        "var r=el.getBoundingClientRect();"
+        "return r.left+','+r.top+','+r.width+','+r.height;})()"
+    )
+    deadline = time.time() + timeout
+    last = None
+    stable = 0
+    while time.time() < deadline:
+        current = browser.evaluate(rect_js)
+        if current and current != "null" and current == last:
+            stable += 1
+            if stable >= settle_polls:
+                return
+        else:
+            stable = 0
+        last = current
+        time.sleep(interval)
+    raise TimeoutError(f"element rect never settled: {selector}")
+
+
+def native_click_retry(browser: NativeBrowser, selector: str,
+                       relative: tuple[float, float] | None = None,
+                       attempts: int = 3) -> dict:
+    """native_click with a re-settle + retry loop.
+
+    The page's main thread can be briefly blocked right after the pre-gate steps
+    (debounced autosave serialization / 409 rebase cycles), which makes the runner's
+    1s mousedown-observation window expire before the queued event is delivered.
+    Re-measuring the target and retrying the click is pure input robustness; no
+    assertion is touched."""
+    last: RuntimeError | None = None
+    for _ in range(attempts):
+        try:
+            if relative is not None:
+                return browser.native_click(selector, relative=relative)
+            return browser.native_click(selector)
+        except RuntimeError as error:
+            last = error
+            text = str(error)
+            if "did not observe" not in text and "did not settle" not in text:
+                raise
+            wait_rect_stable(browser, selector, timeout=5.0)
+            time.sleep(0.6)
+    assert last is not None
+    # Failure diagnostics: dump target rect, hit chain at the click point, and the
+    # page-side native event log so a "did not observe" failure is debuggable from
+    # the run log alone.
+    try:
+        encoded = json.dumps(selector)
+        dump = browser.evaluate(
+            "(function(){var el=document.querySelector(" + encoded + ");"
+            "var r=el?el.getBoundingClientRect():null;"
+            "var x=r?r.left+r.width/2:-1,y=r?r.top+r.height/2:-1;"
+            "var chain=[];var p=r?document.elementFromPoint(x,y):null;"
+            "while(p&&chain.length<6){chain.push(p.tagName+'.'+String(p.className).slice(0,45));p=p.parentElement;}"
+            "return JSON.stringify({rect:r?[r.left,r.top,r.width,r.height]:null,"
+            "center:[Math.round(x),Math.round(y)],hitChain:chain,"
+            "vp:[window.innerWidth,window.innerHeight],"
+            "events:(window.__fireflyNativeEvents||[]).slice(-3)});})()"
+        )
+        print(f"[click-dump] {selector}: {dump}", file=sys.stderr)
+    except Exception:
+        pass
+    raise last
+
+
 def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
              gate: str, mode: str) -> dict:
     result: dict = {
@@ -328,16 +409,27 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
 
                 # ---- make the canvas dirty (proves the gate has work to flush)
                 if gate == "video":
+                    wait_rect_stable(browser, f'.image-node[data-id="{VID_NODE}"]')
                     browser.native_click(f'.image-node[data-id="{VID_NODE}"]')
                 else:
+                    wait_rect_stable(browser, f'.image-node[data-id="{DIRTY_NODE}"]')
                     browser.native_click(f'.image-node[data-id="{DIRTY_NODE}"]')
                 time.sleep(0.8)
                 wait_prompt_clickable(browser, shot=run_shots / "debug-prompt-blocked.png")
+                wait_rect_stable(browser, "#promptInput")
                 browser.native_click("#promptInput", relative=(0.02, 0.5))
                 browser.native_press("End")
                 browser.native_type(VIDEO_EDIT if gate == "video" else DIRTY_TEXT)
                 wait_state(browser, "contentDirty===true", 10, "edit marks canvas dirty")
                 result["steps"]["dirty"] = True
+
+                # ---- deselect the dirty node: while selected its composer card floats over
+                # the canvas and can obscure the gate target node's click area.
+                # Exception: for the video gate the dirty node IS the video node, and
+                # #runBtn lives inside its composer card — deselecting would hide the target.
+                if gate != "video":
+                    browser.evaluate("clearSelection(); render();")
+                    time.sleep(0.5)
 
                 # ---- arm the stale-base 409 rewrites, then fire the gate action immediately
                 browser.evaluate(f"window.__fix189Inject.left = {ARM_STALE}")
@@ -345,26 +437,38 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 browser.capture_screenshot(run_shots / "01-pre-gate.png")
 
                 if gate == "conversation":
-                    browser.native_click('[data-conversation-input]', relative=(0.5, 0.5))
+                    wait_rect_stable(browser, "[data-conversation-input]")
+                    native_click_retry(browser, "[data-conversation-input]", relative=(0.5, 0.5))
                     time.sleep(0.3)
                     browser.native_type(CONV_TEXT)
-                    browser.native_click('[data-conversation-send]', relative=(0.5, 0.5))
+                    wait_rect_stable(browser, "[data-conversation-send]")
+                    native_click_retry(browser, "[data-conversation-send]", relative=(0.5, 0.5))
                 elif gate == "photoshop":
-                    browser.native_click(f'.image-node[data-id="{PS_NODE}"]')
+                    wait_rect_stable(browser, f'.image-node[data-id="{PS_NODE}"]')
+                    native_click_retry(browser, f'.image-node[data-id="{PS_NODE}"]')
                     browser.wait_for('document.querySelector("button[data-smart-node-action=\\"send-ps\\"]")', timeout=20)
-                    browser.native_click('button[data-smart-node-action="send-ps"]')
+                    wait_rect_stable(browser, 'button[data-smart-node-action="send-ps"]')
+                    native_click_retry(browser, 'button[data-smart-node-action="send-ps"]')
                 elif gate == "local-edit":
-                    browser.native_click(f'.local-edit-node[data-id="{LE_NODE}"]')
+                    # No node-selection click: any click inside the card triggers
+                    # select + full re-render, which replaces the element tree between
+                    # mousedown and mouseup and breaks the runner's owner-integrity
+                    # check. The LE control card is always rendered and the submit
+                    # button is enabled without selection (verified by probe), so the
+                    # native submit click below is the faithful user action.
                     browser.wait_for(
                         "(function(){var b=document.querySelector('[data-local-edit-node=\"g189-le\"] [data-local-edit-submit]');"
                         "if(!b)return false;var r=b.getBoundingClientRect();"
                         "if(r.width<=0||r.height<=0)return false;"
+                        "if(b.hasAttribute('disabled'))return false;"
                         "var x=r.left+r.width*0.5,y=r.top+r.height*0.5;"
                         "var hit=document.elementFromPoint(x,y);return !!(hit&&(b===hit||b.contains(hit)));})()",
                         timeout=20)
-                    browser.native_click('[data-local-edit-submit]')
+                    wait_rect_stable(browser, "[data-local-edit-submit]")
+                    native_click_retry(browser, "[data-local-edit-submit]")
                 elif gate == "video":
-                    browser.native_click("#runBtn")
+                    wait_rect_stable(browser, "#runBtn")
+                    native_click_retry(browser, "#runBtn")
                 result["steps"]["gate-fired"] = True
                 browser.capture_screenshot(run_shots / "02-post-gate.png")
 
@@ -401,8 +505,8 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 pending_seen = any(PENDING_TOAST in t for t in (toasts_gate + toasts_final))
                 pending1 = cap1["pending"]
                 pending2 = cap2["pending"]
-                pre_posts = len(cap1["net"])
-                post_posts = len(cap2["net"])
+                pre_posts = len([e for e in cap1["net"] if e.get("method") == "POST"])
+                post_posts = len([e for e in cap2["net"] if e.get("method") == "POST"])
                 posts = result["gate-posts"]
                 replayed = any(e.get("event") == "replayed" and e.get("kind") == KIND[gate]
                                for e in cap2["log"])
@@ -469,7 +573,13 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                         result["passed"] = common_ok and rb.get("ps-round-trips") == 1 \
                             and posts[0].get("status") == 200
                     elif gate == "local-edit":
-                        result["passed"] = common_ok and cap2["state"].get("busy") is False
+                        # The seed selection must satisfy the endpoint's validate_rect
+                        # (local_edit.py:47): inside the 480x320 source image AND match
+                        # aspect_ratio 1:1 within 0.02. [12,18,112,118] is a 100x100
+                        # square. With a valid seed the offline adapter composites
+                        # deterministically, so 200 + output asset is the green bar.
+                        result["passed"] = common_ok and cap2["state"].get("busy") is False \
+                            and posts[0].get("status") == 200 and rb.get("le-output-asset")
                     else:
                         result["passed"] = common_ok and rb.get("video-task-ids-unique") is True
     except Exception as error:  # noqa: BLE001 — journey evidence must capture any failure
