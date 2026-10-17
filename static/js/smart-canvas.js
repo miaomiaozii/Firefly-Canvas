@@ -6609,6 +6609,11 @@ async function loadCanvas(){
         resumeConversationTasks();
         resumeSmartPendingTasks();
         resumeJimengPendingNodes();
+        // #197: replay gate requests whose persisted "not-yet-sent" mark survived the
+        // reload (clear-on-send: the mark is removed from disk only after the fetch
+        // fires; an absent mark means already sent — the gate's own recovery path picks
+        // it up, so no duplicate request is ever re-sent).
+        void resumeSmartPendingActionResumes(canvasState.nodes);
         startCanvasMetaPoll();
         // Mark the canvas as authoritatively loaded. From this point on an empty
         // local node set is treated as a deliberate user action and autosave may
@@ -6673,11 +6678,62 @@ function markAutosaveSaved(){
     // server-side idempotency key keeps any race with the normal path single-task.
     if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
     // #189 follow-up: the four remaining save gates (video / local-edit / photoshop /
-    // conversation) replay here too. Their queues are in-memory and single-shot (each entry
-    // removed before its fetch fires) — see resumeSmartPendingActionResumes() in
-    // canvas-generation-tasks.js for which endpoints do and do not dedupe server-side.
+    // conversation) replay here too. #197: their marks are persisted on the node and
+    // removed from disk at the moment the fetch fires (clear-on-send — see
+    // registerSmartPendingActionPersister below), so a mark that survives a reload is
+    // provably never sent and is replayed exactly once; an already-sent request leaves
+    // no mark and is picked up by the gate's own recovery path (docs/issue197_recovery_audit.md).
+    // In-session entries are single-shot (removed before their fetch fires).
     if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
 }
+// #197: pending-action persistence wiring. canvas-generation-tasks.js owns the
+// in-memory queue and the clear-on-send protocol; it calls back into these registered
+// hooks (no smart-canvas.js symbol is referenced from the tasks module — layer guard).
+// Persister: commits "this entry is no longer pending" to disk BEFORE the corresponding
+// fetch fires (node field cleared + settled non-automated save). Returns true only when
+// the cleared state has landed; on failure the caller keeps the entry and retries on the
+// next save settle, so a request is never sent without its mark being cleared first.
+registerSmartPendingActionPersister(async (entry) => {
+    const node = (canvasState.nodes || []).find(n => n && n.id === entry.nodeId);
+    if(!node) return false;
+    const list = Array.isArray(node.pendingActionResumes) ? node.pendingActionResumes : [];
+    node.pendingActionResumes = list.filter(rec => rec?.actionId !== entry.actionId);
+    try {
+        return (await saveCanvas({automatic:false})) === true;
+    } catch(error) {
+        return false;
+    }
+});
+// Rebuilders: after a reload the queued closure is gone; rebuild each gate's replay from
+// the serializable payload persisted on the node. Conversation carries text+requestId
+// (the server dedupes by request_id); photoshop carries projectId+assetId; local-edit
+// carries nothing (all state is node fields, read from the live node); video carries
+// prompt/refs/runSettings.
+registerSmartPendingActionRebuilder('conversation', (entry, live) => async (target) => {
+    try {
+        await sendConversationRequest(target);
+    } catch(replayError){
+        const fresh = canvasState.nodes.find(n => n.id === target.id) || target;
+        fresh.conversationSending = false;
+        const failInput = document.querySelector(`.image-node[data-id="${target.id}"] [data-conversation-input]`);
+        if(failInput && entry.payload) failInput.value = entry.payload.text || '';
+        render();
+        throw replayError;
+    }
+});
+registerSmartPendingActionRebuilder('photoshop', (entry, live) => (target) => psSendRoundTrip(target, (entry.payload || {}).assetId, (entry.payload || {}).projectId));
+registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target));
+registerSmartPendingActionRebuilder('video', (entry, live) => async (target) => {
+    const payload = entry.payload || {};
+    const freshNode = canvasState.nodes.find(n => n.id === target.id) || target;
+    const videoResult = await runApiVideoGeneration(payload.prompt, payload.refs, payload.runSettings, freshNode);
+    const taskIds = applyApiVideoGenerationResult(freshNode, videoResult, payload.prompt);
+    if(!await acceptProjectGenerationRegistration(videoResult)){
+        scheduleSave();
+        await saveCanvas();
+    }
+    if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+});
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
     contentDirty = true;
@@ -9046,30 +9102,36 @@ function duplicateSmartNodeMediaToCanvas(node, imageIndex){
     scheduleSave();
     toast(tr('smart.addedToCanvas'));
 }
+// #197: Photoshop round-trip send, module scope (was a local `psSend` closure in
+// sendSmartNodeImageToPhotoshop) so the reload rebuilder can resend it from the
+// persisted payload {assetId, projectId} — the in-session closure is lost on reload.
+async function psSendRoundTrip(live, assetId, projectId){
+    const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({source_node_id:live.id, source_media_id:assetId, ttl_seconds:300})
+    });
+    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
+    const binding = await response.json();
+    toast(trf('smart.sentToPs', {id: binding.request_id}));
+}
 async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     const item = node?.images?.[imageIndex];
     const assetId = String(item?.asset_id || '').trim();
     const projectId = canvas?.project_id || canvas?.project || canvasId || '';
     if(!projectId || !node?.id || !assetId){ toast(tr('smart.noProjectMediaOriginal')); return; }
-    const psSend = async (live) => {
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({source_node_id:live.id, source_media_id:assetId, ttl_seconds:300})
-        });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
-        const binding = await response.json();
-        toast(trf('smart.sentToPs', {id: binding.request_id}));
-    };
     try{
         if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
             // #189 gate (m03364/m03420): do not cancel the request. Queue a single-shot
             // replay (the round-trip endpoint has no server-side dedup); the canvas is
             // still dirty, so the queued save settles and markAutosaveSaved replays it.
-            queueSmartPendingActionResume('photoshop', node.id, live => psSend(live));
+            // #197: the entry's mark is persisted on the node and cleared from disk at
+            // the moment this fetch fires (clear-on-send); the payload carries everything
+            // the reload rebuilder needs.
+            queueSmartPendingActionResume('photoshop', node.id, live => psSendRoundTrip(live, assetId, projectId), {assetId, projectId});
             toast(tr('smart.canvasPsPendingAfterSave'));
             return;
         }
-        await psSend(node);
+        await psSendRoundTrip(node, assetId, projectId);
     }catch(error){ toast(error.message || tr('smart.sendPsFailed')); }
 }
 function runSmartNodeToolbarAction(nodeId, action){
@@ -10223,6 +10285,8 @@ async function sendConversationMessage(node, input, button){
             // it (canvas-generation-tasks.js: resumeSmartPendingActionResumes).
             queued = true;
             ensureLocalPendingConversationMessage(node, text, requestId);
+            // #197: payload carries text+requestId for the reload rebuilder (the same
+            // request_id also keeps the server-side dedup as a backstop).
             queueSmartPendingActionResume('conversation', node.id, async live => {
                 try {
                     await sendConversationRequest(live);
@@ -10234,7 +10298,7 @@ async function sendConversationMessage(node, input, button){
                     render();
                     throw replayError;
                 }
-            });
+            }, {text, requestId});
             toast(tr('smart.canvasMessagePendingAfterSave'));
             render();
         } else {
@@ -10705,7 +10769,10 @@ function bindLocalEditNodeControls(el, node){
                 // visible busy state and queue a single-shot replay (the local-edit endpoint
                 // has no server-side dedup); the canvas is still dirty, so the queued save
                 // settles and markAutosaveSaved replays it.
-                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live));
+                // #197: the request is fully described by node fields (prompt/mode/
+                // selection/feather/...), so the payload is empty — the reload rebuilder
+                // just calls submitLocalEditRequest(live) against the reloaded node.
+                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live), {});
                 toast(tr('smart.canvasLocalEditPendingAfterSave'));
                 render();
                 const freshButton = document.querySelector(`.local-edit-node[data-id="${node.id}"] [data-local-edit-submit]`);
