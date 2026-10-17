@@ -60,7 +60,7 @@ from tests.issue189_gate_flush_native_browser import (  # noqa: E402
 )
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser  # noqa: E402
 
-VIEWPORT = {"width": 1520, "height": 940}
+VIEWPORT = (1520, 940)
 ARM_STALE = 3
 GATE_SETTLE_S = 3.0
 FIXED_SETTLE_S = 8.0
