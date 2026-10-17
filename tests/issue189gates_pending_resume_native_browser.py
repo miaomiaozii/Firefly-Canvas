@@ -21,6 +21,19 @@ timeout and no cancellation by design.
 --mode fixed: post-fix guarantees — a pending entry is queued at the gate, 0 gate POSTs
              before settle, exactly one gate POST after settle, the pending table is drained
              with a 'replayed' log event, and the server shows no duplicate task. Exit 0.
+--mode refresh (#197): persistence guarantee — the gate fails, the in-session replay is
+             stubbed out (pure test instrumentation), the canvas save settles and the
+             pending mark must land on the SERVER canvas (pendingActionResumes has exactly
+             one entry for this gate, 0 gate POSTs), then the page is RELOADED (native
+             full page load) and the load path must replay the request exactly once:
+             exactly one gate POST across both sessions, exactly one server task/artifact,
+             the server mark drained, 'replayed' log event in the reloaded session.
+             RED before the #197 persistence work (the mark never reaches the server).
+--mode refresh-sent (#197): duplicate-prevention guarantee — the in-session replay fires
+             normally (one gate POST, mark cleared and persisted), then the page is
+             RELOADED and the assertions demand NO second gate POST across both sessions
+             and the server task count still exactly 1 (a request that was already sent
+             must never be replayed).
 
 Usage:
   python tests/issue189gates_pending_resume_native_browser.py --gate conversation --mode fixed \
@@ -64,6 +77,20 @@ VIEWPORT = (1520, 940)
 ARM_STALE = 3
 GATE_SETTLE_S = 3.0
 FIXED_SETTLE_S = 8.0
+
+# #197: the persisted pending-mark field on the canvas object (survives via
+# canvasForStorage()'s deep clone, rides any successful canvas save to the server).
+PENDING_FIELD = "pendingActionResumes"
+# #197 test instrumentation ONLY: stub out the in-session replay dispatcher so the
+# persisted mark (written by the gate) survives the reload. Classic-script top-level
+# function declarations live on the global object, and markAutosaveSaved calls the
+# dispatcher unqualified, so this reassignment is observed by the page code. The
+# reloaded page is a fresh context and gets the real dispatcher back.
+STUB_RESUME_JS = (
+    "if(typeof window.resumeSmartPendingActionResumes!=='function') throw new Error('resumeSmartPendingActionResumes missing');"
+    "window.__fcResumeOriginal=window.resumeSmartPendingActionResumes;"
+    "window.resumeSmartPendingActionResumes=function(){return Promise.resolve();};"
+)
 
 DIRTY_NODE = "g189-dirty"
 CONV_NODE = "g189-conv"
@@ -270,6 +297,26 @@ def gate_posts(logger: RequestLogger | None, gate: str) -> list[dict]:
             if e.get("method") == "POST" and e.get("path", "").rstrip("/").endswith(tail)]
 
 
+def server_pending_field(store: ProjectStore, project_id: str) -> list[dict]:
+    """#197: the pending-mark field as persisted on the SERVER canvas (authoritative
+    readback — the in-memory table is what the mark must mirror to disk)."""
+    opened = store.open_project(project_id)
+    field = (opened.get("canvas") or {}).get(PENDING_FIELD)
+    return [e for e in (field or []) if isinstance(e, dict)]
+
+
+def poll_server_field(store: ProjectStore, project_id: str, expected_len: int,
+                      timeout: float = 30.0) -> list[dict]:
+    deadline = time.time() + timeout
+    last: list[dict] = []
+    while time.time() < deadline:
+        last = server_pending_field(store, project_id)
+        if len(last) == expected_len:
+            return last
+        time.sleep(0.5)
+    return last
+
+
 def server_task_ids(store: ProjectStore, project_id: str) -> list[str]:
     opened = store.open_project(project_id)
     ids: list[str] = []
@@ -452,6 +499,12 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 # ---- arm the stale-base 409 rewrites, then fire the gate action immediately
                 browser.evaluate(f"window.__fix189Inject.left = {ARM_STALE}")
                 result["steps"]["armed"] = True
+                if mode == "refresh":
+                    # #197: block the in-session replay so the persisted mark is
+                    # forced across the reload boundary (the stub is page-context
+                    # only; the reloaded session gets the real dispatcher).
+                    browser.evaluate(STUB_RESUME_JS)
+                    result["steps"]["resume-stubbed"] = True
                 browser.capture_screenshot(run_shots / "01-pre-gate.png")
 
                 if gate == "conversation":
@@ -505,15 +558,50 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                     browser,
                     "(function(){return (window.__fix189Net||[]).some(function(e){return (e.url||'').indexOf("
                     + json.dumps(GATE_URL_PART[gate]) + ")!==-1;});})()",
-                    30) if mode == "fixed" else False
+                    30) if mode in ("fixed", "refresh-sent") else False
                 result["steps"]["post-arrived"] = bool(post_seen)
-                time.sleep(FIXED_SETTLE_S if mode == "fixed" else 3.0)
+                time.sleep(FIXED_SETTLE_S if mode in ("fixed", "refresh-sent") else 3.0)
                 cap2 = json.loads(browser.evaluate(capture_js(gate)))
-                result["final"] = cap2
+                result["phase1"] = cap2
                 result["server"] = list(logger.entries)
                 result["gate-posts"] = gate_posts(logger, gate)
                 result["readback"] = server_readback(store, project_id, gate)
                 browser.capture_screenshot(run_shots / "04-after-settle.png")
+
+                posts_phase1 = gate_posts(logger, gate)
+                cap3 = cap2
+                if mode in ("refresh", "refresh-sent"):
+                    # ---- #197 phase 1 server-side mark check, then a NATIVE reload
+                    # of the same page. refresh: exactly one persisted entry must
+                    # exist (the in-session replay is stubbed, so nothing may have
+                    # been sent). refresh-sent: the in-session replay already fired
+                    # and the cleared mark must be persisted before the reload.
+                    want_p1 = 1 if mode == "refresh" else 0
+                    result["field-phase1"] = poll_server_field(store, project_id, want_p1)
+                    browser.navigate(url)
+                    browser.wait_for(FIRST_WAIT[gate], timeout=30)
+                    time.sleep(1.0)
+                    browser.evaluate(INSTRUMENT_JS)
+                    browser.evaluate(FLUSH_SPY_JS)
+                    wait_state(browser, "contentDirty===false && canvasSyncInFlight===false",
+                               25, "reload settle")
+                    wait_state(browser, "document.getElementById('projectSaveState').dataset.state==='saved'",
+                               20, "pill saved after reload")
+                    result["steps"]["reloaded"] = True
+                    reload_seen = wait_state_soft(
+                        browser,
+                        "(function(){return (window.__fix189Net||[]).some(function(e){return (e.url||'').indexOf("
+                        + json.dumps(GATE_URL_PART[gate]) + ")!==-1;});})()",
+                        30) if mode == "refresh" else False
+                    result["steps"]["reload-post-arrived"] = bool(reload_seen)
+                    time.sleep(FIXED_SETTLE_S if mode == "refresh" else 3.0)
+                    cap3 = json.loads(browser.evaluate(capture_js(gate)))
+                    result["final"] = cap3
+                    browser.capture_screenshot(run_shots / "05-after-reload.png")
+                    result["field-phase2"] = poll_server_field(store, project_id, 0, timeout=40)
+                    result["server"] = list(logger.entries)
+                    result["gate-posts"] = gate_posts(logger, gate)
+                    result["readback"] = server_readback(store, project_id, gate)
 
                 # ---- verdict
                 toasts_gate = [t.get("text", "") for t in cap1["toasts"]]
@@ -575,6 +663,95 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                             or gate != "conversation"
                         )
                     )
+                elif mode == "refresh":
+                    # #197 acceptance 1: gate fails -> the persisted mark survives a
+                    # reload -> the request is sent exactly once (across BOTH sessions)
+                    # and the server ends with exactly one task/artifact.
+                    field1 = result["field-phase1"]
+                    field1_ok = (
+                        len(field1) == 1
+                        and any(e.get("kind") == KIND[gate] and e.get("nodeId") == NODE_ID_OF(gate)
+                                for e in field1)
+                    )
+                    net_p1 = len([e for e in cap2["net"] if e.get("method") == "POST"])
+                    phase1_ok = (
+                        gate_flush_failed and not stop_seen and pending_seen
+                        and result["checks"]["pending-queued-at-gate"]
+                        and pre_posts == 0 and net_p1 == 0
+                        and len(posts_phase1) == 0 and field1_ok
+                    )
+                    net_p2 = len([e for e in cap3["net"] if e.get("method") == "POST"])
+                    replayed2 = any(e.get("event") == "replayed" and e.get("kind") == KIND[gate]
+                                    for e in cap3["log"])
+                    dropped2 = any(e.get("event") == "dropped-node-gone" for e in cap3["log"])
+                    pending3 = cap3["pending"]
+                    phase2_ok = (
+                        net_p2 == 1 and len(posts) == 1 and replayed2 and not dropped2
+                        and (pending3.get("present") is True and pending3.get("size") == 0)
+                        and len(result["field-phase2"]) == 0
+                    )
+                    rb = result["readback"]
+                    if gate == "conversation":
+                        phase2_ok = phase2_ok and rb.get("conv-gate-text-count") == 1 \
+                            and "failed" not in (rb.get("conv-gate-statuses") or []) \
+                            and (rb.get("conv-assistant-replies") or 0) >= 1
+                    elif gate == "photoshop":
+                        phase2_ok = phase2_ok and rb.get("ps-round-trips") == 1 \
+                            and posts[0].get("status") == 200
+                    elif gate == "local-edit":
+                        phase2_ok = phase2_ok and posts[0].get("status") == 200 \
+                            and rb.get("le-output-asset")
+                    else:
+                        ids = rb.get("video-task-ids") or []
+                        phase2_ok = phase2_ok and rb.get("video-task-ids-unique") is True \
+                            and len(set(ids)) <= 1 and len(ids) >= 1
+                    result["checks"]["phase1"] = phase1_ok
+                    result["checks"]["phase2"] = phase2_ok
+                    result["checks"]["server-field-phase1"] = field1
+                    result["checks"]["server-field-phase2"] = result["field-phase2"]
+                    result["checks"]["session1-net-posts"] = net_p1
+                    result["checks"]["session2-net-posts"] = net_p2
+                    result["checks"]["total-server-posts"] = len(posts)
+                    result["passed"] = phase1_ok and phase2_ok
+                elif mode == "refresh-sent":
+                    # #197 acceptance 2 (duplicate prevention): the request was ALREADY
+                    # sent in session 1 and the cleared mark is persisted; a reload
+                    # must NOT send a second time and the server task count stays 1.
+                    field1 = result["field-phase1"]
+                    net_p1 = len([e for e in cap2["net"] if e.get("method") == "POST"])
+                    phase1_ok = (
+                        gate_flush_failed and not stop_seen and pending_seen
+                        and result["checks"]["pending-queued-at-gate"]
+                        and pre_posts == 0 and net_p1 == 1
+                        and len(posts_phase1) == 1 and replayed and not dropped
+                        and len(field1) == 0
+                    )
+                    net_p2 = len([e for e in cap3["net"] if e.get("method") == "POST"])
+                    replayed2 = any(e.get("event") == "replayed" and e.get("kind") == KIND[gate]
+                                    for e in cap3["log"])
+                    phase2_ok = (
+                        net_p2 == 0 and len(posts) == 1 and not replayed2
+                        and len(result["field-phase2"]) == 0
+                    )
+                    rb = result["readback"]
+                    if gate == "conversation":
+                        phase2_ok = phase2_ok and rb.get("conv-gate-text-count") == 1
+                    elif gate == "photoshop":
+                        phase2_ok = phase2_ok and rb.get("ps-round-trips") == 1
+                    elif gate == "local-edit":
+                        phase2_ok = phase2_ok and rb.get("le-output-asset")
+                    else:
+                        ids = rb.get("video-task-ids") or []
+                        phase2_ok = phase2_ok and rb.get("video-task-ids-unique") is True \
+                            and len(set(ids)) <= 1 and len(ids) >= 1
+                    result["checks"]["phase1"] = phase1_ok
+                    result["checks"]["phase2"] = phase2_ok
+                    result["checks"]["server-field-phase1"] = field1
+                    result["checks"]["server-field-phase2"] = result["field-phase2"]
+                    result["checks"]["session1-net-posts"] = net_p1
+                    result["checks"]["session2-net-posts"] = net_p2
+                    result["checks"]["total-server-posts"] = len(posts)
+                    result["passed"] = phase1_ok and phase2_ok
                 else:
                     common_ok = (
                         gate_flush_failed
@@ -635,7 +812,7 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gate", choices=["conversation", "photoshop", "local-edit", "video"], required=True)
-    parser.add_argument("--mode", choices=["repro", "fixed"], default="repro")
+    parser.add_argument("--mode", choices=["repro", "fixed", "refresh", "refresh-sent"], default="repro")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--artifacts-dir", type=pathlib.Path, required=True)
     parser.add_argument("--shots-dir", type=pathlib.Path, required=True)
