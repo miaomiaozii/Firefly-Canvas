@@ -390,7 +390,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertNotIn("identity.includes('comfly')", self.source)
         self.assertNotIn("identity.includes('ai.comfly.org')", self.source)
         self.assertIn("settingsSnapshot.resolution = '';", self.source)
-        self.assertIn("const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);", self.source)
+        self.assertIn("const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);", self.source)
+        # #187：扩图不再门掉 resolution（旧写法带 !outpaintSize，会把用户选的 4K 发成空串）。
+        # 但扩图仍不发显式 size/width/height —— 几何由 aspect_ratio + 分辨率档位表达，
+        # 且 app/services/generation.py 在 aspect_ratio 存在时不写 body['size']。
+        self.assertNotIn("const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);", self.source)
+        self.assertIn("const sendsExplicitSize = usesExplicitResolution && !outpaintSize;", self.source)
         self.assertIn("resolution:usesExplicitResolution ? (runSettings.resolution || '') : ''", self.source)
         self.assertIn(".size-picker-popover.resolution-free", self.styles)
 
