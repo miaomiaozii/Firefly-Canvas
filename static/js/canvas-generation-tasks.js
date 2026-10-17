@@ -156,11 +156,17 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
     if(canvas?.format === 'firefly-canvas-v1'){
         if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         const outpaintSize = validOutpaintSize(resultNode);
-        const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);
-        // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution
-        const size = usesExplicitResolution ? sizeForRun(runSettings) : '';
-        const parsed = usesExplicitResolution ? parseSizeValue(size) : null;
-        if(usesExplicitResolution && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
+        // #187: resolution 不得被 !outpaintSize 门掉——扩图参数面板保留用户选择的
+        // 分辨率预设（4K/2K/1K），请求必须照发同一值，否则服务商按默认档位出图（1K），
+        // 界面承诺与请求实态不一致（ADR 0006：用户输入不得静默降级）。
+        const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);
+        // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution：
+        // 扩图几何由 outpaintSize 的 aspect_ratio 表达，服务商契约按「比例 + 分辨率档位」
+        // 推导像素尺寸（见 app/services/generation.py：aspect_ratio 存在时 body 不写 size）。
+        const sendsExplicitSize = usesExplicitResolution && !outpaintSize;
+        const size = sendsExplicitSize ? sizeForRun(runSettings) : '';
+        const parsed = sendsExplicitSize ? parseSizeValue(size) : null;
+        if(sendsExplicitSize && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
         const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
         if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));

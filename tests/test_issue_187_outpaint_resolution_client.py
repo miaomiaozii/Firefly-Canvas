@@ -47,7 +47,8 @@ class OutpaintResolutionClientContractTests(unittest.TestCase):
         # The parameter panel keeps the user's preset (1k/2k/4k) during outpaint —
         # that promise must match the outgoing request after the fix.
         self.assertIn("function withOutpaintDisplaySettings", source)
-        self.assertIn("keepCurrentResolution", source)
+        self.assertIn("outpaintResolutionLocked:true", source)
+        self.assertIn("保留用户选择的分辨率预设", source)
 
 
 if __name__ == "__main__":
