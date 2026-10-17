@@ -6711,7 +6711,7 @@ registerSmartPendingActionPersister(async (entry) => {
 // prompt/refs/runSettings.
 registerSmartPendingActionRebuilder('conversation', (entry, live) => async (target) => {
     try {
-        await sendConversationRequest(target);
+        await sendConversationMessageRequest(target, (entry.payload || {}).text, (entry.payload || {}).requestId);
     } catch(replayError){
         const fresh = canvasState.nodes.find(n => n.id === target.id) || target;
         fresh.conversationSending = false;
@@ -10227,6 +10227,38 @@ function applyConversationCanvasResponse(nextCanvas){
     return true;
 }
 if(params.get('browserTest') === '1') window.__issue13ApplyConversationCanvasResponse = applyConversationCanvasResponse;
+// #197: module-scope conversation request send (was a nested `sendConversationRequest`
+// const inside sendConversationMessage — invisible to the module-scope reload
+// rebuilder registered near markAutosaveSaved). Owns its per-call AbortController and
+// 15s timeout; an AbortError still means the fetch fired and the server keeps
+// processing under the same request_id, so the caller switches to task polling.
+async function sendConversationMessageRequest(live, text, requestId){
+    const projectId = conversationProjectId();
+    if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+        response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text, request_id:requestId}),
+            signal:controller.signal,
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
+    const data = await response.json();
+    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+    if(data.canvas) applyConversationCanvasResponse(data.canvas);
+    else if(data.message) fresh.messages = [...(fresh.messages || []).filter(m => String(m?.request_id || '') !== requestId), data.message].slice(-500);
+    const currentInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
+    if(currentInput) currentInput.value = '';
+    fresh.conversationSending = false;
+    if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
+    render();
+}
 async function sendConversationMessage(node, input, button){
     const text = String(input?.value || '').trim();
     const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
@@ -10236,32 +10268,12 @@ async function sendConversationMessage(node, input, button){
     node.conversationSending = true;
     if(button) button.disabled = true;
     const requestId = conversationRequestId();
-    let controller = null;
     let timeoutId = null;
     let requestSent = false;
     let queued = false;
     const sendConversationRequest = async (live) => {
         requestSent = true;
-        const projectId = conversationProjectId();
-        if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
-        controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), 15000);
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({text, request_id:requestId}),
-            signal:controller.signal,
-        });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
-        const data = await response.json();
-        const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
-        if(data.canvas) applyConversationCanvasResponse(data.canvas);
-        else if(data.message) fresh.messages = [...(fresh.messages || []).filter(m => String(m?.request_id || '') !== requestId), data.message].slice(-500);
-        const currentInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
-        if(currentInput) currentInput.value = '';
-        fresh.conversationSending = false;
-        if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
-        render();
+        await sendConversationMessageRequest(live, text, requestId);
     };
     try {
         const mutationClient = projectCanvasMutationClient();
