@@ -12,19 +12,34 @@
 | Photoshop | **能（有缺口）** | round-trip 记录持久化在服务端（创建 `app/routers/api_project_library.py:2977-3001`，存储读回 `ProjectStore.load_photoshop_round_trips`）；PS 结果经 `/round-trips/{id}/return`（`:3048`）→ `complete_photoshop_round_trip` 更新源节点（`:3117`），节点更新持久化，刷新后显示最终产物。**缺口**：「等待 PS 返回」是客户端瞬态状态，刷新后不恢复该等待 UI；服务端记录与最终节点更新不丢。 |
 | 对话 | **能** | 未发消息以 `status:'pending'` + `request_id` 的本地 user 消息持久化在 `node.messages`（`static/js/smart-canvas.js:9951-9961 ensureLocalPendingConversationMessage`）。加载钩子 `resumeConversationTasks()`（`smart-canvas.js:10027-10032`）对 pending user 消息恢复 `startConversationTaskPolling`（`:9978`）→ `GET /conversation/{node}/messages/{request_id}` 取服务端快照。服务端按 `request_id` 去重（`app/routers/api_project_library.py:3277-3282`，命中已有快照直接返回），即使双发也只一个任务。 |
 
-## 由此确定的持久化设计（照 issue 票）
+## 由此确定的持久化设计（照 issue 票；传输层已修正）
 
-- 标记语义 = **「尚未发出」**：关卡失败时把 `{kind, nodeId, payload, enqueuedAt}` 写入画布顶层字段
-  `canvas.pendingActionResumes`（`canvasForStorage()` 深拷贝 `canvas`，顶层字段原样随保存落盘，服务端零改动）。
-- **fetch 发出的那一刻清除**：实现上更严格——先把「已无挂起」（`canvas.pendingActionResumes = []`）
-  落盘成功，才 fire fetch；落盘失败则回填内存队列、保留字段，等下一次保存落定重试（请求不丢）。
-- 刷新后：字段存在 → 从未发出 → 安全复放（恰好一次）；字段不存在 → 已发出 → **不复放**，
-  由上表既有路径接管。重复发送在结构上不可能，不依赖服务端去重。
-- 各道载荷字段：
-  - video: `{prompt, refs, runSettings}`
-  - photoshop: `{projectId, assetId}`（imageIndex 仅在入队时用于取 assetId）
-  - local-edit: `{}`（全部状态在节点字段上：original_asset_id / reference_asset_ids / prompt / mode / selection / feather_radius / generation_size / generation_resolution / aspect_ratio）
-  - conversation: `{text, requestId}`（沿用同一 request_id，吃服务端去重）
+**传输层修正（勘误）**：增量保存（autosave 主路径）走 mutation 协议，
+`snapshotFromCanvas` 的 meta 白名单只有 `{title, icon, history}`
+（`static/js/project-canvas-mutations.js:147-156`）→ **顶层 canvas 新字段不会落盘**；
+节点则整节点 `JSON.stringify` 进 `upsert_node` mutation，服务端 `_apply_mutation`
+（`firefly_projects.py:3215-3245`）deep-copy 全字段合并 → **节点任意字段可落盘**
+（agent 服务已靠此模式持久化完整节点字典）。因此标记锚定在**节点字段**
+`node.pendingActionResumes = [{actionId, kind, payload, enqueuedAt}]`（服务端零改动）。
+
+- 标记语义 = **「尚未发出」**：关卡失败时把 `{actionId, kind, payload, enqueuedAt}` 写入
+  锚定节点字段（内存 Map 为权威，同步镜像到节点字段，随下一次成功保存的
+  `upsert_node` mutation 落盘）。
+- **fetch 发出的那一刻清除**：实现上更严格——先把「该条目已移除」的节点状态
+  落盘成功（persister：改节点字段 + `saveCanvas({automatic:false})` await 落定），
+  才 fire fetch；落盘失败则 `releasing=false` 留在队列，等下一次
+  `markAutosaveSaved` 重试（请求不丢）。并发保护：`entry.releasing` 标记，
+  另一轮 resume 跳过正在清位的条目，杜绝双发。
+- 刷新后：节点字段存在 → 从未发出 → 从字段重建内存队列（replay 闭包丢失，
+  用注册表 `smartPendingActionRebuilderFor(kind)` 从 payload 重建）→ 安全复放（恰好一次）；
+  字段不存在 → 已发出 → **不复放**，由上表既有路径接管。重复发送在结构上不可能，
+  不依赖服务端去重。
+- 各道载荷字段（payload，可序列化）：
+  - video: `{prompt, refs, runSettings}`（rebuild 重调 `runApiVideoGeneration` + 结果镜像）
+  - photoshop: `{projectId, assetId}`（rebuild 直发 round-trip POST，不依赖闭包变量）
+  - local-edit: `{}`（全部状态在节点字段上，`submitLocalEditRequest(live)` 从节点读）
+  - conversation: `{}`（`sendConversationRequest(live)` 从节点读 text/request_id/refs；
+    服务端按 request_id 去重兜底）
 
 ## 残留缺口（最终报告需如实列出）
 

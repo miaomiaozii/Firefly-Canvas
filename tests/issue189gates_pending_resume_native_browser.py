@@ -78,8 +78,11 @@ ARM_STALE = 3
 GATE_SETTLE_S = 3.0
 FIXED_SETTLE_S = 8.0
 
-# #197: the persisted pending-mark field on the canvas object (survives via
-# canvasForStorage()'s deep clone, rides any successful canvas save to the server).
+# #197: the persisted pending-mark field, ANCHORED ON THE NODE (node.pendingActionResumes).
+# The incremental save path carries whole nodes via upsert_node mutations, while top-level
+# canvas fields are NOT part of the mutation snapshot (snapshotFromCanvas meta whitelist
+# is {title, icon, history} only — project-canvas-mutations.js). The server-side
+# _apply_mutation (firefly_projects.py) merges the whole node dict, so node fields land.
 PENDING_FIELD = "pendingActionResumes"
 # #197 test instrumentation ONLY: stub out the in-session replay dispatcher so the
 # persisted mark (written by the gate) survives the reload. Classic-script top-level
@@ -298,11 +301,17 @@ def gate_posts(logger: RequestLogger | None, gate: str) -> list[dict]:
 
 
 def server_pending_field(store: ProjectStore, project_id: str) -> list[dict]:
-    """#197: the pending-mark field as persisted on the SERVER canvas (authoritative
-    readback — the in-memory table is what the mark must mirror to disk)."""
+    """#197: the pending marks as persisted on the SERVER canvas nodes (authoritative
+    readback). Each entry is node.pendingActionResumes[i] plus the nodeId it sits on."""
     opened = store.open_project(project_id)
-    field = (opened.get("canvas") or {}).get(PENDING_FIELD)
-    return [e for e in (field or []) if isinstance(e, dict)]
+    canvas = opened.get("canvas") or {}
+    entries: list[dict] = []
+    for node in canvas.get("nodes") or []:
+        node_id = str(node.get("id") or "")
+        for rec in (node.get(PENDING_FIELD) or []):
+            if isinstance(rec, dict):
+                entries.append({**rec, "nodeId": node_id})
+    return entries
 
 
 def poll_server_field(store: ProjectStore, project_id: str, expected_len: int,
