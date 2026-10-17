@@ -15,6 +15,14 @@ const activeSmartSubmissionRecoveries = new Set();
 // them (the server dedupes by key). In-memory only: after a page reload the persisted
 // marker is recovered by the existing load-path resumeSmartPendingTasks() instead.
 const smartPendingPersistenceKeys = new Set();
+// #189 follow-up: in-memory pending action resumes for the four remaining save gates
+// (video / local-edit / photoshop / conversation). Unlike the image entry these gates have
+// NO server-side idempotency, so each entry carries exactly one replay closure and is
+// removed from the table BEFORE its fetch fires: one user action => at most one send
+// attempt. Node deletion drops the entry automatically (no timeout/cancel by design).
+const smartPendingActionResumes = new Map();
+let smartPendingActionResumeSeq = 0;
+const smartPendingActionResumeLog = [];
 
 const smartGenerationRegistrationQueues = new Map();
 
@@ -1114,4 +1122,52 @@ function resumeSmartPersistencePendingTasks(canvasNodes){
     const liveKeys = new Set();
     (canvasNodes || []).forEach(node => smartGenerationSubmissions(node).forEach(s => liveKeys.add(s.idempotencyKey)));
     for(const key of [...smartPendingPersistenceKeys]) if(!liveKeys.has(key)) smartPendingPersistenceKeys.delete(key);
+}
+// #189 follow-up: queue one gate request (video/local-edit/photoshop/conversation) whose
+// pre-action flush failed. The entry is anchored to nodeId (liveness check on replay) and
+// scheduleSave() is called here: the failed gate flush left the canvas dirty, and the
+// debounced autosave that then succeeds settles the save (markAutosaveSaved), which calls
+// resumeSmartPendingActionResumes().
+function queueSmartPendingActionResume(kind, nodeId, replay){
+    if(!nodeId || typeof replay !== 'function') return null;
+    smartPendingActionResumeSeq += 1;
+    const actionId = `action-${kind}-${smartPendingActionResumeSeq}`;
+    smartPendingActionResumes.set(actionId, {actionId, kind:String(kind || ''), nodeId:String(nodeId), replay, createdAt:Date.now()});
+    smartPendingActionResumeLog.push({t:Date.now(), event:'queued', kind:String(kind || ''), nodeId:String(nodeId)});
+    if(typeof scheduleSave === 'function') scheduleSave();
+    return actionId;
+}
+function hasSmartPendingActionResume(kind, nodeId){
+    for(const entry of smartPendingActionResumes.values()){
+        if(entry.kind === kind && entry.nodeId === nodeId) return true;
+    }
+    return false;
+}
+// #189 follow-up: after a settled canvas save, replay queued gate requests whose node is
+// still alive. Each entry is removed BEFORE its fetch fires, so a user action can never
+// send twice (these endpoints have no server-side dedup). Node deleted => entry dropped.
+async function resumeSmartPendingActionResumes(canvasNodes){
+    if(!smartPendingActionResumes.size) return;
+    const nodes = Array.isArray(canvasNodes) ? canvasNodes : [];
+    for(const entry of [...smartPendingActionResumes.values()]){
+        const live = nodes.find(n => n && n.id === entry.nodeId);
+        if(!live){
+            smartPendingActionResumes.delete(entry.actionId);
+            smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-node-gone', kind:entry.kind, nodeId:entry.nodeId});
+            continue;
+        }
+        smartPendingActionResumes.delete(entry.actionId);
+        try {
+            await entry.replay(live);
+            smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
+        } catch(error){
+            smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
+            if(typeof toast === 'function') toast(String(error?.message || '').slice(0, 160) || tr('smart.errRunFailed'));
+        }
+    }
+}
+if(typeof window !== 'undefined'){
+    // Test observability handles: publish this module's own state only (no cross-module reads).
+    window.__fcPendingActionResumes = smartPendingActionResumes;
+    window.__fcPendingActionResumeLog = smartPendingActionResumeLog;
 }

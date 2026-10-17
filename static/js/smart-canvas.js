@@ -6679,6 +6679,11 @@ function markAutosaveSaved(){
     // are replayed; the normal path self-registers, so this is a no-op there. The
     // server-side idempotency key keeps any race with the normal path single-task.
     if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
+    // #189 follow-up: the four remaining save gates (video / local-edit / photoshop /
+    // conversation) replay here too. Their requests carry no server-side idempotency, so
+    // each queued entry is single-shot (removed before its fetch fires) — see
+    // resumeSmartPendingActionResumes() in canvas-generation-tasks.js.
+    if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
 }
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
