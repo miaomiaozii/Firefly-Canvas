@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 
 from firefly_projects import ProjectStore  # noqa: E402
 from tests import conversation_browser as harness  # noqa: E402
-from tests.conversation_browser import image_bytes  # noqa: E402
+from tests.conversation_browser import audio_bytes, image_bytes  # noqa: E402
 from tests.issue189_gate_flush_native_browser import (  # noqa: E402
     FLUSH_SPY_JS,
     INJECT_STALE_JS,
@@ -67,6 +67,7 @@ FIXED_SETTLE_S = 8.0
 
 DIRTY_NODE = "g189-dirty"
 CONV_NODE = "g189-conv"
+CONV_AUDIO = "g189-conv-audio"
 PS_NODE = "g189-ps"
 LE_SRC = "g189-src"
 LE_NODE = "g189-le"
@@ -163,7 +164,16 @@ def seed(store: ProjectStore, gate: str) -> str:
     project = store.create_project("Issue 189 gates " + gate)
     pid = project["id"]
     nodes: list[dict] = []
+    edges: list[dict] = []
     if gate == "conversation":
+        # The harness fake conversation adapter (tests/conversation_browser.py:594-596)
+        # raises unless the request carries a connected audio reference, and the server
+        # resolves those references only from canvas edges pointing at the conversation
+        # node (app/routers/api_project_library.py:3157-3171). Without this edge the
+        # message reaches the server but the task ends status="failed", which would make
+        # the green run meaningless. Mirrors tests/conversation_browser.py:194-201,247-251.
+        audio = store.import_media(pid, audio_bytes(), "reference.wav", "audio/wav",
+                                   source_info={"type": "issue-189-gates-fixture", "name": "reference.wav"})
         nodes = [
             {"id": DIRTY_NODE, "type": "smart-image", "name": "Dirty", "x": 800, "y": 40, "w": 300, "h": 200,
              "runPrompt": "issue189 gates dirty node",
@@ -174,7 +184,10 @@ def seed(store: ProjectStore, gate: str) -> str:
                  {"id": "m-seed-1", "role": "user", "text": "hello"},
                  {"id": "m-seed-2", "role": "assistant", "text": "hi there"},
              ]},
+            {"id": CONV_AUDIO, "type": "smart-image", "name": "Audio ref", "x": 40, "y": 640, "w": 180, "h": 120,
+             "scale": 1, "images": [{"asset_id": audio["asset_id"], "kind": "audio", "name": "reference.wav"}]},
         ]
+        edges = [{"id": f"{CONV_AUDIO}-{CONV_NODE}", "from": CONV_AUDIO, "to": CONV_NODE, "kind": "input"}]
     elif gate == "photoshop":
         asset = store.import_media(pid, image_bytes("G189", (46, 92, 138)), "g189.png", "image/png",
                                    source_info={"type": "issue-189-gates-fixture", "name": "g189.png"})
@@ -216,7 +229,9 @@ def seed(store: ProjectStore, gate: str) -> str:
         ]
     else:
         raise ValueError(f"unknown gate: {gate}")
-    store.apply_mutations(pid, [{"op": "upsert_node", "node": n} for n in nodes], base_revision=0)
+    mutations = [{"op": "upsert_node", "node": n} for n in nodes]
+    mutations += [{"op": "upsert_edge", "edge": e} for e in edges]
+    store.apply_mutations(pid, mutations, base_revision=0)
     if gate == "local-edit":
         # syncLocalEditInputRoles (smart-canvas.js) re-derives the role map from
         # canvas.connection edges on every render and OVERWRITES the node field;
@@ -278,6 +293,9 @@ def server_readback(store: ProjectStore, project_id: str, gate: str) -> dict:
                 {"text": m.get("text"), "status": m.get("status")} for m in users
             ],
             "conv-gate-text-count": sum(1 for m in users if m.get("text") == CONV_TEXT),
+            "conv-gate-statuses": [m.get("status") for m in users if m.get("text") == CONV_TEXT],
+            "conv-assistant-replies": sum(1 for m in (node.get("messages") or [])
+                                          if m.get("role") == "assistant" and m.get("text") != "hi there"),
         }
     if gate == "photoshop":
         trips = store.load_photoshop_round_trips(project_id)
@@ -571,8 +589,13 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                         and not dropped
                     )
                     if gate == "conversation":
+                        # The replay must land a task that actually runs, not merely a
+                        # request that was accepted once: status must not be "failed"
+                        # and the adapter must have produced an assistant reply.
                         result["passed"] = common_ok and rb.get("conv-gate-text-count") == 1 \
-                            and cap2["state"].get("input") in ("", None)
+                            and cap2["state"].get("input") in ("", None) \
+                            and "failed" not in (rb.get("conv-gate-statuses") or []) \
+                            and (rb.get("conv-assistant-replies") or 0) >= 1
                     elif gate == "photoshop":
                         result["passed"] = common_ok and rb.get("ps-round-trips") == 1 \
                             and posts[0].get("status") == 200
