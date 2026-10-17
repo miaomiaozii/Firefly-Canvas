@@ -6680,9 +6680,9 @@ function markAutosaveSaved(){
     // server-side idempotency key keeps any race with the normal path single-task.
     if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
     // #189 follow-up: the four remaining save gates (video / local-edit / photoshop /
-    // conversation) replay here too. Their requests carry no server-side idempotency, so
-    // each queued entry is single-shot (removed before its fetch fires) — see
-    // resumeSmartPendingActionResumes() in canvas-generation-tasks.js.
+    // conversation) replay here too. Their queues are in-memory and single-shot (each entry
+    // removed before its fetch fires) — see resumeSmartPendingActionResumes() in
+    // canvas-generation-tasks.js for which endpoints do and do not dedupe server-side.
     if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
 }
 function markContentDirty(){

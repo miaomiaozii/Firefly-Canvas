@@ -16,10 +16,15 @@ const activeSmartSubmissionRecoveries = new Set();
 // marker is recovered by the existing load-path resumeSmartPendingTasks() instead.
 const smartPendingPersistenceKeys = new Set();
 // #189 follow-up: in-memory pending action resumes for the four remaining save gates
-// (video / local-edit / photoshop / conversation). Unlike the image entry these gates have
-// NO server-side idempotency, so each entry carries exactly one replay closure and is
-// removed from the table BEFORE its fetch fires: one user action => at most one send
-// attempt. Node deletion drops the entry automatically (no timeout/cancel by design).
+// (video / local-edit / photoshop / conversation). Each entry carries exactly one replay
+// closure and is removed from the table BEFORE its fetch fires, so one user action => at
+// most one send attempt. Server-side dedup only exists for the conversation gate: the
+// endpoint replays by request_id (app/routers/api_project_library.py:3277-3282 returns the
+// existing snapshot instead of re-running). video / local-edit / photoshop have NO server
+// dedup (idempotency_key handling in that router is image-only), which is why the
+// single-shot dispatcher is required for them. Node deletion drops the entry
+// automatically (no timeout/cancel by design). Unlike the image entry these queues are
+// in-memory only: a page reload before the save settles drops the queued request.
 const smartPendingActionResumes = new Map();
 let smartPendingActionResumeSeq = 0;
 const smartPendingActionResumeLog = [];

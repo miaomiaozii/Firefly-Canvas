@@ -549,7 +549,11 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                         and len(posts) == 0
                         and (pending1.get("present") is False or pending1.get("size") == 0)
                         and (
-                            (gate == "conversation" and cap2["state"].get("input") == CONV_TEXT)
+                            # Measured pre-fix behaviour (git checkout 1208c0b -- static/js/*,
+                            # RED-conversation run01..03): stop-toast=True, server-post-count=0,
+                            # input-cleared=True. The typed text is LOST, not left in the box,
+                            # so the old bug is worse than "message not sent".
+                            (gate == "conversation" and cap2["state"].get("input") in ("", None))
                             or gate != "conversation"
                         )
                     )
