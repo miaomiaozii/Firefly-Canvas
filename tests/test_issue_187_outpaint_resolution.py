@@ -45,7 +45,30 @@ os.environ.setdefault("FIREFLY_TEST_MODE", "1")
 from firefly_generation import ImageGenerationRequest, ModelRoutingError, route_image_generation
 
 PROVIDERS_PATH = ROOT / "data" / "api_providers.json"
+# #187：不能硬读 data/api_providers.json——它被 .gitignore:22 排除，
+# tools/quality_gate.py 的隔离 workspace 用 `git ls-files --cached --others --exclude-standard`
+# 复制文件，gitignored 文件不在里面，于是 setUpClass 直接 FileNotFoundError
+# （跟 #175 同一个根因模式）。缺位时退回 checked-in fixture，
+# 并用下面的漂移守卫保证 fixture 不会悄悄过期。
+FIXTURE_PATH = ROOT / "tests" / "fixtures" / "outpaint_provider_capabilities.json"
 OUTPAINT_PROMPT = "Remove red area and fill the scene"
+
+
+def _capability_models(providers):
+    for provider in providers:
+        for model_id, caps in (provider.get("image_model_capabilities") or {}).items():
+            yield provider, model_id, caps
+
+
+def _supports(providers, *, aspect_ratio=None, resolution=None):
+    for _, _, caps in _capability_models(providers):
+        ratios = caps.get("aspect_ratios") or []
+        resolutions = caps.get("resolutions") or []
+        if (aspect_ratio is None or aspect_ratio in ratios) and (
+            resolution is None or resolution in resolutions
+        ):
+            return True
+    return False
 
 
 class OutpaintResolutionRoutingTests(unittest.TestCase):
@@ -53,7 +76,38 @@ class OutpaintResolutionRoutingTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.providers = json.loads(PROVIDERS_PATH.read_text(encoding="utf-8"))
+        if PROVIDERS_PATH.exists():
+            cls.providers = json.loads(PROVIDERS_PATH.read_text(encoding="utf-8"))
+            cls.providers_source = "real"
+        else:
+            cls.providers = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+            cls.providers_source = "fixture"
+
+    def test_provider_source_assumptions_hold_in_the_real_registry(self) -> None:
+        # 漂移守卫：本文件所有场景都依赖「有模型支持 21:9+4k」、「无模型支持 8k」。
+        # 真实注册表变了就得同步改 fixture，否则门里跑的是过期的能力假设。
+        # 门的隔离 workspace 里没有真实注册表 → 跳过（不是静默通过，是环境缺位）。
+        if not PROVIDERS_PATH.exists():
+            self.skipTest("data/api_providers.json is gitignored and absent in this workspace")
+        real = json.loads(PROVIDERS_PATH.read_text(encoding="utf-8"))
+        self.assertTrue(
+            _supports(real, aspect_ratio="21:9", resolution="4k"),
+            "real registry no longer supports 21:9 + 4k; update the fixture and the scenarios",
+        )
+        self.assertFalse(_supports(real, resolution="8k"), "real registry gained 8k; the unsupported-resolution scenario no longer tests what it claims")
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        self.assertTrue(_supports(fixture, aspect_ratio="21:9", resolution="4k"))
+        self.assertFalse(_supports(fixture, resolution="8k"))
+
+    def test_routes_against_the_fixture_when_real_registry_absent(self) -> None:
+        # 显式钉住兜底路径本身可用（门里跑的就是这条）。
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        route = route_image_generation(
+            ImageGenerationRequest(prompt=OUTPAINT_PROMPT, size=None, width=None, height=None, aspect_ratio="21:9", resolution="2k"),
+            fixture,
+        )
+        self.assertEqual(route.request.get("resolution"), "2k")
+        self.assertEqual(route.request.get("aspect_ratio"), "21:9")
 
     def route(self, **kwargs: object):
         # Mirrors the payload runApiGeneration sends after outpaint confirmation:

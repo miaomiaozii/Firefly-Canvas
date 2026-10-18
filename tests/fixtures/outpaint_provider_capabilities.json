@@ -1,0 +1,19 @@
+[
+  {
+    "id": "fixture-openai",
+    "name": "Fixture OpenAI-compatible provider",
+    "protocol": "openai",
+    "image_request_mode": "openai",
+    "enabled": true,
+    "base_url": "https://fixture.invalid",
+    "image_models": ["fixture/vision-2"],
+    "image_model_capabilities": {
+      "fixture/vision-2": {
+        "media_types": ["image"],
+        "aspect_ratios": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+        "resolutions": ["1k", "2k", "4k"],
+        "sizes": ["1024x1024", "1024x1536", "1536x1024", "1280x720", "2048x2048"]
+      }
+    }
+  }
+]
