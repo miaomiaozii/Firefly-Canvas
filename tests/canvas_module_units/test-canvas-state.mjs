@@ -6,7 +6,7 @@
 // 全局 window 上、且 canvas-core.js 的 selectedNode() 读到的是同一个对象引用。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCanvasContext, loadModules, globalFunction, fromContext } from './harness.mjs';
+import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
 test('loads standalone and attaches canvasState to window with the 13 documented fields', () => {
     const { ctx } = createCanvasContext();
@@ -48,6 +48,11 @@ test('loads standalone and attaches canvasState to window with the 13 documented
     assert.equal(snap.connectionLayerRaf, 0);
     assert.equal(snap.lastComposerNodeId, '');
     assert.equal(snap.activeComposerSubject, null);
+    // 数组必须是各自独立的实例，否则一个模块 push 会污染另一个。
+    // 必须在原始跨 realm 对象上比引用，归一化后永远是两个不同的 host 对象。
+    // （自旧 canvas_state_units.mjs 移植：初始值 + 独立性是「共享状态容器」契约的一半。）
+    assert.notEqual(state.nodes, state.selectedIds);
+    assert.notEqual(state.nodes, state.projectMediaLibrary.items);
 });
 
 test('canvas-core.selectedNode() reads the SAME canvasState object, not a copy', () => {
@@ -71,6 +76,12 @@ test('canvas-core.selectedNode() reads the SAME canvasState object, not a copy',
     ctx.canvasState.nodes.push({ id: 'node-2', type: 'smart-prompt' });
     ctx.canvasState.selectedId = 'node-2';
     assert.equal(selectedNode().type, 'smart-prompt');
+    // canvas-core 的其他顶层名字也在同一共享词法作用域里可读（同域共存守卫，
+    // 自旧 canvas_state_units.mjs 移植：core 若重复定义 state 的名字，后加载
+    // 的文件会解析失败，页面节点全空而 pageErrors 为空）。
+    for (const name of ['escapeHtml', 'uid', 'nowMs', 'smartGenerationSubmissions']) {
+        assert.notEqual(evaluate(ctx, name), undefined, `canvas-core.js 的 ${name} 读不到`);
+    }
 });
 
 test('container is mutable in place: nested objects keep identity across reads', () => {

@@ -81,6 +81,10 @@ test('fitContaining: non-numeric and non-positive source sizes clamp to a 16x16 
     assert.deepEqual(fromContext(fitContaining(-5, -5, '1:1')), expected);
     // 'abc' -> 1px 宽；高 7px 保留：offsetX=floor(15/2)=7, offsetY=floor(9/2)=4。
     assert.deepEqual(fromContext(fitContaining('abc', 7, '1:1')), { width: 16, height: 16, offsetX: 7, offsetY: 4, preset: '1:1' });
+    // NaN/undefined 同样收敛到 1x1 最小源（Number(NaN)/Number(undefined) 都是 falsy → 1）。
+    // （自旧 outpaint_ratio_units.mjs 的 0/负数/NaN 边长矩阵继承。）
+    assert.deepEqual(fromContext(fitContaining(Number.NaN, Number.NaN, '1:1')), expected);
+    assert.deepEqual(fromContext(fitContaining(undefined, undefined, '1:1')), expected);
 });
 
 test('fitContaining: target snaps UP to 16px units and never shrinks the source', () => {
