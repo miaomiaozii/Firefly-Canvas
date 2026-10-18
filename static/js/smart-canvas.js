@@ -6753,6 +6753,28 @@ registerSmartPendingActionRebuilder('conversation', (entry, live) => async (targ
 });
 registerSmartPendingActionRebuilder('photoshop', (entry, live) => (target) => psSendRoundTrip(target, (entry.payload || {}).assetId, (entry.payload || {}).projectId));
 registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target));
+// #197: shared video-result apply, used by BOTH pending-action replay paths:
+// - in-session closure (canvas-generation-tasks.js, runApiVideoGeneration's gate branch)
+// - this reload-time rebuilder right below.
+// Mirrors the main video success path in the run handler below (the taskIds branch after
+// runApiVideoGeneration): a video request is only "landed" once its taskIds are on the
+// node, which is what lets resumeSmartPendingNode re-attach to the running task. The
+// in-session path called a bare `applyApiVideoGenerationResult` that was never defined
+// anywhere, so after a reload the video rebuilder (and the in-session closure) threw
+// "applyApiVideoGenerationResult is not defined" and the pending mark was never drained
+// (#197 video/refresh + video/refresh-sent red).
+function applyApiVideoGenerationResult(node, videoResult, prompt, pendingHistoryId=''){
+    const taskIds = (Array.isArray(videoResult?.taskIds) ? videoResult.taskIds : []).filter(Boolean);
+    if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
+    const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
+    node.pendingTasks = [...smartPendingTasks(node).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
+    ensureSmartPendingHistoryLogs(node, newTasks, {prompt, kind:'video'});
+    node.pending = Math.max(node.pendingTasks.length, node.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
+    node.runTimerHidden = false;
+    node.running = false;
+    render();
+    return taskIds;
+}
 registerSmartPendingActionRebuilder('video', (entry, live) => async (target) => {
     const payload = entry.payload || {};
     const freshNode = canvasState.nodes.find(n => n.id === target.id) || target;
@@ -10443,6 +10465,43 @@ function bindConversationNodeControls(el, node){
     });
 }
 
+// #197: module-scope local-edit submit so the reload rebuilder
+// (registerSmartPendingActionRebuilder('local-edit')) can call the very same function
+// after a page reload. It used to be a closure local inside the submit click handler
+// below, so the rebuilder's bare reference threw "submitLocalEditRequest is not defined"
+// after a reload and the pending mark was never re-sent (#197 local-edit/refresh red).
+// The request is fully described by node fields (original_asset_id/prompt/mode/
+// selection/feather/...), so the persisted payload is empty and the rebuilder just calls
+// submitLocalEditRequest(live) against the reloaded node. projectId is re-derived from
+// the live canvas state at call time — the same expression the click handler used to
+// capture.
+async function submitLocalEditRequest(live){
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    try {
+        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+            original_asset_id:live.original_asset_id, reference_asset_ids:live.reference_asset_ids || [], prompt:live.prompt,
+            mode:live.mode, aspect_ratio:live.aspect_ratio || '', size:live.generation_size || '1024x1024', resolution:live.generation_resolution || '1k', selection:live.mode === 'modify' ? live.selection : {type:live.selectionType || 'freehand', points:live.selection}, feather_radius:live.feather_radius, result_node_id:live.id, base_revision:Number(canvas?.revision || 0)
+        })});
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
+        const data = await response.json();
+        live.output_asset_id = data.assets?.output?.asset_id || '';
+        live.model_result_asset_id = data.assets?.model_result?.asset_id || '';
+        live.images = live.output_asset_id ? [{asset_id:live.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(live.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
+        // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
+        // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
+        live._leBusy = false;
+        if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
+        const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+        fresh._leBusy = false;
+        if(!fresh.output_asset_id){ fresh.output_asset_id = live.output_asset_id; fresh.model_result_asset_id = live.model_result_asset_id; fresh.images = live.images; }
+        toast(tr('smart.localEditDone'));
+        render();
+    } catch(error){
+        live._leBusy = false;
+        toast(error.message || tr('smart.localEditFailed'));
+        render();
+    }
+}
 function bindLocalEditNodeControls(el, node){
     syncLocalEditInputRoles(node);
     el.querySelectorAll('[data-local-edit-connect-role]').forEach(btn => {
@@ -10777,38 +10836,11 @@ function bindLocalEditNodeControls(el, node){
         const roleMap = node.localEditInputRoles || {};
         if(!roleMap.originalNode || !node.original_asset_id){ toast(tr('smart.localEditNeedOriginal')); return; }
         if(!String(node.prompt || '').trim()){ toast(tr('smart.localEditNeedPrompt')); return; }
-        const projectId = canvas?.project_id || canvas?.project || canvasId;
         const button = e.currentTarget;
         node._leBusy = true;
         button.disabled = true;
         const statusEl = el.querySelector('[data-local-edit-status]');
         if(statusEl) statusEl.textContent = tr('smart.localEditGenerating');
-        const submitLocalEditRequest = async (live) => {
-            try {
-                const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-                    original_asset_id:live.original_asset_id, reference_asset_ids:live.reference_asset_ids || [], prompt:live.prompt,
-                    mode:live.mode, aspect_ratio:live.aspect_ratio || '', size:live.generation_size || '1024x1024', resolution:live.generation_resolution || '1k', selection:live.mode === 'modify' ? live.selection : {type:live.selectionType || 'freehand', points:live.selection}, feather_radius:live.feather_radius, result_node_id:live.id, base_revision:Number(canvas?.revision || 0)
-                })});
-                if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
-                const data = await response.json();
-                live.output_asset_id = data.assets?.output?.asset_id || '';
-                live.model_result_asset_id = data.assets?.model_result?.asset_id || '';
-                live.images = live.output_asset_id ? [{asset_id:live.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(live.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
-                // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
-                // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
-                live._leBusy = false;
-                if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
-                const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
-                fresh._leBusy = false;
-                if(!fresh.output_asset_id){ fresh.output_asset_id = live.output_asset_id; fresh.model_result_asset_id = live.model_result_asset_id; fresh.images = live.images; }
-                toast(tr('smart.localEditDone'));
-                render();
-            } catch(error){
-                live._leBusy = false;
-                toast(error.message || tr('smart.localEditFailed'));
-                render();
-            }
-        };
         try {
             if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
                 // #189 gate (m03364/m03420): do not cancel the request. Keep the node in its
