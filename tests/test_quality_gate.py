@@ -178,7 +178,12 @@ class QualityGateTests(unittest.TestCase):
         # 门在临时 workspace 里执行步骤；runner 里硬编码的仓库根会读到工作区外的源码，
         # 在非本机（例如 CI）上直接带不动。
         repo_root = Path(__file__).resolve().parents[1]
-        for name in ("canvas-boundaries-evidence", "video-failure-evidence"):
+        for name in (
+            "canvas-boundaries-evidence",
+            "video-failure-evidence",
+            "node-flow-cascade-evidence",
+            "fly-fixes-evidence",
+        ):
             command = STEP_DEFINITIONS[name](sys.executable)
             runner = repo_root / command[1]
             self.assertTrue(runner.is_file(), f"missing {command[1]}")
@@ -304,7 +309,13 @@ class QualityGateTests(unittest.TestCase):
         )
         # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
         # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
-        for runner_name in ("canvas_boundaries_browser.py", "video_failure_browser.py"):
+        # #185：node_flow 级联与 fly_fixes 两个 runner 同一套路接入。
+        for runner_name in (
+            "canvas_boundaries_browser.py",
+            "video_failure_browser.py",
+            "node_flow_browser.py",
+            "fly_fixes_browser.py",
+        ):
             (self.fixture_root / "tests" / runner_name).write_text(
                 "import sys\n"
                 f"print('{runner_name} fixture ok')\n"
@@ -1913,7 +1924,7 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ["javascript-syntax", "excel-api-smoke", "surface-contract"]),
             "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "unit-contract-browser", "browser-tracer"]),
+            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer"]),
             "release": (
                 900,
                 [
@@ -1931,6 +1942,8 @@ class QualityGateTests(unittest.TestCase):
                     "edge-compatibility",
                     "canvas-boundaries-evidence",
                     "video-failure-evidence",
+                    "node-flow-cascade-evidence",
+                    "fly-fixes-evidence",
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
