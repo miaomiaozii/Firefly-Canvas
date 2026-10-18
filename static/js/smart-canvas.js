@@ -6831,8 +6831,12 @@ async function saveProjectCanvasUntilSettled({maxAttempts=4}={}){
         debouncedSaveTimer = null;
         while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
         const saved = await saveCanvas({automatic:false});
-        if(saved !== true) return false;
-        if(!hasDurableCanvasChanges()) return true;
+        // #190：这里原先写 `if(saved !== true) return false;`，第一次失败就退出，
+        // maxAttempts 完全无效。saveCanvas 返回 false/undefined 的原因大多是可重试的
+        // （冲突、并发保存 in-flight、后台保存超时），内层 mutation 层的重试预算耗尽后
+        // 外层应该重新发一批，而不是直接告诉调用方「保存失败」。
+        // 终态（未加载 / 无 canvasId）重试几次后仍返回 false，只是慢一点，不会误报成功。
+        if(saved === true && !hasDurableCanvasChanges()) return true;
     }
     return false;
 }
