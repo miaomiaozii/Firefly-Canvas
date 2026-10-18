@@ -202,6 +202,11 @@
             }
         }
 
+        // #187：跨作用域共享——spy 在扩图块里装（必须在生成之前），
+        // 断言放在整个 run 的最后，所以两个变量提到这一层。
+        const userResolution = '2k';   // 合法档位值见 app/core.py:294 IMAGE_PARAM_RESOLUTIONS
+        let spyState = 'spy-not-installed';
+
         trace('outpaint-step');
         // --- outpaint ---
         const outOpen = await openEditor() && await waitFor(cropImageLoaded, 12000);
@@ -213,6 +218,23 @@
                 const grown = evalFn('() => { const c = eval("cropState"); c.w = Math.round(c.w * 1.5); c.h = Math.round(c.h * 1.5); return c.w; }')();
                 assertion('outpaint region expanded', grown > 0, 'w=' + grown);
                 const before = nodeName('edit-node');
+                // #187：断言扩图发出的载荷带用户选的分辨率档位。
+                // 不能事后读 node.generationSubmissions —— 成功后会被
+                // clearSmartGenerationSubmission 清掉（static/js/canvas-generation-tasks.js:104-108）。
+                // 所以在载荷构造出来的那一刻捕获：upsertSmartGenerationSubmission 是顶层函数
+                // 声明（classic script → 全局绑定），调用方用裸标识符（:191），替换 window 上同名属性即生效。
+                spyState = evalFn(`() => {
+                    const n = (window.canvasState?.nodes || []).find(x => x && x.id === 'edit-node');
+                    window.__fix187Payloads = [];
+                    const orig = window.upsertSmartGenerationSubmission;
+                    if(typeof orig !== 'function') return 'NO-GLOBAL-FN';
+                    window.upsertSmartGenerationSubmission = (node, submission) => {
+                        const p = submission && submission.requestPayload;
+                        if(p) window.__fix187Payloads.push({ nodeId: node && node.id, resolution: p.resolution, size: p.size, width: p.width, height: p.height, aspect_ratio: p.aspect_ratio });
+                        return orig(node, submission);
+                    };
+                    return 'armed node=' + (n ? 'found' : 'MISSING');
+                }`)();
                 evalFn('() => { eval("applyImageEdit()"); return true; }')();
                 const applied = await waitApplied(before);
                 assertion('outpaint applied and modal closed', applied);
@@ -289,6 +311,51 @@
             } catch(_) { return false; }
         }, 20000);
         assertion('server canvas persisted all ops', persisted, 'final=' + persisted);
+
+        // #187：放在整个 run 的最后。探针会从扩图后的节点出一次图，改变节点当前图
+        // 的尺寸基准；放在中间会污染后面的 resize（实测 resize natural size 32x32→48x48）。
+        // 扩图本身是本地画布扩展（输出像素宽恰好等于 outpaintSize.width），真正的生成
+        // 发生在之后从该节点出图时——那才会进 static/js/canvas-generation-tasks.js:159 的
+        // validOutpaintSize(resultNode) 分支，也就是修复所在处。
+        // 设置用产品自己的 withOutpaintDisplaySettings（static/js/canvas-image-editor.js:92）组，
+        // 不自己拼，否则测的不是真实组合。
+        trace('fix187-probe');
+            // #187：扩图本身是本地画布扩展（输出像素宽恰好等于 outpaintSize.width），
+            // 真正的生成发生在之后从该节点出图时——那才会进
+            // static/js/canvas-generation-tasks.js:159 的 validOutpaintSize(resultNode) 分支，
+            // 也就是修复所在处。设置用产品自己的 withOutpaintDisplaySettings
+            // （static/js/canvas-image-editor.js:92）组，不自己拼，否则测的不是真实组合。
+            const genState = await evalFn(`async () => {
+                const n = (window.canvasState?.nodes || []).find(x => x && x.id === 'edit-node');
+                if(!n) return 'node-missing';
+                if(!validOutpaintSize(n)) return 'no-valid-outpaint-size';
+                // 不写回节点：上一版把 resolution 写进了 n.runSettings，
+                // 污染了后面的 resize 步骤（resize natural size 从 32x32 变成 48x48）。
+                const merged = Object.assign({}, settings, n.runSettings || {}, { resolution: '2k' });
+                const s = withOutpaintDisplaySettings(n, merged);
+                // 探针必须自清：post 抛异常时 clearSmartGenerationSubmission 不会跑，
+                // submission 会留在节点上、node.pending 被 :100 抬起来，
+                // 导致后面的 resize 步骤拿到不同的基准图（32x32 变 48x48）。
+                const snap = { subs: n.generationSubmissions, pending: n.pending };
+                // 还要还原全局 settings：normalizeApiSizeSettings（smart-canvas.js:2795）
+                // 直接写全局 settings（settings[resKey]='auto'），不看它的参数。
+                const gSnap = JSON.parse(JSON.stringify(settings));
+                try { await runApiGeneration('fix187 resolution probe', [], s, n, {}); }
+                catch(err){ return 'posted-then-threw: ' + err.message; }
+                finally {
+                    if(snap.subs === undefined) delete n.generationSubmissions; else n.generationSubmissions = snap.subs;
+                    if(snap.pending === undefined) delete n.pending; else n.pending = snap.pending;
+                    for(const k of Object.keys(settings)) delete settings[k];
+                    Object.assign(settings, gSnap);
+                }
+                return 'called engine=' + String(s.engine || '') + ' res=' + String(s.resolution || '');
+            }`)();
+            const payloads = (window.__fix187Payloads || []).filter(p => p.nodeId === 'edit-node');
+            const sent = payloads[payloads.length - 1] || null;
+            // 修复前 `!outpaintSize` 门把 resolution 发成空串，服务商按默认档位出图（1K）。
+            assertion('outpaint payload carries user resolution', !!sent && sent.resolution === userResolution, (genState + ' | ' + spyState + ' | ') + (sent ? JSON.stringify(sent) : 'no payload captured'));
+            // 扩图仍不应发显式 size/width/height：几何由 aspect_ratio + 分辨率档位表达。
+            assertion('outpaint payload omits explicit size', !!sent && !sent.size && !sent.width && !sent.height, sent ? JSON.stringify({size: sent.size, width: sent.width, height: sent.height}) : 'no payload');
     }
     run().catch(error => result.errors.push(error?.stack || String(error))).finally(postResult);
 })();
