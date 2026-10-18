@@ -222,6 +222,11 @@ STEP_DEFINITIONS = {
     "excel-import-evidence": lambda python: [python, "tests/excel_import_browser.py"],
     # #167：两个画布浏览器 runner 以前只能手动跑，零断言假绿也没人接。现在接进 trial/release
     # （fast/domain 要保持快）。canvas_interactions_browser.py 因 #172 长期红，判定完再接。
+    # #185：node_flow 级联与 fly_fixes 两个 runner 以前完全不在门里（门 15 步全绿而它们一直红）。
+    # 耗时实测（2026-10-18，fast 门内）：node-flow-cascade-evidence≈11.5s、fly-fixes-evidence≈19s，
+    # 加进 fast 后总耗时 31.4s 超 30s 预算（fly-fixes 步 exit 124），故按 #167 先例接进 trial/release。
+    "node-flow-cascade-evidence": lambda python: [python, "tests/node_flow_browser.py"],
+    "fly-fixes-evidence": lambda python: [python, "tests/fly_fixes_browser.py"],
     "canvas-boundaries-evidence": lambda python: [python, "tests/canvas_boundaries_browser.py"],
     "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
@@ -253,6 +258,8 @@ MODE_STEPS = {
         "excel-import-evidence",
         "canvas-boundaries-evidence",
         "video-failure-evidence",
+        "node-flow-cascade-evidence",
+        "fly-fixes-evidence",
         "unit-contract-browser",
         "browser-tracer",
     ),
@@ -271,6 +278,8 @@ MODE_STEPS = {
         "edge-compatibility",
         "canvas-boundaries-evidence",
         "video-failure-evidence",
+        "node-flow-cascade-evidence",
+        "fly-fixes-evidence",
         "unit-contract-browser",
         "browser-tracer",
         "browser-harness-contract",
@@ -296,6 +305,8 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "browser-tracer",
         "canvas-boundaries-evidence",
         "video-failure-evidence",
+        "node-flow-cascade-evidence",
+        "fly-fixes-evidence",
     )
 )
 PARALLEL_STEP_NAMES = BROWSER_EVIDENCE_STEP_NAMES | frozenset(
