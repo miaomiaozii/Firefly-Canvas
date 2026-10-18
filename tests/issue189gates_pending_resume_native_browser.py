@@ -74,7 +74,13 @@ from tests.issue189_gate_flush_native_browser import (  # noqa: E402
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser  # noqa: E402
 
 VIEWPORT = (1520, 940)
-ARM_STALE = 3
+# The armed stale-base 409s must OUTLAST the gate flush's whole retry budget, or the
+# flush recovers and the gate never fails: saveProjectCanvasUntilSettled (smart-canvas.js,
+# #190) retries up to 4 saveCanvas attempts, and each attempt's mutation flush rebases
+# up to maxConflictRetries=2 times (1 + 2 = 3 save PATCHes per attempt) -> 12 armed 409s
+# are absorbed. 15 leaves 3 for the follow-up mark autosave, which rebases through them
+# and still lands. (Before #190, 3 was enough because the first failure returned false.)
+ARM_STALE = 15
 GATE_SETTLE_S = 3.0
 FIXED_SETTLE_S = 8.0
 
@@ -552,7 +558,8 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 result["steps"]["gate-fired"] = True
                 browser.capture_screenshot(run_shots / "02-post-gate.png")
 
-                # ---- the gate save chain runs (3 x 409 -> budget exhausted -> gate fails)
+                # ---- the gate save chain runs (12+ armed 409s exhaust the whole retry
+                # budget -> saveProjectCanvasUntilSettled returns false -> gate fails)
                 wait_state(browser, "canvasSyncInFlight===false", 40, "gate save flight cleared")
                 time.sleep(GATE_SETTLE_S)
                 cap1 = json.loads(browser.evaluate(capture_js(gate)))
