@@ -99,10 +99,21 @@ class CanvasModuleUnitsTests(unittest.TestCase):
         self.assertTrue(Path(node).is_file(), f"node 不可用（{node}）：JS 单测必须真跑")
 
 
+def _node_module_argument(path: Path) -> str:
+    # 门的 sitecustomize guard 只允许 `node <tests/ 下的 .mjs/.js>`，且要求是
+    # **相对路径**（guard 无法从绝对路径判断它落在隔离 workspace 内）。
+    # 传 str(绝对路径) 会被拒：PermissionError: quality gate denied node arguments
+    # （guard/sitecustomize.py:333）。subprocess 已经 cwd=ROOT，所以相对路径等价。
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def _make_node_case(filename: Path):
     def test(self):
         result = subprocess.run(
-            [_node_executable(), str(filename)],
+            [_node_executable(), _node_module_argument(filename)],
             cwd=ROOT,
             capture_output=True,
             text=True,
