@@ -51,3 +51,10 @@ data/api_providers.json.bak-*
 *.pid
 data/server_*.log
 edge_state.json
+
+# 实验残留：仓库前端不用 npm 依赖（tests/canvas_module_units/harness.mjs 只用 node 内置模块）。
+# 未忽略时门快照（git ls-files --cached --others --exclude-standard）会把整个 node_modules 复制进隔离 workspace。
+node_modules/
+
+# worker 误用未展开的 --artifacts-dir ~/.cache/... 造出来的字面目录
+~/
