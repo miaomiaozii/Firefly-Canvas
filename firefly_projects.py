@@ -73,17 +73,30 @@ def _canonical_drive_key(path_text: str) -> str:
     return text
 
 
+def path_is_within(root: Path | str, candidate: Path | str) -> bool:
+    """``candidate`` 是否位于 ``root`` 内（含相等）；跨盘或不可比时返回 ``False``。
+
+    #195：两侧先过 ``_canonical_drive_key``。直接 ``os.path.commonpath`` 在
+    一侧带 ``\\?\\`` 扩展前缀、另一侧不带时会抛
+    ``ValueError: Paths don't have the same drive``；调用方若用
+    ``except ValueError: pass`` 兑底，就会把安全检查静默跳过。
+    """
+    root_key = _canonical_drive_key(str(root))
+    candidate_key = _canonical_drive_key(str(candidate))
+    try:
+        return os.path.commonpath([root_key, candidate_key]) == root_key
+    except ValueError:
+        return False
+
+
 def _validated_projects_root(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         raise ProjectStoreError("项目库路径必须是绝对路径")
     resolved = candidate.resolve()
     repository = Path(__file__).resolve().parent
-    try:
-        if os.path.commonpath([os.path.normcase(str(repository)), os.path.normcase(str(resolved))]) == os.path.normcase(str(repository)):
-            raise ProjectStoreError("项目库不能位于 Git 代码仓库内")
-    except ValueError:
-        pass
+    if path_is_within(repository, resolved):
+        raise ProjectStoreError("项目库不能位于 Git 代码仓库内")
     return resolved
 
 
@@ -1120,7 +1133,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     relative = Path(*name.split("/")[1:])
                     media_root = (directory / "media").resolve()
                     target = (media_root / relative).resolve()
-                    if os.path.commonpath([str(media_root), str(target)]) != str(media_root):
+                    if not path_is_within(media_root, target):
                         raise ProjectStoreError("Fly 项目包含不安全媒体路径")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, target.open("wb") as destination:
@@ -1156,7 +1169,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     relative = Path(*name.split("/")[1:])
                     agent_root = (directory / "agent_nodes").resolve()
                     target = (agent_root / relative).resolve()
-                    if os.path.commonpath([str(agent_root), str(target)]) != str(agent_root):
+                    if not path_is_within(agent_root, target):
                         raise ProjectStoreError("Fly 项目包含不安全 Agent 会话路径")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, target.open("wb") as destination:
@@ -1350,7 +1363,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 raise ProjectNotFound("项目媒体不存在")
             media_root = (self.root / project_id / "media").resolve()
             path = (media_root / str(record.get("filename") or "")).resolve()
-            if os.path.commonpath([str(media_root), str(path)]) != str(media_root) or not path.is_file():
+            if not path_is_within(media_root, path) or not path.is_file():
                 raise ProjectNotFound("项目媒体不存在")
             cleaned_source = self._media_source(record["source"]) if isinstance(record.get("source"), dict) else None
             cleaned_sources = [self._media_source(item) for item in record.get("sources") or [] if isinstance(item, dict)] if isinstance(record.get("sources"), list) else None
@@ -1597,7 +1610,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             # 删除物理文件
             if delete_file:
                 path = (media_root / str(record.get("filename") or "")).resolve()
-                if os.path.commonpath([str(media_root), str(path)]) == str(media_root) and path.is_file():
+                if path_is_within(media_root, path) and path.is_file():
                     path.unlink(missing_ok=True)
             # 从索引中移除
             del index["items"][asset_id]
@@ -3060,12 +3073,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         source = self.root.resolve()
         if os.path.normcase(str(destination)) == os.path.normcase(str(source)):
             raise ProjectStoreError("新项目库与当前项目库相同")
-        try:
-            common = Path(os.path.commonpath([str(source), str(destination)]))
-            if common == source or common == destination:
-                raise ProjectStoreError("新旧项目库不能互相嵌套")
-        except ValueError:
-            pass
+        if path_is_within(source, destination) or path_is_within(destination, source):
+            raise ProjectStoreError("新旧项目库不能互相嵌套")
         if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
             raise ProjectStoreError("目标项目库必须为空")
 
