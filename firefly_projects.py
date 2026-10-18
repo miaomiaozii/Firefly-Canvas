@@ -305,9 +305,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         try:
             root = self.root.resolve(strict=True)
             resolved = lexical.resolve(strict=True)
-            contained = os.path.commonpath(
-                [os.path.normcase(str(root)), os.path.normcase(str(resolved))]
-            ) == os.path.normcase(str(root))
+            # #195：strict=True 只保护第一次 _getfinalpathname 调用；对已存在路径
+            # realpath 的第二次校验调用以不同 winerror 失败时（并发删除 / 瞬时
+            # FS 错误）仍会残留 \\?\\ 前缀。比较前两侧都过 _canonical_drive_key，
+            # 否则 commonpath 把 \\?\\c: 与 c: 判为不同盘抛 ValueError。
+            root_key = _canonical_drive_key(str(root))
+            resolved_key = _canonical_drive_key(str(resolved))
+            contained = os.path.commonpath([root_key, resolved_key]) == root_key
         except FileNotFoundError as exc:
             raise ProjectNotFound("项目不存在") from exc
         except (OSError, ValueError) as exc:
