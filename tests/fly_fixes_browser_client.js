@@ -41,7 +41,11 @@
         }).catch(error => result.errors.push(`result upload: ${error.message}`));
     }
     function evalFn(fn){ return Function('"use strict";return (' + fn + ')')(); }
-    function nodes(){ return (0, eval)('nodes'); }
+    // #185：`2d3381b`（#162 P2e 4a）把顶层 `let nodes = []` 移进了 `window.canvasState.nodes`，
+    // 顶层绑定已不存在（diff 里 `-let nodes = [];`），所以 `(0, eval)('nodes')` 会抛
+    // ReferenceError，导致 boot 断言报 "nodes missing" 且整个 run 崩在 `nodes is not defined`。
+    // 保留旧的顶层读取作为兜底，以防将来又改回去。
+    function nodes(){ const s = window.canvasState; return (s && Array.isArray(s.nodes)) ? s.nodes : (0, eval)('nodes'); }
     function findNode(id){ return nodes().find(n => n && n.id === id); }
     function nodeName(nodeId){ const n = findNode(nodeId); return n && n.images && n.images[0] ? n.images[0].name : null; }
     function editMode(){ return (0, eval)('imageEditMode'); }
@@ -384,7 +388,11 @@
         {
             const t9Asset = await (async () => {
                 try {
-                    const items = (0, eval)('projectMediaLibrary?.items || []');
+                    // #185：`projectMediaLibrary` 同 `nodes` 一样已在 `2d3381b`（#162 P2e 4a）移进
+                    // `window.canvasState`（`static/js/canvas-state.js:12`），顶层绑定不存在。
+                    // 外层 `catch(_)` 会把 ReferenceError 吞成 null，所以这里只会看到 "missing"。
+                    const s = window.canvasState;
+                    const items = (s && s.projectMediaLibrary && s.projectMediaLibrary.items) || [];
                     return (items || []).find(it => String(it.name || '').indexOf('t9-seed') === 0) || null;
                 } catch(_){ return null; }
             })();
@@ -421,7 +429,7 @@
                         // 成功分支会调用 removeProjectMediaFromCache；500/异常分支不会 —— 资产仍在库中即可抓住请求失败
                         const assetGone = await waitFor(() => {
                             try {
-                                const items = (0, eval)('projectMediaLibrary?.items || []');
+                                const items = (window.canvasState?.projectMediaLibrary?.items) || [];
                                 return !(items || []).some(it => String(it.asset_id || '') === t9AssetId);
                             } catch(_) { return false; }
                         }, 10000);
