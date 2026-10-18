@@ -4,8 +4,8 @@
 // 且被 canvas-core.js 的 isSmartImageNode/isSmartGroupNode 与 project-canvas-mutations.js
 // 的 UMD require 路径消费。这里测的是「加载进共享全局作用域后读到的真实值」，
 // 而不是源码文本。
-import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 import { createCanvasContext, loadModules, evaluate, JS_DIR } from './harness.mjs';
 
@@ -54,12 +54,10 @@ test('constants are visible to later scripts in the same shared lexical scope', 
 
 test('require() path (UMD) exports the same FireflyNodeTypes object shape', () => {
     // project-canvas-mutations.js 通过 require('./canvas-node-types.js') 读同一份值。
-    // 用 node -e 走 CommonJS require 验证 .js 在两种加载器下都可用（现有
-    // tests/test_project_canvas_mutation_client.py 依赖这条路径）。
-    const out = execFileSync(
-        process.execPath,
-        ['-e', `const t = require(${JSON.stringify(JS_DIR + '/canvas-node-types.js')}); console.log(JSON.stringify(Object.keys(t).sort()));`],
-        { encoding: 'utf8' },
-    );
-    assert.equal(out.trim(), JSON.stringify(Object.keys(EXPECTED).sort()));
+    // 不用 execFileSync 启子 node：门的 node-guard 会拒
+    // （Error: quality gate denied Node boundary: node:execFileSync）。
+    // 进用 createRequire 直接 require，测的是同一条 CommonJS 加载路径，更快。
+    const require_ = createRequire(import.meta.url);
+    const exported = require_(`${JS_DIR}/canvas-node-types.js`);
+    assert.deepEqual(Object.keys(exported).sort(), Object.keys(EXPECTED).sort());
 });
