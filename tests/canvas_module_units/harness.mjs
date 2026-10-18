@@ -1,147 +1,289 @@
-// #194 画布模块单元测试 harness。
+// #194 测试侧假核心（harness）。
 //
-// 这些模块是 classic `<script>` 文件（不是 ES module）：顶层 `const` 落在
-// context 的**全局词法作用域**，后续 `runInContext` 的脚本能读到，但
-// `context.NAME` 读不到。所以加载完必须再在 context 内执行一段取值的脚本。
+// static/js/ 下的画布脚本是 classic <script> 模块：它们共享同一个全局词法作用域
+// （每个文件的顶层 let/const/function 落在同一作用域，跨文件重复声明会让整个
+// 后加载文件解析失败，SyntaxError）。本文件用 node:vm 复刻同样的环境：
+//   1. vm.createContext 建 context，window 指向 context 自身（浏览器里 window === 全局对象）；
+//   2. 按 static/smart-canvas.html 的 <script> 标签顺序，把模块逐个 runInContext 进同一 context；
+//   3. 预桩 vm context 里缺失的浏览器全局（document/location/localStorage/CustomEvent/
+//      requestAnimationFrame/fetch/可控定时器等）。
 //
-// 加载顺序必须与 static/smart-canvas.html 里的 <script> 顺序一致：跨文件重复的
-// 顶层 let/const 会让整个后加载的文件解析失败，且没有任何 Python 侧报错
-// （实测症状是页面节点全空、pageErrors 为空）。
+// 用法（见各 test-*.mjs）：
+//   import { createCanvasContext, loadModules, evaluate, globalFunction } from './harness.mjs';
+//   const { ctx, harness } = createCanvasContext();
+//   loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-state.js']);
+//   globalFunction(ctx, 'escapeHtml');   // 顶层 function/var：context 全局对象的属性
+//   evaluate(ctx, 'settings.width');     // let/const：只活在词法环境，必须用表达式读
+//
+// 若 loadModules 抛 SyntaxError（"Identifier X has already been declared"），是加载顺序或
+// HTML_SCRIPT_ORDER 表的问题（tests/test_canvas_core_layer.py 有文本侧守卫），不是被测代码问题。
 
-import fs from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const JS_DIR = path.resolve(HERE, '..', '..', 'static', 'js');
+const here = path.dirname(fileURLToPath(import.meta.url));
+export const ROOT = path.resolve(here, '..', '..');
+export const JS_DIR = path.join(ROOT, 'static', 'js');
 
-// 必须与 static/smart-canvas.html 里 <script> 的相对顺序一致；
-// tests/test_canvas_module_units.py 会比对两者，不一致直接红。
-export const CANVAS_SCRIPT_ORDER = [
+// 画布相关脚本的相对加载顺序（与 static/smart-canvas.html 的 <script src> 顺序一致）。
+// i18n-core.js 不是 HTML 里的 <script src>：static/js/i18n.js 在运行时注入它
+// （解析期 document.write、否则异步 append），等效运行于 outpaint-ratios.js 之前，
+// 故本表排在最前。HTML 变更时本表必须同步更新——
+// tests/test_canvas_module_units.py::test_harness_order_matches_html 会钉住。
+export const HTML_SCRIPT_ORDER = [
+    'i18n-core.js',
     'outpaint-ratios.js',
     'canvas-node-types.js',
     'canvas-core.js',
     'canvas-state.js',
+    'project-canvas-mutations.js',
     'canvas-layout-utils.js',
+    'canvas-connections.js',
+    'canvas-media-history.js',
+    'canvas-undo.js',
+    'canvas-node-ops.js',
+    'canvas-image-editor.js',
+    'canvas-generation-cascade.js',
+    'canvas-generation-tasks.js',
+    'canvas-agent-tui.js',
+    'smart-canvas.js',
 ];
 
-/** 最小浏览器替身：只给被测纯工具真正会碰到的东西，缺什么就让它显式报错。 */
-function browserStubs() {
-    const storage = new Map();
-    const localStorage = {
-        getItem: (key) => (storage.has(key) ? storage.get(key) : null),
-        setItem: (key, value) => { storage.set(key, String(value)); },
-        removeItem: (key) => { storage.delete(key); },
-    };
-    const noop = () => {};
-    const elementStub = () => ({
-        style: {}, dataset: {}, classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
-        setAttribute: noop, removeAttribute: noop, getAttribute: () => null,
-        appendChild: noop, removeChild: noop, addEventListener: noop, removeEventListener: noop,
-        querySelector: () => null, querySelectorAll: () => [], textContent: '', innerHTML: '',
-    });
-    const document = {
-        documentElement: elementStub(),
-        body: elementStub(),
-        head: elementStub(),
-        createElement: elementStub,
-        createTextNode: () => ({}),
-        getElementById: () => null,
+function makeElement(tag = 'div') {
+    const classes = new Set();
+    const attrs = new Map();
+    const listeners = new Map();
+    const el = {
+        tagName: String(tag).toUpperCase(),
+        children: [],
+        parentNode: null,
+        style: {},
+        dataset: {},
+        value: '',
+        checked: false,
+        disabled: false,
+        hidden: false,
+        textContent: '',
+        innerHTML: '',
+        classList: {
+            add: (...cs) => cs.forEach((c) => classes.add(String(c))),
+            remove: (...cs) => cs.forEach((c) => classes.delete(String(c))),
+            contains: (c) => classes.has(String(c)),
+            toggle: (c) => {
+                const s = String(c);
+                if (classes.has(s)) classes.delete(s); else classes.add(s);
+                return classes.has(s);
+            },
+            toString: () => [...classes].join(' '),
+        },
+        hasAttribute: (n) => attrs.has(String(n)),
+        getAttribute: (n) => (attrs.has(String(n)) ? attrs.get(String(n)) : null),
+        setAttribute: (n, v) => { attrs.set(String(n), String(v)); },
+        removeAttribute: (n) => { attrs.delete(String(n)); },
+        addEventListener: (t, fn) => {
+            const arr = listeners.get(t) || [];
+            arr.push(fn);
+            listeners.set(t, arr);
+        },
+        removeEventListener: () => {},
+        dispatchEvent: (ev) => {
+            (listeners.get(ev.type) || []).slice().forEach((fn) => fn.call(el, ev));
+            return true;
+        },
+        appendChild: (child) => { el.children.push(child); child.parentNode = el; return child; },
+        removeChild: (child) => { el.children = el.children.filter((c) => c !== child); return child; },
+        replaceChild: (newChild, oldChild) => {
+            const i = el.children.indexOf(oldChild);
+            if (i >= 0) el.children[i] = newChild;
+            return oldChild;
+        },
+        remove: () => {},
         querySelector: () => null,
         querySelectorAll: () => [],
-        addEventListener: noop,
-        removeEventListener: noop,
-        elementFromPoint: () => null,
+        getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+        focus: () => {},
+        blur: () => {},
+        click: () => { (listeners.get('click') || []).slice().forEach((fn) => fn.call(el, { type: 'click' })); },
     };
-    const window = {
-        document,
-        localStorage,
-        location: { search: '', href: 'http://localhost/static/smart-canvas.html', pathname: '/static/smart-canvas.html', hash: '' },
-        devicePixelRatio: 1,
-        innerWidth: 1024,
-        innerHeight: 768,
-        addEventListener: noop,
-        removeEventListener: noop,
-        requestAnimationFrame: (fn) => { fn(0); return 1; },
-        cancelAnimationFrame: noop,
-        matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }),
-        getComputedStyle: () => ({ getPropertyValue: () => '' }),
-        fetch: () => { throw new Error('harness: fetch 未替身，被测模块不应在加载期取网络'); },
-    };
-    // vm context 自带 ECMAScript 内置对象，但不带宿主 Web 全局。
-    // canvas-core.js 顶层就读了 location / URLSearchParams，缺了会整文件解析失败。
-    return {
-        window,
-        document,
-        localStorage,
-        location: window.location,
-        URL,
-        URLSearchParams,
-        setTimeout,
-        clearTimeout,
-        setInterval,
-        clearInterval,
-        console,
-    };
+    return el;
 }
 
-/** 把跨 realm 的值重建成 host realm 的普通对象/数组（deepStrictEqual 比原型）。 */
-export function normalizeValue(value) {
-    if (value === null || typeof value !== 'object') return value;
-    if (typeof value === 'function') return value;
-    // 注意：对跨 realm 数组调 .map() 会用该 realm 的 Array 构造新数组
-    // （Symbol.species），原型仍是跨 realm 的。必须先用展开重建 host 数组。
-    if (Array.isArray(value)) return [...value].map(normalizeValue);
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, normalizeValue(v)]));
+export function createCanvasContext({ locationSearch = '' } = {}) {
+    const ctx = vm.createContext({});
+
+    const harness = {
+        ctx,
+        makeElement,
+        // 注册（或取回）一个 document.getElementById 能找到的元素。
+        // 浏览器里 getElementById 找不到返回 null，所以测试必须显式注册被测元素，
+        // 不能依赖桩自动造出来——那会把「页面里没有这个 DOM 节点」的缺陷盖掉。
+        elementsById: new Map(),
+        element(id, tag = 'div') {
+            if (!harness.elementsById.has(id)) harness.elementsById.set(id, makeElement(tag));
+            return harness.elementsById.get(id);
+        },
+        // document.querySelector(All) 的结果，按选择器注册。
+        queryResults: Object.create(null),
+        querySelectorAll(selector, els) { harness.queryResults[selector] = els; return els; },
+        // document.addEventListener 的记录。
+        documentListeners: new Map(),
+        fireDocumentEvent(type) {
+            (harness.documentListeners.get(type) || []).slice().forEach((fn) => fn.call(document, { type }));
+        },
+        // window.addEventListener / dispatchEvent 的记录。
+        windowListeners: new Map(),
+        dispatchedEvents: [],
+        // 可控定时器：被测代码的 setTimeout 记录在这里，测试显式 advanceTimers() 才触发。
+        timers: [],
+        timerSeq: 1,
+        advanceTimers() {
+            const due = harness.timers.filter((t) => !t.fired && !t.cancelled);
+            due.forEach((t) => { t.fired = true; t.fn(...t.args); });
+            return due.length;
+        },
+        intervals: [],
+        clearIntervals() { harness.intervals.length = 0; return true; },
+        // requestAnimationFrame 队列，测试显式 flushRafs() 才跑。
+        rafQueue: [],
+        rafSeq: 1,
+        flushRafs() {
+            const due = harness.rafQueue.splice(0);
+            due.forEach((t) => t.fn(0));
+            return due.length;
+        },
+        // localStorage 底层存储。
+        store: new Map(),
+    };
+
+    const document = {
+        readyState: 'complete',
+        documentElement: makeElement('html'),
+        head: makeElement('head'),
+        body: makeElement('body'),
+        currentScript: null,
+        createElement: (t) => makeElement(t),
+        getElementById: (id) => harness.elementsById.get(id) || null,
+        querySelector: (sel) => (harness.queryResults[sel] || [])[0] || null,
+        querySelectorAll: (sel) => harness.queryResults[sel] || [],
+        addEventListener: (type, fn) => {
+            const arr = harness.documentListeners.get(type) || [];
+            arr.push(fn);
+            harness.documentListeners.set(type, arr);
+        },
+        removeEventListener: () => {},
+        write: () => {},
+    };
+
+    // window === 全局对象（classic script 的共享作用域载体）。
+    ctx.window = ctx;
+
+    // 宿主透传：裸 vm context 没有这些 WHATWG/宿主全局，不注入 canvas-core 顶层的
+    // `new URLSearchParams(location.search)` 直接 ReferenceError。
+    ctx.URL = URL;
+    ctx.URLSearchParams = URLSearchParams;
+    ctx.console = console;
+    ctx.queueMicrotask = (fn) => { Promise.resolve().then(fn); };
+    ctx.setTimeout = (fn, ms, ...args) => {
+        const id = harness.timerSeq++;
+        harness.timers.push({ id, fn, ms: ms || 0, args, fired: false, cancelled: false });
+        return id;
+    };
+    ctx.clearTimeout = (id) => {
+        const t = harness.timers.find((x) => x.id === id);
+        if (t) t.cancelled = true;
+    };
+    ctx.setInterval = (fn, ms, ...args) => {
+        const id = harness.timerSeq++;
+        harness.intervals.push({ id, fn, ms: ms || 0, args });
+        return id;
+    };
+    ctx.clearInterval = (id) => { harness.intervals = harness.intervals.filter((t) => t.id !== id); };
+    ctx.requestAnimationFrame = (fn) => {
+        const id = harness.rafSeq++;
+        harness.rafQueue.push({ id, fn });
+        return id;
+    };
+    ctx.cancelAnimationFrame = (id) => { harness.rafQueue = harness.rafQueue.filter((t) => t.id !== id); };
+    ctx.fetch = async () => { throw new Error('fetch is disabled in the unit harness'); };
+    ctx.CustomEvent = class CustomEvent {
+        constructor(type, options = {}) { this.type = type; this.detail = options && options.detail; }
+    };
+    ctx.Event = class Event {
+        constructor(type) { this.type = type; }
+    };
+    ctx.addEventListener = (type, fn) => {
+        const arr = harness.windowListeners.get(type) || [];
+        arr.push(fn);
+        harness.windowListeners.set(type, arr);
+    };
+    ctx.removeEventListener = () => {};
+    ctx.dispatchEvent = (ev) => { harness.dispatchedEvents.push(ev); return true; };
+    ctx.location = {
+        search: locationSearch,
+        hash: '',
+        href: 'http://localhost/static/smart-canvas.html' + (locationSearch || ''),
+        origin: 'http://localhost',
+        protocol: 'http:',
+        host: 'localhost',
+        hostname: 'localhost',
+        pathname: '/static/smart-canvas.html',
+    };
+    ctx.localStorage = {
+        getItem: (k) => (harness.store.has(k) ? harness.store.get(k) : null),
+        setItem: (k, v) => { harness.store.set(k, String(v)); },
+        removeItem: (k) => { harness.store.delete(k); },
+        clear: () => { harness.store.clear(); },
+        key: (i) => [...harness.store.keys()][i] || null,
+        get length() { return harness.store.size; },
+    };
+    ctx.navigator = { language: 'zh-CN', languages: ['zh-CN'], userAgent: 'node-unit-harness' };
+    ctx.screen = { width: 1920, height: 1080 };
+    ctx.performance = { now: () => 0 };
+    ctx.alert = () => {};
+    ctx.confirm = () => true;
+    ctx.prompt = () => null;
+    ctx.document = document;
+
+    return { ctx, harness };
 }
 
-/**
- * 用于 UMD 模块导出的对象：数据字段归一化，函数包一层让**返回值**也归一化。
- * 直接调跨 realm 函数会返回跨 realm 对象，deepStrictEqual 会红。
- */
-export function normalizeApi(api) {
-    const out = {};
-    for (const [key, value] of Object.entries(api)) {
-        out[key] = typeof value === 'function' ? (...args) => normalizeValue(value(...args)) : normalizeValue(value);
-    }
-    return out;
-}
-
-/**
- * 按 HTML 顺序把 classic 脚本装进同一个 context。
- * @param {string[]} files 相对 static/js 的文件名
- * @returns {{context: object, take: (names: string[]) => object}}
- */
-export function loadCanvasScripts(files) {
-    const sandbox = browserStubs();
-    const context = vm.createContext(sandbox);
-    for (const file of files) {
-        const full = path.join(JS_DIR, file);
-        const source = fs.readFileSync(full, 'utf8');
-        // filename 传真实路径：解析错误里能直接看到是哪个文件。
-        vm.runInContext(source, context, { filename: full });
-    }
-    // vm context 里创建的对象原型属于另一个 realm，host 侧的
-    // assert.deepStrictEqual 会因原型不同而失败（值完全一样）。
-    // 这里把跨界的值重建成 host realm 的普通对象/数组；函数则包一层，
-    // 让返回值也自动归一化。
-    const normalize = (value) => normalizeValue(value);
-    const take = (names) => {
-        const raw = vm.runInContext(
-            `(() => { const out = {}; ${names
-                .map((n) => `out[${JSON.stringify(n)}] = typeof ${n} === 'undefined' ? undefined : ${n};`)
-                .join(' ')} return out; })()`,
-            context,
-        );
-        const result = {};
-        for (const name of names) {
-            const value = raw[name];
-            result[name] = typeof value === 'function'
-                ? (...args) => normalize(value(...args))
-                : normalize(value);
+// 按 HTML_SCRIPT_ORDER 的相对顺序把 names 逐个加载进 ctx（共享全局词法作用域）。
+export function loadModules(ctx, names) {
+    const requested = [...new Set(names)];
+    if (requested.length !== names.length) throw new Error(`harness: duplicate module requested: ${names.join(', ')}`);
+    const unknown = requested.filter((n) => !HTML_SCRIPT_ORDER.includes(n));
+    if (unknown.length > 0) throw new Error(`harness: module(s) not in HTML_SCRIPT_ORDER: ${unknown.join(', ')}`);
+    const ordered = HTML_SCRIPT_ORDER.filter((n) => requested.includes(n));
+    for (const name of ordered) {
+        const source = readFileSync(path.join(JS_DIR, name), 'utf8');
+        try {
+            vm.runInContext(source, ctx, { filename: `static/js/${name}` });
+        } catch (err) {
+            throw new Error(`harness: failed to load static/js/${name}: ${err && err.message}`);
         }
-        return result;
-    };
-    return { context, take };
+    }
+    return ctx;
+}
+
+// 读词法环境里的 let/const（顶层 let/const 不是全局对象的属性，只能这样取）。
+export function evaluate(ctx, expression) {
+    return vm.runInContext(expression, ctx, { filename: '<evaluate>' });
+}
+
+// 取顶层 function/var（是 context 全局对象的属性）。
+export function globalFunction(ctx, name) {
+    const value = ctx[name];
+    if (typeof value !== 'function') {
+        throw new Error(`harness: expected top-level function ${name}, got ${typeof value}`);
+    }
+    return value;
+}
+
+// vm context 是独立的 V8 realm：里面 new 出来的对象带 context 自己的 Object.prototype，
+// 宿主侧 assert.deepEqual（prototype 敏感）会跨 realm 假红。
+// 断言前把被测函数返回的纯数据 JSON 往返一次，转回宿主 realm（仅限可序列化结果）。
+export function fromContext(value) {
+    return JSON.parse(JSON.stringify(value));
 }
