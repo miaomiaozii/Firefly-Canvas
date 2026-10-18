@@ -6691,18 +6691,48 @@ function markAutosaveSaved(){
 // hooks (no smart-canvas.js symbol is referenced from the tasks module — layer guard).
 // Persister: commits "this entry is no longer pending" to disk BEFORE the corresponding
 // fetch fires (node field cleared + settled non-automated save). Returns true only when
-// the cleared state has landed; on failure the caller keeps the entry and retries on the
-// next save settle, so a request is never sent without its mark being cleared first.
+// the cleared state has landed; on failure the in-memory removal is rolled back so a
+// later autosave can never flush a clear we cannot prove landed, and the caller keeps
+// the entry (retry on the next save settle) — a request is never sent without its mark
+// being cleared first. The dispatcher runs from markAutosaveSaved, which fires while the
+// triggering save still holds canvasSyncInFlight=true; saveCanvas() in that window dies
+// at the in-flight guard before reaching the server, so we wait for the flag to clear
+// (the triggering save's finally clears it right after the hook returns).
 registerSmartPendingActionPersister(async (entry) => {
     const node = (canvasState.nodes || []).find(n => n && n.id === entry.nodeId);
     if(!node) return false;
     const list = Array.isArray(node.pendingActionResumes) ? node.pendingActionResumes : [];
-    node.pendingActionResumes = list.filter(rec => rec?.actionId !== entry.actionId);
-    try {
-        return (await saveCanvas({automatic:false})) === true;
-    } catch(error) {
+    const record = list.find(rec => rec?.actionId === entry.actionId);
+    if(!record){
+        // An earlier attempt already removed the mark in memory (its save died or is
+        // still pending). Re-add it so no later autosave can flush an unproven clear;
+        // the next dispatch pass retries the whole clear.
+        node.pendingActionResumes = [...list, {actionId:entry.actionId, kind:entry.kind, payload:entry.payload, enqueuedAt:entry.createdAt}];
         return false;
     }
+    node.pendingActionResumes = list.filter(rec => rec?.actionId !== entry.actionId);
+    let waitedMs = 0;
+    while(canvasSyncInFlight && waitedMs < 5000){
+        await new Promise(resolve => setTimeout(resolve, 50));
+        waitedMs += 50;
+    }
+    if(canvasSyncInFlight){
+        // A different save is still in flight — restore the mark and retry later.
+        if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)) node.pendingActionResumes.push(record);
+        scheduleSave();
+        return false;
+    }
+    let saved = false;
+    try { saved = (await saveCanvas({automatic:false})) === true; } catch(error) { saved = false; }
+    if(!saved){
+        // The removal never landed: roll it back in memory (the server snapshot still
+        // holds the mark, so the re-added record produces no duplicate mutation) and
+        // keep the entry pending for the next save settle.
+        if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)) node.pendingActionResumes.push(record);
+        scheduleSave();
+        return false;
+    }
+    return true;
 });
 // Rebuilders: after a reload the queued closure is gone; rebuild each gate's replay from
 // the serializable payload persisted on the node. Conversation carries text+requestId

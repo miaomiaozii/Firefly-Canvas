@@ -171,7 +171,7 @@ def capture_js(gate: str) -> str:
         "flush:(window.__fix189FlushResults||[]),"
         "net:(window.__fix189Net||[]).filter(function(e){return (e.url||'').indexOf(" + json.dumps(GATE_URL_PART[gate]) + ")!==-1;}),"
         "pending:(function(){try{var m=window.__fcPendingActionResumes;if(!(m instanceof Map))return {present:false,size:0,entries:[]};var e=[];m.forEach(function(x){e.push({kind:x.kind,nodeId:x.nodeId});});return {present:true,size:m.size,entries:e};}catch(err){return {present:false,error:String(err)};}})(),"
-        "log:(window.__fcPendingActionResumeLog||[]).map(function(e){return {event:e.event,kind:e.kind,nodeId:e.nodeId};})"
+        "log:(window.__fcPendingActionResumeLog||[]).map(function(e){return {event:e.event,kind:e.kind,nodeId:e.nodeId,error:e.error||null};})"
         "};"
         "var live=(window.canvasState&&canvasState.nodes||[]).find(function(n){return n.id===" + json.dumps(NODE_ID_OF(gate)) + ";});"
         "if(!live){out.state={found:false};return JSON.stringify(out);}"
