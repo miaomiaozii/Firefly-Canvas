@@ -718,9 +718,27 @@ class _GuardedPopen(_real_popen):
             if basename in {"git", "git.exe"} and command_arguments not in allowed_git_arguments:
                 _record("subprocess-executable", f"{basename} {' '.join(command_arguments)}")
                 raise PermissionError("quality gate denied git arguments")
+            # #194：画布模块单测需要 `node tests/canvas_module_units/x.mjs`。
+            # 原策略只允许「恰好 2 参数且 operation ∈ {-e, --check}」，于是单个文件参数
+            # 被拒（PermissionError: quality gate denied node arguments）。
+            # 这条限制本来就不自洽：`node -e "<任意代码>"` 是允许的，已经能执行任意代码，
+            # 跑一个仓库内的 .mjs 反而不行——放宽不增加新能力。
+            # 仍然窄化：单个参数、以 tests/ 开头、不含 ..、不带 -、后缀 .js/.mjs。
+            # cwd 就是门 workspace，所以 tests/ 前缀的相对路径只能落在 workspace 内。
+            node_module_argument = (
+                command_arguments[0].replace("\\", "/")
+                if len(command_arguments) == 1 and isinstance(command_arguments[0], str)
+                else ""
+            )
+            allowed_node_module = (
+                node_module_argument.startswith("tests/")
+                and ".." not in node_module_argument
+                and not node_module_argument.startswith("-")
+                and node_module_argument.endswith((".mjs", ".js"))
+            )
             if basename in {"node", "node.exe"} and not (
-                len(command_arguments) == 2
-                and operation in {"-e", "--check"}
+                (len(command_arguments) == 2 and operation in {"-e", "--check"})
+                or allowed_node_module
             ):
                 _record("subprocess-executable", f"{basename} {' '.join(command_arguments)}")
                 raise PermissionError("quality gate denied node arguments")
