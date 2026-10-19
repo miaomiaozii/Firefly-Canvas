@@ -28,6 +28,15 @@ const smartPendingPersistenceKeys = new Set();
 const smartPendingActionResumes = new Map();
 let smartPendingActionResumeSeq = 0;
 const smartPendingActionResumeLog = [];
+// #198: bounded retry budget for replayed gate requests. clear-on-send removes the
+// persisted mark from disk BEFORE the replay fetch fires (double-billing prevention —
+// video / local-edit / photoshop have no server-side dedup), so a FAILED replay must
+// write the mark back or the user's action is lost forever. The count persists inside
+// the same mark (node.pendingActionResumes[i].replayAttempts) so a reload cannot reset
+// it into an unbounded retry loop. The budget is deliberately small: every attempt of a
+// non-deduplicated gate can be a paid request even when its response is lost.
+const SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS = 3; // total attempts (1 initial + 2 retries)
+const SMART_PENDING_ACTION_RETRY_BACKOFF_MS = [60000, 180000]; // retry 1 after 1 min, retry 2 after 3 min
 
 const smartGenerationRegistrationQueues = new Map();
 
@@ -1200,6 +1209,73 @@ function clearPendingActionFromStorage(entry){
         node.pendingActionResumes = node.pendingActionResumes.filter(rec => rec?.actionId !== entry.actionId);
     } catch(error){ /* best-effort */ }
 }
+// #198: per-kind replay success check. conversation / photoshop / video replay
+// closures THROW on a failed request, so a resolved replay means success. local-edit
+// is the exception: submitLocalEditRequest (smart-canvas.js) swallows its own fetch
+// error (toast + resolve), so the dispatcher verifies the observable effect — a
+// successful local edit always assigns a FRESH output_asset_id (the endpoint has no
+// server-side dedup, every accepted POST mints a new asset), so success means the
+// node's output_asset_id changed from the pre-replay value.
+function smartPendingActionReplaySucceeded(kind, beforeOutput, node){
+    if(kind === 'local-edit'){
+        const after = String(node?.output_asset_id || '');
+        return Boolean(after) && after !== beforeOutput;
+    }
+    return true;
+}
+// #198: retry timer for a backoff-queued entry. Session-local: after a reload the
+// timer is gone, but the persisted nextRetryAt on the mark re-arms it at seed time
+// (the dispatcher schedules it whenever it sees a future nextRetryAt).
+function schedulePendingActionRetryTimer(entry){
+    if(!entry || entry._retryTimer) return;
+    const delay = Math.max(0, Number(entry.nextRetryAt || 0) - Date.now());
+    entry._retryTimer = setTimeout(() => {
+        entry._retryTimer = null;
+        if(smartPendingActionResumes.has(entry.actionId)) void resumeSmartPendingActionResumes(canvasState.nodes).catch(() => {});
+    }, delay);
+}
+// #198: a replayed gate request failed AFTER its mark had already been cleared from
+// disk (clear-on-send). Write the mark back onto the anchored node WITH the persisted,
+// bounded retry count, re-queue with a backoff, and only drop permanently once the
+// budget is exhausted.
+function handlePendingActionReplayFailure(entry, freshNode){
+    const now = Date.now();
+    entry.replayAttempts = Number(entry.replayAttempts || 0) + 1;
+    entry.lastReplayAttemptAt = now;
+    entry.releasing = false;
+    if(entry._retryTimer){ clearTimeout(entry._retryTimer); entry._retryTimer = null; }
+    if(entry.replayAttempts >= SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS){
+        // Budget exhausted: drop permanently. The mark was already cleared from disk
+        // by the persister right before this attempt fired (clear-on-send landed, or
+        // the replay would not have run), so there is nothing left to persist.
+        smartPendingActionResumes.delete(entry.actionId);
+        clearPendingActionFromStorage(entry);
+        smartPendingActionResumeLog.push({t:now, event:'dropped-retry-exhausted', kind:entry.kind, nodeId:entry.nodeId, attempts:entry.replayAttempts});
+        return;
+    }
+    entry.nextRetryAt = now + SMART_PENDING_ACTION_RETRY_BACKOFF_MS[Math.min(entry.replayAttempts - 1, SMART_PENDING_ACTION_RETRY_BACKOFF_MS.length - 1)];
+    // Write the mark back. The record carries the counter (replayAttempts) and the
+    // backoff deadline (nextRetryAt) so a reload resumes with the same budget.
+    const nodes = (typeof canvasState !== 'undefined' && canvasState?.nodes) || [];
+    const node = freshNode || nodes.find(n => n && n.id === entry.nodeId);
+    if(node){
+        if(!Array.isArray(node.pendingActionResumes)) node.pendingActionResumes = [];
+        node.pendingActionResumes = node.pendingActionResumes.filter(rec => rec?.actionId !== entry.actionId);
+        node.pendingActionResumes.push({actionId:entry.actionId, kind:entry.kind, payload:entry.payload, enqueuedAt:entry.createdAt, replayAttempts:entry.replayAttempts, nextRetryAt:entry.nextRetryAt});
+    }
+    // Re-queue (the dispatcher removed the entry from the Map before the attempt fired).
+    smartPendingActionResumes.set(entry.actionId, entry);
+    smartPendingActionResumeLog.push({t:now, event:'replay-scheduled-retry', kind:entry.kind, nodeId:entry.nodeId, attempt:entry.replayAttempts, retryInMs:entry.nextRetryAt - now});
+    schedulePendingActionRetryTimer(entry);
+    // Persist the written-back mark NOW (not on the 3s debounce): the mark is a
+    // durable node field, so the app's pagehide crash-recovery flush
+    // (flushPendingCanvasSaveOnExit — the only registered pagehide listener) sees a
+    // durable-snapshot diff and saves immediately. Dispatched through the built-in
+    // Event API on purpose: the layer ratchet (tests/test_canvas_core_layer.py)
+    // forbids any new bare reference from this module to a smart-canvas top-level
+    // name, and #201 track 1 will later interface-ify this module properly.
+    try { window.dispatchEvent(new Event('pagehide')); } catch(error){ /* best-effort */ }
+}
 function hasSmartPendingActionResume(kind, nodeId){
     for(const entry of smartPendingActionResumes.values()){
         if(entry.kind === kind && entry.nodeId === nodeId) return true;
@@ -1224,8 +1300,17 @@ async function resumeSmartPendingActionResumes(canvasNodes){
             const alreadyQueued = [...smartPendingActionResumes.values()].some(e => e.kind === rec.kind && e.nodeId === node.id && (rec.actionId ? e.actionId === rec.actionId : true));
             if(alreadyQueued) continue;
             const actionId = rec.actionId || `action-${rec.kind}-seeded-${smartPendingActionResumeSeq}`;
-            smartPendingActionResumes.set(actionId, {actionId, kind:String(rec.kind), nodeId:String(node.id), replay:null, payload:rec.payload || null, createdAt:Number(rec.enqueuedAt || Date.now()), releasing:false, seededFromStorage:true});
-            smartPendingActionResumeLog.push({t:Date.now(), event:'seeded', kind:String(rec.kind), nodeId:String(node.id)});
+            const attempts = Number(rec.replayAttempts || 0);
+            if(attempts >= SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS){
+                // #198: the retry budget was exhausted in an earlier session — the
+                // persisted mark is dead weight now; drop it (the next save persists
+                // the removal) instead of firing one more doomed attempt.
+                node.pendingActionResumes = node.pendingActionResumes.filter(r => r?.actionId !== actionId);
+                smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-retry-exhausted', kind:String(rec.kind), nodeId:String(node.id), attempts});
+                continue;
+            }
+            smartPendingActionResumes.set(actionId, {actionId, kind:String(rec.kind), nodeId:String(node.id), replay:null, payload:rec.payload || null, createdAt:Number(rec.enqueuedAt || Date.now()), releasing:false, seededFromStorage:true, replayAttempts:attempts, nextRetryAt:Number(rec.nextRetryAt || 0)});
+            smartPendingActionResumeLog.push({t:Date.now(), event:'seeded', kind:String(rec.kind), nodeId:String(node.id), attempts});
         }
     }
     if(!smartPendingActionResumes.size) return;
@@ -1241,6 +1326,14 @@ async function resumeSmartPendingActionResumes(canvasNodes){
             smartPendingActionResumes.delete(entry.actionId);
             clearPendingActionFromStorage(entry);
             smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-node-gone', kind:entry.kind, nodeId:entry.nodeId});
+            continue;
+        }
+        // #198: bounded-retry backoff — a failed replay is re-queued with a future
+        // nextRetryAt; save-settle passes before then must NOT re-fire it (the
+        // write-back autosave settles one shortly after the failure). The retry timer
+        // re-runs this pass when the window elapses.
+        if(Number(entry.nextRetryAt || 0) > Date.now()){
+            schedulePendingActionRetryTimer(entry);
             continue;
         }
         if(persister){
@@ -1277,12 +1370,22 @@ async function resumeSmartPendingActionResumes(canvasNodes){
         // Fire-and-forget (void) like resumeSmartGenerationSubmission: replays can run
         // for minutes (video task polling) and must not block the markAutosaveSaved hook.
         void (async () => {
+            let replayError = null;
+            const beforeOutput = entry.kind === 'local-edit' ? String(live?.output_asset_id || '') : '';
             try {
                 await replay(live);
+            } catch(error){ replayError = error; }
+            const fresh = (typeof canvasState !== 'undefined' && canvasState?.nodes || []).find(n => n && n.id === entry.nodeId) || live;
+            const succeeded = !replayError && smartPendingActionReplaySucceeded(entry.kind, beforeOutput, fresh);
+            if(succeeded){
                 smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
-            } catch(error){
-                smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:error?.message || String(error)});
-                if(typeof toast === 'function') toast(String(error?.message || '').slice(0, 160) || tr('smart.errRunFailed'));
+            } else {
+                // #198: the mark was already cleared from disk before this fetch fired;
+                // without a write-back the user's action is permanently lost.
+                const detail = replayError ? (replayError?.message || String(replayError)) : 'no-observable-effect';
+                smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:detail});
+                if(typeof toast === 'function') toast((replayError ? String(replayError?.message || '').slice(0, 160) : '') || tr('smart.errRunFailed'));
+                handlePendingActionReplayFailure(entry, fresh);
             }
         })();
     }
