@@ -137,7 +137,6 @@ let minimapViewport = document.getElementById('minimapViewport');
 let canvasUsesConnections = true;
 let dragState = null;
 let composerDragSettleTimer = 0;
-let loopInsertPreview = null;
 let selectionState = null;
 let isRKeyDown = false;
 let selectionJustFinished = false;
@@ -236,7 +235,6 @@ let createMenuPoint = {x:0, y:0};
 let nodeClipboard = null;
 let imageClickTimer = null;
 let suppressImageClickUntil = 0;
-let lastMouseWorld = null;
 let lastConfigRefreshAt = 0;
 let smartMinimapState = null;
 let smartEdgeRevealTimer = 0;
@@ -262,13 +260,6 @@ function activeSmartCascadeCount(){ return smartCascadeRuns.size; }
 function smartCascadeRunForLoop(loopId){ return loopId ? smartCascadeRuns.get(loopId) || null : null; }
 function smartCascadeIsLoopRunning(loopId){ return Boolean(smartCascadeRunForLoop(loopId)); }
 function smartCascadeAnyRunning(){ return activeSmartCascadeCount() > 0; }
-function smartCascadeEdgeState(edgeKey){
-    for(const run of smartCascadeRuns.values()){
-        const state = run?.runPath?.states?.[edgeKey];
-        if(state) return state;
-    }
-    return '';
-}
 let previewZoom = 1.0;
 let previewPan = {x:0, y:0};
 let previewComparePos = 50;
@@ -1200,12 +1191,6 @@ function smartGroupContainingNode(nodeId){
 }
 // 节点所属的“分组作用域”ID：成员返回其分组，分组本体返回自身，否则空。
 // 用于连线合并/隐藏：同一作用域内部的连线属于分组内部关系，无需画出。
-function smartGroupScopeId(nodeId){
-    const group = smartGroupContainingNode(nodeId);
-    if(group) return group.id;
-    const node = canvasState.nodes.find(n => n.id === nodeId);
-    return isSmartGroupNode(node) ? node.id : '';
-}
 // 汇总分组内所有图片成员的图片，按阅读顺序（先行后列：成员当前 y 再 x）排成一维序列。
 // 返回 [{nodeId, index, source, item}]——source 是成员节点里真实的图片对象（写回自然尺寸用），
 // item 是 imageForDisplay 后的展示对象。预览左右切换、批量下载、宫格拼接都以它为数据源。
@@ -1841,11 +1826,6 @@ function translateSmartNodeWithMembers(node, dx, dy, seen=new Set()){
     if(isSmartGroupNode(node)){
         smartGroupMembers(node).forEach(member => translateSmartNodeWithMembers(member, dx, dy, seen));
     }
-}
-function moveSmartNodeAtom(node, x, y){
-    const dx = Math.round(x - (Number(node.x) || 0));
-    const dy = Math.round(y - (Number(node.y) || 0));
-    translateSmartNodeWithMembers(node, dx, dy);
 }
 function arrangeSelectedSmartNodes(){
     if(!canvas) return;
@@ -7113,10 +7093,6 @@ function duplicateForAltDrag(node, preserveConnections=false){
     render();
     scheduleSave();
     return dragCopy;
-}
-function shellPoint(event){
-    const rect = shell.getBoundingClientRect();
-    return {x:event.clientX - rect.left, y:event.clientY - rect.top};
 }
 let interactionLayerRaf = 0;
 // 拖动/缩放节点时，每个 mousemove 都全量重建连线 SVG + 小地图会掉帧；

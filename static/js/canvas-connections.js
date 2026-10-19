@@ -494,3 +494,28 @@ function cascadeConnectionKeys(){
     return keys;
 }
 
+// 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
+let loopInsertPreview = null;
+let lastMouseWorld = null;
+function smartCascadeEdgeState(edgeKey){
+    for(const run of smartCascadeRuns.values()){
+        const state = run?.runPath?.states?.[edgeKey];
+        if(state) return state;
+    }
+    return '';
+}
+function smartGroupScopeId(nodeId){
+    const group = smartGroupContainingNode(nodeId);
+    if(group) return group.id;
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    return isSmartGroupNode(node) ? node.id : '';
+}
+function moveSmartNodeAtom(node, x, y){
+    const dx = Math.round(x - (Number(node.x) || 0));
+    const dy = Math.round(y - (Number(node.y) || 0));
+    translateSmartNodeWithMembers(node, dx, dy);
+}
+function shellPoint(event){
+    const rect = shell.getBoundingClientRect();
+    return {x:event.clientX - rect.left, y:event.clientY - rect.top};
+}

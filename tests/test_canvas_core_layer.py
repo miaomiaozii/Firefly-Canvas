@@ -72,7 +72,16 @@ MODULE_OWNED = {
         "smartOutputAtPreservedPosition",
         "openSmartCanvasLog",
     ),
-    "canvas-connections.js": ("connectionEraseState",),
+    "canvas-connections.js": (
+        "connectionEraseState",
+        # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+        "loopInsertPreview",
+        "lastMouseWorld",
+        "smartCascadeEdgeState",
+        "smartGroupScopeId",
+        "moveSmartNodeAtom",
+        "shellPoint",
+    ),
     # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
     "canvas-image-editor.js": (
         "previewPanDrag",
@@ -139,7 +148,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-generation-tasks.js": 103,
     "canvas-image-editor.js": 87,
     "canvas-node-ops.js": 60,
-    "canvas-connections.js": 44,
+    "canvas-connections.js": 41,
     "canvas-undo.js": 6,
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,
