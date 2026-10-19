@@ -99,7 +99,7 @@ def main() -> int:
     args = parser.parse_args()
 
     durations = load_existing(OUTPUT) if not args.refresh else {}
-    targets = [t for t in profile_targets(ROOT) if args.only in t]
+    targets = [t for t in profile_targets(ROOT) if not args.only or args.only in t]
     if args.limit:
         targets = targets[: args.limit]
     due = [t for t in targets if args.refresh or t not in durations]
