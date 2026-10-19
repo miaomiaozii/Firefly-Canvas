@@ -179,3 +179,60 @@ function registerSmartPendingActionPersister(persister){
 function smartPendingActionPersister(){
     return smartPendingActionPersisterFn;
 }
+
+// #201 轨道 1（ADR 0020）：显式接口 window.canvasCore。
+// 模块访问共享服务（smart-canvas.js 里被 >=2 个模块引用的顶层名字）统一走接口：
+//     canvasCore.render()          // 而不是裸 render
+//     canvasCore.shell             // 而不是裸 shell（值引用同样支持，不只是调用）
+//     canvasCore.smartLoopContext  // let 绑定，读/写都落到原始绑定
+// 收益不在引用处数（测量口径不变，见 tools/canvas_coupling_report.py），在可测性：
+// 模块独立单测只需桩 canvasCore 一个对象，而不是 N 个独立外部名字
+// （#194/#203 实测过的单测成本驱动因子）。
+//
+// 解析必须惰性：本文件先于 smart-canvas.js 加载（层守卫要求），而接口名字大多定义在
+// smart-canvas.js 顶层，其中一部分是 let/const 词法绑定。在定义处直接引用它们会
+// TDZ 报错或读到 undefined，所以所有解析都推迟到 canvasCore.NAME 被访问时（运行期，
+// 全部脚本加载完成后）。
+//
+// 为什么用 new Function 而不是 window.NAME：顶层 function/var 在 window 上，但
+// 顶层 let/const 只存在于全局词法环境（global declarative record），window.NAME
+// 对它们是 undefined。new Function 构造的函数作用域链就是全局环境，两类绑定都能
+// 按名解析到。缓存的是解析器（每次调用仍读绑定的当前值，重绑定的 let 不会读到
+// 旧值），不是值本身。
+window.canvasCore = (function () {
+    const _resolvers = Object.create(null);
+    function resolve(name) {
+        let resolver = _resolvers[name];
+        if (!resolver) {
+            resolver = new Function("return " + name + ";");
+            _resolvers[name] = resolver;
+        }
+        return resolver();
+    }
+    const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+    return new Proxy(Object.create(null), {
+        get(_target, name) {
+            // 只解析合法标识符；symbol/元属性探测一律返回 undefined。
+            if (typeof name !== "string" || !IDENTIFIER.test(name)) return undefined;
+            try {
+                return resolve(name);
+            } catch (_err) {
+                // 名字不存在（拼错/已搬走）：返回 undefined 而不是抛 ReferenceError，
+                // 行为与「读一个不存在的属性」一致，调用点该报的错在下一步调用时照报。
+                return undefined;
+            }
+        },
+        // canvasCore.NAME = v：写回原始全局绑定（如 smartLoopContext 是 let）。
+        set(_target, name, value) {
+            if (typeof name !== "string" || !IDENTIFIER.test(name)) return false;
+            if (name in window) {
+                window[name] = value;
+                return true;
+            }
+            // let/const 绑定：new Function 的赋值落在全局词法环境（与裸赋值同语义）。
+            // const 会抛 TypeError，与裸赋值行为一致，故不吞错。
+            new Function("value", "return (" + name + " = value);")(value);
+            return true;
+        },
+    });
+})();
