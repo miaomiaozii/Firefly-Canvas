@@ -191,7 +191,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-generation-tasks.js": 103,
     "canvas-image-editor.js": 87,
     "canvas-node-ops.js": 60,
-    "canvas-connections.js": 41,
+    "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
     "canvas-undo.js": 6,
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,

@@ -44,7 +44,7 @@ function arrangeSmartIdsByConnections(ids){
     const idSet = new Set(smartArrangeAtomicIds(ids));
     const selectedNodes = [...idSet].map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(selectedNodes.length < 2) return false;
-    const rects = selectedNodes.map(node => ({node, rect:nodeRect(node)}));
+    const rects = selectedNodes.map(node => ({node, rect:canvasCore.nodeRect(node)}));
     const startX = Math.min(...rects.map(item => item.rect.x));
     const startY = Math.min(...rects.map(item => item.rect.y));
     const internal = (canvas?.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
@@ -75,11 +75,11 @@ function arrangeSmartIdsByConnections(ids){
     const sortedDepths = [...groups.keys()].sort((a, b) => a - b);
     let x = startX;
     sortedDepths.forEach(d => {
-        const col = groups.get(d).slice().sort((a, b) => nodeRect(a).y - nodeRect(b).y || String(a.id).localeCompare(String(b.id)));
+        const col = groups.get(d).slice().sort((a, b) => canvasCore.nodeRect(a).y - canvasCore.nodeRect(b).y || String(a.id).localeCompare(String(b.id)));
         let y = startY;
         let maxW = 0;
         col.forEach(node => {
-            const rect = nodeRect(node);
+            const rect = canvasCore.nodeRect(node);
             moveSmartNodeAtom(node, x, y);
             y += Math.max(110, rect.height) + 56;
             maxW = Math.max(maxW, Math.max(180, rect.width));
@@ -105,7 +105,7 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 function renderConnections(){
     const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => canvasState.nodes.some(n => n.id === c.from) && canvasState.nodes.some(n => n.id === c.to));
     const cascadeKeys = cascadeConnectionKeys();
-    const activeRunPath = [...smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
+    const activeRunPath = [...canvasCore.smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
     const activeCascadeCount = (activeRunPath?.states && Object.values(activeRunPath.states).filter(state => state && state !== 'done').length) || 0;
     const reduceMotion = activeCascadeCount > 24;
     const selectedConnIds = new Set(selectedNodeIds());
@@ -138,7 +138,7 @@ function renderConnections(){
         const fromNode = canvasState.nodes.find(n => n.id === item.from);
         const toNode = canvasState.nodes.find(n => n.id === item.toId);
         if(!fromNode || !toNode) return '';
-        const fr = nodeRect(fromNode), tr = nodeRect(toNode);
+        const fr = canvasCore.nodeRect(fromNode), tr = canvasCore.nodeRect(toNode);
         const kind = item.kind;
         const isHistory = kind === 'history';
         const dataIndex = item.indices.join(',');
@@ -181,7 +181,7 @@ function renderConnections(){
 
 function refreshConnectionLayer(){
     canvasState.connectionLayerRaf = 0;
-    const oldSvg = world.querySelector('svg.connection-layer');
+    const oldSvg = canvasCore.world.querySelector('svg.connection-layer');
     if(!oldSvg) return;
     const tpl = document.createElement('template');
     tpl.innerHTML = renderConnections().trim();
@@ -196,7 +196,7 @@ function scheduleConnectionLayerRefresh(){
 }
 
 function bindConnectionEvents(){
-    world.querySelectorAll('[data-conn-index]').forEach(el => {
+    canvasCore.world.querySelectorAll('[data-conn-index]').forEach(el => {
         if(el.classList.contains('conn-hit')){
             el.addEventListener('dblclick', e => {
                 e.preventDefault(); e.stopPropagation();
@@ -212,12 +212,12 @@ function bindConnectionEvents(){
 }
 
 function dragConnectTargetFor(sourceNode, point=lastMouseWorld){
-    if(!sourceNode || (dragState?.group || []).length > 1) return null;
+    if(!sourceNode || (canvasCore.dragState?.group || []).length > 1) return null;
     if([NODE_TYPE_PROMPT, NODE_TYPE_LOOP].includes(sourceNode.type) && point){
-        return rectOverlapNode(sourceNode.id, point.x - 1, point.y - 1, 2, 2, dragState?.groupIds || []);
+        return rectOverlapNode(sourceNode.id, point.x - 1, point.y - 1, 2, 2, canvasCore.dragState?.groupIds || []);
     }
-    const r = nodeRect(sourceNode);
-    return rectOverlapNode(sourceNode.id, r.x, r.y, r.width, r.height, dragState?.groupIds || []);
+    const r = canvasCore.nodeRect(sourceNode);
+    return rectOverlapNode(sourceNode.id, r.x, r.y, r.width, r.height, canvasCore.dragState?.groupIds || []);
 }
 
 function canAutoConnectDraggedNode(sourceNode, targetNode){
@@ -259,8 +259,8 @@ function disconnectConnections(spec){
             demoteHistoryGroupNode(group);
         }
     });
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
 }
 
 function connectionIndexSpecFromPoint(clientX, clientY){
@@ -280,7 +280,7 @@ function eraseConnectionsAtClientPoint(clientX, clientY){
     indices.forEach(index => connectionEraseState.indices.add(index));
     connectionEraseState.started = true;
     connectionEraseState.count = connectionEraseState.indices.size;
-    world.querySelectorAll('[data-conn-index]').forEach(el => {
+    canvasCore.world.querySelectorAll('[data-conn-index]').forEach(el => {
         const hasHit = String(el.dataset.connIndex || '').split(',').some(v => connectionEraseState.indices.has(Number(v)));
         if(hasHit) el.classList.add('conn-erasing-mark');
     });
@@ -307,7 +307,7 @@ function finishConnectionErase(){
             demoteHistoryGroupNode(group);
         }
     });
-    render();
+    canvasCore.render();
     return true;
 }
 
@@ -333,13 +333,13 @@ function eraseConnectionsAlongPointer(event){
 }
 
 function ensureConnectionEraseTrail(){
-    let svg = shell.querySelector(':scope > svg.connection-erase-trail');
+    let svg = canvasCore.shell.querySelector(':scope > svg.connection-erase-trail');
     if(svg) return svg;
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'connection-erase-trail');
     svg.setAttribute('aria-hidden', 'true');
     svg.innerHTML = '<path class="connection-erase-trail-glow" fill="none"></path><path class="connection-erase-trail-line" fill="none"></path>';
-    shell.appendChild(svg);
+    canvasCore.shell.appendChild(svg);
     return svg;
 }
 
@@ -349,14 +349,14 @@ function updateConnectionEraseTrail(event){
     connectionEraseState.trail = [...(connectionEraseState.trail || []), p].slice(-80);
     const points = connectionEraseState.trail;
     const svg = ensureConnectionEraseTrail();
-    const rect = shell.getBoundingClientRect();
+    const rect = canvasCore.shell.getBoundingClientRect();
     svg.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${Math.max(1, rect.height)}`);
     const d = points.map((pt, index) => `${index ? 'L' : 'M'}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ');
     svg.querySelectorAll('path').forEach(path => path.setAttribute('d', d));
 }
 
 function clearConnectionEraseTrail(){
-    const svg = shell.querySelector(':scope > svg.connection-erase-trail');
+    const svg = canvasCore.shell.querySelector(':scope > svg.connection-erase-trail');
     if(!svg) return;
     svg.classList.add('fading');
     setTimeout(() => svg.remove(), 180);
@@ -366,7 +366,7 @@ function connectionMidpoint(conn){
     const fromNode = canvasState.nodes.find(n => n.id === conn?.from);
     const toNode = canvasState.nodes.find(n => n.id === conn?.to);
     if(!fromNode || !toNode) return null;
-    const fr = nodeRect(fromNode), tr = nodeRect(toNode);
+    const fr = canvasCore.nodeRect(fromNode), tr = canvasCore.nodeRect(toNode);
     if((conn.kind || 'flow') === 'history'){
         return {x:(fr.x + fr.width / 2 + tr.x + tr.width / 2) / 2, y:(fr.y + fr.height + tr.y) / 2};
     }
@@ -375,7 +375,7 @@ function connectionMidpoint(conn){
 
 function insertionConnectionForNode(node){
     if(!node || node.type !== NODE_TYPE_LOOP || !canvas?.connections?.length) return null;
-    const r = nodeRect(node);
+    const r = canvasCore.nodeRect(node);
     const cx = (Number(r.x) || 0) + (Number(r.width) || 0) / 2;
     const cy = (Number(r.y) || 0) + (Number(r.height) || 0) / 2;
     let best = null;
@@ -471,7 +471,7 @@ function cascadeConnectionKeys(){
     const addKey = (from, to) => {
         if(from && to) keys.add(`${from}->${to}`);
     };
-    const activeLoopIds = new Set(smartCascadeRuns.keys());
+    const activeLoopIds = new Set(canvasCore.smartCascadeRuns.keys());
     const loops = activeLoopIds.size
         ? canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP && activeLoopIds.has(n.id))
         : canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP);
@@ -487,7 +487,7 @@ function cascadeConnectionKeys(){
             const toNode = canvasState.nodes.find(n => n.id === conn.to);
             if(conn.from === loop.id && (chainIds.has(conn.to) || downstreamNodesForId(conn.to).some(n => chainIds.has(n.id)))) addKey(conn.from, conn.to);
             if(toNode && chainIds.has(toNode.id)){
-                inputNodesFor(toNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
+                canvasCore.inputNodesFor(toNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
             }
         });
     });
@@ -498,14 +498,14 @@ function cascadeConnectionKeys(){
 let loopInsertPreview = null;
 let lastMouseWorld = null;
 function smartCascadeEdgeState(edgeKey){
-    for(const run of smartCascadeRuns.values()){
+    for(const run of canvasCore.smartCascadeRuns.values()){
         const state = run?.runPath?.states?.[edgeKey];
         if(state) return state;
     }
     return '';
 }
 function smartGroupScopeId(nodeId){
-    const group = smartGroupContainingNode(nodeId);
+    const group = canvasCore.smartGroupContainingNode(nodeId);
     if(group) return group.id;
     const node = canvasState.nodes.find(n => n.id === nodeId);
     return isSmartGroupNode(node) ? node.id : '';
@@ -516,6 +516,6 @@ function moveSmartNodeAtom(node, x, y){
     translateSmartNodeWithMembers(node, dx, dy);
 }
 function shellPoint(event){
-    const rect = shell.getBoundingClientRect();
+    const rect = canvasCore.shell.getBoundingClientRect();
     return {x:event.clientX - rect.left, y:event.clientY - rect.top};
 }
