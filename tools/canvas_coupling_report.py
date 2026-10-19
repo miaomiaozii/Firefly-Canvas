@@ -57,8 +57,6 @@ CATEGORY_BY_NAME = {
     "tr": "hub",
     "trf": "hub",
     "nodeRect": "hub",
-    "world": "hub",
-    "shell": "hub",
     "screenToWorld": "hub",
     "nodeById": "hub",
     "imagesForNode": "hub",
@@ -125,7 +123,6 @@ CATEGORY_BY_NAME = {
     "smartGenerationSubmissions": "state",
     "apiProviders": "state",
     "MEDIA_NODE_DEFAULT_SCALE": "state",
-    "MEDIA_NODE_DEFAULT_SCALE": "state",
     "MEDIA_GROUP_DEFAULT_SCALE": "state",
     "MEDIA_GROUP_MAX_VISIBLE_ROWS": "state",
     "SMART_GROUP_MAX_VISIBLE_ROWS": "state",
@@ -154,6 +151,113 @@ CATEGORY_BY_NAME = {
     "smartHistoryPurgeTrash": "reach",
     "smartHistoryVirtualState": "reach",
     "connectionEraseState": "reach",
+    # --- #201 前置补全：solo 名字分类（2026-10-19 实测 99 名字 / 130 处，全部 solo）---
+    # 判定依据是定义而不是名字（读了 smart-canvas.js 顶层定义后判）：
+    #   util = 纯函数：行为只由参数决定，不读写共享可变状态、不碰 DOM（可下沉 canvas-core.js）
+    #   state = let/var 共享可变变量，或 const 配置表（沿用本表惯例）
+    #   hub = 行为服务：读写共享状态或 DOM，或对画布节点/provider 的查询与变更
+    # --- 补全 hub（行为服务，61 名字）---
+    "updateZoomLabel": "hub",  # 写 #imageEditZoomLabel 文本（读 imageEditMode/zoom 状态）
+    "rectOverlapNode": "hub",  # 节点查询：rect -> canvasState.nodes 中节点
+    "clearDetachedRunInputRefs": "hub",  # 节点变更：清孤儿 run 输入引用
+    "syncLocalEditInputRoles": "hub",  # 节点变更：由 connections 重建 local-edit 输入角色
+    "bindSmartPreviewImageFallbacks": "hub",  # DOM 行为：给 img 绑预览 fallback 事件
+    "positionComposerForNode": "hub",  # UI 操作：定位 composer 到节点旁
+    "refreshComparePanel": "hub",  # UI 操作：刷新对比面板 DOM
+    "activeSettingsSubject": "hub",  # 节点查询：当前设置主体节点
+    "smartRunSnapshot": "hub",  # run 服务：读 settings 建运行快照
+    "promptInputNodesFor": "hub",  # 节点查询：上游 prompt/loop/group 节点
+    "defaultReferenceImagesFor": "hub",  # 节点查询：默认参考图
+    "workflowInputNodesFor": "hub",  # 节点查询：workflow 上游节点
+    "requestSmartEdgeReveal": "hub",  # UI 行为：智能边缘揭示动画
+    "smartArrangeAtomicIds": "hub",  # 画布查询：id 折叠为分组原子（读 canvasState.nodes）
+    "promptTextItemsForNode": "hub",  # 节点查询：prompt 文本项（读 smartLoopContext）
+    "fitSmartLoopNode": "hub",  # 节点变更：调整 loop 节点 w/h
+    "translateSmartNodeWithMembers": "hub",  # 节点变更：平移节点+组成员
+    "assetLibraryIsProject": "hub",  # 画布查询：当前资产库是否项目级
+    "openLongContentReader": "hub",  # UI 行为：打开长内容阅读器
+    "videoProviderById": "hub",  # provider 查询：id -> 视频 provider（读 apiProviders）
+    "removeProjectMediaFromCache": "hub",  # 状态变更：projectMediaLibrary 缓存移除
+    "toggleAssetLibrary": "hub",  # UI 行为：资产库面板开/关
+    "closeSmartCanvasLog": "hub",  # UI 行为：关画布日志抽屉
+    "apiProviderById": "hub",  # provider 查询：id -> 图像 provider（读 apiProviders）
+    "renderAssetLibrary": "hub",  # UI 操作：渲染资产库面板
+    "viewportCenter": "hub",  # 视口服务：视口中心世界坐标（读 shell+viewport）
+    "closeCreateMenu": "hub",  # UI 行为：关创建菜单
+    "smartNodeInFlight": "hub",  # 节点查询：是否有在途运行（读 pending/submission）
+    "inheritNodeMetaFromImage": "hub",  # 节点变更：剥 node.images 生成元数据
+    "ungroupNode": "hub",  # 画布操作：释放分组（pushUndo、重建节点）
+    "openAssetNameDialog": "hub",  # UI 行为：打开资产重命名对话框
+    "renderMinimap": "hub",  # UI 操作：渲染小地图
+    "addNodeToSmartGroup": "hub",  # 画布操作：节点加入/吸收进智能分组
+    "applyThumbDisplaySizeToElement": "hub",  # DOM 操作：应用缩略图显示尺寸到元素
+    "previewDownloadGroupItems": "hub",  # 画布查询：预览组下载项（读 previewNavState）
+    "renderDynamicParams": "hub",  # UI 操作：渲染动态参数面板（读写 settings）
+    "activeComposerNode": "hub",  # 节点查询：composer 绑定节点
+    "updatePreviewMetaHint": "hub",  # UI 操作：更新预览 meta 提示
+    "visibleReferenceImagesFor": "hub",  # 节点查询：可见参考图（读 mention 状态）
+    "applyPreviewTransform": "hub",  # DOM 操作：应用预览 pan/zoom 变换
+    "buildPromptRequest": "hub",  # prompt 服务：构建 prompt 请求（读 promptInput/loop ctx）
+    "savePromptDraftForCurrent": "hub",  # draft 服务：存 prompt 草稿到 composer 主体
+    "runningHubSelectedModel": "hub",  # RunningHub 查询：选中模型（读 settings）
+    "modelscopeImageModels": "hub",  # provider 查询：ModelScope 图像模型
+    "smartCascadeAnyRunning": "hub",  # 级联查询：是否有级联在跑
+    "updateComposer": "hub",  # UI 操作：刷新 composer（DOM+状态）
+    "runningHubModelApiSettings": "hub",  # RunningHub 查询：选中模型对应 API settings
+    "syncRunButtonState": "hub",  # UI 操作：同步运行按钮状态
+    "smartCascadeRunForLoop": "hub",  # 级联查询：loopId -> run（读 smartCascadeRuns）
+    "rememberRecentSmartSettings": "hub",  # settings 服务：记录最近智能设置
+    "smartCascadeIsLoopRunning": "hub",  # 级联查询：loopId 是否在跑
+    "applyApiVideoGenerationResult": "hub",  # run 服务：视频结果落到节点（调 render）
+    "rhActiveFields": "hub",  # RunningHub 查询：激活字段（读 settings）
+    "promptNodeUpstreamPromptText": "hub",  # 节点查询：上游 prompt 文本（读 smartLoopContext）
+    "manualSmartVideoLink": "hub",  # settings 查询：手动 temp-sh 视频链接
+    "tempShUploadedUrlFor": "hub",  # 云链服务：本地 url -> 已上传 url（读 transient links）
+    "promptNodeInputMediaForLLM": "hub",  # 节点查询：LLM 输入媒体
+    "selectedRunningHubRef": "hub",  # RunningHub 查询：选中 ref（读写 settings.rhConfigKey）
+    "providerChatModels": "hub",  # provider 查询：chat 模型（读 apiProviders）
+    "chatApiProviders": "hub",  # provider 查询：可用 chat provider（读 apiProviders）
+    "centerViewportOnWorldPoint": "hub",  # 视口行为：以世界点为中心（写 viewport）
+    # --- 补全 util（纯函数，31 名字；候选下沉 canvas-core.js）---
+    "smartPreviewImgHtml": "util",  # 纯 builder：URL+escape -> <img> HTML，无状态读写/DOM
+    "sizeForRun": "util",  # 纯计算：settings 参数 -> 尺寸串
+    "videoRefsOnly": "util",  # 纯 filter：refs 参数 -> 视频项
+    "generationStageProgressHtml": "util",  # 纯 builder：progress 对象 -> 进度条 HTML
+    "promptHtmlWithMentionTokens": "util",  # 纯 builder：text+refs -> mention token HTML
+    "smartImageUsesWorkflowInput": "util",  # 纯谓词：node+ctx -> bool（只读 smartLoopContext 默认参）
+    "smartRunNeedsPrompt": "util",  # 纯谓词：settings -> bool
+    "audioRefsOnly": "util",  # 纯 filter：refs 参数 -> 音频项
+    "apiErrorMessage": "util",  # 纯 format：错误数据 -> 消息串
+    "formatRunDuration": "util",  # 纯 format：ms -> "m:ss"
+    "modelDisplayName": "util",  # 纯查表：provider+model -> 显示名
+    "smartNodeHasDisplayResult": "util",  # 纯谓词：node -> bool
+    "zoomPanAroundPoint": "util",  # 纯计算：zoom/pan/rect/坐标 -> 新 {zoom,pan}
+    "smartVideoPreviewHtml": "util",  # 纯 builder：url 参数 -> <video> HTML
+    "mediaGroupGridHeight": "util",  # 纯计算：images/cols/rows/thumb -> 高
+    "imageNameLabel": "util",  # 纯：img 参数 -> 名称串
+    "smartGroupCompactMembers": "util",  # 纯 filter：group 参数 -> prompt/loop 成员
+    "nearestFourKSizeFor": "util",  # 纯计算：w/h -> 最近 4K 规格（SIZE_MAP 常量）
+    "normalizeSmartOnlineEngine": "util",  # 纯：value -> engine（fallback 'api'）
+    "circledNumber": "util",  # 纯：n -> 圈数字符
+    "isSmartRunnableNode": "util",  # 纯谓词：node -> bool
+    "pendingBoxSize": "util",  # 纯计算：count+node -> 占位尺寸
+    "smartLoopCount": "util",  # 纯：node -> clamp 计数
+    "stripRunInputMeta": "util",  # 纯：meta -> 新 meta（清输入字段）
+    "cloneSmartNode": "util",  # 纯 builder：node 参数 -> 新 node（只读参数+uid）
+    "parseSizePair": "util",  # 纯："WxH" -> {width,height}
+    "mediaRefSourceUrl": "util",  # 纯：ref 参数 -> 源 url
+    "apiImageUsesExplicitResolution": "util",  # 纯谓词：settings+provider 能力 -> bool
+    "promptNodePromptItems": "util",  # 纯：node -> 拆分后的 prompt 列表
+    "parseSizeAspect": "util",  # 纯：尺寸/比例串 -> {w,h}
+    "nodeBodyHtml": "util",  # 纯 builder：node+layout -> body HTML（分派纯子 builder）
+    # --- 补全 state（共享可变变量 / const 配置表，7 名字）---
+    "interactionLayerRaf": "state",  # let raf id：交互层刷新合并
+    "generationCompleteSoundAt": "state",  # let 时间戳：完成音去重
+    "previewComparePos": "state",  # let 数字：对比滑块位置
+    "assetLibraryOpen": "state",  # let bool：资产库开关
+    "MS_GEN_MODELS": "state",  # const 配置表：ModelScope 模型目录
+    "previewPan": "state",  # let {x,y}：预览平移
+    "previewZoom": "state",  # let 数字：预览缩放
 }
 
 CATEGORY_ORDER = ("hub", "util", "state", "dom", "reach", "unclassified")

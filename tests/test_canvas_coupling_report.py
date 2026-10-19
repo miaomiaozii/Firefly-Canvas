@@ -15,6 +15,13 @@ import unittest
 from tests.test_canvas_core_layer import REVERSE_REFERENCE_CEILINGS
 from tools.canvas_coupling_report import coupling, summarize
 
+# 棘轮上限（仿 REVERSE_REFERENCE_CEILINGS 的写法）：未分类引用只许降不许升。
+# 2026-10-19（#201 前置）补全分类前实测 130（99 名字、全部 solo）；补全后 0。
+# 分类是工具判 movable/blocked 的前提，未分类一升，那些引用的判定就是盲的。
+# 之后新出现的跨模块引用（核心新增名字）必须先进 CATEGORY_BY_NAME 分类，
+# 否则这里红灯。
+UNCLASSIFIED_REFERENCE_CEILING = 0
+
 
 class CanvasCouplingReportTests(unittest.TestCase):
     def setUp(self):
@@ -45,6 +52,17 @@ class CanvasCouplingReportTests(unittest.TestCase):
             if row["core_internal_calls"] > 0
         ]
         self.assertEqual(offenders, [])
+
+    def test_unclassified_reference_count_does_not_grow(self):
+        # 棘轮：未分类引用只许降不许升（见 ADR 0020：分类表是 movable/blocked
+        # 判定的前提，未分类一升，工具对那批引用就是盲的）。
+        unclassified = self.summary["per_category"].get("unclassified", 0)
+        self.assertLessEqual(
+            unclassified,
+            UNCLASSIFIED_REFERENCE_CEILING,
+            f"未分类引用 {unclassified} 超过棘轮上限 {UNCLASSIFIED_REFERENCE_CEILING}："
+            "新增的跨模块引用必须先分类进 CATEGORY_BY_NAME，见 ADR 0020",
+        )
 
     def test_solo_and_shared_partition_is_complete(self):
         scope = self.summary["scope"]
