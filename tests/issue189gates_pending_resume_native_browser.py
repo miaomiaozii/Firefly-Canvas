@@ -16,8 +16,11 @@ single-shot: each is removed from the table BEFORE its fetch fires (video / loca
 photoshop endpoints have no server-side dedup). Node deletion drops the entry; there is no
 timeout and no cancellation by design.
 
---mode repro: pre-fix characterization — the old stop toast fires and, after the save
-             settles, the request never arrives (0 gate POSTs). Exit 0 when characterized.
+--mode repro: post-#189 characterization (RED->GREEN history: pre-#190 this mode
+             asserted the old stop toast + request loss; since #190 the gate 409s are
+             absorbed by the conflict-retry budget and that failure path is unreachable,
+             so the mode now asserts the same post-#189 contract as --mode fixed — #216).
+             Exit 0.
 --mode fixed: post-fix guarantees — a pending entry is queued at the gate, 0 gate POSTs
              before settle, exactly one gate POST after settle, the pending table is drained
              with a 'replayed' log event, and the server shows no duplicate task. Exit 0.
@@ -92,6 +95,11 @@ VIEWPORT = (1520, 940)
 # up to maxConflictRetries=2 times (1 + 2 = 3 save PATCHes per attempt) -> 12 armed 409s
 # are absorbed. 15 leaves 3 for the follow-up mark autosave, which rebases through them
 # and still lands. (Before #190, 3 was enough because the first failure returned false.)
+# #216: DERIVED, not a magic number — ARM_STALE must stay >
+# maxAttempts * (1 + maxConflictRetries) = 4 * (1 + 2) = 12, or the armed 409s are fully
+# absorbed, the gate never fails and the pending path is never exercised (the #216 false
+# red: waiting for the generation result times out). tests/test_issue189gates_arm_stale_guard.py
+# re-derives this from the product constants and fails the suite if either side drifts.
 ARM_STALE = 15
 GATE_SETTLE_S = 3.0
 FIXED_SETTLE_S = 8.0
@@ -625,13 +633,15 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 saved_again = wait_state_soft(
                     browser, "document.getElementById('projectSaveState').dataset.state==='saved'", 40)
                 result["steps"]["saved-again"] = bool(saved_again)
+                # #216: repro flows exactly like fixed (it asserts the same post-#189
+                # contract, and the local-edit replay can land seconds after settle).
                 post_seen = wait_state_soft(
                     browser,
                     "(function(){return (window.__fix189Net||[]).some(function(e){return (e.url||'').indexOf("
                     + json.dumps(GATE_URL_PART[gate]) + ")!==-1;});})()",
-                    30) if mode in ("fixed", "refresh-sent") else False
+                    30) if mode in ("fixed", "repro", "refresh-sent") else False
                 result["steps"]["post-arrived"] = bool(post_seen)
-                time.sleep(FIXED_SETTLE_S if mode in ("fixed", "refresh-sent") else 3.0)
+                time.sleep(FIXED_SETTLE_S if mode in ("fixed", "repro", "refresh-sent") else 3.0)
                 cap2 = json.loads(browser.evaluate(capture_js(gate)))
                 result["phase1"] = cap2
                 result["server"] = list(logger.entries)
@@ -740,24 +750,12 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                     result["checks"]["video-task-ids-unique"] = rb.get("video-task-ids-unique")
                     result["checks"]["video-task-ids"] = rb.get("video-task-ids")
 
-                if mode == "repro":
-                    result["passed"] = bool(
-                        stop_seen
-                        and gate_flush_failed
-                        and pre_posts == 0
-                        and post_posts == 0
-                        and len(posts) == 0
-                        and (pending1.get("present") is False or pending1.get("size") == 0)
-                        and (
-                            # Measured pre-fix behaviour (git checkout 1208c0b -- static/js/*,
-                            # RED-conversation run01..03): stop-toast=True, server-post-count=0,
-                            # input-cleared=True. The typed text is LOST, not left in the box,
-                            # so the old bug is worse than "message not sent".
-                            (gate == "conversation" and cap2["state"].get("input") in ("", None))
-                            or gate != "conversation"
-                        )
-                    )
-                elif mode == "refresh":
+                # #216: no repro branch — since #190 the pre-#189 stop-toast/loss
+                # contract is unreachable (the armed 409s are absorbed by the retry
+                # budget), so --mode repro asserts the same post-#189 contract as
+                # --mode fixed (the final else below). See
+                # test_issue189gates_arm_stale_guard.py for the constant guard.
+                if mode == "refresh":
                     # #197 acceptance 1: gate fails -> the persisted mark survives a
                     # reload -> the request is sent exactly once (across BOTH sessions)
                     # and the server ends with exactly one task/artifact.
@@ -932,6 +930,10 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                     result["checks"]["killer"] = result.get("killer")
                     result["passed"] = phase1_ok and phase2_ok
                 else:
+                    # --mode fixed AND --mode repro (#216): the post-#189 contract —
+                    # the gate flush reports conflict exhaustion, the request is queued
+                    # pending, the save settles, the replay lands exactly one server
+                    # POST, and the gate's task completes.
                     common_ok = (
                         gate_flush_failed
                         and not stop_seen

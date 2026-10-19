@@ -7,19 +7,24 @@ user's generation: the durable submission marker is cleared and the user sees
 Scenario (per the issue): edit the prompt -> wait until the save state is back
 to "saved" -> arm N stale-base rewrites on the next canvas-save PATCHes (the
 real server then returns authentic 409s with the latest canvas) -> click
-generate IMMEDIATELY.  The gate's save chain 409s three times, hits
-conflictLimitReached, saveProjectCanvasUntilSettled() returns false on its
-first (only) save attempt, and the generation entry point reacts.
+generate IMMEDIATELY.  The gate's save chain 409s three times and the first
+save attempt's flush hits conflictLimitReached, but since #190
+saveProjectCanvasUntilSettled() retries (maxAttempts=4) and recovers on later
+attempts (3 < 12), so the settle succeeds and the generation entry point takes
+the #189 pending path instead of cancelling.
 
 Modes:
-  repro   - asserts the CURRENT (buggy) behavior: "已停止生图" toast, the
-            submission marker is cleared, no task is registered server-side.
-            Passing here == the bug is reproduced (the red).
+  repro   - post-#189 characterization (RED->GREEN history: pre-#190 this mode
+            asserted the buggy "已停止生图" behavior; since #190 the armed 409s
+            are absorbed by the retry budget, and since #197's clear-on-send
+            protocol the old stop toast and marker-lingering timing are both
+            unreachable — #216). The mode now asserts the same post-#189
+            contract as `fixed`. Passing here == the product keeps the request.
   fixed   - asserts the DESIRED behavior (user decision m03364: the request
             stays pending and generation starts automatically once the save
             settles): no "已停止生图" toast, the marker survives the failed
-            flush (page-side + carried by the next durable save), the task is
-            registered exactly once, the node enters the generating state.
+            flush (carried by the next durable save), the task is registered
+            exactly once, the node enters the generating state.
             Red before the fix, green after.
   natural - observational control without injection (single tab, no concurrent
             writer): the gate save normally 200s straight away; reports how
@@ -59,7 +64,16 @@ VIEWPORT = (1424, 900)
 NODE_ID = "img-189"
 MODEL = "fix189-model"
 EDIT_A = "[edit-189-a]"
-INJECT_STALE = 3          # rewrites -> 3 authentic 409s -> conflict budget (2 retries) exhausted
+# #216: DERIVED, not a magic number. INJECT_STALE must EXHAUST one flush's
+# rebase budget (1 + maxConflictRetries=2 = 3 save PATCHes) so the gate's first
+# save attempt reports conflictLimitReached, while staying BELOW the whole
+# settle budget maxAttempts=4 * (1 + maxConflictRetries=2) = 12 so the settle
+# still recovers and the #189 pending path (not the old stop toast) is
+# exercised. Both product constants live in static/js/smart-canvas.js
+# (saveProjectCanvasUntilSettled maxAttempts=4 at :6619, flush
+# maxConflictRetries=2 at :6662); tests/test_issue189gates_arm_stale_guard.py
+# fails the suite if either side drifts.
+INJECT_STALE = 3
 STOVED_TOAST_TEXT = "已停止生图"
 GATE_SETTLE_S = 2.0        # after the gate save flight clears, before capturing evidence
 FIXED_SETTLE_S = 5.0       # after the final readback window
@@ -575,8 +589,10 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                 result["gate"]["gate-t"] = gate_t
                 browser.capture_screenshot(run_shots / "04-gate-result.png")
 
-                # --- step 4: let the (re)saved state settle; in fixed mode wait for the auto-resume
-                if mode == "fixed":
+                # --- step 4: let the (re)saved state settle; in repro/fixed mode
+                # wait for the auto-resume (#216: repro asserts the same
+                # post-#189 contract as fixed, so it needs the same waits)
+                if mode in ("fixed", "repro"):
                     saved_again = wait_state_soft(browser, "document.getElementById('projectSaveState').dataset.state==='saved'", 40)
                     result["fixed"] = {"saved-again": saved_again}
                     registered = wait_state_soft(browser,
@@ -611,7 +627,7 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                     "edit-a-persisted": EDIT_A in server_prompt(store, project_id),
                     "pill": state(browser, PILL_JS),
                 }
-                if mode == "fixed":
+                if mode in ("fixed", "repro"):
                     terminal_id, terminal_status = "", ""
                     terminal_deadline = time.monotonic() + 50
                     while time.monotonic() < terminal_deadline:
@@ -630,31 +646,31 @@ def run_journey(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path, *
                 result["inject-state"] = read_inject_state(browser) if inject_stale else None
 
                 # --- verdict
-                if mode == "repro":
-                    # Pre-fix characterization: the stopped toast fires, and the clear runs on a
-                    # stale node reference (409 rebase swapped the canvas nodes), so the marker
-                    # lingers on the page and is persisted as a zombie marker (saved, never
-                    # consumed, task never registered).
-                    result["passed"] = bool(
-                        result["gate"]["stopped_toast"]
-                        and result["gate"]["limit_reached"]
-                        and result["gate"]["gate_409_count"] >= 3
-                        and page_node_gate.get("marker") == 1
-                        and bool(result["final"]["server-marker"])
-                        and not task_ids
+                if mode in ("repro", "fixed"):
+                    # #216: repro and fixed assert the SAME post-#189 contract.
+                    # Pre-#190, repro asserted the buggy stop toast; since #190 the
+                    # armed 409s are absorbed by the retry budget, so that path is
+                    # unreachable. And the old `page_node_gate.marker == 1` check
+                    # (pre-#197 timing) is replaced by a marker/task consistency
+                    # invariant, because #197's clear-on-send protocol (67e458f)
+                    # makes the replay consume the marker BEFORE the gate evidence
+                    # capture (measured on 98eb32d: clears at t=9466/10601 vs
+                    # gate-t=7497 + 2s settle). The #189 guarantee that survives
+                    # the timing change: a cleared marker must always be
+                    # accompanied by a registered task (the pre-#189 bug cleared
+                    # the marker AND lost the task). A lingering marker is
+                    # legitimate (consumed by the next durable save; the server
+                    # dedupes replays by idempotency_key in
+                    # reserve_project_image_task, so it cannot double-generate).
+                    marker_final = page_node_final.get("marker")
+                    marker_consistent = (
+                        marker_final == 1 or (marker_final == 0 and bool(task_ids))
                     )
-                elif mode == "fixed":
-                    # Note: the cleared marker may legitimately linger on the server until the
-                    # next durable save (a broadcast merge can re-persist it before the clear is
-                    # saved — the same clear-then-save race the normal flow at :198 already has).
-                    # The hard guarantees are: the task is registered exactly once and the server
-                    # dedupes replays by idempotency_key (reserve_project_image_task), so a
-                    # lingering marker cannot cause a duplicate generation.
                     result["passed"] = bool(
                         not result["final"]["stopped_toast"]
                         and result["gate"]["limit_reached"]
                         and result["gate"]["gate_409_count"] >= 3
-                        and page_node_gate.get("marker") == 1
+                        and marker_consistent
                         and result["gate"]["marker_carried_after_gate"]
                         and result["fixed"]["task-registered-page"]
                         and result["final"]["task-count"] == 1
