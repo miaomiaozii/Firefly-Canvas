@@ -108,6 +108,16 @@ MODULE_OWNED = {
         "aspectRatioForRun",
         "sleep",
     ),
+    # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+    "canvas-generation-cascade.js": (
+        "composer",
+        "runBtn",
+        "smartCascadePathForCtx",
+        "smartLoopRoundSettings",
+        "selfReferenceImagesForNode",
+        "upstreamLoopPromptNodesFor",
+        "rememberRoundOutputs",
+    ),
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
@@ -124,7 +134,7 @@ MODULE_OWNED = {
 # 搬回 owning module（每模块一个提交）；其中状态/DOM 名字核心可能仍有引用（经典脚本共享
 # 全局词法作用域，模块先于核心加载，运行期引用安全），对应上限同步降，名字另进 MODULE_OWNED 防回流。
 REVERSE_REFERENCE_CEILINGS = {
-    "canvas-generation-cascade.js": 153,
+    "canvas-generation-cascade.js": 147,
     "canvas-media-history.js": 83,
     "canvas-generation-tasks.js": 103,
     "canvas-image-editor.js": 87,

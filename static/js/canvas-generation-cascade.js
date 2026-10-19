@@ -1262,3 +1262,32 @@ function runSmartCascadeFromLoop(loopId){
     canvasState.selectedImage = {nodeId:'', index:-1};
     runSmartCascade(tail);
 }
+
+// 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
+const composer = document.getElementById('composer');
+const runBtn = document.getElementById('runBtn');
+function smartCascadePathForCtx(ctx=null){
+    return ctx?.runState?.runPath || ctx?.runPath || null;
+}
+function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
+    const next = {...(runSettings || {})};
+    const imageCountEngine = isApiLikeEngine(next.engine)
+        ? next.apiKind !== 'video'
+        : next.engine === 'modelscope';
+    if(ctx?.nodeId && imageCountEngine){
+        next.count = 1;
+    }
+    return next;
+}
+function selfReferenceImagesForNode(node, consume=false, ctx=smartLoopContext){
+    return outputImagesForNode(node, consume, ctx).filter(img => img?.url);
+}
+function upstreamLoopPromptNodesFor(node){
+    return promptInputNodesFor(node).filter(input => input?.type === NODE_TYPE_LOOP && input.showPrompt);
+}
+function rememberRoundOutputs(ctx, node, outputs){
+    if(!ctx || !node?.id || !Array.isArray(outputs)) return outputs || [];
+    if(!ctx.roundOutputs || typeof ctx.roundOutputs.set !== 'function') ctx.roundOutputs = new Map();
+    ctx.roundOutputs.set(node.id, outputs.filter(img => img?.url).map(img => ({...img})));
+    return outputs;
+}

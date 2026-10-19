@@ -4,7 +4,6 @@ const sourceProjectId = params.get('project') || '';
 window.canvasId = canvasId;
 const shell = document.getElementById('shell');
 const world = document.getElementById('world');
-const composer = document.getElementById('composer');
 const createMenu = document.getElementById('createMenu');
 const canvasEmptyState = document.getElementById('canvasEmptyState');
 const canvasEmptyCreate = document.getElementById('canvasEmptyCreate');
@@ -15,7 +14,6 @@ const mentionPicker = document.getElementById('mentionPicker');
 const mentionPreview = document.getElementById('mentionPreview');
 const engineSelect = document.getElementById('engineSelect');
 const dynamicParams = document.getElementById('dynamicParams');
-const runBtn = document.getElementById('runBtn');
 const fileInput = document.getElementById('fileInput');
 const apiKindToggle = document.getElementById('apiKindToggle');
 const inputThumbsRow = document.getElementById('inputThumbsRow');
@@ -270,9 +268,6 @@ function smartCascadeEdgeState(edgeKey){
         if(state) return state;
     }
     return '';
-}
-function smartCascadePathForCtx(ctx=null){
-    return ctx?.runState?.runPath || ctx?.runPath || null;
 }
 let previewZoom = 1.0;
 let previewPan = {x:0, y:0};
@@ -616,16 +611,6 @@ function normalizeSmartVideoModeSettings(target, preferMultimodal=false){
 }
 function isApiLikeEngine(engine){
     return ['api', 'volcengine'].includes(String(engine || '').toLowerCase());
-}
-function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
-    const next = {...(runSettings || {})};
-    const imageCountEngine = isApiLikeEngine(next.engine)
-        ? next.apiKind !== 'video'
-        : next.engine === 'modelscope';
-    if(ctx?.nodeId && imageCountEngine){
-        next.count = 1;
-    }
-    return next;
 }
 function isGptImageAutoSizeModel(model){
     const raw = String(model || '').trim().toLowerCase();
@@ -13132,9 +13117,6 @@ function outputImagesForNode(node, consume=false, ctx=smartLoopContext){
     }
     return imagesForNode(node).filter(img => img?.url);
 }
-function selfReferenceImagesForNode(node, consume=false, ctx=smartLoopContext){
-    return outputImagesForNode(node, consume, ctx).filter(img => img?.url);
-}
 function textForNode(node, ctx=smartLoopContext){
     if(!node) return '';
     if(node.type === NODE_TYPE_PROMPT) return promptNodePromptItems(node).join('\n\n');
@@ -13158,20 +13140,11 @@ function inputPromptTextFor(node, ctx=smartLoopContext){
         return true;
     }).join('\n\n');
 }
-function upstreamLoopPromptNodesFor(node){
-    return promptInputNodesFor(node).filter(input => input?.type === NODE_TYPE_LOOP && input.showPrompt);
-}
 function inputImagesFor(node, consume=false, ctx=smartLoopContext){
     return inputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
 }
 function workflowInputImagesFor(node, consume=false, ctx=smartLoopContext){
     return workflowInputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
-}
-function rememberRoundOutputs(ctx, node, outputs){
-    if(!ctx || !node?.id || !Array.isArray(outputs)) return outputs || [];
-    if(!ctx.roundOutputs || typeof ctx.roundOutputs.set !== 'function') ctx.roundOutputs = new Map();
-    ctx.roundOutputs.set(node.id, outputs.filter(img => img?.url).map(img => ({...img})));
-    return outputs;
 }
 function inputRefKey(img){
     if(!img?.url) return '';
