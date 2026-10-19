@@ -156,6 +156,11 @@ MODULE_OWNED = {
 # 2026-10-19 实测：#200 把工具判定 movable 的 71 个寄居名字（只被 1 个模块引用、核心从不调用）
 # 搬回 owning module（每模块一个提交）；其中状态/DOM 名字核心可能仍有引用（经典脚本共享
 # 全局词法作用域，模块先于核心加载，运行期引用安全），对应上限同步降，名字另进 MODULE_OWNED 防回流。
+#
+# #201 轨道 1（ADR 0020）口径说明：共享服务改写成 `canvasCore.NAME` 接口引用后，
+# 本表计**不变**——`canvasCore.render` 仍算作对 render 的反向引用（正则 \brender\b
+# 匹配点号后的名字，陷阱 2 的守卫在 tests/test_canvas_coupling_report.py）。真实进展
+# 看下面 FREE_GLOBAL_REFERENCE_CEILINGS（自由全局侧，只许降）。
 REVERSE_REFERENCE_CEILINGS = {
     "canvas-generation-cascade.js": 147,
     "canvas-media-history.js": 83,
@@ -172,6 +177,27 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-core.js": 0,
     # #184 新增的节点类型常量层：只声明常量，不引用 smart-canvas.js 的任何顶层名；
     # 必须紧跟 canvas-core.js 之后加载（见 test_canvas_core_is_loaded_first_among_canvas_scripts）。
+    "canvas-node-types.js": 0,
+}
+
+# #201 轨道 1 新增棘轮：模块对 smart-canvas.js 的**自由全局**引用处数（只许降）。
+# 自由全局 = 裸引用，即还没改走 canvasCore 接口的那部分；总数 - 接口引用 = 自由全局。
+# ADR 0020：轨道 1 的收益是「单测要桩的独立外部名字数」下降，它由自由侧的独立名字数
+# 驱动，不由总数驱动（总数在接口化前后不变，见上）。2026-10-19（#201 开始）实测初值
+# 等于当时的反向引用总数（尚无接口引用）；每接口化一个模块就收紧一次。
+FREE_GLOBAL_REFERENCE_CEILINGS = {
+    "canvas-generation-cascade.js": 147,
+    "canvas-media-history.js": 83,
+    "canvas-generation-tasks.js": 103,
+    "canvas-image-editor.js": 87,
+    "canvas-node-ops.js": 60,
+    "canvas-connections.js": 41,
+    "canvas-undo.js": 6,
+    "canvas-agent-tui.js": 12,
+    "canvas-state.js": 0,
+    "project-canvas-mutations.js": 0,
+    "canvas-layout-utils.js": 0,
+    "canvas-core.js": 0,
     "canvas-node-types.js": 0,
 }
 
@@ -249,6 +275,38 @@ def reverse_references() -> dict[str, int]:
     return counts
 
 
+def interface_references() -> dict[str, int]:
+    """每个已拆出模块走 `canvasCore.NAME` 接口引用的处数（按名字归到核心）。
+
+    口径与 reverse_references 同步（去注释行、排除同名局部），并且是它的子集：
+    `canvasCore.render` 既计入 render 的反向引用（正则 \brender\b 匹配点号后），
+    也计入接口引用。所以 总数 = 自由全局 + 接口，接口化不改变总数。
+    """
+    core = _top_level_names((JS_DIR / "smart-canvas.js").read_text(encoding="utf-8"))
+    counts: dict[str, int] = {}
+    for module in _canvas_modules():
+        path = JS_DIR / module
+        if not path.exists():
+            counts[module] = 0
+            continue
+        text = _strip_comment_lines(path.read_text(encoding="utf-8"))
+        local = _locally_declared_names(text)
+        total = 0
+        for name in core:
+            if name in local:
+                continue
+            total += len(re.findall(r"canvasCore\." + re.escape(name) + r"\b", text))
+        counts[module] = total
+    return counts
+
+
+def free_references() -> dict[str, int]:
+    """自由全局引用 = 反向引用总数 - 接口引用（模块还没接口化的那部分）。"""
+    reverse = reverse_references()
+    iface = interface_references()
+    return {module: reverse[module] - iface[module] for module in reverse}
+
+
 def _canvas_modules() -> tuple[str, ...]:
     """已拆出模块清单，从 `CANVAS_SCRIPTS` 推导，不再手拄。
 
@@ -264,7 +322,9 @@ def _canvas_modules() -> tuple[str, ...]:
 class CanvasCoreLayerTests(unittest.TestCase):
     def test_module_ceilings_cover_exactly_the_derived_module_set(self):
         # 新增模块时，这里会先红，逼你显式给它记一个上限，而不是静默少计。
-        self.assertEqual(sorted(_canvas_modules()), sorted(REVERSE_REFERENCE_CEILINGS))
+        modules = sorted(_canvas_modules())
+        self.assertEqual(modules, sorted(REVERSE_REFERENCE_CEILINGS))
+        self.assertEqual(modules, sorted(FREE_GLOBAL_REFERENCE_CEILINGS))
 
     def test_canvas_core_is_loaded_first_among_canvas_scripts(self):
         order = _script_order()
@@ -332,6 +392,24 @@ class CanvasCoreLayerTests(unittest.TestCase):
             regressions,
             "模块反向引用 smart-canvas.js 的处数上升；按功能继续拆分之前，"
             "先把被回调的名字下沉到 canvas-core.js。",
+        )
+
+    def test_free_global_reference_count_does_not_grow(self):
+        # #201 轨道 1 的真实进展指标（ADR 0020）：自由全局引用只许降。
+        # 改写成 canvasCore.NAME 后总数不变（本表不松），自由侧才降——
+        # 自由侧的独立名字数决定模块独立单测要桩多少个外部名字。
+        free = free_references()
+        self.assertEqual(sorted(FREE_GLOBAL_REFERENCE_CEILINGS), sorted(free))
+        regressions = [
+            f"{module}: {free[module]} > {FREE_GLOBAL_REFERENCE_CEILINGS[module]}"
+            for module in sorted(free)
+            if free[module] > FREE_GLOBAL_REFERENCE_CEILINGS[module]
+        ]
+        self.assertEqual(
+            [],
+            regressions,
+            "模块对 smart-canvas.js 的自由全局引用上升；新增裸引用前，"
+            "先让新名字走 canvasCore 接口或下沉到 canvas-core.js。",
         )
 
 

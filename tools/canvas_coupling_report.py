@@ -11,6 +11,13 @@
 - 显式部分：`CATEGORY_BY_NAME` 是人给的分类决定。工具会**列出所有未分类的名字**，
   所以分类不完整时是可见的，不会悄悄退化成一个自洽但过时的表。
 
+#201 轨道 1（ADR 0020）把共享服务改成显式接口 `canvasCore.NAME` 后，引用口径必须
+同时看得见两种写法：`canvasCore.render` 仍算作对 `render` 的反向引用（正则 \brender\b
+本来也匹配点号后的名字），否则棘轮数字「变好」而耦合一点没少，守卫从此看不见真耦合。
+所以每个模块额外拆分出 **自由全局引用（free）/ 接口引用（interface）**：总数不变，
+自由侧只许降（tests/test_canvas_core_layer.py 的 FREE_GLOBAL_REFERENCE_CEILINGS），
+那才是轨道 1 的真实进展——模块要桩的不同外部名字数随自由侧下降。
+
 用法：
     python tools/canvas_coupling_report.py            # 汇总表
     python tools/canvas_coupling_report.py --names    # 带名字和分类的明细
@@ -282,6 +289,42 @@ def _declaration_kind(name: str, core_text: str) -> str:
     return "not-top-level"
 
 
+def count_references(text: str, core_names: set[str], local_names: set[str]) -> Counter:
+    """每个核心名字的引用处数（引用口径，与棘轮守卫一致）。
+
+    同时计入裸引用与 `canvasCore.NAME` 接口引用：正则 `\bNAME\b` 也匹配
+    点号后的名字，所以改写成接口后总数不降（#201 陷阱 2 的守卫见
+    tests/test_canvas_coupling_report.py）。
+    """
+    hits: Counter[str] = Counter()
+    for name in core_names:
+        if name in local_names:
+            continue  # 同名局部变量不是对核心的耦合
+        count = len(re.findall(rf"\b{re.escape(name)}\b", text))
+        if count:
+            hits[name] = count
+    return hits
+
+
+def count_interface_references(
+    text: str, core_names: set[str], local_names: set[str]
+) -> Counter:
+    """`canvasCore.NAME` 形式的接口引用处数，归到对应的核心名字上。
+
+    这是引用口径的拆分而不是新口径：总数 = 自由全局引用 + 接口引用。
+    守卫的 FREE_GLOBAL_REFERENCE_CEILINGS 只对自由侧棘轮（只许降）——
+    自由侧独立名字越少，模块独立单测要桩的外部名字就越少（ADR 0020 轨道 1）。
+    """
+    hits: Counter[str] = Counter()
+    for name in core_names:
+        if name in local_names:
+            continue
+        count = len(re.findall(rf"canvasCore\.{re.escape(name)}\b", text))
+        if count:
+            hits[name] = count
+    return hits
+
+
 def coupling() -> dict[str, dict[str, int]]:
     """module -> {referenced core top-level name: 引用处数}。
 
@@ -299,14 +342,21 @@ def coupling() -> dict[str, dict[str, int]]:
             continue
         text = _strip_comment_lines(path.read_text(encoding="utf-8"))
         own = _locally_declared_names(text)
-        hits: Counter[str] = Counter()
-        for name in core_names:
-            if name in own:
-                continue  # 同名局部变量不是对核心的耦合
-            count = len(re.findall(rf"\b{re.escape(name)}\b", text))
-            if count:
-                hits[name] = count
-        result[module] = dict(hits)
+        result[module] = dict(count_references(text, core_names, own))
+    return result
+
+
+def interface_coupling() -> dict[str, dict[str, int]]:
+    """module -> {走 canvasCore 接口引用的核心名字: 处数}（口径见 count_interface_references）。"""
+    core_names = _top_level_names(_strip_comment_lines(_core_text()))
+    result: dict[str, dict[str, int]] = {}
+    for module in [n for n in _script_order() if _is_canvas_script(n) and n != CORE]:
+        path = JS_DIR / module
+        if not path.exists():
+            continue
+        text = _strip_comment_lines(path.read_text(encoding="utf-8"))
+        own = _locally_declared_names(text)
+        result[module] = dict(count_interface_references(text, core_names, own))
     return result
 
 
@@ -340,15 +390,24 @@ def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
 
     per_category: Counter[str] = Counter()
     per_module: dict[str, dict[str, int]] = {}
+    iface = interface_coupling()
     for module, refs in data.items():
         buckets: Counter[str] = Counter()
         for name, count in refs.items():
             category = CATEGORY_BY_NAME.get(name, "unclassified")
             per_category[category] += count
             buckets[category] += count
+        module_iface = iface.get(module, {})
+        iface_refs = sum(module_iface.values())
+        free_names = {n for n, c in refs.items() if c > module_iface.get(n, 0)}
         per_module[module] = {
             "total": sum(refs.values()),
             "distinct_names": len(refs),
+            # #201 轨道 1：总数 = 自由全局 + 接口。自由侧是单测桩数量的驱动因子。
+            "free_refs": sum(refs.values()) - iface_refs,
+            "interface_refs": iface_refs,
+            "distinct_free_names": len(free_names),
+            "distinct_interface_names": len(module_iface),
             **{category: buckets[category] for category in CATEGORY_ORDER if buckets[category]},
         }
 
@@ -357,9 +416,16 @@ def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
     movable = [n for n in solo if core_internal_calls(n) == 0]
     blocked = [n for n in solo if core_internal_calls(n) > 0]
 
+    free_total = sum(stats["free_refs"] for stats in per_module.values())
+    interface_total = sum(stats["interface_refs"] for stats in per_module.values())
+
     return {
         "core": CORE,
         "grand_total": sum(name_totals.values()),
+        # #201 轨道 1 拆分：总数口径不变，自由全局只许降（守卫另见
+        # tests/test_canvas_core_layer.py 的 FREE_GLOBAL_REFERENCE_CEILINGS）。
+        "free_total": free_total,
+        "interface_total": interface_total,
         "per_category": dict(per_category),
         "per_module": per_module,
         "scope": {
@@ -419,7 +485,10 @@ def main() -> int:
         return 0
 
     scope = summary["scope"]
-    print(f"核心：{summary['core']}    反向引用总数：{summary['grand_total']}")
+    print(
+        f"核心：{summary['core']}    反向引用总数：{summary['grand_total']}"
+        f"（自由全局 {summary['free_total']} / 接口 {summary['interface_total']}）"
+    )
     print(
         f"  只被 1 个模块引用：{scope['solo_names']} 个名字 / {scope['solo_refs']} 处"
         f"（可纯搬家 {scope['movable_solo_names']}，核心也调用 {scope['blocked_by_core_call_names']}）"
@@ -435,7 +504,7 @@ def main() -> int:
             share = 100.0 * count / summary["grand_total"]
             print(f"  {category:<13}{count:>5}  {share:5.1f}%")
 
-    print("\n按模块（total / 独立名字数 / 可注入部分 = state+dom+reach）：")
+    print("\n按模块（total / 独立名字数 / 自由全局处数 / 自由独立名字数 / 可注入部分 = state+dom+reach）：")
     for module, stats in sorted(
         summary["per_module"].items(), key=lambda item: -item[1]["total"]
     ):
@@ -444,6 +513,7 @@ def main() -> int:
         )
         print(
             f"  {module:<32}{stats['total']:>5} / {stats['distinct_names']:>4}"
+            f"   自由 {stats['free_refs']:>4} / {stats['distinct_free_names']:>2} 名字"
             f"   可注入 {injectable:>4}"
         )
 

@@ -6,14 +6,22 @@
 
 1. 总数必须等于 REVERSE_REFERENCE_CEILINGS 之和（两个工具口径一致）；
 2. 所有「被 >=2 个模块引用」的共享名字都必须已分类（不许悄悄漏）；
-3. 「可纯搬家」的名字必须真的不被核心调用（防止把会造成反向依赖的搬家当成安全搬家）。
+3. 「可纯搬家」的名字必须真的不被核心调用（防止把会造成反向依赖的搬家当成安全搬家）；
+4. #201 轨道 1 陷阱 2 的守卫：`canvasCore.NAME` 接口引用必须继续计入对 NAME 的
+   反向引用——改写成接口后总数不能降（降了就是守卫自我失明，棘轮数字「变好」
+   而耦合一点没少）。
 """
 from __future__ import annotations
 
 import unittest
 
 from tests.test_canvas_core_layer import REVERSE_REFERENCE_CEILINGS
-from tools.canvas_coupling_report import coupling, summarize
+from tools.canvas_coupling_report import (
+    count_interface_references,
+    count_references,
+    coupling,
+    summarize,
+)
 
 # 棘轮上限（仿 REVERSE_REFERENCE_CEILINGS 的写法）：未分类引用只许降不许升。
 # 2026-10-19（#201 前置）补全分类前实测 130（99 名字、全部 solo）；补全后 0。
@@ -72,6 +80,58 @@ class CanvasCouplingReportTests(unittest.TestCase):
         self.assertEqual(
             scope["movable_solo_names"] + scope["blocked_by_core_call_names"],
             scope["solo_names"],
+        )
+
+    def test_free_plus_interface_equals_total_per_module(self):
+        # #201 轨道 1 的拆分自洽：总数 = 自由全局 + 接口，对每个模块都成立。
+        for module, stats in self.summary["per_module"].items():
+            self.assertEqual(
+                stats["free_refs"] + stats["interface_refs"],
+                stats["total"],
+                f"{module} 的自由/接口拆分与总数不一致（口径漂移）",
+            )
+        self.assertEqual(
+            self.summary["free_total"] + self.summary["interface_total"],
+            self.summary["grand_total"],
+        )
+
+    def test_interface_call_still_counts_as_reverse_reference(self):
+        # #201 陷阱 2：守卫不许在新旧两种写法下计数不一致。裸 `render()` 和接口
+        # `canvasCore.render()` 必须计入相同的反向引用数，否则棘轮「变好」而耦合没少。
+        old_text = "render(); shell; scheduleSave()"
+        new_text = "canvasCore.render(); canvasCore.shell; canvasCore.scheduleSave()"
+        names = {"render", "shell", "scheduleSave"}
+        self.assertEqual(
+            dict(count_references(old_text, names, set())),
+            {"render": 1, "shell": 1, "scheduleSave": 1},
+        )
+        self.assertEqual(
+            dict(count_references(new_text, names, set())),
+            {"render": 1, "shell": 1, "scheduleSave": 1},
+            "canvasCore.NAME 没有被计入对 NAME 的反向引用：守卫自我失明",
+        )
+
+    def test_interface_references_are_split_off_from_free_globals(self):
+        text = "render(); canvasCore.render(); canvasCore.shell; shell"
+        names = {"render", "shell"}
+        total = count_references(text, names, set())
+        iface = count_interface_references(text, names, set())
+        self.assertEqual(dict(iface), {"render": 1, "shell": 1})
+        free = {n: total[n] - iface.get(n, 0) for n in total}
+        self.assertEqual(dict(free), {"render": 1, "shell": 1})
+
+    def test_member_access_is_not_an_interface_call(self):
+        # foo.render 是成员访问，不是接口引用；不计入 interface（总数口径不变）。
+        self.assertEqual(
+            dict(count_interface_references("foo.render(); canvasCore.render()", {"render"}, set())),
+            {"render": 1},
+        )
+
+    def test_local_name_exclusion_applies_to_interface_count(self):
+        # 口径与总数一致：模块自己声明过的名字，接口引用也不计入（避免 free 变负）。
+        self.assertEqual(
+            dict(count_interface_references("canvasCore.render()", {"render"}, {"render"})),
+            {},
         )
 
 
