@@ -10,13 +10,13 @@ let smartRunStateToken = 0;
 const smartNodeRunTokens = new Map();
 
 function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
-    const sourceRect = nodeRect(sourceNode);
+    const sourceRect = canvasCore.nodeRect(sourceNode);
     const x = (sourceRect.x || 0) + sourceRect.width + 80;
     const gap = 28;
     const outputs = outgoingConnectionsFor(sourceNode, ['input','flow'])
         .map(conn => canvasState.nodes.find(n => n.id === conn.to))
         .filter(n => isSmartImageNode(n))
-        .map(n => nodeRect(n))
+        .map(n => canvasCore.nodeRect(n))
         .filter(rect => Math.abs((rect.x || 0) - x) < Math.max(320, (pendingBox?.w || 260) + 120))
         .sort((a, b) => (a.y || 0) - (b.y || 0));
     if(!outputs.length) return {x, y:sourceRect.y || 0};
@@ -44,14 +44,14 @@ function createPendingOutputFromSource(sourceNode, expectedCount, meta, options=
         runTimerHidden:false,
         w:pendingBox.w,
         h:pendingBox.h,
-        scale:MEDIA_NODE_DEFAULT_SCALE,
+        scale:canvasCore.MEDIA_NODE_DEFAULT_SCALE,
         created_at:Date.now()
     };
     output._selectAfterRunId = options.selectOutput ? output.id : sourceNode.id;
     canvasState.nodes.push(output);
     if(options.connectSource === false) addConnection(sourceNode.id, output.id, 'flow');
     else connectInputNode(sourceNode.id, output.id);
-    attachRunMeta(output, options.stripInputMeta ? stripRunInputMeta(meta) : meta);
+    canvasCore.attachRunMeta(output, options.stripInputMeta ? stripRunInputMeta(meta) : meta);
     canvasState.selectedId = sourceNode.id;
     canvasState.selectedImage = {nodeId:'', index:-1};
     return output;
@@ -91,7 +91,7 @@ function tagLoopOutputSlot(output, rootNode, loopNode, roundIndex, slotIndex){
 }
 
 function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
-    const rootRect = nodeRect(rootNode);
+    const rootRect = canvasCore.nodeRect(rootNode);
     const output = cloneSmartNode(rootNode, 0, 0);
     output.id = uid('smart');
     output.type = NODE_TYPE_IMAGE;
@@ -124,7 +124,7 @@ function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
     delete output.blockedInputRefs;
     delete output.manualInputRefs;
     tagLoopOutputSlot(output, rootNode, options.loopNode || null, roundIndex, options.slotIndex ?? roundOffset);
-    const slots = loopOutputSlotsForRoot(rootNode).map(nodeRect);
+    const slots = loopOutputSlotsForRoot(rootNode).map(canvasCore.nodeRect);
     let y = (Number(rootNode.y) || 0) + roundOffset * ((Number(rootRect.height) || 180) + 28);
     slots.forEach(rect => {
         if((Number(rect.x) || 0) >= (Number(output.x) || 0) - 24){
@@ -141,25 +141,25 @@ function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
 
 function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(!pendingNode) return;
-    pendingNode = liveSmartNode(pendingNode);
+    pendingNode = canvasCore.liveSmartNode(pendingNode);
     const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
     const imgs = cleanHistoryImages(urls.map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})});
+        return canvasCore.copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})});
     }).filter(img => img.url));
     pendingNode.images = imgs;
-    markSmartNodeComplete(pendingNode, meta, true);
+    canvasCore.markSmartNodeComplete(pendingNode, meta, true);
     pendingNode.outputKind = kind;
     if(imgs.length > 1) pendingNode.title = kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group';
     else pendingNode.title = kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image';
-    pendingNode.scale = mediaNodeDefaultScale(pendingNode);
+    pendingNode.scale = canvasCore.mediaNodeDefaultScale(pendingNode);
     delete pendingNode.w;
     delete pendingNode.h;
     const metaTarget = pendingNode._runMetaTargetId ? canvasState.nodes.find(n => n.id === pendingNode._runMetaTargetId) : pendingNode;
-    if(metaTarget) attachRunMeta(metaTarget, meta);
-    pendingNode.images = (pendingNode.images || []).map(img => stripImageGenerationMeta(img));
-    clearSourceBusyStateIfDownstreamDone(canvasState.nodes.find(n => n.id === meta?.sourceNodeId));
+    if(metaTarget) canvasCore.attachRunMeta(metaTarget, meta);
+    pendingNode.images = (pendingNode.images || []).map(img => canvasCore.stripImageGenerationMeta(img));
+    canvasCore.clearSourceBusyStateIfDownstreamDone(canvasState.nodes.find(n => n.id === meta?.sourceNodeId));
     // 生成完成不抢占选择:仅当用户仍停留在该生成节点上(或当前无选择)时才切换选择;
     // 否则保留用户当前选择 —— 支持并发生成时去调整/编辑别的卡片,A 节点的参数栏不被打断。
     const afterRunSelection = pendingNode._selectAfterRunId || pendingNode.id;
@@ -169,10 +169,10 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(canvasState.activeComposerSubject?.id && canvasState.selectedId === canvasState.activeComposerSubject.id) canvasState.lastComposerNodeId = `${canvasState.selectedId}:node`;
     canvasState.selectedImage = {nodeId:'', index:-1};
     // pending 节点完成时，如果节点在组框内，重新整理成员并计算组框高度
-    const group = smartGroupContainingNode(pendingNode.id);
+    const group = canvasCore.smartGroupContainingNode(pendingNode.id);
     if(group){
-        arrangeSmartGroupMembers(group, {skipUndo:true});
-        scheduleSave();
+        canvasCore.arrangeSmartGroupMembers(group, {skipUndo:true});
+        canvasCore.scheduleSave();
     }
 }
 
@@ -200,12 +200,12 @@ function restoreSourceVisualState(node, state){
 
 function finishLoopTargetPreviewState(node){
     if(!node) return;
-    node = liveSmartNode(node);
-    markSmartNodeComplete(node);
+    node = canvasCore.liveSmartNode(node);
+    canvasCore.markSmartNodeComplete(node);
     if((node.images || []).some(img => img?.url)){
         node.title = node.images.length > 1 ? 'Group' : 'Image';
-        node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
-        node.outputKind = mediaKindForUrls(node.images || [], (node.images || []).some(isVideoMediaItem) ? 'video' : 'image');
+        node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.MEDIA_NODE_DEFAULT_SCALE;
+        node.outputKind = canvasCore.mediaKindForUrls(node.images || [], (node.images || []).some(isVideoMediaItem) ? 'video' : 'image');
         delete node.w;
         delete node.h;
     }
@@ -218,7 +218,7 @@ function refsForDirectLoopRound(loopNode, loopIndex, total){
         .map((ref, index) => ({
             ...ref,
             role:ref.role || `image_${index + 1}`,
-            name:ref.name || trf('canvas.loopImageLabel', {n:loopIndex + index})
+            name:ref.name || canvasCore.trf('canvas.loopImageLabel', {n:loopIndex + index})
         }));
 }
 
@@ -226,10 +226,10 @@ function showDirectLoopRoundPreview(loopNode, target, refs, loopIndex, total){
     if(!loopNode?.imageInput || !isSmartImageNode(target)) return false;
     const cleanRefs = (refs || []).filter(ref => ref?.url);
     if(!cleanRefs.length) return false;
-    const preview = cleanRefs.map((ref, index) => stripImageGenerationMeta({
+    const preview = cleanRefs.map((ref, index) => canvasCore.stripImageGenerationMeta({
         asset_id:ref.asset_id || '',
         url:ref.url || '',
-        name:ref.name || trf('canvas.loopImageLabel', {n:loopIndex + index}),
+        name:ref.name || canvasCore.trf('canvas.loopImageLabel', {n:loopIndex + index}),
         kind:ref.kind || (isVideoMediaItem(ref) ? 'video' : 'image'),
         nodeId:ref.nodeId || '',
         imageIndex:ref.imageIndex ?? '',
@@ -251,17 +251,17 @@ function showDirectLoopRoundPreview(loopNode, target, refs, loopIndex, total){
         imageIndex:ref.imageIndex ?? '',
         kind:ref.kind || ''
     })).filter(ref => ref.url);
-    target.outputKind = mediaKindForUrls(preview, preview.some(isVideoMediaItem) ? 'video' : 'image');
-    target.scale = preview.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
+    target.outputKind = canvasCore.mediaKindForUrls(preview, preview.some(isVideoMediaItem) ? 'video' : 'image');
+    target.scale = preview.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.MEDIA_NODE_DEFAULT_SCALE;
     target.title = total > 1 ? `Image ${loopIndex}/${total}` : (target.title || 'Image');
     delete target.w;
     delete target.h;
-    render();
+    canvasCore.render();
     return true;
 }
 
 function directImageInputsFor(node){
-    const upstream = smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : inputNodesFor(node);
+    const upstream = smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : canvasCore.inputNodesFor(node);
     return upstream
         .filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n) && (n.images || []).some(img => img?.url))
         .sort((a, b) => {
@@ -287,7 +287,7 @@ function primaryImageInputFor(node, options={}){
         ? directImageInputsForKinds(node, ['input', 'flow'])[0]
         : directImageInputsFor(node)[0];
     if(direct) return direct;
-    const inputs = options.includeFlow ? upstreamNodesForKinds(node, ['input', 'flow']) : (smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : inputNodesFor(node));
+    const inputs = options.includeFlow ? upstreamNodesForKinds(node, ['input', 'flow']) : (smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : canvasCore.inputNodesFor(node));
     const loop = inputs.find(n => n?.type === NODE_TYPE_LOOP);
     if(loop?.imageInput){
         const upstream = upstreamNodesForKinds(loop, options.includeFlow ? ['input', 'flow'] : ['input']).find(n => isSmartImageNode(n) && (n.images || []).some(img => img?.url));
@@ -351,13 +351,13 @@ function resolveSmartCascadeLoop(nodeId){
 function relayLoopPromptNodesForEdge(sourceNode, targetNode){
     if(!sourceNode?.id || !targetNode?.id) return [];
     const directLoopIds = new Set(promptInputNodesFor(targetNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).map(n => n.id));
-    return inputNodesFor(sourceNode)
+    return canvasCore.inputNodesFor(sourceNode)
         .filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt && !directLoopIds.has(n.id));
 }
 
 function relayLoopPromptNodesForTarget(node){
     if(!node?.id) return [];
-    return inputNodesFor(node).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt);
+    return canvasCore.inputNodesFor(node).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt);
 }
 
 function downstreamNodesForId(nodeId){
@@ -490,7 +490,7 @@ function coolNodeRunningState(node, ms=2000){
         const current = canvasState.nodes.find(n => n.id === node.id);
         if(current){
             current.running = false;
-            render();
+            canvasCore.render();
         }
     }, ms);
     return token;
@@ -505,11 +505,11 @@ function clearNodeRunningState(node){
 function pushRightSideNodes(sourceNode, delta){
     const shift = Math.ceil(Number(delta) || 0);
     if(!sourceNode || shift <= 0) return;
-    const sourceRight = (Number(sourceNode.x) || 0) + nodeRect(sourceNode).width - shift;
+    const sourceRight = (Number(sourceNode.x) || 0) + canvasCore.nodeRect(sourceNode).width - shift;
     const downstreamIds = new Set(downstreamNodesForId(sourceNode.id).map(n => n.id));
     canvasState.nodes.forEach(n => {
         if(!n || n.id === sourceNode.id) return;
-        const r = nodeRect(n);
+        const r = canvasCore.nodeRect(n);
         const shouldShift = downstreamIds.has(n.id) || (Number(r.x) > sourceRight && Math.abs((Number(r.y) || 0) - (Number(sourceNode.y) || 0)) < 520);
         if(shouldShift) n.x = (Number(n.x) || 0) + shift;
     });
@@ -525,13 +525,13 @@ function nonPreviewOutputImages(images=[]){
 }
 
 function candidatePoolPosition(node, estW, estH){
-    const r = nodeRect(node);
+    const r = canvasCore.nodeRect(node);
     const x = Math.round((Number(node.x) || 0) + r.width + 80);
     let y = Math.round(Number(node.y) || 0);
     const overlapsAny = (px, py) => canvasState.nodes.some(n => {
         if(!n || n.id === node.id) return false;
         if(n.isHistoryGroup && n.historyFor === node.id) return false;
-        const nr = nodeRect(n);
+        const nr = canvasCore.nodeRect(n);
         return px < nr.x + nr.width && px + estW > nr.x && py < nr.y + nr.height && py + estH > nr.y;
     });
     for(let i = 0; i < 8; i++){
@@ -539,11 +539,11 @@ function candidatePoolPosition(node, estW, estH){
         const blocker = canvasState.nodes.find(n => {
             if(!n || n.id === node.id) return false;
             if(n.isHistoryGroup && n.historyFor === node.id) return false;
-            const nr = nodeRect(n);
+            const nr = canvasCore.nodeRect(n);
             return y < nr.y + nr.height && y + estH > nr.y && x < nr.x + nr.width && x + estW > nr.x;
         });
         if(!blocker) break;
-        const br = nodeRect(blocker);
+        const br = canvasCore.nodeRect(blocker);
         y = Math.round((Number(blocker.y) || 0) + br.height + 24);
     }
     if(!overlapsAny(x, y)) return {x, y};
@@ -552,8 +552,8 @@ function candidatePoolPosition(node, estW, estH){
 
 function appendOutputsToNode(node, additions, kind='image', options={}){
     if(!node || !additions?.length) return [];
-    node = liveSmartNode(node);
-    const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
+    node = canvasCore.liveSmartNode(node);
+    const beforeRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
     const existing = cleanHistoryImages(node.images || []);
     const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
     const next = cleanHistoryImages(additions).filter(img => {
@@ -564,18 +564,18 @@ function appendOutputsToNode(node, additions, kind='image', options={}){
     });
     if(!next.length) return [];
     node.images = [...existing, ...next];
-    markSmartNodeComplete(node, undefined, true);
+    canvasCore.markSmartNodeComplete(node, undefined, true);
     node.outputKind = kind;
     node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image');
     delete node.w;
     delete node.h;
-    const afterRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const skipShift = options.skipShift || Boolean(smartLoopContext?.nodeId);
+    const afterRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
+    const skipShift = options.skipShift || Boolean(canvasCore.smartLoopContext?.nodeId);
     if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
     return next;
 }
 
-function appendLoopOutputsToNode(node, additions, kind='image', ctx=smartLoopContext){
+function appendLoopOutputsToNode(node, additions, kind='image', ctx=canvasCore.smartLoopContext){
     if(!node || !additions?.length) return [];
     const runState = ctx?.runState;
     if(runState && !runState.loopAppendInitialized) runState.loopAppendInitialized = new Set();
@@ -607,7 +607,7 @@ function promptDraftHtmlForNode(node){
     return promptHtmlWithMentionTokens(prompt, node?.runPromptRefs || []) || escapeHtml(prompt);
 }
 
-function buildPromptRequestForNode(node, defaultImages, ctx=smartLoopContext){
+function buildPromptRequestForNode(node, defaultImages, ctx=canvasCore.smartLoopContext){
     // Button-state checks run on every keystroke. Build against a detached root
     // so IME composition, selection, and the caret in the live editor are never
     // interrupted by a temporary draft load/restore cycle.
@@ -624,12 +624,12 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         if(taskIds.length){
             const settled = await pollGenerationTaskResultForNode(node, taskResult);
             const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
+            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
         }
         const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
+        return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
-    if(isApiLikeEngine(activeSettings.engine) && activeSettings.apiKind === 'video'){
+    if(canvasCore.isApiLikeEngine(activeSettings.engine) && activeSettings.apiKind === 'video'){
         const taskResult = await runApiVideoGeneration(prompt, refs, activeSettings, node);
         if(Array.isArray(taskResult?.taskIds) && taskResult.taskIds.length){
             const settled = await pollGenerationTaskResultForNode(node, taskResult, 'video');
@@ -644,16 +644,16 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         }
         return {urls:resultMediaUrls(taskResult), kind:'video'};
     }
-    if(isApiLikeEngine(activeSettings.engine)){
+    if(canvasCore.isApiLikeEngine(activeSettings.engine)){
         const taskResult = await runApiGeneration(prompt, refs, activeSettings, node);
         const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
         if(taskIds.length){
             const settled = await pollGenerationTaskResultForNode(node, taskResult);
             const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
+            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
         }
         const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
+        return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
     if(activeSettings.engine === 'modelscope'){
         const routed = {
@@ -669,20 +669,20 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         if(taskIds.length){
             const settled = await pollGenerationTaskResultForNode(node, taskResult);
             const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
+            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
         }
         const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
+        return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
     return {urls:[], kind:'image'};
 }
 
-async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=smartLoopContext){
+async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=canvasCore.smartLoopContext){
     const outputNode = targetNode || sourceNode;
     if(!sourceNode || !targetNode || !outputNode) return [];
     const requestNode = sourceNode?.type === NODE_TYPE_LOOP ? targetNode : sourceNode;
     const previousSettings = cloneSmartSettings(settings);
-    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(requestNode) || {})}, ctx);
+    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(requestNode) || {})}, ctx);
     settings = runSettings;
     const outpaintSize = validOutpaintSize(requestNode);
     const selfRefs = sourceNode?.type === NODE_TYPE_LOOP ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
@@ -714,7 +714,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
         meta.promptHtml = requestNode.promptDraftHtml;
         meta.promptText = requestNode.promptDraftText || request.displayPrompt || '';
     }
-    const logKind = isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
+    const logKind = canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
     const runLog = smartRunSnapshot(requestNode, prompt, request.refs || [], logKind);
     const runLogStart = nowMs();
     const targetPromptState = {
@@ -734,7 +734,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
     delete outputNode.runElapsedMs;
     outputNode.runTimerHidden = false;
     rememberRecentSmartSettings(runSettings, requestNode);
-    render();
+    canvasCore.render();
     settings = previousSettings;
     try {
         const result = await generateUrlsForCurrentSettings(outputNode, prompt, request.refs || [], runSettings);
@@ -745,7 +745,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
         const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
         const additions = result.urls.map((item, i) => {
             const url = typeof item === 'string' ? item : item?.url || '';
-            return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
+            return canvasCore.stripImageGenerationMeta(canvasCore.copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
         }).filter(item => item.url);
         if(ctx?.appendLoopOutputs) {
             appendLoopOutputsToNode(outputNode, additions, result.kind, ctx);
@@ -767,27 +767,27 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
             if(targetPromptState[key] === undefined) delete outputNode[key];
         });
         settings = previousSettings;
-        render();
+        canvasCore.render();
         return rememberRoundOutputs(ctx, outputNode, additions);
     } catch(e) {
         settings = previousSettings;
         if(handleJimengPendingSignal(outputNode, e)){
-            render();
+            canvasCore.render();
             return [];
         }
         outputNode.running = false;
         if(!e?.smartGenerationLogged) addSmartGenerationHistory({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
-        render();
+        canvasCore.render();
         throw e;
     }
 }
 
 async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx){
     if(!loopNode || !rootNode || !outputSlot) return [];
-    outputSlot = liveSmartNode(outputSlot);
+    outputSlot = canvasCore.liveSmartNode(outputSlot);
     const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
-    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})}, ctx);
+    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(rootNode) || {})}, ctx);
     settings = runSettings;
     try {
         const refsForRequest = outputImagesForNode(loopNode, true, ctx).filter(img => img?.url);
@@ -804,10 +804,10 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             settings:JSON.parse(JSON.stringify(runSettings)),
             createdAt:Date.now()
         };
-        const logKind = isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
+        const logKind = canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
         const runLog = smartRunSnapshot(rootNode, prompt, request.refs || [], logKind);
         const runLogStart = nowMs();
-        const expectedCount = isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'
+        const expectedCount = canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'
             ? Math.max(1, Math.min(8, Number(runSettings.count || 1)))
             : 1;
         outputSlot.queued = false;
@@ -822,10 +822,10 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             runPath.states[edgeKey] = 'active';
             scheduleConnectionLayerRefresh();
         }
-        render();
+        canvasCore.render();
         settings = previousSettings;
         let result;
-        if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
+        if(canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
             const existing = cleanHistoryImages(outputSlot.images || []);
             let archiveRollback = null;
             if(existing.length){
@@ -901,16 +901,16 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                     }
                 };
                 restoreArchive();
-                render();
+                canvasCore.render();
                 if(canvas?.format === 'firefly-canvas-v1'){
                     const restored = await saveCanvas();
                     if(restored === false){
                         restoreArchive(true);
-                        render();
+                        canvasCore.render();
                         await saveCanvas();
                     }
                 } else {
-                    scheduleSave();
+                    canvasCore.scheduleSave();
                 }
                 throw submitError;
             }
@@ -919,13 +919,13 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             ensureSmartPendingHistoryLogs(outputSlot, outputSlot.pendingTasks, {prompt, kind:'image'});
             outputSlot.pending = Math.max(taskIds.length, Number(outputSlot.pending || 0) || taskIds.length);
             outputSlot.running = false;
-            render();
+            canvasCore.render();
             if(!await acceptProjectGenerationRegistration(taskResult)){
-                scheduleSave();
+                canvasCore.scheduleSave();
                 await saveCanvas();
             }
             await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
-            if(outputSlot.jimengPending || smartRecoverableImageTask(outputSlot)){
+            if(outputSlot.jimengPending || canvasCore.smartRecoverableImageTask(outputSlot)){
                 outputSlot.queued = false;
                 return [];
             }
@@ -935,22 +935,22 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         }
         if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
         let additions;
-        if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
-            additions = (outputSlot.images || []).map(img => stripImageGenerationMeta({...img})).filter(img => img?.url);
-            if(meta) attachRunMeta(outputSlot, meta);
+        if(canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
+            additions = (outputSlot.images || []).map(img => canvasCore.stripImageGenerationMeta({...img})).filter(img => img?.url);
+            if(meta) canvasCore.attachRunMeta(outputSlot, meta);
         } else {
             const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
             additions = result.urls.map((item, i) => {
                 const url = typeof item === 'string' ? item : item?.url || '';
-                return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
+                return canvasCore.stripImageGenerationMeta(canvasCore.copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
             }).filter(item => item.url);
-            outputSlot = liveSmartNode(outputSlot);
+            outputSlot = canvasCore.liveSmartNode(outputSlot);
             outputSlot.images = nonPreviewOutputImages(outputSlot.images);
             replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
         }
-        outputSlot = liveSmartNode(outputSlot);
-        markSmartNodeComplete(outputSlot, meta, true);
-        clearSourceBusyStateIfDownstreamDone(rootNode);
+        outputSlot = canvasCore.liveSmartNode(outputSlot);
+        canvasCore.markSmartNodeComplete(outputSlot, meta, true);
+        canvasCore.clearSourceBusyStateIfDownstreamDone(rootNode);
         if(runPath?.states) {
             runPath.states[edgeKey] = 'done';
             scheduleConnectionLayerRefresh();
@@ -972,19 +972,19 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
     }
 }
 
-function appendCascadeRefsToReceiver(node, refs, ctx=smartLoopContext){
+function appendCascadeRefsToReceiver(node, refs, ctx=canvasCore.smartLoopContext){
     if(!node || !refs?.length) return [];
     const additions = refs
         .filter(ref => ref?.url)
-        .map((ref, i) => stripImageGenerationMeta({
+        .map((ref, i) => canvasCore.stripImageGenerationMeta({
             asset_id:ref.asset_id || '',
             url:ref.url,
             name:ref.name || `output-${i + 1}.png`,
             kind:ref.kind || (isVideoMediaItem(ref) ? 'video' : 'image')
         }));
     if(!additions.length) return [];
-    replaceOutputsToNodeWithHistory(node, additions, mediaKindForUrls(additions, additions.some(isVideoMediaItem) ? 'video' : 'image'), null, {skipShift:Boolean(ctx?.nodeId)});
-    render();
+    replaceOutputsToNodeWithHistory(node, additions, canvasCore.mediaKindForUrls(additions, additions.some(isVideoMediaItem) ? 'video' : 'image'), null, {skipShift:Boolean(ctx?.nodeId)});
+    canvasCore.render();
     return rememberRoundOutputs(ctx, node, additions);
 }
 
@@ -1015,12 +1015,12 @@ function throwIfSmartCascadeStopRequested(runState=null){
 }
 
 function requestSmartCascadeStop(loopId=''){
-    const runState = loopId ? smartCascadeRunForLoop(loopId) : ([...smartCascadeRuns.values()].pop() || null);
+    const runState = loopId ? smartCascadeRunForLoop(loopId) : ([...canvasCore.smartCascadeRuns.values()].pop() || null);
     if(!runState) return;
     if(runState.stopRequested) return;
     runState.stopRequested = true;
     toast(tr('smart.stopRequested'));
-    render();
+    canvasCore.render();
 }
 
 function smartCascadeParallelLimit(chain=[]){
@@ -1061,10 +1061,10 @@ async function runSmartCascade(targetNode=null){
     if(!graph.edges.length && !singleNodeLoopRun){ toast(tr('smart.loopNoChain')); return; }
     const originalSelected = canvasState.selectedId;
     const originalSettings = cloneSmartSettings(settings);
-    const originalPromptHtml = promptInput.innerHTML;
+    const originalPromptHtml = canvasCore.promptInput.innerHTML;
     const runKey = loopId || `cascade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const runState = {runKey, loopId, stopRequested:false, runPath:null};
-    smartCascadeRuns.set(runKey, runState);
+    canvasCore.smartCascadeRuns.set(runKey, runState);
     smartCascadeSilentSelection = true;
     runBtn.disabled = true;
     pushUndo();
@@ -1093,7 +1093,7 @@ async function runSmartCascade(targetNode=null){
                 singleLoopSlots[slotOffset] = createLoopOutputSlot(tail, loopIndex, slotOffset, {queued:true, loopNode:loop.node, slotIndex:slotOffset, runState});
             }
         }
-        render();
+        canvasCore.render();
     }
     if(!singleNodeLoopRun){
         const runStates = {};
@@ -1109,7 +1109,7 @@ async function runSmartCascade(targetNode=null){
             const ctx = loop
                 ? {index:loopIndex, total:endIndex, nodeId:loop.node.id, forceWorkflow:chain.length > 1 && !singleNodeLoopRun, runState, roundOutputs:new Map()}
                 : {runState, roundOutputs:new Map()};
-            if(parallelLimit === 1) smartLoopContext = ctx;
+            if(parallelLimit === 1) canvasCore.smartLoopContext = ctx;
             if(singleNodeLoopRun){
                 const refs = refsForDirectLoopRound(loop.node, loopIndex, endIndex);
                 if(directLoopTargetRun && parallelLimit === 1) showDirectLoopRoundPreview(loop.node, tail, refs, loopIndex, endIndex);
@@ -1211,7 +1211,7 @@ async function runSmartCascade(targetNode=null){
             const parallelTargets = singleNodeLoopRun
                 ? singleLoopSlots
                 : [];
-            if(parallelTargets.length) render();
+            if(parallelTargets.length) canvasCore.render();
             await runSmartCascadeRoundsWithLimit(roundIndexes, parallelLimit, (loopIndex, roundOffset) => {
                 const outputTarget = parallelTargets[roundOffset] || null;
                 return runRound(loopIndex, {outputTarget});
@@ -1223,7 +1223,7 @@ async function runSmartCascade(targetNode=null){
             }
         }
         throwIfSmartCascadeStopRequested(runState);
-        if(parallelLimit === 1) smartLoopContext = null;
+        if(parallelLimit === 1) canvasCore.smartLoopContext = null;
         canvasState.selectedId = '';
         canvasState.selectedIds = [];
         canvasState.selectedImage = {nodeId:'', index:-1};
@@ -1231,24 +1231,24 @@ async function runSmartCascade(targetNode=null){
         canvasState.lastComposerNodeId = '';
         composer.classList.remove('open');
         settings = originalSettings;
-        promptInput.innerHTML = originalPromptHtml;
-        scheduleSave();
+        canvasCore.promptInput.innerHTML = originalPromptHtml;
+        canvasCore.scheduleSave();
         toast(totalRounds > 1
-            ? trf(loopMode === 'parallel' ? 'smart.loopParallelRoundsDone' : 'smart.loopRunRoundsDone', {n:totalRounds})
+            ? canvasCore.trf(loopMode === 'parallel' ? 'smart.loopParallelRoundsDone' : 'smart.loopRunRoundsDone', {n:totalRounds})
             : tr('smart.loopRunDone'));
     } catch(e) {
-        if(parallelLimit === 1) smartLoopContext = null;
+        if(parallelLimit === 1) canvasCore.smartLoopContext = null;
         canvasState.selectedId = originalSelected;
         settings = originalSettings;
-        promptInput.innerHTML = originalPromptHtml;
+        canvasCore.promptInput.innerHTML = originalPromptHtml;
         toast(e?.smartCascadeStopped ? tr('smart.oneClickStopped') : (e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
-        smartCascadeRuns.delete(runKey);
+        canvasCore.smartCascadeRuns.delete(runKey);
         smartCascadeSilentSelection = false;
         syncRunButtonState();
         if(directLoopTargetRun) finishLoopTargetPreviewState(tail);
-        scheduleSave();
-        render();
+        canvasCore.scheduleSave();
+        canvasCore.render();
     }
 }
 
@@ -1269,9 +1269,9 @@ const runBtn = document.getElementById('runBtn');
 function smartCascadePathForCtx(ctx=null){
     return ctx?.runState?.runPath || ctx?.runPath || null;
 }
-function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
+function smartLoopRoundSettings(runSettings, ctx=canvasCore.smartLoopContext){
     const next = {...(runSettings || {})};
-    const imageCountEngine = isApiLikeEngine(next.engine)
+    const imageCountEngine = canvasCore.isApiLikeEngine(next.engine)
         ? next.apiKind !== 'video'
         : next.engine === 'modelscope';
     if(ctx?.nodeId && imageCountEngine){
@@ -1279,7 +1279,7 @@ function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
     }
     return next;
 }
-function selfReferenceImagesForNode(node, consume=false, ctx=smartLoopContext){
+function selfReferenceImagesForNode(node, consume=false, ctx=canvasCore.smartLoopContext){
     return outputImagesForNode(node, consume, ctx).filter(img => img?.url);
 }
 function upstreamLoopPromptNodesFor(node){
