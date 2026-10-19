@@ -95,6 +95,19 @@ MODULE_OWNED = {
         "drawImageCover",
         "setPromptDraftForNode",
     ),
+    # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+    "canvas-generation-tasks.js": (
+        "SMART_REFERENCE_IMAGE_MAX",
+        "persistedCoreSnapshot",
+        "promptNodeLLMInputText",
+        "videoProviderPlatform",
+        "rhMediaForRun",
+        "applyUploadedUrlsToSmartRefs",
+        "manualSmartMediaLinks",
+        "applySmartTaskProgress",
+        "aspectRatioForRun",
+        "sleep",
+    ),
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
@@ -113,7 +126,7 @@ MODULE_OWNED = {
 REVERSE_REFERENCE_CEILINGS = {
     "canvas-generation-cascade.js": 153,
     "canvas-media-history.js": 83,
-    "canvas-generation-tasks.js": 106,
+    "canvas-generation-tasks.js": 103,
     "canvas-image-editor.js": 87,
     "canvas-node-ops.js": 60,
     "canvas-connections.js": 44,

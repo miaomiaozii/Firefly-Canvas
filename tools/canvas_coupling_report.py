@@ -78,6 +78,7 @@ CATEGORY_BY_NAME = {
     "imageForDisplay": "hub",
     "imageLayout": "hub",
     "imageRefsOnly": "hub",
+    "reducedAspectRatio": "hub",  # #200 搬家后由 tasks+image-editor 共用，纯函数留在核心
     "isVideoMediaItem": "hub",
     "outputUrlLooksVideo": "hub",
     "markSmartNodeComplete": "hub",

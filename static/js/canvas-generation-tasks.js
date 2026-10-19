@@ -1292,3 +1292,85 @@ if(typeof window !== 'undefined'){
     window.__fcPendingActionResumes = smartPendingActionResumes;
     window.__fcPendingActionResumeLog = smartPendingActionResumeLog;
 }
+
+// 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
+const SMART_REFERENCE_IMAGE_MAX = 20;
+let persistedCoreSnapshot = null;
+function promptNodeLLMInputText(node, ctx=smartLoopContext){
+    const upstream = promptNodeUpstreamPromptText(node, ctx).trim();
+    const instruction = String(node?.llmInstruction || '').trim() || promptNodePromptItems(node).join('\n\n').trim();
+    return [upstream, instruction].filter(Boolean).join('\n\n');
+}
+function videoProviderPlatform(providerId){
+    const p = (apiProviders || []).find(x => x.id === providerId);
+    const proto = String(p?.protocol || '').toLowerCase();
+    const base = String(p?.base_url || '').toLowerCase();
+    if(proto === 'apimart' || base.includes('apimart.ai')) return 'apimart';
+    if(proto === 'volcengine' || providerId === 'volcengine') return 'volcengine';
+    return '';
+}
+function rhMediaForRun(prompt, refs){
+    const cleanRefs = (refs || []).filter(ref => ref?.url);
+    return {
+        refs:cleanRefs,
+        image:imageRefsOnly(cleanRefs),
+        video:videoRefsOnly(cleanRefs),
+        audio:audioRefsOnly(cleanRefs),
+        prompt:String(prompt || '').trim()
+    };
+}
+function applyUploadedUrlsToSmartRefs(refs, sourceSettings=settings){
+    return (refs || []).map(ref => {
+        if(!ref?.url) return ref;
+        const sourceUrl = mediaRefSourceUrl(ref);
+        const url = tempShUploadedUrlFor(sourceUrl, sourceSettings);
+        return url && url !== ref.url ? {...ref, url, originalLocalUrl:ref.originalLocalUrl || ref.url} : ref;
+    });
+}
+function manualSmartMediaLinks(sourceSettings=settings){
+    return ((sourceSettings || settings).videoTempShLinks || []).filter(item => item?.manual === true && item?.url);
+}
+function applySmartTaskProgress(taskId, progress){
+    const normalizedTaskId = String(taskId || '').trim();
+    if(!normalizedTaskId || !progress || typeof progress !== 'object') return false;
+    let changed = false;
+    canvasState.nodes.forEach(node => {
+        const tasks = Array.isArray(node?.pendingTasks) ? node.pendingTasks : [];
+        tasks.forEach(task => {
+            if(String(task?.taskId || task?.task_id || '') !== normalizedTaskId) return;
+            const next = JSON.stringify(progress);
+            if(JSON.stringify(task.progress || {}) === next) return;
+            task.progress = {...progress};
+            changed = true;
+        });
+    });
+    const taskLog = (canvas?.history || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);
+    if(taskLog){
+        const nextProgress = {...progress, failed:taskLog.status === 'failed' || Boolean(progress.failed)};
+        if(JSON.stringify(taskLog.progress || {}) !== JSON.stringify(nextProgress)){
+            taskLog.progress = nextProgress;
+            changed = true;
+        }
+    }
+    if(changed){
+        render();
+        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    }
+    return changed;
+}
+function aspectRatioForRun(sourceSettings=settings){
+    const ratio = sourceSettings.ratio || 'square';
+    const presets = {
+        square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4',
+        landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21'
+    };
+    if(ratio === 'custom' || ratio === 'source'){
+        const explicit = String(sourceSettings.customRatio || '').trim();
+        if(explicit) return explicit;
+        const parsed = parseSizePair(sizeForRun(sourceSettings));
+        if(parsed) return reducedAspectRatio(parsed.width, parsed.height);
+        return '';
+    }
+    return presets[ratio] || '1:1';
+}
+function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
