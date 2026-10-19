@@ -192,9 +192,14 @@ class ExportZipRequest(BaseModel):
 
     export_dir（issue #58）：可选。为空 → 返回 zip 流给浏览器（默认，向后兼容）；
     非空 → 写入服务器指定目录（必须位于项目库根之下，拒绝路径穿越）。
+
+    asset_ids（issue #206）：可选。给定 → 按图片粒度导出，只导这些资源 ID 的媒体
+    （用于「导出打标」；节点从 asset_ids 反查，node_ids 可不传）；
+    缺省 → 按节点粒度导出选中节点的全部输出媒体（用于「导出选中节点」，语义不变）。
     """
     project_id: str
-    node_ids: List[str]
+    node_ids: List[str] = []
+    asset_ids: Optional[List[str]] = None
     include_unselected: bool = False
     export_dir: Optional[str] = None
     filename: Optional[str] = None
@@ -297,22 +302,37 @@ async def export_zip(payload: ExportZipRequest) -> Any:
     - 文件以任务 ID 命名：{task_id}_{section}_{no}.{ext}（issue #53）
     - export_dir 为空：返回 zip 流给浏览器（默认，向后兼容）
     - export_dir 非空：写入服务器指定目录并返回 JSON（issue #58）
+    - asset_ids 非空（issue #206）：按图片粒度筛选，只导给定资源 ID 的媒体
+      （「导出打标」走这条；节点从 asset_ids 反查，同一节点里未命中的图不导出）
     """
     project_id = payload.project_id
 
     canvas, _ = await _open_project_canvas(project_id)
 
-    selected = []
-    for node_id in payload.node_ids:
-        node = next((n for n in canvas.get("nodes", []) if n.get("id") == node_id), None)
-        if node is None:
-            raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
-        selected.append(node)
+    # #206：asset_ids 给定 → 图片粒度导出（节点从 asset_ids 反查，去重、保持画布顺序）；
+    # 缺省 → 节点粒度导出（「导出选中节点」，语义保持不变）。
+    wanted_assets = None
+    if payload.asset_ids is not None:
+        wanted_assets = {str(a).strip() for a in payload.asset_ids if str(a).strip()}
+        selected = [
+            node
+            for node in canvas.get("nodes", [])
+            if any(item["asset_id"] in wanted_assets for item in _node_output_assets(node))
+        ]
+    else:
+        selected = []
+        for node_id in payload.node_ids:
+            node = next((n for n in canvas.get("nodes", []) if n.get("id") == node_id), None)
+            if node is None:
+                raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
+            selected.append(node)
 
     # 收集 (node, asset_id, kind) 并解析媒体文件；不存在的媒体（已删除等）跳过
     entries = []  # [node, asset_id, kind, Path]
     for ordinal, node in enumerate(selected, start=1):
         for item in _node_output_assets(node):
+            if wanted_assets is not None and item["asset_id"] not in wanted_assets:
+                continue
             try:
                 record = await asyncio.to_thread(
                     _app_main.project_store_call, "media_record", project_id, item["asset_id"]
@@ -324,6 +344,8 @@ async def export_zip(payload: ExportZipRequest) -> Any:
                 entries.append([node, item["asset_id"], item.get("kind", "image"), path])
 
     if not entries:
+        if wanted_assets is not None:
+            raise HTTPException(status_code=404, detail="星标图片没有可导出的输出媒体")
         raise HTTPException(status_code=404, detail="选中节点没有可导出的输出媒体")
 
     # 命名 + 去重

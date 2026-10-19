@@ -604,7 +604,7 @@ def load_production_app(root: Path, store: ProjectStore):
     return production_main.app
 
 
-def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str], result_timeout: float = 60, extra_query: dict[str, str] | None = None):
+def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int, int], fixture: dict[str, str], result_timeout: float = 60, extra_query: dict[str, str] | None = None, extra_args: list[str] | None = None):
     width, height = viewport
     print(f"launching {viewport} on {server.base_url}", flush=True)
     profile = Path(tempfile.mkdtemp(prefix="firefly-issue13-browser-profile-"))
@@ -628,7 +628,7 @@ def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int
             f"--window-size={width},{height}",
             f"--user-data-dir={profile}",
             url,
-        ],
+        ] + list(extra_args or []),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=ROOT,

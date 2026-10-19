@@ -14324,12 +14324,14 @@ smartExcelExportBtn?.addEventListener('click', e => {
 });
 // #53/#58：星标 → 收集/导出。已标记图片面板内的「导出星标节点」：
 // 目录留空 = 浏览器 zip 下载；填服务器目录（项目库根之下）= 按任务 ID 命名写入服务器目录。
-function markedNodeIds(){
-    const ids = getMarkedAssetIds();
-    if(!ids.length) return [];
+// #206：导出打标按图片粒度——收集星标图片的资源标识（asset_ids）交给导出接口筛选；
+// 不再收集「含星标图的节点 ID 列表」（那会把同节点未打标的图也一起导出）。
+// 节点粒度的全量导出是「导出选中节点」的职责，两条语义各管各的。
+function markedAssetIdsForExport(){
     const out = [];
-    canvasState.nodes.forEach(n => {
-        if((n.images || []).some(img => img && ids.includes(String(img.asset_id || '')))) out.push(String(n.id));
+    (getMarkedAssetIds() || []).forEach(id => {
+        const s = String(id || '');
+        if(s && !out.includes(s)) out.push(s);
     });
     return out;
 }
@@ -14357,8 +14359,8 @@ function renderMarkedExportFiles(files, dir){
 async function exportMarkedSmartNodes(){
     const projectId = (typeof canvas !== 'undefined' && (canvas?.project_id || canvas?.project)) || sourceProjectId || canvasId || '';
     if(!projectId){ toast(tr('smart.exportNoProject')); return; }
-    const nodeIds = markedNodeIds();
-    if(!nodeIds.length){ toast(tr('smart.exportNoMarked')); return; }
+    const assetIds = markedAssetIdsForExport();
+    if(!assetIds.length){ toast(tr('smart.exportNoMarked')); return; }
     const dir = String(document.getElementById('smartMarkedExportDir')?.value || '').trim();
     const btn = document.getElementById('smartMarkedExportBtn');
     if(btn){ btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
@@ -14366,7 +14368,7 @@ async function exportMarkedSmartNodes(){
         const res = await fetch('/api/excel/export-zip', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(dir ? {project_id: projectId, node_ids: nodeIds, export_dir: dir} : {project_id: projectId, node_ids: nodeIds}),
+            body: JSON.stringify(dir ? {project_id: projectId, asset_ids: assetIds, export_dir: dir} : {project_id: projectId, asset_ids: assetIds}),
         });
         if(!res.ok){
             let detail = res.status;
