@@ -20,12 +20,15 @@ from tools.quality_gate import (
     MODE_STEPS,
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
+    compute_unit_contract_shards,
     discover_unit_contract_modules,
     expected_native_focus,
+    expand_unit_contract_steps,
     failed_native_browser_evidence,
     stop_leaked_children,
     trusted_node_executable,
-    unit_contract_shards,
+    unit_contract_modules_for_shards,
+    unit_contract_slot_for_shard,
     wait_for_process_exit,
 )
 from tools.ui_integrity_evidence import accept_baseline
@@ -38,18 +41,30 @@ QUALITY_GATE = ROOT / "tools" / "quality_gate.py"
 class QualityGateTests(unittest.TestCase):
     def test_trial_covers_every_discoverable_unit_contract_module_once(self):
         modules = discover_unit_contract_modules(ROOT)
-        shards = unit_contract_shards(modules)
-        flattened = [module for name in UNIT_CONTRACT_STEP_NAMES for module in shards[name]]
+        shards = compute_unit_contract_shards(ROOT)
+        covered = list(unit_contract_modules_for_shards(shards))
+        targets = [target for shard_targets in shards.values() for target in shard_targets]
 
-        self.assertEqual(sorted(flattened), list(modules))
-        self.assertEqual(len(flattened), len(set(flattened)))
-        self.assertIn("tests.test_quality_gate", shards["unit-contract-quality-gate"])
+        # 每个被发现的模块恰好落入一片、绝不跨片重复：新模块拿到默认
+        # 估计自动进装箱，不靠人手维护列表。
+        self.assertEqual(sorted(covered), list(modules))
+        self.assertEqual(len(targets), len(set(targets)))
+        gate_targets = [
+            target
+            for name, shard_targets in shards.items()
+            if unit_contract_slot_for_shard(name) == "unit-contract-quality-gate"
+            for target in shard_targets
+        ]
+        self.assertTrue(gate_targets)
         self.assertIn(
             "tests.test_generation_log_reuse_ui",
             shards["unit-contract-browser"],
         )
+        # #204：三个 unit-contract 槽位不再直接进 STEP_DEFINITIONS——运行时由
+        # expand_unit_contract_steps 展开成具体分片（resolve_step_command 负责命令）。
+        # 这里钉死的是它们在 MODE_STEPS 里的存在与模式约束。
         for name in UNIT_CONTRACT_STEP_NAMES:
-            self.assertIn(name, STEP_DEFINITIONS)
+            self.assertNotIn(name, STEP_DEFINITIONS)
             self.assertNotIn(name, MODE_STEPS["fast"])
             self.assertNotIn(name, MODE_STEPS["domain"])
             self.assertIn(name, MODE_STEPS["trial"])
@@ -70,22 +85,24 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if "tests.test_dynamic_contract" in targets
+        )
 
         result = self.run_gate(mode="trial")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-remainder")
+        self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertEqual(report["first_failure"]["status"], "failed")
         self.assertIn(
             "tests.test_dynamic_contract",
             report["unit_contract_inventory"]["modules"],
         )
-        shard = next(
-            step
-            for step in report["steps"]
-            if step["name"] == "unit-contract-remainder"
-        )
+        shard = next(step for step in report["steps"] if step["name"] == shard_name)
         self.assertIn("tests.test_dynamic_contract", shard["command"])
         self.assertIn("intentional unit shard failure", shard["stderr_tail"])
 
@@ -114,6 +131,13 @@ class QualityGateTests(unittest.TestCase):
 
         # #167 后 javascript-syntax 是一个真的 unittest 步骤（约 1 秒），
         # 预算必须给到 3 秒，否则超时的是语法步骤而不是分片。
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if any("test_slow" in target for target in targets)
+        )
+
         result = self.run_gate(
             mode="trial",
             FIREFLY_TEST_MODE="1",
@@ -122,7 +146,7 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
+        self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertEqual(report["first_failure"]["status"], "timed-out")
 
     def test_javascript_syntax_step_covers_every_canvas_module(self):
@@ -1481,12 +1505,18 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if any("test_unrelated_python_is_denied" in target for target in targets)
+        )
 
         result = self.run_gate(mode="trial")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
+        self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertIn(
             {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()},
             report["guard_events"],
@@ -1517,13 +1547,22 @@ class QualityGateTests(unittest.TestCase):
 
     def test_parallel_group_boundary_event_does_not_redden_sibling_steps(self):
         violation = self.write_parallel_boundary_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        offender_name = next(
+            name
+            for name, targets in shards.items()
+            if any(
+                "test_denied_subprocess_is_attributed_to_its_own_step" in target
+                for target in targets
+            )
+        )
 
         result = self.run_gate(mode="trial")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
         steps = {step["name"]: step for step in report["steps"]}
-        offender = steps["unit-contract-quality-gate"]
+        offender = steps[offender_name]
         self.assertEqual(offender["status"], "failed", offender.get("stderr_tail") or "")
         self.assertEqual(offender["exit_code"], 1)
         self.assertIn(
@@ -1531,8 +1570,7 @@ class QualityGateTests(unittest.TestCase):
             {(event["kind"], event["target"]) for event in offender["guard_events"]},
         )
         for name in (
-            "unit-contract-remainder",
-            "unit-contract-browser",
+            *(shard_name for shard_name in shards if shard_name != offender_name),
             "excel-import-evidence",
             "canvas-boundaries-evidence",
         ):
@@ -1553,6 +1591,15 @@ class QualityGateTests(unittest.TestCase):
 
     def test_blocking_guard_event_attribution_is_visible_in_verdict_reasons(self):
         violation = self.write_parallel_boundary_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        offender_name = next(
+            name
+            for name, targets in shards.items()
+            if any(
+                "test_denied_subprocess_is_attributed_to_its_own_step" in target
+                for target in targets
+            )
+        )
 
         result = self.run_gate(mode="trial")
 
@@ -1561,7 +1608,7 @@ class QualityGateTests(unittest.TestCase):
         reasons = "\n".join(report["verdict_reasons"])
         self.assertIn(violation["kind"], reasons)
         self.assertIn(violation["target"], reasons)
-        self.assertIn("unit-contract-quality-gate", reasons)
+        self.assertIn(offender_name, reasons)
 
     def test_javascript_syntax_uses_trusted_node_instead_of_path(self):
         fake_bin = Path(self.temp_dir.name) / "fake-bin"
@@ -1921,13 +1968,16 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        # #204：三个 unit-contract 槽位在运行时展开成具体分片步骤。这里钉死的是
+        # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
+        # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ["javascript-syntax", "excel-api-smoke", "surface-contract"]),
-            "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer"]),
+            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract")),
+            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer")),
             "release": (
                 900,
-                [
+                (
                     "javascript-syntax",
                     "unit-contract-quality-gate",
                     "unit-contract-remainder",
@@ -1947,18 +1997,23 @@ class QualityGateTests(unittest.TestCase):
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
-                ],
+                ),
             ),
         }
+        shards = compute_unit_contract_shards(self.fixture_root)
 
-        for mode, (budget, names) in expected.items():
+        for mode, (budget, slots) in expected.items():
             with self.subTest(mode=mode):
+                self.assertEqual(MODE_STEPS[mode], slots)
                 self.evidence_dir = Path(self.temp_dir.name) / f"evidence-{mode}"
                 result = self.run_gate(mode)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 report = self.report()
                 self.assertEqual(report["budget_seconds"], budget)
-                self.assertEqual([step["name"] for step in report["steps"]], names)
+                self.assertEqual(
+                    [step["name"] for step in report["steps"]],
+                    list(expand_unit_contract_steps(slots, shards)),
+                )
 
     def test_edge_compatibility_step_is_release_only(self):
         step = "edge-compatibility"
@@ -2026,14 +2081,16 @@ class QualityGateTests(unittest.TestCase):
             step for step in report["steps"] if step["name"] == "native-browser-evidence"
         )
         self.assertIs(native_step["parallel_group"], True)
-        for name in UNIT_CONTRACT_STEP_NAMES:
+        shards = report["unit_contract_inventory"]["shards"]
+        self.assertTrue(shards)
+        for name in sorted(shards):
             contract_step = next(step for step in report["steps"] if step["name"] == name)
             self.assertIs(contract_step["parallel_group"], True)
         self.assertTrue(report["unit_contract_inventory"]["covered_in_mode"])
         covered_modules = [
             module
-            for name in UNIT_CONTRACT_STEP_NAMES
-            for module in report["unit_contract_inventory"]["shards"][name]
+            for shard_modules in shards.values()
+            for module in shard_modules
         ]
         self.assertEqual(
             sorted(covered_modules),

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import datetime as dt
 import hashlib
 import http.server
 import json
+import math
 import os
 import re
 import shlex
@@ -97,12 +99,31 @@ MODE_BUDGETS = {
     "release": 900,
 }
 
+# #204：unit/contract 步骤槽位。MODE_STEPS 保留槽位名，运行前由
+# expand_unit_contract_steps() 把每个槽位展开成具体分片步骤。
+# 旧切法形同虚设：quality-gate 片只装 tests.test_quality_gate（1 个模块），
+# browser 片只装 1 个模块，1150+ 个测试全挤在 remainder 一片，单片耗时爬到
+# 预算边缘后整个 trial 撞墙钟。现在：remainder 按实测耗时 LPT 贪心装箱均衡
+# 切多片，tests.test_quality_gate（元测试，反复把 gate 当子进程跑，很贵）
+# 按方法切分（文件里只有 1 个 class，按 class 切不动）。
 UNIT_CONTRACT_STEP_NAMES = (
     "unit-contract-quality-gate",
     "unit-contract-remainder",
     "unit-contract-browser",
 )
 UNIT_CONTRACT_PARALLEL_STEP_NAMES = UNIT_CONTRACT_STEP_NAMES
+UNIT_CONTRACT_QUALITY_GATE_MODULE = "tests.test_quality_gate"
+UNIT_CONTRACT_BROWSER_MODULE = "tests.test_generation_log_reuse_ui"
+UNIT_CONTRACT_PROFILE_FILENAME = "quality_gate_shard_durations.json"
+# 未实测的新模块/新方法的耗时估计。估计偏低会由守卫测试兜底
+# （单片实测耗时不得超过 trial 预算的 UNIT_CONTRACT_SHARD_BUDGET_RATIO）。
+UNIT_CONTRACT_UNKNOWN_TARGET_SECONDS = 5.0
+# 装箱后单片的目标上限（秒）：留出远大于守卫比例的余量。
+UNIT_CONTRACT_TARGET_SHARD_SECONDS = 45.0
+# 每组分片数上限，防止大量小测试把分片数量撑爆。
+UNIT_CONTRACT_MAX_SHARDS = 12
+# #204 守卫：任何单片的实测耗时不得超过 trial 预算的这个比例。
+UNIT_CONTRACT_SHARD_BUDGET_RATIO = 0.6
 
 
 def discover_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
@@ -114,24 +135,198 @@ def discover_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
     )
 
 
+def quality_gate_unit_test_targets(root: Path) -> tuple[str, ...]:
+    """#204：AST 枚举 tests/test_quality_gate.py 里的全部测试方法。
+
+    前缀 "test" 与 unittest.TestLoader 的默认发现规则一致。枚举结果排序，
+    确定性且无需维护手工列表：新增方法自动经装箱落入某片。文件缺失或
+    不可解析时返回空元组（该模块退回整模块运行，见 unit_contract_shards）。
+    """
+    path = root / "tests" / "test_quality_gate.py"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return ()
+    targets = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef) and item.name.startswith("test"):
+                targets.append(f"tests.test_quality_gate.{node.name}.{item.name}")
+    return tuple(sorted(targets))
+
+
+def load_unit_contract_durations(root: Path) -> dict[str, float]:
+    """读取每个分片目标的实测耗时（tools/quality_gate_shard_durations.json，
+    由 tools/quality_gate_profile.py 生成）。
+
+    文件缺失或格式无效时返回空 dict —— 全部按默认估计装箱，保证 fixture
+    仓库（没有 tools/ 目录）和任何新克隆仍能得到确定性切分。
+    """
+    try:
+        payload = json.loads(
+            (root / "tools" / UNIT_CONTRACT_PROFILE_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    targets = payload.get("targets") if isinstance(payload, dict) else None
+    if not isinstance(targets, dict):
+        return {}
+    durations: dict[str, float] = {}
+    for name, value in targets.items():
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            durations[str(name)] = seconds
+    return durations
+
+
+def pack_unit_contract_shards(
+    targets: tuple[str, ...],
+    durations: dict[str, float],
+    prefix: str,
+) -> dict[str, tuple[str, ...]]:
+    """#204：贪心装箱（LPT）把目标均衡切成分片；输入相同则切法相同。
+
+    按（耗时降序、名字升序）逐个放入当前最轻的分片（同载取编号小者）。
+    分片数 = 总估计耗时 / 目标上限，夹在 [1, UNIT_CONTRACT_MAX_SHARDS]。
+    78 个模块里有重块（如 test_canvas_coupling_report 约 110s），
+    简单轮询会把它和别的重块堆到同一片，所以必须按耗时装箱。
+    """
+    if not targets:
+        return {}
+    estimates = {
+        target: durations.get(target, UNIT_CONTRACT_UNKNOWN_TARGET_SECONDS)
+        for target in targets
+    }
+    total = sum(estimates.values())
+    shard_count = min(
+        UNIT_CONTRACT_MAX_SHARDS,
+        max(1, math.ceil(total / UNIT_CONTRACT_TARGET_SHARD_SECONDS)),
+    )
+    bins: list[list[str]] = [[] for _ in range(shard_count)]
+    loads = [0.0] * shard_count
+    for target in sorted(targets, key=lambda item: (-estimates[item], item)):
+        index = min(range(shard_count), key=lambda i: (loads[i], i))
+        bins[index].append(target)
+        loads[index] += estimates[target]
+    return {
+        f"{prefix}-{index + 1}": tuple(bin_targets)
+        for index, bin_targets in enumerate(bins)
+        if bin_targets
+    }
+
+
 def unit_contract_shards(
     modules: tuple[str, ...],
+    durations: dict[str, float],
+    root: Path,
 ) -> dict[str, tuple[str, ...]]:
-    quality_gate_module = "tests.test_quality_gate"
-    browser_module = "tests.test_generation_log_reuse_ui"
-    return {
-        "unit-contract-quality-gate": tuple(
-            module for module in modules if module == quality_gate_module
-        ),
-        "unit-contract-remainder": tuple(
-            module
-            for module in modules
-            if module not in {quality_gate_module, browser_module}
-        ),
-        "unit-contract-browser": tuple(
-            module for module in modules if module == browser_module
-        ),
-    }
+    """#204：把发现的测试模块变成 具体分片名 -> unittest 目标 的映射。
+
+    - tests.test_quality_gate 按方法切（目标形如
+      tests.test_quality_gate.<Class>.<method>）；枚举不到方法时退回整模块
+      运行，保证它不脱离门禁；
+    - tests.test_generation_log_reuse_ui 单独成片（浏览器 UI 契约，耗时短）；
+    - 其余装进 unit-contract-remainder-N 分片。
+    每个被发现的模块恰好落入一片：新模块自动获得默认估计并被装箱。
+    """
+    shards: dict[str, tuple[str, ...]] = {}
+    remainder = [
+        module
+        for module in modules
+        if module
+        not in {UNIT_CONTRACT_QUALITY_GATE_MODULE, UNIT_CONTRACT_BROWSER_MODULE}
+    ]
+    if UNIT_CONTRACT_QUALITY_GATE_MODULE in modules:
+        quality_gate_targets = quality_gate_unit_test_targets(root)
+        if quality_gate_targets:
+            shards.update(
+                pack_unit_contract_shards(
+                    quality_gate_targets,
+                    durations,
+                    "unit-contract-quality-gate",
+                )
+            )
+        else:
+            remainder.append(UNIT_CONTRACT_QUALITY_GATE_MODULE)
+    shards.update(
+        pack_unit_contract_shards(
+            tuple(remainder), durations, "unit-contract-remainder"
+        )
+    )
+    if UNIT_CONTRACT_BROWSER_MODULE in modules:
+        shards["unit-contract-browser"] = (UNIT_CONTRACT_BROWSER_MODULE,)
+    return shards
+
+
+def compute_unit_contract_shards(
+    root: Path,
+    modules: tuple[str, ...] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """按给定根目录（工作区或仓库根）的模块集合与实测 profile 计算分片。"""
+    if modules is None:
+        modules = discover_unit_contract_modules(root)
+    return unit_contract_shards(modules, load_unit_contract_durations(root), root)
+
+
+def unit_contract_slot_for_shard(name: str) -> str:
+    """具体分片名所属的 MODE_STEPS 槽位名。"""
+    for slot in UNIT_CONTRACT_STEP_NAMES:
+        if name == slot or name.startswith(f"{slot}-"):
+            return slot
+    raise ValueError(f"unknown unit contract shard: {name}")
+
+
+def unit_contract_module_for_target(target: str) -> str:
+    """#204：把 unittest 目标（模块名或 tests.test_quality_gate.<Class>.<method>
+    方法目标）归一成它覆盖的模块名，供审计清单做覆盖率核对。"""
+    prefix = UNIT_CONTRACT_QUALITY_GATE_MODULE + "."
+    return UNIT_CONTRACT_QUALITY_GATE_MODULE if target.startswith(prefix) else target
+
+
+def unit_contract_modules_for_shards(
+    shards: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """#204：全部分片覆盖到的模块集合（去重、排序）。"""
+    return tuple(
+        sorted({unit_contract_module_for_target(target) for targets in shards.values() for target in targets})
+    )
+
+
+def is_unit_contract_shard(name: str | None) -> bool:
+    return bool(name) and name.startswith("unit-contract-")
+
+
+def _unit_shard_sort_key(shard: str):
+    suffix = shard.rsplit("-", 1)[1]
+    return (0, int(suffix)) if suffix.isdigit() else (1, suffix)
+
+
+def expand_unit_contract_steps(
+    mode_steps: tuple[str, ...],
+    shards: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """把 MODE_STEPS 里的三个 unit-contract 槽位展开成具体分片步骤（保持位置）。"""
+    expanded: list[str] = []
+    for name in mode_steps:
+        if name not in UNIT_CONTRACT_STEP_NAMES:
+            expanded.append(name)
+            continue
+        expanded.extend(
+            sorted(
+                (
+                    shard
+                    for shard in shards
+                    if unit_contract_slot_for_shard(shard) == name
+                ),
+                key=_unit_shard_sort_key,
+            )
+        )
+    return tuple(expanded)
 
 
 def executed_unit_contract_modules(repo_root: Path) -> tuple[str, ...]:
@@ -209,9 +404,6 @@ STEP_DEFINITIONS = {
         "tests.test_provider_contract_families",
         "tests.test_provider_contract_template",
     ],
-    "unit-contract-quality-gate": lambda python: [python, "-m", "unittest", "-b"],
-    "unit-contract-remainder": lambda python: [python, "-m", "unittest", "-b"],
-    "unit-contract-browser": lambda python: [python, "-m", "unittest", "-b"],
     "native-browser-evidence": lambda python: [python, "tests/core_surface_browser.py"],
     "project-linked-generation-evidence": lambda python: [python, "tests/project_linked_generation_native_browser.py"],
     "generation-lifecycle-evidence": lambda python: [python, "tests/generation_lifecycle_browser.py"],
@@ -1752,23 +1944,11 @@ def browser_step_spec(
     return None
 
 
-def unit_contract_step_command(
-    name: str,
-    python: str,
-    workspace_root: Path,
-) -> list[str]:
-    modules = discover_unit_contract_modules(workspace_root)
-    shard = unit_contract_shards(modules)[name]
-    if not shard:
-        return [python, "-c", f"print('empty unit/contract shard: {name}')"]
-    return [python, "-m", "unittest", "-b", *shard]
-
-
 def execution_groups(names: tuple[str, ...]) -> list[tuple[str, list[str]]]:
     """Group adjacent isolated steps while keeping all others sequential."""
     groups: list[tuple[str, list[str]]] = []
     for name in names:
-        if name in PARALLEL_STEP_NAMES:
+        if name in PARALLEL_STEP_NAMES or is_unit_contract_shard(name):
             if groups and groups[-1][0] == "parallel":
                 groups[-1][1].append(name)
             else:
@@ -1887,7 +2067,12 @@ def build_severity_findings(
         status = step.get("status")
         if status == "passed":
             continue
-        severity = "S1" if step.get("name") in CRITICAL_JOURNEY_STEPS else "S2"
+        severity = (
+            "S1"
+            if step.get("name") in CRITICAL_JOURNEY_STEPS
+            or is_unit_contract_shard(step.get("name"))
+            else "S2"
+        )
         findings.append(
             {
                 "severity": severity,
@@ -2887,24 +3072,37 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 retry_events_file = Path(environment["FIREFLY_QUALITY_GATE_RETRY_EVENTS"])
                 child_events_file = Path(environment["FIREFLY_QUALITY_GATE_CHILD_EVENTS"])
+                # #204：并行组从 3 个巨型 unit 片 + 13 个浏览器步骤（总工作量
+                # ≈1000s）变成 8 个均衡 unit 片 + 13 个浏览器步骤。4 个 worker
+                # 时组耗时 ≈ 总工作量/4 ≈ 250s，贴着 300s 预算；8 个 worker
+                # ≈130s，留出确定性的余量。仍可用环境变量覆盖。
                 parallel_workers = max(
                     1,
-                    int(os.environ.get("FIREFLY_QUALITY_GATE_PARALLEL_WORKERS", "4")),
+                    int(os.environ.get("FIREFLY_QUALITY_GATE_PARALLEL_WORKERS", "8")),
                 )
+
+                # #204：unit/contract 分片按工作区模块集合 + 实测 profile 计算，
+                # 槽位展开成具体分片步骤后再分组执行。
+                unit_shards = compute_unit_contract_shards(workspace_root)
 
                 def resolve_step_command(name: str):
                     spec = browser_step_spec(name, sys.executable, evidence_dir)
                     if spec is not None:
                         return spec[0], spec
-                    if name in UNIT_CONTRACT_STEP_NAMES:
-                        return unit_contract_step_command(
-                            name,
-                            sys.executable,
-                            workspace_root,
-                        ), None
+                    if is_unit_contract_shard(name):
+                        targets = unit_shards.get(name)
+                        if not targets:
+                            return [
+                                sys.executable,
+                                "-c",
+                                f"print('empty unit/contract shard: {name}')",
+                            ], None
+                        return [sys.executable, "-m", "unittest", "-b", *targets], None
                     return STEP_DEFINITIONS[name](sys.executable), None
 
-                for group_kind, group_names in execution_groups(MODE_STEPS[args.mode]):
+                for group_kind, group_names in execution_groups(
+                    expand_unit_contract_steps(MODE_STEPS[args.mode], unit_shards)
+                ):
                     remaining = run_budget - (time.monotonic() - started)
                     if remaining <= 0:
                         for name in group_names:
@@ -3036,7 +3234,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_environment["FIREFLY_QUALITY_GATE_GUARD_EVENTS"] = str(sinks["guard"])
                         step_environment["FIREFLY_QUALITY_GATE_RETRY_EVENTS"] = str(sinks["retry"])
                         step_environment["FIREFLY_QUALITY_GATE_CHILD_EVENTS"] = str(sinks["child"])
-                        if name == "unit-contract-quality-gate":
+                        if name.startswith("unit-contract-quality-gate"):
                             step_environment["FIREFLY_QUALITY_GATE_SELF_TEST"] = "1"
                             step_environment["FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT"] = str(
                                 (workspace_root / "tools" / "quality_gate.py").resolve()
@@ -3180,6 +3378,32 @@ def main(argv: list[str] | None = None) -> int:
     first_failure = next((step for step in steps if step["status"] != "passed"), None)
     if first_failure is None and boundary_events_failure is not None:
         first_failure = boundary_events_failure
+    # #204 运行期守卫：任何单片的实测耗时不得超过当前模式预算的
+    # UNIT_CONTRACT_SHARD_BUDGET_RATIO（trial 为 300s 的 60% = 180s）。
+    # 并行组的墙钟就是最慢那片：单片从「远低于预算」静默爬到墙钟的过程中，
+    # 门一直是绿的——只有把「单片贴墙」本身变成失败，切分才不会再次腐烂。
+    shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
+    overshot_shard = next(
+        (
+            step
+            for step in steps
+            if is_unit_contract_shard(step["name"])
+            and (step.get("duration_seconds") or 0) > shard_budget_limit
+        ),
+        None,
+    )
+    if overshot_shard is not None and final_exit_code == 0:
+        final_exit_code = 1
+    if first_failure is None and overshot_shard is not None:
+        first_failure = {
+            "name": "unit-contract-shard-budget",
+            "status": "failed",
+            "exit_code": 1,
+            "message": (
+                f"{overshot_shard['name']} 单片耗时 {overshot_shard.get('duration_seconds')}s "
+                f"超过 {args.mode} 预算 {run_budget}s 的 {UNIT_CONTRACT_SHARD_BUDGET_RATIO:.0%}"
+            ),
+        }
     if changed_during_run and first_failure is None:
         first_failure = {
             "name": "worktree-preservation",
@@ -3196,7 +3420,9 @@ def main(argv: list[str] | None = None) -> int:
             "message": "mode budget was exceeded during quality gate finalization",
         }
     unit_contract_modules = executed_unit_contract_modules(repo_root)
-    unit_contract_inventory = unit_contract_shards(unit_contract_modules)
+    unit_contract_inventory = unit_contract_shards(
+        unit_contract_modules, load_unit_contract_durations(repo_root), repo_root
+    )
     report = {
         "schema_version": 1,
         "mode": args.mode,
@@ -3212,8 +3438,15 @@ def main(argv: list[str] | None = None) -> int:
         "unit_contract_inventory": {
             "modules": list(unit_contract_modules),
             "shards": {
+                name: sorted({
+                    unit_contract_module_for_target(target)
+                    for target in unit_contract_inventory[name]
+                })
+                for name in sorted(unit_contract_inventory)
+            },
+            "targets": {
                 name: list(unit_contract_inventory[name])
-                for name in UNIT_CONTRACT_STEP_NAMES
+                for name in sorted(unit_contract_inventory)
             },
             "covered_in_mode": args.mode in {"trial", "release"},
         },

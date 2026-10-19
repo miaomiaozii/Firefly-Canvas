@@ -96,7 +96,13 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def wait_for_task(self, task_id):
-        deadline = time.monotonic() + 4
+        # #204：这个截止是测试自身的负载容忍度，不是产品 SLO——它测的是
+        # 任务 API 生命周期（202 -> 后台适配 -> succeeded），供应商调用全部
+        # mock（in-process TestClient + 本地 ThreadingHTTPServer，亚秒返回）。
+        # 原来是 4s：门里 8 个 unit 分片并行时机器饱和，后台执行器/轮询偶发
+        # 超 4s，测试就红（实测 2/27）。放宽到 15s（名义完成时间 <1s 的 15 倍）；
+        # 真回归（任务卡死/异常被吞）仍然会在 15s 确定性地 fail，不会漏。
+        deadline = time.monotonic() + 15
         task = None
         while time.monotonic() < deadline:
             task = self.client.get(f"/api/canvas-image-tasks/{task_id}").json()
