@@ -167,6 +167,28 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str, sw
         harness.remove_profile(profile)
 
 
+def _stored_env_secret(module, key: str) -> str:
+    """Read one persisted value from the runner's temporary API env file.
+
+    Since b51d833 provider keys are stored DPAPI-encrypted at rest
+    (``dpapi:<base64>``), the raw line is decrypted before comparison.
+    """
+    from app.services import secret_store
+
+    try:
+        env_text = Path(module.API_ENV_FILE).read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    for raw_line in env_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        env_key, value = line.split("=", 1)
+        if env_key.strip() == key:
+            return secret_store.decrypt_secret(value.strip().strip('"').strip("'"))
+    return ""
+
+
 def main():
     browser = harness.find_browser()
     harness.CLIENT_SCRIPT = CLIENT_SCRIPT
@@ -186,7 +208,7 @@ def main():
                 result["pythonChecks"] = {
                     "newLibraryProjectCopied": (target_root / project_id / "project.json").is_file(),
                     "oldLibraryRetained": (projects_root / project_id / "project.json").is_file(),
-                    "providerKeyWritten": "API_PROVIDER_SECRET_TEST_KEY=browser-key-rotated" in Path(module.API_ENV_FILE).read_text(encoding="utf-8"),
+                    "providerKeyWritten": _stored_env_secret(module, "API_PROVIDER_SECRET_TEST_KEY") == "browser-key-rotated",
                 }
                 result["pass"] = result.get("pass") and all(result["pythonChecks"].values())
                 if not result.get("pass"):
