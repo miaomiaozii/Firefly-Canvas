@@ -284,7 +284,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
 
     def test_loop_archives_old_output_before_task_registration(self):
         pattern = re.compile(
-            r"if\(isApiLikeEngine\(runSettings\.engine\).*?const existing = cleanHistoryImages"
+            r"if\((?:canvasCore\.)?isApiLikeEngine\(runSettings\.engine\).*?const existing = cleanHistoryImages"
             r".*?outputSlot\.images = \[\];.*?await runApiGeneration",
             re.DOTALL,
         )
