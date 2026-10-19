@@ -10,7 +10,7 @@
 // duplicateForAltDrag）属剪贴板操作，留主脚本。
 
 function createImageNodeAt(point, images=[], options={}){
-    const layout = imageLayout(images || [], mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:images || []}), {type:NODE_TYPE_IMAGE, images:images || []});
+    const layout = canvasCore.imageLayout(images || [], canvasCore.mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:images || []}), {type:NODE_TYPE_IMAGE, images:images || []});
     return createNode((point?.x || 0) - Math.round(layout.width / 2), (point?.y || 0) - Math.round(layout.height / 2), images, options);
 }
 
@@ -18,23 +18,23 @@ function createNode(x, y, images=[], options={}){
     if(!options.skipUndo) pushUndo();
     const nodeImages = (images || []).map(img => ({...img}));
     const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
-    node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : mediaNodeDefaultScale(node);
+    node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.mediaNodeDefaultScale(node);
     if(options.title) node.title = String(options.title);
-    if(options.runMeta) attachRunMeta(node, options.runMeta);
+    if(options.runMeta) canvasCore.attachRunMeta(node, options.runMeta);
     if(options.historyId) node.historyId = String(options.historyId);
     if(options.needsRegeneration != null) node.needsRegeneration = Boolean(options.needsRegeneration);
     if(options.generationState) node.generationState = String(options.generationState);
     inheritNodeMetaFromImage(node);
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
 function createPromptNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
-    const providerId = resolveChatProviderId();
+    const providerId = canvasCore.resolveChatProviderId();
     const node = {
         id:uid('prompt'),
         type:NODE_TYPE_PROMPT,
@@ -48,7 +48,7 @@ function createPromptNode(x, y, options={}){
         promptSplitEnabled:false,
         llmEnabled:false,
         llmProvider:providerId,
-        llmModel:resolveChatModel('', providerId),
+        llmModel:canvasCore.resolveChatModel('', providerId),
         llmSystemEnabled:false,
         llmSystemPrompt:'You are a helpful prompt assistant.',
         llmInstruction:'',
@@ -58,8 +58,8 @@ function createPromptNode(x, y, options={}){
     if(options.sourceMessageId) node.source_message_id = String(options.sourceMessageId);
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
@@ -78,8 +78,8 @@ function createConversationNode(x, y, options={}){
     };
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
@@ -98,8 +98,8 @@ function createAgentNode(x, y, options={}){
     };
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
@@ -109,8 +109,8 @@ function createLocalEditNode(x, y, options={}){
         original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 // 工具排「局部编辑」：在图片节点旁创建 local-edit 节点并自动连好原图角色，
@@ -121,13 +121,13 @@ function createLocalEditNodeFromImage(nodeId, imageIndex=null){
     if(!node) return;
     const source = imageIndex == null ? (node.images || [])[0] : (node.images || [])[imageIndex];
     if(!source){ toast(tr('smart.noExportableMedia')); return; }
-    const rect = nodeRect(node);
+    const rect = canvasCore.nodeRect(node);
     const point = {x:rect.x + rect.width + 140, y:Math.max(40, rect.y + Math.max(0, rect.height / 2 - LOCAL_EDIT_NODE_H / 2))};
     const created = createLocalEditNode(point.x, point.y, {select:true});
     created.localEditActiveRole = 'original';
     const connected = connectInputNode(nodeId, created.id);
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     toast(connected ? tr('smart.localEditCreated') : tr('smart.localEditConnectHint'));
 }
 
@@ -136,8 +136,8 @@ function createLoopNode(x, y, options={}){
     const node = {id:uid('loop'), type:NODE_TYPE_LOOP, x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
@@ -146,24 +146,24 @@ function createSmartGroupNode(x, y, options={}){
     const node = {id:uid('group'), type:NODE_TYPE_GROUP, x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return node;
 }
 
 function moveNodeElementsDuringDrag(){
-    if(!dragState) return;
-    const groupItems = dragState.group || [{id:dragState.id}];
+    if(!canvasCore.dragState) return;
+    const groupItems = canvasCore.dragState.group || [{id:canvasCore.dragState.id}];
     groupItems.map(item => item.id).forEach(id => {
         const n = canvasState.nodes.find(x => x.id === id);
-        const el = world.querySelector(`.image-node[data-id="${CSS.escape(id)}"]`);
+        const el = canvasCore.world.querySelector(`.image-node[data-id="${CSS.escape(id)}"]`);
         if(n && el){
             el.style.left = `${n.x || 0}px`;
             el.style.top = `${n.y || 0}px`;
         }
     });
     const active = selectedNode();
-    if(active && (dragState.group || [{id:dragState.id}]).some(item => item.id === active.id)){
+    if(active && (canvasCore.dragState.group || [{id:canvasCore.dragState.id}]).some(item => item.id === active.id)){
         positionComposerForNode(active);
     }
     scheduleInteractionLayerRefresh();
@@ -171,13 +171,13 @@ function moveNodeElementsDuringDrag(){
 
 function updateNodeElementDuringResize(node){
     if(!node) return;
-    const el = world.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
+    const el = canvasCore.world.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
     if(!el){
-        render();
+        canvasCore.render();
         return;
     }
-    const imgs = isSmartGroupNode(node) ? smartGroupImageRefs(node).map(ref => ref.item) : (node.images || []);
-    const layout = imageLayout(imgs, nodeScale(node), node);
+    const imgs = isSmartGroupNode(node) ? canvasCore.smartGroupImageRefs(node).map(ref => ref.item) : (node.images || []);
+    const layout = canvasCore.imageLayout(imgs, nodeScale(node), node);
     el.style.width = `${layout.width}px`;
     el.style.height = `${layout.height}px`;
     const body = el.querySelector('.node-body');
@@ -205,7 +205,7 @@ function updateNodeElementDuringResize(node){
         }
         const maxVisibleRows = isSmartGroupNode(node)
             ? (smartGroupCompactMembers(node).length ? Number(layout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS)
-            : MEDIA_GROUP_MAX_VISIBLE_ROWS;
+            : canvasCore.MEDIA_GROUP_MAX_VISIBLE_ROWS;
         const grid = body.querySelector('.thumb-grid');
         if(grid){
             grid.style.setProperty('--thumb-cols', layout.cols);
@@ -273,8 +273,8 @@ function deleteNode(id){
     if(canvasState.selectedId === id) canvasState.selectedId = '';
     canvasState.selectedIds = canvasState.selectedIds.filter(selected => !deleteIds.has(selected));
     if(deleteIds.has(canvasState.selectedImage.nodeId)) canvasState.selectedImage = {nodeId:'', index:-1};
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     // #74 (D1) + #146: 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
     // #146: 延迟到撤销窗口结束才归档，撤销时取消，避免撤销恢复的节点引用已归档资产 → 404。
     scheduleMediaArchive(removedNodes.flatMap(node => node.images || []));
@@ -301,8 +301,8 @@ function clearNodeMediaBeforeDelete(id){
     if(canvasState.selectedImage.nodeId === id) canvasState.selectedImage = {nodeId:'', index:-1};
     canvasState.selectedId = id;
     canvasState.selectedIds = [];
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     // #74 (D1) + #146: 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
     // #146: 延迟归档，撤销时取消，避免撤销后图片 404。
     scheduleMediaArchive(clearedImages);
@@ -333,8 +333,8 @@ async function renameSmartNodeImage(nodeId, imageIndex){
     canvasState.selectedId = node.id;
     canvasState.selectedIds = [];
     canvasState.selectedImage = {nodeId:node.id, index};
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
 }
 
 function createNodeFromMenu(type){
@@ -372,8 +372,8 @@ function addCreatedNodeToMenuGroup(node){
     const group = canvasState.createMenuGroupId ? canvasState.nodes.find(n => n.id === canvasState.createMenuGroupId) : null;
     if(addNodeToSmartGroup(group, node)){
         // 通过分组小菜单新建的节点入组后自动整理（节点创建已压过 undo，这里不再重复）。
-        arrangeSmartGroupMembers(group, {skipUndo:true});
-        render();
-        scheduleSave();
+        canvasCore.arrangeSmartGroupMembers(group, {skipUndo:true});
+        canvasCore.render();
+        canvasCore.scheduleSave();
     }
 }
