@@ -49,6 +49,28 @@ MODULE_OWNED = {
         "smartHistoryCollapse",
         "smartHistoryPurgeTrash",
         "smartHistoryVirtualState",
+        # #200 从 smart-canvas.js 搬回的寄居名字（只被本模块引用、核心不调用）：
+        "SMART_HISTORY_DOM_LIMIT",
+        "SMART_HISTORY_OVERSCAN",
+        "SMART_HISTORY_RENDER_BUFFER",
+        "apiProviders",
+        "playGenerationCompleteSound",
+        "usedCanvasOutputUrls",
+        "successfulRecentGenerationLogOutputs",
+        "smartTrashBackdrop",
+        "smartTrashList",
+        "smartTrashPurgeBtn",
+        "setupSimpleImageStage",
+        "smartUnusedBackdrop",
+        "smartRunTaskLabel",
+        "outputUrlLooksVideo",
+        "syncCuratedFromMarks",
+        "smartRunPlatformLabel",
+        "smartRunRequestMeta",
+        "normalizedSizeLabel",
+        "normalizedResolutionTier",
+        "smartOutputAtPreservedPosition",
+        "openSmartCanvasLog",
     ),
     "canvas-connections.js": ("connectionEraseState",),
 }
@@ -63,9 +85,12 @@ MODULE_OWNED = {
 # 它们本来就该被模块调用；要继续降，得先判明哪些该注入、哪些该留在核心。
 # 2026-10-17 实测：#189 四道关卡把 canvas-generation-tasks.js 顶到 126（超当时上限 124，
 # 守卫当时是红的）；把共享提示条 toast 下沉到 canvas-core.js 后全表重测，收紧到下列值。
+# 2026-10-19 实测：#200 把工具判定 movable 的 71 个寄居名字（只被 1 个模块引用、核心从不调用）
+# 搬回 owning module（每模块一个提交）；其中状态/DOM 名字核心可能仍有引用（经典脚本共享
+# 全局词法作用域，模块先于核心加载，运行期引用安全），对应上限同步降，名字另进 MODULE_OWNED 防回流。
 REVERSE_REFERENCE_CEILINGS = {
     "canvas-generation-cascade.js": 153,
-    "canvas-media-history.js": 119,
+    "canvas-media-history.js": 83,
     "canvas-generation-tasks.js": 106,
     "canvas-image-editor.js": 106,
     "canvas-node-ops.js": 60,

@@ -89,9 +89,6 @@ function setupSmartTitleEdit(){
     smartTitle?.addEventListener('click', event => { if(!event.target.closest?.('#smartTitleEdit')) openSmartTitleEdit(); });
     smartTitle?.addEventListener('dblclick', event => { event.preventDefault(); openSmartTitleEdit(); });
 }
-const SMART_HISTORY_DOM_LIMIT = 140;
-const SMART_HISTORY_OVERSCAN = 48;
-const SMART_HISTORY_RENDER_BUFFER = 24;
 let smartProjectMediaTrashRefreshVersion = 0;
 const smartShortcutModal = document.getElementById('smartShortcutModal');
 const smartSettingsLink = document.getElementById('smartSettingsLink');
@@ -207,7 +204,6 @@ const projectMediaImportCache = new Map();
 const conversationTaskPolls = new Map();
 let activeProjectMediaImports = 0;
 const projectMediaImportWaiters = [];
-let apiProviders = [];
 // model_specs.json is the authoritative registry of adapted models + their
 // parameter options. Loaded via /api/model-specs; drives model lists & params.
 let modelSpecs = {chat_models:{}, image_models:{}, video_models:{}, chat_model_ids:[], image_model_ids:[], video_model_ids:[], schema_version:null, last_updated:null};
@@ -1040,36 +1036,6 @@ function applyTheme(theme){
     document.body?.classList.toggle('studio-theme-dark', dark);
 }
 let generationCompleteSoundAt = 0;
-function playGenerationCompleteSound(){
-    const now = Date.now();
-    if(now - generationCompleteSoundAt < 1200) return;
-    generationCompleteSoundAt = now;
-    try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if(!AudioCtx) return;
-        const ctx = playGenerationCompleteSound._ctx || (playGenerationCompleteSound._ctx = new AudioCtx());
-        const play = () => {
-            const start = ctx.currentTime + 0.015;
-            [
-                {freq:660, at:0, duration:0.12},
-                {freq:880, at:0.12, duration:0.16}
-            ].forEach(tone => {
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(tone.freq, start + tone.at);
-                gain.gain.setValueAtTime(0.0001, start + tone.at);
-                gain.gain.exponentialRampToValueAtTime(0.075, start + tone.at + 0.018);
-                gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.at + tone.duration);
-                osc.connect(gain).connect(ctx.destination);
-                osc.start(start + tone.at);
-                osc.stop(start + tone.at + tone.duration + 0.02);
-            });
-        };
-        if(ctx.state === 'suspended') ctx.resume().then(play).catch(() => {});
-        else play();
-    } catch(e) {}
-}
 // 任务等待期间，服务端 WebSocket 可能用最新画布替换 canvasState.nodes 数组；不要继续读旧的节点对象。
 function liveNode(node){ return node?.id ? (canvasState.nodes.find(item => item.id === node.id) || node) : node; }
 function clearSelection(){
@@ -4972,27 +4938,6 @@ function clearCompletedNodeBusyStates(){
     if(clearCompletedSourceBusyStates()) changed = true;
     return changed;
 }
-function usedCanvasOutputUrls(){
-    const used = new Set();
-    (canvasState.nodes || []).forEach(node => (node.images || []).forEach(img => {
-        if(img?.url && !img.loopInputPreview) used.add(img.url);
-    }));
-    return used;
-}
-function successfulRecentGenerationLogOutputs(sourceNodeId='', withinMs=30 * 60 * 1000){
-    const cutoff = Date.now() - withinMs;
-    const logs = (canvas?.history || [])
-        .filter(log => log && log.status === 'success' && Number(log.createdAt || 0) >= cutoff)
-        .filter(log => Array.isArray(log.outputs) && log.outputs.length)
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
-    const scoped = sourceNodeId ? logs.filter(log => log.nodeId === sourceNodeId) : logs;
-    const usable = scoped.length ? scoped : logs.filter(log => !log.nodeId);
-    return usable.flatMap(log => (log.outputs || []).map(output => ({
-        url:typeof output === 'string' ? output : (output?.url || output?.src || output?.path || ''),
-        createdAt:log.createdAt,
-        nodeId:log.nodeId
-    }))).filter(item => item.url);
-}
 function completeSmartNodeWithImages(node, images){
     const copy = {...node, images};
     if(smartNodeHasDisplayResult(copy)) markSmartNodeComplete(copy);
@@ -5914,10 +5859,7 @@ async function smartAssetBatchDelete(){
 if(assetBatchDeleteBtn) assetBatchDeleteBtn.onclick = () => void smartAssetBatchDelete();
 
 // ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
-const smartTrashBackdrop = document.getElementById('smartTrashBackdrop');
-const smartTrashList = document.getElementById('smartTrashList');
 const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
-const smartTrashPurgeBtn = document.getElementById('smartTrashPurgeBtn');
 const smartTrashCloseBtn = document.getElementById('smartTrashCloseBtn');
 if(smartTrashCloseBtn) smartTrashCloseBtn.onclick = closeSmartTrashPanel;
 if(smartTrashBackdrop) smartTrashBackdrop.addEventListener('mousedown', e => { if(e.target === smartTrashBackdrop) closeSmartTrashPanel(); });
@@ -5943,58 +5885,6 @@ async function openSmartTrashPanel(){
         renderSmartTrashItems([]);
         toast(tr('smart.trashLoadFailed'));
     }
-}
-function setupSimpleImageStage(stage){
-    if(!stage) return null;
-    const frame = stage.querySelector('.preview-frame');
-    const label = stage.querySelector('[data-simple-zoom-label]');
-    const view = {scale:1, panX:0, panY:0, drag:null};
-    const apply = () => {
-        if(!frame) return;
-        frame.style.transform = `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`;
-        if(label) label.textContent = `${Math.round(view.scale * 100)}%`;
-    };
-    const zoomAt = (factor, clientX, clientY) => {
-        const rect = stage.getBoundingClientRect();
-        const cx = clientX - rect.left - rect.width / 2;
-        const cy = clientY - rect.top - rect.height / 2;
-        const next = Math.min(8, Math.max(0.2, view.scale * factor));
-        const k = next / view.scale;
-        view.panX = cx - (cx - view.panX) * k;
-        view.panY = cy - (cy - view.panY) * k;
-        view.scale = next;
-        apply();
-    };
-    stage.addEventListener('wheel', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
-    }, {passive:false});
-    stage.addEventListener('pointerdown', event => {
-        if(event.button !== 0) return;
-        event.stopPropagation();
-        stage.setPointerCapture?.(event.pointerId);
-        view.drag = {pointerId:event.pointerId, clientX:event.clientX, clientY:event.clientY, startX:view.panX, startY:view.panY};
-    });
-    stage.addEventListener('pointermove', event => {
-        const drag = view.drag;
-        if(!drag || drag.pointerId !== event.pointerId) return;
-        event.preventDefault();
-        event.stopPropagation();
-        view.panX = drag.startX + event.clientX - drag.clientX;
-        view.panY = drag.startY + event.clientY - drag.clientY;
-        apply();
-    });
-    const finish = event => { if(view.drag && view.drag.pointerId === event.pointerId) view.drag = null; };
-    stage.addEventListener('pointerup', finish);
-    stage.addEventListener('pointercancel', finish);
-    stage.addEventListener('dblclick', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        view.scale = 1; view.panX = 0; view.panY = 0;
-        apply();
-    });
-    return {apply, reset(){ view.scale = 1; view.panX = 0; view.panY = 0; apply(); }};
 }
 // #86：回收区大图预览（缩略图点击），带「恢复」快捷按钮。
 async function smartTrashRestoreItem(assetId, deletionId){
@@ -6063,7 +5953,6 @@ async function smartTrashPurgeItem(assetId){
 }
 
 // ── 片③：未使用媒体检测与一键清理 ─────────────────────────
-const smartUnusedBackdrop = document.getElementById('smartUnusedBackdrop');
 const smartUnusedList = document.getElementById('smartUnusedList');
 const smartUnusedCleanBtn = document.getElementById('smartUnusedCleanBtn');
 const smartUnusedCloseBtn = document.getElementById('smartUnusedCloseBtn');
@@ -7582,17 +7471,6 @@ function restoreMediaPlaybackStates(states){
         restoreMediaPlaybackState(media, states.get(`${tag}:${url}`));
     });
 }
-function smartRunTaskLabel(run){
-    const s = run?.settings || {};
-    if(run?.kind === 'video') return s.videoModel || 'Video';
-    if(s.engine === 'modelscope'){
-        return s.msgenModel === 'custom' ? (s.msCustomModel || 'Modelscope') : (MS_GEN_MODELS[s.msgenModel]?.label || s.msgenModel || 'Modelscope');
-    }
-    return s.model || 'API Image';
-}
-function outputUrlLooksVideo(url){
-    return /\.(mp4|webm|mov|m4v|avi|mkv)(\?|$)/.test(smartOriginalMediaUrl(url).toLowerCase());
-}
 function proxiedMediaUrl(itemOrUrl, name=''){
     const url = smartOriginalMediaUrl(itemOrUrl);
     if(!url || String(url).startsWith('/assets/') || String(url).startsWith('/output/') || String(url).startsWith('/api/project-library/') || String(url).startsWith('data:') || String(url).startsWith('blob:')) return url;
@@ -7693,14 +7571,6 @@ function imageMarkButtonHtml(item, index){
     const marked = getMarkedAssetIds().includes(assetId);
     return `<button class="mini-x image-mark${marked ? ' image-marked' : ''}" type="button" data-image-index="${index}" title="${escapeHtml(tr(marked ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`;
 }
-function syncCuratedFromMarks(){
-    canvasState.nodes.forEach(node => {
-        const imgs = node.images || [];
-        if(!imgs.some(img => img && img.marked) && !node.curated) return;
-        const curated = imgs.some(img => img && img.marked);
-        if(Boolean(node.curated) !== curated) node.curated = curated;
-    });
-}
 // #89 第四轮：同步所有带 data-marked-asset 的星位按钮（画布缩略图/生图历史/生成详情/预览大图）。
 function toggleImagePreviewMark(){
     const ref = canvasState.selectedImage || {};
@@ -7755,18 +7625,6 @@ async function downloadPreviewGroup(){
     const group = previewNavState.groupId ? canvasState.nodes.find(n => n.id === previewNavState.groupId) : null;
     const owner = group || canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     return zipDownloadImageItems(owner?.title, previewDownloadGroupItems());
-}
-function smartRunPlatformLabel(run){
-    const s = run?.settings || {};
-    if(s.engine === 'modelscope') return 'Modelscope';
-    if(run?.kind === 'video') return videoProviderById(s.videoProvider || '')?.name || s.videoProvider || 'Video';
-    return apiProviderById(s.provider_id || '')?.name || s.provider_id || 'API';
-}
-function smartRunRequestMeta(run){
-    const s = run?.settings || {};
-    if(s.engine === 'modelscope') return {backend:'Modelscope', model:s.msgenModel || '', custom_model:s.msCustomModel || ''};
-    if(run?.kind === 'video') return {provider_id:s.videoProvider || '', model:s.videoModel || '', duration:s.videoDuration || '', aspect_ratio:s.videoAspect || '', resolution:s.videoResolution || ''};
-    return {provider_id:s.provider_id || '', model:s.model || '', size:run?.size || '', quality:s.quality || '', n:s.count || 1};
 }
 function smartRunSnapshot(node, prompt, refs=[], kind='image'){
     const settingsSnapshot = cloneSmartSettings(settings);
@@ -7845,16 +7703,6 @@ function applySmartTaskProgress(taskId, progress){
         if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     return changed;
-}
-function normalizedSizeLabel(value){
-    const parsed = parseSizeValue(value);
-    const w = Number(parsed?.width || 0);
-    const h = Number(parsed?.height || 0);
-    return w > 0 && h > 0 ? `${Math.round(w)} x ${Math.round(h)}` : '';
-}
-function normalizedResolutionTier(value){
-    const match = String(value || '').trim().toLowerCase().match(/^([124])\s*k$/);
-    return match ? `${match[1]}K` : '';
 }
 async function smartHistoryImage2kPngBlob(item){
     const sourceUrl = displayMediaUrl(item);
@@ -7981,12 +7829,6 @@ async function deleteCanvasLogEntry(historyId, deleteMedia=false){
     } finally {
         smartHistoryDeletingBusy = false;
     }
-}
-function smartOutputAtPreservedPosition(outputs, preservedOutputId, fallbackPosition){
-    const preserved = outputs.find(output => String(output.output_id || '') === String(preservedOutputId || ''));
-    if(preserved) return preserved;
-    if(!outputs.length) return null;
-    return outputs[Math.max(0, Math.min(outputs.length - 1, Number(fallbackPosition) || 0))];
 }
 async function settleProjectCanvasBeforeOriginalMutation(){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return true;
@@ -8260,14 +8102,6 @@ async function controlProjectImageTask(historyId, taskId, action, button=null){
             button.removeAttribute('aria-busy');
         }
     }
-}
-function openSmartCanvasLog(){
-    if(!canvas) return;
-    if(assetLibraryOpen) toggleAssetLibrary(false);
-    renderSmartCanvasHistory();
-    smartHistoryModal.classList.add('open');
-    updateSmartHistoryDrawerCollapseUi();
-    refreshSmartProjectMediaTrashButton();
 }
 function closeSmartCanvasLog(){
     smartHistoryModal?.classList.remove('open');
