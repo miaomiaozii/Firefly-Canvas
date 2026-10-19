@@ -70,7 +70,7 @@ function smartMediaPreviewUrl(itemOrUrl, size=512){
         if(/^\/api\/project-library\/[^/]+\/media\/[^/]+$/.test(parsed.pathname)) return `${parsed.pathname}/preview?w=${width}`;
     } catch(e) {}
     const displayItem = typeof itemOrUrl === 'object' && itemOrUrl ? {...itemOrUrl, url:raw} : raw;
-    const displayUrl = displayMediaUrl(displayItem);
+    const displayUrl = canvasCore.displayMediaUrl(displayItem);
     if(!raw || raw.startsWith('data:') || raw.startsWith('blob:')) return displayUrl;
     if(!raw.startsWith('/output/') && !raw.startsWith('/assets/')) return displayUrl;
     if(!/\.(png|jpe?g|webp|gif|bmp|avif|tiff?|mp4|webm|mov|m4v|avi|mkv)(\?|#|$)/i.test(raw)) return displayUrl;
@@ -107,7 +107,7 @@ function mediaReferencesForStorage(value){
 }
 
 function projectMediaUrl(assetId){
-    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || '';
+    const projectId = canvas?.project_id || canvas?.project || canvasCore.sourceProjectId || '';
     return `/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`;
 }
 
@@ -123,7 +123,7 @@ function hydrateProjectMediaReferences(value){
     if(hydrated.asset_id && !hydrated.url){
         hydrated.url = projectMediaUrl(hydrated.asset_id);
         hydrated.preview_url = '';
-        if(mediaKindForItem(hydrated) === 'image') hydrated.preview_url = projectMediaPreviewUrl(hydrated.asset_id);
+        if(canvasCore.mediaKindForItem(hydrated) === 'image') hydrated.preview_url = projectMediaPreviewUrl(hydrated.asset_id);
     }
     return hydrated;
 }
@@ -203,18 +203,18 @@ function recoverStuckLoopOutputsFromHistory(){
         const sourceId = slot.loopRootId || slot.sourceNodeId || '';
         const output = successfulRecentGenerationLogOutputs(sourceId).find(item => !used.has(item.url));
         if(!output) return;
-        const kind = mediaKindForUrls([output.url], 'image');
+        const kind = canvasCore.mediaKindForUrls([output.url], 'image');
         const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-        slot.images = [stripImageGenerationMeta({url:output.url, name:`recovered-${Number(slot.loopSlotIndex || 0) + 1}.${ext}`, kind, generatedResult:true})];
-        markSmartNodeComplete(slot);
+        slot.images = [canvasCore.stripImageGenerationMeta({url:output.url, name:`recovered-${Number(slot.loopSlotIndex || 0) + 1}.${ext}`, kind, generatedResult:true})];
+        canvasCore.markSmartNodeComplete(slot);
         if(kind) slot.outputKind = kind;
         slot.title = slot.title || 'Image';
-        slot.scale = mediaNodeDefaultScale(slot);
+        slot.scale = canvasCore.mediaNodeDefaultScale(slot);
         delete slot.w;
         delete slot.h;
         used.add(output.url);
         changed = true;
-        clearSourceBusyStateIfDownstreamDone(canvasState.nodes.find(n => n.id === sourceId));
+        canvasCore.clearSourceBusyStateIfDownstreamDone(canvasState.nodes.find(n => n.id === sourceId));
     });
     return changed;
 }
@@ -292,7 +292,7 @@ function renderSmartTrashItems(items){
             <button class="asset-mini-btn danger" type="button" data-trash-forever title="${escapeHtml(tr('smart.trashDeleteForever'))}"><i data-lucide="trash-2"></i></button>
         </div>`;
     }).join('');
-    refreshIcons();
+    canvasCore.refreshIcons();
     smartTrashList.querySelectorAll('[data-trash-restore]').forEach(btn => {
         btn.onclick = () => void smartTrashRestoreItem(
             btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '',
@@ -355,7 +355,7 @@ function openTrashMediaPreview(item){
     };
     box.hidden = false;
     box.setAttribute('aria-hidden', 'false');
-    refreshIcons();
+    canvasCore.refreshIcons();
 }
 
 function closeTrashMediaPreview(){
@@ -440,8 +440,8 @@ function setMarkedImage(assetId, marked){
         }
     }));
     syncCuratedFromMarks(); // #53/#58：星标即“保留”信号，同步节点 curated 供收集/导出 API 读取
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     renderSmartMarkedPanel();
     syncMarkedImageButtons();
 }
@@ -488,7 +488,7 @@ function smartHistoryDetailNodeImageRef(item){
 
 function toggleMarkedImage(node, imageIndex){
     const raw = node?.images?.[imageIndex];
-    const item = imageForDisplay(raw) || raw;
+    const item = canvasCore.imageForDisplay(raw) || raw;
     const assetId = String(raw?.asset_id || item?.asset_id || '');
     if(!assetId){ toast(tr('smart.markUnavailable')); return; }
     setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
@@ -545,7 +545,7 @@ function renderSmartMarkedPanel(){
         </div>`).join('');
     list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
         e.preventDefault(); e.stopPropagation();
-        downloadPreviewFile(items[Number(btn.dataset.i)]);
+        canvasCore.downloadPreviewFile(items[Number(btn.dataset.i)]);
     }));
     list.querySelectorAll('.smart-marked-unmark').forEach(btn => btn.addEventListener('click', e => {
         e.preventDefault(); e.stopPropagation();
@@ -668,7 +668,7 @@ function beginSmartPendingHistoryLog(node, defaults={}){
             return matching.id;
         }
     }
-    const runSettings = defaults.runSettings || smartSettingsForNode(node);
+    const runSettings = defaults.runSettings || canvasCore.smartSettingsForNode(node);
     const providerId = String(defaults.providerId || runSettings.providerId || runSettings.provider_id || '');
     const model = String(defaults.model || runSettings.model || '');
     const prompt = String(defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
@@ -699,7 +699,7 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
     if(!canvas || !node) return false;
     canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
     let changed = false;
-    const runSettings = smartSettingsForNode(node);
+    const runSettings = canvasCore.smartSettingsForNode(node);
     (Array.isArray(tasks) ? tasks : []).forEach(task => {
         const taskId = String(task?.taskId || task?.task_id || '').trim();
         if(!taskId) return;
@@ -791,7 +791,7 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
         if(!item || typeof item !== 'object') return null;
         const url = item.url || item.path || item.src || item.uri || '';
         if(!url) return null;
-        return copyMediaSizeFields(item, {
+        return canvasCore.copyMediaSizeFields(item, {
             url,
             kind:item.kind || item.type || item.mediaKind || '',
             name:item.name || item.filename || ''
@@ -818,8 +818,8 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
         error:error ? String(error) : ''
     };
     canvas.history = [entry, ...canvas.history].slice(0, 500);
-    if(!error && recoverStuckLoopOutputsFromHistory()) render();
-    scheduleSave();
+    if(!error && recoverStuckLoopOutputsFromHistory()) canvasCore.render();
+    canvasCore.scheduleSave();
 }
 const SMART_LOG_PREVIEW_NODE_ID = '__smart_log_preview__';
 let smartHistoryPreviewRestore = null;
@@ -829,7 +829,7 @@ function smartHistoryOutputItem(output){
     if(!output || typeof output !== 'object') return null;
     const url = output.url || output.path || output.src || output.uri || '';
     if(!url) return null;
-    return copyMediaSizeFields(output, {
+    return canvasCore.copyMediaSizeFields(output, {
         ...output,
         url,
         kind:output.kind || output.type || output.mediaKind || '',
@@ -860,7 +860,7 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
     let outputs = smartHistoryImageOutputs(log);
     if(Number.isInteger(outputIndex)) outputs = outputs.filter(output => output.outputIndex === outputIndex);
     if(log?.kind === 'video' && !outputs.length) return;
-    const rect = shell.getBoundingClientRect();
+    const rect = canvasCore.shell.getBoundingClientRect();
     const point = dropPoint || screenToWorld({clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2});
     const failed = log?.status === 'failed' || !outputs.length;
     const runMeta = smartHistoryRunMeta(log);
@@ -878,7 +878,7 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
         generationState:failed ? 'ready' : 'complete'
     });
     node.runStatus = failed ? 'failed' : 'succeeded';
-    scheduleSave();
+    canvasCore.scheduleSave();
     closeSmartCanvasLog();
     toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
     return node;
@@ -1089,7 +1089,7 @@ function smartHistoryResolutionTier(log, outputs=[]){
         if(tier) return tier;
     }
     for(const source of sources){
-        const parsed = parseSizeValue(source.size || '');
+        const parsed = canvasCore.parseSizeValue(source.size || '');
         const longest = Math.max(Number(parsed?.width || 0), Number(parsed?.height || 0));
         if(longest >= 3072) return '4K';
         if(longest >= 1536) return '2K';
@@ -1111,9 +1111,9 @@ function smartHistorySizeSummary(log, outputs=[]){
     const more = actualLabels.length > 3 ? ` +${actualLabels.length - 3}` : '';
     const actualLabel = `${actualText}${more}`;
     if(requestLabel && actualLabels.some(label => label !== requestLabel)){
-        return trf('smart.requestActual', {r: requestLabel, a: actualLabel});
+        return canvasCore.trf('smart.requestActual', {r: requestLabel, a: actualLabel});
     }
-    return trf('smart.actualOnly', {a: actualLabel});
+    return canvasCore.trf('smart.actualOnly', {a: actualLabel});
 }
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
 
@@ -1350,7 +1350,7 @@ function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
     download.setAttribute('aria-label', download.title);
     download.onclick = event => {
         event.preventDefault();
-        downloadPreviewFile(item);
+        canvasCore.downloadPreviewFile(item);
     };
     const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
     deleteOriginal.dataset.outputIndex = String(item.outputIndex);
@@ -1415,7 +1415,7 @@ function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
     img.dataset.outputId = String(item.output_id || '');
     img.dataset.assetId = String(item.asset_id || '');
     img.alt = `${tr('canvas.originalImage')} · ${position}`;
-    img.src = displayMediaUrl(item);
+    img.src = canvasCore.displayMediaUrl(item);
     return true;
 }
 
@@ -1448,7 +1448,7 @@ function renderSmartHistoryDetailOutputs(box){
 
 function openSmartHistoryDetail({url, kind='image', historyId='', outputIndex=0}={}){
     if(!url) return;
-    if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(displayMediaUrl({url}), '_blank'); return; }
+    if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(canvasCore.displayMediaUrl({url}), '_blank'); return; }
     const log = smartHistoryEntryById(historyId);
     const fallback = smartHistoryOutputItem({url, kind, name:smartImageNameFromUrl(url)});
     const outputs = smartHistoryImageOutputs(log);
@@ -1486,7 +1486,7 @@ function openSmartHistoryDetail({url, kind='image', historyId='', outputIndex=0}
     box.classList.add('open');
     box.setAttribute('aria-hidden', 'false');
     selectSmartHistoryDetailOutput(requestedIndex);
-    refreshIcons(box);
+    canvasCore.refreshIcons(box);
     requestAnimationFrame(() => box.querySelector('.smart-log-lightbox-close')?.focus({preventScroll:true}));
 }
 
@@ -1499,7 +1499,7 @@ function smartHistoryPreviewNode(url, kind='image', context={}){
 
 function smartHistoryContextForImage(node, imageIndex){
     const source = node?.images?.[imageIndex];
-    const item = imageForDisplay(source) || source;
+    const item = canvasCore.imageForDisplay(source) || source;
     const assetId = String(source?.asset_id || item?.asset_id || '');
     const url = String(item?.url || source?.url || '');
     if(!assetId && !url) return null;
@@ -1625,7 +1625,7 @@ function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
             };
             renderSmartHistoryDetailOutputs(box);
             selectSmartHistoryDetailOutput(nextDetail.outputIndex);
-            refreshIcons(box);
+            canvasCore.refreshIcons(box);
         }
     }
 }
@@ -2061,7 +2061,7 @@ function bindSmartHistoryWindow(){
             const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
             const output = (smartHistoryEntryById(historyId)?.outputs || [])[Number(button.dataset.historyDownloadOriginal)];
             const item = smartHistoryOutputItem(output);
-            if(item?.url) downloadPreviewFile(item);
+            if(item?.url) canvasCore.downloadPreviewFile(item);
         };
     });
     // #89 第四轮：生图历史卡片上的星标。
@@ -2136,7 +2136,7 @@ function bindSmartHistoryWindow(){
             }, {once:true});
         };
     });
-    refreshIcons();
+    canvasCore.refreshIcons();
 }
 
 function renderSmartHistoryWindow(force=false){
@@ -2154,7 +2154,7 @@ function renderSmartHistoryWindow(force=false){
         smartHistoryVirtualState.signature = 'empty';
         smartHistoryVirtualState.focusCard = null;
         smartHistoryVirtualState.focusElement = null;
-        refreshIcons();
+        canvasCore.refreshIcons();
         return;
     }
     if(canvasState.smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === canvasState.smartHistorySelectedImage.historyId)){
@@ -2219,7 +2219,7 @@ function updateSmartHistoryDrawerCollapseUi(){
         smartHistoryCollapse.title = canvasState.smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
         smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
         smartHistoryCollapse.innerHTML = `<i data-lucide="${canvasState.smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
-        refreshIcons();
+        canvasCore.refreshIcons();
     }
 }
 
@@ -2285,7 +2285,7 @@ function setupSmartHistoryDrawer(){
 function cleanHistoryImages(images=[]){
     const seen = new Set();
     return nonPreviewOutputImages(images)
-        .map(img => stripImageGenerationMeta({...img}))
+        .map(img => canvasCore.stripImageGenerationMeta({...img}))
         .filter(img => {
             const key = `${img.kind || ''}|${img.url || ''}`;
             if(seen.has(key)) return false;
@@ -2319,8 +2319,8 @@ function historyGroupForNode(node){
 
 function positionHistoryGroupForNode(node, group){
     if(!node || !group) return;
-    const r = nodeRect(node);
-    const gr = nodeRect(group);
+    const r = canvasCore.nodeRect(node);
+    const gr = canvasCore.nodeRect(group);
     if(!Number.isFinite(Number(group.x))) group.x = Math.round((Number(node.x) || 0) + Math.max(0, (r.width - gr.width) / 2));
     if(!Number.isFinite(Number(group.y))) group.y = Math.round((Number(node.y) || 0) + r.height + 56);
 }
@@ -2329,7 +2329,7 @@ function ensureHistoryGroupForNode(node){
     if(!node?.id) return null;
     let group = historyGroupForNode(node);
     if(!group){
-        const r = nodeRect(node);
+        const r = canvasCore.nodeRect(node);
         // #85：候选池固定摆在生图框右侧列（碰撞时同列下移/回退下方）；
         // 新建时池内还没图，用「至少一行缩略格」估计尺寸参与碰撞检测。
         const estW = Math.max(316, Math.round(r.width || 0));
@@ -2362,8 +2362,8 @@ function ensureHistoryGroupForNode(node){
 
 function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=null, options={}){
     if(!node || !additions?.length) return [];
-    node = liveSmartNode(node);
-    const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
+    node = canvasCore.liveSmartNode(node);
+    const beforeRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
     const existing = cleanHistoryImages(node.images || []);
     const next = cleanHistoryImages(additions);
     if(!next.length) return [];
@@ -2378,15 +2378,15 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
         delete history.h;
     }
     node.images = next;
-    markSmartNodeComplete(node, meta, true);
+    canvasCore.markSmartNodeComplete(node, meta, true);
     node.outputKind = kind;
     node.title = cascadeOutputTitle(kind, node.images.length);
-    node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
+    node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.MEDIA_NODE_DEFAULT_SCALE;
     delete node.w;
     delete node.h;
-    if(meta) attachRunMeta(node, meta);
-    const afterRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const skipShift = options.skipShift || Boolean(smartLoopContext?.nodeId);
+    if(meta) canvasCore.attachRunMeta(node, meta);
+    const afterRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
+    const skipShift = options.skipShift || Boolean(canvasCore.smartLoopContext?.nodeId);
     if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
     canvasState.selectedImage = {nodeId:'', index:-1};
     return next;
@@ -2536,7 +2536,7 @@ function smartRunRequestMeta(run){
     return {provider_id:s.provider_id || '', model:s.model || '', size:run?.size || '', quality:s.quality || '', n:s.count || 1};
 }
 function normalizedSizeLabel(value){
-    const parsed = parseSizeValue(value);
+    const parsed = canvasCore.parseSizeValue(value);
     const w = Number(parsed?.width || 0);
     const h = Number(parsed?.height || 0);
     return w > 0 && h > 0 ? `${Math.round(w)} x ${Math.round(h)}` : '';
