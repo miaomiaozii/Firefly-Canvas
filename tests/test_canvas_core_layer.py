@@ -186,10 +186,10 @@ REVERSE_REFERENCE_CEILINGS = {
 # 驱动，不由总数驱动（总数在接口化前后不变，见上）。2026-10-19（#201 开始）实测初值
 # 等于当时的反向引用总数（尚无接口引用）；每接口化一个模块就收紧一次。
 FREE_GLOBAL_REFERENCE_CEILINGS = {
-    "canvas-generation-cascade.js": 147,
+    "canvas-generation-cascade.js": 42,  # #201 接口化：自由侧 147 -> 42（22 个共享名字 105 处改走 canvasCore 接口）
     "canvas-media-history.js": 36,  # #201 接口化：自由侧 83 -> 36（23 个共享名字 47 处改走 canvasCore 接口）
     "canvas-generation-tasks.js": 103,
-    "canvas-image-editor.js": 87,
+    "canvas-image-editor.js": 41,  # #201 接口化：自由侧 87 -> 41（17 个共享名字 46 处改走 canvasCore 接口）
     "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
     "canvas-undo.js": 6,
