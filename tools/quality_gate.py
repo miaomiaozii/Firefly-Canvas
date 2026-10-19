@@ -195,6 +195,14 @@ def pack_unit_contract_shards(
     分片数 = 总估计耗时 / 目标上限，夹在 [1, UNIT_CONTRACT_MAX_SHARDS]。
     78 个模块里有重块（如 test_canvas_coupling_report 约 110s），
     简单轮询会把它和别的重块堆到同一片，所以必须按耗时装箱。
+
+    片内执行顺序保持字母序（与 unittest discover 一致）：LPT 只决定
+    目标落在哪一片，不决定片内先后。这不是美学选择——仓库里有跨模块
+    状态污染（例如 test_conversation_browser_harness 先跑会破坏
+    test_agent_node_settings/test_agent_concurrency，
+    test_conversation_nodes 先跑会破坏 test_agent_tui 的事件循环），
+    它们在 discover 字母序下从不暴露；若按装箱顺序（重块在前）执行，
+    门会因与 #204 无关的既有 bug 变红。
     """
     if not targets:
         return {}
@@ -214,7 +222,7 @@ def pack_unit_contract_shards(
         bins[index].append(target)
         loads[index] += estimates[target]
     return {
-        f"{prefix}-{index + 1}": tuple(bin_targets)
+        f"{prefix}-{index + 1}": tuple(sorted(bin_targets))
         for index, bin_targets in enumerate(bins)
         if bin_targets
     }
