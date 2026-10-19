@@ -277,8 +277,8 @@ function renderSmartTrashItems(items){
         const name = String(item?.name || item?.filename || assetId);
         const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
         const days = trashDaysLeft(item?.expires_at);
-        // #86：回收区条目带缩略图（第一张预览图，无预览回退原文件），点缩略图可放大预览。
-        const thumbUrl = projectId && assetId ? `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview` : '';
+        // #86/#208：回收区条目带缩略图（显式请求预览图，无预览回退原文件），点缩略图可放大预览。
+        const thumbUrl = projectId && assetId ? `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview?view=preview` : '';
         return `<div class="smart-trash-item" data-trash-asset="${escapeHtml(assetId)}" data-trash-deletion="${escapeHtml(deletionId)}">
             <div class="smart-trash-thumb-wrap" data-trash-preview="${escapeHtml(assetId)}" title="${escapeHtml(tr('smart.trashPreview'))}">
                 ${thumbUrl ? `<img class="smart-trash-thumb" loading="lazy" src="${escapeAttr(thumbUrl)}" alt="${escapeHtml(name)}">` : ''}
@@ -311,60 +311,40 @@ function renderSmartTrashItems(items){
         el.onclick = () => openTrashMediaPreview(byAsset.get(el.dataset.trashPreview) || {});
     });
 }
-// 通用图片大图查看器（滚轮缩放 + 拖拽平移 + 双击复位）：#86 回收站预览使用，
-// 后续其他预览入口可复用（#87 统一详情面板）。
-
+// #207/#87：回收区预览收口到「生成详情」统一面板（与画布缩略图/生图历史抽屉同一组件，
+// 以后改详情 UI 只改一处）：图片请求生成原件（#208 view=original，原件缺失时服务端回退预览图），
+// 视频走新标签页（openSmartHistoryDetail 内部处理）。动作行追加「恢复」按钮
+//（对应该自建面板原有的恢复入口），面板关闭时由 closeSmartHistoryLightbox 统一清理。
 function openTrashMediaPreview(item){
     const projectId = smartProjectId();
     const assetId = String(item?.asset_id || '');
     if(!projectId || !assetId) return;
-    let box = document.getElementById('smartTrashPreview');
-    if(!box){
-        box = document.createElement('div');
-        box.id = 'smartTrashPreview';
-        box.className = 'smart-trash-preview-backdrop';
-        box.setAttribute('aria-hidden', 'true');
-        box.hidden = true;
-        box.innerHTML = `<div class="smart-trash-preview" role="dialog" aria-modal="true" aria-label="${escapeAttr(tr('smart.trashPreview'))}">
-            <div class="preview-stage smart-trash-preview-stage" style="cursor:grab">
-                <div class="preview-frame"><img alt="" draggable="false"></div>
-                <div class="smart-trash-preview-zoom"><output data-simple-zoom-label aria-live="polite">100%</output></div>
-            </div>
-            <div class="smart-trash-preview-bar">
-                <span class="smart-trash-preview-name"></span>
-                <button class="asset-mini-btn" type="button" data-trash-preview-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span></button>
-                <button class="asset-mini-btn" type="button" data-trash-preview-close title="${escapeHtml(tr('common.close'))}"><i data-lucide="x"></i><span>${escapeHtml(tr('common.close'))}</span></button>
-            </div>
-        </div>`;
-        document.body.appendChild(box);
-        box.addEventListener('click', event => {
-            if(event.target === box || event.target.closest('[data-trash-preview-close]')) closeTrashMediaPreview();
-        });
-        document.addEventListener('keydown', event => {
-            if(event.key === 'Escape' && !box.hidden) closeTrashMediaPreview();
-        });
-        setupSimpleImageStage(box.querySelector('.smart-trash-preview-stage'));
-    }
-    const img = box.querySelector('img');
-    img.src = `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview`;
-    box.querySelector('.smart-trash-preview-name').textContent = String(item?.name || item?.filename || assetId);
-    const restoreBtn = box.querySelector('[data-trash-preview-restore]');
-    restoreBtn.onclick = () => {
+    const previewUrl = `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview?view=original`;
+    const isVideo = String(item?.kind || '').includes('video') || String(item?.mime_type || '').startsWith('video/');
+    openSmartHistoryDetail({
+        url: previewUrl,
+        kind: isVideo ? 'video' : 'image',
+        historyId: '',
+        outputIndex: 0
+    });
+    if(isVideo) return; // 视频走新标签页打开，无需附恢复按钮
+    const box = document.getElementById('smartHistoryLightbox');
+    const actions = box?.querySelector('.smart-log-detail-actions');
+    if(!actions) return;
+    const restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'smart-trash-detail-restore';
+    restoreBtn.title = tr('smart.trashRestore');
+    restoreBtn.setAttribute('aria-label', tr('smart.trashRestore'));
+    restoreBtn.innerHTML = `<i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span>`;
+    restoreBtn.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
         void smartTrashRestoreItem(assetId, String(item?.deletion_id || ''));
-        closeTrashMediaPreview();
+        closeSmartHistoryLightbox();
     };
-    box.hidden = false;
-    box.setAttribute('aria-hidden', 'false');
-    canvasCore.refreshIcons();
-}
-
-function closeTrashMediaPreview(){
-    const box = document.getElementById('smartTrashPreview');
-    if(!box) return;
-    box.hidden = true;
-    box.setAttribute('aria-hidden', 'true');
-    const img = box.querySelector('img');
-    if(img) img.removeAttribute('src');
+    actions.prepend(restoreBtn);
+    canvasCore.refreshIcons(box);
 }
 
 function closeSmartTrashPanel(){
@@ -1231,6 +1211,8 @@ function closeSmartHistoryLightbox(){
     if(img){ img.onerror = null; img.removeAttribute('src'); }
     smartHistoryDetailSession = {historyId:'', outputs:[], outputIndex:0, outputId:''};
     box.querySelector('.smart-log-detail-output-strip')?.replaceChildren();
+    // #207：openTrashMediaPreview 注入的回收区「恢复」按钮随面板关闭统一清理。
+    box.querySelector('.smart-trash-detail-restore')?.remove();
     resetSmartHistoryDetailView();
     const restore = smartHistoryDetailLastFocus;
     smartHistoryDetailLastFocus = null;

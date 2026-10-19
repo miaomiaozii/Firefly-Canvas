@@ -3585,15 +3585,23 @@ async def list_project_media_trash(project_id: str):
     return {'items': items}
 
 @router.get('/api/project-library/{project_id}/trash/media/{asset_id}/preview')
-async def get_project_trash_media_preview(project_id: str, asset_id: str):
-    """#86：回收区条目预览（第一张预览图，无预览回退原文件）。"""
+async def get_project_trash_media_preview(project_id: str, asset_id: str, view: str = 'preview'):
+    """#86/#208：回收区条目预览。
+
+    view=preview（默认）：第一张预览图，无预览回退原文件（列表缩略图）；
+    view=original：返回生成原件，原件缺失时回退预览图。
+    响应头 X-Canvas-Media-View 告知前端本次实际返回的是哪一种（preview|original）。
+    """
+    normalized_view = 'original' if str(view or 'preview').strip() == 'original' else 'preview'
+
     def build_response() -> ProjectMediaFileResponse:
         with project_lifecycle_lock(project_id):
-            record = _app_main.project_store_call('trash_media_preview_path', project_id, asset_id)
+            record = _app_main.project_store_call('trash_media_preview_path', project_id, asset_id, view=normalized_view)
             return ProjectMediaFileResponse(
                 record['path'],
                 project_id=project_id,
                 media_type=record.get('media_type') or 'application/octet-stream',
+                headers={'X-Canvas-Media-View': 'original' if record.get('is_original') else 'preview'},
             )
 
     try:

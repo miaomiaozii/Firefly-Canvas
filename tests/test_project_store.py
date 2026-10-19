@@ -2486,6 +2486,28 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         tombstones = node.get("deletedOutputTombstones") or []
         self.assertTrue(any(str(t.get("deleted_asset_id") or "") == original["asset_id"] for t in tombstones))
 
+    def test_list_deleted_media_sorted_newest_first(self):
+        """#210: 回收区列表按删除时间倒序（最新删除在顶部）。
+
+        按 a→b→c 先后删除三条，列表须返回 c→b→a，且 deleted_at 非增。
+        用递增假时钟保证三条戳值不同（稳定排序下同刻保持插入序）。
+        """
+        ticks = iter(range(1_700_000_000_000, 1_700_000_100_000, 1_000))
+        with patch.object(firefly_projects, "_now_ms", side_effect=lambda: next(ticks)):
+            project = self.store.create_project("回收区排序")
+            media_a = self.store.import_media(project["id"], b"trash-a", "a.png", "image/png")
+            media_b = self.store.import_media(project["id"], b"trash-b", "b.png", "image/png")
+            media_c = self.store.import_media(project["id"], b"trash-c", "c.png", "image/png")
+            # 级联归档路径（ADR 0016 D1，前端单图 × / 节点 × 经此入回收区）
+            self.store.archive_unreferenced_media(project["id"], media_a["asset_id"])
+            self.store.archive_unreferenced_media(project["id"], media_b["asset_id"])
+            self.store.archive_unreferenced_media(project["id"], media_c["asset_id"])
+            items = self.store.list_deleted_media(project["id"])
+        self.assertEqual([item["asset_id"] for item in items],
+                         [media_c["asset_id"], media_b["asset_id"], media_a["asset_id"]])
+        deleted_ats = [item["deleted_at"] for item in items]
+        self.assertEqual(deleted_ats, sorted(deleted_ats, reverse=True))
+
     def test_orphan_generation_media_goes_to_trash_and_can_restore(self):
         """#79: 无引用的生成孤儿移入回收区（7 天可恢复），不再静默硬删。"""
         project = self.store.create_project("孤儿回收")
