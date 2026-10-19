@@ -128,9 +128,37 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 **修订后的顺序**：轨道 1（39-40 个共享服务显式化，占 65%）→ 轨道 4（补测）→ 轨道 3（17 个）。
 轨道 3 的 17 个已逐个列在 #202 评论里，含建议分类。
 
+### 轨道 1 完成后的实测结果：口径必须分清（2026-10-19）
+
+**接口化不改变反向引用总数。** 调用还在，只是从裸全局名改成走 `canvasCore` 接口。
+所以拿「反向引用总数」衡量轨道 1 会得到 0 收益的错误结论——这个坑我踩过一次。
+
+`tools/canvas_coupling_report.py` 实测（`FREE_GLOBAL_REFERENCE_CEILINGS` 之和 = `free_total`，
+`REVERSE_REFERENCE_CEILINGS` 之和 = `grand_total`，两个守卫测试强制对齐）：
+
+| 口径 | 轨道 1 前 | 轨道 1 后 |
+|---|---|---|
+| 反向引用总数（`grand_total`） | 539 | **539（不变，设计如此）** |
+| 自由全局引用（`free_total`） | 539 | **269（−50.1%）** |
+| 接口引用（`interface_total`） | 0 | 270 |
+
+按模块的自由侧变化：`canvas-generation-cascade.js` 147→42、`canvas-media-history.js` 83→36、
+`canvas-image-editor.js` 87→41、`canvas-node-ops.js` 60→17、`canvas-connections.js` 41→12；
+`canvas-generation-tasks.js`(103)、`canvas-undo.js`(6)、`canvas-agent-tui.js`(12) 本轮未动。
+
+**轨道 1 真正的收益是「单测要桩的独立外部名字数」下降**，它由自由侧的独立名字数驱动，
+不由总数驱动。棘轮因此拆成两套：`REVERSE_REFERENCE_CEILINGS`（总数）+
+`FREE_GLOBAL_REFERENCE_CEILINGS`（自由侧），后者才是轨道 1 的执行机制。
+
 ### 轨道 4：按依赖面从小到大补测
 
-`canvas-undo.js`(29，已完成) → `canvas-core.js`(54) → `canvas-connections.js`(88)。
+`canvas-undo.js`(29，已完成) → `canvas-core.js` → `canvas-connections.js`。
+
+**`canvas-core.js` 的「54」是错的**（本 ADR 初稿口径有误，#203 实测纠正）：按「不同外部自由名」
+口径实测为 **18**，且对最近 4 个历史版本实测均为 14–18，从未到过 54。其中 9 个是 JS 内建、
+6 个是 `harness.mjs` 已提供的浏览器全局、3 个是可直接加载真实模块的跨模块名——
+**手写函数桩 0 个**（`043ab0a`，18 个 `node:test` 用例）。它是全部画布模块里最适合单测的一个。
+
 **不做** `canvas-media-history.js`(210)：210 个名字的桩文件本身会变成「第二套假核心」，
 它自己需要维护，而假核心跟真核心行为不一致时**测试会骗人**。这才是真正的代价，不是做不到。
 
