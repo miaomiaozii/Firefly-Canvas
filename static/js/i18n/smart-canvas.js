@@ -550,7 +550,7 @@
         "smart.addGroupFailed": { zh: "新增分组失败", en: "Failed to create group" },
         "smart.renameFailed": { zh: "重命名失败", en: "Rename failed" },
         "smart.category": { zh: "分类", en: "Category" },
-        "smart.defaultAssetLibrary": { zh: "默认素材抽屉", en: "Default material drawer" },
+        "smart.defaultAssetLibrary": { zh: "默认全局资源库", en: "Default global library" },
         "smart.select": { zh: "选择", en: "Select" },
         "smart.localAssetEmpty": { zh: "暂无本地素材，拖入图片即可保存", en: "No local assets yet — drag in an image to save it" },
         "smart.smartClassEmpty": { zh: "这个智能分类下暂无素材", en: "No assets in this smart category yet" },

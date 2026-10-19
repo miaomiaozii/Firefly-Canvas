@@ -592,7 +592,12 @@ def load_asset_library():
             lib = json.load(f)
     except Exception:
         lib = default_asset_library()
-    return normalize_asset_library(lib)
+    # #212: 默认库历史名一次性迁移后回写一次磁盘，使存量数据与界面收敛
+    migrated = any(isinstance(l, dict) and str(l.get('id')) == 'default' and str(l.get('name')) in DEFAULT_LIBRARY_LEGACY_NAMES for l in lib.get('libraries') or [])
+    lib = normalize_asset_library(lib)
+    if migrated:
+        save_asset_library(lib)
+    return lib
 
 
 

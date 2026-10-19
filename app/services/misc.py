@@ -15,6 +15,11 @@ def jimeng_decode_cli_output(stdout, stderr):
     clean_err_text = jimeng_clean_wsl_stderr(err_text) if _svc.jimeng_use_wsl() else err_text
     return (out_text, clean_err_text)
 
+# #212: 默认全局资源库的规范名 + 历史默认名（加载时一次性迁移）。
+# 只认默认库的稳定身份 id='default' 且名字为已知历史名，用户自己重命名的库不受影响。
+DEFAULT_LIBRARY_NAME = '默认全局资源库'
+DEFAULT_LIBRARY_LEGACY_NAMES = {'默认资产库', '默认素材抽屉'}
+
 def default_asset_library():
     categories = [{'id': 'characters', 'name': '角色', 'type': 'image', 'items': []}, {'id': 'scenes', 'name': '场景', 'type': 'image', 'items': []}]
     return {'active_library_id': 'default', 'libraries': [{'id': 'default', 'name': '默认全局资源库', 'type': 'asset', 'categories': categories}], 'categories': categories, 'updated_at': _svc._main('now_ms')()}
@@ -28,6 +33,9 @@ def normalize_asset_library(lib):
         libraries = [{'id': 'default', 'name': '默认全局资源库', 'type': 'asset', 'categories': legacy_categories or default_asset_library()['categories']}]
     for library in libraries:
         library['id'] = re.sub('[^A-Za-z0-9_-]+', '_', str(library.get('id') or f'lib_{uuid.uuid4().hex[:8]}'))[:40]
+        # #212: 默认库历史显示名一次性迁移（“默认资产库”/“默认素材抽屉” → “默认全局资源库”）
+        if str(library.get('id')) == 'default' and str(library.get('name')) in DEFAULT_LIBRARY_LEGACY_NAMES:
+            library['name'] = DEFAULT_LIBRARY_NAME
         library['name'] = sanitize_asset_name(library.get('name') or '全局资源库', '全局资源库')
         cats = library.get('categories') if isinstance(library.get('categories'), list) else []
         cats[:] = [cat for cat in cats if isinstance(cat, dict) and cat.get('type', 'image') != 'workflow']

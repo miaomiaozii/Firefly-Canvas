@@ -181,14 +181,14 @@ CATEGORY_BY_NAME = {
     "promptTextItemsForNode": "hub",  # 节点查询：prompt 文本项（读 smartLoopContext）
     "fitSmartLoopNode": "hub",  # 节点变更：调整 loop 节点 w/h
     "translateSmartNodeWithMembers": "hub",  # 节点变更：平移节点+组成员
-    "assetLibraryIsProject": "hub",  # 画布查询：当前资产库是否项目级
+    "assetLibraryIsProject": "hub",  # 画布查询：当前资源库是否项目级
     "openLongContentReader": "hub",  # UI 行为：打开长内容阅读器
     "videoProviderById": "hub",  # provider 查询：id -> 视频 provider（读 apiProviders）
     "removeProjectMediaFromCache": "hub",  # 状态变更：projectMediaLibrary 缓存移除
-    "toggleAssetLibrary": "hub",  # UI 行为：资产库面板开/关
+    "toggleAssetLibrary": "hub",  # UI 行为：资源库面板开/关
     "closeSmartCanvasLog": "hub",  # UI 行为：关画布日志抽屉
     "apiProviderById": "hub",  # provider 查询：id -> 图像 provider（读 apiProviders）
-    "renderAssetLibrary": "hub",  # UI 操作：渲染资产库面板
+    "renderAssetLibrary": "hub",  # UI 操作：渲染资源库面板
     "viewportCenter": "hub",  # 视口服务：视口中心世界坐标（读 shell+viewport）
     "closeCreateMenu": "hub",  # UI 行为：关创建菜单
     "smartNodeInFlight": "hub",  # 节点查询：是否有在途运行（读 pending/submission）
@@ -261,7 +261,7 @@ CATEGORY_BY_NAME = {
     "interactionLayerRaf": "state",  # let raf id：交互层刷新合并
     "generationCompleteSoundAt": "state",  # let 时间戳：完成音去重
     "previewComparePos": "state",  # let 数字：对比滑块位置
-    "assetLibraryOpen": "state",  # let bool：资产库开关
+    "assetLibraryOpen": "state",  # let bool：资源库开关
     "MS_GEN_MODELS": "state",  # const 配置表：ModelScope 模型目录
     "previewPan": "state",  # let {x,y}：预览平移
     "previewZoom": "state",  # let 数字：预览缩放

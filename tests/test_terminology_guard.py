@@ -102,8 +102,9 @@ FORBIDDEN_TERMS = {
     "项目设置",
     # 全局资源库 _Avoid_
     "项目素材库", "隐式共享目录",
-    # 素材抽屉 _Avoid_
-    "独立素材页面", "混合素材库", "全局资产面板",
+    # 素材抽屉 _Avoid_（#212：用户可见文案、存量数据与内部注释改名完成后，才把裸词“资产库”纳入守卫；
+    # CONTEXT.md 的“资源库/素材抽屉/项目回收区”三处词条均将其登记为 _Avoid_）
+    "独立素材页面", "混合素材库", "全局资产面板", "资产库",
     # 在线生成 _Avoid_
     "本地生成", "ComfyUI", "工作流生成",
     # 模型路由 _Avoid_
@@ -162,6 +163,10 @@ WHITELIST = [
     ("*", "diagnostics", "Diagnostics logging"),
     # Backward-compatible log_id read in deletion snapshots
     ("firefly_projects_deletion.py", "log_id", "Backward-compatible read of legacy log_id key"),
+    # #212: 默认库历史名一次性迁移——迁移表/迁移测试必须保留历史名本身用于识别存量数据，
+    # 不是显示文案（与 legacy log_id 兼容读取同类）
+    ("app/services/misc.py", "资产库", "#212 legacy-name migration table DEFAULT_LIBRARY_LEGACY_NAMES"),
+    ("tests/test_asset_library_naming.py", "资产库", "#212 migration tests reference legacy display names"),
     # "logs" in legitimate contexts (directory paths, legacy keys)
     ("CLI/windows/gemini/install_gemini_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("CLI/windows/openai/install_openai_codex_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
