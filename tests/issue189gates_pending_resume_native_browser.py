@@ -34,6 +34,18 @@ timeout and no cancellation by design.
              RELOADED and the assertions demand NO second gate POST across both sessions
              and the server task count still exactly 1 (a request that was already sent
              must never be replayed).
+--mode replay-failed (#198, RED today): mark survival after a FAILED replay — the gate
+             fails, the in-session replay is stubbed (pure test instrumentation), the
+             persisted mark must land on the server canvas (exactly one entry), then the
+             page is RELOADED with the ReplayKillMiddleware armed: the reloaded session's
+             load-path replay (resumeSmartPendingActionResumes) fires exactly one gate
+             POST which is answered 500 BEFORE the application runs (a network-level
+             failure). clear-on-send (canvas-generation-tasks.js: the persister commits
+             "entry cleared" to disk BEFORE the fetch fires) plus the current never
+             write-back on 'replay-failed' means the user's action is lost forever.
+             The RED assertion demands the mark STILL be present on the server canvas
+             after the failed replay (a #198 fix must write it back, with a bounded
+             retry count) — RED until the fix lands, because today the field is empty.
 
 Usage:
   python tests/issue189gates_pending_resume_native_browser.py --gate conversation --mode fixed \
@@ -148,6 +160,46 @@ FIRST_WAIT = {
     "local-edit": 'document.querySelector("[data-local-edit-node=\\"%s\\"]")' % LE_NODE,
     "video": 'document.querySelector(".image-node[data-id=\\"%s\\"]")' % VID_NODE,
 }
+
+
+class ReplayKillMiddleware:
+    """#198 red-test instrumentation ONLY (ASGI middleware).
+
+    While ``armed``, answers the gate's POST endpoint with 500 before the
+    application runs, so the reloaded session's replay fetch fails at the
+    network level (like a dead connection). Only the reloaded session can hit
+    it: session 1 never sends a gate POST in replay-failed mode (the
+    in-session replay is stubbed by STUB_RESUME_JS) and the middleware is
+    armed only after phase 1 confirms the persisted mark on the server.
+    ``killed`` records every request path it short-circuited — server-side
+    evidence that does not depend on page instrumentation timing."""
+
+    def __init__(self, app, gate: str):
+        self.app = app
+        self.tail = GATE_POST_TAIL[gate]
+        self.armed = False
+        self.killed: list[str] = []
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") == "http"
+            and self.armed
+            and scope.get("method") == "POST"
+            and scope.get("path", "").rstrip("/").endswith(self.tail)
+        ):
+            self.killed.append(scope.get("path", ""))
+            body = json.dumps({"detail": "issue198 forced replay failure"}).encode("utf-8")
+            await send({
+                "type": "http.response.start",
+                "status": 500,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
 
 
 def capture_js(gate: str) -> str:
@@ -466,7 +518,10 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
             project_id = seed(store, gate)
             app = harness.load_production_app(root / "runtime-root", store)
             result["provider-file"] = write_test_provider(app, mock_base_url, with_video=(gate == "video"))
-            logger = RequestLogger(app)
+            # #198: the killer sits BELOW the logger so the forced 500 is also
+            # recorded server-side (logger -> killer -> production app).
+            killer = ReplayKillMiddleware(app, gate)
+            logger = RequestLogger(killer)
             with AsgiBrowserServer(logger) as server:
                 browser = NativeBrowser.launch(find_browser())
                 browser.set_environment(VIEWPORT)
@@ -514,7 +569,7 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 # ---- arm the stale-base 409 rewrites, then fire the gate action immediately
                 browser.evaluate(f"window.__fix189Inject.left = {ARM_STALE}")
                 result["steps"]["armed"] = True
-                if mode == "refresh":
+                if mode in ("refresh", "replay-failed"):
                     # #197: block the in-session replay so the persisted mark is
                     # forced across the reload boundary (the stub is page-context
                     # only; the reloaded session gets the real dispatcher).
@@ -586,14 +641,23 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
 
                 posts_phase1 = gate_posts(logger, gate)
                 cap3 = cap2
-                if mode in ("refresh", "refresh-sent"):
+                if mode in ("refresh", "refresh-sent", "replay-failed"):
                     # ---- #197 phase 1 server-side mark check, then a NATIVE reload
-                    # of the same page. refresh: exactly one persisted entry must
-                    # exist (the in-session replay is stubbed, so nothing may have
-                    # been sent). refresh-sent: the in-session replay already fired
-                    # and the cleared mark must be persisted before the reload.
-                    want_p1 = 1 if mode == "refresh" else 0
+                    # of the same page. refresh / replay-failed: exactly one
+                    # persisted entry must exist (the in-session replay is stubbed,
+                    # so nothing may have been sent). refresh-sent: the in-session
+                    # replay already fired and the cleared mark must be persisted
+                    # before the reload.
+                    want_p1 = 1 if mode in ("refresh", "replay-failed") else 0
                     result["field-phase1"] = poll_server_field(store, project_id, want_p1)
+                    if mode == "replay-failed":
+                        # #198: arm the forced failure NOW — before the reload — so
+                        # the reloaded session's replay POST is answered 500 before
+                        # the app runs, whenever it fires. Session 1 cannot hit it
+                        # (its in-session replay is stubbed, so no gate POST is left
+                        # to send).
+                        killer.armed = True
+                        result["steps"]["killer-armed"] = True
                     browser.navigate(url)
                     browser.wait_for(FIRST_WAIT[gate], timeout=30)
                     time.sleep(1.0)
@@ -610,11 +674,25 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                         + json.dumps(GATE_URL_PART[gate]) + ")!==-1;});})()",
                         30) if mode == "refresh" else False
                     result["steps"]["reload-post-arrived"] = bool(reload_seen)
-                    time.sleep(FIXED_SETTLE_S if mode == "refresh" else 3.0)
+                    if mode == "replay-failed":
+                        # The load-path replay can fire BEFORE INSTRUMENT_JS is
+                        # reinstalled on the reloaded page, so __fix189Net is not a
+                        # reliable witness here: wait for the kill on the SERVER
+                        # side (the killer sees the request regardless of page
+                        # instrumentation timing).
+                        deadline = time.time() + 30
+                        while time.time() < deadline and not killer.killed:
+                            time.sleep(0.2)
+                        result["steps"]["reload-post-killed"] = bool(killer.killed)
+                    time.sleep(FIXED_SETTLE_S if mode in ("refresh", "replay-failed") else 3.0)
                     cap3 = json.loads(browser.evaluate(capture_js(gate)))
                     result["final"] = cap3
                     browser.capture_screenshot(run_shots / "05-after-reload.png")
-                    result["field-phase2"] = poll_server_field(store, project_id, 0, timeout=40)
+                    result["field-phase2"] = poll_server_field(
+                        store, project_id, 1 if mode == "replay-failed" else 0, timeout=40)
+                    if mode == "replay-failed":
+                        result["field-after-failure"] = result["field-phase2"]
+                        result["killer"] = {"armed": killer.armed, "killed": list(killer.killed)}
                     result["server"] = list(logger.entries)
                     result["gate-posts"] = gate_posts(logger, gate)
                     result["readback"] = server_readback(store, project_id, gate)
@@ -768,6 +846,91 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                     result["checks"]["session2-net-posts"] = net_p2
                     result["checks"]["total-server-posts"] = len(posts)
                     result["passed"] = phase1_ok and phase2_ok
+                elif mode == "replay-failed":
+                    # #198 acceptance (RED today): the persisted mark survives the
+                    # reload and the reloaded session's replay is FORCED to fail
+                    # (ReplayKillMiddleware answers 500 before the app runs).
+                    # clear-on-send has already persisted the cleared mark before
+                    # that fetch (canvas-generation-tasks.js: the persister commits
+                    # "entry cleared" to disk BEFORE the fetch fires, then the entry
+                    # is deleted from the Map), and the current code never writes
+                    # the mark back on 'replay-failed' — so the user's action is
+                    # lost forever. The RED assertion is
+                    # `mark-survived-failed-replay`: after the failed replay the
+                    # server canvas must STILL carry this gate's pending mark (a
+                    # #198 fix must write it back with a bounded retry count).
+                    field1 = result["field-phase1"]
+                    field1_ok = (
+                        len(field1) == 1
+                        and any(e.get("kind") == KIND[gate] and e.get("nodeId") == NODE_ID_OF(gate)
+                                for e in field1)
+                    )
+                    net_p1 = len([e for e in cap2["net"] if e.get("method") == "POST"])
+                    phase1_ok = (
+                        gate_flush_failed and not stop_seen and pending_seen
+                        and result["checks"]["pending-queued-at-gate"]
+                        and pre_posts == 0 and net_p1 == 0
+                        and len(posts_phase1) == 0 and field1_ok
+                    )
+                    # Phase 2 (server-side evidence only — the killed POST may fire
+                    # before INSTRUMENT_JS is reinstalled on the reloaded page, so
+                    # __fix189Net / net_p2 are recorded but NOT asserted):
+                    net_p2 = len([e for e in cap3["net"] if e.get("method") == "POST"])
+                    seeded2 = any(e.get("event") == "seeded" and e.get("kind") == KIND[gate]
+                                  for e in cap3["log"])
+                    replayed2 = any(e.get("event") == "replayed" and e.get("kind") == KIND[gate]
+                                    for e in cap3["log"])
+                    replay_failed2 = any(e.get("event") == "replay-failed" and e.get("kind") == KIND[gate]
+                                         for e in cap3["log"])
+                    if gate == "local-edit":
+                        # submitLocalEditRequest swallows its own fetch error (it
+                        # toasts and RESOLVES), so its dispatcher event is
+                        # 'replayed' even when the POST got 500 — for that gate the
+                        # 500 + no-output server evidence IS the failure evidence.
+                        fail_evidence = len(posts) == 1 and posts[0].get("status") == 500
+                    else:
+                        fail_evidence = replay_failed2 and not replayed2
+                    phase2_ok = (
+                        seeded2
+                        and len(posts) == 1
+                        and posts[0].get("status") == 500
+                        and fail_evidence
+                    )
+                    rb = result["readback"]
+                    if gate == "conversation":
+                        phase2_ok = phase2_ok and rb.get("conv-gate-text-count") == 0
+                    elif gate == "photoshop":
+                        phase2_ok = phase2_ok and rb.get("ps-round-trips") == 0
+                    elif gate == "local-edit":
+                        phase2_ok = phase2_ok and not rb.get("le-output-asset")
+                    else:
+                        phase2_ok = phase2_ok and rb.get("video-task-count") == 0
+                    # THE RED ASSERTION (#198): the failed replay must NOT have
+                    # permanently lost the mark — it must still be on the server
+                    # canvas so a later reload can retry it. Current code: the
+                    # clear was persisted before the fetch and nothing is written
+                    # back on failure -> field is empty -> RED.
+                    field_after = result["field-after-failure"]
+                    mark_survived = (
+                        len(field_after) >= 1
+                        and any(e.get("kind") == KIND[gate] and e.get("nodeId") == NODE_ID_OF(gate)
+                                for e in field_after)
+                    )
+                    phase2_ok = phase2_ok and mark_survived
+                    result["checks"]["phase1"] = phase1_ok
+                    result["checks"]["phase2"] = phase2_ok
+                    result["checks"]["server-field-phase1"] = field1
+                    result["checks"]["server-field-after-failure"] = field_after
+                    result["checks"]["mark-survived-failed-replay"] = mark_survived
+                    result["checks"]["session1-net-posts"] = net_p1
+                    result["checks"]["session2-net-posts"] = net_p2
+                    result["checks"]["total-server-posts"] = len(posts)
+                    result["checks"]["server-post-statuses"] = [p.get("status") for p in posts]
+                    result["checks"]["seeded-on-reload"] = seeded2
+                    result["checks"]["replayed-on-reload"] = replayed2
+                    result["checks"]["replay-failed-on-reload"] = replay_failed2
+                    result["checks"]["killer"] = result.get("killer")
+                    result["passed"] = phase1_ok and phase2_ok
                 else:
                     common_ok = (
                         gate_flush_failed
@@ -828,7 +991,7 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gate", choices=["conversation", "photoshop", "local-edit", "video"], required=True)
-    parser.add_argument("--mode", choices=["repro", "fixed", "refresh", "refresh-sent"], default="repro")
+    parser.add_argument("--mode", choices=["repro", "fixed", "refresh", "refresh-sent", "replay-failed"], default="repro")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--artifacts-dir", type=pathlib.Path, required=True)
     parser.add_argument("--shots-dir", type=pathlib.Path, required=True)
