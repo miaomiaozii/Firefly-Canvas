@@ -60,6 +60,31 @@ CATEGORY_BY_NAME = {
     "render": "hub",
     "scheduleSave": "hub",
     "saveProjectCanvasUntilSettled": "hub",
+    # 以下三个是 2026-10-19 修好 TOP_LEVEL_NAME_RE 漏 `async function` 后才浮现的：
+    # 它们一直是跨模块共享的核心名字，只是之前对提取器隐形、从未被分类。
+    # 实测引用数：saveCanvas 4 / acceptProjectGenerationRegistration 4 / importProjectMediaReference 3。
+    "saveCanvas": "hub",
+    "importProjectMediaReference": "hub",
+    "acceptProjectGenerationRegistration": "hub",
+    # 同一批正则修正后浮现的单模块引用（共 25 处），按现有约定分类：
+    # util = 纯辅助（对齐 apiErrorMessage / formatRunDuration）；dom = DOM 元素与刷新动作（对齐 refreshIcons）；
+    # 其余都是对画布状态的动作/服务 → hub。
+    "pollGenerationTaskResultForNode": "hub",
+    "controlProjectImageTask": "hub",
+    "flushProjectCanvasBeforeGeneration": "hub",
+    "deleteSmartProjectOriginal": "hub",
+    "restoreSmartProjectOriginal": "hub",
+    "restoreSmartProjectOriginalUndo": "hub",
+    "archiveProjectMediaAsset": "hub",
+    "copySmartHistoryImage2k": "hub",
+    "smartTrashRestoreItem": "hub",
+    "smartTrashPurgeItem": "hub",
+    "deleteCanvasLogEntry": "hub",
+    "uploadImageBlobs": "hub",
+    "refreshSmartProjectMediaTrashButton": "dom",
+    "copyTextToClipboard": "util",
+    "smartResponseErrorMessage": "util",
+    "rhBuildNodeInfoList": "util",
     "toast": "hub",
     "tr": "hub",
     "trf": "hub",
@@ -277,6 +302,9 @@ def _core_text() -> str:
 def _declaration_kind(name: str, core_text: str) -> str:
     """名字在核心里的声明形态——分类的证据，不是猜的。"""
     for pattern, kind in (
+        # `async function` 必须单独列：只写 `^function` 会把 async 顶层函数
+        # 归为 not-top-level，跟 _top_level_names 的盲点同源。
+        (rf"^async\s+function\s+{re.escape(name)}\s*\(", "function"),
         (rf"^function\s+{re.escape(name)}\s*\(", "function"),
         (rf"^class\s+{re.escape(name)}\b", "class"),
         (rf"^const\s+{re.escape(name)}\s*=\s*(?:document\.(?:getElementById|querySelector)|\$\()", "dom-ref"),
@@ -383,7 +411,9 @@ def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
         if name in call_cache:
             return call_cache[name]
         calls = len(re.findall(rf"\b{re.escape(name)}\s*\(", stripped_core))
-        definitions = len(re.findall(rf"^function\s+{re.escape(name)}\s*\(", stripped_core, re.M))
+        definitions = len(
+            re.findall(rf"^(?:async\s+)?function\s+{re.escape(name)}\s*\(", stripped_core, re.M)
+        )
         result = max(0, calls - definitions)
         call_cache[name] = result
         return result

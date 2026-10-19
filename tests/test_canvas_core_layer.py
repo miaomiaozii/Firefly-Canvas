@@ -162,13 +162,18 @@ MODULE_OWNED = {
 # 匹配点号后的名字，陷阱 2 的守卫在 tests/test_canvas_coupling_report.py）。真实进展
 # 看下面 FREE_GLOBAL_REFERENCE_CEILINGS（自由全局侧，只许降）。
 REVERSE_REFERENCE_CEILINGS = {
-    "canvas-generation-cascade.js": 147,
-    "canvas-media-history.js": 83,
-    "canvas-generation-tasks.js": 103,
-    "canvas-image-editor.js": 87,
+    # 2026-10-19 全部上调：不是放宽棘轮，是修正测量。
+    # 旧正则漏 `async function`，smart-canvas.js 里 89 个 async 顶层函数从未计入。
+    # 括号里是「旧（少算） -> 修正后」。每个增量都能归因到正则修正，无一个是真回归：
+    # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
+    # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
+    "canvas-generation-cascade.js": 155,  # 147 -> 155
+    "canvas-media-history.js": 98,  # 83 -> 98
+    "canvas-generation-tasks.js": 113,  # 103 -> 113
+    "canvas-image-editor.js": 89,  # 87 -> 89
     "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
     "canvas-connections.js": 41,
-    "canvas-undo.js": 6,
+    "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
@@ -186,13 +191,14 @@ REVERSE_REFERENCE_CEILINGS = {
 # 驱动，不由总数驱动（总数在接口化前后不变，见上）。2026-10-19（#201 开始）实测初值
 # 等于当时的反向引用总数（尚无接口引用）；每接口化一个模块就收紧一次。
 FREE_GLOBAL_REFERENCE_CEILINGS = {
-    "canvas-generation-cascade.js": 42,  # #201 接口化：自由侧 147 -> 42（22 个共享名字 105 处改走 canvasCore 接口）
-    "canvas-media-history.js": 36,  # #201 接口化：自由侧 83 -> 36（23 个共享名字 47 处改走 canvasCore 接口）
-    "canvas-generation-tasks.js": 103,
-    "canvas-image-editor.js": 41,  # #201 接口化：自由侧 87 -> 41（17 个共享名字 46 处改走 canvasCore 接口）
+    # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
+    "canvas-generation-cascade.js": 50,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
+    "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51（+15）
+    "canvas-generation-tasks.js": 113,  # 正则修正 103->113（+10）；尚未接口化
+    "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
     "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
-    "canvas-undo.js": 6,
+    "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
@@ -202,11 +208,20 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
 }
 
 
+# 顶层名提取。必须含 `async function`：早期版本只写 `function`，导致
+# smart-canvas.js 里 89 个 async 顶层函数对守卫完全隐形——而且正是最关键的
+# 一批（saveProjectCanvasUntilSettled / saveCanvas / importProjectMediaReference /
+# materializeProjectMediaReferences / flushProjectCanvasBeforeGeneration /
+# settleProjectCanvasBeforeOriginalMutation / runGeneration / loadCanvas）。
+# 后果：反向引用棘轮上限始终按少算的数定（实测 575 被当成 539），
+# 这 89 个名字被模块引用时完全不计入预算。见 test_top_level_names_recognizes_async_function。
+TOP_LEVEL_NAME_RE = re.compile(
+    r"^(?:async\s+function|function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", re.M
+)
+
+
 def _top_level_names(text: str) -> set[str]:
-    return {
-        m.group(1)
-        for m in re.finditer(r"^(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", text, re.M)
-    }
+    return {m.group(1) for m in TOP_LEVEL_NAME_RE.finditer(text)}
 
 
 def _is_canvas_script(name: str) -> bool:
@@ -320,6 +335,26 @@ def _canvas_modules() -> tuple[str, ...]:
 
 
 class CanvasCoreLayerTests(unittest.TestCase):
+    def test_top_level_names_recognizes_async_function(self):
+        # 守卫自己的回归测试。旧正则只写 `function`，smart-canvas.js 里 89 个
+        # async 顶层函数对两个棘轮完全隐形——它们被模块引用时不计入预算。
+        # 这批名字恰好是最关键的行为枢纽，所以这个盲点不是边角案例。
+        core = _top_level_names(_strip_comment_lines((JS_DIR / "smart-canvas.js").read_text(encoding="utf-8")))
+        for name in (
+            "saveProjectCanvasUntilSettled",
+            "saveCanvas",
+            "importProjectMediaReference",
+            "materializeProjectMediaReferences",
+            "flushProjectCanvasBeforeGeneration",
+            "settleProjectCanvasBeforeOriginalMutation",
+            "runGeneration",
+            "loadCanvas",
+        ):
+            self.assertIn(name, core, f"async 顶层函数 {name} 未被 TOP_LEVEL_NAME_RE 识别")
+        # 下限守卫：棘轮只防「涨」，不防「提取器塌了」。提取到的名字数
+        # 突然大幅下降意味着正则坏了，而不是代码变好了。
+        self.assertGreaterEqual(len(core), 1000, f"顶层名提取数量异常（{len(core)}）——检查 TOP_LEVEL_NAME_RE")
+
     def test_module_ceilings_cover_exactly_the_derived_module_set(self):
         # 新增模块时，这里会先红，逼你显式给它记一个上限，而不是静默少计。
         modules = sorted(_canvas_modules())
@@ -374,7 +409,7 @@ class CanvasCoreLayerTests(unittest.TestCase):
             path = JS_DIR / name
             if not path.exists():
                 continue
-            for m in re.finditer(r"^(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", path.read_text(encoding="utf-8"), re.M):
+            for m in TOP_LEVEL_NAME_RE.finditer(path.read_text(encoding="utf-8")):
                 seen.setdefault(m.group(1), []).append(name)
         duplicates = {name: files for name, files in seen.items() if len(files) > 1}
         self.assertEqual({}, duplicates)
