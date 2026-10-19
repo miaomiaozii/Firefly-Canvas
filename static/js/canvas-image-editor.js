@@ -2259,10 +2259,21 @@ function updatePreviewNavButtons(){
 function replaceEditedImage(file, extra={}){
     const {node, index} = currentEditImage();
     if(!node || !file) return false;
-    const assetId = file.asset_id || extra.asset_id || (node.images[index] || {}).asset_id || '';
-    node.images[index] = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || canvasCore.mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
+    // #205：星标（marked）按具体图片资源记录（#89 规格）。裁剪/笔刷/扩图/调整尺寸把当前图
+    // 替换成一张全新的上传图（另一个资源）——asset_id 只取调用方显式绑定的新 asset
+    // （extra.asset_id / file.asset_id），不得回退旧图的 asset_id，否则旧 asset 的星标
+    // （canvas.markedAssetIds）仍会挂在新图条目上，星标状态看起来被「搬」到新图
+    // （保存/刷新后固化）。新图的新 asset 由落盘时 materializeProjectMediaReferences
+    // 按 url 导入项目媒体得到（与候选池等 url 条目同一路径）。
+    const assetId = (extra && extra.asset_id) || file.asset_id || '';
+    const next = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || canvasCore.mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
+    // 新图是新资源，不得继承旧图的星标（旧 asset 的星标仍在 canvas.markedAssetIds）。
+    delete next.marked;
+    node.images[index] = next;
     if((node.images || []).length === 1){ delete node.w; delete node.h; }
     canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index};
+    // 旧图若是节点上唯一星标图，节点 curated（收集/导出的「保留」信号）需随真实星标重同步。
+    syncCuratedFromMarks();
     return true;
 }
 function drawImageCover(ctx, img, dx, dy, dw, dh){

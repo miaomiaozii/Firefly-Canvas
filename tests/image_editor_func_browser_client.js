@@ -35,6 +35,38 @@
     function nodes(){ return (0, eval)('canvasState.nodes'); }
     function findNode(id){ return nodes().find(n => n && n.id === id); }
     function nodeName(nodeId){ const n = findNode(nodeId); return n && n.images && n.images[0] ? n.images[0].name : null; }
+    // #205：星标（marked）按具体图片资源（asset）记录（#89 规格）。「替换图片」操作
+    // （裁剪/笔刷/扩图/调整尺寸）把当前图换成一张全新的上传图——新图不得继承星标，
+    // 原图的星标必须保留（canvas.markedAssetIds 仍含原 asset）。
+    function starMarks(){
+        try {
+            const c = (0, eval)('canvas');
+            return Array.isArray(c && c.markedAssetIds) ? c.markedAssetIds.map(String) : null;
+        } catch(_){ return null; }
+    }
+    function editNodeImages(){
+        try {
+            const n = (0, eval)('canvasState.nodes').find(x => x && x.id === 'edit-node');
+            return n && n.images ? n.images.map(i => ({asset_id: String(i && i.asset_id || ''), marked: !!(i && i.marked), name: i && i.name})) : null;
+        } catch(_){ return null; }
+    }
+    function markEditNodeFirstImage(){
+        try {
+            const n = (0, eval)('canvasState.nodes').find(x => x && x.id === 'edit-node');
+            if(!n || !n.images || !n.images[0]) return 'no-image';
+            const a = String(n.images[0].asset_id || '');
+            if(!a) return 'no-asset-id';
+            (0, eval)('setMarkedImage')(a, true);
+            return a;
+        } catch(e){ return 'ERR:' + e.message; }
+    }
+    function assertStarNotMoved(label, originalAssetId){
+        const imgs = editNodeImages();
+        const cur = imgs && imgs[0] ? imgs[0] : null;
+        const marks = starMarks();
+        assertion(label + ': replaced image has no star', !!(cur && cur.marked === false && cur.asset_id !== String(originalAssetId)), JSON.stringify(cur));
+        assertion(label + ': original image star retained', !!(marks && marks.includes(String(originalAssetId))), JSON.stringify(marks));
+    }
     function editMode(){ return (0, eval)('imageEditMode'); }
     function modalOpen(){ return document.getElementById('imageEditModal')?.classList.contains('open') === true; }
     function cropImageLoaded(){ const img = document.getElementById('cropImage'); return !!(img && img.naturalWidth > 0); }
@@ -121,6 +153,14 @@
             assertion('image toolbar is interactive without covering node content', imageGeometry.toolbarPointerEvents === 'auto' && imageGeometry.toolbarRect.bottom < imageGeometry.mediaRect.top, {pointerEvents:imageGeometry.toolbarPointerEvents, toolbarBottom:imageGeometry.toolbarRect.bottom, imageTop:imageGeometry.mediaRect.top});
         }
 
+        // #205：星标基线——先给 edit-node 当前图打星标，随后每个「替换图片」操作
+        // （裁剪/笔刷/扩图/调整尺寸）后依次断言星标没有搬到新图上。
+        const markedOriginalAssetId = markEditNodeFirstImage();
+        const markedBaselineOk = typeof markedOriginalAssetId === 'string' && markedOriginalAssetId && !markedOriginalAssetId.startsWith('no-') && !markedOriginalAssetId.startsWith('ERR')
+            && !!(starMarks() && starMarks().includes(markedOriginalAssetId))
+            && !!(editNodeImages() && editNodeImages()[0] && editNodeImages()[0].marked);
+        assertion('star baseline: edit-node first image marked', markedBaselineOk, 'asset=' + markedOriginalAssetId + ' | marks=' + JSON.stringify(starMarks()) + ' | imgs=' + JSON.stringify(editNodeImages()));
+
         trace('crop-step');
         // --- crop ---
         assertion('editor opens with image loaded', await openEditor() && await waitFor(cropImageLoaded, 12000), 'modal+image');
@@ -143,6 +183,7 @@
                     assertion('crop width', Math.abs(pix.w - expectW) <= 2, pix.w + ' vs ' + expectW);
                     assertion('crop height preserved', Math.abs(pix.h - expectH) <= 2, pix.h + ' vs ' + expectH);
                 } catch(e){ result.errors.push('crop fetch: ' + e.message); }
+                assertStarNotMoved('after crop', markedOriginalAssetId);
             }
         }
 
@@ -171,6 +212,7 @@
                         }
                         assertion('brush pixels visible in result', dark >= 5, 'dark px=' + dark);
                     } catch(e){ result.errors.push('brush fetch: ' + e.message); }
+                    assertStarNotMoved('after brush', markedOriginalAssetId);
                 }
             }
         }
@@ -249,6 +291,7 @@
                         assertion('outpaintSize matches', os.width === pix.w, JSON.stringify(os) + ' vs ' + pix.w);
                         assertion('outpaint prompt draft set', (node.promptDraftText || '').includes('Remove red area and fill the scene'), String(node.promptDraftText));
                     } catch(e){ result.errors.push('outpaint fetch: ' + e.message); }
+                    assertStarNotMoved('after outpaint', markedOriginalAssetId);
                 }
             }
         }
@@ -294,6 +337,7 @@
                     const img = findNode('edit-node').images[0];
                     assertion('resize image name', (img.name || '').includes('_resize_50pct'), img.name);
                     assertion('resize natural size', img.natural_w === 32 && img.natural_h === 32, img.natural_w + 'x' + img.natural_h);
+                    assertStarNotMoved('after resize', markedOriginalAssetId);
                 }
             }
         }
@@ -302,15 +346,28 @@
         // --- persist ---
         const canvasId = (0, eval)('canvasId');
         trace('persist-wait');
+        let persistText = null;
+        let persistNodeDump = null;
         const persisted = await waitFor(async () => {
             try {
                 const res = await fetch('/api/canvases/' + encodeURIComponent(canvasId));
                 if(!res.ok) return false;
                 const text = JSON.stringify(await res.json());
-                return text.includes('_resize_50pct') && text.includes('"Grid"');
+                if(!text.includes('_resize_50pct') || !text.includes('"Grid"')) return false;
+                persistText = text;
+                try {
+                    const doc = JSON.parse(text);
+                    const cdoc = doc.canvas || doc;
+                    const pn = (cdoc.nodes || []).find(n => n && n.id === 'edit-node');
+                    persistNodeDump = JSON.stringify(pn && pn.images ? pn.images.map(i => ({asset_id:i.asset_id,name:i.name,marked:!!i.marked,url:i.url||null})) : null);
+                } catch(_){}
+                return true;
             } catch(_) { return false; }
         }, 20000);
         assertion('server canvas persisted all ops', persisted, 'final=' + persisted);
+        // #205：刷新后（从磁盘 JSON 重建）星标不得落到「替换出的新图」上——
+        // 持久化 JSON 里任何节点图片都不得带 marked:true。
+        assertion('persisted canvas keeps no star on replaced images', !!(persistText && !persistText.includes('"marked":true')), 'noMarked=' + (persistText ? String(!persistText.includes('"marked":true')) : 'timeout') + ' | edit-node=' + (persistNodeDump || 'n/a'));
 
         // #187：放在整个 run 的最后。探针会从扩图后的节点出一次图，改变节点当前图
         // 的尺寸基准；放在中间会污染后面的 resize（实测 resize natural size 32x32→48x48）。
