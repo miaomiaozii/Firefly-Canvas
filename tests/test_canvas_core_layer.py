@@ -136,6 +136,11 @@ MODULE_OWNED = {
         "LOCAL_EDIT_NODE_H",
         "addCreatedNodeToMenuGroup",
     ),
+    # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+    "canvas-agent-tui.js": (
+        "getChatModels",
+        "renderMarkdown",
+    ),
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
@@ -159,7 +164,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
     "canvas-connections.js": 41,
     "canvas-undo.js": 6,
-    "canvas-agent-tui.js": 12,
+    "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
     "canvas-layout-utils.js": 0,

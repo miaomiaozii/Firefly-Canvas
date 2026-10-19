@@ -392,33 +392,6 @@ function refreshIcons(root=document){
 // Lightweight XSS-safe markdown renderer for agent TUI messages
 // Escapes HTML first, then renders markdown syntax.
 // Supports: code blocks, inline code, bold, italic, links, unordered lists.
-function renderMarkdown(text){
-    if(text == null) return '';
-    let html = escapeHtml(String(text));
-    // Code blocks (```) - must be done before inline code
-    html = html.replace(/```([\s\S]*?)```/g, '<pre class="agent-md-code-block"><code>$1</code></pre>');
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code class="agent-md-inline-code">$1</code>');
-    // Bold (**text**)
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic (*text*) - must be after bold
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    // Links [text](url) - only allow safe protocols (block javascript: etc.)
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-        const safeUrl = /^(https?:|mailto:|\/|#|\.\/|\.\.\/)/i.test(url) ? url : '#';
-        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-    });
-    // Unordered lists (- item)
-    html = html.replace(/(^|\n)- (.+)/g, '$1<li>$2</li>');
-    html = html.replace(/(<li>.*?<\/li>)(\s*(?:<li>.*?<\/li>))+/g, '<ul class="agent-md-list">$1</ul>');
-    // Paragraphs (double newline)
-    html = html.replace(/\n\n/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    html = '<p>' + html + '</p>';
-    // Clean up empty paragraphs
-    html = html.replace(/<p><\/p>/g, '');
-    return html;
-}
 function smartPreviewImgHtml(itemOrUrl, size=512, attrs=''){
     const original = smartOriginalMediaUrl(itemOrUrl);
     const preview = smartMediaPreviewUrl(itemOrUrl, size);
@@ -2381,17 +2354,6 @@ function resolveChatProviderId(providerId=''){
     const providers = chatApiProviders();
     if(providers.some(p => p.id === providerId)) return providerId;
     return providers[0]?.id || 'comfly';
-}
-function getChatModels(){
-    // Return a list of chat model IDs across all providers
-    const models = [];
-    for (const provider of chatApiProviders()) {
-        const providerModels = providerChatModels(provider.id);
-        for (const model of providerModels) {
-            models.push({ id: model, name: model });
-        }
-    }
-    return models;
 }
 
 function providerChatModels(providerId){
