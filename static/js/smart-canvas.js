@@ -231,7 +231,6 @@ let promptTemplateSelectedId = '';
 let promptTemplateEditing = false;
 let promptTemplateGroupEditMode = false;
 let promptPresetDeleteArmed = false;
-let createMenuPoint = {x:0, y:0};
 let nodeClipboard = null;
 let imageClickTimer = null;
 let suppressImageClickUntil = 0;
@@ -1061,7 +1060,6 @@ const ZOOM_PREVIEW_NODE_MAX_SCALE = 1.15;
 const MEDIA_GROUP_THUMB_BASE = 224;
 const MEDIA_GROUP_MAX_VISIBLE_ROWS = 3;
 // 智能分组卡片内的图片网格：超过这么多排就出现纵向滚动（区别于多图节点的 3 排）。
-const SMART_GROUP_MAX_VISIBLE_ROWS = 4;
 
 // ========== 批量生图缩略图规范（单一数据源） ==========
 // 参考生图历史面板：136px 宽、4:3 比例的卡片
@@ -7097,14 +7095,6 @@ function duplicateForAltDrag(node, preserveConnections=false){
 let interactionLayerRaf = 0;
 // 拖动/缩放节点时，每个 mousemove 都全量重建连线 SVG + 小地图会掉帧；
 // 用 requestAnimationFrame 把它们合并成每帧最多刷新一次（节点本身的位移仍是即时的）。
-function scheduleInteractionLayerRefresh(){
-    if(interactionLayerRaf) return;
-    interactionLayerRaf = requestAnimationFrame(() => {
-        interactionLayerRaf = 0;
-        refreshConnectionLayer();
-        renderMinimap();
-    });
-}
 function syncSmartGroupMemberElements(group){
     if(!isSmartGroupNode(group)) return;
     smartGroupCompactMembers(group).forEach(member => {
@@ -8361,8 +8351,6 @@ function smartGroupBodyHtml(node){
 }
 // #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
 // 360x330 会溢出外框；卡片内部可滚动，用户仍可拖右下角调整。
-const LOCAL_EDIT_NODE_W = 400;
-const LOCAL_EDIT_NODE_H = 520;
 function syncLocalEditInputRoles(node){
     if(!node || node.type !== NODE_TYPE_LOCAL_EDIT) return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
@@ -14220,15 +14208,6 @@ function openCreateMenu(event, options={}){
     createMenu.style.left = `${left}px`;
     createMenu.style.top = `${top}px`;
     refreshIcons();
-}
-function addCreatedNodeToMenuGroup(node){
-    const group = canvasState.createMenuGroupId ? canvasState.nodes.find(n => n.id === canvasState.createMenuGroupId) : null;
-    if(addNodeToSmartGroup(group, node)){
-        // 通过分组小菜单新建的节点入组后自动整理（节点创建已压过 undo，这里不再重复）。
-        arrangeSmartGroupMembers(group, {skipUndo:true});
-        render();
-        scheduleSave();
-    }
 }
 shell.addEventListener('mousedown', e => {
     if(!zoomPreviewState) return;

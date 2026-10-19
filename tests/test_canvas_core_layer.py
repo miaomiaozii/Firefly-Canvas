@@ -127,6 +127,15 @@ MODULE_OWNED = {
         "upstreamLoopPromptNodesFor",
         "rememberRoundOutputs",
     ),
+    # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+    "canvas-node-ops.js": (
+        "createMenuPoint",
+        "SMART_GROUP_MAX_VISIBLE_ROWS",
+        "scheduleInteractionLayerRefresh",
+        "LOCAL_EDIT_NODE_W",
+        "LOCAL_EDIT_NODE_H",
+        "addCreatedNodeToMenuGroup",
+    ),
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
@@ -147,7 +156,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-media-history.js": 83,
     "canvas-generation-tasks.js": 103,
     "canvas-image-editor.js": 87,
-    "canvas-node-ops.js": 60,
+    "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
     "canvas-connections.js": 41,
     "canvas-undo.js": 6,
     "canvas-agent-tui.js": 12,

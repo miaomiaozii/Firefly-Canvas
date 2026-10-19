@@ -354,3 +354,26 @@ function createNodeFromMenu(type){
     canvasState.createMenuGroupId = '';
     return created;
 }
+
+// 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
+let createMenuPoint = {x:0, y:0};
+const SMART_GROUP_MAX_VISIBLE_ROWS = 4;
+function scheduleInteractionLayerRefresh(){
+    if(interactionLayerRaf) return;
+    interactionLayerRaf = requestAnimationFrame(() => {
+        interactionLayerRaf = 0;
+        refreshConnectionLayer();
+        renderMinimap();
+    });
+}
+const LOCAL_EDIT_NODE_W = 400;
+const LOCAL_EDIT_NODE_H = 520;
+function addCreatedNodeToMenuGroup(node){
+    const group = canvasState.createMenuGroupId ? canvasState.nodes.find(n => n.id === canvasState.createMenuGroupId) : null;
+    if(addNodeToSmartGroup(group, node)){
+        // 通过分组小菜单新建的节点入组后自动整理（节点创建已压过 undo，这里不再重复）。
+        arrangeSmartGroupMembers(group, {skipUndo:true});
+        render();
+        scheduleSave();
+    }
+}
