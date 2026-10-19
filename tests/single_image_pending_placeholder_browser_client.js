@@ -27,6 +27,14 @@
         result.assertions.push({name: name, pass: !!ok, actual: actual === undefined ? null : actual});
     }
 
+    // #213：2d3381b（#162 P2e 4a）起 nodes 不再是裸全局，挂在 window.canvasState.nodes
+    // （static/js/canvas-state.js:8）；兼容访问器同 tests/fly_fixes_browser_client.js:48，
+    // 返回活数组，供注入（push）与几何测量。
+    function nodes() {
+        const s = window.canvasState;
+        return (s && Array.isArray(s.nodes)) ? s.nodes : (0, eval)('nodes');
+    }
+
     async function waitFor(predicate, timeoutMs) {
         const timeout = timeoutMs || 12000;
         const start = Date.now();
@@ -47,15 +55,15 @@
     async function run() {
         const ready = await waitFor(() =>
             typeof render === 'function' &&
-            typeof nodes !== 'undefined' &&
+            (() => { try { return nodes().length >= 0; } catch (err) { return false; } })() &&
             document.getElementById('world') !== null
         );
         result.diagnostics = {
             ready: ready,
             typeofRender: typeof render,
-            typeofNodes: (typeof nodes === 'undefined') ? 'undefined' : typeof nodes,
+            typeofNodes: (() => { try { return typeof nodes(); } catch (err) { return 'undefined'; } })(),
             worldFound: document.getElementById('world') !== null,
-            nodesLen: (typeof nodes !== 'undefined' && Array.isArray(nodes)) ? nodes.length : -1
+            nodesLen: (() => { try { return Array.isArray(nodes()) ? nodes().length : -1; } catch (err) { return -1; } })()
         };
         assertion('app globals ready', ready);
         if (!ready) return finish();
@@ -82,14 +90,14 @@
         };
         let renderError = null;
         try {
-            nodes.push(node);
+            nodes().push(node);
             render();
         } catch (err) {
             renderError = String((err && err.stack) || err);
             result.errors.push('render failed: ' + renderError);
         }
         result.diagnostics.renderError = renderError;
-        result.diagnostics.nodesLenAfter = (typeof nodes !== 'undefined' && Array.isArray(nodes)) ? nodes.length : -1;
+        result.diagnostics.nodesLenAfter = (() => { try { return Array.isArray(nodes()) ? nodes().length : -1; } catch (err) { return -1; } })();
 
         const found = await waitFor(() =>
             document.querySelector(`.image-node[data-id="${nodeId}"] .loading-cell.single`) !== null
@@ -136,7 +144,7 @@
         const batchCompletedId = 'm2-batch-completed';
         const batchPendingId = 'm2-batch-pending';
         const makeImg = (i) => ({url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', kind: 'image', name: 'img' + i + '.png'});
-        nodes.push(
+        nodes().push(
             {id: singleCompletedId, type: 'smart-image', x: 700, y: 200, images: [makeImg(0)], _batchTotal: 1, _generationAspect: {w: 4, h: 3}},
             {id: batchCompletedId, type: 'smart-image', x: 1000, y: 200, images: [0,1,2,3,4,5,6,7].map(makeImg), _batchTotal: 8, _generationAspect: {w: 4, h: 3}},
             {id: batchPendingId, type: 'smart-image', x: 1000, y: 560, pending: 1, _batchTotal: 8, _generationAspect: {w: 4, h: 3}, images: []}
@@ -155,7 +163,7 @@
             assertion('single completed node keeps resize handle', hasHandle(singleCompletedId));
 
             // ===== L4：手动删图 → _batchTotal 随剩余图片下调，外框/网格自适应，不留空位 =====
-            const batchNode = nodes.find(n => n.id === batchCompletedId);
+            const batchNode = nodes().find(n => n.id === batchCompletedId);
             const beforeRect = rectOf(document.querySelector(`.image-node[data-id="${batchCompletedId}"]`));
             assertion('batch 8 completed outer frame 603x277', Math.round(beforeRect.width) === 603 && Math.round(beforeRect.height) === 277,
                 {w: beforeRect.width, h: beforeRect.height});
