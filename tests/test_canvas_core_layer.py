@@ -73,6 +73,28 @@ MODULE_OWNED = {
         "openSmartCanvasLog",
     ),
     "canvas-connections.js": ("connectionEraseState",),
+    # #200 从 smart-canvas.js 搬回（只被本模块引用、核心不调用）：
+    "canvas-image-editor.js": (
+        "previewPanDrag",
+        "previewCompareDrag",
+        "previewNavState",
+        "exceedsFourKStandard",
+        "updateImagePreviewMarkButton",
+        "textItemFont",
+        "beginTextEditChange",
+        "selectInlineEditorText",
+        "inlineEditorText",
+        "autosizeEditTextInlineEditor",
+        "previewCompareOn",
+        "previewCompareIndex",
+        "resetPreviewTransform",
+        "editCanvasHasPixels",
+        "drawNumberLabel",
+        "updatePreviewNavButtons",
+        "replaceEditedImage",
+        "drawImageCover",
+        "setPromptDraftForNode",
+    ),
 }
 
 # 棘轮上限：模块 -> smart-canvas.js 的反向引用处数，按模块记。只能降。
@@ -92,7 +114,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-generation-cascade.js": 153,
     "canvas-media-history.js": 83,
     "canvas-generation-tasks.js": 106,
-    "canvas-image-editor.js": 106,
+    "canvas-image-editor.js": 87,
     "canvas-node-ops.js": 60,
     "canvas-connections.js": 44,
     "canvas-undo.js": 6,

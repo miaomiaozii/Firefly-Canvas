@@ -278,10 +278,7 @@ function smartCascadePathForCtx(ctx=null){
 }
 let previewZoom = 1.0;
 let previewPan = {x:0, y:0};
-let previewPanDrag = null;
-let previewCompareDrag = false;
 let previewComparePos = 50;
-let previewNavState = {nodeId:'', index:0, count:0};
 let viewport = {x:0, y:0, scale:1};
 const PROJECT_VIEWPORT_STORAGE_PREFIX = 'firefly_canvas_viewport_v1:';
 function isProjectCanvasData(source=canvas){
@@ -952,11 +949,6 @@ function nearestFourKSizeFor(width, height){
         if(!best || score < best.score) best = {...size, key, score};
     });
     return best;
-}
-function exceedsFourKStandard(width, height){
-    const standard = nearestFourKSizeFor(width, height);
-    if(!standard) return false;
-    return Number(width) > standard.width || Number(height) > standard.height;
 }
 function smartSettingsForNode(node){
     const nodeSettings = stripOutpaintDisplaySettings(node?.runSettings || {}, node);
@@ -7581,18 +7573,6 @@ function toggleImagePreviewMark(){
     if(!assetId){ toast(tr('smart.markUnavailable')); return; }
     setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
 }
-function updateImagePreviewMarkButton(){
-    const btn = document.getElementById('imagePreviewMarkBtn');
-    if(!btn) return;
-    const ref = canvasState.selectedImage || {};
-    const node = canvasState.nodes.find(n => n.id === ref.nodeId);
-    const raw = node?.images?.[Number(ref.index || 0)];
-    const item = imageForDisplay(raw) || raw;
-    const assetId = String(raw?.asset_id || item?.asset_id || '');
-    btn.dataset.markedAsset = assetId;
-    btn.hidden = !assetId || mediaKindForItem(item) !== 'image' || imageEditMode !== 'preview';
-    syncMarkedImageButtons();
-}
 async function zipDownloadImageItems(title, items){
     const list = (items || []).filter(item => item?.url);
     if(!list.length) return;
@@ -11261,36 +11241,6 @@ function currentEditImage(){
     const index = Number(cropState?.imageIndex || 0);
     return {node, index, image:imageForDisplay(node?.images?.[index])};
 }
-function textItemFont(item){
-    const size = Math.max(10, Math.min(120, Number(item?.size) || 28));
-    return `900 ${size}px Arial, sans-serif`;
-}
-function beginTextEditChange(){
-    if(editTextDirty) return;
-    pushEditDrawHistory();
-    editTextDirty = true;
-}
-function selectInlineEditorText(el){
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-}
-function inlineEditorText(){
-    return String(editTextInlineEditor?.el?.innerText || editTextInlineEditor?.el?.textContent || '').replace(/\u00a0/g, ' ');
-}
-function autosizeEditTextInlineEditor(){
-    const editor = editTextInlineEditor;
-    if(!editor?.el) return;
-    const el = editor.el;
-    el.style.width = 'auto';
-    el.style.height = 'auto';
-    el.style.width = `${Math.max(Number(editor.minW || 48), el.scrollWidth + 10)}px`;
-    el.style.height = `${Math.max(Number(editor.minH || 28), el.scrollHeight + 4)}px`;
-}
-let previewCompareOn = false;
-let previewCompareIndex = -1;
 let previewMetaExtraText = '';
 function zoomPanAroundPoint(zoom, pan, factor, rect, clientX, clientY, {min=0.05, max=8}={}){
     const nextZoom = Math.max(min, Math.min(max, zoom * factor));
@@ -11312,13 +11262,6 @@ function applyPreviewTransform(){
         frame.style.transform = `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`;
     }
     updateZoomLabel();
-}
-function resetPreviewTransform(){
-    previewZoom = 1.0;
-    previewPan = {x:0, y:0};
-    previewComparePos = 50;
-    document.getElementById('previewStage')?.style.setProperty('--compare-pos', `${previewComparePos}%`);
-    applyPreviewTransform();
 }
 function setPreviewComparePos(clientX){
     const frame = document.getElementById('previewFrame');
@@ -11646,39 +11589,11 @@ async function exportVideoFrame(which='current'){
         toast((e.message || tr('smart.frameExportFailed')).slice(0, 120));
     }
 }
-function editCanvasHasPixels(){
-    if(editTextHasContent()) return true;
-    const canvasEl = editDrawCanvas();
-    const data = canvasEl.getContext('2d').getImageData(0, 0, canvasEl.width, canvasEl.height).data;
-    for(let i = 3; i < data.length; i += 4) if(data[i] > 0) return true;
-    return false;
-}
 function circledNumber(n){ return n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) : String(n); }
-function drawNumberLabel(point){
-    const ctx = editDrawCanvas().getContext('2d');
-    const size = Math.max(18, editBrushSize() * 2.2);
-    const text = circledNumber(brushLabelCounter++);
-    setupDrawStyle(ctx);
-    ctx.save(); ctx.font = `900 ${size}px Arial, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = Math.max(3, size / 8);
-    ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.strokeText(text, point.x, point.y); ctx.fillStyle = brushColor(); ctx.fillText(text, point.x, point.y); ctx.restore();
-}
 function updateZoomLabel(){
     const el = document.getElementById('imageEditZoomLabel');
     if(!el) return;
     el.textContent = Math.round((imageEditMode === 'preview' ? previewZoom : imageEditZoom) * 100) + '%';
-}
-function updatePreviewNavButtons(){
-    let count;
-    if(previewNavState.groupId && Array.isArray(previewNavState.seq)){
-        count = previewNavState.seq.length;
-    } else {
-        const node = canvasState.nodes.find(n => n.id === previewNavState.nodeId);
-        count = Math.max(0, (node?.images || []).filter(img => img?.url).length);
-    }
-    previewNavState.count = count;
-    const show = imageEditModal.classList.contains('open') && imageEditMode === 'preview' && count > 1;
-    document.getElementById('previewPrevBtn')?.classList.toggle('visible', show);
-    document.getElementById('previewNextBtn')?.classList.toggle('visible', show);
 }
 function navigatePreviewImage(delta){
     if(!imageEditModal.classList.contains('open') || imageEditMode !== 'preview') return;
@@ -11715,27 +11630,6 @@ async function uploadImageBlobs(blobs){
     const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
     return data.files || [];
 }
-function replaceEditedImage(file, extra={}){
-    const {node, index} = currentEditImage();
-    if(!node || !file) return false;
-    const assetId = file.asset_id || extra.asset_id || (node.images[index] || {}).asset_id || '';
-    node.images[index] = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
-    if((node.images || []).length === 1){ delete node.w; delete node.h; }
-    canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index};
-    return true;
-}
-function drawImageCover(ctx, img, dx, dy, dw, dh){
-    const sw = Math.max(1, Number(img?.naturalWidth || img?.videoWidth || img?.width || 1));
-    const sh = Math.max(1, Number(img?.naturalHeight || img?.videoHeight || img?.height || 1));
-    const targetW = Math.max(1, Number(dw || 1));
-    const targetH = Math.max(1, Number(dh || 1));
-    const scale = Math.max(targetW / sw, targetH / sh);
-    const cropW = Math.max(1, targetW / scale);
-    const cropH = Math.max(1, targetH / scale);
-    const sx = Math.max(0, (sw - cropW) / 2);
-    const sy = Math.max(0, (sh - cropH) / 2);
-    ctx.drawImage(img, sx, sy, cropW, cropH, dx, dy, targetW, targetH);
-}
 function savePromptDraftForCurrent(){
     if(promptInput?.dataset?.promptLocked === '1') return;
     const subject = activeComposerNode();
@@ -11747,17 +11641,6 @@ function savePromptDraftForCurrent(){
     subject.promptDraftHtml = promptInput.innerHTML;
     subject.promptDraftText = promptPlainText();
     subject.runSettings = cloneSmartSettings(settings);
-}
-function setPromptDraftForNode(node, text){
-    if(!isSmartRunnableNode(node)) return;
-    const value = String(text || '');
-    node.promptDraftHtml = escapeHtml(value);
-    node.promptDraftText = value;
-    node.promptDraftTouched = true;
-    if(activeSettingsSubject()?.id === node.id && promptInput){
-        promptInput.textContent = value;
-        delete promptInput.dataset.preserveDraftOnce;
-    }
 }
 function loadPromptDraft(subject){
     if(subject?.promptDraftHtml){
