@@ -194,7 +194,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 50,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
     "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51（+15）
-    "canvas-generation-tasks.js": 113,  # 正则修正 103->113（+10）；尚未接口化
+    "canvas-generation-tasks.js": 34,  # #199 轨道 1 接口化：自由侧 113->34（21 个共享名字 79 处改走 canvasCore 接口）；剩 21 个 solo 名字 34 处裸引用（轨道 2/3 范畴）
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
     "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
