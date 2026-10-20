@@ -19,6 +19,79 @@
     const assertion = (name, pass, actual) => result.assertions.push({name, pass:Boolean(pass), actual});
     const evalCanvas = () => { try { return eval('canvas'); } catch(_) { return null; } };
     const evalFn = name => { try { const f = eval(name); return typeof f === 'function' ? f : null; } catch(_) { return null; } };
+    // #214 probe (diagnostics only, no behavior/assertion changes): wrap the app's
+    // history-card creation and node-mutation entry points to identify (a) which
+    // call path creates task-less failed history cards and (b) which path clears
+    // gen-conn.images after the concurrent stage completes.
+    const probe214 = {events: []};
+    function probeInstall(){
+        const t0 = performance.now();
+        const ts = () => Math.round(performance.now() - t0);
+        const snap = () => {
+            try {
+                const c = evalCanvas();
+                const n = (c?.nodes || []).find(x => x.id === 'gen-conn');
+                return {
+                    images: (n?.images || []).map(i => String(i.url || i.name || '').slice(-20)),
+                    pending: n?.pending ?? null,
+                    pendingTasks: (n?.pendingTasks || []).map(p => String(p.taskId || '').slice(-8)),
+                    pendingLogs: (c?.history || []).filter(l => l.status === 'pending').map(l => String(l.id || '').slice(-8) + ':' + String(l.request?.task_id || l.task_id || '-').slice(-8)),
+                    history: (c?.history || []).map(l => String(l.status) + '|' + String(l.task_id || l.request?.task_id || '-').slice(-8) + '|' + String(l.prompt || '').slice(0, 12)),
+                };
+            } catch(_) { return null; }
+        };
+        const record = event => probe214.events.push(Object.assign({t: ts()}, event));
+        const origAdd = evalFn('addSmartGenerationHistory');
+        if (typeof origAdd === 'function') {
+            window.addSmartGenerationHistory = function(opts = {}){
+                const before = snap();
+                const stack = (new Error().stack || '').split('\n').slice(2, 5).map(s => s.trim()).join(' <- ');
+                record({type: 'addHistory', prompt: String(opts.run?.prompt || '').slice(0, 20), outputs: (opts.outputs || []).length, error: String(opts.error || '').slice(0, 80), stack, before});
+                return origAdd.call(this, opts);
+            };
+        }
+        const origAbsorb = evalFn('absorbProjectGenerationResult');
+        if (typeof origAbsorb === 'function') {
+            window.absorbProjectGenerationResult = function(result, taskId = ''){
+                const before = snap();
+                const out = origAbsorb.call(this, result, taskId);
+                const after = snap();
+                record({type: 'absorb', task: String(taskId || '').slice(-8), status: result?.status, recorded: Boolean(result?.history_recorded), revision: result?.project_revision, fnImages: (result?.final_node?.images || []).length, imgBefore: before?.images?.length, imgAfter: after?.images?.length, changed: (before?.images?.length) !== (after?.images?.length)});
+                return out;
+            };
+        }
+        const origMerge = evalFn('applyMergedServerCanvas');
+        if (typeof origMerge === 'function') {
+            window.applyMergedServerCanvas = function(serverCanvas){
+                const before = snap();
+                const out = origMerge.call(this, serverCanvas);
+                const after = snap();
+                record({type: 'merge', revision: serverCanvas?.revision, imgBefore: before?.images?.length, imgAfter: after?.images?.length, changed: (before?.images?.length) !== (after?.images?.length), images: after?.images});
+                return out;
+            };
+        }
+        const origSave = evalFn('saveCanvas');
+        if (typeof origSave === 'function') {
+            window.saveCanvas = async function(...args){
+                const before = snap();
+                try {
+                    const out = await origSave.apply(this, args);
+                    record({type: 'save', imgAtSave: before?.images?.length});
+                    return out;
+                } catch(error){
+                    record({type: 'save', imgAtSave: before?.images?.length, error: String(error?.message || error)});
+                    throw error;
+                }
+            };
+        }
+        let lastSig = '';
+        probe214.timer = setInterval(() => {
+            const s = snap();
+            if (!s) return;
+            const sig = JSON.stringify(s);
+            if (sig !== lastSig){ lastSig = sig; record({type: 'state', snap: s}); }
+        }, 700);
+    }
     async function waitFor(predicate, timeout=15000){
         const deadline = performance.now() + timeout;
         while(performance.now() < deadline){
@@ -92,6 +165,7 @@
             return;
         }
         if(sessionStorage.getItem('t09-submission-recovery-phase') === 'verify'){
+            probeInstall();
             const carried = JSON.parse(sessionStorage.getItem('t09-submission-recovery-result') || '{}');
             result.assertions.push(...(carried.assertions || []));
             result.errors.push(...(carried.errors || []));
@@ -108,6 +182,8 @@
                 matchingLogs:(evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY')).map(log => ({task:log.task_id, status:log.status})),
             });
             assertion('response-loss recovery invokes the fake adapter only once', recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length === 1, recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length);
+            if(probe214.timer) clearInterval(probe214.timer);
+            result.diagnostics.push(`probe214-verify=${JSON.stringify(probe214.events)}`);
             sessionStorage.removeItem('t09-submission-recovery-phase');
             sessionStorage.removeItem('t09-submission-recovery-result');
             return;
@@ -118,6 +194,7 @@
         }, 20000);
         assertion('second real browser client is ready before overlap begins', secondaryReady, secondaryReady);
         const settings = smartSettings();
+        probeInstall();
         assertion('settings loaded', Boolean(settings), Boolean(settings));
 
         const mergeNode = evalFn('mergeSmartNode');
@@ -604,6 +681,8 @@
             droppedSubmissionResponses,
             submissions:nodeById('gen-conn')?.generationSubmissions || [],
         });
+        if(probe214.timer) clearInterval(probe214.timer);
+        result.diagnostics.push(`probe214=${JSON.stringify(probe214.events)}`);
         sessionStorage.setItem('t09-submission-recovery-result', JSON.stringify({assertions:result.assertions, errors:result.errors, diagnostics:result.diagnostics}));
         sessionStorage.setItem('t09-submission-recovery-phase', 'verify');
         location.reload();
