@@ -5750,6 +5750,9 @@ if(smartTrashPurgeBtn) smartTrashPurgeBtn.onclick = () => {
     void purgeSmartProjectMediaTrash();
 };
 
+// #209: 缓存已加载的回收区列表——恢复无 deletion_id 条目时用它构造新节点的
+// name/kind 等字段，避免为拿缩略图信息多打一次请求。
+let smartTrashItems = [];
 async function openSmartTrashPanel(){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
     const projectId = smartProjectId();
@@ -5761,8 +5764,10 @@ async function openSmartTrashPanel(){
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media`);
         if(!response.ok) throw new Error('trash status unavailable');
         const data = await response.json().catch(() => ({}));
+        smartTrashItems = data.items || [];
         renderSmartTrashItems(data.items || []);
     } catch(_){
+        smartTrashItems = [];
         renderSmartTrashItems([]);
         toast(tr('smart.trashLoadFailed'));
     }
@@ -5798,7 +5803,28 @@ async function smartTrashRestoreItem(assetId, deletionId){
             return;
         }
         if(res.data?.canvas) await adoptServerCanvas(res.data.canvas);
-        // #151: 明确恢复去向——有 deletion_id 还原到画布+历史，无则只回资源库
+        // #209: 无 deletion_id 条目恢复后直接落到画布上（新图片节点），而不是只回资源库：
+        // 复用 pasteAssetsFromInbox 链路——外层 pushUndo 一次 + 节点 {skipUndo:true}，
+        // 让「恢复 + 放画布」成为一次可撤销动作；节点 image URL 由 asset_id 本地构造
+        //（projectMediaUrl），不发额外请求。
+        if(!deletionId){
+            const cached = (smartTrashItems || []).find(it => String(it?.asset_id || '') === String(assetId)) || {};
+            const kind = cached.kind || 'image';
+            const item = {
+                ...cached,
+                asset_id: assetId,
+                name:cached.name || cached.filename || assetId,
+                kind,
+                url:projectMediaUrl(assetId),
+                preview_url:(kind === 'image' || kind === 'video') ? projectMediaPreviewUrl(assetId) : ''
+            };
+            const center = lastMouseWorld || viewportCenter();
+            pushUndo();
+            createImageNodeAt(center, [assetNodeImageFromItem(item)], {skipUndo:true, select:true});
+            render();
+            scheduleSave();
+        }
+        // #151/#209: 明确恢复去向——有 deletion_id 还原到画布+历史，无则回资源库并在画布新建节点
         toast(deletionId ? tr('canvas.originalRestored') : tr('smart.trashRestoredToLibrary'));
         renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
