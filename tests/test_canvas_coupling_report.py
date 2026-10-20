@@ -20,6 +20,7 @@ from tools.canvas_coupling_report import (
     count_interface_references,
     count_references,
     coupling,
+    reverse_coupling,
     summarize,
 )
 
@@ -133,6 +134,22 @@ class CanvasCouplingReportTests(unittest.TestCase):
             dict(count_interface_references("canvasCore.render()", {"render"}, {"render"})),
             {},
         )
+
+
+    def test_reverse_coupling_is_measurable_and_pinned(self):
+        # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
+        # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
+        # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
+        rev = reverse_coupling()
+        self.assertEqual(rev["reverse_names"], 231)
+        self.assertEqual(rev["reverse_core_refs"], 933)
+        self.assertEqual(rev["core_dominant_names"], 163)
+        self.assertEqual(rev["core_dominant_core_refs"], 784)
+        # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
+        self.assertNotIn("canvas-core.js", rev["by_owner"])
+        self.assertNotIn("smart-canvas.js", rev["by_owner"])
+        # 「核心用得比 owner 多」必须是全集子集，否则两个口径自相矛盾。
+        self.assertLessEqual(rev["core_dominant_names"], rev["reverse_names"])
 
 
 if __name__ == "__main__":

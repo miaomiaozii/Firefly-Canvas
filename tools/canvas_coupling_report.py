@@ -388,6 +388,66 @@ def interface_coupling() -> dict[str, dict[str, int]]:
     return result
 
 
+def reverse_coupling() -> dict[str, object]:
+    """反方向：声明在模块里、却被核心引用的名字。
+
+    为什么需要这个函数：`coupling()` 只统计「模块引用声明在核心里的名字」（见
+    `summarize()` 的 owners 语义），所以它**测不到反方向**。ADR 0020 初稿把轨道 3
+    的规模写成「17 个名字 / 40 处」，那个数无法从本工具任何字段重现——直接导致
+    后来人按错的规模排期。这里把反方向也做成可复现的。
+
+    两个口径（都不是「债」的判定，只是证据）：
+      reverse_*        核心引用了模块声明的名字（核心是 UI 编排层，调模块功能
+                       本身合法——这是正常的组合关系，不是债）。
+      core_dominant_*  其中「核心用得比 owner 模块自己还多」的那部分——这才是
+                       ADR 0020 关心的「搬早了」信号：名字住在模块里，但主用方是核心。
+
+    计数口径：`\bname\b` 出现数减去该文件里的声明数（与 `core_internal_calls` 一致）。
+    `canvas-core.js` 排除在 owner 之外：核心调 canvas-core.js 是合法的下层依赖。
+    """
+    core_text = _strip_comment_lines(_core_text())
+    core_declared = _top_level_names(core_text)
+    # 单遍扫描建词频表。每个名字单独跑一遗正则会在这个文件上花 ~135s（它跟
+    # test_quality_gate 同分片，会直接拖长门）。
+    core_tokens = Counter(re.findall(r"[A-Za-z_$][\w$]*", core_text))
+
+    def _refs(tokens: Counter, name: str, declared_here: int) -> int:
+        return max(0, tokens.get(name, 0) - declared_here)
+
+    rows: list[dict[str, object]] = []
+    for module in [n for n in _script_order() if _is_canvas_script(n) and n not in (CORE, "canvas-core.js")]:
+        path = JS_DIR / module
+        if not path.exists():
+            continue
+        text = _strip_comment_lines(path.read_text(encoding="utf-8"))
+        own_declared = _top_level_names(text)
+        own_tokens = Counter(re.findall(r"[A-Za-z_$][\w$]*", text))
+        for name in sorted(own_declared - core_declared):
+            in_core = _refs(core_tokens, name, 0)
+            if not in_core:
+                continue
+            own = _refs(own_tokens, name, 1 if name in own_declared else 0)
+            rows.append(
+                {"name": name, "owner": module, "core_refs": in_core, "owner_refs": own}
+            )
+
+    dominant = [r for r in rows if r["core_refs"] > r["owner_refs"]]
+    return {
+        "reverse_names": len(rows),
+        "reverse_core_refs": sum(int(r["core_refs"]) for r in rows),
+        "core_dominant_names": len(dominant),
+        "core_dominant_core_refs": sum(int(r["core_refs"]) for r in dominant),
+        "by_owner": dict(
+            Counter(str(r["owner"]) for r in rows)
+        ),
+        "core_dominant_by_owner": dict(Counter(str(r["owner"]) for r in dominant)),
+        "reverse_rows": sorted(rows, key=lambda r: -int(r["core_refs"])),
+        "core_dominant_rows": sorted(
+            dominant, key=lambda r: -(int(r["core_refs"]) - int(r["owner_refs"]))
+        ),
+    }
+
+
 def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
     # owner 数是客观事实，不是人工判断：只被 1 个模块引用 = 那个模块自己的代码
     # 寄居在核心里；被 >=2 个引用 = 真共享服务。这个切分比「名字看起来像什么」可靠。
@@ -509,6 +569,7 @@ def main() -> int:
     args = parser.parse_args()
 
     summary = summarize(coupling())
+    summary["reverse"] = reverse_coupling()
 
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -533,6 +594,17 @@ def main() -> int:
         if count:
             share = 100.0 * count / summary["grand_total"]
             print(f"  {category:<13}{count:>5}  {share:5.1f}%")
+
+    print("\n反方向（声明在模块里、被核心引用；见 reverse_coupling() 的口径说明）：")
+    rev = summary["reverse"]
+    print(
+        f"  核心引用模块声明的名字：{rev['reverse_names']} 个名字 / {rev['reverse_core_refs']} 处"
+    )
+    print(
+        f"  其中核心用得比 owner 模块还多：{rev['core_dominant_names']} 个名字 /"
+        f" {rev['core_dominant_core_refs']} 处（「搬早了」信号）"
+    )
+    print(f"  按 owner：{rev['by_owner']}")
 
     print("\n按模块（total / 独立名字数 / 自由全局处数 / 自由独立名字数 / 可注入部分 = state+dom+reach）：")
     for module, stats in sorted(

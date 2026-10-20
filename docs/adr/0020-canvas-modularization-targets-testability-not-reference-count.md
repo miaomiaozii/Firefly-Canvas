@@ -122,11 +122,45 @@
 
 **结论：轨道 3 的规模是 17 个名字 / 40 处，不是 90 / 206。** 真结构债只占 7.4%。
 
+#### 但上面的 17 / 40 无法从工具重现，轨道 3 的实际范围已重测（2026-10-21）
+
+后来人（包括我）拿着「17 / 40」去排期时发现：**跑 `python tools/canvas_coupling_report.py` 得不出这两个数**。
+查下去：
+
+- `coupling()` / `summarize()` 的 `owners` 语义是「某模块引用了**声明在核心里**的名字」——方
+  向刚好跟轨道 3 相反。它的 `blocked`（当前 108 个名字）全部 `declared_in_core_as: function`，
+  即「核心自己的函数恰好被 1 个模块用了一次」——**#202 已经据此判完并关闭了轨道 3**
+  （结论：全部留在核心，搬走会造出核心→模块正向依赖）。
+- 本 ADR 那句「17 个已逐个列在 #202 评论里」是**空指针**：#202 评论里只有 97 / 160 和
+  40 / 352 两组数，从没有 17 / 40。这两个数来自当时一个已丢的临时脚本。
+
+重测（新增 `tools/canvas_coupling_report.py:reverse_coupling()`，已钉进
+`tests/test_canvas_coupling_report.py:test_reverse_coupling_is_measurable_and_pinned`）：
+
+| 口径 | 名字 | 核心侧引用处 |
+|---|---|---|
+| 核心引用模块声明的名字（反向总面） | **231** | **933** |
+| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **163** | **784** |
+
+owner 分布：`canvas-media-history.js` 58、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
+`canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
+`canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24。
+（`canvas-core.js` 已排除：核心调它是合法下层依赖。）
+
+**两个口径都不是「债」的判定，只是证据。** 核心是 UI 编排层，调模块功能本身合法（正常组合关系）。
+典型误判例：`NODE_TYPE_*` 常量核心用 24-28 处、owner 模块用 2 处——常量本来就是给全仓用的，
+不是债。所以 163 这个数不能直接当工作量。
+
+**轨道 3 现行结论：保持 #202 的判定（不搬）。** 若将来要重开，必须先逐名过一遍上表的
+ `core_dominant_rows`，并区分「常量/工具——应共享」与「行为——可能真搬错了」。
+
 其中 17 个有 12 个（27 处）集中在 `canvas-media-history.js`，而该模块有 210 个外部依赖名、
 ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
+（这句里的 17 / 12 / 27 同属下面被推翻的那组数，保留只为记录当时的推理。）
 
 **修订后的顺序**：轨道 1（39-40 个共享服务显式化，占 65%）→ 轨道 4（补测）→ 轨道 3（17 个）。
 轨道 3 的 17 个已逐个列在 #202 评论里，含建议分类。
+（这句指针是空的——见下一节。#202 评论里没有 17 这个数字，而 #202 本身已关闭。）
 
 ### 轨道 1 完成后的实测结果：口径必须分清（2026-10-19）
 
@@ -170,6 +204,20 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 `canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成)。
 
 **轨道 1 完成后被解锁的下一块**：`canvas-generation-tasks.js` 现在独立外部自由名 = **22**，已经低于两个已判定「可测」的模块（`canvas-undo.js` 29 → 15 个手写桩、`canvas-connections.js` 28 → 15 个手写桩）。按本 ADR 的判据它现在进入可测范围，而它是 #197（刷新后恢复）与 #198（重放失败丢用户动作）两个真 bug 的所在地，当前无单测。
+
+#### 该块已完成（2026-10-21，#219）
+
+`tests/canvas_module_units/test-canvas-generation-tasks.mjs`：`node --test` → **tests 27 / pass 27 / fail 0 / skipped 0**；
+全量 `Ran 1190 tests, OK`；门 `trial` → `verdict: passed`。
+**有效性证据（不是「写了测试」就算）**：在 worktree 里把 `handlePendingActionReplayFailure` 的写回
+分支禁用（`if(node)` → `if(false && node)`）→ **恰好 1 个 #198 用例变红**（`undefined !== 1`），
+其余 26 个绿。这说明该用例真在盯那个行为，不是自我断言。
+桩预算（文件头有清单）：13 个外部自由名由加载真实模块满足；26 个手写桩（20 零逻辑记录器 /
+6 单行契约镜像）。
+明确判为单测盖不住（没写假测试）：`runPromptLLMNode` / `runRunningHubGeneration` /
+`runApiVideoGeneration`（依 smart-canvas.js 13 个未桩自由名，靠浏览器 runner 兜）；
+`startJimengPoll` / `pollSmartCanvasTask` 的分钟级长轮询循环本身（只覆盖单次终态迁移）；
+服务端 `idempotency_key` 去重（API 层负责）。
 
 **`canvas-core.js` 的「54」是错的**（本 ADR 初稿口径有误，#203 实测纠正）：按「不同外部自由名」
 口径实测为 **18**，且对最近 4 个历史版本实测均为 14–18，从未到过 54。其中 9 个是 JS 内建、
