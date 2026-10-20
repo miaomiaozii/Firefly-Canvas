@@ -34,6 +34,7 @@
                 const n = (c?.nodes || []).find(x => x.id === 'gen-conn');
                 return {
                     images: (n?.images || []).map(i => String(i.url || i.name || '').slice(-20)),
+                    imagesFull: JSON.stringify((n?.images || []).map(i => Object.fromEntries(Object.entries(i || {}).filter(([k]) => ['url','name','asset_id','preview_url','status','kind'].includes(k))))).slice(0, 600),
                     pending: n?.pending ?? null,
                     pendingTasks: (n?.pendingTasks || []).map(p => String(p.taskId || '').slice(-8)),
                     pendingLogs: (c?.history || []).filter(l => l.status === 'pending').map(l => String(l.id || '').slice(-8) + ':' + String(l.request?.task_id || l.task_id || '-').slice(-8)),
@@ -71,6 +72,34 @@
                 return out;
             };
         }
+        const origSaveCore = evalFn('saveCoreCanvasIncrementally');
+        if (typeof origSaveCore === 'function') {
+            window.saveCoreCanvasIncrementally = async function(storageCanvas){
+                const out = await origSaveCore.apply(this, arguments);
+                try {
+                    const n = ((storageCanvas || {}).nodes || []).find(x => x.id === 'gen-conn');
+                    record({type: 'saveCore', sentImages: JSON.stringify((n?.images || []).map(i => ({url: String(i?.url || '').slice(-20), name: i?.name, asset_id: i?.asset_id}))).slice(0, 400)});
+                } catch(_){}
+                return out;
+            };
+        }
+        const origMergeReload = evalFn('mergeReloadCanvasNow');
+        if (typeof origMergeReload === 'function') {
+            window.mergeReloadCanvasNow = async function(...args){
+                record({type: 'mergeReload', args: JSON.stringify(args).slice(0, 120)});
+                return origMergeReload.apply(this, args);
+            };
+        }
+        const origFetch = window.fetch;
+        window.fetch = async function(url, opts){
+            const u = String(url);
+            if(!/^\/api\//.test(u) && !u.startsWith('/__')) {
+                const res = await origFetch.apply(this, arguments);
+                return res;
+            }
+            record({type: 'api', url: u.slice(0, 90), method: opts?.method || 'GET'});
+            return origFetch.apply(this, arguments);
+        };
         const origSave = evalFn('saveCanvas');
         if (typeof origSave === 'function') {
             window.saveCanvas = async function(...args){
