@@ -95,11 +95,31 @@ def canvas_nodes(store: ProjectStore, project_id: str) -> list:
     return store.open_project(project_id)["canvas"].get("nodes") or []
 
 
+def canvas_node_with_asset(store: ProjectStore, project_id: str, asset_id: str) -> dict | None:
+    """Server-side node whose images[] reference asset_id (None if absent)."""
+    for node in canvas_nodes(store, project_id):
+        for image in node.get("images") or []:
+            if str(image.get("asset_id") or "") == asset_id:
+                return node
+    return None
+
+
 def wait_condition(predicate, timeout: float, interval: float = 0.4) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
+        time.sleep(interval)
+    raise TimeoutError("condition was not reached in time")
+
+
+def wait_value(predicate, timeout: float, interval: float = 0.4):
+    """Like wait_condition, but returns the first truthy value from predicate."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
         time.sleep(interval)
     raise TimeoutError("condition was not reached in time")
 
@@ -319,6 +339,95 @@ def run(artifacts: pathlib.Path, entry: str) -> dict:
                                 + " mismatches="
                                 + json.dumps(mismatches, ensure_ascii=False)
                             )
+
+                    if entry == "both":
+                        # #209: 恢复一条无 deletion_id 的回收区条目（#217 归档的
+                        # 节点孤儿）必须在画布上新建一个引用该 asset 的图片节点，
+                        # 且刷新页面后仍在——证明落盘，而不是只存在前端内存里。
+                        time.sleep(0.3)
+                        restored_asset = asset_by_node["trash-node-c"]
+                        restore_button = (
+                            '.smart-trash-item[data-trash-asset="' + restored_asset + '"] [data-trash-restore]'
+                        )
+                        wait_node_clickable(browser, restore_button)
+                        browser.native_click(restore_button)
+
+                        node_id_after_restore = wait_value(
+                            lambda: str(browser.evaluate(
+                                "window.__trashPanelTest.restoredNodeForAsset(" + json.dumps(restored_asset) + ")"
+                            ) or "") or None,
+                            30,
+                        )
+                        assertions.append({
+                            "name": "restored media (no deletion_id) creates a new canvas node referencing the asset",
+                            "expected": "a .image-node whose <img> src contains " + restored_asset,
+                            "actual": {"asset_id": restored_asset, "node_id": node_id_after_restore},
+                            "passed": bool(node_id_after_restore),
+                        })
+                        steps["trash-restore-node"] = bool(node_id_after_restore)
+                        if not steps["trash-restore-node"]:
+                            raise AssertionError(
+                                "restored media did not create a canvas node: asset=" + restored_asset
+                            )
+
+                        # 前端 scheduleSave 的自动保存必须把新节点回写到服务端 store。
+                        wait_condition(
+                            lambda: canvas_node_with_asset(store, project_id, restored_asset) is not None,
+                            30,
+                        )
+
+                        # 证明落盘：强制写出前端已提交、生产环境 1.2s 定时器会写的
+                        # 快照，然后直接读磁盘上的 canvas.json 验证节点在文件里。
+                        store.flush(project_id)
+                        disk_canvas = json.loads(
+                            (store.root / project_id / "canvas.json").read_text(encoding="utf-8")
+                        )
+                        disk_node = next(
+                            (
+                                node for node in (disk_canvas.get("nodes") or [])
+                                for image in (node.get("images") or [])
+                                if str(image.get("asset_id") or "") == restored_asset
+                            ),
+                            None,
+                        )
+                        steps["trash-restore-persisted"] = disk_node is not None
+                        assertions.append({
+                            "name": "restored canvas node is persisted to disk (canvas.json)",
+                            "expected": "canvas.json contains a node whose images[] reference " + restored_asset,
+                            "actual": {"asset_id": restored_asset, "node_id": (disk_node or {}).get("id")},
+                            "passed": disk_node is not None,
+                        })
+                        if not steps["trash-restore-persisted"]:
+                            raise AssertionError(
+                                "restored node was not persisted to canvas.json: asset=" + restored_asset
+                            )
+                        browser.capture_screenshot(shots_dir / "03-trash-restore-node.png")
+                        screenshots.append("screenshots/03-trash-restore-node.png")
+
+                        # 刷新后仍在：重新加载页面（前端内存状态清零），重新注入探针，
+                        # 画布上仍能找到引用该 asset 的节点。
+                        browser.reload()
+                        browser.wait_for('document.querySelectorAll(".image-node").length >= 1', timeout=30)
+                        browser.evaluate(CLIENT_SCRIPT.read_text(encoding="utf-8"))
+                        node_id_after_reload = wait_value(
+                            lambda: str(browser.evaluate(
+                                "window.__trashPanelTest.restoredNodeForAsset(" + json.dumps(restored_asset) + ")"
+                            ) or "") or None,
+                            30,
+                        )
+                        steps["trash-restore-reload"] = bool(node_id_after_reload)
+                        assertions.append({
+                            "name": "restored canvas node survives a page reload",
+                            "expected": "after reload, a .image-node whose <img> src contains " + restored_asset,
+                            "actual": {"asset_id": restored_asset, "node_id": node_id_after_reload},
+                            "passed": bool(node_id_after_reload),
+                        })
+                        if not steps["trash-restore-reload"]:
+                            raise AssertionError(
+                                "restored node did not survive page reload: asset=" + restored_asset
+                            )
+                        browser.capture_screenshot(shots_dir / "04-trash-restore-after-reload.png")
+                        screenshots.append("screenshots/04-trash-restore-after-reload.png")
                 finally:
                     operations = list(browser.operations)
                     console_errors = list(browser.console_errors)

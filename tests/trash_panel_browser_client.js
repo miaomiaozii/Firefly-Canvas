@@ -46,6 +46,24 @@
         return getComputedStyle(el)[prop];
     }
 
+    /* #209: after restoring a trash item that has NO deletion_id, the app
+     * creates a new image node on the canvas referencing that asset. Return
+     * the data-id of a .image-node whose <img> src contains assetId (proof
+     * the restored media is back on the canvas), or null if none matches. */
+    function restoredNodeForAsset(assetId) {
+        if (!assetId) return null;
+        var nodes = Array.prototype.slice.call(document.querySelectorAll(".image-node"));
+        for (var i = 0; i < nodes.length; i++) {
+            var imgs = nodes[i].querySelectorAll("img");
+            for (var j = 0; j < imgs.length; j++) {
+                if ((imgs[j].src || "").indexOf(assetId) !== -1) {
+                    return nodes[i].getAttribute("data-id") || null;
+                }
+            }
+        }
+        return null;
+    }
+
     /* #211: panel element colors + the theme variables they must track. */
     function readThemeStyles() {
         var vars = ["--panel", "--card", "--soft", "--text", "--muted", "--faint", "--line", "--accent"];
@@ -67,6 +85,7 @@
 
     window.__trashPanelTest = {
         readTrashDom: readTrashDom,
+        restoredNodeForAsset: restoredNodeForAsset,
         readThemeStyles: readThemeStyles,
         /* Panel rendered (loading state replaced by items)? */
         trashItemsRendered: function (count) {
