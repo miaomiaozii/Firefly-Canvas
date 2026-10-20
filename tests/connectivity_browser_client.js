@@ -675,6 +675,27 @@
         })();
         assertion('generated image downloadable', downloadResult.ok && downloadResult.size >= 60 && downloadResult.png, JSON.stringify(downloadResult));
 
+        // #214 屏障：上一个 run（并发微调）的主流程会迟到结算——轮询续体在任务完成后
+        // ~0.7-2.5s 才执行，迟到的 absorb 会把该 run 的图回写进画布（卡片早已
+        // succeeded 之后）。若在此之前启动下一个 run，回写会落进新 run 的占位窗口，
+        // 污染「占位替换」与「完成判定」。等 gen-conn 节点状态（images/pending/
+        // runFinishedAt）稳定 2s 再启动自动路由 run。
+        const nodeSettleSig = (() => {
+            let lastSig = '';
+            let lastChange = performance.now();
+            return () => {
+                const n = nodeById('gen-conn') || {};
+                const sig = JSON.stringify({
+                    i:(n.images || []).map(x => ({u:x.url, a:x.asset_id, n:x.name})),
+                    p:n.pending, t:(n.pendingTasks || []).length, f:n.runFinishedAt,
+                });
+                if(sig !== lastSig){ lastSig = sig; lastChange = performance.now(); }
+                return performance.now() - lastChange >= 2000;
+            };
+        })();
+        const nodeSettled = await waitFor(nodeSettleSig, 30000);
+        result.diagnostics.push(`nodeSettledBeforeAutoRun=${nodeSettled}`);
+
         const autoReset = await evalFn(`(p) => {
             const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
