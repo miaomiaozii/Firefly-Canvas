@@ -53,7 +53,10 @@ NODES = (
     ("trash-node-b", "第二张图", (30, 160, 200)),
     ("trash-node-c", "第三张图", (30, 30, 200)),
 )
-EXPECTED_TRASH_NAMES = [name for _, name, _ in reversed(NODES)]
+# 回收区显示的是素材真实文件名（带扩展名），不是节点的显示名：
+# static/js/canvas-media-history.js:291 `item.name || item.filename || assetId`。
+# 回收站面对的是待清除的文件，带扩展名便于识别类型（#218 语义判定，用户选定）。
+EXPECTED_TRASH_NAMES = [f"{name}.png" for _, name, _ in reversed(NODES)]
 
 
 def solid_png(color: tuple[int, int, int], size: tuple[int, int]) -> bytes:
