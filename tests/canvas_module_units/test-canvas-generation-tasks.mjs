@@ -629,3 +629,195 @@ test('projectImageTaskUrl: v1 project task ids route to project-library endpoint
     evaluate(ctx, 'canvas = { id: "cv-1", format: "firefly-canvas-v1", project_id: "proj 1", nodes: __canvasPayload.nodes, history: [] }');
     assert.equal(url('project_img_D'), '/api/project-library/proj%201/image-generation-tasks/project_img_D');
 });
+
+// ---------- #197：pending-action 队列（video / local-edit / photoshop / conversation 四道保存关卡） ----------
+
+test('queueSmartPendingActionResume: in-memory entry + node mirror + scheduleSave; input guards', () => {
+    const node = { id: 'n1', type: 'smart-video' };
+    const nodes = [node];
+    const { ctx, calls } = loadGenerationTasksModule({ nodes });
+    const queue = globalFunction(ctx, 'queueSmartPendingActionResume');
+    const mirror = globalFunction(ctx, 'mirrorPendingActionToStorage');
+    const has = globalFunction(ctx, 'hasSmartPendingActionResume');
+    const replay = async () => {};
+
+    const actionId = queue('video', 'n1', replay, { prompt: 'p', refs: [] });
+    assert.equal(actionId, 'action-video-1', '首个 entry 编号 action-video-1');
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 1);
+    // 节点镜像是持久化账本（#197：增量保存只带节点字段，顶层 canvas 字段不进 mutation 快照）。
+    const marks = fromContext(node.pendingActionResumes);
+    assert.equal(marks.length, 1);
+    assert.equal(marks[0].actionId, 'action-video-1');
+    assert.equal(marks[0].kind, 'video');
+    assert.deepEqual(marks[0].payload, { prompt: 'p', refs: [] });
+    assert.ok(typeof marks[0].enqueuedAt === 'number');
+    assert.ok(calls.includes('scheduleSave'), '入队即触发保存（失败的 flush 把画布弄脏了）');
+    // 内存 entry 携带不可序列化的 replay 闭包（镜像里只有 payload）。
+    const entry = ctx.__fcPendingActionResumes.get(actionId);
+    assert.equal(typeof entry.replay, 'function');
+    assert.equal(entry.kind, 'video');
+    assert.equal(entry.nodeId, 'n1');
+    // hasSmartPendingActionResume 按 kind+nodeId 精确判定。
+    assert.equal(has('video', 'n1'), true);
+    assert.equal(has('video', 'n2'), false);
+    assert.equal(has('local-edit', 'n1'), false);
+
+    // 第二个 entry：seq 递增；同 actionId 重复 mirror 不重复追加。
+    assert.equal(queue('video', 'n1', replay, { prompt: 'p2' }), 'action-video-2');
+    assert.equal(node.pendingActionResumes.length, 2);
+    mirror(entry);
+    assert.equal(node.pendingActionResumes.length, 2, '同 actionId 的 mirror 是 no-op（去重）');
+
+    // 非法输入：无 nodeId / replay 非函数 → 不排队。
+    assert.equal(queue('video', '', replay, {}), null);
+    assert.equal(queue('video', 'n1', 'not-a-function', {}), null);
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 2);
+
+    // 节点不存在：内存 entry 仍建（权威），mirror 尽力而为（best-effort）。
+    assert.equal(queue('video', 'ghost-node', replay, {}), 'action-video-3');
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 3);
+
+    assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['queued', 'queued', 'queued'], '守卫调用不产生日志事件');
+});
+
+test('resumeSmartPendingActionResumes: clear-on-send fires exactly once (single-shot), persister lands before the fetch', async () => {
+    const node = { id: 'n1', type: 'smart-video' };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    const queue = globalFunction(ctx, 'queueSmartPendingActionResume');
+    const resume = globalFunction(ctx, 'resumeSmartPendingActionResumes');
+    let fired = 0;
+    const actionId = queue('video', 'n1', async () => { fired++; }, { prompt: 'p' });
+    // 真实 core 的 persister 注册口（smart-canvas.js 在运行期注册把「标记已清」状态写盘的 persister）。
+    globalFunction(ctx, 'registerSmartPendingActionPersister')(async (entry) => {
+        harness.persisterCalls.push(entry.actionId);
+        return true;  // clear-on-send：「标记已清」落盘成功
+    });
+
+    await resume(nodes);
+    await tick();
+    assert.equal(fired, 1, '重放恰好发一次');
+    assert.equal(harness.persisterCalls.length, 1);
+    assert.equal(harness.persisterCalls[0], actionId, 'persister 在 fetch 前提交「标记已清」');
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0, 'entry 在重放前从 Map 删除（single-shot：之后的 settle 不可能再发）');
+    assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['queued', 'replayed']);
+
+    // 第二次 settle（persister 已把标记清盘，节点上不再有标记）：无事发生。
+    node.pendingActionResumes = [];
+    await resume(nodes);
+    await tick();
+    assert.equal(fired, 1, '标记清盘后绝不重放');
+    assert.equal(harness.persisterCalls.length, 1);
+});
+
+test('resumeSmartPendingActionResumes: persister not landed keeps entry AND node mark until the next settle (#197 window)', async () => {
+    const node = { id: 'n1', type: 'smart-video' };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    const queue = globalFunction(ctx, 'queueSmartPendingActionResume');
+    const resume = globalFunction(ctx, 'resumeSmartPendingActionResumes');
+    let fired = 0;
+    queue('video', 'n1', async () => { fired++; }, { prompt: 'p' });
+    let persisterResult = false;
+    globalFunction(ctx, 'registerSmartPendingActionPersister')(async () => {
+        harness.persisterCalls.push(1);
+        return persisterResult;
+    });
+
+    // persister 未落盘：entry 留在 Map、节点标记保留——这个窗口内刷新页面照样能重放。
+    await resume(nodes);
+    await tick();
+    assert.equal(fired, 0, 'persister 未落盘 → 不发请求');
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 1, 'entry 留在内存 Map');
+    assert.equal(node.pendingActionResumes.length, 1, '节点标记保留（刷新账本还在）');
+    assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['queued', 'clear-persist-pending']);
+
+    // 下一次 save settle，persister 落盘 → 恰好发一次。
+    persisterResult = true;
+    await resume(nodes);
+    await tick();
+    assert.equal(fired, 1);
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0);
+    assert.ok(ctx.__fcPendingActionResumeLog.some(e => e.event === 'replayed'));
+});
+
+test('resumeSmartPendingActionResumes: node deleted → dropped-node-gone', async () => {
+    const node = { id: 'n1', type: 'smart-video' };
+    const nodes = [node];
+    const { ctx } = loadGenerationTasksModule({ nodes });
+    const queue = globalFunction(ctx, 'queueSmartPendingActionResume');
+    const resume = globalFunction(ctx, 'resumeSmartPendingActionResumes');
+    let fired = 0;
+    queue('video', 'n1', async () => { fired++; }, { prompt: 'p' });
+    assert.equal(node.pendingActionResumes.length, 1);
+    // 节点被删除（用户删节点；刷新后画布里没有该节点）。
+    ctx.canvasState.nodes.length = 0;
+    await resume([]);
+    await tick();
+    assert.equal(fired, 0);
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0, '节点没了 → entry 丢弃');
+    assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['queued', 'dropped-node-gone']);
+});
+
+test('resumeSmartPendingActionResumes: reload seeding from node marks, replay rebuilt via registered rebuilder', async () => {
+    const node = {
+        id: 'n1', type: 'smart-video',
+        pendingActionResumes: [{ actionId: 'action-video-7', kind: 'video', payload: { prompt: 'p7' }, enqueuedAt: 111, replayAttempts: 0, nextRetryAt: 0 }],
+    };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    // 全新 context：内存 Map 为空（刷新后活闭包没了），节点上的持久化标记就是「未发送」账本。
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0);
+    // 经真实 core 的 registerSmartPendingActionRebuilder 重建 replay（从可序列化 payload）。
+    globalFunction(ctx, 'registerSmartPendingActionRebuilder')('video', (entry, live) => {
+        harness.rebuilderCalls.push([entry.actionId, live.id]);
+        return async () => { harness.replayFired.push(entry.actionId); };
+    });
+    await globalFunction(ctx, 'resumeSmartPendingActionResumes')(nodes);
+    await tick();
+    assert.deepEqual(harness.rebuilderCalls, [['action-video-7', 'n1']], 'rebuilder 拿到 entry 与活节点');
+    assert.deepEqual(harness.replayFired, ['action-video-7'], '重建的 replay 被触发');
+    assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['seeded', 'replayed']);
+    assert.equal(ctx.__fcPendingActionResumeLog[0].attempts, 0, 'seed 事件记录预算消耗');
+});
+
+test('resumeSmartPendingActionResumes: seeded mark with exhausted budget is dropped; no rebuilder → entry waits', async () => {
+    // 边界：replayAttempts=2（预算 3 未耗尽）→ seed 且照发。
+    {
+        const node = { id: 'n1', type: 'smart-video', pendingActionResumes: [{ actionId: 'action-video-1', kind: 'video', payload: { prompt: 'p' }, enqueuedAt: 1, replayAttempts: 2, nextRetryAt: 0 }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        globalFunction(ctx, 'registerSmartPendingActionRebuilder')('video', (entry) => async () => { harness.replayFired.push(entry.actionId); });
+        await globalFunction(ctx, 'resumeSmartPendingActionResumes')(nodes);
+        await tick();
+        assert.deepEqual(harness.replayFired, ['action-video-1'], '2 次尝试 < 预算 3 → 还有最后机会');
+    }
+    // replayAttempts=3 → 标记是死重：从节点删除（下次保存落盘移除），绝不发请求。
+    {
+        const node = { id: 'n1', type: 'smart-video', pendingActionResumes: [{ actionId: 'action-video-1', kind: 'video', payload: { prompt: 'p' }, enqueuedAt: 1, replayAttempts: 3, nextRetryAt: 0 }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        globalFunction(ctx, 'registerSmartPendingActionRebuilder')('video', () => { throw new Error('rebuilder 不应被调用'); });
+        await globalFunction(ctx, 'resumeSmartPendingActionResumes')(nodes);
+        await tick();
+        assert.equal(harness.replayFired.length, 0);
+        assert.deepEqual(fromContext(node.pendingActionResumes), [], '耗尽的标记从节点删除');
+        assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['dropped-retry-exhausted']);
+        assert.equal(ctx.__fcPendingActionResumeLog[0].attempts, 3);
+        assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0);
+    }
+    // 未注册 rebuilder 的 kind：single-shot 已从 Map 删除，rebuild 失败 → 记
+    // replay-missing-rebuilder 后**不再回队列**（entry 丢弃；持久化标记由关卡自身的
+    // 恢复路径处理——本模块不假装能恢复自己无法重建的请求）。
+    {
+        const node = { id: 'n1', type: 'smart-video', pendingActionResumes: [{ actionId: 'action-video-9', kind: 'conversation', payload: {}, enqueuedAt: 1, replayAttempts: 0, nextRetryAt: 0 }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        await globalFunction(ctx, 'resumeSmartPendingActionResumes')(nodes);
+        await tick();
+        assert.equal(harness.replayFired.length, 0);
+        assert.deepEqual(fromContext(ctx.__fcPendingActionResumeLog).map(e => e.event), ['seeded', 'replay-missing-rebuilder']);
+        assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0, '无 rebuilder → entry 不回队列（single-shot 删除已发生）');
+        assert.equal(node.pendingActionResumes.length, 1, '节点标记未动（没有 persister 参与，清盘从未发生）');
+    }
+});
