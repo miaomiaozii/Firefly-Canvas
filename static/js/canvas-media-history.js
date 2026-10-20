@@ -27,21 +27,34 @@ const smartHistoryVirtualState = {
     focusCard:null,
     focusElement:null
 };
-const ARCHIVE_DELAY_MS = 2500; // 延迟 2.5s（> 450ms 保存防抖 + 网络往返）
-let pendingMediaArchives = []; // [{ images: [...], timer: number }]
+// #217: 归档绝不在自己的计时器上触发。旧实现 ARCHIVE_DELAY_MS=2500 的计时器比
+// DEBOUNCED_SAVE_MS=3000（smart-canvas.js）的保存防抖早 500ms 发出：归档请求到达时
+// 服务端 canvas 仍引用着被删资产 → 409 → 被 cascadeArchiveDeletedMedia 的 catch 吞掉
+// → 回收区无条目。现在归档唯一触发点是保存成功（markAutosaveSaved →
+// flushPendingMediaArchives）——删除已持久落盘、服务端不再引用这些资产的瞬间。
+// ARCHIVE_DELAY_MS 保留为哨兵常量：产品代码不再有任何计时器使用它；守卫测试
+// tests/test_orphan_media_archive_guard.py 钉住 ARCHIVE_DELAY_MS >= DEBOUNCED_SAVE_MS，
+// 若有人恢复计时器式归档，数值下界先变红。
+const ARCHIVE_DELAY_MS = 3000; // #217 哨兵常量：无任何计时器使用它，见 tests/test_orphan_media_archive_guard.py
+let pendingMediaArchives = []; // [{ images: [...] }]
 
 function scheduleMediaArchive(images){
     if(!images.length) return;
-    const timer = setTimeout(() => {
-        pendingMediaArchives = pendingMediaArchives.filter(entry => entry.timer !== timer);
-        void cascadeArchiveDeletedMedia(images);
-    }, ARCHIVE_DELAY_MS);
-    pendingMediaArchives.push({ images, timer });
+    // #217: 只登记，不 setTimeout——唯一触发点是保存成功后
+    // markAutosaveSaved 调用的 flushPendingMediaArchives（引用已离开服务端 canvas）。
+    pendingMediaArchives.push({ images });
 }
 
 function cancelPendingMediaArchives(){
-    pendingMediaArchives.forEach(entry => clearTimeout(entry.timer));
     pendingMediaArchives = [];
+}
+
+// #217: 孤儿媒体归档的唯一触发点。由 markAutosaveSaved()（smart-canvas.js）在保存
+// 确定落盘后调用——此刻服务端 canvas 不再引用这些资产，归档不会 409。
+function flushPendingMediaArchives(){
+    const entries = pendingMediaArchives;
+    pendingMediaArchives = [];
+    entries.forEach(entry => void cascadeArchiveDeletedMedia(entry.images));
 }
 
 function smartOriginalMediaUrl(itemOrUrl){

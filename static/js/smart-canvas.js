@@ -6455,6 +6455,10 @@ function markAutosaveSaved(){
     // no mark and is picked up by the gate's own recovery path (docs/issue197_recovery_audit.md).
     // In-session entries are single-shot (removed before their fetch fires).
     if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
+    // #217: 孤儿媒体归档的唯一触发点——删除已随保存持久落盘，服务端 canvas 不再
+    // 引用被删资产，此刻归档不会 409（旧实现是独立的 2.5s 计时器，早于 3s 保存
+    // 防抖触发 → 409 被吞 → 回收区无条目）。
+    flushPendingMediaArchives();
 }
 // #197: pending-action persistence wiring. canvas-generation-tasks.js owns the
 // in-memory queue and the clear-on-send protocol; it calls back into these registered
