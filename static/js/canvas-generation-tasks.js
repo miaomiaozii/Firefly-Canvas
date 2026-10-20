@@ -139,7 +139,7 @@ async function postProjectImageTaskWithReplay(projectId, payload){
         }
         await sleep(250);
     }
-    const unknown = new Error(trf('smart.submitUnknownRecoverDetail', {m: lastError?.message || tr('smart.networkInterrupted')}));
+    const unknown = new Error(canvasCore.trf('smart.submitUnknownRecoverDetail', {m: lastError?.message || tr('smart.networkInterrupted')}));
     unknown.smartSubmissionUnknown = true;
     unknown.idempotencyKey = payload.idempotency_key;
     throw unknown;
@@ -497,7 +497,7 @@ function jimengQueueText(queueInfo){
     const qi = queueInfo || {};
     const idx = qi.queue_idx;
     const len = qi.queue_length;
-    if(idx != null && len != null) return trf('smart.jimengCloudQueued', {idx: idx, len: len});
+    if(idx != null && len != null) return canvasCore.trf('smart.jimengCloudQueued', {idx: idx, len: len});
     return tr('smart.jimengCloudGenerating');
 }
 
@@ -520,8 +520,8 @@ function setNodeJimengPending(node, signal){
     delete node.runFinishedAt;
     delete node.runElapsedMs;
     node.runTimerHidden = false;
-    render();
-    scheduleStateSave();
+    canvasCore.render();
+    canvasCore.scheduleStateSave();
     startJimengPoll(node);
 }
 
@@ -565,8 +565,8 @@ function applyJimengQueryResult(node, data){
         node.running = false;
         node.pending = 0;
         toast((data.error || tr('smart.jimengTaskFailed')).slice(0, 160));
-        render();
-        scheduleStateSave();
+        canvasCore.render();
+        canvasCore.scheduleStateSave();
         return true;
     }
     if(node.jimengPending){
@@ -574,8 +574,8 @@ function applyJimengQueryResult(node, data){
         node.jimengPending.message = data.message || node.jimengPending.message || '';
         node.jimengPending.updatedAt = nowMs();
     }
-    render();
-    scheduleStateSave();
+    canvasCore.render();
+    canvasCore.scheduleStateSave();
     return false;
 }
 
@@ -659,8 +659,8 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     } finally {
         const latest = smartPendingTasks(node).find(item => item.taskId === localTaskId);
         if(latest) latest.querying = false;
-        render();
-        scheduleStateSave();
+        canvasCore.render();
+        canvasCore.scheduleStateSave();
     }
 }
 
@@ -914,8 +914,8 @@ async function resumeSmartPendingNode(node, logContext={}){
             if(e && e.jimengPending && e.submitId){
                 node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                 setNodeJimengPending(node, e);
-                render();
-                scheduleStateSave();
+                canvasCore.render();
+                canvasCore.scheduleStateSave();
                 return;
             }
             if(e && e.imageTaskRecover && e.recoverTaskId){
@@ -983,7 +983,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             task._retryCount = (task._retryCount || 0) + 1;
             if(task._retryCount <= 3){
                 const delay = task._retryCount * 5000; // 5s, 10s, 15s
-                toast(trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
+                toast(canvasCore.trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
                 await sleep(delay);
                 // 图片回载后取消重试
                 if(activeSmartTaskPolls.has(task.taskId)){
@@ -1001,7 +1001,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                     : 0;
                 node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
                 if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                    node.failedGenerationTasks.push({taskId:task.taskId, error:trf('smart.networkRetryExhausted', {n: task._retryCount}), at:nowMs(), retryable:true});
+                    node.failedGenerationTasks.push({taskId:task.taskId, error:canvasCore.trf('smart.networkRetryExhausted', {n: task._retryCount}), at:nowMs(), retryable:true});
                 }
             }
             if(!node.pending && smartPendingTasks(node).length === 0){
@@ -1056,9 +1056,9 @@ async function retryFailedGenerationInner(node){
                     const images = outputs.map(item => ({url: base + encodeURIComponent(item.asset_id || ''), kind: item.kind || 'image'}));
                     node.failedGenerationTasks = [];
                     finalizeSmartPendingTask(node, failedTask.taskId, images, 'image', images.length);
-                    render();
-                    scheduleSave();
-                    toast(trf('smart.recoveredResults', {n: images.length}));
+                    canvasCore.render();
+                    canvasCore.scheduleSave();
+                    toast(canvasCore.trf('smart.recoveredResults', {n: images.length}));
                     return;
                 }
             }catch(_){
