@@ -558,3 +558,74 @@ test('resumeSmartGenerationSubmission: rejected(409) clears the marker, unknown(
     }
 });
 
+test('aspectRatioForRun: preset mapping, custom ratio pass-through, source size fallback via reducedAspectRatio', () => {
+    const { ctx, harness } = loadGenerationTasksModule();
+    const aspectRatioForRun = globalFunction(ctx, 'aspectRatioForRun');
+    // 预设表（#200 从 smart-canvas.js 搬回本模块的函数，必须保持同一映射）。
+    assert.equal(aspectRatioForRun({}), '1:1', '缺省 ratio 走 square');
+    assert.equal(aspectRatioForRun({ ratio: 'square' }), '1:1');
+    assert.equal(aspectRatioForRun({ ratio: 'portrait' }), '2:3');
+    assert.equal(aspectRatioForRun({ ratio: 'landscape' }), '3:2');
+    assert.equal(aspectRatioForRun({ ratio: 'portrait43' }), '3:4');
+    assert.equal(aspectRatioForRun({ ratio: 'landscape43' }), '4:3');
+    assert.equal(aspectRatioForRun({ ratio: 'story' }), '9:16');
+    assert.equal(aspectRatioForRun({ ratio: 'wide' }), '16:9');
+    assert.equal(aspectRatioForRun({ ratio: 'ultrawide' }), '21:9');
+    assert.equal(aspectRatioForRun({ ratio: 'ultratall' }), '9:21');
+    assert.equal(aspectRatioForRun({ ratio: 'bogus' }), '1:1', '未知预设回退 1:1');
+    // custom：显式 customRatio 直出。
+    assert.equal(aspectRatioForRun({ ratio: 'custom', customRatio: '3:4' }), '3:4');
+    // custom/source：无 customRatio 时从尺寸串推导比例（parseSizePair → reducedAspectRatio 链路）。
+    harness.sizeForRunResult = '1024x768';
+    assert.equal(aspectRatioForRun({ ratio: 'custom' }), '4:3', '1024x768 约分为 4:3');
+    assert.equal(aspectRatioForRun({ ratio: 'custom', customRatio: '   ' }), '4:3', '空白 customRatio 等同缺失');
+    assert.equal(aspectRatioForRun({ ratio: 'source' }), '4:3');
+    harness.sizeForRunResult = '1000x1000';
+    assert.equal(aspectRatioForRun({ ratio: 'custom' }), '1:1');
+    // 尺寸串无法解析 → 空串（调用方决定兜底），不是 undefined/抛错。
+    harness.sizeForRunResult = '';
+    assert.equal(aspectRatioForRun({ ratio: 'source' }), '');
+});
+
+test('projectVideoSizeForRun: ratio x resolution size matrix', () => {
+    const { ctx } = loadGenerationTasksModule();
+    const sizeForVideo = globalFunction(ctx, 'projectVideoSizeForRun');
+    assert.deepEqual(fromContext(sizeForVideo({})), { width: 1280, height: 720, size: '1280x720' }, '缺省 16:9/720p');
+    assert.deepEqual(fromContext(sizeForVideo({ videoAspect: '9:16', videoResolution: '1080p' })), { width: 1080, height: 1920, size: '1080x1920' });
+    assert.deepEqual(fromContext(sizeForVideo({ videoAspect: '1:1', videoResolution: '480p' })), { width: 480, height: 480, size: '480x480' });
+    assert.deepEqual(fromContext(sizeForVideo({ videoAspect: 'bogus' })), { width: 1280, height: 720, size: '1280x720' }, '未知比例回退 16:9');
+    assert.deepEqual(fromContext(sizeForVideo({ videoResolution: 'BOGUS' })), { width: 1280, height: 720, size: '1280x720' }, '未知档位按 720p 原尺寸');
+});
+
+test('extractUpstreamTaskId: regex extraction from error text (task_id / taskId / task id, = or : or full-width :)', () => {
+    const { ctx } = loadGenerationTasksModule();
+    const extract = globalFunction(ctx, 'extractUpstreamTaskId');
+    assert.equal(extract('upstream task_id: abc123'), 'abc123');
+    assert.equal(extract('provider says taskId=XYZ-1 done'), 'XYZ-1');
+    assert.equal(extract('task id：abc_1.x'), 'abc_1.x');
+    assert.equal(extract('TASK_ID: upper-case-key'), 'upper-case-key');
+    assert.equal(extract('no id here'), '');
+    assert.equal(extract(''), '');
+    assert.equal(extract(null), '');
+});
+
+test('projectImageTaskUrl: v1 project task ids route to project-library endpoints, others to legacy', () => {
+    const node = { id: 'img-1' };
+    const { ctx } = loadGenerationTasksModule({ nodes: [node] });
+    const url = globalFunction(ctx, 'projectImageTaskUrl');
+    // firefly-canvas-v1 + project_img_/project_vid_ 前缀 → 项目库端点（projectId 走 encodeURIComponent）。
+    assert.equal(url('project_img_A'), '/api/project-library/proj-1/image-generation-tasks/project_img_A');
+    assert.equal(url('project_vid_B'), '/api/project-library/proj-1/video-generation-tasks/project_vid_B');
+    // 无前缀 → 旧端点。
+    assert.equal(url('img_x'), '/api/canvas-image-tasks/img_x');
+    assert.equal(url(''), '/api/canvas-image-tasks/');
+    // projectId 兜底：canvas 无 project_id/project 时用 canvasCore.canvasId。
+    evaluate(ctx, 'canvas = { id: "cv-1", format: "firefly-canvas-v1", nodes: __canvasPayload.nodes, history: [] }');
+    assert.equal(url('project_img_C'), '/api/project-library/cv-1/image-generation-tasks/project_img_C');
+    // 旧 canvas（无 format）一律走旧端点。
+    evaluate(ctx, 'canvas = { id: "cv-1", nodes: __canvasPayload.nodes, history: [] }');
+    assert.equal(url('project_img_A'), '/api/canvas-image-tasks/project_img_A');
+    // 特殊字符 projectId 必须编码。
+    evaluate(ctx, 'canvas = { id: "cv-1", format: "firefly-canvas-v1", project_id: "proj 1", nodes: __canvasPayload.nodes, history: [] }');
+    assert.equal(url('project_img_D'), '/api/project-library/proj%201/image-generation-tasks/project_img_D');
+});
