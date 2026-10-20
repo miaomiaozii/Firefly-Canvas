@@ -121,6 +121,88 @@
                 return out;
             };
         }
+        const origResumePersist = evalFn('resumeSmartPersistencePendingTasks');
+        if (typeof origResumePersist === 'function') {
+            window.resumeSmartPersistencePendingTasks = function(nodes){
+                const keyCount = (typeof smartPendingPersistenceKeys !== 'undefined' && smartPendingPersistenceKeys) ? smartPendingPersistenceKeys.size : -1;
+                const out = origResumePersist.apply(this, arguments);
+                record({type: 'resumePersist', keys: keyCount, nodeImgs: JSON.stringify((((nodes || []).find(n => n.id === 'gen-conn') || {}).images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                return out;
+            };
+        }
+        const origMarkAutosave = evalFn('markAutosaveSaved');
+        if (typeof origMarkAutosave === 'function') {
+            window.markAutosaveSaved = function(...args){
+                const out = origMarkAutosave.apply(this, args);
+                const node = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                record({type: 'markAutosave', imgs: JSON.stringify((node?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                return out;
+            };
+        }
+        const trap = evalFn(`(() => {
+            const rawToProxy = new Map();
+            const events = [];
+            const t0 = performance.now();
+            let lastArr = null;
+            let lastLen = -1;
+            function makeProxy(target, label){
+                if(!target || typeof target !== 'object') return target;
+                if(rawToProxy.has(target)) return rawToProxy.get(target);
+                const p = new Proxy(target, {
+                    get(t, k, r){ return Reflect.get(t, k, r); },
+                    set(t, k, v, r){
+                        const ks = String(k);
+                        if(ks === 'url' || ks === 'preview_url' || ks === 'asset_id'){
+                            events.push({op: 'set', label, key: ks, t: Math.round(performance.now() - t0), stack: String((new Error().stack || '').split('\\n').slice(1, 5)).join(' | ')});
+                        }
+                        return Reflect.set(t, k, v, r);
+                    },
+                    deleteProperty(t, k){
+                        const ks = String(k);
+                        if(ks === 'url' || ks === 'preview_url' || ks === 'asset_id' || ks === 'src'){
+                            events.push({op: 'del', label, key: ks, t: Math.round(performance.now() - t0), stack: String((new Error().stack || '').split('\\n').slice(1, 5)).join(' | ')});
+                        }
+                        return Reflect.deleteProperty(t, k);
+                    }
+                });
+                rawToProxy.set(target, p);
+                return p;
+            }
+            const iv = setInterval(() => {
+                try {
+                    const nodes = (typeof canvasState !== 'undefined' && canvasState && canvasState.nodes) || [];
+                    if(!Array.isArray(nodes)) return;
+                    const node = nodes.find(n => n && n.id === 'gen-conn');
+                    if(!node) return;
+                    const arr = node.images;
+                    if(arr !== lastArr){
+                        events.push({op: 'arr-swap', t: Math.round(performance.now() - t0), fromLen: lastLen, toLen: Array.isArray(arr) ? arr.length : -1, keys: Array.isArray(arr) ? JSON.stringify(arr.map(i => Object.keys(i || {}).sort().join('.') || i)) : String(arr)});
+                        lastArr = arr;
+                        lastLen = Array.isArray(arr) ? arr.length : -1;
+                    } else if(Array.isArray(arr) && arr.length !== lastLen){
+                        events.push({op: 'arr-len', t: Math.round(performance.now() - t0), fromLen: lastLen, toLen: arr.length});
+                        lastLen = arr.length;
+                    }
+                    (Array.isArray(arr) ? arr : []).forEach((img, i) => {
+                        if(!img || typeof img !== 'object') return;
+                        const w = makeProxy(img, 'gen-conn.img' + i);
+                        if(w !== arr[i]) arr[i] = w;
+                    });
+                } catch(e){ events.push({op: 'err', t: Math.round(performance.now() - t0), error: String(e)}); }
+            }, 10);
+            return {events, stop(){ clearInterval(iv); }};
+        })()`);
+        if (trap && trap.stop) {
+            const iv2 = setInterval(() => {
+                try {
+                    const evs = trap.events.splice(0, trap.events.length);
+                    if (evs.length) record({type: 'trap', items: evs.slice(0, 40)});
+                } catch(_){}
+            }, 200);
+            result.diagnostics.push('probe214v5_trap_installed=' + Boolean(trap));
+        } else {
+            result.diagnostics.push('probe214v5_trap_installed=false');
+        }
         const origSave = evalFn('saveCanvas');
         if (typeof origSave === 'function') {
             window.saveCanvas = async function(...args){
