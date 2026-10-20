@@ -251,7 +251,7 @@
             expectedModelCount = configured.length + specImageIds.filter(id => id && !configured.some(m => String(m).toLowerCase() === String(String(id)).toLowerCase())).length;
         } catch(_){}
         const configuredListed = ['browser-image-model', 'browser-image-model-2'].every(id => modelOptionIds.some(m => String(m).toLowerCase() === id));
-        assertion('model popover lists configured models plus spec-adapted models', optionsShown && optionCount === expectedModelCount && configuredListed, {optionCount, expectedModelCount, modelOptionIds});
+        assertion('model popover lists configured models plus spec-adapted models', optionsShown && modelOptionIds.length === expectedModelCount && configuredListed, {optionCount:modelOptionIds.length, expectedModelCount, modelOptionIds});
         const modelPopoverRect = document.querySelector('#dynamicParams .model-control .smart-popover')?.getBoundingClientRect();
         assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= layoutViewportWidth - 8, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:layoutViewportWidth} : 'missing');
 
