@@ -100,6 +100,27 @@
             record({type: 'api', url: u.slice(0, 90), method: opts?.method || 'GET'});
             return origFetch.apply(this, arguments);
         };
+        const origSyncLive = evalFn('syncLiveProjectMediaReferences');
+        if (typeof origSyncLive === 'function') {
+            window.syncLiveProjectMediaReferences = function(storageCanvas, materializedCanvas){
+                const node = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                const before = JSON.stringify((node?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort()})));
+                origSyncLive.apply(this, arguments);
+                const afterNode = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                const after = JSON.stringify((afterNode?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort()})));
+                if (before !== after) record({type: 'syncLive', before, after, matKeys: JSON.stringify(Object.keys((node && materializedCanvas ? (materializedCanvas.nodes || []).find(x => x.id === 'gen-conn') : {}) || {}).sort()).slice(0, 200)});
+            };
+        }
+        const origMergeImages = evalFn('mergeSmartImageLists');
+        if (typeof origMergeImages === 'function') {
+            window.mergeSmartImageLists = function(localImgs, remoteImgs){
+                const out = origMergeImages.apply(this, arguments);
+                if ((localImgs || []).length || (remoteImgs || []).length) {
+                    record({type: 'mergeImages', out: JSON.stringify((out || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                }
+                return out;
+            };
+        }
         const origSave = evalFn('saveCanvas');
         if (typeof origSave === 'function') {
             window.saveCanvas = async function(...args){
