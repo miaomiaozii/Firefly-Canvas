@@ -390,3 +390,228 @@ test('createSmartGroupNode: 真实 SMART_GROUP_DEFAULT_WIDTH/HEIGHT（canvas-lay
     assert.equal(node.title, '智能分组');
     assert.deepEqual(node.items, []);
 });
+
+// ---------- 删除节点 ----------
+
+test('deleteNode: 节点移除 + 关联边两端过滤 + inputNodeIds/分组成员清理 + 选中复位 + canvas 同步 + 真实 undo 深快照', () => {
+    const nodes = [
+        { id: 'N', images: [{ url: 'u1' }, { url: 'u2' }] },
+        { id: 'P', inputNodeIds: ['N', 'X'] },
+        { id: 'X' },
+        { id: 'G', type: 'smart-group', items: ['N', 'X'] },
+    ];
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes,
+        connections: [
+            { from: 'N', to: 'P' },
+            { from: 'X', to: 'N' },
+            { from: 'P', to: 'X' },
+            { from: 'X', to: 'Q' },
+        ],
+    });
+    ctx.canvasState.selectedId = 'N';
+    ctx.canvasState.selectedIds = ['N', 'X'];
+    ctx.canvasState.selectedImage = { nodeId: 'N', index: 0 };
+    const deleteNode = globalFunction(ctx, 'deleteNode');
+
+    deleteNode('N');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.map(n => n.id)')), ['P', 'X', 'G'], 'N 被移除');
+    assert.equal(evaluate(ctx, 'canvas.nodes === canvasState.nodes'), true, 'canvas.nodes 指向同一数组引用');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvas.connections')), [
+        { from: 'P', to: 'X' },
+        { from: 'X', to: 'Q' },
+    ], 'N 作端点的两条边被过滤，其余保留');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.find(n => n.id === "P").inputNodeIds')), ['X'], 'P.inputNodeIds 去掉 N');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.find(n => n.id === "G").items')), ['X'], '分组成员 items 去掉 N');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), '', '删除的是选中节点 → 清空 selectedId');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedIds')), ['X'], 'selectedIds 过滤 N');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedImage')), { nodeId: '', index: -1 }, 'selectedImage 指向被删节点 → 复位');
+    assert.deepEqual(calls, ['render', 'scheduleSave'], '副作用序列');
+    // 真实 pushUndo 的深快照：删前状态可读回（N 带 2 张图、4 条边都在快照里）。
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '压一次真实撤销栈');
+    const snap = fromContext(evaluate(ctx, 'undoStack[0]'));
+    assert.deepEqual(snap.nodes.map((n) => n.id), ['N', 'P', 'X', 'G'], '快照含删前全部节点');
+    assert.equal(snap.nodes[0].images.length, 2, '快照里 N 的图片完整');
+    assert.equal(snap.connections.length, 4, '快照含删前全部边');
+
+    // 无图节点：再次删除不留归档条目（真实 scheduleMediaArchive 的 !images.length 早退）。
+    deleteNode('X');
+    assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
+        [['u1', 'u2']], '只有 N 的图片进待归档队列');
+    assert.equal(harness.timers.length, 0, '#217：归档只登记、零计时器（旧 setTimeout(ARCHIVE_DELAY_MS) 实现必红）');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 2, '无图节点也压 undo');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvas.connections')), [], 'X 作端点的两条边（P→X、X→Q）都被过滤');
+});
+
+test('deleteNode: 分组节点委托 ungroupNode 且不重复 pushUndo/render（#147 解散=不丢数据）', () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes: [
+            { id: 'G', type: 'smart-group', items: ['A'] },
+            { id: 'A' },
+        ],
+    });
+    const deleteNode = globalFunction(ctx, 'deleteNode');
+
+    deleteNode('G');
+    assert.deepEqual(harness.ungroupCalls, ['G'], '委托 ungroupNode(G)');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.map(n => n.id)')), ['G', 'A'], 'deleteNode 自身不改节点（解散由 ungroupNode 负责）');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, 'ungroupNode 内部已 pushUndo，这里不重复');
+    assert.deepEqual(calls, [], '不 render/save（提前 return）');
+});
+
+test('deleteNode: 历史候选池经真实 demoteHistoryGroupNode 解绑降级，池内图片全保留（#188）', () => {
+    const { ctx, harness } = loadNodeOpsModule({
+        nodes: [
+            { id: 'N', images: [{ url: 'u1' }] },
+            { id: 'H', type: 'smart-image', isHistoryGroup: true, historyFor: 'N', title: 'Group', images: [{ url: 'h1' }, { url: 'h2' }] },
+        ],
+    });
+    const deleteNode = globalFunction(ctx, 'deleteNode');
+
+    deleteNode('N');
+    const h = fromContext(evaluate(ctx, 'canvasState.nodes.find(n => n.id === "H")'));
+    assert.ok(h, '候选池节点保留在画布上');
+    assert.equal(h.isHistoryGroup, undefined, '解绑 isHistoryGroup');
+    assert.equal(h.historyFor, undefined, '解绑 historyFor');
+    assert.equal(h.title, 'Group', '真实 demote 的标题重置（2 图 → Group，titleTouched 缺失）');
+    assert.deepEqual(h.images, [{ url: 'h1' }, { url: 'h2' }], '池内图片全部保留');
+    assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
+        [['u1']], '只有被删节点的图进归档，池内图不归档');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1);
+});
+
+test('deleteNode: agent 节点经真实 cleanupAgentTuiState 清 TUI 状态（含 socket.close），非 agent 不清', () => {
+    const { ctx } = loadNodeOpsModule({
+        nodes: [
+            { id: 'A', type: 'smart-agent' },
+            { id: 'B', type: 'smart-agent' },
+            { id: 'C' },
+        ],
+    });
+    evaluate(ctx, 'agentTuiState.set("A", { socket: null })');
+    ctx.__closeRecord = [];
+    evaluate(ctx, 'agentTuiState.set("B", { socket: { close(){ __closeRecord.push("B"); } } })');
+    evaluate(ctx, 'agentTuiState.set("C", { socket: null })');
+    const deleteNode = globalFunction(ctx, 'deleteNode');
+
+    deleteNode('A');
+    deleteNode('B');
+    deleteNode('C');
+    assert.equal(evaluate(ctx, 'agentTuiState.has("A")'), false, 'agent A 的 TUI 状态被清');
+    assert.equal(evaluate(ctx, 'agentTuiState.has("B")'), false, 'agent B 的 TUI 状态被清');
+    assert.deepEqual(ctx.__closeRecord, ['B'], 'B 的 socket.close() 被真实 cleanup 调用');
+    assert.equal(evaluate(ctx, 'agentTuiState.has("C")'), true, '非 agent 节点不触发 TUI 清理');
+});
+
+test('deleteNode: canvas=null 安全（真实 pushUndo 早退，归档与渲染仍发生）', () => {
+    const { ctx, calls } = loadNodeOpsModule({
+        nodes: [{ id: 'N', images: [{ url: 'u1' }] }],
+    });
+    evaluate(ctx, 'canvas = null');
+    const deleteNode = globalFunction(ctx, 'deleteNode');
+
+    deleteNode('N');
+    assert.equal(evaluate(ctx, 'canvas'), null, 'canvas 保持 null');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes')), [], '节点仍被移除');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, '真实 pushUndo 的 if(!canvas) return → 不压栈');
+    assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
+        [['u1']], '归档登记与 canvas 无关，照常');
+    assert.deepEqual(calls, ['render', 'scheduleSave']);
+});
+
+test('clearNodeMediaBeforeDelete: 图片节点清图 + 历史池移除（含连线）+ 选中复位 + 清出图片进归档', () => {
+    const { ctx, calls } = loadNodeOpsModule({
+        nodes: [
+            { id: 'N', type: 'smart-image', images: [{ url: 'i1' }, { url: 'i2' }], pending: 2, running: true, w: 300, h: 200, title: 'Image' },
+            { id: 'H', type: 'smart-image', isHistoryGroup: true, historyFor: 'N', images: [{ url: 'h1' }] },
+            { id: 'P' },
+        ],
+        connections: [
+            { from: 'H', to: 'N', kind: 'history' },
+            { from: 'N', to: 'P' },
+            { from: 'P', to: 'N' },
+        ],
+    });
+    ctx.canvasState.selectedId = 'P';
+    ctx.canvasState.selectedIds = ['P'];
+    ctx.canvasState.selectedImage = { nodeId: 'N', index: 0 };
+    const clear = globalFunction(ctx, 'clearNodeMediaBeforeDelete');
+
+    assert.equal(clear('N'), true, '有媒体 → true');
+    const n = fromContext(evaluate(ctx, 'canvasState.nodes.find(x => x.id === "N")'));
+    assert.deepEqual(n.images, [], 'images 清空');
+    assert.equal(n.pending, 0);
+    assert.equal(n.running, false);
+    assert.equal(n.title, 'smart.createImportNode', '真实 tr 回退标题');
+    assert.equal('w' in n, false, 'delete w');
+    assert.equal('h' in n, false, 'delete h');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.map(x => x.id)')), ['N', 'P'], '历史池 H 被移除，N 保留');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvas.connections')), [
+        { from: 'N', to: 'P' },
+        { from: 'P', to: 'N' },
+    ], '历史池的边被过滤，N↔P 保留');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), 'N', '清图后选中保持该节点');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedIds')), [], 'selectedIds 清空');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedImage')), { nodeId: '', index: -1 });
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '真实 pushUndo');
+    assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
+        [['i1', 'i2']], '清出的图片进归档队列');
+    assert.deepEqual(calls, ['render', 'scheduleSave']);
+});
+
+test('clearNodeMediaBeforeDelete: 非图片节点/无媒体 → false 零副作用；仅 pending → true 但无归档条目', () => {
+    const { ctx, calls } = loadNodeOpsModule({
+        nodes: [
+            { id: 'P', type: 'smart-prompt' },
+            { id: 'I', type: 'smart-image', images: [] },
+            { id: 'R', type: 'smart-image', images: [], pending: 1, title: 'Image' },
+        ],
+    });
+    const clear = globalFunction(ctx, 'clearNodeMediaBeforeDelete');
+
+    assert.equal(clear('P'), false, '非图片节点 → false');
+    assert.equal(clear('I'), false, '无 images 且无 pending → false');
+    assert.deepEqual(calls, [], '两种 false 都零副作用');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0);
+
+    assert.equal(clear('R'), true, '仅 pending 也算有媒体 → true');
+    const r = fromContext(evaluate(ctx, 'canvasState.nodes.find(x => x.id === "R")'));
+    assert.equal(r.pending, 0);
+    assert.equal(r.running, false);
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1);
+    assert.equal(evaluate(ctx, 'pendingMediaArchives.length'), 0, 'clearedImages 为空 → 真实 scheduleMediaArchive 早退，无归档条目');
+});
+
+test('deleteNodeFromButton: 生成中节点禁止删除（#65：toast + 零副作用）', () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes: [{ id: 'N', images: [{ url: 'u1' }] }],
+    });
+    harness.inFlight.add('N');
+    const del = globalFunction(ctx, 'deleteNodeFromButton');
+
+    del('N');
+    assert.equal(harness.element('toast').textContent, 'smart.nodeDeleteBusy', '真实 toast 文案（tr key）');
+    assert.ok(harness.element('toast').classList.contains('show'), 'toast 已显示');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.map(n => n.id)')), ['N'], '节点仍在');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, '不压 undo');
+    assert.equal(evaluate(ctx, 'pendingMediaArchives.length'), 0, '不归档');
+    assert.deepEqual(calls, [], '不 render/save');
+});
+
+test('deleteNodeFromButton: 空闲节点一步删除（#149 B5）；ghost id 走 deleteNode 仍压一次真实 undo', () => {
+    const { ctx, harness } = loadNodeOpsModule({
+        nodes: [{ id: 'N', images: [{ url: 'u1' }] }],
+    });
+    const del = globalFunction(ctx, 'deleteNodeFromButton');
+
+    del('N');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes')), [], '节点被删');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1);
+    assert.equal(harness.element('toast').textContent, '', '空闲删除无 toast');
+    assert.ok(!harness.element('toast').classList.contains('show'));
+
+    del('ghost');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 2, 'ghost id：deleteNode 照常 pushUndo/render（真实行为，非 bug 断言）');
+    assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
+        [['u1']], 'ghost 无被删节点 → 不新增归档条目（队列里只有 N 的 u1）');
+});
