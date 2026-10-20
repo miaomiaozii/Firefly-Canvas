@@ -1,0 +1,392 @@
+// #199 轨道 4：canvas-node-ops.js 行为单元测试（canvas-connections.js / canvas-generation-tasks.js
+// 之后的下一个模块；耦合报告：60 处 / 27 独立名 / 自由 17 处 / 14 名 / 可注入 11）。
+//
+// canvas-node-ops.js 是画布节点操作模块（#160 P2c 从 smart-canvas.js 抽离）：节点创建
+// （image/prompt/conversation/agent/local-edit/loop/智能分组）、deleteNode（#147 分组解散委托、
+// #188 历史候选池降级、#74/#146 延迟归档）、clearNodeMediaBeforeDelete、deleteNodeFromButton
+// （#65 生成中禁删）、renameSmartNodeImage、createNodeFromMenu、rAF 交互层刷新调度。
+// 本文件只含函数定义与少量模块级 let/const，加载期不触碰外部名。
+//
+// 依赖面实测（口径=独立外部自由名，与耦合报告一致；与 #203 canvas-connections 同方法）：
+// **21 个外部自由名**，其中：
+//   - 7 个模块由**加载真实模块**满足（不桩；harness 按 HTML_SCRIPT_ORDER 排序加载）：
+//       canvas-node-types.js → NODE_TYPE_IMAGE/PROMPT/CONVERSATION/AGENT/LOCAL_EDIT/LOOP/GROUP
+//       canvas-core.js       → canvas(let) / canvasCore(Proxy 接口) / tr / toast / uid /
+//                              selectedNode / nodeScale / isSmartGroupNode / isSmartImageNode /
+//                              MEDIA_GROUP_DEFAULT_SCALE
+//       canvas-state.js      → canvasState
+//       canvas-layout-utils.js → SMART_GROUP_DEFAULT_WIDTH / SMART_GROUP_DEFAULT_HEIGHT
+//       canvas-undo.js       → pushUndo（真实深快照撤销栈：deleteNode 的 undo 断言直接读 undoStack）
+//       canvas-media-history.js → isHistoryGroupNode / demoteHistoryGroupNode / historyGroupForNode /
+//                              scheduleMediaArchive（#217 真实实现：只登记 pendingMediaArchives、
+//                              无计时器——本测试直接断言 harness.timers 为空）
+//       canvas-agent-tui.js  → isSmartAgentNode / cleanupAgentTuiState（真实 agentTuiState Map 清理）
+//   - 20 个手写桩（全部来自不可独立加载的宿主脚本 smart-canvas.js / canvas-connections.js，
+//     按真实契约最小化；ADR 0020 判据「桩要开始重新实现产品逻辑就停」：0 个复制产品逻辑）：
+//       零逻辑记录器 9 个：render / scheduleSave / attachRunMeta / arrangeSmartGroupMembers /
+//       inheritNodeMetaFromImage / ungroupNode / closeCreateMenu / refreshConnectionLayer /
+//       renderMinimap（前两个替换真实 canvasCore 成员为调用记录器，与 canvas-connections 测试同法）
+//       数据驱动 8 个（测试显式喂数据，桩零逻辑）：imageLayout / resolveChatProviderId /
+//       resolveChatModel / smartNodeInFlight / openAssetNameDialog / viewportCenter /
+//       addNodeToSmartGroup / connectInputNode（connectInputNode 属 canvas-connections.js——
+//       不加载整模块，因为那会额外引入它自己的 11 个自由名桩；连线判定行为已由
+//       test-canvas-connections.mjs 覆盖）
+//       单行契约镜像 3 个：mediaNodeDefaultScale（smart-canvas.js:1079-1082 逐字，MEDIA_NODE_DEFAULT_SCALE=2
+//       取 smart-canvas.js:1030 的值）、nodeRect（smart-canvas.js:1772-1775 逐字，nodeScale 用真实
+//       canvas-core.js:88）、imageNameLabel（smart-canvas.js:7207-7209 测试触达分支；fileNameFromUrl
+//       回退分支不在测试路径——测试图片都带 name）
+//       状态 1 个：interactionLayerRaf（smart-canvas.js 的 let；测试上下文无该词法声明，初始化为 0，
+//       非函数）
+//   - 浏览器全局 document/localStorage/requestAnimationFrame/可控定时器由 harness.mjs 提供；
+//     document.getElementById('toast') 显式注册元素（供真实 canvas-core toast 运行）。
+//
+// 防的回归（全部断言可观察输出/副作用，不是「不抛错就算过」）：
+//   - 节点创建：真实 uid 前缀/真实 NODE_TYPE_* 常量/真实 MEDIA_GROUP_DEFAULT_SCALE 与
+//     SMART_GROUP_DEFAULT_WIDTH/HEIGHT、images 浅拷贝隔离、options 透传（title String 化、
+//     runMeta、historyId String 化、needsRegeneration Boolean、generationState）、
+//     select:false 不抢选中、skipUndo 不压栈（真实 undoStack 长度）；
+//   - deleteNode（#147/#188/#74/#146）：分组节点委托 ungroupNode 且不重复 pushUndo；
+//     关联边过滤（from/to 两端）、inputNodeIds/分组成员 items 清理、selectedId/selectedIds/
+//     selectedImage 复位、canvas.nodes 同引用同步、真实 pushUndo 深快照（删前状态可读回）、
+//     历史候选池经真实 demoteHistoryGroupNode 解绑降级且池内图片全保留、agent 节点经真实
+//     cleanupAgentTuiState 清 TUI 状态（含 socket.close）、#217 归档只登记
+//     pendingMediaArchives 且**零计时器**（旧实现 setTimeout(ARCHIVE_DELAY_MS) 比保存防抖早，
+//     归档 409 被吞——本断言是单测侧的直接证据）、canvas=null 安全；
+//   - clearNodeMediaBeforeDelete：仅图片节点、清图后历史池经真实 historyGroupForNode 找到并
+//     移除（含其连线）、标题/尺寸复位、清出的图片进 pendingMediaArchives；
+//   - deleteNodeFromButton（#65）：生成中节点禁止删除（toast + 零副作用）；
+//   - createLocalEditNodeFromImage：节点缺失/无素材 toast 且零副作用、正常路径位置公式
+//     （源节点右缘 +140、y 下限 40）、角色 original、connectInputNode 调用与 toast 分支；
+//   - createNodeFromMenu：七种类型的偏移矩阵、closeCreateMenu、createMenuGroupId 读-还原-清零、
+//     分组入组触发 arrangeSmartGroupMembers(skipUndo)、createMenuPoint=null 回退 viewportCenter；
+//   - scheduleInteractionLayerRefresh：rAF 合并、flush 后双刷新、token 清零可重排。
+//
+// 判为**本轮单测不覆盖**的行为（不是「永远绿的假断言」，是预算/边界外的真实路径）：
+//   - moveNodeElementsDuringDrag / updateNodeElementDuringResize：拖拽/缩放的 DOM 样式同步。
+//     覆盖它们需再引入 6 个桩（positionComposerForNode / mediaGroupGridHeight /
+//     applyThumbDisplaySizeToElement / smartGroupImageRefs / smartGroupCompactMembers / CSS.escape），
+//     总桩数将突破 26 条既有上限（canvas-generation-tasks.js 26），且核心输入 imageLayout 本身
+//     是数据驱动桩——断言大半会落在「自己桩的输出」上，自我断言风险高。其核心布局数学
+//     （getBatchThumbGridSize/BATCH_THUMB）属 canvas-layout-utils.js，由 test-canvas-layout-utils.mjs
+//     覆盖；真实时序由浏览器 runner 兜底。
+//   - 节点复制/粘贴/Alt 拖拽复制（cloneSmartNode/copySelectedNodes/pasteNodes/duplicateForAltDrag）：
+//     属剪贴板操作，仍在 smart-canvas.js（本模块头部注释明示「留主脚本」）——不在本模块测试范围，
+//     其身份与去重行为由浏览器 runner 兜底。
+//   - createLocalEditNodeFromImage 里 connectInputNode 的连线判定内部（角色路由/去重）：
+//     属 canvas-connections.js 行为，已由 test-canvas-connections.mjs 的 connectInputNode 用例覆盖；
+//     本文件只断言 node-ops 侧的调用参数与 toast 分支。
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
+
+// 加载真实底层模块 + 被测模块（按 HTML 相对顺序，harness 会排序）：
+// canvas-node-types.js → canvas-core.js → canvas-state.js → canvas-layout-utils.js →
+// canvas-undo.js → canvas-media-history.js → canvas-agent-tui.js → canvas-node-ops.js。
+// 外部名在 loadModules 之前用全局属性桩好即可（canvasCore Proxy 是惰性解析，运行期才按名
+// 解析）；3 个契约镜像必须 loadModules 之后用 evaluate 定义（要引用 context 内真实常量/函数）。
+function loadNodeOpsModule({ nodes = [], connections = [] } = {}) {
+    const { ctx, harness } = createCanvasContext();
+    const calls = [];
+    // --- 数据驱动注册表：测试显式喂数据，桩零逻辑（防「第二套假核心」） ---
+    harness.layout = { width: 180, height: 110 };      // imageLayout 返回值（canvasCore 成员）
+    harness.providerId = 'comfly';                     // resolveChatProviderId 返回值
+    harness.model = 'gpt-5.4';                         // resolveChatModel 返回值
+    harness.inFlight = new Set();                      // smartNodeInFlight：哪些节点生成中
+    harness.assetName = undefined;                     // openAssetNameDialog 返回值
+    harness.assetDialogCalls = [];                     // openAssetNameDialog 入参记录
+    harness.viewportPoint = { x: 0, y: 0 };            // viewportCenter 返回值
+    harness.connectResult = true;                      // connectInputNode 返回值
+    harness.connectCalls = [];                         // connectInputNode 调用记录
+    harness.addNodeToGroupResult = false;              // addNodeToSmartGroup 返回值
+    harness.addNodeToGroupCalls = [];                  // addNodeToSmartGroup 调用记录
+    harness.runMetaCalls = [];                         // canvasCore.attachRunMeta 调用记录
+    harness.inheritCalls = [];                         // inheritNodeMetaFromImage 调用记录
+    harness.ungroupCalls = [];                         // ungroupNode 调用记录
+    harness.closeMenuCalls = 0;                         // closeCreateMenu 调用计数
+    harness.arrangeCalls = [];                         // canvasCore.arrangeSmartGroupMembers 调用记录
+    harness.refreshLayerCalls = 0;                      // refreshConnectionLayer 调用计数
+    harness.minimapCalls = 0;                           // renderMinimap 调用计数
+
+    harness.element('toast');   // 真实 canvas-core toast（canvas-core.js:154）需要 #toast 元素
+
+    // --- canvasCore 接口成员（真实 canvasCore Proxy 运行期按名解析到这些全局属性） ---
+    ctx.render = () => calls.push('render');
+    ctx.scheduleSave = () => calls.push('scheduleSave');
+    ctx.imageLayout = () => harness.layout;
+    ctx.attachRunMeta = (node, meta) => { harness.runMetaCalls.push({ node: node?.id || '', meta }); };
+    ctx.resolveChatProviderId = () => harness.providerId;
+    ctx.resolveChatModel = () => harness.model;
+    ctx.arrangeSmartGroupMembers = (group, options) => { harness.arrangeCalls.push({ group: group?.id ?? '', options }); };
+    // --- 宿主自由名桩（smart-canvas.js / canvas-connections.js） ---
+    ctx.inheritNodeMetaFromImage = (node) => { harness.inheritCalls.push(node?.id || ''); };
+    ctx.ungroupNode = (id) => { harness.ungroupCalls.push(id); };
+    ctx.smartNodeInFlight = (node) => harness.inFlight.has(node?.id);
+    ctx.openAssetNameDialog = async (opts) => { harness.assetDialogCalls.push(opts); return harness.assetName; };
+    ctx.viewportCenter = () => harness.viewportPoint;
+    ctx.closeCreateMenu = () => { harness.closeMenuCalls++; };
+    ctx.addNodeToSmartGroup = (group, node) => {
+        harness.addNodeToGroupCalls.push({ group: group?.id ?? null, node: node?.id || '' });
+        return harness.addNodeToGroupResult;
+    };
+    ctx.connectInputNode = (fromId, toId) => {
+        harness.connectCalls.push([fromId, toId]);
+        return harness.connectResult;
+    };
+    ctx.refreshConnectionLayer = () => { harness.refreshLayerCalls++; };
+    ctx.renderMinimap = () => { harness.minimapCalls++; };
+    // 状态：interactionLayerRaf（smart-canvas.js 的 let；测试上下文无词法声明，用全局属性顶替）
+    ctx.interactionLayerRaf = 0;
+
+    loadModules(ctx, [
+        'canvas-node-types.js',
+        'canvas-core.js',
+        'canvas-state.js',
+        'canvas-layout-utils.js',
+        'canvas-undo.js',
+        'canvas-media-history.js',
+        'canvas-agent-tui.js',
+        'canvas-node-ops.js',
+    ]);
+
+    // --- 3 个单行契约镜像（loadModules 之后定义：引用 context 内的真实常量/函数） ---
+    // 契约镜像（smart-canvas.js:7207-7209 测试触达分支：name 存在 → trim；测试图片都带 name，
+    // fileNameFromUrl 回退分支不在测试路径）。
+    evaluate(ctx, 'imageNameLabel = (img, fallback = "image") => { const raw = String(img?.name || fallback || "image").trim(); return raw || "image"; }');
+    // 契约镜像（smart-canvas.js:1079-1082 逐字；MEDIA_NODE_DEFAULT_SCALE=2 的值取自
+    // smart-canvas.js:1030；MEDIA_GROUP_DEFAULT_SCALE 用真实 canvas-core.js:86 的 0.8）。
+    evaluate(ctx, 'mediaNodeDefaultScale = (node) => { if((node?.images || []).length > 1 && !Number.isFinite(Number(node?.scale))) return MEDIA_GROUP_DEFAULT_SCALE; return Number.isFinite(Number(node?.scale)) && Number(node.scale) > 0 ? Number(node.scale) : 2; }');
+    // 契约镜像（smart-canvas.js:1772-1775 逐字：x/y 取节点，宽/高取 imageLayout；
+    // nodeScale 用真实 canvas-core.js:88）。
+    evaluate(ctx, 'nodeRect = (node) => { const layout = imageLayout(node.images || [], nodeScale(node), node); return { x: node.x || 0, y: node.y || 0, width: layout.width, height: layout.height }; }');
+
+    // 运行期状态：canvas 是 canvas-core.js 的词法 let 绑定（不是全局对象属性），必须用
+    // evaluate 赋值；canvasState 是 window.canvasState 对象，宿主侧直接改属性即可。
+    ctx.canvasState.nodes = nodes;
+    ctx.__canvasPayload = { id: 'cv', nodes, connections };
+    evaluate(ctx, 'canvas = __canvasPayload');
+    return { ctx, harness, calls };
+}
+
+// ---------- 模块加载 ----------
+
+test('loads canvas-node-ops.js standalone: all top-level functions exist, real modules in place', () => {
+    const { ctx } = loadNodeOpsModule();
+    // 顶层 function 都在（模块加载成功且无 SyntaxError 的前置证据）。
+    for (const name of [
+        'createImageNodeAt', 'createNode', 'createPromptNode', 'createConversationNode',
+        'createAgentNode', 'createLocalEditNode', 'createLocalEditNodeFromImage',
+        'createLoopNode', 'createSmartGroupNode', 'moveNodeElementsDuringDrag',
+        'updateNodeElementDuringResize', 'deleteNode', 'clearNodeMediaBeforeDelete',
+        'deleteNodeFromButton', 'renameSmartNodeImage', 'createNodeFromMenu',
+        'scheduleInteractionLayerRefresh', 'addCreatedNodeToMenuGroup',
+    ]) globalFunction(ctx, name);
+    // 真实底层模块就位。
+    assert.equal(evaluate(ctx, 'NODE_TYPE_IMAGE'), 'smart-image', 'NODE_TYPE_IMAGE 来自真实 canvas-node-types.js');
+    assert.equal(evaluate(ctx, 'NODE_TYPE_LOCAL_EDIT'), 'local-edit', 'NODE_TYPE_LOCAL_EDIT 来自真实 canvas-node-types.js');
+    assert.equal(evaluate(ctx, 'MEDIA_GROUP_DEFAULT_SCALE'), 0.8, '真实 canvas-core.js 常量');
+    assert.equal(evaluate(ctx, 'SMART_GROUP_DEFAULT_WIDTH'), 340, '真实 canvas-layout-utils.js 常量');
+    assert.equal(evaluate(ctx, 'SMART_GROUP_DEFAULT_HEIGHT'), 286, '真实 canvas-layout-utils.js 常量');
+    assert.equal(evaluate(ctx, 'typeof pushUndo'), 'function', 'pushUndo 来自真实 canvas-undo.js');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, '真实撤销栈初始为空');
+    assert.equal(evaluate(ctx, 'typeof scheduleMediaArchive'), 'function', 'scheduleMediaArchive 来自真实 canvas-media-history.js');
+    assert.equal(evaluate(ctx, 'typeof isHistoryGroupNode'), 'function', 'isHistoryGroupNode 来自真实 canvas-media-history.js');
+    assert.equal(evaluate(ctx, 'pendingMediaArchives.length'), 0, '真实待归档队列初始为空');
+    assert.equal(evaluate(ctx, 'typeof cleanupAgentTuiState'), 'function', 'cleanupAgentTuiState 来自真实 canvas-agent-tui.js');
+    assert.equal(evaluate(ctx, 'canvas && canvas.id'), 'cv', 'canvas let 绑定已被 evaluate 赋值');
+    assert.equal(evaluate(ctx, 'canvasState.nodes.length'), 0, 'canvasState 来自真实 canvas-state.js');
+    // 真实 canvasCore Proxy 惰性解析到本测试提供的全局成员。
+    assert.equal(evaluate(ctx, 'typeof canvasCore.imageLayout'), 'function', 'canvasCore.imageLayout 解析成功');
+    assert.equal(evaluate(ctx, 'typeof canvasCore.nodeRect'), 'function', 'canvasCore.nodeRect 解析成功');
+    assert.equal(evaluate(ctx, 'typeof canvasCore.mediaNodeDefaultScale'), 'function', 'canvasCore.mediaNodeDefaultScale 解析成功');
+    assert.equal(evaluate(ctx, 'canvasCore.render === render'), true, 'canvasCore.render 是记录器');
+});
+
+// ---------- 节点创建 ----------
+
+test('createNode: default shape — real uid prefix/type/scale constants, title branches, shallow-copied images', () => {
+    const { ctx } = loadNodeOpsModule();
+    const create = globalFunction(ctx, 'createNode');
+
+    const single = fromContext(create(10, 20, [{ url: 'u1', w: 100, h: 50 }]));
+    assert.ok(single.id.startsWith('smart_'), '真实 uid 前缀 smart_');
+    assert.equal(single.type, 'smart-image', 'NODE_TYPE_IMAGE 真实值');
+    assert.equal(single.x, 10);
+    assert.equal(single.y, 20);
+    assert.equal(single.title, 'Image', '单图标题 Image');
+    assert.equal(single.scale, 2, '单图缺省 scale = MEDIA_NODE_DEFAULT_SCALE（smart-canvas.js:1030 的 2）');
+    assert.equal(typeof single.created_at, 'number');
+    assert.deepEqual(single.images, [{ url: 'u1', w: 100, h: 50 }]);
+
+    const group = fromContext(create(30, 40, [{ url: 'a' }, { url: 'b' }]));
+    assert.equal(group.title, 'Group', '多图标题 Group');
+    assert.equal(group.scale, 0.8, '多图 scale = 真实 MEDIA_GROUP_DEFAULT_SCALE（canvas-core.js:86）');
+
+    const empty = fromContext(create(0, 0));
+    assert.equal(empty.title, 'smart.createImportNode', '无图标题走真实 tr（无 StudioI18n 返回 key）');
+    assert.equal(empty.scale, 2);
+    assert.deepEqual(empty.images, []);
+
+    // images 浅拷贝隔离：改原数组/原对象不影响节点。
+    const source = [{ url: 'u1', w: 100 }];
+    create(50, 60, source);
+    source[0].url = 'changed';
+    source.splice(1, 0, { url: 'extra' });
+    const n = fromContext(evaluate(ctx, 'canvasState.nodes.find(x => x.x === 50)'));
+    assert.equal(n.images.length, 1, '原数组增删不影响节点');
+    assert.equal(n.images[0].url, 'u1', '原对象改字段不影响节点（浅拷贝）');
+});
+
+test('createNode: undo push / skipUndo / select:false / render+scheduleSave 序列', () => {
+    const { ctx, calls } = loadNodeOpsModule();
+    const create = globalFunction(ctx, 'createNode');
+
+    create(0, 0);
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '默认压一次真实撤销栈');
+    assert.deepEqual(calls, ['render', 'scheduleSave'], '副作用序列（pushUndo 是真实函数，不在记录器里）');
+
+    create(0, 0, [], { skipUndo: true });
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, 'skipUndo 不压栈');
+    assert.equal(calls.length, 4, '但 render/scheduleSave 仍发生');
+
+    evaluate(ctx, 'canvasState.selectedId = "preset"');
+    create(0, 0, [], { select: false });
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), 'preset', 'select:false 不抢选中');
+});
+
+test('createNode: options 透传 — title String 化 / runMeta / historyId String 化 / needsRegeneration Boolean / generationState', () => {
+    const { ctx, harness } = loadNodeOpsModule();
+    const create = globalFunction(ctx, 'createNode');
+
+    const node = fromContext(create(0, 0, [], {
+        title: 42,
+        runMeta: { prompt: 'p', inputRefs: [{ url: 'u', kind: 'image' }] },
+        historyId: 123,
+        needsRegeneration: 0,
+        generationState: 'running',
+    }));
+    assert.equal(node.title, '42', 'title 经 String() 转换');
+    assert.equal(node.historyId, '123', 'historyId 经 String() 转换');
+    assert.equal(node.needsRegeneration, false, 'needsRegeneration 经 Boolean() 转换（0 → false）');
+    assert.equal(node.generationState, 'running');
+    assert.deepEqual(harness.runMetaCalls, [
+        { node: node.id, meta: { prompt: 'p', inputRefs: [{ url: 'u', kind: 'image' }] } },
+    ], 'runMeta 原样交给 attachRunMeta');
+    assert.deepEqual(harness.inheritCalls, [node.id], 'inheritNodeMetaFromImage 以节点为参调用');
+
+    const noMeta = fromContext(create(0, 0, [], { needsRegeneration: null }));
+    assert.equal('needsRegeneration' in noMeta, false, 'needsRegeneration=null 不设置字段（!= null 门）');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), noMeta.id, '默认选中新建节点');
+});
+
+test('createImageNodeAt: 按布局尺寸把节点中心对准光标点（数据驱动 layout 180x110）', () => {
+    const { ctx } = loadNodeOpsModule();
+    const createAt = globalFunction(ctx, 'createImageNodeAt');
+
+    const node = fromContext(createAt({ x: 1000, y: 500 }, [{ url: 'u' }]));
+    assert.equal(node.x, 1000 - Math.round(180 / 2), 'x = 光标 x - 宽/2');
+    assert.equal(node.y, 500 - Math.round(110 / 2), 'y = 光标 y - 高/2');
+    assert.equal(node.type, 'smart-image');
+
+    const atOrigin = fromContext(createAt(null, []));
+    assert.equal(atOrigin.x, -90, 'null 点 → (0,0) 中心对齐');
+    assert.equal(atOrigin.y, -55);
+});
+
+test('createPromptNode: 形状 + 聊天 provider/model 经 canvasCore 接口 + source id String 化', () => {
+    const { ctx } = loadNodeOpsModule();
+    const createPrompt = globalFunction(ctx, 'createPromptNode');
+
+    const node = fromContext(createPrompt(1, 2, { text: 'hello', sourceNodeId: 7, sourceMessageId: 'm1' }));
+    assert.ok(node.id.startsWith('prompt_'), '真实 uid 前缀 prompt_');
+    assert.equal(node.type, 'smart-prompt');
+    assert.equal(node.w, 316);
+    assert.equal(node.h, 240);
+    assert.equal(node.title, 'Prompt');
+    assert.equal(node.text, 'hello');
+    assert.equal(node.promptSeparator, ';');
+    assert.equal(node.promptSplitEnabled, false);
+    assert.equal(node.llmEnabled, false);
+    assert.equal(node.llmProvider, 'comfly', 'llmProvider 经 canvasCore.resolveChatProviderId');
+    assert.equal(node.llmModel, 'gpt-5.4', 'llmModel 经 canvasCore.resolveChatModel');
+    assert.equal(node.llmSystemEnabled, false);
+    assert.equal(node.llmSystemPrompt, 'You are a helpful prompt assistant.');
+    assert.equal(node.llmInstruction, '');
+    assert.equal(node.source_node_id, '7', 'sourceNodeId String 化');
+    assert.equal(node.source_message_id, 'm1');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '压一次真实撤销栈');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), node.id, '默认选中');
+});
+
+test('createConversationNode / createAgentNode: 形状与选中', () => {
+    const { ctx } = loadNodeOpsModule();
+    const conv = fromContext(globalFunction(ctx, 'createConversationNode')(10, 20));
+    assert.ok(conv.id.startsWith('conversation_'));
+    assert.equal(conv.type, 'smart-conversation');
+    assert.equal(conv.w, 390);
+    assert.equal(conv.h, 430);
+    assert.equal(conv.title, 'Conversation');
+    assert.deepEqual(conv.messages, []);
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), conv.id);
+
+    const agent = fromContext(globalFunction(ctx, 'createAgentNode')(30, 40));
+    assert.ok(agent.id.startsWith('agent_'));
+    assert.equal(agent.type, 'smart-agent');
+    assert.equal(agent.w, 382);
+    assert.equal(agent.h, 360);
+    assert.equal(agent.title, 'Agent');
+    assert.equal(agent.agentGoal, '');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), agent.id);
+});
+
+test('createLocalEditNode: 模块级尺寸常量 400x520 与默认角色结构', () => {
+    const { ctx } = loadNodeOpsModule();
+    const node = fromContext(globalFunction(ctx, 'createLocalEditNode')(0, 0));
+    assert.ok(node.id.startsWith('local-edit_'));
+    assert.equal(node.type, 'local-edit', 'NODE_TYPE_LOCAL_EDIT 真实值');
+    assert.equal(node.w, 400, 'LOCAL_EDIT_NODE_W');
+    assert.equal(node.h, 520, 'LOCAL_EDIT_NODE_H');
+    assert.equal(node.title, '');
+    assert.equal(node.mode, 'modify');
+    assert.equal(node.original_asset_id, '');
+    assert.deepEqual(node.reference_asset_ids, []);
+    assert.equal(node.prompt, '');
+    assert.deepEqual(node.localEditInputRoles, { originalNode: '', referenceNodes: [], promptNode: '', promptNodes: [] });
+    assert.equal(node.localEditActiveRole, 'original');
+    assert.equal(node.aspect_ratio, '1:1');
+    assert.equal(node.generation_size, '1024x1024');
+    assert.equal(node.generation_resolution, '1k');
+    assert.equal(node.selectionType, 'polygon');
+    assert.deepEqual(node.selection, []);
+    assert.equal(node.feather_radius, 8);
+    assert.deepEqual(node.images, []);
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), node.id);
+});
+
+test('createLoopNode: 形状（count/mode/imageBatchSize 默认）', () => {
+    const { ctx } = loadNodeOpsModule();
+    const node = fromContext(globalFunction(ctx, 'createLoopNode')(0, 0));
+    assert.ok(node.id.startsWith('loop_'));
+    assert.equal(node.type, 'smart-loop');
+    assert.equal(node.w, 340);
+    assert.equal(node.h, 168);
+    assert.equal(node.title, 'Loop');
+    assert.equal(node.count, 1);
+    assert.equal(node.mode, 'serial');
+    assert.equal(node.showPrompt, false);
+    assert.equal(node.imageInput, false);
+    assert.equal(node.loopStart, 1);
+    assert.equal(node.imageBatchSize, 1);
+    assert.equal(node.variablePrompt, '');
+});
+
+test('createSmartGroupNode: 真实 SMART_GROUP_DEFAULT_WIDTH/HEIGHT（canvas-layout-utils.js）', () => {
+    const { ctx } = loadNodeOpsModule();
+    const node = fromContext(globalFunction(ctx, 'createSmartGroupNode')(0, 0));
+    assert.ok(node.id.startsWith('group_'));
+    assert.equal(node.type, 'smart-group');
+    assert.equal(node.w, evaluate(ctx, 'SMART_GROUP_DEFAULT_WIDTH'), '宽 = 真实常量 340');
+    assert.equal(node.h, evaluate(ctx, 'SMART_GROUP_DEFAULT_HEIGHT'), '高 = 真实常量 286');
+    assert.equal(node.title, '智能分组');
+    assert.deepEqual(node.items, []);
+});
