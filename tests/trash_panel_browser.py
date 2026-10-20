@@ -441,7 +441,10 @@ def run(artifacts: pathlib.Path, entry: str) -> dict:
         steps = {k: v for k, v in steps.items() if k in ("nodes-deleted-and-archived", "trash-order")}
     if entry == "theme":
         steps = {k: v for k, v in steps.items() if k == "trash-theme"}
-    passed = failure is None and all(steps.values())
+    # #218: assertions[].passed 必须计入退出码。修之前名字/时间戳断言是装饰性的
+    # （manifest 里 passed: false 但 EXIT=0），任何断言 false 都会让 run 变红。
+    assertions_ok = all(bool(item.get("passed")) for item in assertions)
+    passed = failure is None and assertions_ok and all(steps.values())
     write_json(artifacts / "manifest.json", {
         "schema_version": 1,
         "journey": "trash-panel",
