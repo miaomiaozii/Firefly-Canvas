@@ -51,8 +51,8 @@ async function runPromptLLMNode(nodeId){
     node.running = true;
     canvasCore.render();
     try {
-        const provider = resolveChatProviderId(node.llmProvider || '');
-        const model = resolveChatModel(node.llmModel || '', provider);
+        const provider = canvasCore.resolveChatProviderId(node.llmProvider || '');
+        const model = canvasCore.resolveChatModel(node.llmModel || '', provider);
         const mediaRefs = promptNodeInputMediaForLLM(node);
         const images = imageRefsOnly(mediaRefs).map(img => img.url).filter(Boolean);
         const videos = videoRefsOnly(mediaRefs).map(video => video.url).filter(Boolean);
@@ -174,9 +174,9 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         // 推导像素尺寸（见 app/services/generation.py：aspect_ratio 存在时 body 不写 size）。
         const sendsExplicitSize = usesExplicitResolution && !outpaintSize;
         const size = sendsExplicitSize ? sizeForRun(runSettings) : '';
-        const parsed = sendsExplicitSize ? parseSizeValue(size) : null;
+        const parsed = sendsExplicitSize ? canvasCore.parseSizeValue(size) : null;
         if(sendsExplicitSize && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
-        const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
+        const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(canvasCore.importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
         if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
@@ -230,7 +230,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         if(submission) submission.requestPayload = {...payload};
         const task = await postProjectImageTaskWithReplay(projectId, payload);
         const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
-        await acceptProjectGenerationRegistration(taskResult);
+        await canvasCore.acceptProjectGenerationRegistration(taskResult);
         // 新运行重置计时器：项目 API 提交路径不经过 runCascadeStepIntoNode，
         // 必须显式重置，否则持久化节点会带着上次生成的旧 runStartedAt 无限涨。
         const refreshedNode = canvasState.nodes.find(item => item.id === resultNode.id) || resultNode;
@@ -324,9 +324,9 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
                 // as soon as the request has been re-sent and registered; polling the
                 // video task to completion must not gate the resume log.
                 const taskIds = applyApiVideoGenerationResult(freshNode, videoResult, prompt);
-                if(!await acceptProjectGenerationRegistration(videoResult)){
-                    scheduleSave();
-                    await saveCanvas();
+                if(!await canvasCore.acceptProjectGenerationRegistration(videoResult)){
+                    canvasCore.scheduleSave();
+                    await canvasCore.saveCanvas();
                 }
                 if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
             })(), {prompt, refs, runSettings});
@@ -335,8 +335,8 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
             toast(pendingError.message);
             throw pendingError;
         }
-        const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(mediaKindForItem(ref)));
-        const ownedRefs = await Promise.all(projectRefs.map(ref => importProjectMediaReference(ref)));
+        const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(canvasCore.mediaKindForItem(ref)));
+        const ownedRefs = await Promise.all(projectRefs.map(ref => canvasCore.importProjectMediaReference(ref)));
         if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error(tr('smart.videoRefsNotInProject'));
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const size = projectVideoSizeForRun(runSettings);
@@ -360,9 +360,9 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
             camera_fixed:Boolean(runSettings.videoCameraFixed),
             return_last_frame:Boolean(runSettings.videoReturnLastFrame),
             generate_audio:Boolean(runSettings.videoGenerateAudio),
-            image_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'image').map(item => item.asset_id),
-            video_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'video').map(item => item.asset_id),
-            audio_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'audio').map(item => item.asset_id),
+            image_reference_asset_ids:ownedRefs.filter(item => canvasCore.mediaKindForItem(item) === 'image').map(item => item.asset_id),
+            video_reference_asset_ids:ownedRefs.filter(item => canvasCore.mediaKindForItem(item) === 'video').map(item => item.asset_id),
+            audio_reference_asset_ids:ownedRefs.filter(item => canvasCore.mediaKindForItem(item) === 'audio').map(item => item.asset_id),
             media_type:'video',
             result_node_id:resultNode.id,
             base_revision:Number(canvas.revision || 0)
@@ -538,7 +538,7 @@ function finalizeJimengPending(node, urls, kind='image'){
     const additions = (urls || []).map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
+        return canvasCore.stripImageGenerationMeta(canvasCore.copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
     }).filter(item => item.url);
     if(!additions.length) return false;
     delete node.jimengPending;
@@ -624,7 +624,7 @@ async function fetchImageTaskQuery(providerId, taskId){
 async function querySmartImageTaskNow(nodeId, localTaskId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return;
-    const task = smartPendingTasks(node).find(item => item.taskId === localTaskId) || smartRecoverableImageTask(node);
+    const task = smartPendingTasks(node).find(item => item.taskId === localTaskId) || canvasCore.smartRecoverableImageTask(node);
     if(!task || task.querying) return;
     const recoverTaskId = task.recoverTaskId || extractUpstreamTaskId(task.error || '');
     if(!recoverTaskId){
@@ -842,7 +842,7 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
     const additions = cleanHistoryImages((mediaItems || []).map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
+        return canvasCore.stripImageGenerationMeta(canvasCore.copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
     }).filter(item => item.url)).filter(item => {
         const key = `${item.kind || ''}|${item.url || ''}`;
         if(seen.has(key)) return false;
@@ -863,16 +863,16 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
         node.running = false;
         node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : 'Image');
         if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === canvasCore.MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
-        else node.scale = mediaNodeDefaultScale(node);
+        else node.scale = canvasCore.mediaNodeDefaultScale(node);
         // 保留固化后的尺寸（占位图、写回、完成三个阶段统一），不再删除
         // delete node.w;
         // delete node.h;
         // 批量生图完成时，如果节点在组框内，重新整理成员并计算组框尺寸
         //（与 finalizePendingNode 保持一致，避免占位图→真实图切换时组框尺寸不匹配）
-        const group = smartGroupContainingNode(node.id);
+        const group = canvasCore.smartGroupContainingNode(node.id);
         if(group){
-            arrangeSmartGroupMembers(group, {skipUndo:true});
-            scheduleSave();
+            canvasCore.arrangeSmartGroupMembers(group, {skipUndo:true});
+            canvasCore.scheduleSave();
         }
     }
 }
@@ -1103,7 +1103,7 @@ async function resumeSmartGenerationSubmission(node, submission){
             pendingHistoryId,
             idempotencyKey:task.idempotency_key || idempotencyKey
         };
-        await acceptProjectGenerationRegistration(taskResult);
+        await canvasCore.acceptProjectGenerationRegistration(taskResult);
         const currentNode = canvasState.nodes.find(item => String(item.id || '') === nodeId) || node;
         clearSmartGenerationSubmission(currentNode, idempotencyKey);
         const taskIds = taskResult.taskIds;
@@ -1471,7 +1471,7 @@ function aspectRatioForRun(sourceSettings=settings){
         const explicit = String(sourceSettings.customRatio || '').trim();
         if(explicit) return explicit;
         const parsed = parseSizePair(sizeForRun(sourceSettings));
-        if(parsed) return reducedAspectRatio(parsed.width, parsed.height);
+        if(parsed) return canvasCore.reducedAspectRatio(parsed.width, parsed.height);
         return '';
     }
     return presets[ratio] || '1:1';
