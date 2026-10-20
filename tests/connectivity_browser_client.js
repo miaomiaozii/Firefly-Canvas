@@ -614,11 +614,23 @@
             return Boolean(n?.images?.length && n.images.some(i => i.url) && !n.pending && n.runFinishedAt);
         }, 60000);
         assertion('generation completes on gen-conn', completed, JSON.stringify(nodeById('gen-conn')?.images?.map(i => i.url) || []));
+        // #214 产品契约（已对 static/js 代码核实）：一次运行结束时节点没有图片，
+        // 除了就地升级的卡片（cancelled/failed，保留 task 身份）外，主流程
+        // errNoOutImages（smart-canvas.js:13878）→ 外层 catch（!smartGenerationLogged）
+        // → addSmartGenerationHistory 会再新增一条无 task 身份的 failed 记录。
+        // 因此被取消的运行（连通性测试提示词）留下 2 张卡（cancelled + failed），
+        // 出图的运行（并发微调提示词）留下 1 张 succeeded 卡，共 3 张。
+        const historyTaskId = log => String(log?.task_id || log?.request?.task_id || '');
         const pendingHistoryReplaced = await waitFor(() => {
             const logs = evalCanvas()?.history || [];
-            return logs.length === historyCountBeforeRun + 2
-                && logs.filter(log => log.status === 'cancelled').length >= 1
-                && logs.filter(log => log.status === 'succeeded').length >= 1
+            const cancelledRun = logs.filter(log => String(log.prompt || '').includes('连通性测试提示词'));
+            const survivorRun = logs.filter(log => String(log.prompt || '').includes('并发微调提示词'));
+            return logs.length === historyCountBeforeRun + 3
+                && cancelledRun.length === 2
+                && cancelledRun.some(log => log.status === 'cancelled' && historyTaskId(log).startsWith('project_img_'))
+                && cancelledRun.some(log => log.status === 'failed' && !historyTaskId(log))
+                && survivorRun.length === 1
+                && survivorRun[0].status === 'succeeded'
                 && !logs.some(log => log.status === 'pending')
                 && Boolean(document.querySelector('#smartHistoryList .log-item:not(.pending) .log-history-image'));
         }, 8000);
@@ -626,8 +638,16 @@
         assertion('completed node no longer renders the stage progress placeholder', !document.querySelector('[data-id="gen-conn"] .generation-stage-progress'), document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.outerHTML || 'removed');
         result.diagnostics.push(`genImagesReadAt=${Math.round(performance.now() - (probe214.t0 || 0))} imgCount=${(nodeById('gen-conn')?.images || []).length} archived=${JSON.stringify((evalCanvas()?.history || []).filter(l => !l.status).map(l => ({images:(l.images||[]).length, title:l.title})))}`);
         const genImages = nodeById('gen-conn')?.images || [];
-        const urlImage = genImages.find(i => i.url);
-        assertion('generated image has url', Boolean(urlImage?.url), urlImage?.url || '');
+        // #214 产品契约：项目媒体自动保存往返后以 asset_id 为规范引用
+        // （canvasForStorage → mediaItemForStorage 剥离瞬态 url 键；显示/水合层
+        // hydrateProjectMediaReferences/displayMediaUrl 从 asset_id 重建
+        // projectMediaUrl(asset_id)）。内存对象可能只保留 asset_id，两种形态都合法。
+        const effectiveMediaUrl = item => item?.url || (item?.asset_id && projectId
+            ? `/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(item.asset_id)}`
+            : '');
+        const urlImage = genImages.find(item => effectiveMediaUrl(item)) || genImages[0] || null;
+        const genImageUrl = urlImage ? effectiveMediaUrl(urlImage) : '';
+        assertion('generated image has url', Boolean(genImageUrl), genImageUrl || JSON.stringify(genImages));
 
         const captured = await (await fetch('/__captured_requests')).json();
         const last = [...captured].reverse().find(item => String(item.prompt || '').includes('并发微调提示词')) || {};
@@ -643,7 +663,7 @@
 
         const downloadResult = await (async () => {
             try {
-                const res = await fetch(urlImage.url, {cache: 'no-store'});
+                const res = await fetch(genImageUrl, {cache: 'no-store'});
                 if(!res.ok) return {ok: false, size: 0, status: res.status};
                 const buf = await res.arrayBuffer();
                 const bytes = new Uint8Array(buf);
@@ -724,11 +744,19 @@
             return Boolean(card && placeholder && getComputedStyle(placeholder).animationName !== 'none');
         }, 5000);
         assertion('failing generation first appears as an animated history placeholder', failedPendingVisible, document.querySelector('#smartHistoryList .log-item.pending')?.dataset?.canvasHistoryId || 'missing');
+        // #214 产品契约（已核实）：无图运行结束时留下恰好 2 张 failed 卡——
+        // 就地升级的占位卡（保留 project_img_ 任务身份）+ 主流程 catch 新增的
+        // 一条无任务身份 failed 记录（errNoOutImages）。不再用全局条数断言：
+        // 上一段（自动路由）的主流程迟到记录可能落进本窗口（探针运行实测），
+        // 按 prompt 精确拆分才是稳定且同样严格的契约。
         const failedHistoryResolved = await waitFor(() => {
             const logs = evalCanvas()?.history || [];
             const matching = logs.filter(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
-            return logs.length === historyCountBeforeFailure + 1
-                && matching.length === 1
+            const inPlace = matching.filter(log => historyTaskId(log).startsWith('project_img_'));
+            const newRecords = matching.filter(log => !historyTaskId(log));
+            return matching.length === 2
+                && inPlace.length === 1
+                && newRecords.length === 1
                 && !logs.some(log => log.status === 'pending');
         }, 60000);
         assertion('failed result replaces the history placeholder without adding a duplicate', failedHistoryResolved, {
@@ -737,7 +765,10 @@
             pending: (evalCanvas()?.history || []).filter(log => log.status === 'pending').length,
             failed: (evalCanvas()?.history || []).filter(log => log.status === 'failed').length - failedCountBefore,
         });
-        const failedLog = (evalCanvas()?.history || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+        // #214：取就地升级的 failed 卡（保留任务身份，才有停止阶段 progress 与
+        // 重试按钮 canvas-media-history.js: failed && projectTask），而不是
+        // 主流程新增的无任务身份记录。
+        const failedLog = (evalCanvas()?.history || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE') && historyTaskId(log).startsWith('project_img_'));
         evalFn('renderSmartCanvasLog')?.();
         const failedStageProgress = failedLog ? document.querySelector(`[data-canvas-history-id="${CSS.escape(String(failedLog.id || ''))}"] .generation-stage-progress.is-failed`) : null;
         assertion('failed history keeps the stage where generation stopped', failedStageProgress?.dataset?.phase === 'provider_generating', failedStageProgress?.outerHTML || failedLog?.progress || 'missing');
