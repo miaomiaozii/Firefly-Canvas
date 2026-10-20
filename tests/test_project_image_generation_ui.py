@@ -94,7 +94,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("aspectRatio:outpaintAspectRatio", self.source)
         self.assertIn("ratio:'custom'", self.source)
         self.assertIn("customRatio:size.aspectRatio", self.source)
-        self.assertIn("return reducedAspectRatio(parsed.width, parsed.height)", self.source)
+        # #219: reducedAspectRatio 接口化后放宽为 99453da 同型契约（允许 canvasCore. 前缀）。
+        self.assertRegex(self.source, r"return (?:canvasCore\.)?reducedAspectRatio\(parsed\.width, parsed\.height\)")
 
     def test_project_task_cards_expose_scoped_cancel_retry_and_stable_idempotency(self):
         self.assertIn("idempotency_key:", self.source)

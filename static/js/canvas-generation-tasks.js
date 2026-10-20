@@ -1471,7 +1471,7 @@ function aspectRatioForRun(sourceSettings=settings){
         const explicit = String(sourceSettings.customRatio || '').trim();
         if(explicit) return explicit;
         const parsed = parseSizePair(sizeForRun(sourceSettings));
-        if(parsed) return reducedAspectRatio(parsed.width, parsed.height);
+        if(parsed) return canvasCore.reducedAspectRatio(parsed.width, parsed.height);
         return '';
     }
     return presets[ratio] || '1:1';

@@ -194,10 +194,9 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 50,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
     "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51（+15）
-    "canvas-generation-tasks.js": 35,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
-    # reducedAspectRatio 保持裸引用：tests/test_project_image_generation_ui.py:97 源码契约钉死裸名
-    # 字面量「return reducedAspectRatio(parsed.width, parsed.height)」，改契约超出本任务文件白名单；
-    # 建议按 99453da（#201 isApiLikeEngine 契约加 (?:canvasCore.)? 前缀）模式后续处理
+    "canvas-generation-tasks.js": 34,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
+    # #219：reducedAspectRatio 也改走 canvasCore 接口（35->34，接口 78->79）；源码契约按
+    # 99453da 模式放宽为 (?:canvasCore\.)? 前缀（tests/test_project_image_generation_ui.py:97）
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
     "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
