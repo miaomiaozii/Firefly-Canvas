@@ -43,7 +43,7 @@ const smartGenerationRegistrationQueues = new Map();
 async function runPromptLLMNode(nodeId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node || node.type !== NODE_TYPE_PROMPT) return;
-    const projectId = canvas?.project_id || canvas?.project || canvasId || '';
+    const projectId = canvas?.project_id || canvas?.project || canvasCore.canvasId || '';
     const message = promptNodeLLMInputText(node).trim();
     if(!message){ toast(tr('smart.promptLlmNeedText')); return; }
     const systemPrompt = (node.llmSystemPrompt || '').trim();
@@ -179,7 +179,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
         if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));
-        const projectId = canvas.project_id || canvas.project || canvasId;
+        const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const payload = {
             prompt,
             routing_mode:runSettings.routingMode === 'manual' ? 'manual' : 'auto',
@@ -338,7 +338,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(mediaKindForItem(ref)));
         const ownedRefs = await Promise.all(projectRefs.map(ref => importProjectMediaReference(ref)));
         if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error(tr('smart.videoRefsNotInProject'));
-        const projectId = canvas.project_id || canvas.project || canvasId;
+        const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const size = projectVideoSizeForRun(runSettings);
         const payload = {
             prompt,
@@ -448,7 +448,7 @@ function smartPendingTasks(node){
 }
 
 function projectImageTaskUrl(taskId){
-    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    const projectId = canvas?.project_id || canvas?.project || canvasCore.canvasId;
     const tid = String(taskId || '');
     if(canvas?.format === 'firefly-canvas-v1' && tid.startsWith('project_img_')){
         return `/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks/${encodeURIComponent(taskId)}`;
@@ -862,7 +862,7 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
         node.runTimerHidden = false;
         node.running = false;
         node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : 'Image');
-        if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
+        if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === canvasCore.MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
         else node.scale = mediaNodeDefaultScale(node);
         // 保留固化后的尺寸（占位图、写回、完成三个阶段统一），不再删除
         // delete node.w;
@@ -1044,7 +1044,7 @@ async function retryFailedGenerationInner(node){
     const failedTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks.slice() : [];
     if(failedTasks.length){
         // 1) 先尝试取回失败任务里已归档成功的图（服务端兑底 outputs）
-        const projectId = canvas.project_id || canvas.project || canvasId;
+        const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         for(const failedTask of failedTasks){
             try{
                 const response = await fetch(projectImageTaskUrl(failedTask.taskId));
@@ -1088,7 +1088,7 @@ async function resumeSmartGenerationSubmission(node, submission){
     if(!nodeId || !idempotencyKey || activeSmartSubmissionRecoveries.has(recoveryKey)) return;
     activeSmartSubmissionRecoveries.add(recoveryKey);
     try {
-        const projectId = canvas.project_id || canvas.project || canvasId;
+        const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const payload = {...(submission.requestPayload || {}), idempotency_key:idempotencyKey, result_node_id:nodeId, base_revision:Number(canvas.revision || 0)};
         const task = await postProjectImageTaskWithReplay(projectId, payload);
         const pendingHistoryId = String(submission.pendingHistoryId || smartPendingHistoryId(task.task_id));
@@ -1399,7 +1399,7 @@ if(typeof window !== 'undefined'){
 // 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
 const SMART_REFERENCE_IMAGE_MAX = 20;
 let persistedCoreSnapshot = null;
-function promptNodeLLMInputText(node, ctx=smartLoopContext){
+function promptNodeLLMInputText(node, ctx=canvasCore.smartLoopContext){
     const upstream = promptNodeUpstreamPromptText(node, ctx).trim();
     const instruction = String(node?.llmInstruction || '').trim() || promptNodePromptItems(node).join('\n\n').trim();
     return [upstream, instruction].filter(Boolean).join('\n\n');
