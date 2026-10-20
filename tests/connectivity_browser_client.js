@@ -189,7 +189,7 @@
         const minimap = document.getElementById('minimap');
         const shellBackground = getComputedStyle(shell).backgroundImage;
         assertion('workspace keeps one dot background layer', (shellBackground.match(/radial-gradient/g) || []).length === 1 && !/linear-gradient|ellipse/i.test(shellBackground), shellBackground);
-        assertion('workspace chrome remains one toolbar plus visible minimap', toolbar?.children.length === 8 && [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle')].every(control => control.closest('.smart-toolbar') === toolbar) && getComputedStyle(minimap).display !== 'none', {toolbar:toolbar?.children.length, minimap:getComputedStyle(minimap).display});
+        assertion('workspace chrome remains one toolbar plus visible minimap', toolbar?.children.length === 11 && [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle,#smartArrangeBtn,#smartExcelExportBtn,#smartMarkedToggle')].every(control => control.closest('.smart-toolbar') === toolbar) && getComputedStyle(minimap).display !== 'none', {toolbar:toolbar?.children.length, minimap:getComputedStyle(minimap).display});
 
         const composer = document.getElementById('composer');
         const composerRect = composer.getBoundingClientRect();
@@ -238,8 +238,20 @@
 
         clickPill('model-control');
         const optionsShown = await waitFor(() => document.querySelectorAll('#dynamicParams [data-model-option]').length >= 2, 8000);
-        const optionCount = document.querySelectorAll('#dynamicParams [data-model-option]').length;
-        assertion('model popover lists 2 models', optionsShown && optionCount === 2, optionCount);
+        const modelOptionIds = [...document.querySelectorAll('#dynamicParams [data-model-option]')].map(el => String(el.dataset.modelOption || ''));
+        // #214: generic OpenAI-compatible providers merge model_specs.json's adapted image
+        // models into the configured list (mergeSpecModels), so the contract is "2 configured
+        // fake models + every spec id not already listed" — compute the expected total from
+        // /api/model-specs instead of hard-coding 2.
+        let expectedModelCount = 2;
+        try {
+            const specJson = await fetch('/api/model-specs').then(r => (r.ok ? r.json() : null));
+            const specImageIds = Array.isArray(specJson?.image_model_ids) ? specJson.image_model_ids : [];
+            const configured = ['browser-image-model', 'browser-image-model-2'];
+            expectedModelCount = configured.length + specImageIds.filter(id => id && !configured.some(m => String(m).toLowerCase() === String(String(id)).toLowerCase())).length;
+        } catch(_){}
+        const configuredListed = ['browser-image-model', 'browser-image-model-2'].every(id => modelOptionIds.some(m => String(m).toLowerCase() === id));
+        assertion('model popover lists configured models plus spec-adapted models', optionsShown && optionCount === expectedModelCount && configuredListed, {optionCount, expectedModelCount, modelOptionIds});
         const modelPopoverRect = document.querySelector('#dynamicParams .model-control .smart-popover')?.getBoundingClientRect();
         assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= layoutViewportWidth - 8, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:layoutViewportWidth} : 'missing');
 
@@ -297,9 +309,17 @@
         runBtn?.click();
         await sleep(120);
         const firstPendingNode = document.querySelector('[data-id="gen-conn"]');
-        const firstPlaceholder = firstPendingNode?.querySelector('.generation-placeholder');
-        const firstPlaceholderSpinner = firstPlaceholder?.querySelector('.generation-placeholder-spinner');
-        assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner), firstPlaceholderSpinner ? {className:firstPlaceholderSpinner.className} : 'missing');
+        // #214: for n>1 batches the spinner + stage progress live in the node-bottom
+        // .batch-statusbar (the #84 batch UI dropped the per-cell status panel); the
+        // placeholder grid still renders one .generation-placeholder cell per output.
+        const firstBatchStack = firstPendingNode?.querySelector('.pending-batch-stack');
+        const firstPlaceholderSpinner = firstBatchStack?.querySelector('.batch-statusbar .generation-placeholder-spinner');
+        const firstBatchCells = firstBatchStack?.querySelectorAll('.generation-placeholder-grid .generation-placeholder') || [];
+        assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner) && firstBatchCells.length === 3, {
+            spinner:Boolean(firstPlaceholderSpinner),
+            cells:firstBatchCells.length,
+            statusbar:firstBatchStack?.querySelector('.batch-statusbar')?.className || 'missing',
+        });
         const firstNodeProgress = firstPendingNode?.querySelector('.generation-stage-progress');
         assertion('node placeholder shows six honest generation stages without a fake percent', Boolean(firstNodeProgress) && firstNodeProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstNodeProgress.textContent.includes('%'), firstNodeProgress?.outerHTML || 'missing');
         document.getElementById('smartHistoryToggle')?.click();
@@ -310,15 +330,24 @@
         assertion('history pending card has an animated placeholder', Boolean(pendingHistoryPlaceholder) && getComputedStyle(pendingHistoryPlaceholder).animationName !== 'none', pendingHistoryPlaceholder ? {className:pendingHistoryPlaceholder.className, animation:getComputedStyle(pendingHistoryPlaceholder).animationName} : 'missing');
         const firstHistoryProgress = pendingHistoryCard?.querySelector('.generation-stage-progress');
         assertion('history placeholder shows the same six generation stages', Boolean(firstHistoryProgress) && firstHistoryProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstHistoryProgress.textContent.includes('%'), firstHistoryProgress?.outerHTML || 'missing');
-        const livePhaseSynced = await waitFor(() => {
+        // #214: sample the node/history phases throughout the window so a failure shows
+        // exactly which tick the 2s poller landed on instead of only the final state.
+        const livePhaseSamples = [];
+        const sampleLivePhase = () => {
             const nodeProgress = document.querySelector('[data-id="gen-conn"] .generation-stage-progress');
             const historyProgress = document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress');
-            return nodeProgress?.dataset?.phase === 'provider_generating'
-                && historyProgress?.dataset?.phase === nodeProgress.dataset.phase;
+            return {node:nodeProgress?.dataset?.phase || '', history:historyProgress?.dataset?.phase || ''};
+        };
+        const livePhaseSynced = await waitFor(() => {
+            const sample = sampleLivePhase();
+            livePhaseSamples.push(sample);
+            return sample.node === 'provider_generating' && sample.history === sample.node;
         }, 7000);
+        result.diagnostics.push(`livePhaseSamples=${JSON.stringify(livePhaseSamples)}`);
         assertion('node and history progress advance to the same live provider stage', livePhaseSynced, {
-            node:document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.dataset?.phase || '',
-            history:document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress')?.dataset?.phase || '',
+            node:sampleLivePhase().node,
+            history:sampleLivePhase().history,
+            samples:livePhaseSamples,
         });
         const concurrentRunEnabled = await waitFor(() => !runBtn?.disabled, 3000);
         assertion('run button stays enabled while the current generation is pending', concurrentRunEnabled, runBtn?.disabled);
@@ -500,7 +529,7 @@
         assertion('failed history keeps the stage where generation stopped', failedStageProgress?.dataset?.phase === 'provider_generating', failedStageProgress?.outerHTML || failedLog?.progress || 'missing');
         const failedTaskId = failedLog?.task_id || failedLog?.request?.task_id || '';
         const retryButton = failedLog ? document.querySelector(`[data-canvas-history-id="${failedLog.id}"] [data-history-retry-task]`) : null;
-        assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.logRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
+        assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.historyRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
         retryButton?.click();
         const retryPending = await waitFor(() => {
             const retryLog = (evalCanvas()?.history || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
