@@ -1,6 +1,9 @@
 (function(){
     'use strict';
     const query = new URLSearchParams(location.search);
+    // #214：探针默认关闭（纯诊断，会显著拖慢 runner 并干扰时序）；需要取证时
+    // 页面 URL 追加 ?probe214=1 即可重新启用全部包装/采样/trap。
+    const probeEnabled = query.has('probe214');
     const projectId = query.get('project') || '';
     const browserRole = query.get('role') || 'probe';
     const result = {
@@ -301,7 +304,7 @@
             return;
         }
         if(sessionStorage.getItem('t09-submission-recovery-phase') === 'verify'){
-            probeInstall();
+            if (probeEnabled) probeInstall();
             const carried = JSON.parse(sessionStorage.getItem('t09-submission-recovery-result') || '{}');
             result.assertions.push(...(carried.assertions || []));
             result.errors.push(...(carried.errors || []));
@@ -330,7 +333,7 @@
         }, 20000);
         assertion('second real browser client is ready before overlap begins', secondaryReady, secondaryReady);
         const settings = smartSettings();
-        probeInstall();
+        if (probeEnabled) probeInstall();
         assertion('settings loaded', Boolean(settings), Boolean(settings));
 
         const mergeNode = evalFn('mergeSmartNode');
