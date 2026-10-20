@@ -615,3 +615,193 @@ test('deleteNodeFromButton: 空闲节点一步删除（#149 B5）；ghost id 走
     assert.deepEqual(fromContext(evaluate(ctx, 'pendingMediaArchives.map(e => e.images.map(i => i.url))')),
         [['u1']], 'ghost 无被删节点 → 不新增归档条目（队列里只有 N 的 u1）');
 });
+
+// ---------- 工具排「局部编辑」 ----------
+
+test('createLocalEditNodeFromImage: 节点缺失/无素材/索引越界 → toast noExportableMedia 且零副作用', () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({ nodes: [] });
+    const f = globalFunction(ctx, 'createLocalEditNodeFromImage');
+
+    assert.equal(f('ghost'), undefined, '节点不存在 → undefined');
+    assert.deepEqual(calls, []);
+    assert.deepEqual(harness.connectCalls, []);
+    assert.equal(harness.element('toast').textContent, '', '无 toast');
+
+    evaluate(ctx, 'canvasState.nodes.push({ id: "N" })');
+    f('N');
+    assert.equal(harness.element('toast').textContent, 'smart.noExportableMedia', '无素材 toast（真实 tr key）');
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes.length')), 1, '不创建节点');
+    assert.deepEqual(harness.connectCalls, [], '不连线');
+    assert.deepEqual(calls, [], '不 render/save');
+
+    evaluate(ctx, 'canvasState.nodes[0].images = [{ url: "i0" }]');
+    f('N', 5);
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes.length')), 1, '索引越界 → 仍是 noExportableMedia，不创建节点');
+    assert.deepEqual(harness.connectCalls, []);
+});
+
+test('createLocalEditNodeFromImage: 位置公式（源右缘+140、y 下限 40）+ original 角色 + connectInputNode 调用 + toast 分支', () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes: [{ id: 'N', x: 0, y: 0, images: [{ url: 'i0' }, { url: 'i1' }] }],
+    });
+    const f = globalFunction(ctx, 'createLocalEditNodeFromImage');
+
+    f('N');
+    const created = fromContext(evaluate(ctx, 'canvasState.nodes.find(n => n.type === "local-edit")'));
+    assert.ok(created, '创建了 local-edit 节点');
+    assert.equal(created.x, 0 + 180 + 140, 'x = 源节点右缘 + 140（nodeRect 宽 180）');
+    assert.equal(created.y, 40, 'y = max(40, 0 + max(0, 55 - 260)) = 40（下限门）');
+    assert.equal(created.localEditActiveRole, 'original', '自动连好原图角色');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), created.id, 'select:true → 选中新节点');
+    assert.deepEqual(harness.connectCalls, [['N', created.id]], 'connectInputNode(源, 新) 恰好一次');
+    assert.equal(harness.element('toast').textContent, 'smart.localEditCreated', '连线成功 toast 分支');
+    assert.deepEqual(calls, ['render', 'scheduleSave', 'render', 'scheduleSave'], 'createLocalEditNode 自身 + 外层各一次 render/save');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '仅内层 createLocalEditNode 压一次真实 undo');
+
+    // 高节点：y 不再触下限（55 → 300-260=40 正值加到 500 上）。
+    harness.layout = { width: 200, height: 600 };
+    evaluate(ctx, 'canvasState.nodes.push({ id: "N2", x: 100, y: 500, images: [{ url: "a" }] })');
+    f('N2', 0);
+    const created2 = fromContext(evaluate(ctx, `canvasState.nodes.find(n => n.id !== '${created.id}' && n.type === "local-edit")`));
+    assert.equal(created2.x, 100 + 200 + 140, 'x = 100+200+140');
+    assert.equal(created2.y, 500 + Math.max(0, 300 - 260), 'y = 500 + (300-260) = 540');
+
+    // 连线失败分支。
+    harness.connectResult = false;
+    evaluate(ctx, 'canvasState.nodes.push({ id: "N3", x: 0, y: 0, images: [{ url: "b" }] })');
+    f('N3');
+    assert.equal(harness.element('toast').textContent, 'smart.localEditConnectHint', '连线失败 toast 分支');
+});
+
+// ---------- 新建节点菜单 ----------
+
+test('createNodeFromMenu: 七种类型偏移矩阵 + closeCreateMenu + 分组早退 + 入组触发 arrange(skipUndo) + groupId 还原-清零', () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes: [{ id: 'G', type: 'smart-group', items: [] }],
+    });
+    evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
+    const menu = globalFunction(ctx, 'createNodeFromMenu');
+
+    const prompt = fromContext(menu('prompt'));
+    assert.equal(prompt.type, 'smart-prompt');
+    assert.equal(prompt.x, 500 - 158); assert.equal(prompt.y, 400 - 97);
+    assert.equal(harness.closeMenuCalls, 1, 'closeCreateMenu 每次调用');
+    assert.deepEqual(harness.addNodeToGroupCalls, [{ group: null, node: prompt.id }], 'createMenuGroupId 空 → group null 也走 addNodeToSmartGroup');
+    assert.equal(harness.addNodeToGroupCalls.length, 1);
+    assert.deepEqual(harness.arrangeCalls, [], 'addNodeToSmartGroup 返回 false → 不 arrange');
+    assert.equal(evaluate(ctx, 'canvasState.createMenuGroupId'), '', '调用后清零');
+
+    const group = fromContext(menu('group'));
+    assert.equal(group.type, 'smart-group');
+    assert.equal(group.x, 500 - 170); assert.equal(group.y, 400 - 110);
+    assert.equal(harness.addNodeToGroupCalls.length, 1, 'group 类型在入组逻辑前早退 return');
+    assert.equal(harness.closeMenuCalls, 2);
+
+    const conv = fromContext(menu('conversation'));
+    assert.equal(conv.x, 500 - 195); assert.equal(conv.y, 400 - 215);
+    const agent = fromContext(menu('agent'));
+    assert.equal(agent.x, 500 - 191); assert.equal(agent.y, 400 - 180);
+    const localEdit = fromContext(menu('local-edit'));
+    assert.equal(localEdit.x, 500 - 180); assert.equal(localEdit.y, 400 - 165);
+    const loop = fromContext(menu('loop'));
+    assert.equal(loop.x, 500 - 135); assert.equal(loop.y, 400 - 95);
+    const image = fromContext(menu('image'));
+    assert.equal(image.x, 500 - Math.round(180 / 2), '未知类型 → createImageNodeAt 中心对齐');
+    assert.equal(image.y, 400 - Math.round(110 / 2));
+    assert.equal(image.type, 'smart-image');
+    assert.equal(harness.addNodeToGroupCalls.length, 6, '每种非 group 类型都走一次入组检查');
+
+    // 分组入组：createMenuGroupId 指向真实分组节点 + addNodeToSmartGroup 返回 true →
+    // arrangeSmartGroupMembers(group, {skipUndo:true}) + render/save。
+    ctx.canvasState.createMenuGroupId = 'G';
+    harness.addNodeToGroupResult = true;
+    const callsBefore = calls.length;
+    const inGroup = fromContext(menu('agent'));
+    assert.deepEqual(harness.addNodeToGroupCalls.at(-1), { group: 'G', node: inGroup.id }, '分组节点对象传入');
+    assert.deepEqual(fromContext(harness.arrangeCalls), [{ group: 'G', options: { skipUndo: true } }], '入组后自动整理且 skipUndo（创建已压过 undo）');
+    assert.deepEqual(calls.slice(callsBefore), ['render', 'scheduleSave', 'render', 'scheduleSave'], 'createAgentNode 自身 + 入组整理各一次 render/save');
+    assert.equal(evaluate(ctx, 'canvasState.createMenuGroupId'), '', '还原-入组-清零后仍为空');
+});
+
+test('createNodeFromMenu: createMenuPoint=null 回退 viewportCenter', () => {
+    const { ctx, harness } = loadNodeOpsModule();
+    evaluate(ctx, 'createMenuPoint = null');
+    harness.viewportPoint = { x: 700, y: 300 };
+    const node = fromContext(globalFunction(ctx, 'createNodeFromMenu')('image'));
+    assert.equal(node.x, 700 - Math.round(180 / 2), 'viewportCenter 作为中心点');
+    assert.equal(node.y, 300 - Math.round(110 / 2));
+});
+
+// ---------- rAF 交互层刷新调度 ----------
+
+test('scheduleInteractionLayerRefresh: rAF 合并 / flush 后双刷新 / token 清零可重排', () => {
+    const { ctx, harness } = loadNodeOpsModule();
+    const schedule = globalFunction(ctx, 'scheduleInteractionLayerRefresh');
+
+    schedule();
+    schedule();
+    schedule();
+    assert.equal(harness.rafQueue.length, 1, '重复调度合并为一次 rAF');
+    assert.equal(ctx.interactionLayerRaf, 1, 'token = 首个 rAF id（harness rafSeq 从 1 起）');
+
+    assert.equal(harness.flushRafs(), 1, 'flush 执行一次');
+    assert.equal(harness.refreshLayerCalls, 1, 'refreshConnectionLayer 被调用');
+    assert.equal(harness.minimapCalls, 1, 'renderMinimap 被调用');
+    assert.equal(ctx.interactionLayerRaf, 0, '回调内 token 清零');
+
+    schedule();
+    assert.equal(harness.rafQueue.length, 1, '清零后可以重新排队');
+    assert.equal(harness.refreshLayerCalls, 1, '未 flush 前不重复执行');
+});
+
+// ---------- 重命名节点图片 ----------
+
+test('renameSmartNodeImage: 取消/同名/纯空白 → 零副作用；新名 → 改名 + 真实 undo + 选中更新', async () => {
+    const { ctx, harness, calls } = loadNodeOpsModule({
+        nodes: [{ id: 'N', images: [{ url: 'u1', name: 'old.png' }] }],
+    });
+    const rename = globalFunction(ctx, 'renameSmartNodeImage');
+    const name = () => fromContext(evaluate(ctx, 'canvasState.nodes[0].images[0].name'));
+
+    // 取消（null）→ 不改名不压栈。
+    harness.assetName = null;
+    await rename('N', 0);
+    assert.equal(name(), 'old.png');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0);
+    assert.deepEqual(fromContext(harness.assetDialogCalls.at(-1)),
+        { title: 'smart.renameImage', value: 'old.png', placeholder: 'smart.imageName', cancelValue: null },
+        '对话框入参（真实 tr key + imageNameLabel 当前值；fromContext 抹平跨 realm 原型）');
+
+    // 同名 → 不改名不压栈。
+    harness.assetName = 'old.png';
+    await rename('N', 0);
+    assert.equal(name(), 'old.png');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0);
+
+    // 纯空白 → trim 后空串 → 不改名。
+    harness.assetName = '   ';
+    await rename('N', 0);
+    assert.equal(name(), 'old.png');
+
+    // 新名（带空白）→ trim 后生效 + 真实 undo + 选中更新。
+    harness.assetName = '  new name  ';
+    await rename('N', 0);
+    assert.equal(name(), 'new name', 'trim 后写入');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, '真实 pushUndo');
+    assert.equal(evaluate(ctx, 'canvasState.selectedId'), 'N');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedIds')), []);
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedImage')), { nodeId: 'N', index: 0 });
+    assert.deepEqual(calls, ['render', 'scheduleSave']);
+
+    // 节点缺失/索引越界 → 连对话框都不开。
+    const dialogs = harness.assetDialogCalls.length;
+    await rename('ghost', 0);
+    await rename('N', 5);
+    assert.equal(harness.assetDialogCalls.length, dialogs, '无节点/无图片不打开对话框');
+    assert.equal(name(), 'new name', '无副作用');
+
+    // 索引字符串 '0' → Number 化后命中。
+    harness.assetName = 'renamed2';
+    await rename('N', '0');
+    assert.equal(name(), 'renamed2');
+});
