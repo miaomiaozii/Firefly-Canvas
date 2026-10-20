@@ -219,6 +219,29 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 `startJimengPoll` / `pollSmartCanvasTask` 的分钟级长轮询循环本身（只覆盖单次终态迁移）；
 服务端 `idempotency_key` 去重（API 层负责）。
 
+#### 轨道 4 下一块：`canvas-node-ops.js`（2026-10-21）
+
+选它的依据是实测自由面 `17 处 / 14 名`（`canvas-node-ops.js 60 / 27 自由 17 / 14 可注入 11`），
+低于已证可测的 `canvas-connections.js`，但它是唯一没单测的核心行为模块。
+
+`tests/canvas_module_units/test-canvas-node-ops.mjs`（807 行）：`node --test` → **tests 25 / pass 25 / fail 0 / skipped 0**；
+`tests.test_canvas_module_units + test_canvas_core_layer + test_canvas_coupling_report` → **Ran 32 tests, OK**；
+全量 **`Ran 1192 tests, OK`**；门 `trial` → **`verdict: passed`, `final_exit_code: 0`**（200.1s）。
+提交 `8242e81` / `a88b5ce` / `8700a7e`。
+
+**有效性证据**：worktree 里移除 `deleteNodeFromButton` 的 #65「生成中禁删」守卫
+→ **恰好 1 个用例红**（`deleteNodeFromButton: 生成中节点禁止删除（#65）`），其余 24 个绿。
+浏览器 runner `node_flow_browser.py` / `node_e2e_browser.py` 均 EXIT=0（两者不收命令行参数，
+内部用 `tempfile.TemporaryDirectory`，天然全新目录）。
+
+**停止条件：数值阈值越线、实质判据未越线。** 我派的 brief 写了「桩数明显超过
+`canvas-connections.js` 的 15 个就停」，实测 **20 个手写桩**，超了；但它们**全部是零逻辑
+记录器（9）/ 数据驱动（8）/ 单行契约镜像（3），复制产品逻辑的个数 = 0**。7 个外部自由名
+由**加载真实模块**满足（包含 `canvas-undo.js` 真实深快照撤销栈、`canvas-media-history.js`
+的 #217 真实归档登记、`canvas-agent-tui.js` 真实 Map 清理）。所以 ADR 的实质判据（
+「桩要开始重新实现产品逻辑就停」）**未命中**，本块保留。以后写 brief 时不要把桩个数当硬阈，
+实质判据是「有没有第二套实现」。
+
 **`canvas-core.js` 的「54」是错的**（本 ADR 初稿口径有误，#203 实测纠正）：按「不同外部自由名」
 口径实测为 **18**，且对最近 4 个历史版本实测均为 14–18，从未到过 54。其中 9 个是 JS 内建、
 6 个是 `harness.mjs` 已提供的浏览器全局、3 个是可直接加载真实模块的跨模块名——
