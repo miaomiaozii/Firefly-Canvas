@@ -143,8 +143,23 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 | 接口引用（`interface_total`） | 0 | 270 |
 
 按模块的自由侧变化：`canvas-generation-cascade.js` 147→42、`canvas-media-history.js` 83→36、
-`canvas-image-editor.js` 87→41、`canvas-node-ops.js` 60→17、`canvas-connections.js` 41→12；
-`canvas-generation-tasks.js`(103)、`canvas-undo.js`(6)、`canvas-agent-tui.js`(12) 本轮未动。
+`canvas-image-editor.js` 87→41、`canvas-node-ops.js` 60→17、`canvas-connections.js` 41→12。
+
+#### 轨道 1 完成：`canvas-generation-tasks.js`（2026-10-20，#199）
+
+它是最后一个「自由侧 == 总数」的模块，即轨道 1 收益为 0 的唯一一块。实测：
+
+| 口径 | 接口化前 | 接口化后 |
+|---|---|---|
+| 反向引用总数 | 113 | **113（不变，设计如此）** |
+| 自由全局引用 | 113 | **35** |
+| 独立外部自由名 | 42 | **22** |
+
+20 个共享名字 / 78 处改走 `canvasCore`（提交 `c94f7c5`→`07836bf`）。棘轮 `FREE_GLOBAL_REFERENCE_CEILINGS["canvas-generation-tasks.js"]` 降到实测 35。
+一个名字 `reducedAspectRatio` **回退保持裸引用**（`07836bf`）：接口化它触发了 `tests/test_project_image_generation_ui.py:97` 的源码契约断言（该断言钉死字面量 `return reducedAspectRatio(parsed.width, parsed.height)`），全量 1189 中 1 个失败。 worker 当时文件白名单不包含该测试文件，所以选择回退而不是跨范围改契约——**这是正确的边界行为，不是技术失败**。棘轮因此是实测 35 而非 34。
+后续应按 `99453da`（#201 `isApiLikeEngine` 契约改成 `(?:canvasCore.)?` 前缀）的既有模式放宽该契约，再把这个名字接口化。轨道 1 的**技术**停止条件（“必须复制产品逻辑才能接口化就停”）**未命中**：21 个名字全部纯接口化，零逻辑副本。
+
+**轨道 1 到此结束。** 剩下的自由引用集中在 `canvas-generation-cascade.js`(50) 和 `canvas-media-history.js`(51)，两者已在轨道 2/201 处理过，剩余部分是 ADR 判定不该搬的宿主耦合。
 
 **轨道 1 真正的收益是「单测要桩的独立外部名字数」下降**，它由自由侧的独立名字数驱动，
 不由总数驱动。棘轮因此拆成两套：`REVERSE_REFERENCE_CEILINGS`（总数）+
@@ -152,7 +167,9 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 
 ### 轨道 4：按依赖面从小到大补测
 
-`canvas-undo.js`(29，已完成) → `canvas-core.js` → `canvas-connections.js`。
+`canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成)。
+
+**轨道 1 完成后被解锁的下一块**：`canvas-generation-tasks.js` 现在独立外部自由名 = **22**，已经低于两个已判定「可测」的模块（`canvas-undo.js` 29 → 15 个手写桩、`canvas-connections.js` 28 → 15 个手写桩）。按本 ADR 的判据它现在进入可测范围，而它是 #197（刷新后恢复）与 #198（重放失败丢用户动作）两个真 bug 的所在地，当前无单测。
 
 **`canvas-core.js` 的「54」是错的**（本 ADR 初稿口径有误，#203 实测纠正）：按「不同外部自由名」
 口径实测为 **18**，且对最近 4 个历史版本实测均为 14–18，从未到过 54。其中 9 个是 JS 内建、
