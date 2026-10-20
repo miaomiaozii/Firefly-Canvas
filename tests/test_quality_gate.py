@@ -1938,7 +1938,11 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["effective_budget_seconds"], 1)
         self.assertEqual(report["first_failure"]["status"], "timed-out")
-        self.assertLess(report["duration_seconds"], 3)
+        # 判据是「门在 1 秒预算处杀掉子进程」而不是「放它跑完 5 秒 sleep」。
+        # 原先写死 <3 秒：trial/release 把步骤跑成有界并行组（tools/quality_gate.py:493、
+        # :3275），fixture 子门要跟同组其他步骤抢 CPU，实测一次 3.015 秒就红了。
+        # 所以阈值绑到夹具自身的 5 秒 sleep：跑完必然 >=5 秒，提前杀掉则远小于它。
+        self.assertLess(report["duration_seconds"], 5)
 
     def test_all_modes_are_cumulative_and_keep_their_declared_budgets(self):
         (self.fixture_root / "tests" / "test_project_store.py").write_text(
