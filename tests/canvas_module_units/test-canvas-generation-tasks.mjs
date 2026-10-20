@@ -401,3 +401,160 @@ test('postProjectImageTaskWithReplay: 2xx pass-through, <500 rejected no-retry, 
     await mixedSettled;
     assert.equal(harness.fetchLog.length, 2);
 });
+
+// 5xx 双发节奏：postProjectImageTaskWithReplay 的 5xx 路径各落回一次 sleep(250)
+// （受控定时器），「tick 让 fetch 微任务落定 + advanceTimers 放行 sleep」共两轮。
+async function drainTwoAttempts(harness) {
+    await tick();
+    harness.advanceTimers();
+    await tick();
+    harness.advanceTimers();
+    await tick();
+}
+
+test('runApiGeneration: flush failure keeps the marker, save-settle replay reuses the SAME idempotency_key (#189)', async () => {
+    const node = { id: 'img-1', type: 'smart-image' };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    const run = globalFunction(ctx, 'runApiGeneration');
+    const settle = globalFunction(ctx, 'resumeSmartPersistencePendingTasks');
+
+    // 预生成 flush 失败 → 不取消请求：标记持久化在节点上 + 抛 smartSavePendingResume，不发 POST。
+    harness.flushResult = false;
+    const pending = run('make a cat', [], { provider_id: 'p1', model: 'm1', quality: 'auto' }, node, {});
+    await assert.rejects(pending, (e) => e.smartSavePendingResume === true && /canvasSavePendingResume/.test(e.message));
+    assert.equal(harness.fetchLog.length, 0, 'flush 失败：不发任何请求');
+    assert.equal(node.generationSubmissions.length, 1, '提交标记先于 flush 持久化（upsert 在 flush 之前）');
+    const key = node.generationSubmissions[0].idempotencyKey;
+    assert.match(key, /^browser:proj-1:ph-1$/, 'idempotency_key = browser:<projectId>:<pendingHistoryId>');
+    assert.equal(node.generationSubmissions[0].outcome, 'unknown');
+    const payload = node.generationSubmissions[0].requestPayload;
+    assert.equal(payload.result_node_id, 'img-1');
+    assert.equal(payload.base_revision, 7);
+    assert.equal(payload.media_type, 'image');
+    assert.equal(payload.n, 1);
+    assert.equal(payload.aspect_ratio, '1:1');
+    assert.equal(node.pending, 1);
+    assert.equal(evaluate(ctx, `smartPendingPersistenceKeys.has(${JSON.stringify(key)})`), true, '#189 键集记录待重放 key');
+
+    // 模拟 save settle（autosave 完成 → markAutosaveSaved → resumeSmartPersistencePendingTasks）：
+    // 用同一个 idempotency_key 重新提交（服务端按 key 去重，一次点击只产生一个任务）。
+    harness.fetchResponder = (url) => {
+        if (url === '/api/project-library/proj-1/image-generation-tasks') {
+            return fakeResponse({ data: { task_id: 'project_img_9', route: { provider_id: 'p1', model: 'm1' }, project_revision: 8, registered_node: { id: 'img-1' }, idempotency_key: key } });
+        }
+        if (url === '/api/project-library/proj-1/image-generation-tasks/project_img_9') {
+            return fakeResponse({ data: { status: 'succeeded', result: {} } });
+        }
+        throw new Error('unexpected fetch ' + url);
+    };
+    settle(nodes);
+    await tick();
+    assert.equal(harness.fetchLog.length, 1, 'save settle 触发重放 POST');
+    const postBody = JSON.parse(harness.fetchLog[0].options.body);
+    assert.equal(postBody.idempotency_key, key, '重放必须使用同一个 idempotency_key');
+    assert.equal(postBody.result_node_id, 'img-1');
+    assert.equal(postBody.base_revision, 7);
+    assert.equal(node.generationSubmissions, undefined, '注册成功清除提交标记');
+    assert.equal(harness.acceptedResults.length, 1);
+    assert.deepEqual(fromContext(harness.acceptedResults[0].taskIds), ['project_img_9']);
+    assert.equal(harness.acceptedResults[0].idempotencyKey, key);
+    assert.equal(node.pendingTasks.length, 1);
+    assert.equal(node.pendingTasks[0].taskId, 'project_img_9');
+
+    // 驱动轮询到终态（2000ms 是受控定时器）：succeeded → finalize 清 pending。
+    harness.advanceTimers();
+    await tick();
+    assert.equal(harness.fetchLog.length, 2, '轮询拉取任务结果');
+    assert.equal(harness.fetchLog[1].url, '/api/project-library/proj-1/image-generation-tasks/project_img_9');
+    assert.equal(node.pending, 0, 'finalize 递减 pending');
+    assert.equal(node.pendingTasks, undefined, '全部完成 → 删除 pendingTasks');
+    assert.ok(typeof node.runFinishedAt === 'number', '终态写入 runFinishedAt');
+
+    // 下一次 settle：标记已清 → 不再发请求，陈旧 key 从 #189 键集清理。
+    settle(nodes);
+    await tick();
+    assert.equal(harness.fetchLog.length, 2, '二次 settle 不重放（标记已清）');
+    assert.equal(evaluate(ctx, 'smartPendingPersistenceKeys.size'), 0, '陈旧 key 在下次 settle 清理');
+});
+
+test('runApiGeneration: flush success sends exactly one POST with the durable payload and resets run timers', async () => {
+    const node = { id: 'img-2', type: 'smart-image', runStartedAt: 111, runFinishedAt: 222, runElapsedMs: 111, runTimerHidden: true };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    const run = globalFunction(ctx, 'runApiGeneration');
+    harness.flushResult = true;
+    harness.fetchResponder = (url) => {
+        if (url === '/api/project-library/proj-1/image-generation-tasks') {
+            return fakeResponse({ data: { task_id: 'project_img_5', route: { provider_id: 'p1', model: 'm1' }, project_revision: 8, registered_node: { id: 'img-2' }, idempotency_key: 'browser:proj-1:ph-1' } });
+        }
+        throw new Error('unexpected fetch ' + url);
+    };
+
+    const result = await run('make a cat', [], { provider_id: 'p1', model: 'm1', quality: 'auto' }, node, {});
+
+    // 外层调用经注册队列包装，透传内层的注册结果。
+    assert.deepEqual(fromContext(result.taskIds), ['project_img_5']);
+    assert.equal(result.idempotencyKey, 'browser:proj-1:ph-1');
+    assert.equal(result.projectRevision, 8);
+    assert.equal(result.pendingHistoryId, 'ph-1');
+    assert.equal(harness.pendingHistoryLogs.length, 1, 'pendingHistoryId 只在外层调用生成一次（内层复用）');
+    // 恰好一个 POST，载荷是持久化契约。
+    assert.equal(harness.fetchLog.length, 1);
+    const body = JSON.parse(harness.fetchLog[0].options.body);
+    assert.equal(body.prompt, 'make a cat');
+    assert.equal(body.idempotency_key, 'browser:proj-1:ph-1');
+    assert.equal(body.result_node_id, 'img-2');
+    assert.equal(body.base_revision, 7);
+    assert.equal(body.media_type, 'image');
+    assert.equal(body.aspect_ratio, '1:1');
+    assert.equal(node.generationSubmissions, undefined, 'POST 成功清除标记');
+    // 新运行重置计时器：持久化节点不得带着上次生成的旧 runStartedAt 无限涨。
+    assert.ok(node.runStartedAt > 111, 'runStartedAt 重置为当前时间');
+    assert.equal(node.runFinishedAt, undefined);
+    assert.equal(node.runElapsedMs, undefined);
+    assert.equal(node.runTimerHidden, false);
+});
+
+test('resumeSmartGenerationSubmission: rejected(409) clears the marker, unknown(500x2) keeps it, double-fire guard', async () => {
+    // 409：服务端明确拒绝 → 标记失去意义，清除。
+    {
+        const node = { id: 'img-3', type: 'smart-image', generationSubmissions: [{ idempotencyKey: 'k-3', requestPayload: { prompt: 'p', n: 1 }, prompt: 'p', count: 1, pendingHistoryId: 'ph-3' }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        const resume = globalFunction(ctx, 'resumeSmartGenerationSubmission');
+        harness.fetchResponder = () => fakeResponse({ ok: false, status: 409, data: { detail: 'already registered' } });
+        await resume(node, node.generationSubmissions[0]);
+        assert.equal(harness.fetchLog.length, 1);
+        assert.equal(node.generationSubmissions, undefined, '明确拒绝 → 清标记');
+    }
+    // 500x2：结果 unknown（请求可能已生效）→ 必须保留标记，后续用同一 key 重试（服务端去重）。
+    {
+        const node = { id: 'img-4', type: 'smart-image', generationSubmissions: [{ idempotencyKey: 'k-4', requestPayload: { prompt: 'p', n: 1 }, prompt: 'p', count: 1, pendingHistoryId: 'ph-4' }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        const resume = globalFunction(ctx, 'resumeSmartGenerationSubmission');
+        harness.fetchResponder = () => fakeResponse({ ok: false, status: 500, data: { detail: 'down' } });
+        const p = resume(node, node.generationSubmissions[0]);  // 内部吞错（catch + toast），正常 resolve
+        await drainTwoAttempts(harness);
+        await p;
+        assert.equal(harness.fetchLog.length, 2, 'unknown 走了两次尝试');
+        assert.equal(node.generationSubmissions.length, 1, 'unknown 结果 → 保留标记');
+        assert.equal(node.generationSubmissions[0].idempotencyKey, 'k-4');
+    }
+    // 防连发：重放在途时同一 node+key 的第二次触发立即返回（activeSmartSubmissionRecoveries）。
+    {
+        const node = { id: 'img-5', type: 'smart-image', generationSubmissions: [{ idempotencyKey: 'k-5', requestPayload: { prompt: 'p', n: 1 }, prompt: 'p', count: 1, pendingHistoryId: 'ph-5' }] };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        const resume = globalFunction(ctx, 'resumeSmartGenerationSubmission');
+        harness.fetchResponder = () => fakeResponse({ ok: false, status: 500, data: { detail: 'down' } });
+        const sub = node.generationSubmissions[0];
+        const [p1, p2] = [resume(node, sub), resume(node, sub)];
+        await drainTwoAttempts(harness);
+        await Promise.all([p1, p2]);
+        assert.equal(harness.fetchLog.length, 2, '双重触发只发一轮（2 次尝试），不是两轮（4 次）');
+        assert.equal(node.generationSubmissions.length, 1);
+    }
+});
+
