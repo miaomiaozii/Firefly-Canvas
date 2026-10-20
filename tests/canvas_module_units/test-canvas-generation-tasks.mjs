@@ -821,3 +821,240 @@ test('resumeSmartPendingActionResumes: seeded mark with exhausted budget is drop
         assert.equal(node.pendingActionResumes.length, 1, '节点标记未动（没有 persister 参与，清盘从未发生）');
     }
 });
+
+// ---------- #198：重放失败的有界重试写回（clear-on-send 之后失败，标记必须写回，不能永久丢失） ----------
+
+test('handlePendingActionReplayFailure via dispatcher: mark written back with budget, backoff honored, exhaustion drops (#198)', async () => {
+    const node = { id: 'n1', type: 'smart-video' };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    const queue = globalFunction(ctx, 'queueSmartPendingActionResume');
+    const resume = globalFunction(ctx, 'resumeSmartPendingActionResumes');
+    let failures = 0;
+    const actionId = queue('video', 'n1', async () => {
+        failures++;
+        throw new Error('net down ' + failures);
+    }, { prompt: 'p' });
+    globalFunction(ctx, 'registerSmartPendingActionPersister')(async () => { harness.persisterCalls.push(1); return true; });
+
+    // ---- 第 1 次重放失败：标记写回节点（带 replayAttempts + nextRetryAt），backoff 60000 ----
+    await resume(nodes);
+    await tick();
+    assert.equal(failures, 1);
+    const entry = ctx.__fcPendingActionResumes.get(actionId);
+    assert.equal(entry, undefined || ctx.__fcPendingActionResumes.get(actionId), 'entry 仍在 Map（重新入队）');
+    assert.equal(ctx.__fcPendingActionResumes.get(actionId).replayAttempts, 1);
+    assert.ok(ctx.__fcPendingActionResumes.get(actionId).nextRetryAt > Date.now() && ctx.__fcPendingActionResumes.get(actionId).nextRetryAt <= Date.now() + 61000, 'backoff = 60000ms');
+    // 写回的节点标记（#198 核心：刷新恢复的账本必须带预算计数器与重试截止时间）。
+    assert.equal(node.pendingActionResumes.length, 1, '标记写回节点');
+    const mark = node.pendingActionResumes[0];
+    assert.equal(mark.actionId, actionId);
+    assert.equal(mark.replayAttempts, 1);
+    assert.equal(mark.nextRetryAt, ctx.__fcPendingActionResumes.get(actionId).nextRetryAt, '写回标记与内存 entry 同一 backoff');
+    let log = fromContext(ctx.__fcPendingActionResumeLog);
+    assert.deepEqual(log.map(e => e.event), ['queued', 'replay-failed', 'replay-scheduled-retry']);
+    assert.equal(log[1].error, 'net down 1', 'replay-failed 记录错误详情');
+    assert.equal(log[2].attempt, 1);
+    assert.ok(log[2].retryInMs >= 59000 && log[2].retryInMs <= 60000);
+    // 写回后立即 dispatch pagehide（crash-recovery flush 马上把标记存盘）。
+    assert.equal(harness.dispatchedEvents.filter(ev => ev.type === 'pagehide').length, 1, '写回触发 pagehide 持久化');
+    // 重试定时器挂上（delay≈60000，harness 受控、不真等）。
+    assert.ok(harness.timers.some(t => !t.fired && !t.cancelled && t.ms >= 59000 && t.ms <= 60000), 'backoff 定时器已挂');
+
+    // ---- backoff 窗口内的 settle：绝不重放、也不消耗 persister ----
+    await resume(nodes);
+    await tick();
+    assert.equal(failures, 1, 'backoff 窗口内不重放（写回触发的 autosave settle 不能二次触发）');
+    assert.equal(harness.persisterCalls.length, 1, 'backoff 窗口内不走 persister（entry 在 Map 里但被 nextRetryAt 拦住）');
+
+    // ---- 到点第 2 次失败：backoff 180000 ----
+    ctx.__fcPendingActionResumes.get(actionId).nextRetryAt = 0;
+    await resume(nodes);
+    await tick();
+    assert.equal(failures, 2);
+    assert.equal(ctx.__fcPendingActionResumes.get(actionId).replayAttempts, 2);
+    const next2 = ctx.__fcPendingActionResumes.get(actionId).nextRetryAt;
+    assert.ok(next2 > Date.now() && next2 <= Date.now() + 181000, '第二次 backoff = 180000ms');
+    log = fromContext(ctx.__fcPendingActionResumeLog);
+    assert.equal(log.filter(e => e.event === 'replay-scheduled-retry').length, 2);
+    assert.equal(log.filter(e => e.event === 'replay-failed').length, 2);
+    assert.equal(harness.dispatchedEvents.filter(ev => ev.type === 'pagehide').length, 2, '每次写回都触发一次 pagehide');
+
+    // ---- 第 3 次失败：预算耗尽 → 永久丢弃（Map + 节点标记都清），不再 pagehide ----
+    ctx.__fcPendingActionResumes.get(actionId).nextRetryAt = 0;
+    await resume(nodes);
+    await tick();
+    assert.equal(failures, 3, '预算 3 次全部用完');
+    assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0, '预算耗尽 → entry 永久丢弃');
+    assert.deepEqual(fromContext(node.pendingActionResumes), [], '节点标记清除（下次保存落盘移除）');
+    log = fromContext(ctx.__fcPendingActionResumeLog);
+    const dropped = log.filter(e => e.event === 'dropped-retry-exhausted');
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].attempts, 3, '丢弃日志记录耗尽预算');
+    assert.equal(harness.dispatchedEvents.filter(ev => ev.type === 'pagehide').length, 2, '耗尽分支不 dispatch pagehide（没有要持久化的写回了）');
+    assert.equal(harness.persisterCalls.length, 3, '每次实际重放前都先过 persister（clear-on-send）');
+
+    // ---- 丢弃后的 settle：无事发生 ----
+    await resume(nodes);
+    await tick();
+    assert.equal(failures, 3);
+});
+
+test('smartPendingActionReplaySucceeded: local-edit 以 output_asset_id 变化为成功判据，其余 kind 解析即成功', () => {
+    const { ctx } = loadGenerationTasksModule();
+    const fn = globalFunction(ctx, 'smartPendingActionReplaySucceeded');
+    assert.equal(fn('local-edit', 'old-asset', { output_asset_id: 'new-asset' }), true, 'local-edit：output_asset_id 变了 = 成功');
+    assert.equal(fn('local-edit', 'old-asset', { output_asset_id: 'old-asset' }), false, 'local-edit：未变 = 失败（提交吞了 fetch 错误，必须看可观察效果）');
+    assert.equal(fn('local-edit', '', {}), false, 'local-edit：从无 asset 到无 asset = 失败');
+    assert.equal(fn('local-edit', 'old-asset', null), false);
+    assert.equal(fn('video', 'anything', {}), true, '非 local-edit：replay 闭包自己抛错表失败，解析即成功');
+    assert.equal(fn('conversation', '', null), true);
+});
+
+test('retryFailedGeneration: 先取回已归档输出（无新计费），无归档则换新幂等键重新生成', async () => {
+    // ---- 路径 1：服务端已归档成功输出 → 直接取回，零 POST ----
+    {
+        const node = { id: 'img-1', type: 'smart-image', failedGenerationTasks: [{ taskId: 'project_img_1', error: 'boom' }] };
+        const nodes = [node];
+        const { ctx, harness, calls } = loadGenerationTasksModule({ nodes });
+        harness.fetchResponder = (url) => {
+            assert.equal(url, '/api/project-library/proj-1/image-generation-tasks/project_img_1');
+            return fakeResponse({ data: { status: 'failed', result: { history_record: { outputs: [{ asset_id: 'a1', kind: 'image' }] } } } });
+        };
+        await globalFunction(ctx, 'retryFailedGeneration')('img-1');
+        assert.equal(harness.fetchLog.length, 1, '取回路径只发一次 GET，零 POST（不重复计费）');
+        assert.deepEqual(fromContext(node.failedGenerationTasks), [], '取回成功后失败清单清空');
+        assert.equal(node.images.length, 1);
+        assert.equal(node.images[0].url, '/api/project-library/proj-1/media/a1', 'media url 按 projectId 构造');
+        assert.equal(node.images[0].name, 'output-1.png', '归档输出无名时按序生成 output-N.png');
+        assert.equal(node.images[0].kind, 'image');
+        assert.equal(node.images[0].generatedResult, true);
+        assert.equal(node.title, 'Image', '终态清理：单图节点标题');
+        assert.equal(node.running, false);
+        assert.equal(node.outputKind, 'image');
+        assert.equal(node._retryInFlight, false, '防连点标志在 finally 清除');
+        assert.ok(calls.some(c => c === 'edgeReveal:img-1'), '取回的图触发 edge reveal');
+    }
+    // ---- 路径 2：无归档 → 新幂等键重新提交（不换键会永远重放同一个已失败任务）----
+    {
+        const node = {
+            id: 'img-2', type: 'smart-image',
+            failedGenerationTasks: [{ taskId: 'project_img_1', error: 'boom' }],
+            generationSubmissions: [{ idempotencyKey: 'k-old', requestPayload: { prompt: 'p', n: 1 }, count: 1, prompt: 'p', createdAt: 1 }],
+        };
+        const nodes = [node];
+        const { ctx, harness } = loadGenerationTasksModule({ nodes });
+        harness.fetchResponder = (url, options) => {
+            if (url === '/api/project-library/proj-1/image-generation-tasks/project_img_1') {
+                return fakeResponse({ data: { status: 'failed', result: {} } });
+            }
+            if (url === '/api/project-library/proj-1/image-generation-tasks') {
+                const body = JSON.parse(options.body);
+                return fakeResponse({ data: { task_id: 'project_img_2', idempotency_key: body.idempotency_key, route: { provider_id: 'p1', model: 'm1' } } });
+            }
+            if (url === '/api/project-library/proj-1/image-generation-tasks/project_img_2') {
+                return fakeResponse({ data: { status: 'succeeded', result: {} } });
+            }
+            throw new Error('unexpected url ' + url);
+        };
+        const settled = globalFunction(ctx, 'retryFailedGeneration')('img-2');
+        await tick();
+        // 提交已发出：POST 带新幂等键。
+        const postEntry = harness.fetchLog.find(f => f.url === '/api/project-library/proj-1/image-generation-tasks' && f.options.method === 'POST');
+        assert.ok(postEntry, '重新生成发了 POST');
+        const body = JSON.parse(postEntry.options.body);
+        assert.ok(body.idempotency_key.startsWith('regen-'), '新幂等键以 regen- 开头（显式重试是新的尝试）');
+        assert.notEqual(body.idempotency_key, 'k-old');
+        assert.equal(body.result_node_id, 'img-2');
+        assert.equal(body.prompt, 'p');
+        // 此刻 pending 任务已进节点、轮询在等 2000ms 受控定时器。
+        assert.equal(node.pendingTasks.length, 1);
+        assert.equal(node.pendingTasks[0].taskId, 'project_img_2');
+        assert.equal(node.pendingTasks[0].idempotencyKey, body.idempotency_key);
+        // 放行轮询（2000ms）→ 成功终态；retryFailedGeneration 在轮询结束后才 settle。
+        harness.advanceTimers();
+        await tick();
+        await tick();
+        await settled;
+        assert.equal(node.pendingTasks, undefined, '任务完成后删除 pendingTasks');
+        assert.equal(node.running, false);
+        // 旧的失败提交标记已被清除（resumeSmartGenerationSubmission 成功后 clear）。
+        assert.equal(node.generationSubmissions, undefined, '提交成功后 generationSubmissions 清空');
+        // 防连点：重试在途时第二次调用直接返回。
+        node.failedGenerationTasks = [{ taskId: 'project_img_9', error: 'boom' }];
+        node._retryInFlight = true;
+        harness.fetchLog.length = 0;
+        await globalFunction(ctx, 'retryFailedGeneration')('img-2');
+        assert.equal(harness.fetchLog.length, 0, '_retryInFlight 时不重复提交');
+    }
+});
+
+test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/failed-bare/timeout/jimeng_pending/succeeded)', async () => {
+    const cases = [
+        {
+            name: 'cancelled → generationCancelled + providerFailure（服务端终态，不能当网络错误重试）',
+            task: { status: 'cancelled', error: 'cancelled by user', result: {} },
+            expect: (e) => e.generationCancelled === true && e.providerFailure === true && e.message === 'cancelled by user',
+        },
+        {
+            name: 'failed + upstream_task_id → ImageTaskRecoverSignal（失败取回信息）',
+            task: { status: 'failed', upstream_task_id: 'up-1', provider_id: 'p1', kind: 'image', error: 'gen failed', result: {} },
+            expect: (e) => e.imageTaskRecover === true && e.recoverTaskId === 'up-1' && e.taskId === 'project_img_X' && e.providerId === 'p1' && e.providerFailure === true && e.message === 'gen failed',
+            expectFailLog: { taskId: 'project_img_X', error: 'gen failed' },
+        },
+        {
+            name: 'failed 无 upstream → 普通 Error + providerFailure，且 failSmartPendingHistoryLog 落账',
+            task: { status: 'failed', error: 'gen failed', result: {} },
+            expect: (e) => e.imageTaskRecover === undefined && e.providerFailure === true && e.message === 'gen failed',
+            expectFailLog: { taskId: 'project_img_X', error: 'gen failed' },
+        },
+        {
+            name: 'timeout → generationTimedOut + providerFailure（#41 任务级硬超时是终态）',
+            task: { status: 'timeout', error: 'timed out', result: {} },
+            expect: (e) => e.generationTimedOut === true && e.providerFailure === true && e.message === 'timed out',
+            expectFailLog: { taskId: 'project_img_X', error: 'timed out' },
+        },
+        {
+            name: 'jimeng_pending → JimengPendingSignal（带 submitId/kind，交给轮询续接）',
+            task: { status: 'jimeng_pending', submit_id: 'sub-1', kind: 'video', queue_info: {}, message: '排队中', result: {} },
+            expect: (e) => e.jimengPending === true && e.submitId === 'sub-1' && e.kind === 'video',
+        },
+    ];
+    for (const c of cases) {
+        test(c.name, async () => {
+            const { ctx, harness } = loadGenerationTasksModule();
+            harness.fetchResponder = (url) => {
+                assert.equal(url, '/api/project-library/proj-1/image-generation-tasks/project_img_X');
+                return fakeResponse({ data: c.task });
+            };
+            const poll = globalFunction(ctx, 'pollSmartCanvasTask');
+            const p = poll('project_img_X');
+            const settled = assert.rejects(p, (e) => c.expect(e));
+            harness.advanceTimers();  // 放行 2000ms 轮询间隔
+            await tick();
+            await tick();
+            await settled;
+            assert.equal(harness.fetchLog.length, 1, '终态只查一次');
+            if (c.expectFailLog) {
+                assert.equal(harness.failHistoryCalls.length, 1);
+                assert.deepEqual(harness.failHistoryCalls[0], c.expectFailLog);
+            } else {
+                assert.equal(harness.failHistoryCalls.length, 0, 'cancelled/jimeng_pending 不落 fail 账');
+            }
+            assert.equal(evaluate(ctx, 'activeSmartTaskPolls.size'), 0, 'settled 后轮询去重 Map 清空');
+        });
+    }
+    // succeeded：解析到 result，absorb 无 history_recorded 时是 no-op。
+    test('succeeded → 返回 result，轮询 Map 清空', async () => {
+        const { ctx, harness } = loadGenerationTasksModule();
+        harness.fetchResponder = () => fakeResponse({ data: { status: 'succeeded', result: {} } });
+        const poll = globalFunction(ctx, 'pollSmartCanvasTask');
+        const p = poll('project_img_X');
+        harness.advanceTimers();
+        await tick();
+        await tick();
+        const result = await p;  // succeeded 永不 reject，直接 await
+        assert.deepEqual(result, {});
+        assert.equal(evaluate(ctx, 'activeSmartTaskPolls.size'), 0);
+    });
+});
