@@ -26,6 +26,7 @@
     const probe214 = {events: []};
     function probeInstall(){
         const t0 = performance.now();
+        probe214.t0 = t0;
         const ts = () => Math.round(performance.now() - t0);
         const snap = () => {
             try {
@@ -90,7 +91,7 @@
             if (!s) return;
             const sig = JSON.stringify(s);
             if (sig !== lastSig){ lastSig = sig; record({type: 'state', snap: s}); }
-        }, 700);
+        }, 50);
     }
     async function waitFor(predicate, timeout=15000){
         const deadline = performance.now() + timeout;
@@ -488,6 +489,7 @@
         }, 8000);
         assertion('cancelled and completed tasks replace only their own history placeholders', pendingHistoryReplaced, {before:historyCountBeforeRun, after:(evalCanvas()?.history || []).length, statuses:(evalCanvas()?.history || []).map(log => log.status)});
         assertion('completed node no longer renders the stage progress placeholder', !document.querySelector('[data-id="gen-conn"] .generation-stage-progress'), document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.outerHTML || 'removed');
+        result.diagnostics.push(`genImagesReadAt=${Math.round(performance.now() - (probe214.t0 || 0))} imgCount=${(nodeById('gen-conn')?.images || []).length} archived=${JSON.stringify((evalCanvas()?.history || []).filter(l => !l.status).map(l => ({images:(l.images||[]).length, title:l.title})))}`);
         const genImages = nodeById('gen-conn')?.images || [];
         const urlImage = genImages.find(i => i.url);
         assertion('generated image has url', Boolean(urlImage?.url), urlImage?.url || '');
