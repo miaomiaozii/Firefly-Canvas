@@ -190,7 +190,10 @@
                     });
                 } catch(e){ events.push({op: 'err', t: Math.round(performance.now() - t0), error: String(e)}); }
             }, 10);
-            return {events, stop(){ clearInterval(iv); }};
+            const api = () => events;
+            api.events = events;
+            api.stop = () => { clearInterval(iv); };
+            return api;
         })()`);
         if (trap && trap.stop) {
             const iv2 = setInterval(() => {
