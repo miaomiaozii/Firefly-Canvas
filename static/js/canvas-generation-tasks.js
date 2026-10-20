@@ -49,7 +49,7 @@ async function runPromptLLMNode(nodeId){
     const systemPrompt = (node.llmSystemPrompt || '').trim();
     node.llmEnabled = true;
     node.running = true;
-    render();
+    canvasCore.render();
     try {
         const provider = resolveChatProviderId(node.llmProvider || '');
         const model = resolveChatModel(node.llmModel || '', provider);
@@ -77,12 +77,12 @@ async function runPromptLLMNode(nodeId){
         node.text = (result.text || '').trim();
         node.llmProvider = provider;
         node.llmModel = model;
-        scheduleSave();
+        canvasCore.scheduleSave();
     } catch(e) {
         toast((e.message || tr('smart.promptLlmFailed')).slice(0, 160));
     } finally {
         node.running = false;
-        render();
+        canvasCore.render();
     }
 }
 
@@ -207,7 +207,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             prompt,
             createdAt:nowMs()
         });
-        scheduleSave();
+        canvasCore.scheduleSave();
         if(!await flushProjectCanvasBeforeGeneration()){
             // #189: a failed pre-generation flush no longer cancels the request. Keep the durable
             // submission marker and let the debounced autosave carry it to disk; once the canvas
@@ -218,7 +218,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             // because a 409 rebase (applyMergedServerCanvas) can swap the canvas nodes for
             // server copies and wipe in-memory marker annotations before they are persisted.
             smartPendingPersistenceKeys.add(payload.idempotency_key);
-            scheduleSave();
+            canvasCore.scheduleSave();
             const pendingError = new Error(tr('smart.canvasSavePendingResume'));
             pendingError.smartSavePendingResume = true;
             throw pendingError;
@@ -239,7 +239,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         delete refreshedNode.runElapsedMs;
         refreshedNode.runTimerHidden = false;
         clearSmartGenerationSubmission(canvasState.nodes.find(item => item.id === resultNode.id) || resultNode, payload.idempotency_key);
-        scheduleSave();
+        canvasCore.scheduleSave();
         return taskResult;
     }
     if(!runSettings.provider_id || !runSettings.model) throw new Error(tr('smart.errNoApiModel'));
@@ -549,8 +549,8 @@ function finalizeJimengPending(node, urls, kind='image'){
     if(!node.runStartedAt) node.runStartedAt = node.runFinishedAt;
     node.runElapsedMs = Math.max(0, node.runFinishedAt - Number(node.runStartedAt || node.runFinishedAt));
     node.runTimerHidden = false;
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
     return true;
 }
 
@@ -594,7 +594,7 @@ async function queryJimengNow(nodeId){
     const submitId = node.jimengPending.submitId;
     const kind = node.jimengPending.kind || 'image';
     node.jimengPending.querying = true;
-    render();
+    canvasCore.render();
     try {
         const data = await fetchJimengQuery(submitId, kind);
         applyJimengQueryResult(node, data);
@@ -602,7 +602,7 @@ async function queryJimengNow(nodeId){
         toast((e.message || tr('smart.queryFailed')).slice(0, 160));
     } finally {
         if(node.jimengPending) node.jimengPending.querying = false;
-        render();
+        canvasCore.render();
     }
 }
 
@@ -633,7 +633,7 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     }
     task.querying = true;
     task.recoverTaskId = recoverTaskId;
-    render();
+    canvasCore.render();
     try {
         const data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
         if(data.status === 'succeeded'){
@@ -642,8 +642,8 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
             node.recoveredGenerationTasks = (node.recoveredGenerationTasks || []).filter(item => item.taskId !== task.taskId);
             if(!node.recoveredGenerationTasks.length) delete node.recoveredGenerationTasks;
-            render();
-            scheduleSave();
+            canvasCore.render();
+            canvasCore.scheduleSave();
             return;
         }
         if(data.status === 'failed'){
@@ -893,7 +893,7 @@ async function resumeSmartPendingNode(node, logContext={}){
     };
     node.pending = Math.max(tasks.length, Number(node.pending || 0) || tasks.length);
     node.running = false;
-    render();
+    canvasCore.render();
     const failures = [];
     await Promise.all(tasks.map(async task => {
         if(task.failed && task.recoverTaskId) return;
@@ -908,8 +908,8 @@ async function resumeSmartPendingNode(node, logContext={}){
             if(!result?.project_node_applied){
                 finalizeSmartPendingTask(node, task.taskId, resultImages, task.kind || 'image', task.count || 1);
             }
-            render();
-            scheduleSave();
+            canvasCore.render();
+            canvasCore.scheduleSave();
         } catch(e) {
             if(e && e.jimengPending && e.submitId){
                 node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
@@ -935,8 +935,8 @@ async function resumeSmartPendingNode(node, logContext={}){
                 finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
                 node.running = false;
                 toast(tr('smart.taskNotLostLater'));
-                render();
-                scheduleSave();
+                canvasCore.render();
+                canvasCore.scheduleSave();
                 return;
             }
             // 区分服务商失败和网络问题：服务端终态失败带 providerFailure 标记；
@@ -974,8 +974,8 @@ async function resumeSmartPendingNode(node, logContext={}){
                     if(e && typeof e === 'object') e.smartGenerationLogged = true;
                 }
                 toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
-                render();
-                scheduleSave();
+                canvasCore.render();
+                canvasCore.scheduleSave();
                 return;
             }
             
@@ -1018,8 +1018,8 @@ async function resumeSmartPendingNode(node, logContext={}){
                 if(e && typeof e === 'object') e.smartGenerationLogged = true;
             }
             toast(tr('smart.writeFailedMaxRetries'));
-            render();
-            scheduleSave();
+            canvasCore.render();
+            canvasCore.scheduleSave();
         }
     }));
     if(failures.length){
@@ -1074,10 +1074,10 @@ async function retryFailedGenerationInner(node){
     if(submission){
         submission.idempotencyKey = `regen-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         await resumeSmartGenerationSubmission(node, submission);
-        render();
+        canvasCore.render();
         return;
     }
-    render();
+    canvasCore.render();
     toast(tr('smart.noRetryableRequest'));
 }
 
@@ -1127,14 +1127,14 @@ async function resumeSmartGenerationSubmission(node, submission){
         // 恢复提交：保持占位格总数固化（已有则保留，避免覆盖）
         if(!Number(currentNode._batchTotal)) currentNode._batchTotal = currentNode.pending;
         currentNode.running = false;
-        render();
-        scheduleSave();
+        canvasCore.render();
+        canvasCore.scheduleSave();
         await resumeSmartPendingNode(currentNode, {taskIds});
     } catch(error) {
         if(!error?.smartSubmissionUnknown){
             const currentNode = canvasState.nodes.find(item => String(item.id || '') === nodeId) || node;
             clearSmartGenerationSubmission(currentNode, idempotencyKey);
-            scheduleSave();
+            canvasCore.scheduleSave();
         }
         toast((error?.message || tr('smart.recoverSubmitFailed')).slice(0, 160));
     } finally {
@@ -1181,7 +1181,7 @@ function queueSmartPendingActionResume(kind, nodeId, replay, payload){
     smartPendingActionResumes.set(actionId, entry);
     mirrorPendingActionToStorage(entry);
     smartPendingActionResumeLog.push({t:Date.now(), event:'queued', kind:entry.kind, nodeId:entry.nodeId});
-    if(typeof scheduleSave === 'function') scheduleSave();
+    if(typeof canvasCore.scheduleSave === 'function') canvasCore.scheduleSave();
     return actionId;
 }
 // #197: mirror the in-memory queue entry onto the anchored node so the next successful
@@ -1456,7 +1456,7 @@ function applySmartTaskProgress(taskId, progress){
         }
     }
     if(changed){
-        render();
+        canvasCore.render();
         if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     }
     return changed;
