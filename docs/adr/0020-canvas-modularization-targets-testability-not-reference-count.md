@@ -201,7 +201,7 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 
 ### 轨道 4：按依赖面从小到大补测
 
-`canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成)。
+`canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成) → `canvas-generation-tasks.js`(#219，已完成) → `canvas-node-ops.js`(已完成) → `canvas-agent-tui.js`(已完成)。
 
 **轨道 1 完成后被解锁的下一块**：`canvas-generation-tasks.js` 现在独立外部自由名 = **22**，已经低于两个已判定「可测」的模块（`canvas-undo.js` 29 → 15 个手写桩、`canvas-connections.js` 28 → 15 个手写桩）。按本 ADR 的判据它现在进入可测范围，而它是 #197（刷新后恢复）与 #198（重放失败丢用户动作）两个真 bug 的所在地，当前无单测。
 
@@ -219,7 +219,57 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 `startJimengPoll` / `pollSmartCanvasTask` 的分钟级长轮询循环本身（只覆盖单次终态迁移）；
 服务端 `idempotency_key` 去重（API 层负责）。
 
-#### 轨道 4 下一块：`canvas-node-ops.js`（2026-10-21）
+#### 该块已完成（2026-10-21，#199 轨道 4）：`canvas-agent-tui.js`
+
+（顺序说明：它在 `canvas-node-ops.js` 之后做，不是按“从小到大”排；选它的理由就是下面那个
+实测自由面——当时未测模块里最小的一块。）
+
+选它的依据是实测自由面 **9 名 / 12 处**（全部是 `smart-canvas.js` 顶层声明），是当时全部未测
+画布模块里最小的一块（对比 `canvas-node-ops.js` 17/14、`canvas-connections.js` 12/9）。
+
+`tests/canvas_module_units/test-canvas-agent-tui.mjs`：`node --test` → **tests 54 / pass 54 / fail 0 / skipped 0**；
+`tests.test_canvas_module_units` → **Ran 13 tests, OK**（该 runner 按 `test-*.mjs` 动态发现，新增文件
+不用登记，以 12→13 的计数验证）；全量 **`Ran 1193 tests, OK`**。提交 `af2a862`/`1922d79`/`7849882`/`a790ef9`/`48bc7ac`。
+
+**有效性证据（不是「写了测试」就算）**：worktree 里把 `handleAgentEvent` 的 `process_exited` 分支
+`state.status = 'crashed'` 改成 `'dead'` → **恰好 1 个用例红**，其余 53 绿。另有 4 处独立变异，
+各自只打红对应用例：删 `agentCardStatusHtml` 的 `disconnected` 分支 → 1 红；去掉
+`cleanupAgentTuiState` 的 `agentTuiState.delete(nodeId)` → 2 红（两个 cleanup 用例）；
+`message_update` 丢掉 `last.streaming` 判定 → 1 红；`renderMarkdown` 协议白名单去掉 `mailto:` → 1 红。
+
+**桩预算：9 个外部自由名全部手写，复制产品逻辑的个数 = 0 → 停止条件未命中。**
+1 个值传递记录器（`trf`）、2 个状态（`canvasId`/`sourceProjectId`）、4 个零逻辑记录器
+（`imageLayout`/`nodeBodyHtml`/`render`/`centerViewportOnWorldPoint`）、2 个数据驱动
+（`chatApiProviders`/`providerChatModels`）。`NODE_TYPE_AGENT`/`NODE_TYPE_TASK`、`canvas`/`tr`/
+`escapeHtml`/`escapeAttr`/`nodeScale`、`canvasState` 由**加载真实模块**满足；`WebSocket`/`fetch`/
+`prompt`/`console` 算浏览器表面积桩，不计入依赖面。
+`trf` 故意不用 `smart-canvas.js:314-316` 的逐字镜像：假 `StudioI18n.t` 返回 `'i18n:'+key`、
+里面没有 `{kind}` 占位符，逐字版会把代入值丢掉，所以做成记录器（把被代入的值拼回返回值），
+这样才断言得出调用方真的传了 `kind`。
+
+**顺带查出 3 个产品缺陷，已建单（本块只钉现状，未修）**：
+**#220** `agentCardStatusHtml` 只分支 busy/connecting/error/disconnected，`retrying`/`crashed` 落到默认
+「空闲」，而同文件 `agentNodeBodyHtml` 显示「重试中/已崩溃」——同一节点头部与正文互相矛盾；
+**#221** `sendAgentCommand` 的 HTTP 回退路径 `fetch(...); return;`，`onSuccess`/`renderAgentNode` 只在
+WS 路径执行 → WS 断开时点 abort，请求发出去了但 `state.status` 仍是 `busy`、控制按钮保持 `disabled`；
+**#222** `turn_end` 从不把 `streaming: true` 的消息收尾（该标记只在追加增量时写入、无处清除）→
+相邻两轮回复粘连（实测 `He`+`llo`+空 content 的 turn_end+`Next` ⇒ 仍是 1 条 `HelloNext`），
+或同段文本被 `turn_end` 再推一条造成重复。
+
+**单测盖不住（没写假测试）**：WebSocket 真实服务端行为（握手/断线重连/服务端事件时序）；
+`showForkPicker` 的完整选择器 UI（真实实现就是 `window.prompt`，源码注释自陈 "In a full
+implementation, this would be a UI picker"）；fork / switch-branch / model / autonomy / prompt 端点的
+真实网络往返（fetch 是数据驱动桩，只验请求形态与本地状态）；渲染 HTML 的实际布局与 CSS。
+
+**并发教训（流程层面）**：本块被两个 agent 各写了一遍。判活要看
+`acp-delegate/del_*.activity` 的 mtime，**不能看 `.out`** —— `.out` 只在进程退出时写，我因此把一个
+仍在跑的 worker 误判成零交付、自己写了一份，两边在同一文件上撞了一次（`af2a862` 一度把另一版
+缩到 3 个用例）。最终由 worker 把那版 41 用例合并为基、补到 54，并逐个 `test(` 名比对确认零丢失。
+以后同一模块的单测只派一个 worker。另外 worker 纠正了我两处误判：`trf` 桩的分类描述与实现不符；
+我误判 `bindAgentNodeControls` 「单测盖不住」——`harness.makeElement` 支持按实例覆写 `querySelector`，
+`test-canvas-connections.mjs` 的 `wireWorldQueries` 早就证了同法可行。
+
+#### 该块已完成（2026-10-21）：`canvas-node-ops.js`
 
 选它的依据是实测自由面 `17 处 / 14 名`（`canvas-node-ops.js 60 / 27 自由 17 / 14 可注入 11`），
 低于已证可测的 `canvas-connections.js`，但它是唯一没单测的核心行为模块。
