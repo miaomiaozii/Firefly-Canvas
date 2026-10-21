@@ -2692,8 +2692,30 @@ function apiImageAllowedAspectRatios(sourceSettings=settings){
 function apiImageRatioPresets(sourceSettings=settings){
     const allowed = apiImageAllowedAspectRatios(sourceSettings);
     if(!allowed) return IMAGE_RATIO_PRESETS.slice();
-    const current = IMAGE_RATIO_PRESETS.find(([value]) => value === sourceSettings?.ratio)?.[1];
-    return IMAGE_RATIO_PRESETS.filter(([, ratio]) => allowed.includes(ratio) || ratio === current);
+    // 不再保留「当前选中但模型并不支持」的 chip。之前这个 escape hatch 让节点上
+    // 残留的 1:4 在切到 gpt-image 家族后仍然可选，请求到路由预检阶段才被拒
+    // （不兼容参数：aspect_ratio），弹窗只剩一句「不支持本次请求」。
+    return IMAGE_RATIO_PRESETS.filter(([, ratio]) => allowed.includes(ratio));
+}
+const IMAGE_RATIO_PRESET_KEYS_BY_RATIO = Object.fromEntries(IMAGE_RATIO_PRESETS.map(([value, ratio]) => [ratio, value]));
+function ratioLog(value){
+    const parsed = parseRatioValue(value);
+    return parsed > 0 ? Math.log(parsed) : null;
+}
+// 模型 / 服务商切换后，节点上残留的比例可能超出新模型能力（banana 的 1:4 切到 gpt-image
+// 家族就是这种）。当场收敛到该模型支持的最接近比例（按对数距离，保留横竖方向）：
+// 用户看到的是「比例被调整」，而不是一次必然失败的生图。能力表缺失时不动用户选择。
+function alignRatioToModel(sourceSettings=settings){
+    const allowed = apiImageAllowedAspectRatios(sourceSettings);
+    if(!allowed) return '';
+    const current = (IMAGE_RATIO_PRESETS.find(([value]) => value === sourceSettings?.ratio) || [])[1];
+    const currentLog = ratioLog(current);
+    if(currentLog === null || allowed.includes(current)) return '';
+    const ranked = allowed.map(ratio => ({ratio, log: ratioLog(ratio)})).filter(item => item.log !== null);
+    if(!ranked.length) return '';
+    const nearest = ranked.reduce((best, item) => Math.abs(item.log - currentLog) < Math.abs(best.log - currentLog) ? item : best, ranked[0]);
+    sourceSettings.ratio = IMAGE_RATIO_PRESET_KEYS_BY_RATIO[nearest.ratio] || 'square';
+    return `${current}→${nearest.ratio}`;
 }
 function apiImageUsesExplicitResolution(sourceSettings=settings){
     if(String(sourceSettings?.engine || '') !== 'api') return true;
@@ -3174,6 +3196,9 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const customRatioKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
     if(settings[ratioKey] === 'source') applySourceRatioToSettings(prefix);
+    // 从 canvas.json 读回的节点可能存着旧模型的比例（例如 gpt-image-2.5-flare + portrait14），
+    // 渲染时先收敛一次，避免面板显示一个该模型不支持的比例。
+    if(!prefix) alignRatioToModel(settings);
     const scope = sizePickerScope(prefix);
     const options = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k'] : ['1k','2k','4k'];
     const currentRes = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
@@ -3640,6 +3665,8 @@ function setDynamicSetting(key, value){
     // 模型选择器在自动路由下也可见；用户明确点选模型时，将这次生成切到固定模型，
     // 这样 UI 选择和实际请求不会出现“看起来选了但 payload 仍是 auto”的错觉。
     if(key === 'model' && settings.routingMode !== 'manual') settings.routingMode = 'manual';
+    // 换模型后当前比例可能不被支持，立刻收敛到支持的最近比例（见 alignRatioToModel）。
+    if(key === 'model') alignRatioToModel(settings);
     if(key === 'videoModel' && settings.videoRoutingMode !== 'manual') settings.videoRoutingMode = 'manual';
     if(key === 'videoMultimodal') settings._videoMultimodalUserSet = true;
     if(key === 'videoMultimodal' && settings.videoMultimodal) settings.videoUseFrameRoles = false;

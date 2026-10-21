@@ -119,6 +119,11 @@ POST /v1/images/generations
   否则 4:5 / 5:4 这类档位（SIZE_MAP 里的 1152x1440 / 1600x2000 / 3072x3840 等）会被
   `route_image_generation` 判为不兼容，`POST /image-generation-tasks` 直接 400；
   banana 家族仍按 aspect_ratio + 像素档位校验
+- **比例 chip 严格按模型能力过滤**（`static/js/smart-canvas.js:apiImageRatioPresets`），
+  不再保留「当前选中但模型不支持」的选项；切换模型时 `alignRatioToModel` 会把残留比例
+  收敛到该模型支持的最接近比例（按对数距离，保留横竖方向，例如 banana 的 `1:4` → gpt 家族的 `9:21`）。
+  否则节点上残留的 `portrait14` 切到 gpt-image 家族后，请求会在路由预检被拒
+  （不兼容参数：aspect_ratio），弹窗只剩一句「不支持本次请求」
 - 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，参数为 size/quality/response_format/image）；
   回归护栏：`tests/test_gpt_image2_5_ratio_resolution.py`、`tests/fixtures/provider_contracts/supported-image-request-families.json`
 

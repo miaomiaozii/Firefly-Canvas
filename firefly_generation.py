@@ -530,9 +530,32 @@ def route_image_generation(
     best = min(candidates, key=lambda item: len(item[3]))
     target = "手动固定的模型" if pinned_model else ("手动固定服务商中的模型" if pinned_provider else "在线图片模型")
     raise ModelRoutingError(
-        f"没有{target}完整支持本次请求",
+        f"没有{target}完整支持本次请求{_capability_hint(*best, request_snapshot)}",
         incompatible_parameters=best[3],
     )
+
+
+CAPABILITY_HINT_KEYS = {"aspect_ratio": "aspect_ratios", "resolution": "resolutions", "size": "sizes", "quality": "qualities"}
+
+
+def _capability_hint(provider: Mapping[str, Any], model: str, capability: Mapping[str, Any], mismatches: Sequence[str], request: Mapping[str, Any]) -> str:
+    """把「哪个参数超出该模型能力、该模型实际支持什么」写进路由错误文案。
+
+    预检失败时前端只显示 message，光一句「不支持本次请求」无法自查。
+    典型场景：节点上残留 banana 的 1:4，切到 gpt-image 家族（长宽比上限 3:1）后
+    aspect_ratio 不兼容——文案里直接给出该模型支持的比例清单和本次请求值。
+    """
+    parts = []
+    for parameter in mismatches:
+        key = CAPABILITY_HINT_KEYS.get(parameter)
+        if not key:
+            continue
+        allowed = capability.get(key) or []
+        if not isinstance(allowed, (list, tuple)) or not allowed or "*" in allowed:
+            continue
+        listed = "/".join(str(item) for item in allowed)
+        parts.append(f"{model} 的 {parameter} 支持 {listed}，本次请求是 {request.get(parameter)}")
+    return f"（{'；'.join(parts)}）" if parts else ""
 
 
 def route_video_generation(

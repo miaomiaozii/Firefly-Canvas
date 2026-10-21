@@ -228,7 +228,12 @@ class GptImageFamilyCapabilityGateTests(unittest.TestCase):
                 with self.subTest(model=model, ratio=ratio):
                     with self.assertRaises(ModelRoutingError) as raised:
                         self._route(model, ratio, "2k", size)
-                    self.assertIn("aspect_ratio", raised.exception.to_dict().get("incompatible_parameters") or [])
+                    detail = raised.exception.to_dict()
+                    self.assertIn("aspect_ratio", detail.get("incompatible_parameters") or [])
+                    # 预检失败时前端只展示 message，必须自带「该模型支持什么 + 本次请求是什么」
+                    message = detail.get("message") or ""
+                    self.assertIn(f"{model} 的 aspect_ratio 支持", message)
+                    self.assertIn(f"本次请求是 {ratio}", message)
 
     def test_gpt_capability_declares_arbitrary_size_instead_of_a_banana_pixel_list(self):
         capabilities = normalize_image_model_capabilities({}, self.GATED_MODELS)
