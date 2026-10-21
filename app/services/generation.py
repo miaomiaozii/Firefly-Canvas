@@ -1331,11 +1331,21 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         image_route = route_openai_image_request(provider, model, size)
     if preserve_model and image_route['params'].get('resolution') and (banana_model_family(image_route['model']) or looks_like_gemini_image_model(image_route['model'])):
         image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
-    if is_comfly_provider:
-        image_route['params'].pop('resolution', None)
     model = image_route['model']
     routed_image_params = image_route['params']
     is_gpt2 = is_gpt_image_2_model(model)
+    if is_gpt2:
+        if routed_image_params.get('aspect_ratio') or routed_image_params.get('resolution'):
+            # gpt-image 家族（含 gpt-image-2.5-flare/-sunburst）只接受 size，
+            # 必须把画布的 比例+档位 换算成合规像素，不能透传 aspect_ratio/resolution。
+            size = gpt_image_2_request_size(size, routed_image_params.get('aspect_ratio'), routed_image_params.get('resolution'))
+            routed_image_params.pop('aspect_ratio', None)
+            routed_image_params.pop('resolution', None)
+        else:
+            # 没有比例/档位参数时，也不能把超出服务商硬约束的像素直接发出去（如 4K 正方形 4096）。
+            size = gpt_image_2_request_size(size)
+    if is_comfly_provider:
+        image_route['params'].pop('resolution', None)
     is_apimart = is_apimart_provider(provider)
     quality = str(quality or '').strip().lower()
     if quality not in {'low', 'medium', 'high'}:

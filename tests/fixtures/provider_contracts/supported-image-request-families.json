@@ -346,13 +346,13 @@
       "request_shape": "OpenAI Images JSON without generic n or response_format, with fallback edit only for unsupported endpoint",
       "response_shape": {"data": [{"url": "string"}]},
       "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json/data.prompt", "aspect_ratio": "json/data.aspect_ratio", "resolution": "json/data.resolution", "references": "multipart image occurrences in caller order"},
+      "parameter_mapping": {"prompt": "json/data.prompt", "size": "json/data.size (aspect_ratio+resolution 经 gpt_image_2_request_size 换算为合规像素)", "references": "multipart image occurrences in caller order"},
       "source_refs": ["openai-images", "local-generation-adapters", "local-image-routing"],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
         "header_names": ["authorization"],
-        "json": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "quality": "high"},
+        "json": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "size": "2048x1152", "quality": "high"},
         "data": null,
         "files": []
       },
@@ -361,7 +361,7 @@
         "url": "https://provider.invalid/v1/images/edits",
         "header_names": ["authorization"],
         "json": null,
-        "data": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "quality": "high"},
+        "data": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "size": "2048x1152", "quality": "high"},
         "files": [
           {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"},
           {"field": "image", "filename": "second.png", "mime_type": "image/png", "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"},

@@ -1100,6 +1100,294 @@
           "description": "参考图数组（图生图）。每项为 URL 或 base64"
         }
       }
+    },
+    "gpt-image-2.5-flare": {
+      "display_name": "GPT Image 2.5 Flare",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-flare-2k": {
+      "display_name": "GPT Image 2.5 Flare 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-flare-4k": {
+      "display_name": "GPT Image 2.5 Flare 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst": {
+      "display_name": "GPT Image 2.5 Sunburst",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst-2k": {
+      "display_name": "GPT Image 2.5 Sunburst 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst-4k": {
+      "display_name": "GPT Image 2.5 Sunburst 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
     }
   },
   "video_models": {

@@ -272,6 +272,10 @@ CHAT_RATIO_SIZE_OPTIONS = {'1:1': ('1024x1024', '1536x1536', '2048x2048'), '2:3'
 GPT_IMAGE2_MAX_EDGE = 3840
 GPT_IMAGE2_MAX_PIXELS = 8294400
 GPT_IMAGE2_MIN_PIXELS = 655360
+# 画布只有「比例 + 档位」两个旋钮，但 gpt-image 家族（gpt-image-2 / gpt-image-2-all /
+# gpt-image-2.5-flare / -sunburst）只接受 size 像素字段。档位对应的长边按服务商文档的
+# 常用尺码取：1K=1024、2K=2048、4K=3840（4K 档的总像素上限会把正方形压到 2880）。
+GPT_IMAGE2_TIER_LONG_EDGE = {'1k': 1024, '2k': 2048, '4k': 3840}
 VOLCENGINE_MIN_PIXELS = 3686400
 VOLCENGINE_MIN_EDGE = 1536
 VOLCENGINE_MAX_EDGE = 4096
@@ -4173,6 +4177,43 @@ def gpt_image_2_size_error_message(size):
 def gpt_image_2_size_exceeds_supported(size):
     width, height = parse_size_pair(size)
     return bool(width and height and (max(width, height) > GPT_IMAGE2_MAX_EDGE or width * height > GPT_IMAGE2_MAX_PIXELS))
+
+def gpt_image_2_request_size(size, aspect_ratio='', resolution=''):
+    """把画布的「比例 + 分辨率档位」换算成 gpt-image 家族能接受的 size 像素。
+
+    服务商文档（api-515692647 / api-515693438 / api-515693868 / api-515694152）：
+    gpt-image-2 / 2.5 的逆向分组只接受 model、prompt、size、image、quality，
+    size 约束为最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、
+    总像素 655360-8294400。因此不能直接把 aspect_ratio/resolution 透传给服务商，
+    必须先在本地算出合规像素，否则服务商只能回到 size=auto。
+    比例无法解析时沿用原本的 size（只做上限收敛）。
+    """
+    match = re.fullmatch(r'\s*(\d{1,3})\s*[:xX*]\s*(\d{1,3})\s*', str(aspect_ratio or ''))
+    if not match:
+        width, height = parse_size_pair(size)
+        return normalize_gpt_image_2_size(f'{width}x{height}') if width and height else (size or 'auto')
+    ratio_w, ratio_h = int(match.group(1)), int(match.group(2))
+    if ratio_w <= 0 or ratio_h <= 0:
+        width, height = parse_size_pair(size)
+        return normalize_gpt_image_2_size(f'{width}x{height}') if width and height else (size or 'auto')
+    tier = str(resolution or '').strip().lower()
+    long_edge = GPT_IMAGE2_TIER_LONG_EDGE.get(tier)
+    if not long_edge:
+        width, height = parse_size_pair(size)
+        long_edge = max(width, height) if width and height else GPT_IMAGE2_TIER_LONG_EDGE['1k']
+    if ratio_w >= ratio_h:
+        width, height = long_edge, long_edge * ratio_h / ratio_w
+    else:
+        width, height = long_edge * ratio_w / ratio_h, long_edge
+    width = max(16, int(round(width / 16)) * 16)
+    height = max(16, int(round(height / 16)) * 16)
+    if width * height < GPT_IMAGE2_MIN_PIXELS:
+        # 极端比例在低档位下会跌到总像素下限以下（如 1K 的 21:9 = 1024x440），
+        # 向上放大到下限（16 的倍数向上取整）而不改比例。
+        grow = (GPT_IMAGE2_MIN_PIXELS / max(1, width * height)) ** 0.5
+        width = max(16, int(-(-width * grow // 16)) * 16)
+        height = max(16, int(-(-height * grow // 16)) * 16)
+    return normalize_gpt_image_2_size(f'{width}x{height}')
 
 def apimart_size_resolution(size):
     width, height = parse_size_pair(size)
