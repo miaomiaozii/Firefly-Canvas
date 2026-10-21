@@ -36,6 +36,11 @@ GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16",
 # Nano Banana 2 家族（gemini-3.1-flash-image-preview[-lite]、nano-banana-2*、
 # gemini-nano-banana-2.1*）额外支持极端比例 1:4 / 4:1 / 8:1 / 1:8，共 15 种。
 GEMINI_FLASH_IMAGE_ASPECT_RATIOS = [*GEMINI_ASPECT_RATIOS, "1:4", "4:1", "8:1", "1:8"]
+# gpt-image 家族（gpt-image-2 / -all / 2.5-flare / 2.5-sunburst / gpt-image-1.5 /
+# gpt-4o-image）不吃 aspect_ratio，只接受 size，且服务商硬约束长宽比 ≤3:1
+# （api-447258891 / api-515692647 / api-515693868）。所以极端比例 1:4 / 4:1 /
+# 8:1 / 1:8 对 gpt 家族不可用，可用集就是 11 种基础比例。
+GPT_IMAGE_ASPECT_RATIOS = list(GEMINI_ASPECT_RATIOS)
 # 每种比例的像素档位（前端 SIZE_MAP 必须与此逐一对应，见 docs/api-parameter-rules.md）。
 # 服务商在收到 aspect_ratio 时不写 size，档位只用于画布几何与能力校验。
 COMMON_IMAGE_SIZES = {
@@ -401,11 +406,17 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
             "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
             "max_reference_images": 20,
         })
-    elif "gpt-image" in identifier or identifier.replace("_", "-").startswith("gptimage"):
+    elif "gpt-image" in identifier or identifier.replace("_", "-").startswith("gptimage") or ("gpt" in identifier and "image" in identifier):
+        # gpt 家族的参数形态与 banana 不同：banana 走 aspect_ratio + image_size，
+        # gpt-image 只接受 size，像素由 app/core.py:gpt_image_2_request_size 按
+        # 「比例 + 档位」换算（取整到 16 倍数、长边 ≤3840、总像素 ≤8294400、≤3:1）。
+        # 因此不能用 COMMON_IMAGE_SIZES（banana 档位白名单）去校验 gpt 的 size：
+        # 那会把 4:5 / 5:4 等合法选择误判成不兼容（#issue: 400 image_model 路由失败）。
+        # size 交给服务商自校验，本地只锁比例和档位。
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": list(GPT_IMAGE_ASPECT_RATIOS),
+            "arbitrary_size": True,
             "resolutions": ["auto", "1k", "2k", "4k"],
-            "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
             "max_reference_images": 20,
         })
     elif any(token in identifier for token in ("text-to-image", "text2image", "txt2img")):

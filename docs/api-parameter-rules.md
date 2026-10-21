@@ -114,6 +114,11 @@ POST /v1/images/generations
   1:1+4K → 受总像素上限压到 `2880x2880`），再把 `aspect_ratio`/`resolution` 从 body 里剔掉；
   直接透传会让服务商回到 `size=auto`，比例和分辨率等于没传
 - 因为 3:1 的长宽比限制，gpt-image 家族可用比例是 11 种基础集，不含 `1:4` `4:1` `8:1` `1:8`
+- **能力表必须分家族**（`firefly_generation.py`）：gpt 家族声明 `arbitrary_size: true` +
+  `aspect_ratios = GPT_IMAGE_ASPECT_RATIOS`，不再复用 banana 的 `COMMON_IMAGE_SIZES` 像素白名单。
+  否则 4:5 / 5:4 这类档位（SIZE_MAP 里的 1152x1440 / 1600x2000 / 3072x3840 等）会被
+  `route_image_generation` 判为不兼容，`POST /image-generation-tasks` 直接 400；
+  banana 家族仍按 aspect_ratio + 像素档位校验
 - 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，参数为 size/quality/response_format/image）；
   回归护栏：`tests/test_gpt_image2_5_ratio_resolution.py`、`tests/fixtures/provider_contracts/supported-image-request-families.json`
 
