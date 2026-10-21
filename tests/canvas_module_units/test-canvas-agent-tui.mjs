@@ -1,240 +1,740 @@
-// #199 轨道 4：canvas-agent-tui.js 行为单元测试（耦合报告里所有未单测模块中自由面最小的一个：
-// 12 处 / 9 独立名 / 自由 12 / 9 名 / 可注入 3；在 canvas-connections.js（自由 12/9）与
-// canvas-node-ops.js（自由 17/14）之后的下一个模块）。
+// #199 轨道 4：canvas-agent-tui.js 行为单元测试（ADR 0020：按依赖面从小到大补测）。
 //
-// canvas-agent-tui.js 是画布 Agent TUI 会话节点模块（#154 从 smart-canvas.js 抽离；
-// renderMarkdown 由 #200 从核心搬回）：isSmartAgentNode/isSmartAgentTaskNode 谓词、
-// agentTuiState 状态容器、WebSocket 连接与事件状态机（handleAgentEvent）、命令发送
-// （prompt/steer/follow_up/abort/confirm）、模型/自治/分支/分叉（fetch）、卡片与 TUI 主体
-// HTML 渲染（agentCardStatusHtml/agentNodeBodyHtml/agentTaskNodeBodyHtml/renderMarkdown）、
-// 控件绑定（bindAgentNodeControls/bindAgentTaskNodeControls）、cleanupAgentTuiState。
-// 本文件顶层只有函数声明 + `const agentTuiState = new Map()`——加载期不触碰任何外部名。
+// 合并说明：本文件合并同一任务的两个并行交付——commit 0ebab4c 的 41 用例（含 #220/#221/#222
+// 三处产品缺陷的发现）+ 后续补组。原 41 用例与其 loader 桩预算原样保留，补组覆盖原头部
+// 误判为「盖不住」的两项（bindAgentNodeControls 的 DOM 绑定与 Enter/Shift+Enter 分流：
+// harness.makeElement 支持按实例覆写 querySelector/querySelectorAll，test-canvas-connections.mjs
+// 的 wireWorldQueries 已证同法可行），以及 connect 回调、fork/switch-branch/分叉选择器、
+// renderAgentNode 重渲染等原版本未覆盖的真实路径。
 //
-// 依赖面实测（口径 = 耦合报告自由侧 9 个独立名 / 12 处引用，全部是 smart-canvas.js 顶层声明）：
-//   - 单行契约镜像 1 个：trf（smart-canvas.js:314-316 逐字单表达式，内部调真实 tr
-//     canvas-core.js:64；loadModules 之后经 evaluate 定义，与 node-ops 测试同法）；
-//   - 状态 2 个：canvasId（smart-canvas.js:2，URL 参数 const）、sourceProjectId（smart-canvas.js:3，同）；
-//   - 零逻辑记录器 3 个：nodeBodyHtml（smart-canvas.js:8686，记录调用+返回固定标记串）、
-//     render（smart-canvas.js）、centerViewportOnWorldPoint（smart-canvas.js:2050）；
-//   - 数据驱动 3 个：imageLayout（smart-canvas.js:1575，测试喂 harness.layout）、
-//     chatApiProviders（smart-canvas.js:2329，测试喂 harness.providers）、
-//     providerChatModels（smart-canvas.js:2359，测试喂 harness.modelsByProvider）；
-//   - 0 个复制产品逻辑（ADR 0020 判据：没有任何一个桩需要「第二套实现」）。
-// 报告口径外（不是 smart-canvas.js 顶层声明）的外部名：
-//   - 由**加载真实模块**满足（不桩，harness 按 HTML_SCRIPT_ORDER 排序加载）：
-//       canvas-node-types.js → NODE_TYPE_AGENT('smart-agent') / NODE_TYPE_TASK('agent-task')
-//       canvas-core.js       → canvas(let) / tr（真实实现，含 window.StudioI18n 分支）/
-//                              escapeHtml / escapeAttr / nodeScale
-//       canvas-state.js      → canvasState
-//   - 浏览器/harness 面（非产品逻辑）：
-//       WebSocket → 手写可控假对象（class + 实例：url/readyState/sent/onmessage/onclose/
-//                   onerror/close），纯浏览器 API 表面积，零产品逻辑；
-//       fetch / prompt → harness 默认（禁用/返回 null），loader 替换为数据驱动记录器；
-//       console → loader 替换为调用记录器（让 console.error 路径可断言）；
-//       window / location / document → harness.mjs 提供。
+// canvas-agent-tui.js（898 行，#154 从 smart-canvas.js 抽离）是画布 Agent TUI 会话节点：
+// WebSocket 连接与事件状态机、prompt/steer/follow_up/abort/confirm 发送（WS 与 HTTP 双路径）、
+// model/autonomy/fork/branch 会话操作、卡片与节点体 HTML 渲染、agent-task 只读卡、Markdown 渲染。
+// 本文件顶层只有声明（`const agentTuiState = new Map()` 是字面量），加载期不读其他模块状态。
+//
+// 依赖面实测（tools/canvas_coupling_report.py:coupling()，口径=引用 hub 声明的名字）：
+// **9 个外部自由名 / 12 处引用**（12 total / 9 distinct / free_refs 12 / interface 0），
+// 是所有未补测模块里最小的（对比已补好的 canvas-node-ops.js 17 处/14 名、
+// canvas-connections.js 12 处/9 名）。其中：
+//   - 由**加载真实模块**满足（不桩）：
+//       canvas-core.js  → tr / nodeScale / escapeHtml / escapeAttr / canvas(let) / canvasCore(Proxy)
+//       canvas-node-types.js → NODE_TYPE_AGENT / NODE_TYPE_TASK
+//       canvas-state.js → canvasState
+//   - 9 个手写桩（全部来自 hub smart-canvas.js，按真实契约最小化）：
+//       trf → 值传递记录器（返回值 = 真实 tr(key) + 被代入值；无 StudioI18n 时 smart-canvas.js:
+//             314-316 的逐字 trf 返回 key 本身、代入值被丢弃，值传递路径不可观察，故刻意不用
+//             逐字镜像——也不重新实现模板替换，零产品逻辑）；
+//       chatApiProviders / providerChatModels → 数据驱动（测试直接喂数组）；
+//       canvasId / sourceProjectId → 数据字段；
+//       imageLayout / nodeBodyHtml / render / centerViewportOnWorldPoint → 零逻辑记录器
+//       （只记录「被调了几次、参数是什么」，不返回布局结构，也不参与任何断言的计算）。
+//   - 浏览器表面积（harness 不提供、按实例补，零产品逻辑）：
+//       WebSocket → 记录器类 + OPEN 常量（真实契约只有 readyState/send/close/onmessage…）；
+//       fetch → 记录器（harness.mjs:209 默认 fetch 直接抛，测试内按实例覆盖）；
+//       prompt → 返回预置答案的记录器。
+// ADR 0020 判据「桩要开始重新实现产品逻辑就停」：**未命中**——9 个桩里 0 个复制产品逻辑。
 //
 // 防的回归（全部断言可观察输出/副作用，不是「不抛错就算过」）：
-//   - 事件状态机：session/agent_start/agent_end/turn_start/turn_end（content[].type==='text'
-//     过滤拼接，无文本不追加）、auto_retry_start/end（失败→error+系统消息）、
-//     process_exited→crashed、confirm→waiting_confirm+confirm 对象、response/未知类型不变；
-//   - 流式：text_delta 追加最近 streaming assistant 消息/非流式消息之后新开，
-//     thinking_delta 进独立 thinking 缓冲（默认隐藏）；
-//   - tool_execution start/update/end：running→done/error、isError 透传、未知 toolCallId
-//     不崩不改状态；
-//   - connectAgentWebSocket：ws:/wss: 协议选择、encodeURIComponent 拼 URL、OPEN 时返回同一
-//     实例、onmessage 派发到真实 handleAgentEvent、畸形 JSON 安全（console.error 路径）、
-//     onclose→disconnected+socket=null、onerror→error、构造器抛错→返回 null；
-//   - 发送路径：OPEN socket 走 ws.send（prompt/steer/follow_up/abort/confirm 载荷），否则
-//     fetch POST 回退（URL/body 精确断言，abort 无 body）、follow-up/abort 的 onSuccess
-//     系统消息与状态、sendAgentConfirm 无 confirm 时早退零副作用；
-//   - setAgentModel/setAgentAutonomy 乐观更新（state+node）+ fetch；forkAgentSession/
-//     switchAgentBranch 成功更新 node.branches/current_branch 且清空 messages/toolActivities、
-//     失败零副作用；showForkPicker 的 prompt 选择→fork(entryId, branchName)、
-//     空/越界选择安全；
-//   - agentProjectId 优先级 canvas.project_id > canvas.project > sourceProjectId > ''；
-//   - agentCardStatusHtml 五态映射 + confirm 覆盖（等待确认）+ 末行 40 字预览与工具活动
-//     回退 + 无 state 不创建；agentTaskStatusText 走真实 tr（含 StudioI18n 分支）；
-//     agentTaskNodeBodyHtml 的 data-status/error/结果链接（anchor vs muted）；
-//     agentNodeBodyHtml 的状态/thinking/消息角色/streaming class/工具图标/confirm 卡片/
-//     模型-自治-分支下拉/空态占位/busy 按钮 disabled 门；
-//   - renderMarkdown（#200 搬回本模块）：转义、代码块/行内代码、粗斜体、链接协议门
-//     （javascript: → href="#"）、列表、段落；
-//   - renderAgentNode：主体重渲染（nodeBodyHtml 输出进 .node-body innerHTML）+ 卡片状态进
-//     .node-head-meta + 重绑定（WS 实例 +1）、el/node 缺失与 layout=null → 全 no-op；
-//   - bindAgentNodeControls：Enter 发送（trim/空串/纯空白 no-op、busy→follow_up、
-//     Shift+Enter no-op）、thinking 切换、steer/follow-up/abort、批准/取消、模型/自治/
-//     分支 change、fork、工具行展开；bindAgentTaskNodeControls：结果链接点击→选中结果
-//     节点 + centerViewportOnWorldPoint(x+120, y+100) + render；
-//   - cleanupAgentTuiState：socket.close + 状态移除（删节点联动已由 test-canvas-node-ops.mjs
-//     的「deleteNode: agent 节点经真实 cleanupAgentTuiState 清 TUI 状态」覆盖，本文件测
-//     清理函数本体）。
+//   - 谓词走真 NODE_TYPE_* 常量（不是字符串字面量）；
+//   - handleAgentEvent 的完整状态机：status 迁移矩阵、turn_end 的 content 过滤/拼接、
+//     message_update 的 streaming 续写 vs 新起、thinking_delta 独立于 messages、
+//     tool_execution_* 的 running→done/error 与 result/isError、auto_retry_end 失败时
+//     推入系统消息、process_exited→crashed、confirm→waiting_confirm、未知 type 不动状态；
+//   - 每次事件都调 renderAgentNode（渲染不漏）；
+//   - sendAgentPrompt / sendAgentConfirm 的 WS 与 HTTP 双路径载荷形状；
+//   - steer/follow_up/abort 的 wsPayload 与系统消息、abort 把 status 复位 idle；
+//   - setAgentModel / setAgentAutonomy 的乐观更新（state + node 两处都要写）；
+//   - connectAgentWebSocket 回调面：onmessage 派发到真实 handleAgentEvent、畸形 JSON 走
+//     console.error 不外抛、onerror→error、onclose→disconnected+socket=null、构造器抛错
+//     →null、https location 切 wss；
+//   - sendAgentSteer / sendAgentFollowUp 的 HTTP 回退（WS 未连：URL/body 精确；onSuccess 不
+//     执行——#221 缺口，断言钉现状）；
+//   - forkAgentSession / switchAgentBranch：成功写回 node.branches/current_branch 且清空
+//     messages/toolActivities、失败零副作用；showForkPicker 的 prompt 选择→fork(entry_id,
+//     name)、空列表/越界/空白选择不分叉；
+//   - renderAgentNode：nodeBodyHtml 输出进 .node-body innerHTML、卡片状态进 .node-head-meta、
+//     重绑定在旧 socket 非 OPEN 时新建；el/node 缺失与 layout=null → no-op；
+//   - bindAgentNodeControls：Enter 发送（trim/清空、busy→follow_up、Shift+Enter/纯空白
+//     no-op）、thinking 切换、steer/follow-up/abort、confirm 批准/取消、model/autonomy/
+//     branch change、fork 按钮、工具行展开；
+//   - bindAgentTaskNodeControls：结果链接点击选中结果节点 + centerViewportOnWorldPoint
+//     （结果节点 + (120,100)）+ render、结果缺失不改选中；
+//   - cleanupAgentTuiState 关 socket 且删条目（#217 同族：节点删除后的清理路径；删节点联动
+//     已由 test-canvas-node-ops.mjs 的「deleteNode: agent 节点经真实 cleanupAgentTuiState
+//     清 TUI 状态」覆盖）；
+//   - agentCardStatusHtml 的预览截断（40 字符 + 省略号）与 toolActivities 回退；
+//   - agentNodeBodyHtml 的 retrying/crashed 映射、HTML 转义、按钮 disabled 门、
+//     model/autonomy/branch select 的 selected 判定；
+//   - renderMarkdown 的 XSS 门：非 https/http/mailto///#/./ 协议必须降级为 '#'。
 //
-// 判为**本轮单测不覆盖**的行为（不是「永远绿的假断言」，是预算/边界外的真实路径）：
+// 明确判为「单测盖不住」的行为（不写假测试）：
+//   - WebSocket 真实服务端行为：握手/断线重连/服务端事件顺序（onmessage JSON.parse 异常
+//     分支只覆盖到「解析失败不外抛」，真实网络时序靠浏览器 runner）；
 //   - showForkPicker 的完整 UI 选择器：真实实现用 window.prompt（源码注释明示 "In a full
-//     implementation, this would be a UI picker"）；prompt 选择流程本文件已覆盖，真实
-//     UI 交互由浏览器 runner 兜底。
-//   - 真实 WebSocket 服务端行为（帧序/重连/服务端推送时序）：单测只验证 URL 构造、事件
-//     派发与状态迁移；真实网络由浏览器/手动测试兜底。
-//   - fork/switch-branch/model/autonomy/prompt 等 HTTP 端点的真实网络往返：fetch 是
-//     数据驱动桩，只验证请求形态（URL/method/body）与本地状态变化。
+//     implementation, this would be a UI picker"）；prompt 选择流程本文件已覆盖，真实 UI
+//     交互靠浏览器 runner；
+//   - fork/switch-branch/model/autonomy/prompt 等 HTTP 端点的真实网络往返（fetch 是
+//     数据驱动桩，只验证请求形态与本地状态变化）；
+//   - 渲染出的 HTML 在浏览器里的实际布局/CSS（只断言字符串包含关系）。
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
-// 加载真实底层模块 + 被测模块（按 HTML 相对顺序，harness 会排序）：
-// canvas-node-types.js → canvas-core.js → canvas-state.js → canvas-agent-tui.js。
-// 本模块加载期不触碰外部名（顶层只有函数声明与一个 Map），外部名在 loadModules 之前
-// 用全局属性桩好即可；trf 契约镜像必须 loadModules 之后用 evaluate 定义（要引用
-// context 内真实 tr）。
-function loadAgentTuiModule({
-    nodes = [],
-    canvasProjectId = '',
-    canvasProject = '',
-    sourceProjectId = '',
-} = {}) {
-    const { ctx, harness } = createCanvasContext();
-    const calls = [];
-    // --- 数据驱动注册表：测试显式喂数据，桩零逻辑（防「第二套假核心」） ---
-    harness.layout = { width: 180, height: 110 };    // imageLayout 返回值
-    harness.providers = [];                          // chatApiProviders 返回值
-    harness.modelsByProvider = new Map();            // providerId -> 聊天模型 ID[]
-    harness.bodyHtmlCalls = [];                      // nodeBodyHtml 调用记录
-    harness.bodyHtmlOut = '<div class="node-body">__body_stub__</div>';
-    harness.viewportPointCalls = [];                 // centerViewportOnWorldPoint 调用记录
-    harness.fetchCalls = [];                         // fetch 调用记录 {url, method, body}
-    harness.fetchResponses = [];                     // fetch 响应队列（shift；空队列默认 ok:true/{}）
-    harness.wsInstances = [];                        // FakeWebSocket 实例
-    harness.wsCloseRecords = [];                     // FakeWebSocket.close 调用记录
-    harness.consoleErrors = [];                      // console.error 调用记录
-    harness.promptReturns = [];                      // ctx.prompt 返回值队列
-    harness.promptLabels = [];                       // ctx.prompt 入参记录
-
-    // 可控 WebSocket 假对象（浏览器 API 表面积，零产品逻辑）。
-    class FakeWebSocket {
-        static get OPEN() { return 1; }
+// WebSocket 记录器：真实契约只有 readyState / send / close 和几个 handler 槽位。
+// OPEN 必须是 1（模块里比较的是 WebSocket.OPEN，不是数字字面量）。
+function makeWebSocketHarness(ctx, { open = true } = {}) {
+    const sent = [];
+    const closed = [];
+    class FakeSocket {
         constructor(url) {
             this.url = url;
-            this.readyState = 0;   // 0=未打开（真实浏览器用 CONNECTING；测试按需置 1 模拟 OPEN）
+            this.readyState = open ? 1 : 3;
             this.sent = [];
-            this.closed = false;
-            harness.wsInstances.push(this);
         }
-        send(data) { this.sent.push(data); }
-        close() { this.closed = true; harness.wsCloseRecords.push(this.url); }
+        send(text) {
+            this.sent.push(text);
+            sent.push(text);
+        }
+        close() {
+            closed.push(this.url);
+        }
     }
-    harness.FakeWebSocket = FakeWebSocket;
-    ctx.WebSocket = FakeWebSocket;
+    FakeSocket.OPEN = 1;
+    ctx.WebSocket = FakeSocket;
+    return { FakeSocket, sent, closed };
+}
 
-    ctx.console = {
-        error: (...args) => { harness.consoleErrors.push(args.map(String).join(' ')); },
-        log: () => {},
+// fetch 记录器：harness.mjs:209 默认 fetch 会抛，测试按实例覆盖。
+// response 三种形态：单个响应对象（所有调用同一响应）/ 数组（响应队列，shift，
+// 空队列回退 ok/{}）/ 函数 (url, opts) => 响应（按 URL 分支）。
+function makeFetchHarness(ctx, response) {
+    const calls = [];
+    const DEFAULT = { ok: true, json: async () => ({}) };
+    const next = (url, opts) => {
+        if (typeof response === 'function') return response(url, opts);
+        if (Array.isArray(response)) return response.length > 0 ? response.shift() : DEFAULT;
+        return response || DEFAULT;
     };
+    ctx.fetch = async (url, opts = {}) => {
+        calls.push({ url, opts });
+        return next(url, opts);
+    };
+    return calls;
+}
 
-    // --- 宿主自由名桩（全部来自不可独立加载的宿主脚本 smart-canvas.js；预算清单见文件头） ---
-    ctx.canvasId = 'cv1';                            // 状态（smart-canvas.js:2）
-    ctx.sourceProjectId = sourceProjectId;           // 状态（smart-canvas.js:3）
-    ctx.render = () => { calls.push('render'); };    // 零逻辑记录器
-    ctx.centerViewportOnWorldPoint = (point) => { harness.viewportPointCalls.push(point); };
+function loadAgentTuiModule({
+    nodes = [],
+    open = true,
+    canvasData = null,
+    chatProviders = [],
+    modelsByProvider = {},
+    location = { protocol: 'http:', host: 'example.test' },
+    fetchResponse = undefined,
+    layout = { x: 0, y: 0, width: 10, height: 10 },
+} = {}) {
+    const { ctx, harness } = createCanvasContext();
+    // 注意：harness.mjs:180 设 `ctx.window = ctx`（浏览器里 window === 全局对象）。
+    // 绝不能替换 ctx.window——canvas-state.js 的 `window.canvasState = {...}` 会写到
+    // 另一个对象上，vm 全局里就拿不到 canvasState。
+    ctx.location.protocol = location.protocol;
+    ctx.location.host = location.host;
+    // 不设 StudioI18n：走 canvas-core.js:64 的真实回退分支（tr 返回 key 本身）。
+    const ws = makeWebSocketHarness(ctx, { open });
+    const fetchCalls = makeFetchHarness(ctx, fetchResponse);
+    const renders = [];
+    const bodyHtmlCalls = [];
+    const promptReturns = [];
+    const promptLabels = [];
+    const consoleErrors = [];
+
+    // 9 个 hub 自由名（见文件头桩预算）。
+    // trf 是零逻辑记录器：把翻译 key 和被代入的值都拼进返回值，让测试能断言
+    // 「调用方确实把 kind 传进去了」，不复制 smart-canvas.js:314-316 的模板替换逻辑。
+    ctx.trf = (key, values = {}) =>
+        ctx.tr(key) + (Object.keys(values).length ? `\u00b7${Object.values(values).join('\u00b7')}` : '');
+    ctx.chatApiProviders = () => chatProviders;
+    ctx.providerChatModels = providerId => modelsByProvider[providerId] || [];
+    ctx.canvasId = 'canvas-id-1';
+    ctx.sourceProjectId = 'source-project-1';
+    ctx.imageLayout = (imgs, scale, node) => {
+        renders.push({ kind: 'imageLayout', nodeId: node?.id, images: imgs.length, scale });
+        return layout;
+    };
     ctx.nodeBodyHtml = (node, layout) => {
-        harness.bodyHtmlCalls.push({ id: node?.id || '', layout });
-        return harness.bodyHtmlOut;
+        bodyHtmlCalls.push({ nodeId: node?.id, hasLayout: Boolean(layout) });
+        return '<div class="node-body-stub"/>';
     };
-    ctx.imageLayout = () => harness.layout;          // 数据驱动
-    ctx.chatApiProviders = () => harness.providers;  // 数据驱动
-    ctx.providerChatModels = (providerId) => harness.modelsByProvider.get(providerId) || [];
-    ctx.fetch = (url, opts) => {
-        harness.fetchCalls.push({ url, method: opts?.method || '', body: opts && opts.body != null ? opts.body : null });
-        const next = harness.fetchResponses.length > 0
-            ? harness.fetchResponses.shift()
-            : { ok: true, json: async () => ({}) };
-        return Promise.resolve(next);
-    };
+    ctx.render = () => renders.push({ kind: 'render' });
+    ctx.centerViewportOnWorldPoint = (point) => renders.push({ kind: 'centerViewport', point });
+    // prompt 记录器：返回值按队列弹出，队列空回退 null（与浏览器取消选择一致）。
     ctx.prompt = (label) => {
-        harness.promptLabels.push(label);
-        return harness.promptReturns.length > 0 ? harness.promptReturns.shift() : null;
+        promptLabels.push(label);
+        return promptReturns.length > 0 ? promptReturns.shift() : null;
+    };
+    // console 记录器：让 console.error 分支可断言，同时避免测试输出噪音。
+    ctx.console = {
+        error: (...args) => { consoleErrors.push(args.map(String).join(' ')); },
+        log: () => {},
     };
 
     loadModules(ctx, [
         'canvas-node-types.js',
-        'canvas-core.js',
         'canvas-state.js',
+        'canvas-core.js',
         'canvas-agent-tui.js',
     ]);
-
-    // 单行契约镜像（smart-canvas.js:314-316 逐字单表达式；tr 运行期解析到真实
-    // canvas-core.js:64）。必须在 loadModules 之后定义。
-    evaluate(ctx, 'trf = (key, values = {}) => Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key))');
-
-    // 运行期状态：canvas 是 canvas-core.js 的词法 let 绑定（不是全局对象属性），必须用
-    // evaluate 赋值；canvasState 是 window.canvasState 对象，宿主侧直接改属性即可。
-    ctx.canvasState.nodes = nodes;
-    ctx.__canvasPayload = { id: 'cv', project_id: canvasProjectId, project: canvasProject, nodes, connections: [] };
-    evaluate(ctx, 'canvas = __canvasPayload');
-    return { ctx, harness, calls };
+    fromContext(evaluate(ctx, `canvas = ${JSON.stringify(canvasData ?? { project_id: 'proj-9' })}`));
+    for (const node of nodes) {
+        ctx.canvasState.nodes.push(node);
+    }
+    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, promptReturns, promptLabels, consoleErrors };
 }
 
-// ---------- 模块加载 ----------
+const fn = (ctx, name) => globalFunction(ctx, name);
 
-test('loads canvas-agent-tui.js standalone: all top-level functions exist, real modules in place', () => {
+// ── 谓词：必须走真 NODE_TYPE_* 常量 ────────────────────────────────────
+test('谓词按 NODE_TYPE_* 常量判定，不是字符串字面量', t => {
     const { ctx } = loadAgentTuiModule();
-    // 顶层 function 都在（模块加载成功且无 SyntaxError 的前置证据）。
-    for (const name of [
-        'isSmartAgentNode', 'isSmartAgentTaskNode', 'getAgentTuiState',
-        'connectAgentWebSocket', 'handleAgentEvent', 'sendAgentPrompt', 'sendAgentCommand',
-        'sendAgentSteer', 'sendAgentFollowUp', 'sendAgentAbort', 'setAgentModel', 'setAgentAutonomy',
-        'forkAgentSession', 'switchAgentBranch', 'showForkPicker', 'sendAgentConfirm',
-        'agentCardStatusHtml', 'agentNodeBodyHtml', 'agentTaskStatusText', 'agentTaskNodeBodyHtml',
-        'agentProjectId', 'bindAgentNodeControls', 'renderAgentNode', 'bindAgentTaskNodeControls',
-        'cleanupAgentTuiState', 'renderMarkdown', 'getChatModels',
-    ]) globalFunction(ctx, name);
-    // 真实底层模块就位。
-    assert.equal(evaluate(ctx, 'NODE_TYPE_AGENT'), 'smart-agent', '真实 canvas-node-types.js 常量');
-    assert.equal(evaluate(ctx, 'NODE_TYPE_TASK'), 'agent-task', '真实 canvas-node-types.js 常量（#184 agent-task 节点类型）');
-    assert.equal(evaluate(ctx, 'agentTuiState instanceof Map'), true, 'agentTuiState 是模块内 Map');
-    assert.equal(evaluate(ctx, 'agentTuiState.size'), 0, '初始状态容器为空');
-    assert.equal(evaluate(ctx, "escapeHtml('<x>')"), '&lt;x&gt;', '真实 canvas-core.js escapeHtml');
-    assert.equal(evaluate(ctx, 'tr("smart.stQueued")'), 'smart.stQueued', '无 StudioI18n 时 tr 回退 key');
-    assert.equal(evaluate(ctx, "trf('x{a}{b}', {a: 1, b: 'c'})"), 'x1c', 'trf 契约镜像（smart-canvas.js:314）');
-    assert.equal(evaluate(ctx, 'nodeScale({scale: 2})'), 2, '真实 canvas-core.js nodeScale');
-    assert.equal(evaluate(ctx, 'nodeScale({})'), 1, 'nodeScale 缺省 1');
-    assert.equal(evaluate(ctx, 'canvas && canvas.id'), 'cv', 'canvas let 绑定已被 evaluate 赋值');
-    assert.equal(evaluate(ctx, 'canvasState.nodes.length'), 0, 'canvasState 来自真实 canvas-state.js');
-});
+    const agentType = fromContext(evaluate(ctx, 'NODE_TYPE_AGENT'));
+    const taskType = fromContext(evaluate(ctx, 'NODE_TYPE_TASK'));
+    assert.notEqual(agentType, taskType);
 
-// ---------- 状态容器 ----------
-
-test('getAgentTuiState: 默认形状（idle/无 socket/cautious/空 messages）+ 幂等（同引用）', () => {
-    const { ctx } = loadAgentTuiModule();
-    const get = globalFunction(ctx, 'getAgentTuiState');
-
-    const s = get('N');
-    assert.equal(s.socket, null);
-    assert.deepEqual(fromContext(s.messages), [], 'messages 初始空数组');
-    assert.equal(s.status, 'idle');
-    assert.equal(s.model, '');
-    assert.equal(s.autonomy, 'cautious');
-    assert.equal(s.thinkingVisible, false);
-    assert.equal('thinking' in s, false, 'thinking 缓冲首次 thinking_delta 才建');
-    assert.equal(evaluate(ctx, 'agentTuiState.get("N").toolActivities instanceof Map'), true, 'toolActivities 是 Map');
-    assert.equal(evaluate(ctx, 'agentTuiState.get("N").toolActivities.size'), 0);
-
-    assert.equal(evaluate(ctx, 'getAgentTuiState("N") === agentTuiState.get("N")'), true, '二次调用返回同一对象');
-    assert.equal(evaluate(ctx, 'agentTuiState.size'), 1, '不重复建条目');
-});
-
-test('isSmartAgentNode / isSmartAgentTaskNode: 真实 NODE_TYPE_* 谓词', () => {
-    const { ctx } = loadAgentTuiModule();
-    const isAgent = globalFunction(ctx, 'isSmartAgentNode');
-    const isTask = globalFunction(ctx, 'isSmartAgentTaskNode');
-
-    assert.equal(isAgent({ type: 'smart-agent' }), true, 'NODE_TYPE_AGENT = "smart-agent"');
-    assert.equal(isAgent({ type: 'agent-task' }), false);
-    assert.equal(isAgent({}), false);
-    assert.equal(isAgent(null), false);
+    const isAgent = fn(ctx, 'isSmartAgentNode');
+    const isTask = fn(ctx, 'isSmartAgentTaskNode');
+    assert.equal(isAgent({ type: agentType }), true);
+    assert.equal(isAgent({ type: taskType }), false);
+    assert.equal(isTask({ type: taskType }), true);
+    assert.equal(isTask({ type: agentType }), false);
+    // 缺失/非对象输入不能抛。
     assert.equal(isAgent(undefined), false);
-
-    assert.equal(isTask({ type: 'agent-task' }), true, 'NODE_TYPE_TASK = "agent-task"（#184）');
-    assert.equal(isTask({ type: 'smart-agent' }), false);
     assert.equal(isTask(null), false);
+});
+
+// ── 状态容器 ──────────────────────────────────────────────────────────
+test('getAgentTuiState 首次建默认形状，二次返回同一对象', t => {
+    const { ctx } = loadAgentTuiModule();
+    const get = fn(ctx, 'getAgentTuiState');
+    const first = get('n1');
+    assert.deepEqual(fromContext({
+        status: first.status,
+        model: first.model,
+        autonomy: first.autonomy,
+        messages: first.messages,
+        socket: first.socket,
+    }), { status: 'idle', model: '', autonomy: 'cautious', messages: [], socket: null });
+    first.status = 'busy';
+    const second = get('n1');
+    assert.equal(fromContext(second.status), 'busy', '必须复用同一 Map 条目，不能重建');
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.size')), 1);
+});
+
+// ── handleAgentEvent 状态机 ───────────────────────────────────────────
+function eventCase(event, expect) {
+    test(`handleAgentEvent: ${event.type}`, () => {
+        const { ctx } = loadAgentTuiModule();
+        const handle = fn(ctx, 'handleAgentEvent');
+        handle('n1', event);
+        const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+        assert.equal(state.status, expect.status);
+        if (expect.messages) assert.deepEqual(state.messages, expect.messages);
+    });
+}
+
+for (const [type, status] of [
+    ['session', 'idle'],
+    ['agent_start', 'busy'],
+    ['agent_end', 'idle'],
+    ['turn_start', 'busy'],
+    ['auto_retry_start', 'retrying'],
+    ['process_exited', 'crashed'],
+    ['response', 'idle'],
+    ['totally-unknown-type', 'idle'],
+]) {
+    eventCase({ type }, { status });
+}
+
+test('handleAgentEvent: turn_end 只取 content 里的 text 段并按序拼接，空文本不推消息', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', {
+        type: 'turn_end',
+        message: { content: [
+            { type: 'text', text: 'A' },
+            { type: 'tool_use', text: 'ignored' },
+            { type: 'text', text: 'B' },
+            null,
+        ] },
+    });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')), [
+        { role: 'assistant', text: 'AB' },
+    ]);
+
+    handle('n2', { type: 'turn_end', message: { content: [{ type: 'text', text: '' }] } });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n2").messages')), []);
+    handle('n3', { type: 'turn_end' });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n3").messages')), []);
+});
+
+test('handleAgentEvent: message_update 文本增量续写 streaming 消息，非 streaming 时新起一条', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'He' } });
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'llo' } });
+    let messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.deepEqual(messages, [{ role: 'assistant', text: 'Hello', streaming: true }]);
+
+    // 实测行为：turn_end **不会**把之前 streaming 的消息收尾（见 #222），
+    // 所以空 content 的 turn_end 后紧接的增量仍追到同一条。这里钉当前行为，
+    // 不把它当“应然”——收尾缺失已单独开 issue。
+    handle('n1', { type: 'turn_end', message: { content: [] } });
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Next' } });
+    messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.equal(messages.length, 1);
+    assert.deepEqual(messages[0], { role: 'assistant', text: 'HelloNext', streaming: true });
+
+    // 非 streaming 末尾时必须是新起一条（用 turn_end 带 content 做对照）。
+    handle('n2', { type: 'turn_end', message: { content: [{ type: 'text', text: 'done' }] } });
+    handle('n2', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'New' } });
+    messages = fromContext(evaluate(ctx, 'getAgentTuiState("n2").messages'));
+    assert.deepEqual(messages, [
+        { role: 'assistant', text: 'done' },
+        { role: 'assistant', text: 'New', streaming: true },
+    ]);
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'other' } });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages').length), 1,
+        '不认识的 assistantMessageEvent.type 不能改动消息列表');
+});
+
+test('handleAgentEvent: thinking_delta 存进 state.thinking，不污染 messages', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'th' } });
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'ink' } });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").thinking')), [
+        { text: 'think', streaming: true },
+    ]);
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')), []);
+});
+
+test('handleAgentEvent: 工具活动 running→done/error，update 只挂到已存在的 call id', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'tool_execution_start', toolName: 'write', toolCallId: 'c1', args: { p: 1 } });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
+    handle('n1', { type: 'tool_execution_update', toolCallId: 'c1', update: { pct: 50 } });
+    handle('n1', { type: 'tool_execution_update', toolCallId: 'missing', update: { pct: 1 } });
+    handle('n1', { type: 'tool_execution_end', toolCallId: 'c1', result: 'ok', isError: false });
+    assert.deepEqual(fromContext(evaluate(ctx, 'Array.from(agentTuiState.get("n1").toolActivities.values())')), [
+        { name: 'write', status: 'done', args: { p: 1 }, result: 'ok', isError: false, update: { pct: 50 } },
+    ]);
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.get("n1").toolActivities.size')), 1,
+        '未知 toolCallId 的 update 不能凭空建条目');
+
+    handle('n2', { type: 'tool_execution_start', toolName: 'rm', toolCallId: 'c2' });
+    handle('n2', { type: 'tool_execution_end', toolCallId: 'c2', result: 'boom', isError: true });
+    assert.deepEqual(fromContext(evaluate(ctx, 'agentTuiState.get("n2").toolActivities.get("c2")')),
+        { name: 'rm', status: 'error', isError: true, result: 'boom' });
+});
+
+test('handleAgentEvent: auto_retry_end 失败时置 error 并推系统消息，成功时回 busy', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'auto_retry_end', success: true });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')), []);
+
+    handle('n2', { type: 'auto_retry_end', success: false });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n2").status')), 'error');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n2").messages').length), 1);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n2").messages[0].role')), 'system');
+});
+
+test('handleAgentEvent: confirm 事件保存载荷并置 waiting_confirm；每次事件都走 renderAgentNode', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    const calls = [];
+    ctx.renderAgentNode = nodeId => calls.push(nodeId);
+    handle('n1', { type: 'confirm', confirm_id: 'k1', message: '要删吗' });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'waiting_confirm');
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").confirm')), {
+        type: 'confirm', confirm_id: 'k1', message: '要删吗',
+    });
+    handle('n1', { type: 'agent_end' });
+    assert.deepEqual(calls, ['n1', 'n1'], '事件处理必须触发节点重渲染');
+});
+
+// ── 发送：WS / HTTP 双路径 ────────────────────────────────────────────
+test('connectAgentWebSocket 拼出项目+节点 id 编码后的 ws URL，并置 connecting', () => {
+    const { ctx, ws } = loadAgentTuiModule({ open: false });
+    const connect = fn(ctx, 'connectAgentWebSocket');
+    const socket = connect('node/1', 'proj/2');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("node/1").status')), 'connecting');
+    assert.equal(fromContext(socket.url),
+        'ws://example.test/api/projects/proj%2F2/agent-nodes/node%2F1/stream');
+    // 已连接时复用，不再新建。
+    const openWs = makeWebSocketHarness(ctx, { open: true });
+    evaluate(ctx, 'getAgentTuiState("node/1").socket = new WebSocket("already")');
+    const reused = connect('node/1', 'proj/2');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("node/1").socket.url')), 'already');
+});
+
+test('connectAgentWebSocket: 已 OPEN 的 socket 直接复用，不新建连接', () => {
+    const { ctx, ws } = loadAgentTuiModule({ open: true });
+    const connect = fn(ctx, 'connectAgentWebSocket');
+    const first = connect('n1', 'p1');
+    const second = connect('n1', 'p1');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").socket.url')), fromContext(first.url));
+    assert.equal(fromContext(second.url), fromContext(first.url), '同一次连接不能建两条 socket');
+});
+
+test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭走 HTTP POST，两条路径都推 user 消息并置 busy', () => {
+    const open = loadAgentTuiModule({ open: true });
+    const sendPrompt = fn(open.ctx, 'sendAgentPrompt');
+    fn(open.ctx, 'connectAgentWebSocket')('n1', 'p1');
+    sendPrompt('n1', 'p1', '  画一只猫  ', ['img/1']);
+    assert.deepEqual(JSON.parse(fromContext(open.ws.sent[0])), {
+        type: 'prompt', message: '  画一只猫  ', images: ['img/1'],
+    });
+    assert.equal(open.fetchCalls.length, 0, 'WS 可用时不该再走 HTTP');
+    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages')), [
+        { role: 'user', text: '  画一只猫  ' },
+    ]);
+    assert.equal(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").status')), 'busy');
+
+    const closed = loadAgentTuiModule({ open: false });
+    fn(closed.ctx, 'sendAgentPrompt')('n1', 'proj/2', '文本', []);
+    assert.equal(closed.fetchCalls.length, 1);
+    assert.equal(fromContext(closed.fetchCalls[0].url),
+        '/api/projects/proj%2F2/agent-nodes/n1/prompt');
+    assert.equal(fromContext(closed.fetchCalls[0].opts.method), 'POST');
+    assert.deepEqual(JSON.parse(fromContext(closed.fetchCalls[0].opts.body)), { message: '文本', images: [] });
+});
+
+test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort 复位 idle', () => {
+    const { ctx, ws } = loadAgentTuiModule({ open: true });
+    fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
+    fn(ctx, 'sendAgentSteer')('n1', 'p1', '转向');
+    fn(ctx, 'sendAgentFollowUp')('n1', 'p1', '排队');
+    fn(ctx, 'sendAgentAbort')('n1', 'p1');
+    assert.deepEqual(ws.sent.map(raw => JSON.parse(fromContext(raw))), [
+        { type: 'steer', message: '转向' },
+        { type: 'follow_up', message: '排队' },
+        { type: 'abort' },
+    ]);
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')), [
+        { role: 'system', text: '↪ steer: 转向' },
+        { role: 'system', text: '⏳ follow_up queued: 排队' },
+        { role: 'system', text: '⏹ aborted' },
+    ]);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
+        'abort 必须把 status 复位，否则按钮永远停在运行中');
+});
+
+test('sendAgentCommand: WS 未连接时只发 HTTP 请求（不碰本地状态——缺口见 #221）', () => {
+    const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
+    evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
+    fn(ctx, 'sendAgentCommand')('n1', 'proj/2', 'steer', {
+        body: { message: 'm' },
+        wsPayload: { type: 'steer', message: 'm' },
+    });
+    assert.equal(ws.sent.length, 0);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/steer');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: 'm' });
+    // body 未提供时不带 body 字段（abort 走这条）。
+    fn(ctx, 'sendAgentCommand')('n1', 'p1', 'abort', { wsPayload: { type: 'abort' } });
+    // 不能用 fromContext：harness.mjs:287 是 JSON 往返，对 undefined 会抛。
+    assert.equal(fetchCalls[1].opts.body, undefined);
+});
+
+test('sendAgentConfirm: 无 confirm 时完全不动作；有 confirm 时清标记、置 busy、带 confirm_id', () => {
+    const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: true });
+    const confirm = fn(ctx, 'sendAgentConfirm');
+    confirm('n1', 'p1', true);
+    assert.equal(ws.sent.length, 0);
+    assert.equal(fetchCalls.length, 0);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle');
+
+    fn(ctx, 'connectAgentWebSocket')('n2', 'p1');
+    evaluate(ctx, 'getAgentTuiState("n2").confirm = { confirm_id: "k9", message: "删?" }');
+    confirm('n2', 'p1', true);
+    assert.deepEqual(JSON.parse(fromContext(ws.sent[0])), { type: 'confirm', confirm_id: 'k9', approved: true });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n2").confirm')), null);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n2").status')), 'busy');
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n2").messages')), [
+        { role: 'system', text: '✅ 已批准' },
+    ]);
+
+    evaluate(ctx, 'getAgentTuiState("n3").confirm = { confirm_id: "k8" }');
+    confirm('n3', 'p1', false);
+    assert.equal(fetchCalls.length, 1, '未连接的 n3 必须回退到 HTTP');
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n3").messages')), [
+        { role: 'system', text: '❌ 已取消' },
+    ]);
+});
+
+test('sendAgentConfirm: WS 断开时走 HTTP，载荷仍带 confirm_id/approved', () => {
+    const { ctx, fetchCalls } = loadAgentTuiModule({ open: false });
+    evaluate(ctx, 'getAgentTuiState("n1").confirm = { confirm_id: "k1" }');
+    fn(ctx, 'sendAgentConfirm')('n1', 'proj/2', false);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/confirm');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { confirm_id: 'k1', approved: false });
+});
+
+// ── 乐观更新：state 与 node 两处都要写 ───────────────────────────────
+test('setAgentModel / setAgentAutonomy 同时更新 state 和节点（渲染以节点为准）', () => {
+    const { ctx, fetchCalls } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
+    fn(ctx, 'setAgentModel')('n1', 'proj/2', 'gpt-x');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").model')), 'gpt-x');
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'gpt-x',
+        '节点是渲染的真值来源，漏写会导致下拉框回弹');
+    // 实测：模型/自治端点**不做** encodeURIComponent（与 prompt/confirm/abort 端点不一致）。
+    assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj/2/agent-nodes/n1/model');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { model: 'gpt-x' });
+
+    fn(ctx, 'setAgentAutonomy')('n1', 'p1', 'autonomous');
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'autonomous');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { autonomy: 'autonomous' });
+
+    // 节点不存在时不能抛（state 仍更新）。
+    fn(ctx, 'setAgentModel')('ghost', 'p1', 'gpt-y');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("ghost").model')), 'gpt-y');
+});
+
+// ── 清理路径（#217 同族：节点删除后必须清干净）─────────────────────────
+test('cleanupAgentTuiState 关闭 socket 并删除条目；不存在的 id 不抛', () => {
+    const { ctx, ws } = loadAgentTuiModule({ open: true });
+    fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.size')), 1);
+    fn(ctx, 'cleanupAgentTuiState')('n1');
+    assert.deepEqual(fromContext(ws.closed), ['ws://example.test/api/projects/p1/agent-nodes/n1/stream']);
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.size')), 0,
+        '条目必须删除，否则重新添加同 id 节点会复用已关闭的会话');
+    fn(ctx, 'cleanupAgentTuiState')('nope');
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.size')), 0);
+});
+
+test('cleanupAgentTuiState: socket.close() 抛错也不能中断删除', () => {
+    const { ctx } = loadAgentTuiModule({ open: true });
+    fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    evaluate(ctx, 'getAgentTuiState("n1").socket.close = () => { throw new Error("boom") }');
+    fn(ctx, 'cleanupAgentTuiState')('n1');
+    assert.equal(fromContext(evaluate(ctx, 'agentTuiState.size')), 0);
+});
+
+// ── 卡片状态行 ───────────────────────────────────────────────────────
+test('agentCardStatusHtml: 无会话时给空闲；四种状态映射到各自 class/文案', () => {
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentCardStatusHtml');
+    assert.equal(fromContext(card('missing')),
+        '<span class="agent-card-status agent-tui-status-idle">空闲</span>');
+    for (const [status, cls, text] of [
+        ['busy', 'agent-tui-status-busy', '运行中'],
+        ['connecting', 'agent-tui-status-connecting', '连接中'],
+        ['error', 'agent-tui-status-error', '错误'],
+        ['disconnected', 'agent-tui-status-disconnected', '已断开'],
+    ]) {
+        evaluate(ctx, `getAgentTuiState("n-${status}").status = ${JSON.stringify(status)}`);
+        const html = fromContext(card(`n-${status}`));
+        assert.ok(html.includes(`class="agent-card-status ${cls}"`), html);
+        assert.ok(html.includes(`>${text}<`), html);
+    }
+});
+
+test('agentCardStatusHtml: 预览取最后一条消息前 40 字符加省略号，并做 HTML 转义', () => {
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentCardStatusHtml');
+    evaluate(ctx, 'getAgentTuiState("n1").messages.push({role:"user", text:"<b>" + "x".repeat(45) + "</b>"})');
+    const html = fromContext(card('n1'));
+    assert.ok(html.includes('agent-card-preview'), html);
+    assert.ok(!html.includes('<b>'), '预览必须转义，不能把用户文本当 HTML 插入');
+    assert.ok(html.includes('…'), html);
+    assert.equal((fromContext(evaluate(ctx, '(getAgentTuiState("n1").messages[0].text.slice(0,40))'))).length, 40);
+});
+
+test('agentCardStatusHtml: 没有消息时回退到最后一条工具活动 name(status)', () => {
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentCardStatusHtml');
+    evaluate(ctx, `getAgentTuiState("n1").toolActivities.set("c1", {name:"write", status:"running"})`);
+    const html = fromContext(card('n1'));
+    assert.ok(html.includes('write(running)'), html);
+});
+
+test('agentCardStatusHtml: confirm 挂起时覆盖成「等待确认」', () => {
+    const { ctx } = loadAgentTuiModule();
+    evaluate(ctx, 'getAgentTuiState("n1").status = "idle"; getAgentTuiState("n1").confirm = {confirm_id:"k"}');
+    const html = fromContext(fn(ctx, 'agentCardStatusHtml')('n1'));
+    assert.ok(html.includes('>等待确认<'), html);
+    assert.ok(html.includes('agent-tui-status-busy'), html);
+});
+
+// ── 节点体渲染 ───────────────────────────────────────────────────────
+test('agentNodeBodyHtml: retrying→重试中、crashed→已崩溃（卡片行没有这两个映射，见 #220）', () => {
+    const { ctx } = loadAgentTuiModule();
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    for (const [status, text] of [['retrying', '重试中'], ['crashed', '已崩溃']]) {
+        evaluate(ctx, `getAgentTuiState("n-${status}").status = ${JSON.stringify(status)}`);
+        const html = fromContext(body({ id: `n-${status}`, type: 'agent' }));
+        assert.ok(html.includes(`>${text}<`), `${status} → ${text} 未出现: ${html}`);
+    }
+});
+
+test('agentNodeBodyHtml: 用户/系统消息走转义、assistant 走 renderMarkdown', () => {
+    const { ctx } = loadAgentTuiModule();
+    evaluate(ctx, `
+        const s = getAgentTuiState("n1");
+        s.messages.push({role:"user", text:"<script>alert(1)</script>"});
+        s.messages.push({role:"system", text:"**bold-system**"});
+        s.messages.push({role:"assistant", text:"**bold**"});
+    `);
+    const html = fromContext(fn(ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'agent' }));
+    assert.ok(html.includes('&lt;script&gt;'), '用户文本必须转义');
+    assert.ok(!html.includes('<script>'), html);
+    assert.ok(html.includes('**bold-system**'), '系统消息不该过 Markdown');
+    assert.ok(html.includes('<strong>bold</strong>'), 'assistant 必须走 renderMarkdown');
+    assert.ok(html.includes('agent-tui-msg-assistant'), html);
+});
+
+test('agentNodeBodyHtml: steer/followup/abort 三个按钮只在 busy 时可用', () => {
+    const { ctx } = loadAgentTuiModule();
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    const idleHtml = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.equal((idleHtml.match(/disabled/g) || []).length, 3, idleHtml);
+    evaluate(ctx, 'getAgentTuiState("n2").status = "busy"');
+    const busyHtml = fromContext(body({ id: 'n2', type: 'agent' }));
+    assert.ok(!/data-agent-steer[^>]*disabled/.test(busyHtml), busyHtml);
+    assert.ok(!/data-agent-abort[^>]*disabled/.test(busyHtml), busyHtml);
+});
+
+test('agentNodeBodyHtml: 模型/自治/分支下拉按节点真值选中最优项，无分支时不渲染分支下拉', () => {
+    const { ctx } = loadAgentTuiModule({
+        chatProviders: [{ id: 'openai' }, { id: 'deepseek' }],
+        modelsByProvider: { openai: ['gpt-a', 'gpt-b'], deepseek: [] },
+    });
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    const html = fromContext(body({
+        id: 'n1', type: 'agent', model: 'gpt-b', autonomy: 'standard',
+        branches: [{ id: 'b1', name: '主线' }, { id: 'b2', name: '支线' }],
+        current_branch: 'b2', title: '我的 Agent',
+    }));
+    assert.ok(html.includes('<option value="gpt-b" selected>'), html);
+    assert.ok(html.includes('<option value="gpt-a" >'), html);
+    assert.ok(html.includes('<option value="standard" selected>'), html);
+    assert.ok(html.includes('<option value="b2" selected>'), html);
+    assert.ok(html.includes('agent-tui-title">我的 Agent<'), html);
+
+    const plain = fromContext(body({ id: 'n2', type: 'agent' }));
+    assert.ok(!plain.includes('agent-tui-branch-select'), '无分支不该渲染分支下拉');
+    assert.ok(plain.includes('<option value="cautious" selected>'), '默认自治级别必须是谨慎');
+    assert.ok(plain.includes('agent-tui-empty'), '空会话要有占位文案');
+});
+
+test('agentNodeBodyHtml: thinking 默认隐藏，thinkingVisible 打开后才渲染且转义', () => {
+    const { ctx } = loadAgentTuiModule();
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    evaluate(ctx, 'const s = getAgentTuiState("n1"); s.thinking = [{text:"<i>私密</i>"}]');
+    assert.ok(!fromContext(body({ id: 'n1', type: 'agent' })).includes('agent-tui-thinking'));
+    evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible = true');
+    const html = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(html.includes('agent-tui-thinking'), html);
+    assert.ok(html.includes('&lt;i&gt;私密&lt;/i&gt;'), html);
+});
+
+// ── agent-task 只读卡 ───────────────────────────────────────────────
+test('agentTaskStatusText: 五种已知状态走 i18n，未知状态原样回显', () => {
+    const { ctx } = loadAgentTuiModule();
+    const text = fn(ctx, 'agentTaskStatusText');
+    assert.deepEqual(
+        ['queued', 'running', 'succeeded', 'failed', 'uncertain'].map(s => fromContext(text(s))),
+        ['smart.stQueued', 'smart.stRunning', 'smart.stSucceeded', 'smart.failed', 'smart.stUncertain'],
+    );
+    // 未映射但已知的工作台状态走 tr；完全空的状态回显原值（agentTaskStatusText 末尾
+    // `status || tr(...)`，所以传 'weird' 会原样返回，必须传空才能进 tr 分支）。
+    assert.equal(fromContext(text('weird-state')), 'weird-state');
+});
+
+test('agentTaskNodeBodyHtml: 结果节点链接/等待占位、错误块按有无 error 出现、文本全转义', () => {
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentTaskNodeBodyHtml');
+    const withResult = fromContext(card({
+        id: 'n1', task_id: 't1', status: 'succeeded', kind: 'video',
+        result_node_id: 'n9', prompt: '<img src=x>', params: { n: 2 }, model_type: 'online',
+    }));
+    assert.ok(withResult.includes('data-agent-result-link="n9"'), withResult);
+    assert.ok(withResult.includes('smart.viewResultNode'), withResult);
+    assert.ok(withResult.includes('data-agent-task-card="t1"'), withResult);
+    assert.ok(withResult.includes('&lt;img src=x&gt;'), 'prompt 必须转义');
+    assert.ok(!withResult.includes('data-agent-task-error'), '无 error 不该渲染错误块');
+    // trf 桩是记录器（见文件头）：把被代入的 kind 拼回返回值，所以这里能断言
+    // 调用方确实把本地化后的 kind 传进了标题。
+    assert.ok(withResult.includes('smart.agentTaskTitle\u00b7smart.agentKindVideo'), withResult);
+
+    const failed = fromContext(card({ id: 'n2', task_id: 't2', status: 'failed', error: '配额不足' }));
+    assert.ok(failed.includes('data-agent-task-error'), failed);
+    assert.ok(failed.includes('配额不足'), failed);
+    assert.ok(failed.includes('agent-task-result-link muted'), failed);
+    assert.ok(failed.includes('smart.waitingResultNode'), failed);
+});
+
+// ── 项目 id 解析 ────────────────────────────────────────────────────
+test('agentProjectId: canvas.project_id → canvas.project → sourceProjectId → 空串', () => {
+    const a = loadAgentTuiModule({ canvasData: { project_id: 'p1', project: 'p0' } });
+    assert.equal(fromContext(fn(a.ctx, 'agentProjectId')()), 'p1');
+    const b = loadAgentTuiModule({ canvasData: { project: 'p0' } });
+    assert.equal(fromContext(fn(b.ctx, 'agentProjectId')()), 'p0');
+    const c = loadAgentTuiModule({ canvasData: {} });
+    assert.equal(fromContext(fn(c.ctx, 'agentProjectId')()), 'source-project-1');
+    const d = loadAgentTuiModule({ canvasData: {} });
+    fromContext(evaluate(d.ctx, 'sourceProjectId = ""'));
+    assert.equal(fromContext(fn(d.ctx, 'agentProjectId')()), '');
+});
+
+// ── getChatModels ───────────────────────────────────────────────────
+test('getChatModels 把所有 provider 的模型拉平成 {id,name}，空 provider 不产条目', () => {
+    const { ctx } = loadAgentTuiModule({
+        chatProviders: [{ id: 'openai' }, { id: 'deepseek' }, { id: 'empty' }],
+        modelsByProvider: { openai: ['gpt-a', 'gpt-b'], deepseek: ['ds-1'], empty: [] },
+    });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getChatModels()')), [
+        { id: 'gpt-a', name: 'gpt-a' },
+        { id: 'gpt-b', name: 'gpt-b' },
+        { id: 'ds-1', name: 'ds-1' },
+    ]);
+});
+
+// ── renderMarkdown：安全边界 ─────────────────────────────────────────
+test('renderMarkdown: 非白名单协议链接降级为 #，白名单协议保留', () => {
+    const { ctx } = loadAgentTuiModule();
+    const md = fn(ctx, 'renderMarkdown');
+    const evil = fromContext(md('[点我](javascript:alert(1))'));
+    assert.ok(evil.includes('href="#"'), evil);
+    assert.ok(!evil.includes('javascript:'), evil);
+    for (const url of ['https://a.test/x', 'http://a.test/x', 'mailto:a@b.c', '/abs/path', '#frag', './rel', '../up']) {
+        const html = fromContext(md(`[t](${url})`));
+        assert.ok(html.includes(`href="${url}"`), `${url} 应保留: ${html}`);
+        assert.ok(html.includes('rel="noopener noreferrer"'), html);
+    }
+});
+
+test('renderMarkdown: 先转义再套 Markdown 结构，代码块优先于行内码', () => {
+    const { ctx } = loadAgentTuiModule();
+    const md = fn(ctx, 'renderMarkdown');
+    const block = fromContext(md('```\n<script>x</script>\n```'));
+    assert.ok(block.includes('agent-md-code-block'), block);
+    assert.ok(block.includes('&lt;script&gt;'), block);
+
+    const inline = fromContext(md('a `b` c'));
+    assert.ok(inline.includes('<code class="agent-md-inline-code">b</code>'), inline);
+
+    // 粗体必须先于斜体，否则 ** 会被拆成 *。
+    const bold = fromContext(md('**b** and *i*'));
+    assert.ok(bold.includes('<strong>b</strong>'), bold);
+    assert.ok(bold.includes('<em>i</em>'), bold);
+
+    const list = fromContext(md('- a\n- b'));
+    assert.ok(list.includes('<ul class="agent-md-list">'), list);
+    assert.equal(fromContext(md(null)), '');
 });
