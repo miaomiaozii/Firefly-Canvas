@@ -1,7 +1,7 @@
 // #199 轨道 4：canvas-generation-cascade.js 独立单测 —— 级联/循环生成调度的纯计算与状态机切片。
 //
 // 实测规模：1294 行 / 60 个顶层 function；其中 48 个函数的自身函数体不碰 DOM/fetch/alert。
-// 本文件覆盖其中 45 个（窄而实）；4 个高桩成本编排函数与 runSmartCascade 家族判为
+// 本文件覆盖 49 个顶层 function（48 组用例，窄而实）；4 个高桩成本编排函数与 runSmartCascade 家族判为
 // 「单测盖不住」（见下方盖不住清单）。
 //
 // 加载面实测（harness.mjs HTML_SCRIPT_ORDER 前 13 个模块全部加载成功，hub smart-canvas.js
@@ -1150,4 +1150,223 @@ test('appendLoopOutputsToNode: 首次归档旧图进历史组，后续只追加�
     // 守卫
     assert.deepEqual(fromContext(f(null, [img('x')], 'image', { runState })), []);
     assert.deepEqual(fromContext(f(N, null, 'image', { runState })), []);
+});
+
+test('nextOutputPositionForSource: 无输出取源右侧列；有输出压到最底 +28；跨列/非图忽略', t => {
+    const { ctx, fn, D } = loadCascadeModule();
+    const f = fn('nextOutputPositionForSource');
+    const box = { w: 260, h: 180 };
+    const S = { id: 'S', type: 'smart-image' };
+    ctx.canvasState.nodes.push(S);
+    D.rects.set('S', { x: 0, y: 0, width: 200, height: 100 });
+    // 无连接 → {x: 0+200+80, y: 0}
+    assert.deepEqual(fromContext(f(S, box)), { x: 280, y: 0 });
+    // 同列输出（|250-280| < max(320, 260+120)=380）→ y 压到其底 +28
+    const O1 = { id: 'O1', type: 'smart-image' };
+    ctx.canvasState.nodes.push(O1);
+    D.rects.set('O1', { x: 250, y: 10, width: 200, height: 50 });
+    setCanvas(ctx, [{ from: 'S', to: 'O1', kind: 'input' }]);
+    assert.deepEqual(fromContext(f(S, box)), { x: 280, y: 88 }, '10+50+28');
+    // 同列第二个 → 取更低者
+    const O2 = { id: 'O2', type: 'smart-image' };
+    ctx.canvasState.nodes.push(O2);
+    D.rects.set('O2', { x: 260, y: 60, width: 200, height: 50 });
+    setCanvas(ctx, [
+        { from: 'S', to: 'O1', kind: 'input' }, { from: 'S', to: 'O2', kind: 'input' },
+    ]);
+    assert.deepEqual(fromContext(f(S, box)), { x: 280, y: 138 }, '60+50+28 更底');
+    // 跨列（|700-280| >= 380）与非图节点 → 均忽略
+    const O3 = { id: 'O3', type: 'smart-image' };
+    const P = { id: 'P', type: 'prompt' };
+    ctx.canvasState.nodes.push(O3, P);
+    D.rects.set('O3', { x: 700, y: 0, width: 200, height: 500 });
+    D.rects.set('P', { x: 250, y: 400, width: 100, height: 100 });
+    setCanvas(ctx, [
+        { from: 'S', to: 'O1', kind: 'input' }, { from: 'S', to: 'O2', kind: 'input' },
+        { from: 'S', to: 'O3', kind: 'flow' }, { from: 'S', to: 'P', kind: 'flow' },
+    ]);
+    assert.deepEqual(fromContext(f(S, box)), { x: 280, y: 138 }, '跨列/非图不参与压底');
+});
+
+test('createPendingOutputFromSource: 推入待生成节点 + 连接 + 选中态 + runMeta 透传/剥离', t => {
+    const { ctx, fn, D, calls } = loadCascadeModule();
+    const f = fn('createPendingOutputFromSource');
+    const S = { id: 'S', type: 'smart-image', x: 0, y: 0 };
+    ctx.canvasState.nodes.push(S);
+    D.rects.set('S', { x: 0, y: 0, width: 200, height: 100 });
+    D.pendingBox = { w: 300, h: 120 };
+    setCanvas(ctx, []);
+    const meta = { promptRefs: [{ url: 'http://img.example/m' }] };
+    const ret = fromContext(f(S, 4, meta));
+    assert.equal(ret.type, 'smart-image');
+    assert.equal(ret.title, 'Image');
+    assert.equal(ret.pending, 4);
+    assert.equal(ret._batchTotal, 4);
+    assert.equal(ret.x, 280, '无既有输出 → 源右侧列');
+    assert.equal(ret.y, 0);
+    assert.equal(ret.w, 300);
+    assert.equal(ret.h, 120);
+    assert.equal(ret.runTimerHidden, false);
+    assert.equal(typeof ret.runStartedAt, 'number');
+    assert.equal(ret._selectAfterRunId, 'S', '缺省选中源');
+    assert.ok(ctx.canvasState.nodes.some(n => n.id === ret.id), '节点已推入 canvasState');
+    assert.equal(ctx.canvasState.selectedId, 'S');
+    assert.deepEqual(fromContext(ctx.canvasState.selectedImage), { nodeId: '', index: -1 });
+    assert.deepEqual(fromContext(calls.pendingBoxSize.at(-1)),
+        [4, { sourceNode: { id: 'S', type: 'smart-image', x: 0, y: 0 },
+              refs: [{ url: 'http://img.example/m' }] }], 'pendingBox 由 pendingBoxSize 给出');
+    assert.deepEqual(calls.attachRunMeta.at(-1), [ret.id, meta], '未剥离 → 原 meta 透传');
+    const conns = connectionsOf(ctx);
+    assert.equal(conns.some(c => c.from === 'S' && c.to === ret.id && c.kind === 'input'), true,
+        '缺省 connectInputNode（input 边）');
+    // selectOutput + stripInputMeta + connectSource:false → flow 边 + 选中自身 + 剥离 meta
+    const stripped = { stripped: true };
+    const ret2 = fromContext(f(S, 0, stripped, { selectOutput: true, stripInputMeta: true, connectSource: false }));
+    assert.equal(ret2.pending, 1, 'expectedCount=0/NaN → 钳制为 1');
+    assert.equal(ret2._selectAfterRunId, ret2.id, 'selectOutput → 选中新节点');
+    assert.ok(calls.stripRunInputMeta.length >= 1, 'stripInputMeta → 走 stripRunInputMeta');
+    assert.deepEqual(calls.attachRunMeta.at(-1), [ret2.id, stripped], '剥离器为透传桩 → 原样记录');
+    assert.equal(calls.attachRunMeta.at(-1)[1].stripped, true);
+    const conns2 = connectionsOf(ctx);
+    assert.equal(conns2.some(c => c.from === 'S' && c.to === ret2.id && c.kind === 'flow'), true,
+        'connectSource:false → addConnection(flow)');
+});
+
+test('createLoopOutputSlot: 克隆源 + 清运行态字段 + 槽位几何 + flow 连接 + runPath 置 wait', t => {
+    const { ctx, fn, D, calls } = loadCascadeModule();
+    const f = fn('createLoopOutputSlot');
+    const R = {
+        id: 'R', type: 'smart-image', x: 0, y: 0,
+        w: 999, h: 999, historyFor: 'H', isHistoryGroup: false, sourceNodeId: 'X',
+        runAt: 1, runPrompt: 'p', runModelPrompt: 'mp', runPromptRefs: ['r'],
+        runInputRefs: ['ri'], runFinishedAt: 2, runElapsedMs: 3, blockedInputRefs: ['b'],
+        manualInputRefs: ['m'], inputNodeIds: ['u1'],
+    };
+    ctx.canvasState.nodes.push(R);
+    D.rects.set('R', { x: 0, y: 0, width: 260, height: 180 });
+    setCanvas(ctx, []);
+    const runPath = { states: {} };
+    const ret = fromContext(f(R, 2, 1, { pending: 3, slotIndex: 0, ctx: { runPath } }));
+    assert.equal(ret.id, R.id === ret.id ? undefined : ret.id); // id 已重铸（uid）
+    assert.notEqual(ret.id, 'R', '克隆后重铸 id');
+    assert.equal(ret.type, 'smart-image');
+    assert.equal(ret.title, 'Image 2');
+    assert.deepEqual(ret.images, []);
+    assert.equal(ret.pending, 3);
+    assert.equal(ret.running, true);
+    assert.equal(ret.queued, false, 'queued 缺省 → false');
+    assert.equal(typeof ret.runStartedAt, 'number', 'pending → 记 runStartedAt');
+    assert.equal(ret.runTimerHidden, false);
+    // 克隆源上的运行态字段全部清掉
+    for (const k of ['w', 'h', 'historyFor', 'isHistoryGroup', 'runAt', 'runPrompt',
+        'runModelPrompt', 'runPromptRefs', 'runInputRefs', 'runFinishedAt', 'runElapsedMs',
+        'blockedInputRefs', 'manualInputRefs']) {
+        assert.equal(ret[k], undefined, `清除 ${k}`);
+    }
+    assert.equal(ret.sourceNodeId, 'R', 'delete sourceNodeId 后被重设为 root.id（line 113）');
+    assert.deepEqual(ret.inputNodeIds, [], '清空 inputNodeIds（#85 注释）');
+    assert.equal(ret.loopSourceId, '', 'tagLoopOutputSlot 落位');
+    assert.equal(ret.loopRootId, 'R');
+    assert.equal(ret.loopRoundIndex, 2);
+    assert.equal(ret.loopSlotIndex, 0);
+    assert.equal(ret.x, 0 + 260 + 80, 'x = root.x + rect.width + 80');
+    assert.equal(ret.y, 0 + 1 * (180 + 28), 'y = root.y + roundOffset*(rect.height+28)，无既有槽位');
+    assert.ok(ctx.canvasState.nodes.some(n => n.id === ret.id), '推入 canvasState');
+    assert.equal(connectionsOf(ctx).some(c => c.from === 'R' && c.to === ret.id && c.kind === 'flow'), true,
+        'flow 连接 root → 槽位');
+    assert.equal(runPath.states['R->' + ret.id], 'wait', 'runPath.states 置 wait');
+    assert.ok(calls.cloneSmartNode.includes('R'), 'cloneSmartNode 记录器命中');
+    // 无 pending → pending 0 / running false / 无 runStartedAt
+    const ret2 = fromContext(f(R, 5, 0, {}));
+    assert.equal(ret2.pending, 0);
+    assert.equal(ret2.running, false);
+    assert.equal(ret2.runStartedAt, undefined);
+    assert.equal(ret2.loopRoundIndex, 5);
+    assert.equal(ret2.loopSlotIndex, 0, 'slotIndex 缺省回退 roundOffset');
+});
+
+test('promptDraftHtmlForNode: mention 标记直返；draft 缺失走 promptHtmlWithMentionTokens/escapeHtml 回退', t => {
+    const { ctx, fn, D, calls } = loadCascadeModule();
+    const f = fn('promptDraftHtmlForNode');
+    // 空节点 → 无 draft → promptHtmlWithMentionTokens('', []) 走 stub(undefined) → escapeHtml('')
+    assert.equal(f(null), '');
+    assert.deepEqual(fromContext(calls.promptHtmlWithMentionTokens.at(-1)), ['', []], '空节点也走一次 mention 重建');
+    calls.promptHtmlWithMentionTokens.length = 0;
+    // 已有 mention-image-token → 原样直返（不再走 mention 重建）
+    const withToken = '<span class="mention-image-token">x</span>hello';
+    assert.equal(f({ promptDraftHtml: withToken }), withToken);
+    assert.equal(calls.promptHtmlWithMentionTokens.length, 0, 'token 直返不触发 mention 重建');
+    calls.promptHtmlWithMentionTokens.length = 0;
+    // 无 token 的 draft → 用 promptDraftText||runPrompt 重建，桩返回非空则用之
+    D.promptHtml = 'REBUILT';
+    assert.equal(f({ promptDraftHtml: 'plain', promptDraftText: 'pt', runPromptRefs: ['r'] }), 'REBUILT');
+    assert.deepEqual(fromContext(calls.promptHtmlWithMentionTokens.at(-1)), ['pt', ['r']]);
+    // 重建为空 → 回退原 draft（draft 存在分支）
+    D.promptHtml = '';
+    assert.equal(f({ promptDraftHtml: 'plain', runPrompt: 'rp' }), 'plain');
+    assert.deepEqual(fromContext(calls.promptHtmlWithMentionTokens.at(-1)), ['rp', []]);
+    // 无 draft → mention 重建(prompt, refs)，再回退 escapeHtml
+    calls.promptHtmlWithMentionTokens.length = 0;
+    D.promptHtml = 'REBUILT';
+    assert.equal(f({ promptDraftText: 'a<b', runPromptRefs: ['r1'] }), 'REBUILT');
+    assert.deepEqual(fromContext(calls.promptHtmlWithMentionTokens.at(-1)), ['a<b', ['r1']]);
+    D.promptHtml = '';
+    assert.equal(f({ runPrompt: 'a<b' }), 'a&lt;b', '重建为空 → escapeHtml(runPrompt)');
+});
+
+test('selfReferenceImagesForNode: 只留有 url 的图（outputImagesForNode 桩 + consume 透传）', t => {
+    const { ctx, fn, D, calls } = loadCascadeModule();
+    const f = fn('selfReferenceImagesForNode');
+    const N = { id: 'N' };
+    D.outputImages.set('N', [{ url: 'http://a' }, { name: 'no-url' }, { url: '' }, null, undefined]);
+    assert.deepEqual(fromContext(f(N)), [{ url: 'http://a' }], 'url 过滤');
+    assert.deepEqual(fromContext(calls.outputImagesForNode.at(-1)), ['N', false, null],
+        'consume 默认 false；ctx 缺省取 canvasCore.smartLoopContext（未设 → undefined → JSON null）');
+    assert.deepEqual(fromContext(f(N, true)), [{ url: 'http://a' }]);
+    assert.deepEqual(fromContext(calls.outputImagesForNode.at(-1)), ['N', true, null], 'consume=true 透传');
+    // 无图 → 空数组
+    assert.deepEqual(fromContext(f({ id: 'EMPTY' })), []);
+});
+
+test('hasDownstreamImageNode: 下游有图 true；仅 prompt/无下游 false', t => {
+    const { ctx, fn, D } = loadCascadeModule();
+    const f = fn('hasDownstreamImageNode');
+    const S = { id: 'S', type: 'smart-image' };
+    const P = { id: 'P', type: 'prompt' };
+    ctx.canvasState.nodes.push(S, P);
+    setCanvas(ctx, [{ from: 'S', to: 'P', kind: 'flow' }]);
+    assert.equal(f(S), false, '下游只有 prompt → false');
+    assert.equal(f({ id: 'LONE', type: 'smart-image' }), false, '无下游 → false');
+    const I = { id: 'I', type: 'smart-image' };
+    ctx.canvasState.nodes.push(I);
+    setCanvas(ctx, [{ from: 'S', to: 'P', kind: 'flow' }, { from: 'S', to: 'I', kind: 'flow' }]);
+    assert.equal(f(S), true, '下游有图 → true');
+});
+
+test('appendOutputsToNode: kind|url 去重（对既有 + 批内）+ 标题矩阵 + markComplete + 右移；全重 → []', t => {
+    const { ctx, fn, D, calls } = loadCascadeModule();
+    const f = fn('appendOutputsToNode');
+    const N = { id: 'N', type: 'smart-image', x: 100, images: [] };
+    ctx.canvasState.nodes.push(N);
+    D.rects.set('N', { x: 100, y: 0, width: 200, height: 100 });
+    setCanvas(ctx, []);
+    assert.deepEqual(fromContext(f(N, [])), [], '空 additions → []');
+    assert.deepEqual(fromContext(f(null, [img(1)])), [], '空节点 → []');
+    N.images = [img('a')];
+    const next = fromContext(f(N, [img('a'), img('b'), img('b')]));
+    assert.deepEqual(next.map(i => i.name), ['b'], '与既有去重 + 批内去重');
+    assert.deepEqual(fromContext(N.images).map(i => i.name), ['a', 'b']);
+    assert.equal(N.outputKind, 'image');
+    assert.equal(N.title, 'Group', '2 图 → Group');
+    assert.deepEqual(fromContext(calls.markSmartNodeComplete.at(-1)), ['N', null, true]);
+    N.images = [img('c')];
+    assert.deepEqual(fromContext(f(N, [img('c')], 'image', { skipShift: true })), [], '全去重 → []，不再 mark');
+    assert.equal(calls.markSmartNodeComplete.length, 1, '全去重路径不调 markSmartNodeComplete');
+    N.images = [];
+    fromContext(f(N, [{ url: 'http://v1', kind: 'video' }, { url: 'http://v2', kind: 'video' }], 'video'));
+    assert.equal(N.outputKind, 'video');
+    assert.equal(N.title, 'Videos', '视频复数标题（kind 是第 3 参，缺省 image）');
+    N.images = [];
+    fromContext(f(N, [{ url: 'http://solo', kind: 'image' }], 'image'));
+    assert.equal(N.title, 'Image', '单图标题');
 });
