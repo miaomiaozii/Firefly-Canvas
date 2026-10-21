@@ -201,7 +201,7 @@ ADR 已判定不该写单测——**所以轨道 3 不能排在补测前面**。
 
 ### 轨道 4：按依赖面从小到大补测
 
-`canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成) → `canvas-generation-tasks.js`(#219，已完成) → `canvas-node-ops.js`(已完成) → `canvas-agent-tui.js`(已完成)。
+`canvas-undo.js`(29，已完成) → `canvas-core.js`(已完成) → `canvas-connections.js`(已完成) → `canvas-generation-tasks.js`(#219，已完成) → `canvas-node-ops.js`(已完成) → `canvas-agent-tui.js`(已完成) → `canvas-image-editor.js`(纯计算核心，已完成)。
 
 **轨道 1 完成后被解锁的下一块**：`canvas-generation-tasks.js` 现在独立外部自由名 = **22**，已经低于两个已判定「可测」的模块（`canvas-undo.js` 29 → 15 个手写桩、`canvas-connections.js` 28 → 15 个手写桩）。按本 ADR 的判据它现在进入可测范围，而它是 #197（刷新后恢复）与 #198（重放失败丢用户动作）两个真 bug 的所在地，当前无单测。
 
@@ -297,8 +297,60 @@ implementation, this would be a UI picker"）；fork / switch-branch / model / a
 6 个是 `harness.mjs` 已提供的浏览器全局、3 个是可直接加载真实模块的跨模块名——
 **手写函数桩 0 个**（`043ab0a`，18 个 `node:test` 用例）。它是全部画布模块里最适合单测的一个。
 
-**不做** `canvas-media-history.js`(210)：210 个名字的桩文件本身会变成「第二套假核心」，
-它自己需要维护，而假核心跟真核心行为不一致时**测试会骗人**。这才是真正的代价，不是做不到。
+#### 该块已完成（2026-10-21，#199 轨道 4）：`canvas-image-editor.js` —— 只测纯计算核心
+
+**这块的难点不是自由名，是渲染。** 自由面只有 22 名（全部未测模块里最小的），但模块真实规模是
+**2301 行 / 139 个顶层 function**（不是耦合报告里的 `89 / 39`——那是引用数/名字数，我一开始把它
+当行数写进 brief，导致第一个 worker 按「小模块」做，烧掉 300 分钟零提交）。
+脚本实测：**65 个顶层函数的自身函数体不碰 DOM/canvas**；真正的障碍是大量
+`document.getElementById` + canvas 2D context + `ImageData` + `getBoundingClientRect`。
+
+**因此本块主动限定范围，而不是去造假 DOM。** 给一个 2300 行的编辑器伪造 DOM + canvas 2D +
+`ImageData`，那份脚手架本身就是「第二套假核心」——跟下面 `canvas-media-history.js` 不做单测是
+同一个理由。渲染/DOM/像素路径写进「盖不住清单」，由浏览器 runner 兜。
+
+`tests/canvas_module_units/test-canvas-image-editor.mjs`（1239 行）：`node --test` →
+**tests 34 / pass 34 / fail 0 / skipped 0**；`tests.test_canvas_module_units` → **Ran 14 tests, OK**；
+全量 **`Ran 1194 tests in 519.533s, OK`**；门 `trial` → **`verdict: passed`, `final_exit_code: 0`,
+28 步全绿, 206.0s**。提交 `91ac16b`/`bdf081f`/`9e3576a`/`2e0ea51`/`df6c5d3`。
+
+测的是参数整形/钳位（`validOutpaintSize`、`withOutpaintDisplaySettings`、
+`stripOutpaintDisplaySettings`、`applyOutpaintSizeToSmartParams`、`clampCrop`/`clampOutpaint`/
+`fitCropRectToAspect`/`cropRatioFromPreset`/`clampAspectCropToBounds`/`resizeCropFromDrag`/
+`clampImageResizeScale`/`exceedsFourKStandard`/`textItemFont`）、宫格数学（`groupImageGridLayout`、
+`gridJoinAutoDims`/`NaturalSize`/`BaseCellSize`/`ItemDisplaySize`/`VisualOrder`/`DragTarget`、
+`gridSplitRects`、`gridLayoutFromRects`）、文本项与历史栈（`createEditTextItem`、`setBrushTool`、
+`pushEditDrawHistory` 的 `EDIT_DRAW_HISTORY_MAX = 40` 截断、undo/redo 栈转移）。
+其中 `groupImageGridLayout` 源码注释自陈「完美网格优先：整除且行数不超可见上限（8→4×2 / 2×4、
+6→3×2、9→3×3），避免 3×2+2 这类缺角布局」——**这条注释之前没有任何测试锁着**。
+
+**有效性证据**：4 处独立变异，每处只打红预期用例（红后回滚复绿）：评分向量去掉 `perfect` 项 →
+1 红（完美网格用例）；`gridJoinDragTarget` 的 `*0.55` 改成 `*0.99` → 1 红；
+`EDIT_DRAW_HISTORY_MAX` 40→41 → 1 红；`validOutpaintSize` 的 `w <= 0` 改成 `w < 0` → 2 红
+（null 门 + 下游）。
+
+**桩预算：`canvasCore.*` 等 hub 名字全是零逻辑记录器 → 复制产品逻辑个数 = 0，停止条件未命中。**
+`reducedAspectRatio` / `isApiLikeEngine` / `MEDIA_GROUP_MAX_VISIBLE_ROWS` / `imageForDisplay` /
+`mediaKindForItem` 定义在 hub `smart-canvas.js`（harness 加载不了 hub），所以用
+`(w,h) => \`R(${w},${h})\`` 这类记录器断言「确实调了它 + 传的是取整后的 w/h」，
+**不断言化简结果**；白名单正则 `/^\d+\s*:\s+\d+$/`（去空格）是模块自己的逻辑，直接断言
+`'4 : 3'` → `'4:3'`；`cloneSmartSettings` 在真模块 `canvas-core.js` 里，加载真模块拿。
+
+**顺带修了一个 harness 自己骗人的地方（正是本 ADR 要防的那类）**：`harness.mjs` 的
+`classList.toggle` 不支持 DOM 标准的 `force` 参数，产品代码 `toggle('primary', active)` 被静默
+当成单参翻转——假桩与真核心行为不一致。已按 DOM 语义补齐（`toggle(c)` 翻转、
+`toggle(c, force)` 强制设置），全套件回归绿。
+
+#### 不做 `canvas-media-history.js`（204 个跨模块自由标识符，实测）
+
+**口径对账（重要，两个数字不是矛盾）**：耦合报告行里的 `自由 51 / 34 名字` 是**可注入自由名**
+这个窄口径；210 这个老数字是**去重后由 hub 或其他 canvas 模块定义的自由标识符数**，
+今天实测为 **204**（同文件另测：去重自由标识符总面 734）——所以旧数字站得住，
+只是必须写清口径。本块的“不做”判断用的是 204 那个宽口径。
+它自己需要维护——**真正要付出的代价是一份 200 多个名字、需要跟人一起维护的桩文件，
+而且假核心跟真核心行为不一致时测试会骗人**（本块已经实际撞上一次：`harness.mjs` 的
+`classList.toggle` 不支持 `force` 参数，产品代码被静默当成单参翻转）。
+这才是真正的代价，不是做不到。
 
 ## 明确不做
 
