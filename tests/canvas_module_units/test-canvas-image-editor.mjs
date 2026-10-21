@@ -249,3 +249,188 @@ test('loads canvas-image-editor.js standalone: target functions + real modules i
     assert.equal(evaluate(ctx, "tr('smart.x')"), 'smart.x');
     assert.equal(evaluate(ctx, 'imageEditModal && imageEditModal.tagName'), 'DIV', '顶层 const imageEditModal 已绑定（加载前注册）');
 });
+
+// ---------- 扩图参数整形 ----------
+
+test('validOutpaintSize: null 门 + 比例白名单（\d+:\d+ 去空格保留，否则走 canvasCore.reducedAspectRatio）', () => {
+    const { ctx, D, calls } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'validOutpaintSize');
+
+    assert.equal(f(null), null, '无节点 → null');
+    assert.equal(f({}), null, '无 outpaintSize → null');
+    assert.equal(f({ outpaintSize: { width: 0, height: 800 } }), null, 'width<=0 → null');
+    assert.equal(f({ outpaintSize: { width: 800, height: -1 } }), null, 'height<=0 → null');
+
+    // 字符串尺寸 Number 化；无 aspectRatio → 走 reducedAspectRatio（断言「调了它 + 取整后的 w/h」，不断言化简结果）。
+    D.reducedRatio = '3:4';
+    assert.deepEqual(fromContext(f({ outpaintSize: { width: '1200', height: '1600' } })),
+        { width: 1200, height: 1600, aspectRatio: '3:4' });
+    assert.ok(calls.some(c => c[0] === 'reducedAspectRatio' && c[1] === 1200 && c[2] === 1600),
+        'reducedAspectRatio 收到取整后的 1200/1600（桩值 3:4 透传）');
+
+    // 白名单是模块自己的逻辑：带空格的 ' 4 : 5 ' → '4:5'，不再调 reducedAspectRatio。
+    D.reducedRatio = '9:9';
+    const before = calls.filter(c => c[0] === 'reducedAspectRatio').length;
+    assert.deepEqual(fromContext(f({ outpaintSize: { width: 1200, height: 1600, aspectRatio: ' 4 : 5 ' } })),
+        { width: 1200, height: 1600, aspectRatio: '4:5' });
+    assert.equal(calls.filter(c => c[0] === 'reducedAspectRatio').length, before, '白名单命中不调 reducedAspectRatio');
+
+    // 非比例字符串 + 小数尺寸 → 取整后走桩（1600.6 → 1601）。
+    D.reducedRatio = '3:4';
+    assert.deepEqual(fromContext(f({ outpaintSize: { width: 1200.4, height: 1600.6, aspectRatio: 'square' } })),
+        { width: 1200, height: 1601, aspectRatio: '3:4' });
+    assert.ok(calls.some(c => c[0] === 'reducedAspectRatio' && c[1] === 1200 && c[2] === 1601));
+});
+
+test('withOutpaintDisplaySettings: 无扩图尺寸返回原引用；有则 ratio:custom + customRatio + outpaintResolutionLocked（不设 resolution）+ 引擎分支', () => {
+    const { ctx, D } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'withOutpaintDisplaySettings');
+
+    const base = { provider: 'p', resolution: '2k', model: 'm' };
+    assert.equal(f({}, base), base, '无 outpaintSize → 原引用返回');
+
+    // api 类引擎：apiKind='image'，resolution 预设保持 '2k'（源码注释：扩图不设 resolution:custom）。
+    D.engine = 'api'; D.apiLike = true;
+    const node = { outpaintSize: { width: 1200, height: 900, aspectRatio: '4:3' } };
+    assert.deepEqual(fromContext(f(node, base)),
+        { provider: 'p', resolution: '2k', model: 'm',
+          ratio: 'custom', customRatio: '4:3', outpaintResolutionLocked: true, apiKind: 'image' });
+
+    // modelscope：ms 双字段，无 apiKind（apiLike 桩为 false）。
+    D.engine = 'modelscope'; D.apiLike = false;
+    assert.deepEqual(fromContext(f(node, base)),
+        { provider: 'p', resolution: '2k', model: 'm',
+          ratio: 'custom', customRatio: '4:3', outpaintResolutionLocked: true,
+          msRatio: 'custom', msCustomRatio: '4:3' });
+});
+
+test('stripOutpaintDisplaySettings: customSize 匹配重置 1k + w/h→1024 + ms 分支 + 真实 cloneSmartSettings 隔离', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'stripOutpaintDisplaySettings');
+    const node = { outpaintSize: { width: 1200, height: 900, aspectRatio: '4:3' } };
+
+    // 匹配重置 + outpaintResolutionLocked 删除 + 无关字段保留。
+    const base = { resolution: 'custom', customSize: '1200x900', ratio: '16:9',
+        width: 1200, height: 900, outpaintResolutionLocked: true, extra: 'keep' };
+    assert.deepEqual(fromContext(f(base, node)),
+        { resolution: '1k', ratio: '16:9', width: 1024, height: 1024,
+          customSize: '', customWidth: '', customHeight: '', extra: 'keep' });
+
+    // ms 分支。
+    assert.deepEqual(fromContext(f({ msResolution: 'custom', msCustomSize: '1200x900', msRatio: '3:4' }, node)),
+        { msResolution: '1k', msRatio: '3:4', msCustomSize: '', msCustomWidth: '', msCustomHeight: '' });
+
+    // 不匹配 → 原样（除 outpaintResolutionLocked）。
+    assert.deepEqual(fromContext(f({ resolution: 'custom', customSize: '800x600' }, node)),
+        { resolution: 'custom', customSize: '800x600' });
+    // w/h 只匹配一边 → 不重置。
+    assert.deepEqual(fromContext(f({ width: 1200, height: 600 }, node)), { width: 1200, height: 600 });
+    // node=null → 只删 outpaintResolutionLocked。
+    assert.deepEqual(fromContext(f({ resolution: 'custom', outpaintResolutionLocked: true }, null)),
+        { resolution: 'custom' });
+
+    // 真实 cloneSmartSettings：入参对象不被原地修改。
+    const orig = { resolution: 'custom', customSize: '1200x900', width: 1200, height: 900 };
+    f(orig, node);
+    assert.equal(orig.resolution, 'custom', '入参未被原地改');
+    assert.equal(orig.width, 1200);
+});
+
+test('applyOutpaintSizeToSmartParams: isSmartImageNode 门 + 白名单/桩双路 + 真实 clone 隔离 + activeSettingsSubject 写回', () => {
+    const { ctx, D, calls } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'applyOutpaintSizeToSmartParams');
+    evaluate(ctx, "outpaintAspectPreset = '4:3'");
+    D.apiLike = false;
+
+    // 门：无节点 → no-op。
+    const ghost = { id: 'g' };
+    D.currentEdit = { node: null, index: 0, image: null };
+    f(1200, 900);
+    assert.equal(ghost.outpaintSize, undefined, '无节点不改任何对象');
+
+    // 门：非图片节点 → no-op。
+    const prompt = { type: 'smart-prompt', id: 'n3' };
+    D.currentEdit = { node: prompt, index: 0, image: null };
+    f(1200, 900);
+    assert.equal(prompt.outpaintSize, undefined, '非图片节点不改 outpaintSize');
+
+    // 正常路径：outpaintSize 白名单比例 + runSettings 走真实 clone + withOutpaint。
+    const subject = { type: 'smart-image', id: 'n1' };
+    const origRun = { provider: 'p', resolution: '1k', model: 'm' };
+    subject.runSettings = origRun;
+    D.currentEdit = { node: subject, index: 0, image: {} };
+    D.subject = null;
+    const reducedBefore = calls.filter(c => c[0] === 'reducedAspectRatio').length;
+    f(1200, 900);
+    assert.deepEqual(fromContext(subject.outpaintSize), { width: 1200, height: 900, aspectRatio: '4:3' });
+    assert.deepEqual(fromContext(subject.runSettings),
+        { provider: 'p', resolution: '1k', model: 'm',
+          ratio: 'custom', customRatio: '4:3', outpaintResolutionLocked: true });
+    assert.equal(calls.filter(c => c[0] === 'reducedAspectRatio').length, reducedBefore, '白名单命中不走桩');
+    assert.equal(calls.filter(c => c[0] === 'renderDynamicParams').length, 0, '非活动 subject 不触发重渲染');
+    assert.equal(evaluate(ctx, 'settings.provider_id'), '', 'settings 未被写回');
+    assert.equal(origRun.resolution, '1k', '真实 cloneSmartSettings：原 runSettings 对象隔离');
+    assert.equal('ratio' in origRun, false, '原对象无新增字段');
+
+    // reducedAspectRatio 路径：预设 'free' + 小数入参 → 取整传桩。
+    evaluate(ctx, "outpaintAspectPreset = 'free'");
+    D.reducedRatio = '3:2';
+    const subject2 = { type: 'smart-image', id: 'n2', runSettings: {} };
+    D.currentEdit = { node: subject2, index: 0, image: {} };
+    f(1200.4, 899.6);
+    assert.deepEqual(fromContext(subject2.outpaintSize), { width: 1200, height: 900, aspectRatio: '3:2' });
+    assert.ok(calls.some(c => c[0] === 'reducedAspectRatio' && c[1] === 1200 && c[2] === 900));
+
+    // activeSettingsSubject 命中：settings 写回（桩值）+ renderDynamicParams。
+    evaluate(ctx, "outpaintAspectPreset = '4:3'");
+    const subject3 = { type: 'smart-image', id: 'n3', runSettings: {} };
+    D.currentEdit = { node: subject3, index: 0, image: {} };
+    D.subject = { id: 'n3' };
+    D.smartSettings = { provider: 'pp', ratio: 'custom' };
+    f(1024, 768);
+    assert.deepEqual(fromContext(evaluate(ctx, 'settings')), { provider: 'pp', ratio: 'custom' }, 'settings 被写回为 smartSettingsForNode 桩值');
+    assert.ok(calls.some(c => c[0] === 'renderDynamicParams'), '活动 subject → renderDynamicParams');
+
+    // modelscope 分支透传（withOutpaint 的 ms 字段）。
+    const subject4 = { type: 'smart-image', id: 'n4', runSettings: { res: '2k' } };
+    D.currentEdit = { node: subject4, index: 0, image: {} };
+    D.subject = null;
+    D.engine = 'modelscope'; D.apiLike = false;
+    f(1600, 1200);
+    const rs = fromContext(subject4.runSettings);
+    assert.equal(rs.msRatio, 'custom');
+    assert.equal(rs.msCustomRatio, '4:3');
+    assert.equal(rs.apiKind, undefined, '非 api 类引擎无 apiKind');
+    assert.equal(rs.res, '2k', '原有 runSettings 字段保留');
+
+    // 钉现状：width/height 缺失时 Math.max(1, …) 兜底 1（源码当前行为，非理想值）。
+    const subject5 = { type: 'smart-image', id: 'n5', runSettings: {} };
+    D.currentEdit = { node: subject5, index: 0, image: {} };
+    f('abc', 'xyz');
+    assert.deepEqual(fromContext(subject5.outpaintSize), { width: 1, height: 1, aspectRatio: '4:3' }, '钉现状：非法尺寸 → 1×1');
+});
+
+test('exceedsFourKStandard: nearestFourKSizeFor 桩值比较（null → false；任一边超出 → true）', () => {
+    const { ctx, D, calls } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'exceedsFourKStandard');
+
+    D.fourK = null;
+    assert.equal(f(99999, 99999), false, '无 4K 标准 → false');
+
+    D.fourK = { width: 3840, height: 2160 };
+    assert.equal(f(3840, 2160), false, '恰好等于标准 → false');
+    assert.equal(f(3841, 2160), true, '宽超出 → true');
+    assert.equal(f(3840, 2161), true, '高超出 → true');
+    assert.equal(f(100, 100), false);
+    assert.ok(calls.some(c => c[0] === 'nearestFourKSizeFor' && c[1] === 3841 && c[2] === 2160), '传原始 w/h 给桩');
+});
+
+test('textItemFont: size 钳制 10–120 + 默认 28 + 字符串 size', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'textItemFont');
+    assert.equal(f({ size: 28 }), '900 28px Arial, sans-serif');
+    assert.equal(f({ size: 5 }), '900 10px Arial, sans-serif', '下限 10');
+    assert.equal(f({ size: 500 }), '900 120px Arial, sans-serif', '上限 120');
+    assert.equal(f(null), '900 28px Arial, sans-serif', '默认 28');
+    assert.equal(f({ size: '32' }), '900 32px Arial, sans-serif', '字符串 size');
+});
