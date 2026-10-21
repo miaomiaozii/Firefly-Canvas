@@ -984,3 +984,256 @@ test('gridLayoutFromRects: type/grid-split + rows/cols = max(row|col)+1；空列
     assert.notEqual(empty.groupId, fromContext(f([])).groupId);
 });
 
+
+// ===== 组 D：文本项与历史栈（模块内状态；canvas 2D 用零逻辑记录器桩） =====
+
+test('editTextHasContent: 空白/缺省全 false，任一非空白 true（读模块级 editTextItems）', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'editTextHasContent');
+    evaluate(ctx, 'editTextItems = []');
+    assert.equal(f(), false);
+    evaluate(ctx, 'editTextItems = [{text: "   "}, {text: ""}, {}]');
+    assert.equal(f(), false, '空白/空串/无 text → false');
+    evaluate(ctx, 'editTextItems = [{text: "a b"}]');
+    assert.equal(f(), true);
+    evaluate(ctx, 'editTextItems = [{text: ""}, {text: "x"}]');
+    assert.equal(f(), true, '任一有内容 → true');
+    evaluate(ctx, 'editTextItems = [null]');
+    assert.equal(f(), false, 'null 项安全（item?.text）');
+});
+
+test('selectedEditTextItem: 按 editTextSelectedId 查 editTextItems；空/未知 → null', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'selectedEditTextItem');
+    const create = globalFunction(ctx, 'createEditTextItem');
+    const itemA = fromContext(create('A', { x: 0, y: 0 }));
+    const itemB = fromContext(create('B', { x: 1, y: 1 }));
+    evaluate(ctx, `editTextItems = [${JSON.stringify(itemA)}, ${JSON.stringify(itemB)}];`);
+
+    evaluate(ctx, 'editTextSelectedId = ""');
+    assert.equal(f(), null, '空 id → null');
+    evaluate(ctx, `editTextSelectedId = "${itemA.id}"`);
+    assert.deepEqual(fromContext(f()), itemA);
+    evaluate(ctx, `editTextSelectedId = "${itemB.id}"`);
+    assert.equal(fromContext(f()).text, 'B');
+    evaluate(ctx, 'editTextSelectedId = "nope"');
+    assert.equal(f(), null, '未知 id → null');
+});
+
+test('createEditTextItem: size=max(10,min(120,Number(preset.size)||brush*2))；默认文本/颜色', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'createEditTextItem');
+    harness.element('paintBrushSize', 'input').value = '20'; // → editTextSizeFromBrush()=40
+
+    const base = fromContext(f('Hello', { x: 5, y: 6 }));
+    assert.match(base.id, /^txt_/);
+    assert.equal(base.text, 'Hello');
+    assert.equal(base.x, 5);
+    assert.equal(base.y, 6);
+    assert.equal(base.color, '#33ff99', 'loader 注册的 paintBrushColor 值（brushColor() 读取）');
+    assert.equal(base.size, 40, 'brush 20 → 40');
+
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: 130 })).size, 120, '130 → 钳 120（钉现状：有 120 上限）');
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: '0.2' })).size, 10, 'truthy 0.2 → max(10, 0.2)');
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: -5 })).size, 10, '负数 → max(10, -5)');
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: 7 })).size, 10, '低于下限 → max(10, 7) = 10');
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: 50 })).size, 50, '区间内不钳');
+    assert.equal(fromContext(f('A', { x: 0, y: 0 }, { size: '0' })).size, 40, '0 falsy → 回退 brush 值');
+
+    assert.equal(fromContext(f('', { x: 1, y: 2 })).text, '双击编辑', '空文本 → defaultEditTextText（zh，StudioI18n 未注册）');
+    const num = fromContext(f('T', { x: '7', y: '8' }));
+    assert.equal(num.x, 7);
+    assert.equal(num.y, 8, '坐标 Number() 转换');
+    assert.equal(fromContext(f('T', {})).x, 0, 'point 缺字段 → 0');
+});
+
+test('setBrushTool: 白名单+缺省 free；primary/secondary 同步；text 保留 inline editor', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'setBrushTool');
+    const btns = ['free', 'rect', 'ellipse'].map((t) => {
+        const b = harness.makeElement('button');
+        b.dataset.brushTool = t;
+        return b;
+    });
+    harness.querySelectorAll('[data-brush-tool]', btns);
+    const primary = () => fromContext(btns.filter((b) => b.classList.contains('primary')).map((b) => b.dataset.brushTool));
+
+    f('rect');
+    assert.equal(evaluate(ctx, 'brushTool'), 'rect');
+    assert.deepEqual(primary(), ['rect'], 'rect primary，其余 secondary');
+
+    f('ellipse');
+    assert.deepEqual(primary(), ['ellipse']);
+
+    f('text');
+    assert.equal(evaluate(ctx, 'brushTool'), 'text');
+    assert.deepEqual(primary(), [], 'text 按钮未注册 → 无 primary（钉注册面）');
+
+    f('magic');
+    assert.equal(evaluate(ctx, 'brushTool'), 'free', '白名单外 → free（钉现状）');
+    assert.deepEqual(primary(), ['free']);
+
+    // inline editor：非 text 工具清除（含 el.remove()），text 工具保留（钉现状）。
+    const item = fromContext(globalFunction(ctx, 'createEditTextItem')('A', { x: 0, y: 0 }));
+    evaluate(ctx, `editTextItems = [${JSON.stringify(item)}];`);
+    evaluate(ctx, 'window.__editorStub = { removed: false, remove(){ this.removed = true; }, textContent: "A" };');
+    evaluate(ctx, `editTextInlineEditor = { itemId: "${item.id}", before: "A", el: window.__editorStub };`);
+
+    f('rect');
+    assert.equal(evaluate(ctx, 'editTextInlineEditor'), null, '非 text 工具清除 inline editor');
+    assert.equal(evaluate(ctx, 'window.__editorStub.removed'), true, 'editor.el.remove() 被调用');
+
+    evaluate(ctx, `editTextInlineEditor = { itemId: "${item.id}", before: "A", el: window.__editorStub };`);
+    f('text');
+    assert.notEqual(evaluate(ctx, 'editTextInlineEditor'), null, 'text 工具不清除 inline editor（钉现状）');
+});
+
+test('pushEditDrawHistory: MAX=40 截断（shift 丢最旧）+ 每次清 redo + 快照为拷贝', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'pushEditDrawHistory');
+    const canvas = harness.element('editDrawCanvas', 'canvas');
+    canvas.width = 10; canvas.height = 10;
+    let n = 0;
+    canvas.getContext = () => ({ getImageData: () => ({ n: n++ }), putImageData: () => {} });
+
+    for (let i = 0; i < 45; i++) f();
+    assert.equal(evaluate(ctx, 'editDrawUndoStack.length'), 40, '45 次 → 截 40（EDIT_DRAW_HISTORY_MAX）');
+    assert.equal(evaluate(ctx, 'editDrawRedoStack.length'), 0);
+    assert.equal(fromContext(evaluate(ctx, 'editDrawUndoStack[0]')).imageData.n, 5, '最旧 5 条被 shift 掉');
+    assert.equal(fromContext(evaluate(ctx, 'editDrawUndoStack[39]')).imageData.n, 44);
+
+    // 快照 textItems 是浅拷贝（{...item}）：之后改活值不影响快照。
+    const item = fromContext(globalFunction(ctx, 'createEditTextItem')('V', { x: 1, y: 1 }));
+    evaluate(ctx, `editTextItems = [${JSON.stringify(item)}];`);
+    f();
+    evaluate(ctx, 'editTextItems[0].text = "MUTATED"');
+    const snap = fromContext(evaluate(ctx, 'editDrawUndoStack[editDrawUndoStack.length - 1]'));
+    assert.equal(snap.textItems[0].text, 'V', '快照与活值隔离');
+    assert.equal(snap.textSelectedId, '');
+
+    // redo 清除语义：undo 产生 redo 后，新 push 清空 redo。
+    globalFunction(ctx, 'undoEditDrawing')();
+    assert.equal(evaluate(ctx, 'editDrawRedoStack.length'), 1);
+    f();
+    assert.equal(evaluate(ctx, 'editDrawRedoStack.length'), 0, '新 push 清空 redo');
+});
+
+test('undo/redoEditDrawing: 栈转移语义 + restore 回滚 labelCounter（0 不恢复，钉现状）', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const push = globalFunction(ctx, 'pushEditDrawHistory');
+    const undo = globalFunction(ctx, 'undoEditDrawing');
+    const redo = globalFunction(ctx, 'redoEditDrawing');
+    const canvas = harness.element('editDrawCanvas', 'canvas');
+    canvas.width = 10; canvas.height = 10;
+    let n = 0;
+    let lastPut = null;
+    canvas.getContext = () => ({
+        getImageData: () => ({ n: n++ }),
+        putImageData: (img) => { lastPut = img; },
+    });
+    const undoLen = () => evaluate(ctx, 'editDrawUndoStack.length');
+    const redoLen = () => evaluate(ctx, 'editDrawRedoStack.length');
+
+    undo();
+    assert.equal(undoLen(), 0, '空栈 undo no-op');
+    redo();
+    assert.equal(redoLen(), 0, '空栈 redo no-op');
+
+    push(); push(); push();
+    assert.equal(undoLen(), 3);
+    assert.equal(redoLen(), 0);
+
+    undo();
+    assert.equal(undoLen(), 2);
+    assert.equal(redoLen(), 1, 'undo：当前快照入 redo，弹 undo 顶');
+    assert.equal(lastPut.n, 2, 'restore undo 栈顶（第 3 条快照，imageData.n=2）');
+
+    undo();
+    assert.equal(undoLen(), 1);
+    assert.equal(redoLen(), 2);
+    assert.equal(lastPut.n, 1, 'undo 栈第 2 条（imageData.n=1）');
+
+    undo();
+    assert.equal(undoLen(), 0);
+    assert.equal(redoLen(), 3);
+    assert.equal(lastPut.n, 0, '恢复第 1 条快照（n=0）');
+
+    undo();
+    assert.equal(undoLen(), 0);
+    assert.equal(redoLen(), 3, 'undo 空栈 no-op（redo 不变）');
+    assert.equal(lastPut.n, 0, 'no-op 不 putImageData');
+
+    redo();
+    assert.equal(undoLen(), 1);
+    assert.equal(redoLen(), 2);
+    assert.equal(lastPut.n, 5, 'redo：当前快照入 undo，弹 redo 顶（n=5）');
+    redo();
+    assert.equal(undoLen(), 2);
+    assert.equal(redoLen(), 1);
+    assert.equal(lastPut.n, 4, '恢复第 4 条快照（n=4）');
+    redo();
+    assert.equal(undoLen(), 3);
+    assert.equal(redoLen(), 0);
+    assert.equal(lastPut.n, 3, '恢复第 3 条快照（n=3）');
+    redo();
+    assert.equal(undoLen(), 3, 'redo 空栈 no-op');
+    assert.equal(lastPut.n, 3, 'no-op 不 putImageData');
+
+    // labelCounter：快照非 0 时恢复；0 时不恢复（if(snapshot.labelCounter) 钉现状）。
+    evaluate(ctx, 'brushLabelCounter = 7');
+    push();
+    evaluate(ctx, 'brushLabelCounter = 1');
+    undo();
+    assert.equal(evaluate(ctx, 'brushLabelCounter'), 7, 'labelCounter 从快照恢复');
+
+    evaluate(ctx, 'brushLabelCounter = 0');
+    push();
+    evaluate(ctx, 'brushLabelCounter = 5');
+    undo();
+    assert.equal(evaluate(ctx, 'brushLabelCounter'), 5, '快照 0 为 falsy 不恢复（钉现状）');
+});
+
+test('resetEditDrawingHistory: 清栈/清文本/计数器归 1 + 历史按钮 disabled 同步', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const push = globalFunction(ctx, 'pushEditDrawHistory');
+    const undo = globalFunction(ctx, 'undoEditDrawing');
+    const reset = globalFunction(ctx, 'resetEditDrawingHistory');
+    const canvas = harness.element('editDrawCanvas', 'canvas');
+    canvas.width = 10; canvas.height = 10;
+    let n = 0;
+    canvas.getContext = () => ({ getImageData: () => ({ n: n++ }), putImageData: () => {} });
+
+    for (const id of ['maskUndoBtn', 'brushUndoBtn', 'maskRedoBtn', 'brushRedoBtn']) harness.element(id, 'button');
+    const btn = (id) => harness.element(id);
+
+    reset();
+    assert.equal(evaluate(ctx, 'editDrawUndoStack.length'), 0);
+    assert.equal(evaluate(ctx, 'editDrawRedoStack.length'), 0);
+    for (const id of ['maskUndoBtn', 'brushUndoBtn', 'maskRedoBtn', 'brushRedoBtn']) {
+        assert.equal(btn(id).disabled, true, `${id} 空栈 sync → disabled`);
+    }
+
+    push();
+    assert.equal(btn('maskUndoBtn').disabled, false, 'undo 有栈 → enabled');
+    assert.equal(btn('brushUndoBtn').disabled, false);
+    assert.equal(btn('brushRedoBtn').disabled, true, 'redo 仍空');
+
+    undo();
+    assert.equal(btn('maskRedoBtn').disabled, false, 'undo 后 redo 有栈 → enabled');
+
+    const item = fromContext(globalFunction(ctx, 'createEditTextItem')('Z', { x: 0, y: 0 }));
+    evaluate(ctx, `editTextItems = [${JSON.stringify(item)}];`);
+    evaluate(ctx, `editTextSelectedId = "${item.id}"`);
+    evaluate(ctx, 'brushLabelCounter = 9');
+
+    reset();
+    assert.equal(evaluate(ctx, 'editDrawUndoStack.length'), 0);
+    assert.equal(evaluate(ctx, 'editDrawRedoStack.length'), 0);
+    assert.equal(evaluate(ctx, 'editTextItems.length'), 0);
+    assert.equal(evaluate(ctx, 'editTextSelectedId'), '');
+    assert.equal(evaluate(ctx, 'brushLabelCounter'), 1);
+    for (const id of ['maskUndoBtn', 'brushUndoBtn', 'maskRedoBtn', 'brushRedoBtn']) {
+        assert.equal(btn(id).disabled, true, `${id} reset 后 disabled`);
+    }
+});
+

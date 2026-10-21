@@ -71,10 +71,12 @@ function makeElement(tag = 'div') {
             add: (...cs) => cs.forEach((c) => classes.add(String(c))),
             remove: (...cs) => cs.forEach((c) => classes.delete(String(c))),
             contains: (c) => classes.has(String(c)),
-            toggle: (c) => {
+            toggle: (c, force) => {
                 const s = String(c);
-                if (classes.has(s)) classes.delete(s); else classes.add(s);
-                return classes.has(s);
+                // DOM 语义：toggle(c) 翻转；toggle(c, force) 强制设置。
+                const on = force === undefined ? !classes.has(s) : Boolean(force);
+                if (on) classes.add(s); else classes.delete(s);
+                return on;
             },
             toString: () => [...classes].join(' '),
         },
