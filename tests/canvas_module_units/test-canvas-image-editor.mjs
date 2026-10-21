@@ -434,3 +434,343 @@ test('textItemFont: size 钳制 10–120 + 默认 28 + 字符串 size', () => {
     assert.equal(f(null), '900 28px Arial, sans-serif', '默认 28');
     assert.equal(f({ size: '32' }), '900 32px Arial, sans-serif', '字符串 size');
 });
+
+// ---------- 裁剪 / 扩图 / 缩放数学 ----------
+
+test('clampCrop: 无尺寸用 clientWidth/Height；x/y/w/h 双侧钳制（先收 w/h 再收 x/y）', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'clampCrop');
+    const read = () => fromContext(evaluate(ctx, 'cropState'));
+
+    evaluate(ctx, 'cropState = null');
+    f();
+    assert.equal(evaluate(ctx, 'cropState'), null, 'cropState null → no-op');
+
+    // 无 cropImageSize：越界左上角 → 收进 0。
+    evaluate(ctx, 'cropState = {x:-5, y:-5, w:100, h:50}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 100, h: 50 });
+
+    // 有 cropImageSize：右下越界 → x/y 收到 300-w / 200-h。
+    evaluate(ctx, 'cropImageSize = {w:300, h:200}; cropState = {x:250, y:150, w:100, h:50}');
+    f();
+    assert.deepEqual(read(), { x: 200, y: 150, w: 100, h: 50 });
+
+    // 框比画布大 → w/h 先被收小，x/y 再按新 w/h 收。
+    evaluate(ctx, 'cropState = {x:250, y:150, w:400, h:300}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 300, h: 200 });
+
+    // 最小 24（钉现状：不是 0）。
+    evaluate(ctx, 'cropState = {x:0, y:0, w:5, h:5}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 24, h: 24 });
+
+    // outpaint 模式 → 委托 clampOutpaint（框必须包住原图）。
+    evaluate(ctx, 'imageEditMode = "outpaint"; cropState = {x:0, y:0, w:100, h:50}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 300, h: 200 }, '委托 clampOutpaint：扩到包住 300×200 原图');
+});
+
+test('clampOutpaint: 框必须包住原图（w≥源宽, h≥源高, x∈[0,w-源宽], y∈[0,h-源高]）', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'clampOutpaint');
+    const read = () => fromContext(evaluate(ctx, 'cropState'));
+
+    evaluate(ctx, 'cropState = null');
+    f();
+    assert.equal(evaluate(ctx, 'cropState'), null, 'cropState null → no-op');
+
+    // 框小于原图 → 扩到原图尺寸，x/y 归 0。
+    evaluate(ctx, 'cropState = {x:-100, y:-50, w:80, h:30}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 300, h: 200 });
+
+    // 框大于原图且位置合法 → 原样。
+    evaluate(ctx, 'cropState = {x:100, y:50, w:500, h:400}');
+    f();
+    assert.deepEqual(read(), { x: 100, y: 50, w: 500, h: 400 });
+
+    // x/y 越出「包住原图」允许区 → 收到边界。
+    evaluate(ctx, 'cropState = {x:400, y:300, w:500, h:400}');
+    f();
+    assert.deepEqual(read(), { x: 200, y: 200, w: 500, h: 400 });
+
+    // 恰好等于原图 → 原样。
+    evaluate(ctx, 'cropState = {x:0, y:0, w:300, h:200}');
+    f();
+    assert.deepEqual(read(), { x: 0, y: 0, w: 300, h: 200 });
+});
+
+test('fitCropRectToAspect(ratio, sourceRect): min 24 + ratio fit + bounds + 中心取整 + clampCrop', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'fitCropRectToAspect');
+    const read = () => fromContext(evaluate(ctx, 'cropState'));
+
+    evaluate(ctx, 'cropState = {x:0, y:0, w:1, h:1}');
+
+    // rect 100×50, ratio 4/3：2 > 4/3 → w=50*4/3=66.67；中心用原 rect.w/h (100,65) → round → {67,40,67,50}。
+    f(4 / 3, { x: 50, y: 40, w: 100, h: 50 });
+    assert.deepEqual(read(), { x: 67, y: 40, w: 67, h: 50 }, '中心 (100,65) 保持；x=round(100-33.5)=67');
+
+    // rect 100×150：0.667 ≤ 4/3 → h=100*3/4=75；中心 (50,75) → y=round(75-37.5)=38。
+    f(4 / 3, { x: 0, y: 0, w: 100, h: 150 });
+    assert.deepEqual(read(), { x: 0, y: 38, w: 100, h: 75 });
+
+    // 越界：rect {200,150,200,100} ratio 1 → 中心 (300,200) → x=250,y=150 → clampCrop 收边。
+    f(1, { x: 200, y: 150, w: 200, h: 100 });
+    assert.deepEqual(read(), { x: 200, y: 100, w: 100, h: 100 }, 'clampCrop 收回界内');
+
+    // ratio 0（free）：w/h 各收到 bounds；中心 (250,250) → clamp 后 {0,0,300,200}。
+    f(0, { x: 0, y: 0, w: 500, h: 500 });
+    assert.deepEqual(read(), { x: 0, y: 0, w: 300, h: 200 });
+
+    // min 24：rect 5×5 free → 24×24；x/y=round(2.5-12)=-9 → 0。
+    f(0, { x: 0, y: 0, w: 5, h: 5 });
+    assert.deepEqual(read(), { x: 0, y: 0, w: 24, h: 24 });
+
+    // sourceRect null → 用 cropState（同第一例 rect）。
+    evaluate(ctx, 'cropState = {x:50, y:40, w:100, h:50}');
+    f(4 / 3);
+    assert.deepEqual(read(), { x: 67, y: 40, w: 67, h: 50 });
+});
+
+test('cropRatioFromPreset: "w:h" 解析；free/source/非法 → null（source = cropBounds 比例）', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'cropRatioFromPreset');
+    assert.equal(f('16:9'), 16 / 9);
+    assert.equal(f('1:1'), 1);
+    assert.equal(f('3:4'), 0.75);
+    assert.equal(f('source'), 1.5, 'cropBounds 300×200 → 300/200');
+    assert.equal(f('free'), null);
+    assert.equal(f(''), null);
+    assert.equal(f(null), null);
+    assert.equal(f('junk'), null, 'Number("junk")=NaN → null（钉现状）');
+    assert.equal(f('0:5'), null, 'parts[0]>0 门');
+});
+
+test('clampAspectCropToBounds(anchor, moving, ratio, handle): ratio fit + 按 handle 方向收边（纯函数，不写 cropState）', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'clampAspectCropToBounds');
+    evaluate(ctx, 'cropState = {x:9, y:9, w:9, h:9}');
+
+    // se: anchor (100,100) → moving (250,180), 4:3：150×80 → 1.875>4/3 → w=80*4/3；bounds 不生效。
+    assert.deepEqual(fromContext(f(100, 100, 250, 180, 4 / 3, 'se')),
+        { x: 100, y: 100, w: 80 * (4 / 3), h: 80 });
+
+    // nw: anchor (150,120) → moving (50,30), 1:1：100×90 → w=90 → x=150-90=60, y=120-90=30。
+    assert.deepEqual(fromContext(f(150, 120, 50, 30, 1, 'nw')), { x: 60, y: 30, w: 90, h: 90 });
+
+    // e: 宽被画布限制（250→300 只剩 50）→ 重 fit 4:3 → h=37.5。
+    assert.deepEqual(fromContext(f(250, 50, 350, 200, 4 / 3, 'e')), { x: 250, y: 50, w: 50, h: 37.5 });
+
+    // min 24：1px 拖拽 → 24×24。
+    assert.deepEqual(fromContext(f(100, 100, 101, 101, 1, 'se')), { x: 100, y: 100, w: 24, h: 24 });
+
+    // 纯函数：cropState 未被修改。
+    assert.deepEqual(fromContext(evaluate(ctx, 'cropState')), { x: 9, y: 9, w: 9, h: 9 });
+});
+
+test('resizeCropFromDrag(dx,dy): 读 cropDrag.start/mode——free（24 下限）/ e-w / n-s / corner→clampAspectCropToBounds', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'resizeCropFromDrag');
+    const read = () => fromContext(evaluate(ctx, 'cropState'));
+    const drag = (mode, x, y, w, h) => evaluate(ctx,
+        `cropState = {x:${x}, y:${y}, w:${w}, h:${h}}; cropDrag = {mode:"${mode}", sx:0, sy:0, start:{...cropState}}`);
+
+    // 无 cropDrag → no-op。
+    evaluate(ctx, 'cropState = {x:1, y:2, w:3, h:4}; cropDrag = null');
+    f(10, 10);
+    assert.deepEqual(read(), { x: 1, y: 2, w: 3, h: 4 });
+
+    // free（ratio 0）：handle "resize" 移右/下边；24 下限。
+    evaluate(ctx, 'cropAspectRatio = 0');
+    drag('resize', 50, 40, 100, 80);
+    f(50, 30);
+    assert.deepEqual(read(), { x: 50, y: 40, w: 150, h: 110 }, 'right=200, bottom=150 → w=150, h=110');
+    drag('resize', 50, 40, 100, 80);
+    f(-80, 0);
+    assert.deepEqual(read(), { x: 46, y: 40, w: 24, h: 80 }, 'left(50) > right-24(46) → x 钉 46, w=24');
+    drag('crop-w', 50, 40, 100, 80);
+    f(-30, 0);
+    assert.deepEqual(read(), { x: 20, y: 40, w: 130, h: 80 }, 'w handle：left += dx');
+
+    // ratio 4/3，e handle：width 150 被 maxW/maxH*ratio 钳制；x 钉左、y 中心（round）。
+    evaluate(ctx, 'cropAspectRatio = 4/3');
+    drag('e', 50, 40, 100, 75);
+    f(50, 0);
+    assert.deepEqual(read(), { x: 50, y: 21, w: 150, h: 113 }, 'y=round(77.5-56.25)=21, h=round(112.5)=113');
+    drag('w', 50, 40, 100, 75);
+    f(-50, 0);
+    assert.deepEqual(read(), { x: 0, y: 21, w: 150, h: 113 }, 'x = start.x+start.w-width = 0');
+    drag('s', 50, 40, 100, 75);
+    f(0, 25);
+    assert.deepEqual(read(), { x: 33, y: 40, w: 133, h: 100 }, 'h=100 → w=133.33→133；x=round(100-66.67)');
+
+    // corner se → clampAspectCropToBounds 路径。
+    drag('se', 50, 40, 100, 75);
+    f(50, 25);
+    assert.deepEqual(read(), { x: 50, y: 40, w: 133, h: 100 });
+});
+
+test('resizeOutpaintFromDrag(dx,dy): 读 cropDrag.start/mode——free ×2 居中回写 / 边拖 / 预设比例走真实 OutpaintRatios.parsePreset', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.clientWidth = 300; img.clientHeight = 200;
+    const f = globalFunction(ctx, 'resizeOutpaintFromDrag');
+    const read = () => fromContext(evaluate(ctx, 'cropState'));
+    const drag = (mode, x, y, w, h) => evaluate(ctx,
+        `cropState = {x:${x}, y:${y}, w:${w}, h:${h}}; cropDrag = {mode:"${mode}", sx:0, sy:0, start:{...cropState}}`);
+    evaluate(ctx, 'imageEditMode = "outpaint"; outpaintAspectPreset = "free"');
+
+    // 无 cropDrag → no-op。
+    evaluate(ctx, 'cropState = {x:1, y:2, w:3, h:4}; cropDrag = null');
+    f(10, 10);
+    assert.deepEqual(read(), { x: 1, y: 2, w: 3, h: 4 });
+
+    // corner free：w/h 各增 2×dx/2×dy，中心平移 (dx,dy)（钉现状），不小于原图。
+    drag('outpaint-corner', 0, 0, 300, 200);
+    f(50, 30);
+    assert.deepEqual(read(), { x: 50, y: 30, w: 400, h: 260 }, '中心 (150,100)→(250,160)；x=start.x+round(Δw/2)');
+
+    // right 边拖：同样 ×2 增长（growX=dx）。
+    drag('outpaint-right', 0, 0, 300, 200);
+    f(50, 0);
+    assert.deepEqual(read(), { x: 50, y: 0, w: 400, h: 200 });
+
+    // bottom 边拖：仅 h 增 2×dy。
+    drag('outpaint-bottom', 0, 0, 300, 200);
+    f(0, 30);
+    assert.deepEqual(read(), { x: 0, y: 30, w: 300, h: 260 });
+
+    // 预设 16:9（真实 OutpaintRatios.parsePreset）：保持中心后按 16:9 重算，clampOutpaint 可能破中心（钉现状）。
+    evaluate(ctx, 'outpaintAspectPreset = "16:9"');
+    drag('outpaint-corner', 0, 0, 300, 200);
+    f(50, 30);
+    const r = read();
+    assert.equal(r.h, 260);
+    assert.equal(r.w, 260 * 16 / 9, '真实 parsePreset("16:9") → w=h*16/9');
+    assert.equal(r.x, 0, '中心保持产生 x=-81.11，被 clampOutpaint max(0,x) 钳到 0（钉现状）');
+    assert.equal(r.y, 0, 'y 中心 -30 被 clampOutpaint 钳到 0（钉现状）');
+});
+
+test('clampImageResizeScale: 0.05–1 + 两位小数 round + 非有限 → 0.5（纯函数，不回写模块变量）', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'clampImageResizeScale');
+    assert.equal(f(0.5), 0.5);
+    assert.equal(f(0.2), 0.2);
+    assert.equal(f(0.05), 0.05, '下限 0.05');
+    assert.equal(f(0), 0.05, '0 → 下限');
+    assert.equal(f(-5), 0.05, '负数 → 下限');
+    assert.equal(f(2), 1, '上限 1');
+    assert.equal(f(300), 1, '超大 → 上限');
+    assert.equal(f(0.123), 0.12, '两位小数 round(12.3)=12');
+    assert.equal(f(0.125), 0.13, 'round(12.5)=13');
+    assert.equal(f('2.5'), 1, '字符串数字 → 2.5 → 上限 1');
+    assert.equal(f('abc'), 0.5, 'NaN → 0.5（钉现状）');
+    assert.equal(f(NaN), 0.5);
+    assert.equal(f(Infinity), 0.5, '+Inf → 0.5（钉现状）');
+
+    // 不回写模块变量。
+    evaluate(ctx, 'imageResizeScale = 0.3');
+    f(0.8);
+    assert.equal(evaluate(ctx, 'imageResizeScale'), 0.3);
+});
+
+test('imageResizeDimensions: naturalWidth/Height × clampImageResizeScale(scale) + 缺图源 1×1 兜底', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const img = harness.elementsById.get('cropImage');
+    img.naturalWidth = 800; img.naturalHeight = 600;
+    const f = globalFunction(ctx, 'imageResizeDimensions');
+    const read = () => fromContext(f());
+
+    evaluate(ctx, 'imageResizeScale = 0.25');
+    assert.deepEqual(read(), { sourceW: 800, sourceH: 600, scale: 0.25, targetW: 200, targetH: 150 });
+    evaluate(ctx, 'imageResizeScale = 1');
+    assert.deepEqual(read(), { sourceW: 800, sourceH: 600, scale: 1, targetW: 800, targetH: 600 });
+    img.naturalWidth = 900; img.naturalHeight = 900;
+    evaluate(ctx, 'imageResizeScale = 6');
+    assert.deepEqual(read(), { sourceW: 900, sourceH: 900, scale: 1, targetW: 900, targetH: 900 },
+        'scale 被 clampImageResizeScale 钳 1（0.05–1，钉现状：无 4096 路径）');
+
+    // 无图（naturalWidth=0）→ sourceW/H 兜底 1（钉现状）。
+    img.naturalWidth = 0; img.naturalHeight = 0;
+    evaluate(ctx, 'imageResizeScale = 2');
+    assert.deepEqual(read(), { sourceW: 1, sourceH: 1, scale: 1, targetW: 1, targetH: 1 });
+});
+
+test('gridJoinCanvasSize: null 布局 → 1×1；格尺寸（cols×cellW+gap）与 items 包围盒取大；ceil 取整', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinCanvasSize');
+
+    assert.deepEqual(fromContext(f(null)), { w: 1, h: 1 }, 'null 布局 → 1×1（钉现状）');
+    evaluate(ctx, 'gridJoinLayout = null');
+    assert.deepEqual(fromContext(f()), { w: 1, h: 1 }, 'let 默认值（null）→ 1×1');
+
+    assert.deepEqual(fromContext(f({ cols: 2, rows: 2, cellW: 64, cellH: 64, gap: 4 })),
+        { w: 132, h: 132 }, 'w=2*64+1*4');
+
+    assert.deepEqual(fromContext(f({ cols: 2, rows: 2, cellW: 64, cellH: 64, gap: 4,
+        items: [{ x: 100, y: 100, w: 50, h: 50 }] })),
+        { w: 150, h: 150 }, 'items 包围盒（150）大于格尺寸（132）→ 取 items');
+
+    assert.deepEqual(fromContext(f({ cellW: 63.5, cellH: 20.25, gap: 0 })),
+        { w: 64, h: 21 }, 'ceil 取整（无 cols/rows → 默认 1×1）');
+
+    assert.deepEqual(fromContext(f({ items: [{ x: 0.5, y: 0, w: 10, h: 5 }] })),
+        { w: 11, h: 5 }, '无 cols/cellW → 格 1×1，items 包围盒优先');
+});
+
+// ---------- 宫格布局数学 ----------
+
+test('groupImageGridLayout: 完美网格优先（源码注释→断言）+ maxThumb 上限 + 小画布 fallback', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'groupImageGridLayout');
+    // maxVisibleRows 默认经 canvasCore 代理 = 3（桩值，smart-canvas.js:1034）
+    const pick = (count, W, H, maxThumb, maxVisibleRows) => {
+        const args = [count, W, H, maxThumb];
+        if (maxVisibleRows !== undefined) args.push(32, 8, maxVisibleRows); // pad/gap 默认
+        const r = f(...args);
+        return { cols: r.cols, rows: r.rows, visibleRows: r.visibleRows, thumb: r.thumb,
+            perfect: r.score ? r.score[0] : undefined, fits: r.score ? r.score[1] : undefined };
+    };
+    const P = (r, cols, rows, visibleRows, thumb, perfect, fits) =>
+        assert.deepEqual(r, { cols, rows, visibleRows, thumb, perfect, fits });
+
+    // 源码注释的三个标准例（pad=32, gap=8, maxThumb=480, 1200×800）：
+    P(pick(8, 1200, 800, 480), 4, 2, 2, 286, 1, 1, '8 → 4×2（perfect 压过 cols=1/2/3 的非完美布局）');
+    P(pick(6, 1200, 800, 480), 3, 2, 2, 380, 1, 1, '6 → 3×2');
+    P(pick(9, 1200, 800, 480), 3, 3, 3, 250, 1, 1, '9 → 3×3');
+
+    // 决定性用例：count=5 时 perfect(cols=5) 必须压过 cols=3（3×2 缺角，非整除）。
+    // 若评分向量去掉 perfect 项，这里会变成 cols=3（变异红）。
+    P(pick(5, 1200, 800, 480), 5, 1, 1, 227, 1, 1, '5 → 5×1 完美优先（防 3×2 缺角）');
+
+    // maxThumb 上限：raw 284 → 钳 100；cols=4 完美且 spare 最小。
+    P(pick(4, 1200, 800, 100), 4, 1, 1, 100, 1, 1);
+
+    // maxVisibleRows=1：只有 1 行布局可 perfect（rows<=1）。
+    P(pick(8, 1200, 800, 480, 1), 8, 1, 1, 139, 1, 1);
+
+    // 无可行 cols（画布比 pad 还小）→ fallback {cols:1, rows:1, thumb:28}，无 score（钉现状）。
+    const fb = f(1, 10, 10, 480);
+    assert.deepEqual({ cols: fb.cols, rows: fb.rows, visibleRows: fb.visibleRows, thumb: fb.thumb },
+        { cols: 1, rows: 1, visibleRows: 1, thumb: 28 });
+    assert.equal(fb.score, undefined);
+
+    // count=0 → fallbackCols=0, rows=NaN（钉现状：无校验）。
+    assert.equal(evaluate(ctx, 'groupImageGridLayout(0, 100, 100, 480).cols'), 0);
+    assert.equal(evaluate(ctx, 'Number.isNaN(groupImageGridLayout(0, 100, 100, 480).rows)'), true);
+});
