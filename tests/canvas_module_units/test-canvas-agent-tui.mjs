@@ -388,6 +388,48 @@ test('connectAgentWebSocket: 已 OPEN 的 socket 直接复用，不新建连接'
     assert.equal(fromContext(second.url), fromContext(first.url), '同一次连接不能建两条 socket');
 });
 
+// ── connectAgentWebSocket：回调面与协议 ────────────────────────────────
+test('connectAgentWebSocket: https location 切 wss://', () => {
+    const { ctx } = loadAgentTuiModule({ open: false, location: { protocol: 'https:', host: 'canvas.example' } });
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    assert.equal(socket.url, 'wss://canvas.example/api/projects/p1/agent-nodes/n1/stream');
+});
+
+test('connectAgentWebSocket: onmessage 派发到真实 handleAgentEvent；畸形 JSON 不外抛且走 console.error', () => {
+    const { ctx, consoleErrors } = loadAgentTuiModule({ open: true });
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    socket.onmessage({ data: JSON.stringify({ type: 'agent_start' }) });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy',
+        'onmessage → 真实 handleAgentEvent 状态迁移');
+    socket.onmessage({ data: 'not-json' });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy', '畸形 JSON 不改状态');
+    assert.ok(consoleErrors.some(m => m.startsWith('Failed to parse agent event:')),
+        '解析失败走 console.error，不是未捕获异常');
+});
+
+test('connectAgentWebSocket: onerror → error；onclose → disconnected 且 socket 复位 null', () => {
+    const { ctx } = loadAgentTuiModule({ open: true });
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    socket.onerror();
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'error');
+    socket.onclose();
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'disconnected');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").socket')), null,
+        '断开后 socket 必须复位 null，否则下次 connect 被陈旧实例挡住');
+});
+
+test('connectAgentWebSocket: 构造器抛错 → 返回 null 且状态无残留', () => {
+    const { ctx, consoleErrors } = loadAgentTuiModule({ open: false });
+    class Boom { constructor() { throw new Error('boom'); } }
+    ctx.WebSocket = Boom;
+    const r = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    assert.equal(r, null);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").socket')), null);
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
+        '构造失败路径不能置成 connecting');
+    assert.ok(consoleErrors.some(m => m.startsWith('Failed to connect agent WebSocket:')));
+});
+
 test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭走 HTTP POST，两条路径都推 user 消息并置 busy', () => {
     const open = loadAgentTuiModule({ open: true });
     const sendPrompt = fn(open.ctx, 'sendAgentPrompt');
@@ -447,6 +489,21 @@ test('sendAgentCommand: WS 未连接时只发 HTTP 请求（不碰本地状态�
     fn(ctx, 'sendAgentCommand')('n1', 'p1', 'abort', { wsPayload: { type: 'abort' } });
     // 不能用 fromContext：harness.mjs:287 是 JSON 往返，对 undefined 会抛。
     assert.equal(fetchCalls[1].opts.body, undefined);
+});
+
+test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body），onSuccess 不执行', () => {
+    const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
+    evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
+    fn(ctx, 'sendAgentSteer')('n1', 'proj/2', '往左');
+    fn(ctx, 'sendAgentFollowUp')('n1', 'p1', '下一步');
+    assert.equal(ws.sent.length, 0, 'ws 不可用，什么都不走 socket');
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/steer');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: '往左' });
+    assert.equal(fromContext(fetchCalls[1].url), '/api/projects/p1/agent-nodes/n1/follow_up');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { message: '下一步' });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages.length')), 0,
+        '#221：HTTP 路径不执行 onSuccess（系统消息不回写本地，钉现状，待修）');
 });
 
 test('sendAgentConfirm: 无 confirm 时完全不动作；有 confirm 时清标记、置 busy、带 confirm_id', () => {
