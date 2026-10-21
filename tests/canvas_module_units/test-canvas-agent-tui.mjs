@@ -926,3 +926,202 @@ test('renderAgentNode: 重渲染主体 + 卡片状态 + 重绑定；el/node 缺�
     fn(m2.ctx, 'renderAgentNode')('n1');
     assert.equal(m2.bodyHtmlCalls.length, 0, 'layout 为 null 时早退，不渲染');
 });
+
+// ── 控件绑定（makeElement 按实例覆写 querySelector/querySelectorAll，
+//    test-canvas-connections.mjs 的 wireWorldQueries 已证同法可行）──────────
+const ev = (type, extra = {}) => ({ type, preventDefault() {}, stopPropagation() {}, ...extra });
+
+function buildAgentControlTree(harness) {
+    const el = harness.makeElement('div');
+    const input = harness.makeElement('textarea');
+    const thinking = harness.makeElement('button');
+    const steer = harness.makeElement('button');
+    const followup = harness.makeElement('button');
+    const abort = harness.makeElement('button');
+    const approve = harness.makeElement('button');
+    const reject = harness.makeElement('button');
+    const modelSel = harness.makeElement('select');
+    const autonomySel = harness.makeElement('select');
+    const branchSel = harness.makeElement('select');
+    const forkBtn = harness.makeElement('button');
+    const bodyEl = harness.makeElement('div');
+    const toolRow = harness.makeElement('div');
+    toolRow.setAttribute('data-tool-call-id', 'c1');
+    el.querySelectorAll = (sel) => (sel === '[data-tool-call-id]' ? [toolRow] : []);
+    el.querySelector = (sel) => ({
+        '[data-agent-tui-input]': input,
+        '[data-agent-thinking]': thinking,
+        '[data-agent-steer]': steer,
+        '[data-agent-followup]': followup,
+        '[data-agent-abort]': abort,
+        '[data-agent-confirm-approve]': approve,
+        '[data-agent-confirm-reject]': reject,
+        '[data-agent-model]': modelSel,
+        '[data-agent-autonomy]': autonomySel,
+        '[data-agent-branch]': branchSel,
+        '[data-agent-fork]': forkBtn,
+        '[data-agent-tui-body]': bodyEl,
+    }[sel] ?? null);
+    return { el, input, thinking, steer, followup, abort, approve, reject, modelSel, autonomySel, branchSel, forkBtn, toolRow };
+}
+
+test('bindAgentNodeControls: Enter 发送 prompt（trim/清空）；busy → follow_up；Shift+Enter/纯空白 no-op', () => {
+    const { ctx, harness, ws } = loadAgentTuiModule({ open: true, nodes: [{ id: 'n1', type: 'agent' }] });
+    const tree = buildAgentControlTree(harness);
+    fn(ctx, 'bindAgentNodeControls')(tree.el, { id: 'n1', type: 'agent' });
+
+    tree.input.value = '  画一只猫  ';
+    tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: false }));
+    assert.equal(tree.input.value, '', '发送后清空输入框');
+    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'prompt', message: '画一只猫', images: [] }, 'trim 后发送');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
+
+    // busy 时 Enter 进后续队列。
+    tree.input.value = '再来一张';
+    tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: false }));
+    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'follow_up', message: '再来一张' });
+    const msgs = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.equal(msgs.at(-1).text, '⏳ follow_up queued: 再来一张');
+
+    // Shift+Enter 换行不发送；纯空白不发送也不清空。
+    const sentBefore = ws.sent.length;
+    tree.input.value = '换行';
+    tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: true }));
+    assert.equal(ws.sent.length, sentBefore, 'Shift+Enter 不发送');
+    assert.equal(tree.input.value, '换行', 'Shift+Enter 内容保留');
+    tree.input.value = '   ';
+    tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: false }));
+    assert.equal(ws.sent.length, sentBefore, '纯空白不发送');
+    assert.equal(tree.input.value, '   ', '未发送则不清空');
+});
+
+test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮', () => {
+    const { ctx, harness, ws } = loadAgentTuiModule({ open: true, nodes: [{ id: 'n1', type: 'agent' }] });
+    const tree = buildAgentControlTree(harness);
+    fn(ctx, 'bindAgentNodeControls')(tree.el, { id: 'n1', type: 'agent' });
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_start' });
+
+    // thinking 切换：false → true → false。
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible')), false);
+    tree.thinking.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible')), true);
+    tree.thinking.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible')), false);
+
+    // steer：读输入内容，发完清空；空输入不发。
+    tree.input.value = '往左';
+    tree.steer.dispatchEvent(ev('click'));
+    assert.equal(tree.input.value, '');
+    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'steer', message: '往左' });
+    const sentBefore = ws.sent.length;
+    tree.steer.dispatchEvent(ev('click'));
+    assert.equal(ws.sent.length, sentBefore, '空输入 steer 不发送');
+
+    // follow-up。
+    tree.input.value = '下一步';
+    tree.followup.dispatchEvent(ev('click'));
+    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'follow_up', message: '下一步' });
+
+    // abort：status 复位 idle + 系统消息。
+    tree.abort.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle', 'abort 复位 idle（否则按钮永远停在运行中）');
+    const msgs = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.equal(msgs.at(-1).role, 'system');
+    assert.equal(msgs.at(-1).text, '⏹ aborted');
+});
+
+test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch change、fork、工具行展开', async () => {
+    const { ctx, harness, fetchCalls, promptReturns, promptLabels } = loadAgentTuiModule({
+        open: false,
+        nodes: [{ id: 'n1', type: 'agent', model: 'm0', autonomy: 'cautious' }],
+        chatProviders: [{ id: 'p1' }],
+        modelsByProvider: { p1: ['m1', 'm2'] },
+        fetchResponse: (url) => url.endsWith('/fork-messages')
+            ? { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }] }) }
+            : { ok: true, json: async () => ({}) },
+    });
+    const tree = buildAgentControlTree(harness);
+    fn(ctx, 'bindAgentNodeControls')(tree.el, { id: 'n1', type: 'agent' });
+    // open:false → 命令全走 HTTP，便于断言 URL/body。
+
+    // 无 confirm 挂起 → 点批准不发送。
+    tree.approve.dispatchEvent(ev('click'));
+    assert.equal(fetchCalls.length, 0);
+
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'confirm', confirm_id: 'k1', message: '删吗' });
+    tree.approve.dispatchEvent(ev('click'));
+    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/confirm');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { confirm_id: 'k1', approved: true });
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
+    const msgs1 = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.equal(msgs1.at(-1).text, '✅ 已批准');
+
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'confirm', confirm_id: 'k2', message: '删吗' });
+    tree.reject.dispatchEvent(ev('click'));
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { confirm_id: 'k2', approved: false });
+    const msgs2 = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.equal(msgs2.at(-1).text, '❌ 已取消');
+
+    // model / autonomy：change 触发端点 + 节点乐观写。
+    tree.modelSel.value = 'm2';
+    tree.modelSel.dispatchEvent(ev('change'));
+    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/model');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { model: 'm2' });
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'm2');
+
+    tree.autonomySel.value = 'autonomous';
+    tree.autonomySel.dispatchEvent(ev('change'));
+    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/autonomy');
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'autonomous');
+
+    // branch：空值不发，非空 → switch-branch。
+    tree.branchSel.value = '';
+    tree.branchSel.dispatchEvent(ev('change'));
+    const beforeBranch = fetchCalls.length;
+    tree.branchSel.value = 'b2';
+    tree.branchSel.dispatchEvent(ev('change'));
+    assert.equal(fetchCalls.length, beforeBranch + 1, '空分支不发送');
+    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/switch-branch');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { branch_id: 'b2' });
+
+    // fork 按钮 → showForkPicker（异步 fire-and-forget，等微任务排空）。
+    promptReturns.push('1', '线');
+    tree.forkBtn.dispatchEvent(ev('click'));
+    await new Promise(r => setImmediate(r));
+    assert.equal(promptLabels.length, 2, 'prompt 选轮次 + 分支名');
+    assert.ok(promptLabels[0].includes('1. 第一轮'), promptLabels[0]);
+    const forkCall = fetchCalls.at(-1);
+    assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
+    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e1', name: '线' });
+
+    // 工具行：点击切换 expanded。
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'tool_execution_start', toolName: 'search', toolCallId: 'c1', args: { q: 1 } });
+    assert.equal(evaluate(ctx, 'getAgentTuiState("n1").toolActivities.get("c1").expanded'), undefined);
+    tree.toolRow.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").toolActivities.get("c1").expanded')), true, '首次点击展开');
+    tree.toolRow.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").toolActivities.get("c1").expanded')), false, '再次点击收起');
+});
+
+test('bindAgentTaskNodeControls: 结果链接点击选中结果节点 + 视口居中 + render；结果缺失 no-op', () => {
+    const { ctx, harness, renders } = loadAgentTuiModule({ nodes: [{ id: 'A', type: 'agent' }, { id: 'R1', x: 100, y: 50 }] });
+    const link = harness.makeElement('a');
+    link.dataset.agentResultLink = 'R1';
+    const el = harness.makeElement('div');
+    el.querySelectorAll = (sel) => (sel === '[data-agent-result-link]' ? [link] : []);
+    fn(ctx, 'bindAgentTaskNodeControls')(el, { id: 'A' });
+
+    link.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.selectedId')), 'R1');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedIds')), []);
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.selectedImage')), { nodeId: '', index: -1 });
+    assert.deepEqual(fromContext(renders.filter(r => r.kind === 'centerViewport').at(-1).point),
+        { x: 220, y: 150 }, '视口中心 = 结果节点 + (120, 100)');
+    assert.equal(renders.filter(r => r.kind === 'render').length, 1, '触发一次全量 render');
+
+    // 结果缺失 → 不改选中不 render。
+    link.dataset.agentResultLink = 'ghost';
+    link.dispatchEvent(ev('click'));
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.selectedId')), 'R1', '缺失结果保持原选中');
+    assert.equal(renders.filter(r => r.kind === 'render').length, 1, '缺失结果不触发 render');
+});
