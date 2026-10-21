@@ -795,3 +795,134 @@ test('renderMarkdown: 先转义再套 Markdown 结构，代码块优先于行内
     assert.ok(list.includes('<ul class="agent-md-list">'), list);
     assert.equal(fromContext(md(null)), '');
 });
+
+// ── fork / switch-branch / 分叉选择器（fetch 数据驱动）──────────────────────
+test('forkAgentSession: 成功写回 node.branches/current_branch 且清空 messages/toolActivities；失败零副作用', async () => {
+    const seed = (fetchResponse) => {
+        const m = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }], fetchResponse });
+        fn(m.ctx, 'handleAgentEvent')('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'old' } });
+        fn(m.ctx, 'handleAgentEvent')('n1', { type: 'tool_execution_start', toolName: 't', toolCallId: 'c1' });
+        return m;
+    };
+
+    // 成功。
+    const ok = seed({ ok: true, json: async () => ({ branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1' }) });
+    await fn(ok.ctx, 'forkAgentSession')('n1', 'proj/9', 'entry-7', '新分支');
+    assert.equal(fromContext(ok.fetchCalls.at(-1).url), '/api/projects/proj/9/agent-nodes/n1/fork');
+    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { entry_id: 'entry-7', name: '新分支' });
+    assert.deepEqual(fromContext(evaluate(ok.ctx, 'canvasState.nodes[0]')),
+        { id: 'n1', type: 'agent', branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1' },
+        'node 是渲染真值，必须写回');
+    assert.deepEqual(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").messages')), [], '新分支从头开始，旧消息清空');
+    assert.equal(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").toolActivities.size')), 0, '工具活动一并清空');
+
+    // 失败（非 2xx）：本地全不动。
+    const bad = seed({ ok: false, json: async () => ({}) });
+    await fn(bad.ctx, 'forkAgentSession')('n1', 'p1', 'e', 'n');
+    assert.equal(fromContext(evaluate(bad.ctx, 'getAgentTuiState("n1").messages.length')), 1, '失败保留旧消息');
+    assert.equal(fromContext(evaluate(bad.ctx, 'getAgentTuiState("n1").toolActivities.size')), 1);
+    assert.equal(evaluate(bad.ctx, 'canvasState.nodes[0].branches'), undefined, '失败不写 branches（fromContext 不支持 undefined，直接读）');
+    assert.ok(bad.consoleErrors.some(m => m.startsWith('Failed to fork agent session:')));
+});
+
+test('switchAgentBranch: 成功更新 current_branch 并清空会话；失败零副作用', async () => {
+    const seed = (fetchResponse) => {
+        const m = loadAgentTuiModule({
+            nodes: [{ id: 'n1', type: 'agent', branches: [{ id: 'b1', name: '主' }, { id: 'b2', name: '侧' }], current_branch: 'b1' }],
+            fetchResponse,
+        });
+        fn(m.ctx, 'handleAgentEvent')('n1', { type: 'turn_end', message: { content: [{ type: 'text', text: 'x' }] } });
+        return m;
+    };
+    const ok = seed({ ok: true, json: async () => ({ current_branch: 'b2' }) });
+    await fn(ok.ctx, 'switchAgentBranch')('n1', 'p1', 'b2');
+    assert.equal(fromContext(ok.fetchCalls.at(-1).url), '/api/projects/p1/agent-nodes/n1/switch-branch');
+    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { branch_id: 'b2' });
+    assert.equal(fromContext(evaluate(ok.ctx, 'canvasState.nodes[0].current_branch')), 'b2');
+    assert.deepEqual(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").messages')), [], '切分支清空旧会话');
+
+    const bad = seed({ ok: false, json: async () => ({}) });
+    await fn(bad.ctx, 'switchAgentBranch')('n1', 'p1', 'b2');
+    assert.equal(fromContext(evaluate(bad.ctx, 'canvasState.nodes[0].current_branch')), 'b1', '失败保留旧分支');
+    assert.equal(fromContext(evaluate(bad.ctx, 'getAgentTuiState("n1").messages.length')), 1, '失败不清会话');
+});
+
+test('showForkPicker: prompt 选轮次与分支名后分叉（entry_id + name）；空列表/越界/空白选择不分叉', async () => {
+    const listResponse = { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }, { text: '第二轮', entryId: 'e2' }] }) };
+    const ok = loadAgentTuiModule({
+        nodes: [{ id: 'n1', type: 'agent' }],
+        fetchResponse: (url) => url.endsWith('/fork-messages') ? listResponse : { ok: true, json: async () => ({}) },
+    });
+    ok.promptReturns.push('2', '分叉线');
+    await fn(ok.ctx, 'showForkPicker')('n1', 'p1');
+    assert.equal(ok.promptLabels.length, 2, '两轮 prompt：选轮次 + 分支名');
+    assert.ok(ok.promptLabels[0].includes('1. 第一轮') && ok.promptLabels[0].includes('2. 第二轮'), 'prompt 列出编号消息列表');
+    assert.ok(ok.promptLabels[1].startsWith('分支名称：'), '第二问是分支名');
+    const forkCall = ok.fetchCalls.at(-1);
+    assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
+    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e2', name: '分叉线' });
+
+    // 空消息列表：直接返回，不 prompt 不分叉。
+    const empty = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: { ok: true, json: async () => ({ messages: [] }) } });
+    await fn(empty.ctx, 'showForkPicker')('n1', 'p1');
+    assert.equal(empty.promptLabels.length, 0);
+    assert.equal(empty.fetchCalls.length, 1, '只有 fork-messages 一次请求');
+
+    // 越界选择（'99'）与空白选择（prompt 返回 null）都不分叉。
+    const one = { ok: true, json: async () => ({ messages: [{ text: '只有一轮', entryId: 'e9' }] }) };
+    const oob = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
+    oob.promptReturns.push('99');
+    await fn(oob.ctx, 'showForkPicker')('n1', 'p1');
+    assert.equal(oob.fetchCalls.length, 1, '越界 → 不分叉');
+    const blank = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
+    await fn(blank.ctx, 'showForkPicker')('n1', 'p1');
+    assert.equal(blank.fetchCalls.length, 1, '空白选择 → 不分叉');
+});
+
+// ── renderAgentNode：重渲染与重绑定 ───────────────────────────────
+test('renderAgentNode: 重渲染主体 + 卡片状态 + 重绑定；el/node 缺失与 layout=null → no-op', () => {
+    const { ctx, harness, bodyHtmlCalls } = loadAgentTuiModule({
+        nodes: [{ id: 'n1', type: 'agent' }],
+        open: false,
+    });
+    // 注册 document.querySelector('[data-id="n1"]') 能找到的元素（浏览器 DOM 的替身）。
+    const el = harness.makeElement('div');
+    const body = harness.makeElement('div');
+    const headMeta = harness.makeElement('div');
+    const messagesEl = harness.makeElement('div');
+    body.querySelector = (sel) => (sel === '[data-agent-tui-messages]' ? messagesEl : null);
+    el.querySelector = (sel) => (sel === '.node-body' ? body : sel === '.node-head-meta' ? headMeta : null);
+    harness.queryResults['[data-id="n1"]'] = [el];
+
+    fn(ctx, 'getAgentTuiState')('n1').status = 'busy';
+    // 计新创建的 socket：重绑定会调 connectAgentWebSocket，旧 socket 非 OPEN 时新建。
+    let constructed = 0;
+    const Base = ctx.WebSocket;
+    ctx.WebSocket = class extends Base {
+        constructor(url) { constructed++; super(url); }
+    };
+    fn(ctx, 'renderAgentNode')('n1');
+    assert.equal(bodyHtmlCalls.length, 1, '渲染一次主体');
+    assert.equal(body.innerHTML, '<div class="node-body-stub"/>', 'nodeBodyHtml 输出进 .node-body innerHTML');
+    assert.ok(headMeta.innerHTML.includes('agent-tui-status-connecting'), headMeta.innerHTML);
+    assert.ok(headMeta.innerHTML.includes('连接中'),
+        '重绑定触发 connectAgentWebSocket，旧 socket 非 OPEN 时 status 置 connecting（真实行为）');
+    assert.equal(constructed, 1, 'bindAgentNodeControls 重绑定并连接（旧 socket 未 OPEN → 新建）');
+    fn(ctx, 'renderAgentNode')('n1');
+    assert.equal(constructed, 2, '重绑定后 socket 仍未 OPEN → 再新建（当前行为）');
+    assert.equal(bodyHtmlCalls.length, 2);
+
+    // el 缺失 → 不渲染。
+    fn(ctx, 'renderAgentNode')('missing');
+    assert.equal(bodyHtmlCalls.length, 2);
+    // node 缺失（el 注册了但 canvasState.nodes 里没有）→ 不渲染。
+    harness.queryResults['[data-id="ghost"]'] = [harness.makeElement('div')];
+    fn(ctx, 'renderAgentNode')('ghost');
+    assert.equal(bodyHtmlCalls.length, 2);
+
+    // layout=null → 在调 nodeBodyHtml 之前早退。
+    const m2 = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }], open: false, layout: null });
+    m2.harness.queryResults['[data-id="n1"]'] = [m2.harness.makeElement('div')];
+    fn(m2.ctx, 'renderAgentNode')('n1');
+    assert.equal(m2.bodyHtmlCalls.length, 0, 'layout 为 null 时早退，不渲染');
+});
