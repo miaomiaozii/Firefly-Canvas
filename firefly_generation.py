@@ -28,11 +28,29 @@ CLI_PROTOCOLS = {"codex", "gemini-cli", "jimeng"}
 VIDEO_CLI_PROTOCOLS = {"jimeng"}
 VIDEO_EXECUTION_PROTOCOLS = {"openai", "apimart", "volcengine", "runninghub"} | VIDEO_CLI_PROTOCOLS
 FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub"}
-GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+# 服务商文档（gpt-best.apifox.cn api-341817446 / api-420361512）：nano-banana 与
+# nano-banana-pro（gemini-3-pro-image-preview）的基础宽高比。
+# 21:9 与其镜像 9:21 一起支持（服务商档位 1280x544 / 544x1280 成对存在）。
+GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "9:21"]
+# 服务商文档（api-420646217 / api-481108294 / api-512112774 / api-512273870）：
+# Nano Banana 2 家族（gemini-3.1-flash-image-preview[-lite]、nano-banana-2*、
+# gemini-nano-banana-2.1*）额外支持极端比例 1:4 / 4:1 / 8:1 / 1:8，共 15 种。
+GEMINI_FLASH_IMAGE_ASPECT_RATIOS = [*GEMINI_ASPECT_RATIOS, "1:4", "4:1", "8:1", "1:8"]
+# 每种比例的像素档位（前端 SIZE_MAP 必须与此逐一对应，见 docs/api-parameter-rules.md）。
+# 服务商在收到 aspect_ratio 时不写 size，档位只用于画布几何与能力校验。
 COMMON_IMAGE_SIZES = {
-    "1k": ["1024x1024", "1024x1536", "1536x1024", "1008x1344", "1344x1008", "720x1280", "1280x720", "1280x544", "544x1280"],
-    "2k": ["2048x2048", "1360x2048", "2048x1360", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "2048x880", "880x2048"],
-    "4k": ["4096x4096", "2352x3520", "3520x2352", "2448x3264", "3264x2448", "2160x3840", "3840x2160", "3840x1648", "1648x3840"],
+    "1k": [
+        "1024x1024", "1024x1536", "1536x1024", "1008x1344", "1344x1008", "720x1280", "1280x720", "1280x544", "544x1280",
+        "1152x1440", "1440x1152", "384x1536", "1536x384", "192x1536", "1536x192",
+    ],
+    "2k": [
+        "2048x2048", "1360x2048", "2048x1360", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "2048x880", "880x2048",
+        "1600x2000", "2000x1600", "512x2048", "2048x512", "256x2048", "2048x256",
+    ],
+    "4k": [
+        "4096x4096", "2352x3520", "3520x2352", "2448x3264", "3264x2448", "2160x3840", "3840x2160", "3840x1648", "1648x3840",
+        "3072x3840", "3840x3072", "960x3840", "3840x960", "480x3840", "3840x480",
+    ],
 }
 ROUTED_PARAMETER_NAMES = (
     "media_type",
@@ -329,6 +347,20 @@ def _inferred_video_model_capabilities(model: str) -> dict[str, Any]:
     return capability
 
 
+def _banana_aspect_ratios(identifier: str) -> list[str]:
+    """Aspect-ratio set for a banana/gemini image model, per provider docs.
+
+    Only the Nano Banana 2 family (3.1-Flash based) accepts the extreme ratios
+    1:4 / 4:1 / 8:1 / 1:8; nano-banana and nano-banana-pro stay on the base set.
+    Both sets include the 21:9 mirror 9:21 (paired provider size presets).
+    """
+    if re.fullmatch(r"(?:gemini-)?nano-banana-(?:2|2\.1)(?:-(?:1k|2k|4k))?", identifier):
+        return list(GEMINI_FLASH_IMAGE_ASPECT_RATIOS)
+    if "nano-banana" not in identifier and "3.1-flash" in identifier:
+        return list(GEMINI_FLASH_IMAGE_ASPECT_RATIOS)
+    return list(GEMINI_ASPECT_RATIOS)
+
+
 def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     identifier = str(model or "").strip().lower()
     capability: dict[str, Any] = {"media_types": ["image"]}
@@ -357,14 +389,14 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
             banana_resolution = "1k"
     if banana_resolution:
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": _banana_aspect_ratios(identifier),
             "resolutions": [banana_resolution],
             "sizes": list(COMMON_IMAGE_SIZES[banana_resolution]),
             "max_reference_images": 20,
         })
     elif identifier.startswith("gemini-") and "image" in identifier:
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": _banana_aspect_ratios(identifier),
             "resolutions": ["1k", "2k", "4k"],
             "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
             "max_reference_images": 20,

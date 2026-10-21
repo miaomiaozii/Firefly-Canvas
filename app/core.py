@@ -276,7 +276,7 @@ VOLCENGINE_MIN_PIXELS = 3686400
 VOLCENGINE_MIN_EDGE = 1536
 VOLCENGINE_MAX_EDGE = 4096
 VOLCENGINE_RATIO_CHOICES = [(1, 1, '1:1'), (4, 3, '4:3'), (3, 4, '3:4'), (16, 9, '16:9'), (9, 16, '9:16'), (21, 9, '21:9'), (9, 21, '9:21'), (3, 2, '3:2'), (2, 3, '2:3'), (5, 4, '5:4'), (4, 5, '4:5')]
-GEMINI_IMAGE_ASPECT_RATIOS = ((1, 1, '1:1'), (1, 4, '1:4'), (1, 8, '1:8'), (2, 3, '2:3'), (3, 2, '3:2'), (3, 4, '3:4'), (4, 1, '4:1'), (4, 3, '4:3'), (4, 5, '4:5'), (5, 4, '5:4'), (8, 1, '8:1'), (9, 16, '9:16'), (16, 9, '16:9'), (21, 9, '21:9'))
+GEMINI_IMAGE_ASPECT_RATIOS = ((1, 1, '1:1'), (1, 4, '1:4'), (1, 8, '1:8'), (2, 3, '2:3'), (3, 2, '3:2'), (3, 4, '3:4'), (4, 1, '4:1'), (4, 3, '4:3'), (4, 5, '4:5'), (5, 4, '5:4'), (8, 1, '8:1'), (9, 16, '9:16'), (16, 9, '16:9'), (21, 9, '21:9'), (9, 21, '9:21'))
 RUNNINGHUB_ENTRY_MODEL_RE = re.compile('^app:(.+)$')
 SEED_UINT32_MAX = 4294967295
 AGENT_ACTIONS = {'chat', 'generate_image', 'edit_image'}
@@ -4308,7 +4308,7 @@ def gemini_supported_aspect_ratio(size, fallback='1:1', strict=False):
     When strict=True: raises IncompatibleGenerationParameterError if the requested
     ratio is not within tolerance of any supported ratio, per ADR 0006.
 
-    A small tolerance (0.5%) is used to account for pixel rounding when users
+    A small tolerance (2%) is used to account for pixel rounding when users
     specify pixel dimensions that are meant to represent a standard ratio.
     """
     width, height = parse_size_pair(size)
@@ -4319,13 +4319,15 @@ def gemini_supported_aspect_ratio(size, fallback='1:1', strict=False):
     if not width or not height:
         return fallback
     ratio = width / height
-    # Check if the requested ratio is within tolerance of a supported ratio
-    # Tolerance of 0.5% accounts for pixel rounding (e.g., 3840x1648 ≈ 21:9)
-    RATIO_TOLERANCE = 0.005
-    for item in GEMINI_IMAGE_ASPECT_RATIOS:
-        supported_ratio = item[0] / item[1]
-        if abs(ratio - supported_ratio) / supported_ratio < RATIO_TOLERANCE:
-            return item[2]
+    # Check if the requested ratio is within tolerance of a supported ratio.
+    # 服务商的像素预设会取整到 32 的倍数（例如 21:9 的 1k 档是 1280x544 ≈ 2.353，
+    # 与 21/9=2.333 相差 0.84%），所以容差必须覆盖这种取整误差；
+    # 支持的相邻比例相差 >12%，不会误匹配。
+    RATIO_TOLERANCE = 0.02
+    candidates = [item for item in GEMINI_IMAGE_ASPECT_RATIOS
+                  if abs(ratio - item[0] / item[1]) / (item[0] / item[1]) < RATIO_TOLERANCE]
+    if candidates:
+        return min(candidates, key=lambda item: abs(math.log(ratio / (item[0] / item[1]))))[2]
     if strict:
         raise IncompatibleGenerationParameterError(
             parameter='aspect_ratio',

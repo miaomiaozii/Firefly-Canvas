@@ -1465,7 +1465,8 @@ function aspectRatioForRun(sourceSettings=settings){
     const ratio = sourceSettings.ratio || 'square';
     const presets = {
         square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4',
-        landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21'
+        landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21',
+        portrait45:'4:5', landscape45:'5:4', portrait14:'1:4', landscape14:'4:1', portrait18:'1:8', landscape18:'8:1'
     };
     if(ratio === 'custom' || ratio === 'source'){
         const explicit = String(sourceSettings.customRatio || '').trim();

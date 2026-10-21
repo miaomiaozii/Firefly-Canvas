@@ -70,9 +70,10 @@ def test_get_api_type():
 def test_get_aspect_ratios():
     """Test getting aspect ratios."""
     ratios = get_aspect_ratios("nano-banana-2")
-    assert len(ratios) == 14, f"nano-banana-2 should have 14 aspect ratios (full Gemini image set), got {len(ratios)}"
+    assert len(ratios) == 15, f"nano-banana-2 should have 15 aspect ratios (full Gemini image set incl. 9:21 mirror), got {len(ratios)}"
     assert "1:1" in ratios, "Should have 1:1 ratio"
     assert "4:3" in ratios, "Should have 4:3 ratio"
+    assert "9:21" in ratios, "Should have the 21:9 mirror ratio 9:21"
     print("OK: get_aspect_ratios('nano-banana-2')")
     
     # Test model without aspect ratios

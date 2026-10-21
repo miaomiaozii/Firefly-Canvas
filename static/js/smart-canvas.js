@@ -307,8 +307,33 @@ const SIZE_MAP = {
     story: {'1k':'720x1280','2k':'1152x2048','4k':'2160x3840'},
     wide: {'1k':'1280x720','2k':'2048x1152','4k':'3840x2160'},
     ultrawide: {'1k':'1280x544','2k':'2048x880','4k':'3840x1648'},
-    ultratall: {'1k':'544x1280','2k':'880x2048','4k':'1648x3840'}
+    ultratall: {'1k':'544x1280','2k':'880x2048','4k':'1648x3840'},
+    portrait45: {'1k':'1152x1440','2k':'1600x2000','4k':'3072x3840'},
+    landscape45: {'1k':'1440x1152','2k':'2000x1600','4k':'3840x3072'},
+    portrait14: {'1k':'384x1536','2k':'512x2048','4k':'960x3840'},
+    landscape14: {'1k':'1536x384','2k':'2048x512','4k':'3840x960'},
+    landscape18: {'1k':'1536x192','2k':'2048x256','4k':'3840x480'},
+    portrait18: {'1k':'192x1536','2k':'256x2048','4k':'480x3840'}
 };
+// 图片比例预设：[settings 键, 比例, i18n 标签键]。SIZE_MAP 必须覆盖每个键；
+// 可用比例由服务商能力表 / model_specs.json 过滤（见 apiImageAllowedAspectRatios）。
+const IMAGE_RATIO_PRESETS = [
+    ['square','1:1','smart.sizeRatioSquare'],
+    ['portrait','2:3','smart.sizeRatioPortrait'],
+    ['landscape','3:2','smart.sizeRatioLandscape'],
+    ['portrait43','3:4','smart.sizeRatioPortrait'],
+    ['landscape43','4:3','smart.sizeRatioLandscape'],
+    ['portrait45','4:5','smart.sizeRatioPortrait45'],
+    ['landscape45','5:4','smart.sizeRatioLandscape45'],
+    ['story','9:16','smart.sizeRatioStory'],
+    ['wide','16:9','smart.sizeRatioWide'],
+    ['ultrawide','21:9','smart.sizeRatioUltrawide'],
+    ['ultratall','9:21','smart.sizeRatioUltratall'],
+    ['portrait14','1:4','smart.sizeRatioPortrait14'],
+    ['landscape14','4:1','smart.sizeRatioLandscape14'],
+    ['portrait18','1:8','smart.sizeRatioPortrait18'],
+    ['landscape18','8:1','smart.sizeRatioLandscape18'],
+];
 const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
 const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
 function trf(key, values={}){
@@ -2652,6 +2677,24 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
     const ratioKey = ratioValue && SIZE_MAP[ratioValue] ? ratioValue : 'square';
     return SIZE_MAP[ratioKey]?.[resolutionKey] || SIZE_MAP.square[resolutionKey] || SIZE_MAP.square['1k'];
 }
+// 当前模型实际支持的宽高比：服务商能力表优先，其次 model_specs.json，都缺失时返回 null（不过滤）。
+function apiImageAllowedAspectRatios(sourceSettings=settings){
+    const model = String(sourceSettings?.model || '').trim();
+    if(!model) return null;
+    const providerId = String(sourceSettings?.provider_id || '').trim();
+    const provider = apiProviderById(providerId) || {};
+    const fromProvider = (provider?.image_model_capabilities || {})[model]?.aspect_ratios;
+    if(Array.isArray(fromProvider) && fromProvider.length) return fromProvider.map(item => String(item || '').trim()).filter(Boolean);
+    const fromSpec = (modelSpecs?.image_models || {})[model]?.parameters?.aspect_ratio?.options;
+    if(Array.isArray(fromSpec) && fromSpec.length) return fromSpec.map(item => String(item || '').trim()).filter(Boolean);
+    return null;
+}
+function apiImageRatioPresets(sourceSettings=settings){
+    const allowed = apiImageAllowedAspectRatios(sourceSettings);
+    if(!allowed) return IMAGE_RATIO_PRESETS.slice();
+    const current = IMAGE_RATIO_PRESETS.find(([value]) => value === sourceSettings?.ratio)?.[1];
+    return IMAGE_RATIO_PRESETS.filter(([, ratio]) => allowed.includes(ratio) || ratio === current);
+}
 function apiImageUsesExplicitResolution(sourceSettings=settings){
     if(String(sourceSettings?.engine || '') !== 'api') return true;
     const providerId = String(sourceSettings?.provider_id || '').trim();
@@ -2961,7 +3004,9 @@ function ratioLabel(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
     const sourceLabel = sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
-    const map = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:sourceLabel, custom:settings[customKey] || tr('smart.custom')};
+    const map = Object.fromEntries(IMAGE_RATIO_PRESETS.map(([value, ratio]) => [value, ratio]));
+    map.source = sourceLabel;
+    map.custom = settings[customKey] || tr('smart.custom');
     return map[settings[ratioKey] || 'square'] || '1:1';
 }
 function gcdInt(a, b){
@@ -3136,8 +3181,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const currentCustomRatio = settings[customRatioKey] || (currentRatio === 'source' ? sourceImageRatioLabel(prefix) : '');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     const ratios = [
-        ['square','1:1',tr('smart.sizeRatioSquare')], ['portrait','2:3',tr('smart.sizeRatioPortrait')], ['landscape','3:2',tr('smart.sizeRatioLandscape')], ['portrait43','3:4',tr('smart.sizeRatioPortrait')], ['landscape43','4:3',tr('smart.sizeRatioLandscape')],
-        ['story','9:16',tr('smart.sizeRatioStory')], ['wide','16:9',tr('smart.sizeRatioWide')], ['ultrawide','21:9',tr('smart.sizeRatioUltrawide')], ['ultratall','9:21',tr('smart.sizeRatioUltratall')],
+        ...apiImageRatioPresets(prefix ? null : settings).map(([value, ratio, labelKey]) => [value, ratio, tr(labelKey)]),
         ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || tr('smart.sizeRatioSource'), tr('smart.sizeRatioSourceAdaptive')]] : [])
     ];
     if(!prefix && !apiImageUsesExplicitResolution(settings)){
