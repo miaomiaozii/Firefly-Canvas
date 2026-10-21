@@ -774,3 +774,213 @@ test('groupImageGridLayout: 完美网格优先（源码注释→断言）+ maxTh
     assert.equal(evaluate(ctx, 'groupImageGridLayout(0, 100, 100, 480).cols'), 0);
     assert.equal(evaluate(ctx, 'Number.isNaN(groupImageGridLayout(0, 100, 100, 480).rows)'), true);
 });
+
+// ---------- 宫格拼接数学（join/split 的纯几何核心） ----------
+
+test('gridJoinAutoDims: cols=ceil(√count)，rows=ceil(count/cols)（正方形化）', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinAutoDims');
+    assert.deepEqual(fromContext(f(0)), { rows: 1, cols: 1 }, '0 → max(1,0) → 1×1（钉现状）');
+    assert.deepEqual(fromContext(f(1)), { rows: 1, cols: 1 });
+    assert.deepEqual(fromContext(f(2)), { rows: 1, cols: 2 }, 'cols=ceil(√2)=2');
+    assert.deepEqual(fromContext(f(3)), { rows: 2, cols: 2 }, 'rows=ceil(3/2)=2');
+    assert.deepEqual(fromContext(f(4)), { rows: 2, cols: 2 });
+    assert.deepEqual(fromContext(f(5)), { rows: 2, cols: 3 }, 'cols=ceil(√5)=3, rows=ceil(5/3)=2');
+    assert.deepEqual(fromContext(f(8)), { rows: 3, cols: 3 }, 'rows=ceil(8/3)=3');
+    assert.deepEqual(fromContext(f(9)), { rows: 3, cols: 3 });
+    assert.deepEqual(fromContext(f(10)), { rows: 3, cols: 4 }, 'cols=ceil(√10)=4, rows=ceil(10/4)=3');
+});
+
+test('gridJoinNaturalSize: natural_w/width/cache 优先级 + 512 兜底 + min 1', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinNaturalSize');
+    assert.deepEqual(fromContext(f({ item: { natural_w: 800, natural_h: 600 }, index: 0 })), { w: 800, h: 600 });
+    assert.deepEqual(fromContext(f({ item: { width: 400, height: 300 }, index: 1 })), { w: 400, h: 300 }, 'natural_w 缺失 → width');
+    assert.deepEqual(fromContext(f({ item: { natural_w: 100, natural_h: 50, width: 999, height: 999 } })), { w: 100, h: 50 }, 'natural_* 优先');
+    evaluate(ctx, 'gridJoinImageCache.set(7, {naturalWidth: 640, naturalHeight: 480})');
+    assert.deepEqual(fromContext(f({ item: {}, index: 7 })), { w: 640, h: 480 }, 'image 字段缺失 → 缓存');
+    assert.deepEqual(fromContext(f({ item: {} })), { w: 512, h: 512 }, '全缺 → 512 兜底');
+    assert.deepEqual(fromContext(f()), { w: 512, h: 512 }, 'entry undefined → 512');
+    assert.deepEqual(fromContext(f({ item: { natural_w: 0.4, natural_h: 0.2 } })), { w: 1, h: 1 }, 'min 1');
+    assert.deepEqual(fromContext(f({ item: { natural_w: 0, natural_h: 200 } })), { w: 512, h: 200 }, '0 视为缺失 → 512（钉现状）');
+});
+
+test('gridJoinBaseCellSize: 最大边 420 上限等比缩放 + 小图 scale=1 + 空列表 1×1', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinBaseCellSize');
+    assert.deepEqual(fromContext(f([{ item: { natural_w: 800, natural_h: 600 } }, { item: { natural_w: 400, natural_h: 400 } }])),
+        { w: 420, h: 315, scale: 0.525 }, 'scale=420/800=0.525；h=round(600*0.525)');
+    assert.deepEqual(fromContext(f([{ item: { natural_w: 100, natural_h: 50 } }])),
+        { w: 100, h: 50, scale: 1 }, '小图不放大');
+    assert.deepEqual(fromContext(f([])), { w: 1, h: 1, scale: 1 }, '空列表 → max(1, ...) = 1（钉现状）');
+});
+
+test('gridJoinItemDisplaySize: 纯 round + min 1（entry 参数不参与）', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinItemDisplaySize');
+    assert.deepEqual(fromContext(f({}, { w: 63.5, h: 20.25 })), { w: 64, h: 20 }, 'round(63.5)=64, round(20.25)=20');
+    assert.deepEqual(fromContext(f({}, { w: 0.4, h: 0.2 })), { w: 1, h: 1 }, 'round(0.4)=0 → min 1');
+    assert.deepEqual(fromContext(f({}, { w: 100, h: 50 })), { w: 100, h: 50 });
+});
+
+test('gridJoinVisualOrder: items 按 y 再 x 排序 → Number(index) 序列；layout 缺省 → []', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinVisualOrder');
+    assert.deepEqual(fromContext(f({ items: [
+        { index: 2, x: 10, y: 30 }, { index: 1, x: 0, y: 30 }, { index: 0, x: 0, y: 0 },
+    ]})), [0, 1, 2], 'y 优先；同 y 按 x');
+    assert.deepEqual(fromContext(f({ items: [
+        { index: 0, x: 0, y: 5 }, { index: 1, x: 9, y: 2 }, { index: 2, x: 1, y: 2 },
+    ]})), [2, 1, 0]);
+    assert.deepEqual(fromContext(f({ items: [{ index: '3', x: 0, y: 0 }] })), [3], 'index 字符串 → Number');
+    assert.deepEqual(fromContext(f({})), [], 'items 缺失 → []');
+    assert.deepEqual(fromContext(f(null)), [], 'layout null → []');
+    assert.deepEqual(fromContext(f()), [], '缺省参数 = gridJoinLayout（null）→ []');
+    // 不修改入参（slice）。
+    const items = [{ index: 1, x: 0, y: 5 }, { index: 0, x: 0, y: 0 }];
+    const before = items.map(i => i.index);
+    f({ items });
+    assert.deepEqual(items.map(i => i.index), before, '入参顺序不变');
+});
+
+test('gridJoinDragTarget: 排除自己 + inside 优先于 score + score < max(双方最大边)×0.55 门', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridJoinDragTarget');
+    const setLayout = () => evaluate(ctx, 'gridJoinLayout = {rows: 1, cols: 3, cellW: 100, cellH: 100, gap: 10, items: [' +
+        '{index:0, x:0, y:0, w:200, h:200}, {index:1, x:0, y:60, w:300, h:300}, {index:2, x:310, y:130, w:100, h:100}]}');
+    const idxOf = () => {
+        const r = f();
+        return r === null ? null : fromContext(r).index;
+    };
+
+    // 无拖拽/无布局 → null。
+    setLayout();
+    evaluate(ctx, 'gridJoinDrag = null');
+    assert.equal(idxOf(), null);
+    evaluate(ctx, 'gridJoinDrag = {index:0, dx:0, dy:0}; gridJoinLayout = null');
+    assert.equal(idxOf(), null);
+    setLayout();
+
+    // 排除自己：拖 index 1（自己中心 150,210，若不排除自己会 score=0 胜出）→ 落到 index 0（score≈120.8 < 165）。
+    evaluate(ctx, 'gridJoinDrag = {index:1, dx:0, dy:0}');
+    assert.equal(idxOf(), 0, '自己格子含拖拽点但被排除；index 2 score≈212 > 165 出局');
+
+    // inside 优先于更近的 score：拖 0 → 点 (260,160)：index 1 inside（score≈120.8），
+    // index 2 非 inside 但 score≈102 更小（< 阈值 110）——若排序按 score 会错选 2。
+    evaluate(ctx, 'gridJoinDrag = {index:0, dx:160, dy:60}');
+    assert.equal(idxOf(), 1, 'inside 优先（钉 0.55 阈值内的非 inside 候选被压过）');
+
+    // 纯 score 路径：拖 2 → 点 (100,-5)：index 0 非 inside（cy<0），score=105 < 110 → 中选。
+    evaluate(ctx, 'gridJoinDrag = {index:2, dx:-260, dy:-185}');
+    assert.equal(idxOf(), 0);
+
+    // 阈值门：拖 0 → 点 (260,430)：两者 score 均超阈值 → null。
+    evaluate(ctx, 'gridJoinDrag = {index:0, dx:160, dy:330}');
+    assert.equal(idxOf(), null, 'score ≈246/≈269 均 > 110');
+
+    // 被拖 index 不在布局里 → null。
+    evaluate(ctx, 'gridJoinDrag = {index:99, dx:0, dy:0}');
+    assert.equal(idxOf(), null);
+});
+
+test('gridSplitRects（标准模式）: rows=hLines+1 / cols=vLines+1，首尾贴边、中间留 gap/2，越界格丢弃', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridSplitRects');
+    const set = (h, v, gap) => {
+        harness.elementsById.get('gridHorizontalLines').value = h;
+        harness.elementsById.get('gridVerticalLines').value = v;
+        harness.elementsById.get('gridGapSize').value = gap;
+    };
+    const rects = (w, h) => fromContext(f(w, h));
+
+    set('1', '1', '8');
+    assert.deepEqual(rects(300, 200), [
+        { row: 0, col: 0, x: 0, y: 0, w: 146, h: 96 },
+        { row: 0, col: 1, x: 154, y: 0, w: 146, h: 96 },
+        { row: 1, col: 0, x: 0, y: 104, w: 146, h: 96 },
+        { row: 1, col: 1, x: 154, y: 104, w: 146, h: 96 },
+    ], '2×2：中间线 ±gap/2，首尾贴边');
+
+    set('0', '0', '8');
+    assert.deepEqual(rects(300, 200), [{ row: 0, col: 0, x: 0, y: 0, w: 300, h: 200 }], '0 线 → 单格整幅');
+
+    set('1', '1', '0');
+    assert.deepEqual(rects(300, 200), [
+        { row: 0, col: 0, x: 0, y: 0, w: 150, h: 100 },
+        { row: 0, col: 1, x: 150, y: 0, w: 150, h: 100 },
+        { row: 1, col: 0, x: 0, y: 100, w: 150, h: 100 },
+        { row: 1, col: 1, x: 150, y: 100, w: 150, h: 100 },
+    ], 'gap 0 → 无缝');
+
+    set('1', '1', '8');
+    assert.deepEqual(rects(5, 5), [], '画布比 gap 还小 → 全部格被丢弃');
+
+    set('25', '25', '0');
+    assert.equal(rects(300, 200).length, 441, '线数钳 20 → 21×21');
+});
+
+test('gridSplitRectsCustom: gridCustomLines 切分线（去重排序）+ gap 钳 240；mode 关时走标准路径', () => {
+    const { ctx, harness } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridSplitRects');
+    const gap = harness.elementsById.get('gridGapSize');
+    const rects = (w, h) => fromContext(f(w, h));
+    const lines = (ls) => evaluate(ctx, 'gridCustomLines = ' + JSON.stringify(ls));
+    const mode = (on) => evaluate(ctx, 'gridCustomMode = ' + (on ? 'true' : 'false'));
+
+    gap.value = '8';
+    mode(true);
+    lines([{ type: 'h', pos: 0.5 }, { type: 'v', pos: 0.5 }]);
+    assert.deepEqual(rects(300, 200), [
+        { row: 0, col: 0, x: 0, y: 0, w: 146, h: 96 },
+        { row: 0, col: 1, x: 154, y: 0, w: 146, h: 96 },
+        { row: 1, col: 0, x: 0, y: 104, w: 146, h: 96 },
+        { row: 1, col: 1, x: 154, y: 104, w: 146, h: 96 },
+    ], 'h/v 各 1 线 → 2×2，与标准同形');
+
+    lines([{ type: 'v', pos: 0.25 }, { type: 'v', pos: 0.5 }, { type: 'v', pos: 0.75 }]);
+    assert.deepEqual(rects(300, 200), [
+        { row: 0, col: 0, x: 0, y: 0, w: 71, h: 200 },
+        { row: 0, col: 1, x: 79, y: 0, w: 67, h: 200 },
+        { row: 0, col: 2, x: 154, y: 0, w: 67, h: 200 },
+        { row: 0, col: 3, x: 229, y: 0, w: 71, h: 200 },
+    ], '3 条竖线 → 4 列，首末列含边距补偿差');
+
+    lines([{ type: 'h', pos: 0.5 }, { type: 'h', pos: 0.5 }, { type: 'h', pos: 0.5 }]);
+    assert.deepEqual(rects(300, 200), [
+        { row: 0, col: 0, x: 0, y: 0, w: 300, h: 96 },
+        { row: 1, col: 0, x: 0, y: 104, w: 300, h: 96 },
+    ], '重复线去重');
+
+    gap.value = '999';
+    lines([{ type: 'h', pos: 0.5 }]);
+    assert.deepEqual(rects(300, 200), [], 'gap 钳 240 → 半 gap 120 > 行高 → 全丢弃');
+    gap.value = '8';
+
+    // mode 关 → 走标准路径（自定义线被忽略）。
+    mode(false);
+    lines([{ type: 'v', pos: 0.5 }]);
+    harness.elementsById.get('gridHorizontalLines').value = '0';
+    harness.elementsById.get('gridVerticalLines').value = '0';
+    assert.deepEqual(rects(300, 200), [{ row: 0, col: 0, x: 0, y: 0, w: 300, h: 200 }]);
+});
+
+test('gridLayoutFromRects: type/grid-split + rows/cols = max(row|col)+1；空列表 1×1', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'gridLayoutFromRects');
+
+    const empty = fromContext(f([]));
+    assert.equal(empty.type, 'grid-split');
+    assert.equal(empty.rows, 1);
+    assert.equal(empty.cols, 1);
+    assert.match(empty.groupId, /^grid_/);
+
+    const r = fromContext(f([{ row: 0, col: 0 }, { row: 1, col: 2 }, { row: 0, col: 1 }]));
+    assert.equal(r.type, 'grid-split');
+    assert.equal(r.rows, 2);
+    assert.equal(r.cols, 3);
+    assert.match(r.groupId, /^grid_/);
+
+    // uid 每次不同（随机）。
+    assert.notEqual(empty.groupId, fromContext(f([])).groupId);
+});
+
