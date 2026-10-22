@@ -129,8 +129,11 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        # #167 后 javascript-syntax 是一个真的 unittest 步骤（约 1 秒），
-        # 预算必须给到 3 秒，否则超时的是语法步骤而不是分片。
+        # #167 后 javascript-syntax 是一个真的 unittest 步骤，预算必须给到
+        # 能跑完它。3 秒在空机器上够，但这个自测会在门里跑（外面同时有浏览器证据
+        # 在并行），嵌套门的 javascript-syntax 会被挤到 3 秒以上，墙钟先落在它身上，
+        # first_failure 就成了 'javascript-syntax' 而不是分片（20261022-110819 门红）。
+        # 8 秒：远高于满载时的单个普通步骤，又远小于慢分片里 test_slow 的 20 秒。
         shards = compute_unit_contract_shards(self.fixture_root)
         shard_name = next(
             name
@@ -141,7 +144,7 @@ class QualityGateTests(unittest.TestCase):
         result = self.run_gate(
             mode="trial",
             FIREFLY_TEST_MODE="1",
-            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="3",
+            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="8",
         )
 
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
