@@ -95,7 +95,20 @@ function handleAgentEvent(nodeId, event) {
                 .filter(c => c && c.type === 'text')
                 .map(c => c.text || '')
                 .join('');
-            if (text) {
+            // #222：streaming 标记只在追加增量时写入，之前没有任何地方清它。
+            // 后果是下一轮的 text_delta / thinking_delta 直接续写到上一轮末尾，
+            // 相邻两轮回复在历史区显示成一条。turn_end 就是「本轮结束」的边界，
+            // 在这里把末条流式消息定型。
+            const lastMessage = state.messages[state.messages.length - 1];
+            // 默认 state 里没有 thinking（它是在 thinking_delta 分支里懒建的），
+            // 取下标前先取好数组，不要在 [] 里读 state.thinking.length。
+            const thinking = state.thinking || [];
+            const lastThinking = thinking[thinking.length - 1];
+            const streamedThisTurn = Boolean(lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming);
+            if (lastMessage && lastMessage.streaming) delete lastMessage.streaming;
+            if (lastThinking && lastThinking.streaming) delete lastThinking.streaming;
+            // 流式增量已经把这段文本写进历史了，turn_end 再推一遇就是重复回复。
+            if (text && !streamedThisTurn) {
                 state.messages.push({ role: 'assistant', text });
             }
             break;
@@ -221,6 +234,12 @@ function sendAgentCommand(nodeId, projectId, command, options = {}) {
         const fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
         if (body !== undefined) fetchOpts.body = JSON.stringify(body);
         fetch(url, fetchOpts).catch(e => console.error(`Failed to send agent ${command}:`, e));
+        // #221：这里不能直接 return。onSuccess 是 sendAgentAbort 唯一把 status
+        // 复位成 idle 的地方，跳过它会让 WS 断开时 abort 后按钮永远停在「运行中」；
+        // steer / follow_up 的系统提示也不写进历史。请求走哪条通道是传输细节，
+        // 本地状态代的是用户意图，两条路径必须一致。
+        if (onSuccess) onSuccess(state);
+        renderAgentNode(nodeId);
         return;
     }
     state.socket.send(JSON.stringify(wsPayload));
@@ -385,6 +404,24 @@ function sendAgentConfirm(nodeId, projectId, approved) {
 }
 
 // Get status light + last line preview HTML for agent node card
+// #220：卡片状态行和节点正文原来各写一遇 switch，两处会各自漏 case——
+// retrying / crashed 就是卡片侧漏的，结果重试中和已崩溃都显示成「空闲」。
+// 状态文案只留一份表；confirm 覆盖只在卡片侧（正文另有 confirm 区），
+// 跟原来一致，不进这张表。
+const AGENT_STATUS_PRESENTATION = {
+    busy: { statusClass: 'agent-tui-status-busy', statusText: '运行中' },
+    connecting: { statusClass: 'agent-tui-status-connecting', statusText: '连接中' },
+    retrying: { statusClass: 'agent-tui-status-busy', statusText: '重试中' },
+    error: { statusClass: 'agent-tui-status-error', statusText: '错误' },
+    crashed: { statusClass: 'agent-tui-status-error', statusText: '已崩溃' },
+    disconnected: { statusClass: 'agent-tui-status-disconnected', statusText: '已断开' },
+};
+const AGENT_STATUS_IDLE = { statusClass: 'agent-tui-status-idle', statusText: '空闲' };
+
+function agentStatusPresentation(state) {
+    return AGENT_STATUS_PRESENTATION[state && state.status] || AGENT_STATUS_IDLE;
+}
+
 function agentCardStatusHtml(nodeId) {
     const state = agentTuiState.get(nodeId);
     if (!state) {
@@ -392,21 +429,7 @@ function agentCardStatusHtml(nodeId) {
     }
     
     // Determine status class and text
-    let statusClass = 'agent-tui-status-idle';
-    let statusText = '空闲';
-    if (state.status === 'busy') {
-        statusClass = 'agent-tui-status-busy';
-        statusText = '运行中';
-    } else if (state.status === 'connecting') {
-        statusClass = 'agent-tui-status-connecting';
-        statusText = '连接中';
-    } else if (state.status === 'error') {
-        statusClass = 'agent-tui-status-error';
-        statusText = '错误';
-    } else if (state.status === 'disconnected') {
-        statusClass = 'agent-tui-status-disconnected';
-        statusText = '已断开';
-    }
+    let { statusClass, statusText } = agentStatusPresentation(state);
     
     // Waiting for confirmation overrides other statuses
     if (state.confirm) {
@@ -437,34 +460,7 @@ function agentNodeBodyHtml(node) {
     const projectId = canvasId || '';
 
     // Determine status indicator
-    let statusClass = 'agent-tui-status-idle';
-    let statusText = '空闲';
-    switch (state.status) {
-        case 'busy':
-            statusClass = 'agent-tui-status-busy';
-            statusText = '运行中';
-            break;
-        case 'connecting':
-            statusClass = 'agent-tui-status-connecting';
-            statusText = '连接中';
-            break;
-        case 'retrying':
-            statusClass = 'agent-tui-status-busy';
-            statusText = '重试中';
-            break;
-        case 'error':
-            statusClass = 'agent-tui-status-error';
-            statusText = '错误';
-            break;
-        case 'crashed':
-            statusClass = 'agent-tui-status-error';
-            statusText = '已崩溃';
-            break;
-        case 'disconnected':
-            statusClass = 'agent-tui-status-disconnected';
-            statusText = '已断开';
-            break;
-    }
+    let { statusClass, statusText } = agentStatusPresentation(state);
 
     // Render thinking (hidden by default, toggleable via 💭 button)
     let thinkingHtml = '';

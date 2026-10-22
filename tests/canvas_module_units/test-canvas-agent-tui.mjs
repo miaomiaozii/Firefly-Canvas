@@ -284,14 +284,16 @@ test('handleAgentEvent: message_update 文本增量续写 streaming 消息，非
     let messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
     assert.deepEqual(messages, [{ role: 'assistant', text: 'Hello', streaming: true }]);
 
-    // 实测行为：turn_end **不会**把之前 streaming 的消息收尾（见 #222），
-    // 所以空 content 的 turn_end 后紧接的增量仍追到同一条。这里钉当前行为，
-    // 不把它当“应然”——收尾缺失已单独开 issue。
+    // #222：turn_end 必须把本轮 streaming 消息收尾。之前它从不收尾，
+    // 下一轮的 text_delta 会直接拼到上一轮末尾，两轮回复显示成一条。
     handle('n1', { type: 'turn_end', message: { content: [] } });
+    messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.deepEqual(messages, [{ role: 'assistant', text: 'Hello' }],
+        'turn_end 要把 streaming 标记清掉，把本轮回复定型');
     handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Next' } });
     messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
-    assert.equal(messages.length, 1);
-    assert.deepEqual(messages[0], { role: 'assistant', text: 'HelloNext', streaming: true });
+    assert.equal(messages.length, 2, '收尾后的新一轮增量必须新起一条，不能拼到上一轮');
+    assert.deepEqual(messages[1], { role: 'assistant', text: 'Next', streaming: true });
 
     // 非 streaming 末尾时必须是新起一条（用 turn_end 带 content 做对照）。
     handle('n2', { type: 'turn_end', message: { content: [{ type: 'text', text: 'done' }] } });
@@ -302,8 +304,20 @@ test('handleAgentEvent: message_update 文本增量续写 streaming 消息，非
         { role: 'assistant', text: 'New', streaming: true },
     ]);
     handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'other' } });
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages').length), 1,
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages').length), 2,
         '不认识的 assistantMessageEvent.type 不能改动消息列表');
+});
+
+test('handleAgentEvent: turn_end 带着流式已输出过的同一段文本时不能重复推入（#222）', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hel' } });
+    handle('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'lo' } });
+    // 服务商同时在 turn_end 里给完整 content：流式增量已经写过这段，
+    // 再推一条就是历史区出现重复回复。
+    handle('n1', { type: 'turn_end', message: { content: [{ type: 'text', text: 'Hello' }] } });
+    const messages = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
+    assert.deepEqual(messages, [{ role: 'assistant', text: 'Hello' }]);
 });
 
 test('handleAgentEvent: thinking_delta 存进 state.thinking，不污染 messages', () => {
@@ -474,24 +488,41 @@ test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort
         'abort 必须把 status 复位，否则按钮永远停在运行中');
 });
 
-test('sendAgentCommand: WS 未连接时只发 HTTP 请求（不碰本地状态——缺口见 #221）', () => {
+test('sendAgentCommand: WS 未连接走 HTTP，但 onSuccess 必须照样执行（#221）', () => {
     const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
     evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
     fn(ctx, 'sendAgentCommand')('n1', 'proj/2', 'steer', {
         body: { message: 'm' },
         wsPayload: { type: 'steer', message: 'm' },
+        onSuccess: (state) => state.messages.push({ role: 'system', text: 'steered' }),
     });
     assert.equal(ws.sent.length, 0);
     assert.equal(fetchCalls.length, 1);
     assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/steer');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: 'm' });
+    // 本地状态表的是用户意图，跟走哪条通道无关。之前 HTTP 路径直接 return，
+    // onSuccess（abort 唯一复位 idle 的地方）被整个跳过。
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages.length')), 1,
+        'onSuccess 必须在 HTTP 路径也执行');
     // body 未提供时不带 body 字段（abort 走这条）。
     fn(ctx, 'sendAgentCommand')('n1', 'p1', 'abort', { wsPayload: { type: 'abort' } });
     // 不能用 fromContext：harness.mjs:287 是 JSON 往返，对 undefined 会抛。
     assert.equal(fetchCalls[1].opts.body, undefined);
 });
 
-test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body），onSuccess 不执行', () => {
+test('sendAgentAbort: WS 已断开时走 HTTP，状态仍必须复位成 idle（#221）', () => {
+    const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
+    evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
+    fn(ctx, 'sendAgentAbort')('n1', 'proj/2');
+    assert.equal(ws.sent.length, 0, 'ws 不可用，什么都不走 socket');
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/abort');
+    // 用户可见症状全在这里：复位 idle 是 onSuccess 里做的，跳过它按钮就永远 disabled。
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
+        'HTTP 回退路径也必须复位 status，否则 abort 后永远显示“运行中”');
+});
+
+test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body），系统消息照样回写', () => {
     const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
     evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
     fn(ctx, 'sendAgentSteer')('n1', 'proj/2', '往左');
@@ -502,8 +533,9 @@ test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body
     assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: '往左' });
     assert.equal(fromContext(fetchCalls[1].url), '/api/projects/p1/agent-nodes/n1/follow_up');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { message: '下一步' });
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages.length')), 0,
-        '#221：HTTP 路径不执行 onSuccess（系统消息不回写本地，钉现状，待修）');
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')),
+        [{ role: 'system', text: '↪ steer: 往左' }, { role: 'system', text: '⏳ follow_up queued: 下一步' }],
+        '#221：HTTP 路径也要回写系统提示，不然历史区少一条记录');
 });
 
 test('sendAgentConfirm: 无 confirm 时完全不动作；有 confirm 时清标记、置 busy、带 confirm_id', () => {
@@ -583,7 +615,7 @@ test('cleanupAgentTuiState: socket.close() 抛错也不能中断删除', () => {
 });
 
 // ── 卡片状态行 ───────────────────────────────────────────────────────
-test('agentCardStatusHtml: 无会话时给空闲；四种状态映射到各自 class/文案', () => {
+test('agentCardStatusHtml: 无会话时给空闲；六种状态映射到各自 class/文案', () => {
     const { ctx } = loadAgentTuiModule();
     const card = fn(ctx, 'agentCardStatusHtml');
     assert.equal(fromContext(card('missing')),
@@ -591,7 +623,10 @@ test('agentCardStatusHtml: 无会话时给空闲；四种状态映射到各自 c
     for (const [status, cls, text] of [
         ['busy', 'agent-tui-status-busy', '运行中'],
         ['connecting', 'agent-tui-status-connecting', '连接中'],
+        // #220：这两个以前在卡片侧没有映射，掉进默认分支→显示「空闲」。
+        ['retrying', 'agent-tui-status-busy', '重试中'],
         ['error', 'agent-tui-status-error', '错误'],
+        ['crashed', 'agent-tui-status-error', '已崩溃'],
         ['disconnected', 'agent-tui-status-disconnected', '已断开'],
     ]) {
         evaluate(ctx, `getAgentTuiState("n-${status}").status = ${JSON.stringify(status)}`);
@@ -629,6 +664,25 @@ test('agentCardStatusHtml: confirm 挂起时覆盖成「等待确认」', () => 
 });
 
 // ── 节点体渲染 ───────────────────────────────────────────────────────
+test('agentCardStatusHtml 与 agentNodeBodyHtml 对同一状态必须给同一文案（#220）', () => {
+    // 两处各自一遍 switch 就是这次不一致的根因，所以钉「两处一致」而不只钉文案。
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentCardStatusHtml');
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    const statusText = (html, scope) => {
+        const match = new RegExp(`class="agent-${scope}-status agent-tui-status-[a-z]+">([^<]*)<`).exec(html);
+        assert.ok(match, `没找到 ${scope} 状态文案: ${html}`);
+        return match[1];
+    };
+    for (const status of ['busy', 'connecting', 'retrying', 'error', 'crashed', 'disconnected', 'idle']) {
+        const nodeId = `n-${status}`;
+        evaluate(ctx, `getAgentTuiState("${nodeId}").status = ${JSON.stringify(status)}`);
+        const fromCard = statusText(fromContext(card(nodeId)), 'card');
+        const fromBody = statusText(fromContext(body({ id: nodeId, type: 'agent' })), 'tui');
+        assert.equal(fromCard, fromBody, `${status}：卡片“${fromCard}” vs 正文“${fromBody}”`);
+    }
+});
+
 test('agentNodeBodyHtml: retrying→重试中、crashed→已崩溃（卡片行没有这两个映射，见 #220）', () => {
     const { ctx } = loadAgentTuiModule();
     const body = fn(ctx, 'agentNodeBodyHtml');
