@@ -23,6 +23,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "static" / "js" / "smart-canvas.js"
 
 DOCUMENTED_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "9:21"]
+
+
+def _node_executable() -> str:
+    """与 tests/test_canvas_module_units.py 同口径：先取质量门受信 node，回退 PATH。
+
+    裸 "node" 在门内会被 sitecustomize 守卫拒：
+    PermissionError: quality gate denied node arguments（20261022-112044 trial）。
+    """
+    from tools.quality_gate import trusted_node_executable
+
+    trusted = trusted_node_executable()
+    if Path(trusted).is_file():
+        return trusted
+    found = shutil.which("node")
+    return found if found else trusted
 EXTREME_RATIOS = ["1:4", "4:1", "8:1", "1:8"]
 
 
@@ -88,13 +103,19 @@ console.log(JSON.stringify({{
   ratioValueAfter: (IMAGE_RATIO_PRESETS.find(([value]) => value === settings.ratio) || [])[1],
 }}));
 """
-        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False, encoding="utf-8") as handle:
-            handle.write(harness)
-            path = handle.name
-        try:
-            completed = subprocess.run(["node", path], capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
-        finally:
-            Path(path).unlink(missing_ok=True)
+        # 走 `node -e`，不往 %TEMP% 落脚本：门对 node 的放行只有
+        # 「恰 2 参数且 operation ∈ {-e, --check}」或「单个 tests/ 开头的 .mjs 路径」
+        # （tools/quality_gate.py:938-946）。临时文件的绝对路径两个都不满足，在门里
+        # 直接 PermissionError: quality gate denied node arguments（20261022-112044）。
+        # harness 是纯脚本（无 import/export），-e 能跑。
+        completed = subprocess.run(
+            [_node_executable(), "-e", harness],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+        )
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
         return json.loads(completed.stdout)
 
