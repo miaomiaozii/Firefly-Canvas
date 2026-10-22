@@ -246,9 +246,17 @@ class ProviderFamilyContractTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 400, response.text)
                         detail = response.json()["detail"]
                         self.assertEqual(detail["code"], "no_compatible_image_model")
-                        self.assertEqual(
-                            detail["message"],
-                            "没有手动固定的模型完整支持本次请求（不兼容参数：size, width, height, aspect_ratio, resolution）",
+                        # 契约钉的是结构化字段和参数清单，不是整条文案。
+                        # 6656f70 往 message 里加了「该模型支持什么、本次请求是什么」
+                        # 的能力提示，整串相等断言当场过期（16 个 family 全红）。
+                        message = detail["message"]
+                        self.assertTrue(
+                            message.startswith("没有手动固定的模型完整支持本次请求"),
+                            message,
+                        )
+                        self.assertIn(
+                            "（不兼容参数：size, width, height, aspect_ratio, resolution）",
+                            message,
                         )
                         self.assertEqual(
                             detail["incompatible_parameters"],

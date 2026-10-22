@@ -28,6 +28,16 @@ for _m in ("infinite_canvas_main",):
             sys.modules.pop(_k, None)
 import os as _os
 _os.environ.pop("FIREFLY_MAIN_MODULE", None)
+# Routers resolve their main module once, at import time
+# (`_app_main = sys.modules.get(FIREFLY_MAIN_MODULE) or ...`). main.py imported the
+# routers while FIREFLY_MAIN_MODULE still pointed at APP, so all of them captured APP.
+# Popping APP from sys.modules does not undo those references: later tests in the same
+# process patch the *real* main's CANVAS_DIR/OUTPUT_DIR and then get 404 画布不存在,
+# because the router still reads the repo's real data/. Re-point them explicitly.
+import main as _real_main
+for _name, _module in list(sys.modules.items()):
+    if _name.startswith("app.routers.") and getattr(_module, "_app_main", None) is APP:
+        _module._app_main = _real_main
 # restore services binding to the real main module if it was already imported
 try:
     import app.services as _services
@@ -505,6 +515,44 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         data = FakeAsyncClient.last_post["data"]
         self.assertNotIn("aspect_ratio", data)
         self.assertNotIn("image_size", data)
+
+
+class MainModuleBindingIsolationTests(unittest.TestCase):
+    """红线回归：exec main.py 不能把 router 的 _app_main 留在假 main 上。
+
+    app/routers/*.py 在 import 时一次性取
+    `_app_main = sys.modules.get(FIREFLY_MAIN_MODULE) or sys.modules.get("main") or __main__`。
+    本模块把 main.py 以 infinite_canvas_main 这个名字 exec 出来，main.py 顺便 import 了
+    router，router 就绑在这个假 main 上。sys.modules 里把假 main 弹掉并不会撤销那个引用：
+    之后别的测试 patch 真 main 的 CANVAS_DIR / OUTPUT_DIR 全部失效——测试写临时目录，
+    router 读仓库真实 data/，表现为 404「画布不存在」。
+    门按实测耗时做 LPT 装箱，谁跟谁同片、谁排第一都会随耗时漂移变（20261021-210356
+    门红：banana 排到片首，同片 17 个红），所以不能指望分片顺序兼带屏蔽。
+    """
+
+    def test_routers_stay_bound_to_the_real_main(self):
+        import main as real_main
+
+        # 46 个 router 文件里只有部分真的有 _app_main 这个绑定（api_app_info、
+        # api_view、__init__ 没有），没有绑定的不可能被污染。从文件本身算出该检查
+        # 哪些，避开硬编码、也避开 polluted 因为「根本没导入」而真空通过。
+        router_dir = ROOT / "app" / "routers"
+        expected = sorted(
+            f"app.routers.{path.stem}"
+            for path in router_dir.glob("*.py")
+            if "_app_main" in path.read_text(encoding="utf-8")
+        )
+        bound = [name for name in expected if name in sys.modules]
+        # app/routers/http.py 是 auto-split 留下的空壳（只有 APIRouter()，没有任何
+        # @router. 装饰器，也没人 import），所以覆盖面临时按「已导入的」算，并用下限
+        # 防 polluted 因为「几乎没导入」而真空通过。
+        self.assertGreaterEqual(
+            len(bound), 40, f"只检查到 {len(bound)} 个 router，这个检查会失去意义"
+        )
+        polluted = sorted(
+            name for name in bound if getattr(sys.modules[name], "_app_main", None) is not real_main
+        )
+        self.assertEqual(polluted, [], f"这些 router 还绑在别的 main 上：{polluted}")
 
 
 if __name__ == "__main__":
