@@ -160,6 +160,18 @@ console.log(JSON.stringify({{
         self.assertNotIn("ratio === current", body.replace(" ", ""))
         self.assertIn("allowed.includes(ratio)", body)
 
+    def test_generation_request_paths_align_ratio_before_size_is_derived(self):
+        source = (REPO_ROOT / "static" / "js" / "canvas-generation-tasks.js").read_text(encoding="utf-8")
+        calls = list(re.finditer(r"alignRatioToModel\(runSettings\);", source))
+        self.assertEqual(len(calls), 2, "both image send paths must align before building the payload")
+        for match in calls:
+            self.assertIn("sizeForRun(runSettings)", source[match.end():match.end() + 1200])
+
+    def test_changed_frontend_files_get_a_fresh_cache_buster(self):
+        html = (REPO_ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
+        versions = dict(re.findall(r'/static/js/([a-z-]+\.js)\?v=([0-9.]+)', html))
+        self.assertEqual(versions["smart-canvas.js"], versions["canvas-generation-tasks.js"])
+
     def test_ratio_alignment_runs_on_model_switch_and_on_picker_render(self):
         source = SOURCE.read_text(encoding="utf-8")
         self.assertRegex(source, r"if\(key === 'model'\)\s*alignRatioToModel\(settings\);")
