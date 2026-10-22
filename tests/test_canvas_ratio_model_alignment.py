@@ -60,6 +60,11 @@ def _slice_balanced(source: str, header: str) -> str:
 class CanvasRatioModelAlignmentTests(unittest.TestCase):
     maxDiff = None
 
+    def setUp(self):
+        # 两个用例以完全相同的参数进 node（评审指出的重复起进程），
+        # harness 是纯函数没副作用，按入参缓存一次执行就够。
+        self._node_results = {}
+
     @classmethod
     def setUpClass(cls):
         if shutil.which("node") is None:
@@ -81,6 +86,9 @@ class CanvasRatioModelAlignmentTests(unittest.TestCase):
                 raise AssertionError(f"missing {name} in {SOURCE}")
 
     def _run(self, provider_capabilities: dict, model_specs: dict, settings: dict) -> dict:
+        cache_key = json.dumps([provider_capabilities, model_specs, settings], sort_keys=True)
+        if cache_key in self._node_results:
+            return self._node_results[cache_key]
         harness = f"""
 {self.snippets['IMAGE_RATIO_PRESETS']}
 {self.snippets['IMAGE_RATIO_PRESET_KEYS_BY_RATIO']}
@@ -93,12 +101,17 @@ const PROVIDER = {{id: "p", image_model_capabilities: {json.dumps(provider_capab
 const modelSpecs = {json.dumps(model_specs)};
 function apiProviderById(id) {{ return id === "p" ? PROVIDER : null; }}
 const settings = {json.dumps(settings)};
+// alignRatioToModel 会 console.info 一条「旧→新」；劫持它才能断言日志真的接上了
+// （console.log 要留给下面的 JSON 输出）。
+const __info = [];
+console.info = (...args) => __info.push(args.join(' '));
 const before = apiImageRatioPresets(settings).map(([, ratio]) => ratio);
 const aligned = alignRatioToModel(settings);
 console.log(JSON.stringify({{
   allowed: apiImageAllowedAspectRatios(settings),
   presetsBefore: before,
   aligned,
+  info: __info,
   ratioAfter: settings.ratio,
   ratioValueAfter: (IMAGE_RATIO_PRESETS.find(([value]) => value === settings.ratio) || [])[1],
 }}));
@@ -117,7 +130,8 @@ console.log(JSON.stringify({{
             errors="replace",
         )
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
-        return json.loads(completed.stdout)
+        self._node_results[cache_key] = json.loads(completed.stdout)
+        return self._node_results[cache_key]
 
     def test_gpt_model_chip_list_excludes_extreme_ratios_it_cannot_render(self):
         result = self._run(
@@ -135,6 +149,8 @@ console.log(JSON.stringify({{
             {"model": "gpt-image-2.5-flare", "provider_id": "p", "ratio": "portrait14"},
         )
         self.assertEqual(result["aligned"], "1:4→9:21")
+        # 提交信息里承诺的「日志记 [ratio] 1:4→9:21」必须真能看见，否则用户只看到比例默默跳了一格。
+        self.assertEqual(result["info"], ["[ratio] 1:4→9:21"])
         self.assertEqual(result["ratioAfter"], "ultratall")
         self.assertEqual(result["ratioValueAfter"], "9:21")
 
@@ -145,6 +161,7 @@ console.log(JSON.stringify({{
             {"model": "nano-banana-2", "provider_id": "p", "ratio": "portrait14"},
         )
         self.assertEqual(result["aligned"], "")
+        self.assertEqual(result["info"], [], "已支持的比例不应记日志")
         self.assertEqual(result["ratioAfter"], "portrait14")
         self.assertIn("1:4", result["presetsBefore"])
 
@@ -153,6 +170,7 @@ console.log(JSON.stringify({{
         self.assertIsNone(result["allowed"])
         self.assertEqual(len(result["presetsBefore"]), 15)
         self.assertEqual(result["aligned"], "")
+        self.assertEqual(result["info"], [], "能力表缺失时不应记日志，也不应动用户选择")
         self.assertEqual(result["ratioAfter"], "portrait14")
 
     def test_ratio_presets_no_longer_keep_unsupported_current_ratio(self):

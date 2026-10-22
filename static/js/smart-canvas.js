@@ -2715,7 +2715,11 @@ function alignRatioToModel(sourceSettings=settings){
     if(!ranked.length) return '';
     const nearest = ranked.reduce((best, item) => Math.abs(item.log - currentLog) < Math.abs(best.log - currentLog) ? item : best, ranked[0]);
     sourceSettings.ratio = IMAGE_RATIO_PRESET_KEYS_BY_RATIO[nearest.ratio] || 'square';
-    return `${current}→${nearest.ratio}`;
+    const change = `${current}→${nearest.ratio}`;
+    // 比例被当场改掉必须留下痕迹：用户只看到比例跳了一格时， Console 能回答「为什么改我选的」。
+    // 记在函数内而不是各调用点，四个入口（面板渲染、切模型、两条发图路径）行为一致。
+    console.info(`[ratio] ${change}`);
+    return change;
 }
 function apiImageUsesExplicitResolution(sourceSettings=settings){
     if(String(sourceSettings?.engine || '') !== 'api') return true;
