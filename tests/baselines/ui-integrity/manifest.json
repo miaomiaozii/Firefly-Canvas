@@ -2,15 +2,15 @@
   "schema_version": 1,
   "contract": "desktop-ui-integrity",
   "accepted": true,
-  "accepted_by": "pi-agent #183",
-  "reason": "refresh UI baselines with the pointer parked before every capture, so :hover state cannot leak into the visual contract",
-  "accepted_at": "2026-10-15T15:56:39.614532+00:00",
+  "accepted_by": "user #154收尾 选项1",
+  "reason": "尺寸面板 preset 自 1e03602/5dbac0a 起新增 4:5、5:4 等档位，把 9:16 顶出 5 个视口的可视区；已逐张核对差异仅限该面板，443d3a3 候选与旧基线一致（判红指标 peak_delta 136>48）",
+  "accepted_at": "2026-10-22T17:20:45.721576+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
       "name": "Google Chrome",
       "channel": "stable",
-      "version": "Chrome/155.0.8059.40"
+      "version": "Chrome/155.0.8059.80"
     },
     "dpr": 1,
     "color_scheme": "light",
@@ -44,7 +44,7 @@
       ],
       "scene": "composer-size",
       "path": "1920x1080/composer-size.png",
-      "sha256": "977b1629f997b496156479e1f3eeacdbbc59ba6e4fad3dbc50ab0a19395a01ab"
+      "sha256": "38b0126bf2ee199062ad23b1c64b17c59eac123cd7d02a4a4d6a3645d71021a1"
     },
     {
       "viewport": [
@@ -116,7 +116,7 @@
       ],
       "scene": "composer-size",
       "path": "1440x900/composer-size.png",
-      "sha256": "24e6fb6bdcf13d6b869fc54880dee7fc3e24cb1ed3663a1e7afd9be44e859917"
+      "sha256": "342c51627bb40b2de026625f5d10bef76333cabd28080f04917d7d606d3e579e"
     },
     {
       "viewport": [
@@ -188,7 +188,7 @@
       ],
       "scene": "composer-size",
       "path": "1280x720/composer-size.png",
-      "sha256": "60d04836d2c50e4908b31a43ecbf51cedf474da3f0ba277a407180c2fa134fb2"
+      "sha256": "bd766e8ffa6fad58a94d0b5c734c507dd09dc12dfa4abd5e6d81a12fbfc6c578"
     },
     {
       "viewport": [
@@ -260,7 +260,7 @@
       ],
       "scene": "composer-size",
       "path": "1024x768/composer-size.png",
-      "sha256": "a999ef7b2f493aee7f5f5bf3262ee0350a90361202fdf6942d16308c259a6c56"
+      "sha256": "56059016c45956a39cedd8969ef8aca3220de513930ff03d8458cdb692c4738c"
     },
     {
       "viewport": [
@@ -332,7 +332,7 @@
       ],
       "scene": "composer-size",
       "path": "800x600/composer-size.png",
-      "sha256": "3865a5878ad01db5115dd8460607eafb489b594b3432e6af7d596309e2428f87"
+      "sha256": "621b25337745708d10c04c03d16737f4ae453aec951ba522203f46e90630e1cf"
     },
     {
       "viewport": [
@@ -377,7 +377,7 @@
       ],
       "scene": "settings",
       "path": "800x600/settings.png",
-      "sha256": "a311f14e7171f668059825c3b1d5aa07e1f2dfd48619c20b6434af23fb613838"
+      "sha256": "e13f032dcc20dcc969a0b1ade3808c3ed3ff3020d578a8b1c8e4df67f88937d0"
     },
     {
       "viewport": [
