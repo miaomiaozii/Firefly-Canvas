@@ -58,16 +58,30 @@ function connectAgentWebSocket(nodeId, projectId) {
     state.socket.onclose = () => {
         state.status = 'disconnected';
         state.socket = null;
+        finalizeAgentStreamingTurn(state);
         // Re-render to show disconnected state
         renderAgentNode(nodeId);
     };
 
     state.socket.onerror = () => {
         state.status = 'error';
+        finalizeAgentStreamingTurn(state);
     };
 
     state.status = 'connecting';
     return state.socket;
+}
+
+// 本轮结束（turn_end）或本轮永远结束不了（进程崩溃 / WS 断开 / 出错）时必须把末条
+// 流式消息定型：streaming 标记只在追加增量时写入且之前没人清，下一轮的
+// text_delta / thinking_delta 就会续写到上一轮末尾（#222 的用户可见症状）。
+function finalizeAgentStreamingTurn(state){
+    const lastMessage = state.messages[state.messages.length - 1];
+    if (lastMessage && lastMessage.streaming) delete lastMessage.streaming;
+    // 默认 state 里没有 thinking（它在 thinking_delta 分支里懒建），取下标前先取好数组。
+    const thinking = state.thinking || [];
+    const lastThinking = thinking[thinking.length - 1];
+    if (lastThinking && lastThinking.streaming) delete lastThinking.streaming;
 }
 
 function handleAgentEvent(nodeId, event) {
@@ -100,15 +114,13 @@ function handleAgentEvent(nodeId, event) {
             // 相邻两轮回复在历史区显示成一条。turn_end 就是「本轮结束」的边界，
             // 在这里把末条流式消息定型。
             const lastMessage = state.messages[state.messages.length - 1];
-            // 默认 state 里没有 thinking（它是在 thinking_delta 分支里懒建的），
-            // 取下标前先取好数组，不要在 [] 里读 state.thinking.length。
-            const thinking = state.thinking || [];
-            const lastThinking = thinking[thinking.length - 1];
             const streamedThisTurn = Boolean(lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming);
-            if (lastMessage && lastMessage.streaming) delete lastMessage.streaming;
-            if (lastThinking && lastThinking.streaming) delete lastThinking.streaming;
-            // 流式增量已经把这段文本写进历史了，turn_end 再推一遇就是重复回复。
-            if (text && !streamedThisTurn) {
+            finalizeAgentStreamingTurn(state);
+            if (text && streamedThisTurn && lastMessage && !lastMessage.text) {
+                // delta 全是空串时末条是空的，无条件跳过 turn_end 会让本轮一个字都不显示。
+                lastMessage.text = text;
+            } else if (text && !streamedThisTurn) {
+                // 流式增量已经把文本写进历史，turn_end 再推一遇就是重复回复。
                 state.messages.push({ role: 'assistant', text });
             }
             break;
@@ -181,6 +193,7 @@ function handleAgentEvent(nodeId, event) {
             break;
         case 'process_exited':
             state.status = 'crashed';
+            finalizeAgentStreamingTurn(state);
             break;
         case 'confirm': {
             // Confirmation request from agent for destructive operation
@@ -227,22 +240,30 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
 
 function sendAgentCommand(nodeId, projectId, command, options = {}) {
     const state = getAgentTuiState(nodeId);
-    const { body, wsPayload, onSuccess } = options;
+    const { body, wsPayload, optimistic, onSuccess, onFailure } = options;
     const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${command}`;
     // WebSocket not connected, use HTTP API
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
         const fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
         if (body !== undefined) fetchOpts.body = JSON.stringify(body);
-        fetch(url, fetchOpts).catch(e => console.error(`Failed to send agent ${command}:`, e));
-        // #221：这里不能直接 return。onSuccess 是 sendAgentAbort 唯一把 status
-        // 复位成 idle 的地方，跳过它会让 WS 断开时 abort 后按钮永远停在「运行中」；
-        // steer / follow_up 的系统提示也不写进历史。请求走哪条通道是传输细节，
-        // 本地状态代的是用户意图，两条路径必须一致。
-        if (onSuccess) onSuccess(state);
+        // #221：这里不能直接 return（不跑本地状态的话，WS 断开时 abort 后按钮永远
+        // 停在「运行中」），但也不能 fire-and-forget 地当成功——issue 备注原文
+        // 「别修成『失败也显示已停止』」。拆三段：optimistic 同步复位本地状态（它代的是
+        // 用户意图，与走哪条通道无关），请求真送达才写成功文案，没送达写警告。
+        if (optimistic) optimistic(state);
         renderAgentNode(nodeId);
+        fetch(url, fetchOpts).then(() => {
+            if (onSuccess) onSuccess(state);
+            renderAgentNode(nodeId);
+        }).catch(e => {
+            console.error(`Failed to send agent ${command}:`, e);
+            if (onFailure) onFailure(state, e);
+            renderAgentNode(nodeId);
+        });
         return;
     }
     state.socket.send(JSON.stringify(wsPayload));
+    if (optimistic) optimistic(state);
     if (onSuccess) onSuccess(state);
     renderAgentNode(nodeId);
 }
@@ -251,7 +272,8 @@ function sendAgentSteer(nodeId, projectId, message) {
     sendAgentCommand(nodeId, projectId, 'steer', {
         body: { message },
         wsPayload: { type: 'steer', message },
-        onSuccess: (state) => state.messages.push({ role: 'system', text: `↪ steer: ${message}` }),
+        optimistic: (state) => state.messages.push({ role: 'system', text: `↪ steer: ${message}` }),
+        onFailure: (state) => state.messages.push({ role: 'system', text: '⚠️ steer 请求未送达，可能没生效' }),
     });
 }
 
@@ -259,17 +281,18 @@ function sendAgentFollowUp(nodeId, projectId, message) {
     sendAgentCommand(nodeId, projectId, 'follow_up', {
         body: { message },
         wsPayload: { type: 'follow_up', message },
-        onSuccess: (state) => state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` }),
+        optimistic: (state) => state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` }),
+        onFailure: (state) => state.messages.push({ role: 'system', text: '⚠️ follow_up 请求未送达，可能没生效' }),
     });
 }
 
 function sendAgentAbort(nodeId, projectId) {
     sendAgentCommand(nodeId, projectId, 'abort', {
         wsPayload: { type: 'abort' },
-        onSuccess: (state) => {
-            state.status = 'idle';
-            state.messages.push({ role: 'system', text: '⏹ aborted' });
-        },
+        // 复位 idle 同步做（否则按钮卡在「运行中」），但「已停止」这句必须等请求真送达。
+        optimistic: (state) => { state.status = 'idle'; },
+        onSuccess: (state) => state.messages.push({ role: 'system', text: '⏹ aborted' }),
+        onFailure: (state) => state.messages.push({ role: 'system', text: '⚠️ 停止请求未送达，agent 可能仍在生成' }),
     });
 }
 

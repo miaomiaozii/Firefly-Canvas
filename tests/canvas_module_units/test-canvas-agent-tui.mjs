@@ -488,21 +488,27 @@ test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort
         'abort 必须把 status 复位，否则按钮永远停在运行中');
 });
 
-test('sendAgentCommand: WS 未连接走 HTTP，但 onSuccess 必须照样执行（#221）', () => {
+test('sendAgentCommand: WS 未连接走 HTTP，但 onSuccess 必须照样执行（#221）', async () => {
     const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
     evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
     fn(ctx, 'sendAgentCommand')('n1', 'proj/2', 'steer', {
         body: { message: 'm' },
         wsPayload: { type: 'steer', message: 'm' },
+        optimistic: (state) => state.messages.push({ role: 'system', text: 'optimistic' }),
         onSuccess: (state) => state.messages.push({ role: 'system', text: 'steered' }),
     });
     assert.equal(ws.sent.length, 0);
     assert.equal(fetchCalls.length, 1);
     assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/steer');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: 'm' });
+    // 同步可见的是 optimistic（它负贵让按钮不卡住），onSuccess 要等请求送达。
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')),
+        [{ role: 'system', text: 'optimistic' }], 'optimistic 必须同步跑');
+    await new Promise(resolve => setTimeout(resolve, 0));
     // 本地状态表的是用户意图，跟走哪条通道无关。之前 HTTP 路径直接 return，
     // onSuccess（abort 唯一复位 idle 的地方）被整个跳过。
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages.length')), 1,
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')),
+        [{ role: 'system', text: 'optimistic' }, { role: 'system', text: 'steered' }],
         'onSuccess 必须在 HTTP 路径也执行');
     // body 未提供时不带 body 字段（abort 走这条）。
     fn(ctx, 'sendAgentCommand')('n1', 'p1', 'abort', { wsPayload: { type: 'abort' } });
@@ -520,6 +526,72 @@ test('sendAgentAbort: WS 已断开时走 HTTP，状态仍必须复位成 idle（
     // 用户可见症状全在这里：复位 idle 是 onSuccess 里做的，跳过它按钮就永远 disabled。
     assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
         'HTTP 回退路径也必须复位 status，否则 abort 后永远显示“运行中”');
+});
+
+test('sendAgentAbort: HTTP 请求失败时不能写“⏹ aborted”，要记「未送达」警告（#221 备注）', async () => {
+    // issue 备注原文：「别修成『失败也显示已停止』」。上一轮修复只补了“按钮不卡住”，
+    // 但 fetch 是 fire-and-forget：.catch 只记 console，onSuccess 无条件跑，
+    // 请求根本没送达也会写出一条「⏹ aborted」。
+    const { ctx, fetchCalls } = loadAgentTuiModule({
+        open: false,
+        fetchResponse: () => Promise.reject(new Error('offline')),
+    });
+    evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
+    fn(ctx, 'sendAgentAbort')('n1', 'p1');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(fetchCalls.length, 1);
+    const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    // 两个要求同时成立：按钮不能卡住（#221 主症状），但也不能谎报已停止。
+    assert.equal(state.status, 'idle');
+    const texts = state.messages.map(item => item.text);
+    assert.ok(!texts.some(text => /aborted|已停止/.test(text)), `失败却写成已停止：${JSON.stringify(texts)}`);
+    assert.deepEqual(texts, ['⚠️ 停止请求未送达，agent 可能仍在生成']);
+});
+
+test('process_exited / socket.onclose 也要给末条流式消息定型（#222 同症状残留）', () => {
+    // turn_end 不来了（进程崩溃 / WS 断开），流式标记还挂在末条上，
+    // 下一轮的 delta 会直接续写进上一轮末尾——跟 #222 同一个用户可见症状。
+    const { ctx } = loadAgentTuiModule({ open: true });
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    evaluate(ctx, `(() => {
+        const state = getAgentTuiState("n1");
+        state.messages.push({ role: "assistant", text: "上一轮", streaming: true });
+        state.thinking = [{ text: "在想", streaming: true }];
+    })()`);
+    socket.onclose();
+    let state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.equal('streaming' in state.messages[0], false, '断开后 messages 末条的流式标记必须清掉');
+    assert.equal('streaming' in state.thinking[0], false, 'thinking 末条也要清，否则下轮 thinking 续写进旧块');
+
+    evaluate(ctx, `(() => {
+        const state = getAgentTuiState("n1");
+        state.messages.push({ role: "assistant", text: "出错前", streaming: true });
+    })()`);
+    socket.onerror();
+    state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.equal('streaming' in state.messages[state.messages.length - 1], false, 'onerror 也要收尾');
+
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'process_exited' });
+    evaluate(ctx, `(() => {
+        const state = getAgentTuiState("n1");
+        state.messages.push({ role: "assistant", text: "崩溃前", streaming: true });
+    })()`);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'process_exited' });
+    state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.equal('streaming' in state.messages[state.messages.length - 1], false,
+        'process_exited 同样要收尾流式消息');
+});
+
+test('turn_end：末条流式消息是空串时，正文要从 turn_end 补进来（#222 边界）', () => {
+    // 去重按「本轮是否有流式末条」判断，但如果 delta 全是空串，末条 text 为空，
+    // 无条件跳过 turn_end 会让本轮一个字都不显示。
+    const { ctx } = loadAgentTuiModule();
+    evaluate(ctx, `(() => {
+        getAgentTuiState("n1").messages.push({ role: "assistant", text: "", streaming: true });
+    })()`);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'turn_end', message: { content: [{ type: 'text', text: '完整回复' }] } });
+    const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.deepEqual(state.messages, [{ role: 'assistant', text: '完整回复' }]);
 });
 
 test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body），系统消息照样回写', () => {
