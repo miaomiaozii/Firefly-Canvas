@@ -2711,10 +2711,26 @@ function alignRatioToModel(sourceSettings=settings){
     const current = (IMAGE_RATIO_PRESETS.find(([value]) => value === sourceSettings?.ratio) || [])[1];
     const currentLog = ratioLog(current);
     if(currentLog === null || allowed.includes(current)) return '';
-    const ranked = allowed.map(ratio => ({ratio, log: ratioLog(ratio)})).filter(item => item.log !== null);
-    if(!ranked.length) return '';
-    const nearest = ranked.reduce((best, item) => Math.abs(item.log - currentLog) < Math.abs(best.log - currentLog) ? item : best, ranked[0]);
-    sourceSettings.ratio = IMAGE_RATIO_PRESET_KEYS_BY_RATIO[nearest.ratio] || 'square';
+    // 只在「预设表 ∩ 该模型能力」里取最近：反查 key 必然命中。之前先按能力清单取最近，
+    // 再查 IMAGE_RATIO_PRESET_KEYS_BY_RATIO，遇到 3:5 这种表外比例就 `|| 'square'`，
+    // 把竖图静默换成 1:1，正好违背本函数声称的「保留横竖方向」。
+    const candidates = IMAGE_RATIO_PRESETS
+        .map(([value, ratio]) => ({ value, ratio, log: ratioLog(ratio) }))
+        .filter(item => item.log !== null && allowed.includes(item.ratio));
+    if(!candidates.length) return '';
+    // 打分：对数距离 + 跨方向惩罚。纯「同方向优先」在 15 档预设表下几乎永不生效
+    // （同方向通常本来就是最近的），但一旦生效反而有害：4:5 在模型只支持 5:4 和 1:8 时
+    // 会被跳到极端的 1:8，而镜像的 5:4 明显更贴原图。ln2 ≈ 0.693 表示「宁可翻转一档，
+    // 也不跳到差一倍以上的比例」。
+    const PENALTY = Math.LN2;
+    const nearest = candidates.reduce((best, item) => {
+        // 1:1 的 log 是 0，不构成方向翻转，不加惩罚。
+        const penalty = value => (value === 0 || Math.sign(value) === Math.sign(currentLog)) ? 0 : PENALTY;
+        const score = Math.abs(item.log - currentLog) + penalty(item.log);
+        const bestScore = Math.abs(best.log - currentLog) + penalty(best.log);
+        return score < bestScore ? item : best;
+    }, candidates[0]);
+    sourceSettings.ratio = nearest.value;
     const change = `${current}→${nearest.ratio}`;
     // 比例被当场改掉必须留下痕迹：用户只看到比例跳了一格时， Console 能回答「为什么改我选的」。
     // 记在函数内而不是各调用点，四个入口（面板渲染、切模型、两条发图路径）行为一致。

@@ -178,6 +178,45 @@ console.log(JSON.stringify({{
         self.assertNotIn("ratio === current", body.replace(" ", ""))
         self.assertIn("allowed.includes(ratio)", body)
 
+    def test_nearest_supported_ratio_must_stay_on_a_renderable_preset(self):
+        # 能力清单里的比例不一定在 15 项预设表里（3:5 就是这种）。旧实现先按原始比例
+        # 取最近，再用表反查 key，查不到就 `|| 'square'`——竖图 9:16 被静默换成 1:1，
+        # 正好违背了它自己声称的「保留横竖方向」。现在只在「预设 ∩ 能力」里取最近。
+        # 9:16(log -0.575) → 3:5(-0.511) 比 9:21(-0.847) 更近，旧路径必落到反查失败。
+        result = self._run(
+            {"gpt-image-2.5-flare": {"aspect_ratios": ["3:5", "9:21", "1:1"]}},
+            {},
+            {"model": "gpt-image-2.5-flare", "provider_id": "p", "ratio": "story"},
+        )
+        self.assertEqual(result["aligned"], "9:16→9:21")
+        self.assertEqual(result["ratioAfter"], "ultratall")
+        self.assertEqual(result["ratioValueAfter"], "9:21")
+
+    def test_mild_orientation_flip_beats_a_far_more_extreme_same_orientation_preset(self):
+        # 4:5（轻竖图）在模型只支持 5:4 和 1:8 时，“同方向优先”会把它扇到极端的 1:8。
+        # 带 ln2 跨方向惩罚的打分选镜像的 5:4（0.446+0.693=1.139 < 1.856）。
+        # 把惩罚改成 Math.POSITIVE_INFINITY（等价于旧的“同方向绝对优先”）本例必红。
+        result = self._run(
+            {"model-x": {"aspect_ratios": ["5:4", "1:8"]}},
+            {},
+            {"model": "model-x", "provider_id": "p", "ratio": "portrait45"},
+        )
+        self.assertEqual(result["aligned"], "4:5→5:4")
+        self.assertEqual(result["ratioAfter"], "landscape45")
+        self.assertEqual(result["ratioValueAfter"], "5:4")
+
+    def test_far_orientation_flip_is_still_preferrable_over_a_near_cross_direction_one(self):
+        # 同一阈值的另一侧：1:8 与 9:16 同方向，差 1.504；4:3 跨方向，0.863+0.693=1.556。
+        # 同方向那一档仍赢。把惩罚改成 0（取消惩罚）本例必红（会选 4:3）。
+        result = self._run(
+            {"model-y": {"aspect_ratios": ["4:3", "1:8"]}},
+            {},
+            {"model": "model-y", "provider_id": "p", "ratio": "story"},
+        )
+        self.assertEqual(result["aligned"], "9:16→1:8")
+        self.assertEqual(result["ratioAfter"], "portrait18")
+        self.assertEqual(result["ratioValueAfter"], "1:8")
+
     def test_generation_request_paths_align_ratio_before_size_is_derived(self):
         source = (REPO_ROOT / "static" / "js" / "canvas-generation-tasks.js").read_text(encoding="utf-8")
         calls = list(re.finditer(r"alignRatioToModel\(runSettings\);", source))
