@@ -171,7 +171,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         // 节点可能残留上一个模型支持、当前模型不支持的比例（banana 的 1:4 切到
         // gpt-image 家族）：发送前先收敛到该模型支持的最接近比例，否则 aspect_ratio 与
         // 由它推导的 size 双双超能力，请求在路由预检被拒（不兼容参数：aspect_ratio）。
-        alignRatioToModel(runSettings);
+        canvasCore.alignRatioToModel(runSettings);
         const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);
         // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution：
         // 扩图几何由 outpaintSize 的 aspect_ratio 表达，服务商契约按「比例 + 分辨率档位」
@@ -246,7 +246,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         canvasCore.scheduleSave();
         return taskResult;
     }
-    alignRatioToModel(runSettings);
+    canvasCore.alignRatioToModel(runSettings);
     if(!runSettings.provider_id || !runSettings.model) throw new Error(tr('smart.errNoApiModel'));
     const payload = {prompt, provider_id:runSettings.provider_id, model:runSettings.model, size:sizeForRun(runSettings), quality:runSettings.quality || 'auto', n:1, reference_images:imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX)};
     const tasks = await Promise.all(Array.from({length:count}, () => fetch('/api/canvas-image-tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).then(async r => {

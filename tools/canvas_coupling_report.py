@@ -279,6 +279,11 @@ CATEGORY_BY_NAME = {
     "parseSizePair": "util",  # 纯："WxH" -> {width,height}
     "mediaRefSourceUrl": "util",  # 纯：ref 参数 -> 源 url
     "apiImageUsesExplicitResolution": "util",  # 纯谓词：settings+provider 能力 -> bool
+    # 核心提供的 settings 归一化操作：就地改 settings.ratio（不是纯函数），两条发图路径
+    # 必须先收敛比例再生成（#199 轨道 4 期间接进 canvas-generation-tasks.js）。
+    # 耦合债：它跟 IMAGE_RATIO_PRESETS/ratioLog/apiImageAllowedAspectRatios 是一簇，
+    # 整簇待从核心抽出（见 #203）。
+    "alignRatioToModel": "hub",
     "promptNodePromptItems": "util",  # 纯：node -> 拆分后的 prompt 列表
     "parseSizeAspect": "util",  # 纯：尺寸/比例串 -> {w,h}
     "nodeBodyHtml": "util",  # 纯 builder：node+layout -> body HTML（分派纯子 builder）

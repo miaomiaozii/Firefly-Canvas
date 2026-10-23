@@ -31,7 +31,7 @@
 //       - apiImageUsesExplicitResolution / imageRefsOnly / sizeForRun /
 //         flushProjectCanvasBeforeGeneration / requestSmartEdgeReveal
 //         —— 零逻辑数据驱动/记录器
-//       canvasCore 接口成员 11 个（真实 canvasCore Proxy 运行期按名解析到这些全局属性）：
+//       canvasCore 接口成员 12 个（真实 canvasCore Proxy 运行期按名解析到这些全局属性）：
 //       - render / scheduleSave / saveCanvas / requestSmartEdgeReveal 之外：
 //         acceptProjectGenerationRegistration / importProjectMediaReference /
 //         mediaNodeDefaultScale / smartGroupContainingNode / canvasId —— 零逻辑
@@ -103,6 +103,7 @@ function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
     harness.ensureHistoryCalls = [];            // ensureSmartPendingHistoryLogs 记录
     harness.failHistoryCalls = [];              // failSmartPendingHistoryLog 记录
     harness.acceptedResults = [];               // canvasCore.acceptProjectGenerationRegistration 记录
+    harness.alignCalls = [];                    // canvasCore.alignRatioToModel 记录（零逻辑桩，只记录入参）
     harness.rebuilderCalls = [];                // 测试注册的 rebuilder 记录
     harness.replayFired = [];                   // 测试 replay 闭包触发记录
     harness.persisterCalls = [];                // 测试 persister 记录
@@ -126,6 +127,9 @@ function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
     ctx.stripImageGenerationMeta = (item) => item;  // 恒等：测试只验证 url/kind/name 成形
     // 单行契约镜像（copyMediaSizeFields 的字段覆盖语义：fields 覆盖 item 同名字段）。
     ctx.copyMediaSizeFields = (item, fields) => ({ ...item, ...fields });
+    // #199 轨道 4：两条发图路径生成前都要把残留比例收敛到模型能力内。
+    // 桩只记录入参（收敛算法本身由 tests/test_canvas_ratio_model_alignment.py 钉）。
+    ctx.alignRatioToModel = (settings) => { harness.alignCalls.push(settings); };
     // --- smart-canvas.js 自由名桩（22 个里的 9 个：已测路径子集） ---
     // 单行契约镜像（smart-canvas.js:717-733 触达分支：null/string/detail 字符串/JSON 兜底；
     // 数组 detail 的 pydantic 校验错误分支不在测试路径里）。
@@ -499,6 +503,8 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
     assert.equal(result.projectRevision, 8);
     assert.equal(result.pendingHistoryId, 'ph-1');
     assert.equal(harness.pendingHistoryLogs.length, 1, 'pendingHistoryId 只在外层调用生成一次（内层复用）');
+    // 生成前必须先过比例收敛（否则节点上残留的模型外比例会直接进请求）。
+    assert.equal(harness.alignCalls.length, 1, 'runApiGeneration 必须在构造载荷前调 canvasCore.alignRatioToModel');
     // 恰好一个 POST，载荷是持久化契约。
     assert.equal(harness.fetchLog.length, 1);
     const body = JSON.parse(harness.fetchLog[0].options.body);

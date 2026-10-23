@@ -169,7 +169,11 @@ REVERSE_REFERENCE_CEILINGS = {
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
     "canvas-generation-cascade.js": 155,  # 147 -> 155
     "canvas-media-history.js": 98,  # 83 -> 98
-    "canvas-generation-tasks.js": 113,  # 103 -> 113
+    "canvas-generation-tasks.js": 115,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
+    # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
+    # canvasCore 接口（自由侧仍 34，接口引用 +2）。
+    # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
+    # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
     "canvas-image-editor.js": 89,  # 87 -> 89
     "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
     "canvas-connections.js": 41,
