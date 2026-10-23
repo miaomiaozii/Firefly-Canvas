@@ -112,6 +112,7 @@
 | `project-canvas-mutations.js` | 项目画布 mutation 客户端封装 | `tests/test_project_canvas_mutation_client.py` |
 | `canvas-layout-utils.js` | 布局计算纯函数 | `tests/canvas_boundaries_browser.py` |
 | `canvas-connections.js` | 连线创建、兼容校验与渲染 | `tests/edge_compatibility_browser.py`、`tests/canvas_interactions_browser.py` |
+| `canvas-download.js` | 下载层：接收响应 blob、与 Content-Length 对账、落盘与按体积给撤销窗口（#223 不再静默产出 0 字节包；#225 回执回传） | `tests/canvas_module_units/test-canvas-download.mjs` |
 | `canvas-media-history.js` | 项目媒体与历史抽屉 | `tests/history_drawer_browser.py`、`tests/test_creative_history_experience.py` |
 | `canvas-undo.js` | 撤销/重做 | `tests/undo_redo_browser.py` |
 | `canvas-node-ops.js` | 节点增删、替换、分组等单节点操作 | `tests/node_replace_browser.py`、`tests/canvas_interactions_browser.py` |

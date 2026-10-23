@@ -484,6 +484,28 @@ def canvas_has_project_image_pending(canvas: Mapping[str, Any], task_id: str) ->
     )
 
 
+def _history_output_entries(generated_items: Any, kind: str = '') -> List[Dict[str, Any]]:
+    """#224：生成历史输出必须携带 name。
+
+    archive_project_generated_image / _video 返回的 item 本来就带 name（归档文件名），
+    但以前写进 history_record['outputs'] 时被丢了。星标素材面板先读历史输出，
+    拿不到名字就只好把 64 位 asset_id 当文件名显示。
+    """
+    entries: List[Dict[str, Any]] = []
+    for item in generated_items or []:
+        if not isinstance(item, dict):
+            continue
+        asset_id = str(item.get('asset_id') or '')
+        if not asset_id:
+            continue
+        entry: Dict[str, Any] = {'asset_id': asset_id, 'kind': kind or str(item.get('kind') or 'image')}
+        name = str(item.get('name') or '').strip()
+        if name:
+            entry['name'] = name[:160]
+        entries.append(entry)
+    return entries
+
+
 def durable_project_image_result(project_id: str, canvas: Mapping[str, Any], durable: Mapping[str, Any]) -> Dict[str, Any]:
     history_record = copy.deepcopy(durable.get('history_record') or {})
     base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
@@ -741,7 +763,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     # 前端可在任务运行中逐个看到已完成的结果；单张失败不中断整体任务（final 会带上全量）。
                     partial_start = _app_main.now_ms()
                     partial_timestamp = partial_start
-                    partial_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'running', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'updated_at': partial_timestamp, 'completed_at': partial_timestamp, 'runMs': max(0, partial_timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'}], 'result_node_id': payload.result_node_id}
+                    partial_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'running', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'updated_at': partial_timestamp, 'completed_at': partial_timestamp, 'runMs': max(0, partial_timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries([item], 'image'), 'result_node_id': payload.result_node_id}
                     partial_canvas = None
                     try:
                         partial_canvas = await asyncio.to_thread(
@@ -805,7 +827,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         if not generated_items:
             raise ProjectStoreError('在线模型没有返回图片')
         timestamp = _app_main.now_ms()
-        history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items], 'result_node_id': payload.result_node_id}
+        history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries(generated_items, 'image'), 'result_node_id': payload.result_node_id}
         raise_if_project_image_task_cancelled(task_id)
         canvas = None
         last_complete_error = None
@@ -861,7 +883,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         failure_result = None
         resolved_status = 'timeout' if isinstance(exc, ImageGenerationTaskTimeout) else 'failed'
         # 取回兑底：已归档成功的图写进失败记录 outputs，客户端可凭 task_id 重新取回。
-        failed_outputs = [{'asset_id': item['asset_id'], 'kind': 'image'} for item in generated_items]
+        failed_outputs = _history_output_entries(generated_items, 'image')
         failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail)}
         try:
             failed_canvas = await asyncio.to_thread(
@@ -920,7 +942,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         await cleanup_project_generation_orphans(project_id)
 
 def _build_video_history_record(task_id: str, payload: ProjectVideoGenerationRequest, request_snapshot: VideoGenerationRequest, route, references: Optional[List[Dict[str, Any]]], generated_items: List[Dict[str, Any]], started_at: int, completed_at: int, status: str, error: str = '') -> Dict[str, Any]:
-    record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': status, 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in (references or [])], 'outputs': [{'asset_id': item['asset_id'], 'kind': 'video'} for item in generated_items], 'result_node_id': payload.result_node_id}
+    record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'type': 'online-video', 'status': status, 'prompt': payload.prompt, 'executed_prompt': payload.prompt, 'created_at': started_at, 'createdAt': started_at, 'completed_at': completed_at, 'runMs': max(0, completed_at - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'references': [{'asset_id': item['asset_id'], 'kind': item['kind']} for item in (references or [])], 'outputs': _history_output_entries(generated_items, 'video'), 'result_node_id': payload.result_node_id}
     if error:
         record['error'] = str(error)
     return record

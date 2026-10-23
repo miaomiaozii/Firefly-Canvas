@@ -193,12 +193,27 @@ def project_media_file_from_url(text):
     path = str(record.get('path') or '').strip()
     return path if path and os.path.isfile(path) else None
 
+def _media_path_is_trashed(candidate) -> bool:
+    """#225：路径里任何一段是 trash（Windows / POSIX 分隔符都算）= 素材已移入回收区。"""
+    parts = [part.lower() for part in re.split(r'[\\/]+', str(candidate or '')) if part]
+    return 'trash' in parts
+
 @router.post('/api/canvas-assets/download')
 async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
     buffer = BytesIO()
     used_names = set()
     count = 0
+    # #225：以前解析失败就 `continue`，调用方拿到一个「成功」的 zip 却不知道少了哪几张。
+    # 现在每一张跳过都记下「是哪一张 + 为什么」，通过 X-Download-Report 头回传。
+    skipped: list[dict] = []
     raw_items = payload.items or [{'url': url} for url in payload.urls]
+
+    def _record_skip(raw, text: str, reason: str) -> None:
+        label = str(raw.get('name') or '').strip() if isinstance(raw, dict) else ''
+        if not label:
+            label = filename_from_media_url(text, '') or os.path.basename(str(text).split('?')[0])
+        skipped.append({'name': str(label or text or ''), 'reason': reason})
+
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for raw in raw_items[:1000]:
             if isinstance(raw, dict):
@@ -208,8 +223,10 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
                 text = str(raw or '').strip()
                 requested_name = ''
             if not text:
+                _record_skip(raw, text, 'empty_url')
                 continue
             path = _app_main.output_file_from_url(text)
+            saw_path = bool(path)
             if not (path and os.path.isfile(path)):
                 # Project media URLs (canvas thumbnails / generation history / detail
                 # panel star-mark downloads) point at the metadata endpoint, not the
@@ -217,6 +234,12 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
                 project_media_path = project_media_file_from_url(text)
                 if project_media_path:
                     path = project_media_path
+                    saw_path = True
+            if path and _media_path_is_trashed(path):
+                # 已移入回收区：既不是「文件缺失」也不是「路径解析不了」，
+                # 必须单独说清楚，否则用户会以为素材丢了。
+                _record_skip(raw, text, 'trashed')
+                continue
             content = None
             content_type = ''
             if path and os.path.isfile(path):
@@ -224,7 +247,13 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
             else:
                 local_by_name = local_media_file_by_basename(filename_from_media_url(text, ''))
                 if local_by_name and os.path.isfile(local_by_name):
+                    # 同名回退也可能命中已回收的文件：这里不再查一道的话，
+                    # 回收区的图会被静默打包，#225 的「已回收」原因就漏了。
+                    if _media_path_is_trashed(local_by_name):
+                        _record_skip(raw, text, 'trashed')
+                        continue
                     path = local_by_name
+                    saw_path = True
                     base = sanitize_export_filename(requested_name or os.path.basename(path), os.path.basename(path) or f'image-{count + 1}.png')
                 else:
                     try:
@@ -232,6 +261,9 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
                     except Exception:
                         remote = None
                     if not remote:
+                        # URL 能解析成本地路径但盘上没有 = 文件缺失；
+                        # 三级解析全落空 = 路径无法解析。
+                        _record_skip(raw, text, 'missing_file' if saw_path else 'unresolved_url')
                         continue
                     content, content_type = remote
                     base = sanitize_export_filename(requested_name or filename_from_media_url(text, f'image-{count + 1}.bin'), f'image-{count + 1}.bin')
@@ -254,5 +286,11 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
     if not filename.lower().endswith('.zip'):
         filename += '.zip'
     encoded = urllib.parse.quote(filename)
-    headers = {'Content-Disposition': f"attachment; filename*=UTF-8''{encoded}"}
+    # #225：部分失败要能回传「已打包 n/总数」与每张的跳过原因，
+    # 前端据此提示用户，而不是留一个看起来成功的空/半空包。
+    report = {'total': len(raw_items[:1000]), 'packed': count, 'skipped': skipped}
+    headers = {
+        'Content-Disposition': f"attachment; filename*=UTF-8''{encoded}",
+        'X-Download-Report': urllib.parse.quote(json.dumps(report, ensure_ascii=False)),
+    }
     return Response(buffer.getvalue(), media_type='application/zip', headers=headers)

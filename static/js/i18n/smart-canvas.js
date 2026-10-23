@@ -576,6 +576,17 @@
         "smart.pastedAssets": { zh: "已粘贴 {n} 个素材到画布", en: "Pasted {n} asset(s) to canvas" },
         "smart.play": { zh: "播放", en: "Play" },
         "smart.batchDownloadFailed": { zh: "批量下载失败", en: "Batch download failed" },
+        // #223：下载层不再静默产出 0 字节包，失败原因必须说得出。
+        "smart.downloadEmpty": { zh: "下载没有收到内容（0 字节），已取消", en: "Download received no content (0 bytes); aborted" },
+        "smart.downloadTruncated": { zh: "下载不完整（被截断）", en: "Download incomplete (truncated)" },
+        // #225：部分失败时给出「已打包 n/总数」与每张被跳过的原因。
+        "smart.downloadPartial": { zh: "部分图片未能打包", en: "Some images were not packed" },
+        "smart.downloadSkippedUnnamed": { zh: "未命名图片", en: "unnamed image" },
+        "smart.downloadSkippedTrashed": { zh: "已删除", en: "deleted" },
+        "smart.downloadSkippedMissing": { zh: "文件已丢失", en: "file missing" },
+        "smart.downloadSkippedUnresolved": { zh: "无法定位资源", en: "unresolved asset" },
+        "smart.downloadSkippedInvalid": { zh: "地址无效", en: "invalid url" },
+        "smart.downloadSkippedFailed": { zh: "读取失败", en: "read failed" },
         "smart.phasePreparingReference": { zh: "准备参考图", en: "Preparing reference" },
         "smart.phaseUploading": { zh: "上传", en: "Uploading" },
         "smart.phaseReceiving": { zh: "接收结果", en: "Receiving result" },

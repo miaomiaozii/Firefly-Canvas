@@ -200,7 +200,9 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 {key: value for key, value in item.items() if key not in {"output_id", "output_order"}}
                 for item in history["outputs"]
             ],
-            [{"asset_id": generated_asset, "kind": "image"}],
+            # #224：输出项必须带 name（归档文件名）——星标素材面板先读生成历史，
+            # 拿不到名字就只好把 64 位 asset_id 当文件名显示。
+            [{"asset_id": generated_asset, "kind": "image", "name": "generated-1.png"}],
         )
         self.assertEqual(history["outputs"][0]["output_id"], generated_image["output_id"])
         self.assertEqual(history["outputs"][0]["output_order"], 0)

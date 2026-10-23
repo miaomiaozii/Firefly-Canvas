@@ -141,10 +141,14 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
         # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
         rev = reverse_coupling()
-        self.assertEqual(rev["reverse_names"], 231)
-        self.assertEqual(rev["reverse_core_refs"], 933)
-        self.assertEqual(rev["core_dominant_names"], 163)
-        self.assertEqual(rev["core_dominant_core_refs"], 784)
+        # 231/933/163/784 → 235/938/166/788：增量全部来自 #223 新建的 canvas-download.js
+        # —— 下载层从 smart-canvas.js 抽成模块后，核心按名调它的 4 个函数
+        # （downloadCanvasArchive / canvasReceiveBlob / canvasSaveBlobAsFile / canvasDownloadSkipSummary）。
+        # 方向是 #154 要求的「核心调模块」，不是新债；但口径上漂就必须同步 ADR 0020 的表。
+        self.assertEqual(rev["reverse_names"], 235)
+        self.assertEqual(rev["reverse_core_refs"], 938)
+        self.assertEqual(rev["core_dominant_names"], 166)
+        self.assertEqual(rev["core_dominant_core_refs"], 788)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

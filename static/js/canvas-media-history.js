@@ -490,16 +490,21 @@ function toggleMarkedImage(node, imageIndex){
 
 function markedImageItems(){
     const found = new Map();
+    const hasName = value => Boolean(String(value?.name || value?.alias || '').trim());
+    const adopt = (id, item) => {
+        if(!id || !item?.url) return;
+        const prev = found.get(id);
+        if(!prev){ found.set(id, item); return; }
+        // #224：生成历史输出只有 {asset_id, kind, url}（后端 history_record['outputs']
+        // 不带 name），而节点图片带归档文件名。原先「先到先得」会让无名条目遮蔽
+        // 有名条目，markedItemDisplayName 只能退回裸 64 位 asset_id。
+        // 同名素材后到时补齐缺失字段，而不是丢弃后到者。
+        if(!hasName(prev) && hasName(item)) found.set(id, {...prev, ...item});
+    };
     (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
-        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
-            const id = String(output?.asset_id || '');
-            if(id && output?.url && !found.has(id)) found.set(id, output);
-        });
+        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => adopt(String(output?.asset_id || ''), output));
     });
-    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
-        const id = String(img?.asset_id || '');
-        if(id && img?.url && !found.has(id)) found.set(id, img);
-    }));
+    canvasState.nodes.forEach(node => (node.images || []).forEach(img => adopt(String(img?.asset_id || ''), img)));
     return getMarkedAssetIds().map(id => found.get(id)).filter(item => item?.url);
 }
 // #89 星标列表显示名：优先 name/alias，其次 url 里的文件名（generated-1.png 这类），最后才退回 asset_id。

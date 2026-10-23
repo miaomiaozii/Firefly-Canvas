@@ -21,6 +21,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "project-canvas-mutations.js",
     "canvas-layout-utils.js",
     "canvas-connections.js",
+    # #223：下载层（接收响应 blob → 校验体积 → 落盘）从 smart-canvas.js 抽成独立模块。
+    "canvas-download.js",
     "canvas-media-history.js",
     "canvas-undo.js",
     "canvas-node-ops.js",

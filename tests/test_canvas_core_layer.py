@@ -177,6 +177,8 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-image-editor.js": 89,  # 87 -> 89
     "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
     "canvas-connections.js": 41,
+    # #223 新建下载层：不引用 smart-canvas.js 的任何顶层名（只依赖 canvas-core.js 的 tr）。
+    "canvas-download.js": 0,
     "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
@@ -204,6 +206,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
     "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
+    "canvas-download.js": 0,  # #223 新建：零自由全局（tr 来自 canvas-core.js）
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,

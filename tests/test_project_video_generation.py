@@ -759,7 +759,9 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         history_output = opened["history"][-1]["outputs"][0]
         self.assertEqual(
             {key: value for key, value in history_output.items() if key not in {"output_id", "output_order"}},
-            {"asset_id": generated_asset, "kind": "video"},
+            # #224：历史输出必须带可读 name（来自归档源名），不能只有裸 asset_id，
+            # 否则星标素材面板只能把 64 位 id 当文件名显。
+            {"asset_id": generated_asset, "kind": "video", "name": "reference.mp4"},
         )
         self.assertRegex(history_output["output_id"], r"^output-[a-f0-9]{32}$")
         self.assertEqual(history_output["output_id"], node["images"][0]["output_id"])

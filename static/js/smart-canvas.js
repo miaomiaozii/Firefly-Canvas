@@ -7574,27 +7574,18 @@ function toggleImagePreviewMark(){
 async function zipDownloadImageItems(title, items){
     const list = (items || []).filter(item => item?.url);
     if(!list.length) return;
+    const filename = safeExportFileName(`${title || 'image-group'}.zip`, 'image-group.zip');
     try {
-        const filename = safeExportFileName(`${title || 'image-group'}.zip`, 'image-group.zip');
-        const response = await fetch('/api/canvas-assets/download', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                filename,
-                urls:list.map(item => item.url).filter(Boolean),
-                items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
-            })
+        // #223：接收/落盘全部交给下载模块。旧实现固定 1200ms 撤销 blob URL、不校验体积，
+        // 单张 9–10MB / 共 48MB 时会落一个 0 字节 zip 还提示成功。
+        const result = await downloadCanvasArchive({
+            filename,
+            urls:list.map(item => item.url).filter(Boolean),
+            items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
         });
-        if(!response.ok) throw new Error((await response.text()) || tr('smart.batchDownloadFailed'));
-        const blob = await response.blob();
-        const href = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = href;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 1200);
+        // #225：部分失败要说清楚打包了几个、哪几张被跳过及原因，不能只说「成功」。
+        const note = canvasDownloadSkipSummary(result?.report);
+        if(note) toast(note);
     } catch(e) {
         toast((e.message || tr('smart.batchDownloadFailed')).slice(0, 160));
     }
@@ -14423,15 +14414,8 @@ async function exportSelectedSmartNodes(){
             toast(`${tr('smart.exportFailed')}: ${detail}`);
             return;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `excel_export_${Date.now()}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        const { blob } = await canvasReceiveBlob(res);
+        downloadBlobAsZip(blob, `excel_export_${Date.now()}.zip`);
     }catch(err){
         toast(`${tr('smart.exportFailed')}: ${err?.message || err}`);
     }
@@ -14456,15 +14440,10 @@ function markedAssetIdsForExport(){
     });
     return out;
 }
+// #223：落盘交给下载模块。固定 4000ms 撤销 blob URL 会把大 zip 截断成 0 字节；
+// canvasSaveBlobAsFile 按体积给撤销窗口。
 function downloadBlobAsZip(blob, filename){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    canvasSaveBlobAsFile(blob, filename);
 }
 function renderMarkedExportFiles(files, dir){
     const el = document.getElementById('smartMarkedExportFiles');
@@ -14502,7 +14481,7 @@ async function exportMarkedSmartNodes(){
             renderMarkedExportFiles(j?.files || [], dir);
             toast(trf('smart.exportDone', {n: (j?.files || []).length || 0}));
         } else {
-            const blob = await res.blob();
+            const { blob } = await canvasReceiveBlob(res);
             downloadBlobAsZip(blob, `excel_marked_${Date.now()}.zip`);
             toast(tr('smart.exportZipOk'));
         }

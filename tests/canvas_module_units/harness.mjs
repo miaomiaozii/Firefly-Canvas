@@ -41,6 +41,8 @@ export const HTML_SCRIPT_ORDER = [
     'project-canvas-mutations.js',
     'canvas-layout-utils.js',
     'canvas-connections.js',
+    // #223：下载层（见 static/js/canvas-download.js）
+    'canvas-download.js',
     'canvas-media-history.js',
     'canvas-undo.js',
     'canvas-node-ops.js',
