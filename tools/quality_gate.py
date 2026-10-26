@@ -1567,6 +1567,15 @@ def blocking_guard_events(events: list[dict]) -> list[dict]:
     ]
 
 
+def summarize_guard_events(events: list[dict]) -> dict[str, int]:
+    # #227 期望 3：换机器跑门时要能直接对比「这台机器的噪声有多少」，
+    # 而不是去 jsonl 里数。计数按 kind 给，不把任何 kind 从证据里挑掉。
+    counts: dict[str, int] = {}
+    for event in events:
+        counts[str(event.get("kind") or "unknown")] = counts.get(str(event.get("kind") or "unknown"), 0) + 1
+    return counts
+
+
 # Children whose shutdown tail the gate waits on for longer than ordinary
 # subprocesses (see stop_leaked_children).
 BROWSER_CHILD_TARGETS = frozenset(
@@ -3534,6 +3543,7 @@ def main(argv: list[str] | None = None) -> int:
             None,
         ),
         "guard_events": guard_events,
+        "guard_event_counts": summarize_guard_events(guard_events),
         "retry_events": retry_events,
         "child_events": child_events,
         "first_failure": first_failure,

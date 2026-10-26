@@ -158,7 +158,43 @@ function canvasDownloadRecords(){
     }
 }
 
-function canvasRecordDownload({ filename, bytes = 0, report = null, status = 'ok', reason = '' } = {}){
+// #228 规范第 1 条要求记录里含「请求了哪些素材」。localStorage 只有 5MB 量度，
+// 所以清单截断存，但真实条数（requestedCount）不能谎。
+const CANVAS_DOWNLOAD_REQUESTED_STORED_LIMIT = 40;
+
+function canvasAssetIdentityFromUrl(url){
+    const text = String(url || '').trim();
+    if(!text) return '';
+    const tail = text.split('?')[0].split('/').filter(Boolean).pop() || text;
+    try{ return decodeURIComponent(tail); }catch(e){ return tail; }
+}
+
+// items 与 urls 在实际调用里描述的是同一批素材（hub:7581），所以优先用带名字的 items，
+// urls 只补 items 没覆盖到的；没名字的素材退化成 url 末段（asset id）当身份。
+function canvasRequestedIdentities({ items = [], urls = [] } = {}){
+    const out = [];
+    const seen = new Set();
+    for(const item of Array.isArray(items) ? items : []){
+        const url = String(item?.url || '').trim();
+        if(url){
+            if(seen.has(url)) continue;
+            seen.add(url);
+        }
+        const name = String(item?.name || item?.filename || '').trim();
+        const identity = name || canvasAssetIdentityFromUrl(url);
+        if(identity) out.push(identity);
+    }
+    for(const url of Array.isArray(urls) ? urls : []){
+        const text = String(url || '').trim();
+        if(!text || seen.has(text)) continue;
+        seen.add(text);
+        const identity = canvasAssetIdentityFromUrl(text);
+        if(identity) out.push(identity);
+    }
+    return out;
+}
+
+function canvasRecordDownload({ filename, bytes = 0, report = null, status = 'ok', reason = '', requested = null } = {}){
     const record = {
         at: new Date().toISOString(),
         filename: String(filename || 'download.zip'),
@@ -168,6 +204,16 @@ function canvasRecordDownload({ filename, bytes = 0, report = null, status = 'ok
         packed: Number(report?.packed) || 0,
         skipped: Array.isArray(report?.skipped) ? report.skipped.slice(0, 12) : [],
     };
+    const requestedList = Array.isArray(requested)
+        ? requested.map(x => String(x || '').trim()).filter(Boolean)
+        : [];
+    if(requestedList.length){
+        record.requestedCount = requestedList.length;
+        record.requested = requestedList.slice(0, CANVAS_DOWNLOAD_REQUESTED_STORED_LIMIT);
+    }else if(record.total > 0){
+        // 没给清单时至少要存服务端报的请求总数，别把「几张」丢掉。
+        record.requestedCount = record.total;
+    }
     if(reason) record.reason = String(reason);
     try{
         const list = canvasDownloadRecords();
@@ -182,6 +228,13 @@ function canvasFormatDownloadRecord(record){
     if(!record) return '';
     const when = String(record.at || '').replace('T', ' ').slice(5, 16);
     const parts = [when, record.filename];
+    if(record.requestedCount > 0){
+        // 翻译里漏掉 {n} 占位符时，计数要照旧显示出来，不能被静默吃掉。
+        const label = String(tr('smart.downloadRecordsRequested'));
+        parts.push(label.includes('{n}')
+            ? label.replace('{n}', String(record.requestedCount))
+            : `${label} ${record.requestedCount}`);
+    }
     if(record.total > 0) parts.push(`${record.packed}/${record.total}`);
     if(Number(record.bytes) > 0) parts.push(`${(Number(record.bytes) / 1024 / 1024).toFixed(1)}MB`);
     if(record.status === 'failed') parts.push(tr('smart.batchDownloadFailed'));
@@ -198,9 +251,19 @@ function canvasFormatDownloadRecord(record){
 function canvasDownloadRecordsHtml({ limit = 8 } = {}){
     const records = canvasDownloadRecords().slice(0, Math.max(1, Number(limit) || 8));
     if(!records.length) return `<div class="smart-marked-export-file">${escapeHtml(tr('smart.downloadRecordsEmpty'))}</div>`;
-    return records.map(r => `<div class="smart-marked-export-file" title="${escapeHtml(canvasFormatDownloadRecord(r))}">` +
-        `<i data-lucide="${r.status === 'failed' ? 'triangle-alert' : 'check'}" aria-hidden="true"></i>` +
-        `<span>${escapeHtml(canvasFormatDownloadRecord(r))}</span></div>`).join('');
+    return records.map(r => {
+        const line = canvasFormatDownloadRecord(r);
+        // 完整请求清单走 hover：面板一行装不下 21 个名字，但字段必须能查到（#228 第 2 条）。
+        const list = Array.isArray(r.requested) ? r.requested : [];
+        let title = line;
+        if(list.length){
+            const more = r.requestedCount > list.length ? ` …${r.requestedCount - list.length}` : '';
+            title += ` · ${tr('smart.downloadRequestedList')}: ${list.join(', ')}${more}`;
+        }
+        return `<div class="smart-marked-export-file" title="${escapeHtml(title)}">` +
+            `<i data-lucide="${r.status === 'failed' ? 'triangle-alert' : 'check'}" aria-hidden="true"></i>` +
+            `<span>${escapeHtml(line)}</span></div>`;
+    }).join('');
 }
 
 // 主入口：POST /api/canvas-assets/download 并把 zip 落成文件。
@@ -216,11 +279,24 @@ async function downloadCanvasArchive({ filename, urls = [], items = [] } = {}){
     try{
         received = await canvasReceiveBlob(response);
     }catch(error){
-        canvasRecordDownload({ filename, bytes: 0, report: error?.report || null, status: 'failed', reason: error?.reason || 'failed' });
+        canvasRecordDownload({
+            filename,
+            bytes: 0,
+            report: error?.report || null,
+            status: 'failed',
+            reason: error?.reason || 'failed',
+            requested: canvasRequestedIdentities({ items, urls }),
+        });
         throw error;
     }
     const { blob, bytes, report } = received;
     const href = canvasSaveBlobAsFile(blob, filename, canvasDownloadRevokeDelayMs(bytes));
-    canvasRecordDownload({ filename, bytes, report, status: report?.skipped?.length ? 'partial' : 'ok' });
+    canvasRecordDownload({
+        filename,
+        bytes,
+        report,
+        status: report?.skipped?.length ? 'partial' : 'ok',
+        requested: canvasRequestedIdentities({ items, urls }),
+    });
     return { filename, bytes, href, report };
 }

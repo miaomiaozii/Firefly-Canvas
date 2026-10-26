@@ -1389,6 +1389,45 @@ class QualityGateTests(unittest.TestCase):
             json.dumps(reasons, ensure_ascii=False),
         )
 
+    def test_host_noise_counts_are_reported_for_cross_machine_comparison(self):
+        # #227 期望 3：evidence 里要直接给出按 kind 的计数，换机器时能一眼对比
+        # 「这台机器的宿主噪声有多少」，而不是要人去 guard-events.jsonl 里手工数。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class HostToolCountContract(unittest.TestCase):\n"
+            "    def test_blocked_host_tool_probes(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        for target in ('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com',\n"
+            "                       'play.googleapis.com'):\n"
+            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "            try:\n"
+            "                connection.sendall(\n"
+            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
+            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
+            "                )\n"
+            "                connection.recv(1024)\n"
+            "            finally:\n"
+            "                connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        counts = self.report()["guard_event_counts"]
+        self.assertEqual(
+            counts.get("host-tool-network"),
+            3,
+            "宿主噪声计数缺失 = 换机器无法对比（#227 期望 3）",
+        )
+        self.assertFalse(
+            counts.get("network"),
+            "没有真违规却出现 network 计数 = 分类把真违规洗掉了",
+        )
+
     def test_host_ai_tool_look_alike_host_is_still_a_blocking_network_target(self):
         # 分类不能变成放宽：长得像宿主工具控制面的域名必须仍旧判红。
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(

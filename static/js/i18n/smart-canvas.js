@@ -443,6 +443,8 @@
         "smart.markedDownloadAll": { zh: "全部下载", en: "Download all" },
         "smart.downloadRecords": { zh: "下载记录", en: "Download log" },
         "smart.downloadRecordsEmpty": { zh: "还没有下载记录", en: "No downloads yet" },
+        "smart.downloadRecordsRequested": { zh: "请求 {n} 项", en: "requested {n}" },
+        "smart.downloadRequestedList": { zh: "请求清单", en: "Requested" },
         "smart.markUnavailable": { zh: "这张图没有资源库文件，暂不能标记", en: "This image has no library asset and can't be marked yet" },
         "smart.markNotOnCanvas": { zh: "该图片当前不在画布节点上，无法使用编辑工具", en: "This image is not on a canvas node, so the edit tools are unavailable" },
         "smart.trashForeverConfirm": { zh: "彻底删除该资源？删除后无法恢复。", en: "Delete this item forever? This cannot be undone." },
@@ -584,7 +586,7 @@
         // #225：部分失败时给出「已打包 n/总数」与每张被跳过的原因。
         "smart.downloadPartial": { zh: "部分图片未能打包", en: "Some images were not packed" },
         "smart.downloadSkippedUnnamed": { zh: "未命名图片", en: "unnamed image" },
-        "smart.downloadSkippedTrashed": { zh: "已删除", en: "deleted" },
+        "smart.downloadSkippedTrashed": { zh: "已移入回收区", en: "moved to trash" },
         "smart.downloadSkippedMissing": { zh: "文件已丢失", en: "file missing" },
         "smart.downloadSkippedUnresolved": { zh: "无法定位资源", en: "unresolved asset" },
         "smart.downloadSkippedInvalid": { zh: "地址无效", en: "invalid url" },

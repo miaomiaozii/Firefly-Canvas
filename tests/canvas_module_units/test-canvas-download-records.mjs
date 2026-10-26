@@ -9,12 +9,26 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { createCanvasContext, loadModules, globalFunction } from './harness.mjs';
+
+// 文案断言要用真翻译，不然测的是 key、上线的是中文，两边都发现不了文案错。
+// 直接读 static/js/i18n/smart-canvas.js，key 改名 / 漏翻译会在这里立刻红。
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const I18N_ZH = (() => {
+    const src = readFileSync(path.join(REPO_ROOT, 'static', 'js', 'i18n', 'smart-canvas.js'), 'utf8');
+    const map = {};
+    for (const match of src.matchAll(/"([a-z]+\.[a-zA-Z]+)":\s*\{\s*zh:\s*"([^"]*)"/g)) map[match[1]] = match[2];
+    return map;
+})();
 
 function load({ response = null, storageItems = {} } = {}) {
     const { ctx, harness } = createCanvasContext();
     for (const [key, value] of Object.entries(storageItems)) ctx.localStorage.setItem(key, value);
     if (response) ctx.fetch = async () => response;
+    ctx.StudioI18n = { t: (key) => I18N_ZH[key] || key };
     // i18n 资源不在 harness 里，tr() 会退回 key 本身（smart.downloadTruncated → 含 Truncated），
     // 所以下面对文案的断言按 key 的英文词形来写。
     loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-download.js']);
@@ -113,7 +127,7 @@ test('部分失败的记录要留住跳过原因，不只显示成功', () => {
     const line = fn(ctx, 'canvasFormatDownloadRecord')(rec);
     assert.match(line, /20\/21/, '要能看出进了几张/一共几张');
     assert.match(line, /海报\.png/, '要说清是哪一张');
-    assert.match(line, /Trashed/, '跳过原因要走 i18n key，不能被丢掉');
+    assert.match(line, /已移入回收区/, '跳过原因要走 i18n 文案（CONTEXT.md:64 要求界面说回收区），不能被丢掉');
 });
 
 test('记录有上限，旧的会被挤掉（不能无限涨）', () => {
@@ -177,5 +191,80 @@ test('没有记录时回查区域给空态，不能抛错', () => {
     // harness 的 i18n stub 只翻译它字典里的 key，未翻译会原样返回 key。
     // 断言 key 说明走的是空态分支且没有抛错；key 是否真在 i18n 源里由
     // tests/test_canvas_frontend_sources.py 的接线测试钉住。
-    assert.match(fn(ctx, 'canvasDownloadRecordsHtml')(), /smart\.downloadRecordsEmpty/);
+    assert.match(fn(ctx, 'canvasDownloadRecordsHtml')(), /还没有下载记录/);
+});
+
+// ---- #228 规范第 1 条：记录要含「请求了哪些素材」 ---------------------------
+test('记录必须存下请求了哪些素材，不只是个总数', () => {
+    const { ctx } = load();
+    fn(ctx, 'canvasRecordDownload')({
+        filename: 'star.zip',
+        bytes: 1000,
+        report: { total: 2, packed: 2, skipped: [], expected_bytes: 900, size_known: true },
+        status: 'ok',
+        requested: ['海报.png', '图标.png'],
+    });
+    const [rec] = fn(ctx, 'canvasDownloadRecords')();
+    assert.equal(rec.requestedCount, 2, '总数也要存（面板要显几项）');
+    assert.equal(JSON.stringify(rec.requested), JSON.stringify(['海报.png', '图标.png']),
+        '没存请求清单 = 21 里到底哪 21 张事后无从对账（#228 规范第 1 条）');
+});
+
+test('下载主入口要把 items/urls 里的素材身份落进记录', async () => {
+    const { ctx } = load({
+        response: fakeResponse({ size: 2048, contentLength: 2048, report: { total: 3, packed: 3, skipped: [] } }),
+    });
+    ctx.URL = { createObjectURL: () => 'blob:x/2', revokeObjectURL: () => {} };
+    await fn(ctx, 'downloadCanvasArchive')({
+        filename: 'star.zip',
+        items: [{ name: '海报.png' }, { name: '图标.png' }],
+        urls: ['/media/x/0f02737013cc4b4c9af179c5b8459b84'],
+    });
+    const [rec] = fn(ctx, 'canvasDownloadRecords')();
+    assert.equal(rec.requestedCount, 3);
+    assert.ok(JSON.stringify(rec.requested).includes('海报.png'), '可读名要落下来');
+    assert.ok(JSON.stringify(rec.requested).includes('0f02737013cc4b4c9af179c5b8459b84'),
+        '没名字的素材用 url 末段当身份，不能直接丢');
+});
+
+test('请求清单存进 localStorage 要有长度上限，但总数不能谎', () => {
+    const { ctx } = load();
+    fn(ctx, 'canvasRecordDownload')({
+        filename: 'big.zip',
+        bytes: 10,
+        report: { total: 100, packed: 100, skipped: [] },
+        status: 'ok',
+        requested: Array.from({ length: 100 }, (_, i) => `图${i}.png`),
+    });
+    const [rec] = fn(ctx, 'canvasDownloadRecords')();
+    assert.equal(rec.requestedCount, 100);
+    assert.ok(rec.requested.length < 100, '不截断会爆 localStorage（5MB 上限）');
+});
+
+test('面板一行要能看出请求了几项，完整清单走 hover', () => {
+    const { ctx } = load();
+    fn(ctx, 'canvasRecordDownload')({
+        filename: 'star.zip',
+        bytes: 1000,
+        report: { total: 3, packed: 2, skipped: [{ name: 'x.png', reason: 'trashed' }], expected_bytes: 900, size_known: true },
+        status: 'partial',
+        requested: ['海报.png', '图标.png', 'x.png'],
+    });
+    const [rec] = fn(ctx, 'canvasDownloadRecords')();
+    assert.match(fn(ctx, 'canvasFormatDownloadRecord')(rec), /3\s*项/, '行内要给出请求数');
+    const html = fn(ctx, 'canvasDownloadRecordsHtml')();
+    assert.match(html, /title="[^"]*海报\.png/, '完整清单走 hover（面板不挤）');
+});
+
+test('请求清单里的名字也要转义，不能注入', () => {
+    const { ctx } = load();
+    fn(ctx, 'canvasRecordDownload')({
+        filename: 'star.zip',
+        bytes: 1,
+        report: { total: 1, packed: 1, skipped: [] },
+        status: 'ok',
+        requested: ['<script>alert(1)<\/script>.png'],
+    });
+    const html = fn(ctx, 'canvasDownloadRecordsHtml')();
+    assert.ok(!html.includes('<script'), 'hover 文本未转义 = 素材名可以注脚本');
 });
