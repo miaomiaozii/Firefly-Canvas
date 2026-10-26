@@ -141,6 +141,52 @@ test('markedItemDisplayName: 生成器默认名要带生成时间去歧义', () 
     assert.match(shown, /^generated-1\.jpg · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `时间后缀不对：${shown}`);
 });
 
+// --- 占位名去重（#224 第二轮，真实数据实测）--------------------------------
+// 上面的时间后缀只到分钟，而一批图是同一分钟连发的：实测一个项目里
+// 「generated-1.jpg · 2026-10-19 12:16」这一个文本就吃了 8 张。
+// 更硬的根因：media/index.json 里的 name 是**供应商给的**占位名（source.name），
+// 这家供应商把每张图都叫 generated-1.png——实测四个不同 asset 的 index name
+// 分别是 generated-1.png / generated-1.png / generated-1.png / generated-4.png。
+// 所以下面钉三条：同批要能分、占位名不能独挡、真实名不受影响。
+
+test('markedItemDisplayName: 同一分钟的占位名要用批次序号分开', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    const first = name({ name: 'generated-1.png', url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A, output_order: 0 });
+    const second = name({ name: 'generated-1.png', url: mediaUrl(ID_B), asset_id: ID_B, createdAt: CREATED_A, output_order: 1 });
+    assert.notEqual(first, second, `同批两张显示成了一样：${first} / ${second}`);
+});
+
+test('markedImageItems + 显示名：真实形状（4 个同名输出同一记录）必须两两不同', () => {
+    const moment = '1792395041104';
+    const ids = ['a942c052e0a1bd5d7cdf915feb31b94991b75e54099067c15c822d42801447f8',
+                 '20d9bc966f73ca422b92b3e2b45e4865f8faf7a0cbfe4bae2d9b3e41f389a0eb',
+                 '2d96f9a02def7547c573edc8404cd7ee717dfbb7d537928ab337c492c9028d43',
+                 'd44dfffd0f66860adcbedf8fc858caf21e5062b244484514bcbcd85df80f47cb'];
+    const { ctx } = loadMediaHistory({
+        marked: ids,
+        history: [{
+            created_at: moment,
+            outputs: ids.map((id, i) => ({
+                asset_id: id, url: mediaUrl(id), kind: 'image',
+                name: i === 3 ? 'generated-4.png' : 'generated-1.png', output_order: i,
+            })),
+        }],
+        nodes: [],
+    });
+    const shown = fn(ctx, 'markedImageItems')().map(item => fn(ctx, 'markedItemDisplayName')(item));
+    assert.equal(shown.length, 4, `丢了项：${JSON.stringify(shown)}`);
+    assert.equal(new Set(shown).size, 4, `显示名重复：${JSON.stringify(shown)}`);
+});
+
+test('markedItemDisplayName: 真实文件名不加任何后缀（占位名才去歧义）', () => {
+    const { ctx } = loadMediaHistory();
+    const shown = fn(ctx, 'markedItemDisplayName')({
+        name: 'DSC08791.jpg', url: '/output/gen/DSC08791.jpg', asset_id: ID_A, createdAt: CREATED_A, output_order: 2,
+    });
+    assert.equal(shown, 'DSC08791.jpg', `真实名被加了后缀：${shown}`);
+});
+
 test('markedItemDisplayName: 同名默认名但生成时间不同 → 文本必须不同', () => {
     const { ctx } = loadMediaHistory();
     const name = fn(ctx, 'markedItemDisplayName');

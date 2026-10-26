@@ -536,6 +536,15 @@ function markedItemDisambiguation(item){
     return /^[0-9a-f]{8,}$/i.test(assetId) ? assetId.slice(0, MARKED_NAME_ID_SUFFIX_LENGTH).toLowerCase() : '';
 }
 
+// 同一批里的序号。output_order 是后端给历史输出带的（从 0 起）。
+// 为什么需要它：media/index.json 里的 name 是供应商给的占位名（source.name），
+// 实测同一家供应商把每张图都叫 generated-1.png，光靠时间（只到分钟）也分不开
+// 同一分钟连发的一批（实测同一个文本吃了 8 张）。
+function markedItemOutputOrdinal(item){
+    const order = Number(item?.output_order ?? item?.outputOrder);
+    return Number.isInteger(order) && order >= 0 ? `#${order + 1}` : '';
+}
+
 // 生成时间：outputs 本身没有时间字段（实测 1053 个输出只有 asset_id/kind/
 // output_id/output_order/name），靠 markedImageItems 从 history 记录带上 createdAt。
 function markedItemCreatedAt(item){
@@ -553,7 +562,11 @@ function markedItemCreatedAtLabel(item){
 }
 
 function markedItemDisplayName(item){
-    const fallback = markedItemCreatedAtLabel(item) || markedItemDisambiguation(item);
+    const moment = markedItemCreatedAtLabel(item);
+    const ordinal = markedItemOutputOrdinal(item);
+    // 没时间就退到 asset_id 短前缀；有时间但同批里带得上序号就补序号，
+    // 两者都没有才真的分不开。
+    const fallback = [moment || markedItemDisambiguation(item), ordinal].filter(Boolean).join(' ');
     const decorate = value => (fallback && GENERATOR_DEFAULT_NAME_PATTERN.test(value)
         ? `${value} · ${fallback}` : value);
     const name = String(item?.name || item?.alias || '').trim();
