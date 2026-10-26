@@ -1532,6 +1532,25 @@ BROWSER_CHILD_TARGETS = frozenset(
     }
 )
 
+CHILD_SHUTDOWN_GRACE_SECONDS = 1.0
+SLOW_CHILD_SHUTDOWN_GRACE_SECONDS = 8.0
+
+# #226：node 测试子进程（tests/test_canvas_module_units.py 每个文件起一个
+# `node --test`、test_canvas_ratio_model_alignment.py 的 `node -e`）的退出尾巴在
+# 并行负载下会超过 1s（V8 卸载、stdout 冲刷）。1s 窗口内没退完就被判成
+# S0 subprocess-leak，守卫接着 taskkill 一个正在正常退出的进程，而 S0 会落到
+# 当时正在跑的 shard 头上（那次实测：82 条 node 子事件里 1 条超窗，该 shard
+# 的 168 条测试全过，整道门被误判红）。所以 node 跟浏览器子进程同权限。
+SLOW_SHUTDOWN_CHILD_TARGETS = frozenset({"node", "node.exe"})
+
+
+def child_grace_seconds(target: object) -> float:
+    name = str(target or "").lower()
+    if name in BROWSER_CHILD_TARGETS or name in SLOW_SHUTDOWN_CHILD_TARGETS:
+        return SLOW_CHILD_SHUTDOWN_GRACE_SECONDS
+    return CHILD_SHUTDOWN_GRACE_SECONDS
+
+
 
 def process_is_running(pid: int) -> bool:
     if os.name == "nt":
@@ -1644,7 +1663,8 @@ def stop_leaked_children(events: list[dict], guard_events_file: Path) -> None:
         # Windows browsers can take several seconds to finish shutting down
         # after their harness already terminated them; give them a longer
         # grace so a natural shutdown tail is not misreported as a leak.
-        grace = 8.0 if target.lower() in BROWSER_CHILD_TARGETS else 1.0
+        # 口径同一个函数：浏览器与 node 测试子进程给长宽限，其余 1s（#226）。
+        grace = child_grace_seconds(target)
         if pid <= 0 or wait_for_process_exit(pid, timeout=grace):
             continue
         if not process_matches_recorded_target(pid, target):

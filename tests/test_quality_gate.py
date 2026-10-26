@@ -1778,6 +1778,30 @@ class QualityGateTests(unittest.TestCase):
         )
         self.assertFalse(guard_events.exists())
 
+    def test_node_children_get_the_same_long_shutdown_grace(self):
+        # #226：node.exe 的退出尾巴（V8 卸载、stdout 冲刷）在并行负载下会超过 1s。
+        # 1s 窗口内没退完就被判 S0 subprocess-leak，守卫还会 taskkill 一个正在
+        # 正常退出的测试子进程，而红会落到当时正在跑的无关 shard 上。
+        guard_events = self.evidence_dir / "guard-events.jsonl"
+        guard_events.parent.mkdir(parents=True, exist_ok=True)
+        with mock.patch("tools.quality_gate.wait_for_process_exit", return_value=True) as wait:
+            stop_leaked_children(
+                [
+                    {"pid": 43220, "target": "node.exe"},
+                    {"pid": 43221, "target": "node"},
+                    {"pid": 43222, "target": "cmd.exe"},
+                ],
+                guard_events,
+            )
+        wait.assert_has_calls(
+            [
+                mock.call(43220, timeout=8.0),
+                mock.call(43221, timeout=8.0),
+                mock.call(43222, timeout=1.0),
+            ]
+        )
+        self.assertFalse(guard_events.exists())
+
     def test_wait_for_process_exit_is_bounded_and_observes_natural_exit(self):
         with (
             mock.patch(
