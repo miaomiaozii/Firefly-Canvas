@@ -96,27 +96,27 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                         offenders.append(f"static/js/{name}:{lineno} {path}")
         self.assertEqual(offenders, [], "路径字面量被状态容器改名污染：\n" + "\n".join(offenders))
 
-    def test_canvas_scripts_share_one_cache_buster(self):
+    def test_canvas_assets_share_one_cache_buster(self):
         # 事故复盘（#224）：smart-canvas.html 里曾并存四个不同的 ?v= 值，
         # 改了 canvas-media-history.js 却把它的戳记停在两天前——浏览器继续用旧文件，
         # 用户 Ctrl+F5 也拿不到修复，而我一度把这种“没变化”当成代码缺陷在查。
-        # 仓库有 Bump-AssetVersions（tools/restart-firefly.ps1:217）但没人跡，
-        # 而原有测试只比对 smart-canvas.js 与 canvas-generation-tasks.js 两个文件。
-        # 画布脚本是一起发布的，必须同一个戳。
+        # 我自己也犯过一次：只刷新了 script 标签，漏了 css，直接弄红
+        # test_creative_history_experience（它只比对 smart-canvas.css 与 smart-canvas.js 两个文件）。
+        # 仓库有 Bump-AssetVersions（tools/restart-firefly.ps1）但没人跡。
+        # 画布资源是一起发布的：整页所有 ?v= 必须同一个值。
         html = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        stamps: dict[str, str] = {
-            match.group(1): match.group(2)
-            for match in re.finditer(r'<script src="/static/js/([a-z0-9-]+\.js)\?v=([0-9.]+)"', html)
-        }
-        missing = [name for name in ("smart-canvas.js", *CANVAS_SCRIPTS) if name not in stamps]
-        self.assertEqual(missing, [], f"以下画布脚本没带缓存戳进 HTML：{missing}")
-        distinct = {stamps[name] for name in ("smart-canvas.js", *CANVAS_SCRIPTS)}
+        tagged = re.findall(r'(/static/[^"\s]+)\?v=([0-9][0-9.]*)', html)
+        self.assertTrue(tagged, "smart-canvas.html 里找不到任何带 ?v= 的本地资源")
+        distinct = {value for _, value in tagged}
         self.assertEqual(
             len(distinct),
             1,
-            "画布脚本的缓存戳必须一致（不一致 = 有人改文件没跡版本，用户拿到旧代码）：\n"
-            + "\n".join(f"  {name} -> {stamps[name]}" for name in sorted(stamps) if name in distinct),
+            "同一页的本地资源缓存戳必须一致（不一致 = 有人改文件没跡版本，用户拿到旧代码）：\n"
+            + "\n".join(f"  {path} -> {value}" for path, value in tagged if value != max(distinct)),
         )
+        stamped_scripts = {path.rsplit("/", 1)[-1] for path, _ in tagged if path.endswith(".js")}
+        missing = [name for name in ("smart-canvas.js", *CANVAS_SCRIPTS) if name not in stamped_scripts]
+        self.assertEqual(missing, [], f"以下画布脚本没带缓存戳进 HTML：{missing}")
 
 
 if __name__ == "__main__":
