@@ -1311,7 +1311,7 @@ class QualityGateTests(unittest.TestCase):
         guard_events = self.report()["guard_events"]
         for target in ("edge.microsoft.com", "cn.bing.com", "www.bing.com"):
             self.assertIn(
-                {"kind": "browser-background-network", "target": target},
+                {"kind": "browser-background-network", "target": target, "attributed_by": "domain-fallback"},
                 guard_events,
             )
 
@@ -1376,7 +1376,7 @@ class QualityGateTests(unittest.TestCase):
             "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
         ):
             self.assertIn(
-                {"kind": "host-tool-network", "target": target},
+                {"kind": "host-tool-network", "target": target, "attributed_by": "domain-fallback"},
                 guard_events,
             )
         # 不能归到任何 step（它本来就不是 step 干的），也不能进 verdict 理由。
@@ -1406,6 +1406,114 @@ class QualityGateTests(unittest.TestCase):
         self.assertFalse(
             counts.get("network"),
             "没有真违规却出现 network 计数 = 分类把真违规洗掉了",
+        )
+
+    def test_guard_events_carry_originating_process_identity(self):
+        # #230 期望 1：事件要能回答「谁发的」——pid 之外还要带父进程和可执行
+        # 路径，否则换机器时 pid 对不上就无从对账。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import socket\n"
+            "import unittest\n\n"
+            "class ProcessIdentityContract(unittest.TestCase):\n"
+            "    def test_denied_connect(self):\n"
+            "        try:\n"
+            "            socket.create_connection(('203.0.113.1', 443), timeout=0.01)\n"
+            "        except Exception:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [
+            event
+            for event in self.report()["guard_events"]
+            if event.get("kind") == "network" and str(event.get("target")) == "203.0.113.1"
+        ]
+        self.assertTrue(events, f'没有 network 违规事件：{self.report()["guard_events"]}')
+        for event in events:
+            self.assertIsInstance(event.get("pid"), int, f'缺 pid：{event}')
+            self.assertIsInstance(event.get("ppid"), int, f'缺父进程 pid（#230 要求带父链）：{event}')
+            self.assertTrue(str(event.get("exe") or "").strip(), f'缺可执行路径：{event}')
+
+    def test_guard_attribution_counts_each_attribution_method(self):
+        # #230 期望 2：除了按 kind 计数，还要按「用了哪种归属判据」计数，
+        # 换机器跑门时才能看出这条证据是进程树定出来的还是域名兜底猜的。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('clients2.google.com',), 'browser-background-network')
+            + "\n    def test_denied_connect(self):\n"
+            "        import socket\n"
+            "        try:\n"
+            "            socket.create_connection(('203.0.113.1', 443), timeout=0.01)\n"
+            "        except Exception:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = self.report()
+        by_method = (report.get("guard_attribution") or {}).get("by_method") or {}
+        self.assertGreaterEqual(
+            by_method.get("process-tree", 0), 1,
+            f'门进程树自己发起的事件没按进程树归类：{by_method}',
+        )
+        self.assertGreaterEqual(
+            by_method.get("domain-fallback", 0), 1,
+            f'归属不到的噪声没标明是域名兜底：{by_method}',
+        )
+        labelled = [
+            event
+            for event in report["guard_events"]
+            if str(event.get("kind")) in {"network", "browser-background-network"}
+        ]
+        self.assertTrue(
+            all(event.get("attributed_by") for event in labelled),
+            f'证据里看不出这条事件用的判据：{labelled}',
+        )
+
+    def test_native_socket_connect_to_allowlisted_target_is_blocking(self):
+        # 不是抬杠：原生 socket 自己发 CONNECT时不会过 set_tunnel，代理那边
+        # 只留下一条带目标域名的噪声。如果归属只看 set_tunnel，产品拿这种
+        # 连接去连清单里的目标（www.googleapis.com）就被洗成宿主遥测了。
+        # 能兜住它的是 proxy-egress：门进程连上出口代理这一跳本身就带 pid。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class NativeSocketToAllowlist(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT www.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: www.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        report = self.report()
+        self.assertEqual(
+            result.returncode, 1,
+            '原生连接连到域名清单里的目标被判成宿主噪声了（#230）：' + result.stdout[-2000:],
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "proxy-egress"
+                and event.get("attributed_by") == "process-tree"
+                for event in blocking
+            ),
+            f'出口代理 hop 没被按进程树归为违规：{blocking}',
         )
 
     def test_gate_tree_process_reaching_a_host_tool_target_is_still_blocking(self):
@@ -1495,10 +1603,23 @@ class QualityGateTests(unittest.TestCase):
 
         result = self.run_gate()
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        #  fixture 是门进程树里的已守卫进程，它自己连代理这一跳（proxy-egress）
+        # 就是违规，所以门必须红；但目标本身的分类仍然是浏览器噪声（domain-
+        # fallback），不能被当成 S0 的理由——真浏览器（没有钩子）拨这个域时
+        # 不会留下 hop 事件，那边走的是上面那条噪声路径。
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
         self.assertIn(
             {"kind": "browser-background-network", "target": "oauth2.googleapis.com"},
-            self.guard_events(self.report()["guard_events"]),
+            self.guard_events(report["guard_events"]),
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "proxy-egress" and event.get("attributed_by") == "process-tree"
+                for event in blocking
+            ),
+            f'代理 hop 没按进程树归为违规：{blocking}',
         )
 
     def test_host_ai_tool_look_alike_host_is_still_a_blocking_network_target(self):
@@ -2061,7 +2182,7 @@ class QualityGateTests(unittest.TestCase):
         )
         report = self.report()
         self.assertIn(
-            {"kind": "subprocess-leak", "target": Path(sys.executable).name.lower()},
+            {"kind": "subprocess-leak", "target": Path(sys.executable).name.lower(), "attributed_by": "unattributed"},
             report["guard_events"],
         )
         self.assertEqual(report["first_failure"]["name"], "surface-contract")
@@ -2393,6 +2514,8 @@ class QualityGateTests(unittest.TestCase):
             if finding["severity"] == "S0"
         )
         self.assertEqual(s0["source"], "guard")
+        # #230：证据要看得出这条 S0 是按哪种判据定出来的（进程树 vs 域名兜底）。
+        self.assertIn("attributed to the gate process tree", s0["message"])
         s1 = next(
             finding
             for finding in report["severity_frequency_findings"]

@@ -727,9 +727,19 @@ _guard_environment_names = {
 def _record(kind, target):
     if not _event_file:
         return
-    # #230：证据要能回答「这条连接是谁发的」。pid 由钩子所在进程自己报，
-    # 不依赖端口→pid 的表查询（实测短命连接在快照间就消失了，不可靠）。
-    event = json.dumps({"kind": kind, "target": str(target), "pid": os.getpid()}, ensure_ascii=True) + "\n"
+    # #230：证据要能回答「这条连接是谁发的」。pid / ppid / 可执行路径都由
+    # 钩子所在进程自己报，不依赖端口→pid 的表查询（实测短命连接在快照
+    # 间就消失了，不可靠）。pid 每台都变，ppid 和 exe 才能给换机器时对账。
+    event = json.dumps(
+        {
+            "kind": kind,
+            "target": str(target),
+            "pid": os.getpid(),
+            "ppid": os.getppid(),
+            "exe": str(getattr(sys, "executable", "") or ""),
+        },
+        ensure_ascii=True,
+    ) + "\n"
     descriptor = os.open(_event_file, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
         os.write(descriptor, event.encode("utf-8"))
@@ -1610,27 +1620,58 @@ NON_BLOCKING_GUARD_KINDS = frozenset(
 )
 
 
-def blocking_guard_events(events: list[dict]) -> list[dict]:
-    # #230：归属优先用进程树，域名白名单只在无法判定时用。
-    # 代理日志只看到目标域名（分得出宿主遥测、分不出是谁发的）；守卫在
-    # set_tunnel 上记录的 proxy-request 带了发起进程 pid。两边同一个目标对上
-    # = 这条「像宿主噪声」的连接其实是门进程树里的产品自己请求的 → 真违规，
-    # 必须判红（否则就是拿域名白名单把产品连接洗掉）。
-    # 对不上 = 无法归属（真实宿主工具不跑我们的钩子）→ 仍按 #227 只记不判红。
-    attributed = {
+def classify_guard_events(events: list[dict]) -> list[dict]:
+    """#230 期望 1：每条守卫事件都带上「这条结论用的哪种判据」。
+
+    判据只有三种（#230 期望 2 要的正是这三种的计数）：进程树 / 域名兜底 /
+    无法归属。
+    • process-tree：事件带 pid = 它是在我们钩子里跑的进程 = 门进程树自己
+      发的（不在树里的进程根本没有钩子，报不出 pid）。域名清单再像宿主
+      遥测也不能把它洗掉。proxy-egress（某个门进程连上了出口代理）也算：
+      原生 socket 自己发 CONNECT 时不会过 set_tunnel，没有这一条就只能看
+      目标域名，产品拿原生连接连白名单目标就能漏过去。
+    • process-tree（升级）：没有 pid 的代理噪声，但同一个目标被门进程树请求
+      过（proxy-request 带 pid）→ 这条「像噪声」的连接其实是产品自己请求的。
+    • domain-fallback：归属不到发起进程，只能按 #227 的域名分类只记不判红。
+    • unattributed：既没 pid 也不是已知噪声 kind → 保守判红。
+    """
+    requested = {
         str(event.get("target") or "").strip().lower()
         for event in events
         if event.get("kind") == "proxy-request" and event.get("pid")
     }
-    blocking = []
+    classified = []
     for event in events:
-        kind = event.get("kind")
-        if kind in NON_BLOCKING_GUARD_KINDS:
-            if str(event.get("target") or "").strip().lower() in attributed:
-                blocking.append({**event, "attributed_by": "process-tree"})
-            continue
-        blocking.append(event)
-    return blocking
+        kind = str(event.get("kind") or "")
+        target = str(event.get("target") or "").strip().lower()
+        if event.get("pid"):
+            label = "process-tree"
+        elif kind in NON_BLOCKING_GUARD_KINDS:
+            label = "process-tree" if target in requested else "domain-fallback"
+        else:
+            label = "unattributed"
+        classified.append({**event, "attributed_by": label})
+    return classified
+
+
+def guard_attribution_method_counts(events: list[dict]) -> dict[str, int]:
+    # #230 期望 2：换机器跑门时要能直接比「这条证据是进程树定出来的还是
+    # 域名兜底猜的」，而不是去 jsonl 里数。
+    counts: dict[str, int] = {}
+    for event in classify_guard_events(events):
+        label = str(event.get("attributed_by") or "unknown")
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def blocking_guard_events(events: list[dict]) -> list[dict]:
+    # 判据在 classify_guard_events 里定，这里只筛「哪些算违规」：只有域名兜底
+    # 不判红，其余（进程树归属、无法归属）一律 S0。
+    return [
+        event
+        for event in classify_guard_events(events)
+        if event["attributed_by"] != "domain-fallback"
+    ]
 
 
 def summarize_guard_events(events: list[dict]) -> dict[str, int]:
@@ -2179,9 +2220,18 @@ def build_severity_findings(
     # #230：对账要整批做。proxy-request（产口自己请求了哪个目标，带 pid）与代理
     # 日志里的目标分类是两个不同的事件，逐事件单判看不到「同一个目标已经被
     # 门进程树里的进程请求过」，那样产品自己的连接会被域名白名单洗掉。
-    blocking_ids = {id(event) for event in blocking_guard_events(guard_events)}
+    # 这里不能用 id() 比对：blocking_guard_events 现在会给每条事件贴判据标签，
+    # 返回的是新字典，拿对象身份比就再也对不上了（S0 记录会默默消失）。
+    def event_key(event: dict) -> tuple:
+        return (
+            str(event.get("kind") or ""),
+            str(event.get("target") or ""),
+            event.get("pid"),
+        )
+
+    blocking_ids = {event_key(event) for event in blocking_guard_events(guard_events)}
     for event in guard_events:
-        if id(event) in blocking_ids:
+        if event_key(event) in blocking_ids:
             findings.append(
                 {
                     "severity": "S0",
@@ -3324,7 +3374,7 @@ def main(argv: list[str] | None = None) -> int:
                             retry_events_file,
                             sensitive_values,
                         )[previous_retry_count:]
-                        step["guard_events"] = step_guard_events
+                        step["guard_events"] = classify_guard_events(step_guard_events)
                         step["retry_events"] = step_retry_events
                         step["child_events"] = step_child_events
                         if (
@@ -3468,7 +3518,7 @@ def main(argv: list[str] | None = None) -> int:
                         merge_event_lines(sinks["guard"], guard_events_file)
                         merge_event_lines(sinks["child"], child_events_file)
                         merge_event_lines(sinks["retry"], retry_events_file)
-                        step["guard_events"] = step_guard_events
+                        step["guard_events"] = classify_guard_events(step_guard_events)
                         step["retry_events"] = step_retry_events
                         step["child_events"] = step_child_events
                         step["parallel_group"] = True
@@ -3512,7 +3562,10 @@ def main(argv: list[str] | None = None) -> int:
                     if group_failed:
                         break
 
-            guard_events = read_guard_events(guard_events_file, sensitive_values)
+            # #230：合并后的全量事件一次性贴判据标签（跨 step 看目标，才能把
+            # 「A step 里产品请求过这个目标」和「B step 里同一目标的代理噪声」
+            # 对起来）；报告、S0 记录、按判据计数共用这一份带标签的事件。
+            guard_events = classify_guard_events(read_guard_events(guard_events_file, sensitive_values))
             retry_events = read_retry_events(retry_events_file, sensitive_values)
             child_events = read_child_events(child_events_file, sensitive_values)
             if final_exit_code == 0 and (
@@ -3628,6 +3681,10 @@ def main(argv: list[str] | None = None) -> int:
         # 对不上的目标就是无法归属（真实宿主工具不跑我们的钩子），
         # 域名白名单只在这种情况下用。
         "guard_attribution": {
+            # #230 期望 2：按判据计数（process-tree / domain-fallback /
+            # unattributed / proxy-hop）。注意这里的标签是对全量事件做的（跨
+            # step 看目标），而「判不判红」仍然是逐 step 定的。
+            "by_method": guard_attribution_method_counts(guard_events),
             "attributed_to_gate_tree": sum(
                 1 for event in guard_events if event.get("pid")
             ),
