@@ -301,7 +301,7 @@ async def download_canvas_assets(payload: CanvasAssetDownloadRequest):
     """打包画布素材。#229：先把条目解析出来，再把 zip 流出去。
 
     旧实现把整包攒在 BytesIO 里一次性返回，峰值内存约等于整个包体积
-    （48MB 的星标批量下载就是 48MB 常驻）。现在只有远程外链那一张会短暂驻留
+    （48MB 的星标批量下载就是 48MB 常驻）。现在只有远程媒体那一张会短暂驻留
     （仍受单文件上限保护），本地文件是一块一块流过管道的。
     """
     used_names = set()

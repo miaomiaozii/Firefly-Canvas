@@ -158,3 +158,24 @@ test('下载主入口成功与失败都要落记录（否则 #228 的回查是�
     assert.equal(rec.total, 3);
     assert.equal(rec.status, 'partial');
 });
+
+test('回查面板的 HTML 必须转义（文件名来自服务端，不能注入）', () => {
+    const { ctx } = load();
+    fn(ctx, 'canvasRecordDownload')({
+        filename: '<img src=x onerror=alert(1)>.zip',
+        bytes: 10,
+        report: { total: 1, packed: 1, skipped: [{ name: '<b>x</b>', reason: 'missing_file' }], expected_bytes: 1, size_known: true },
+        status: 'partial',
+    });
+    const html = fn(ctx, 'canvasDownloadRecordsHtml')();
+    assert.ok(html.includes('&lt;img'), '未转义 = 服务端返的文件名可以注 HTML');
+    assert.ok(!html.includes('<img'), '不得出现未转义的原始标签');
+});
+
+test('没有记录时回查区域给空态，不能抛错', () => {
+    const { ctx } = load();
+    // harness 的 i18n stub 只翻译它字典里的 key，未翻译会原样返回 key。
+    // 断言 key 说明走的是空态分支且没有抛错；key 是否真在 i18n 源里由
+    // tests/test_canvas_frontend_sources.py 的接线测试钉住。
+    assert.match(fn(ctx, 'canvasDownloadRecordsHtml')(), /smart\.downloadRecordsEmpty/);
+});

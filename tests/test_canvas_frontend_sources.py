@@ -96,6 +96,23 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                         offenders.append(f"static/js/{name}:{lineno} {path}")
         self.assertEqual(offenders, [], "路径字面量被状态容器改名污染：\n" + "\n".join(offenders))
 
+    def test_marked_download_records_control_is_wired(self):
+        # #228：打包回执不能只闪一次 toast，已标记面板要有本机回查入口。
+        # 整页不在单测的 vm 里，所以这里钉住三处接线：HTML 控件、核心点击处理、
+        # 下载模块提供的渲染函数。任一处改名都会静默失效（点了没反应）。
+        html = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
+        hub = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        module = (ROOT / "static" / "js" / "canvas-download.js").read_text(encoding="utf-8")
+        self.assertIn('id="smartMarkedRecords"', html)
+        self.assertIn('id="smartMarkedRecordsList"', html)
+        self.assertIn("getElementById('smartMarkedRecords')", hub)
+        self.assertIn("canvasDownloadRecordsHtml()", hub)
+        self.assertIn("function canvasDownloadRecordsHtml", module)
+        # 空态/按钮文案走 i18n，key 没定义就会把 key 直接显示给用户。
+        i18n = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
+        for key in ("smart.downloadRecords", "smart.downloadRecordsEmpty"):
+            self.assertIn(f'"{key}"', i18n)
+
     def test_canvas_assets_share_one_cache_buster(self):
         # 事故复盘（#224）：smart-canvas.html 里曾并存四个不同的 ?v= 值，
         # 改了 canvas-media-history.js 却把它的戳记停在两天前——浏览器继续用旧文件，

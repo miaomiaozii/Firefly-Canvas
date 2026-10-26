@@ -193,7 +193,7 @@ class CanvasAssetZipStreamingTests(unittest.TestCase):
                         f'驻留峰值 {peak / 1024 / 1024:.1f}MB 对 {payload_total / 1024 / 1024:.0f}MB 的包——还是整包量级（#229）')
 
     def test_remote_bytes_are_still_packed_and_counted(self):
-        """远程条目（画布上还没落盘的外链图）不能被流式改造丢掉。"""
+        """远程条目（画布上还没落盘的远程媒体）不能被流式改造丢掉。"""
         payload = os.urandom(700 * 1024)
         response = _download({'urls': ['/remote/one.png'], 'filename': 'x.zip'},
                              remote=lambda url: (payload, 'image/png'))
