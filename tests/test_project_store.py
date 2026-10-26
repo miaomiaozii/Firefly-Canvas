@@ -2152,13 +2152,14 @@ class ProjectStoreContractTests(unittest.TestCase):
             immediate = json.loads(primary.read_text(encoding="utf-8"))
             self.assertEqual(immediate["nodes"], [])
 
-            deadline = time.monotonic() + 2.0
-            persisted = immediate
-            while time.monotonic() < deadline:
-                time.sleep(0.03)
-                persisted = json.loads(primary.read_text(encoding="utf-8"))
-                if persisted["nodes"]:
-                    break
+            # #231：等事件，不等墙钟。原来的 2.0s 轮询在门里会报假红：
+            # project-contract 与其他步骤并行，flush 要抢的全局锁可能被占，
+            # Timer 线程也可能排不到 CPU——落盘一定会发，但时间上没保证。
+            self.assertTrue(
+                delayed.wait_for_snapshot(project["id"], timeout=30.0),
+                "等不到后台快照完成",
+            )
+            persisted = json.loads(primary.read_text(encoding="utf-8"))
             self.assertEqual(persisted["nodes"], [{"id": "released", "x": 9, "y": 10}])
             self.assertTrue(delayed.save_status(project["id"])["saved"])
             self.assertTrue(primary.with_name("canvas.json.bak").exists())
@@ -2591,6 +2592,84 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         result = self.store.archive_unreferenced_media(project["id"], asset["asset_id"], reason="node-delete")
         self.assertTrue(result["file_missing"])
         self.assertFalse(any(item["asset_id"] == asset["asset_id"] for item in self.store.list_media(project["id"])))
+
+
+class BackgroundSnapshotLockContentionTests(unittest.TestCase):
+    """issue #231：后台快照的落盘时间目钱上受全局锁争用约束，不是固定窗口。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_background_snapshot_waits_for_the_lock_held_by_another_operation(self):
+        # 不是测试写法问题：flush 在全局 _lock 里做磁盘写，任何持锁的操作
+        # （另一个项目的写盘、刷库、删除）都能把后台快照顶出固定时间窗口。
+        # 这里先排好快照，再用另一个线程拿锁来确定性复现门里的争用，
+        # 不用真压力机。（注意不能先拿锁再 apply_mutations——那会把 mutation
+        # 本身卡住，测不到快照。）
+        store = ProjectStore(self.root, snapshot_delay=0.4)
+        try:
+            project = store.create_project("锁争用")
+            primary = self.root / project["id"] / "canvas.json"
+            store.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": "released", "x": 9, "y": 10}},
+            ], base_revision=0)
+
+            hold_release = threading.Event()
+            acquired = threading.Event()
+
+            def hold_the_lock():
+                with store._lock:
+                    acquired.set()
+                    hold_release.wait(3.0)
+
+            holder = threading.Thread(target=hold_the_lock, daemon=True)
+            holder.start()
+            self.assertTrue(acquired.wait(1.0), "持锁线程没能抢到锁，场景是空的")
+
+            time.sleep(1.1)
+            self.assertEqual(
+                json.loads(primary.read_text(encoding="utf-8"))["nodes"],
+                [],
+                "后台快照没等锁：这个钉的根因假设不成立",
+            )
+            hold_release.set()
+            holder.join(5.0)
+
+            # 不丢数据：锁释放后快照必须自己落盘（而不是靠 close 补）。
+            deadline = time.monotonic() + 3.0
+            nodes = []
+            while time.monotonic() < deadline:
+                time.sleep(0.02)
+                nodes = json.loads(primary.read_text(encoding="utf-8"))["nodes"]
+                if nodes:
+                    break
+            self.assertEqual(nodes, [{"id": "released", "x": 9, "y": 10}])
+        finally:
+            store.close()
+
+    def test_wait_for_snapshot_is_a_deterministic_sync_point(self):
+        # 时序断言应该等「后台写完成了」这个事件，而不是墙钟窗口：门里并行
+        # 步骤抢 CPU、同一把锁被占，都能把落盘顶出固定秒数，但事件本身会到。
+        store = ProjectStore(self.root, snapshot_delay=0.2)
+        try:
+            project = store.create_project("同步点")
+            store.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": "released", "x": 1, "y": 2}},
+            ], base_revision=0)
+            self.assertTrue(
+                store.wait_for_snapshot(project["id"], timeout=30.0),
+                "等不到后台快照完成",
+            )
+            canvas = json.loads((self.root / project["id"] / "canvas.json").read_text(encoding="utf-8"))
+            self.assertEqual(canvas["nodes"], [{"id": "released", "x": 1, "y": 2}])
+            # 没排程时不用等：直接返回。
+            self.assertTrue(store.wait_for_snapshot(project["id"], timeout=0.0))
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

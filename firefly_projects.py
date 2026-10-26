@@ -3309,6 +3309,29 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         except (OSError, ValueError, json.JSONDecodeError):
             return {"items": {}}
 
+    def wait_for_snapshot(self, project_id: str, timeout: float = 30.0) -> bool:
+        """等该项目的后台快照真的落盘完成（issue #231 的确定性同步点）。
+
+        后台快照由 threading.Timer 触发，而 flush 在全局 _lock 里做磁盘写：
+        别的线程持锁（另一项目的写盘/刷库/删除）或 CPU 被抢时，落盘时间没有
+        上界——所以“等它写完”只能等事件，不能睡固定秒数（门里并行步骤抢资
+        源时，任何墙钟窗口都会报假红）。返回 True 表示已写完或本来就没待写
+        快照；False 表示超超时仍未写完。
+
+        不能在持 _lock 时 join：Timer 线程里的 flush 正是要那把锁，会死锁。
+        """
+        project_id = _clean_project_id(project_id)
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                timer = self._timers.get(project_id)
+            if timer is None:
+                return True
+            timer.join(max(0.0, deadline - time.monotonic()))
+            if timer.is_alive() or time.monotonic() >= deadline:
+                with self._lock:
+                    return project_id not in self._timers
+
     def _schedule_snapshot(self, project_id: str) -> None:
         previous = self._timers.pop(project_id, None)
         if previous is not None:
