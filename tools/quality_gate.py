@@ -829,9 +829,23 @@ socket.getnameinfo = _guarded_getnameinfo
 
 
 _real_socket_connect = socket.socket.connect
+_real_proxy_connect = _real_socket_connect
+
 def _guarded_socket_connect(instance, address):
-    _deny_non_loopback(address)
-    return _real_socket_connect(instance, address)
+    # #230：原生 socket 自己发 CONNECT 时不会过 set_tunnel，没有「哪个进程连了
+    # 代理」这一条就只能看目标域名，产品拿原生连接连白名单目标就能漏过去。
+    # 知道 CONNECT 目标时把目标带上（带 pid 即进程树归属，要按白名单判）；
+    # 不知道时只记「某个进程连了代理」不带目标 —— 不能把代理自己的地址当成
+    # 目标，那会把正常走代理的流量误判红。
+    tunnel_host = getattr(instance, "_tunnel_host", None)
+    tunnel_port = getattr(instance, "_tunnel_port", None)
+    if tunnel_host and tunnel_port:
+        _record("proxy-egress", f"{tunnel_host}:{tunnel_port}")
+    elif getattr(instance, "_tunnel_host", None) is None and _is_loopback(address):
+        _record("proxy-egress")
+    return _deny_non_loopback(address) or _real_proxy_connect(instance, address)
+
+
 socket.socket.connect = _guarded_socket_connect
 
 
@@ -1623,31 +1637,35 @@ NON_BLOCKING_GUARD_KINDS = frozenset(
 def classify_guard_events(events: list[dict]) -> list[dict]:
     """#230 期望 1：每条守卫事件都带上「这条结论用的哪种判据」。
 
-    判据只有三种（#230 期望 2 要的正是这三种的计数）：进程树 / 域名兜底 /
-    无法归属。
-    • process-tree：事件带 pid = 它是在我们钩子里跑的进程 = 门进程树自己
-      发的（不在树里的进程根本没有钩子，报不出 pid）。域名清单再像宿主
-      遥测也不能把它洗掉。proxy-egress（某个门进程连上了出口代理）也算：
-      原生 socket 自己发 CONNECT 时不会过 set_tunnel，没有这一条就只能看
-      目标域名，产品拿原生连接连白名单目标就能漏过去。
-    • process-tree（升级）：没有 pid 的代理噪声，但同一个目标被门进程树请求
-      过（proxy-request 带 pid）→ 这条「像噪声」的连接其实是产品自己请求的。
-    • domain-fallback：归属不到发起进程，只能按 #227 的域名分类只记不判红。
+    分类**只看事件自身**，不看同批里有哪些其它事件——否则同一条
+    事件在 step 视图（只看本 step）和全量视图（跨 step）里会拿到两个
+    判据，证据自相矛盾（#230 要的正是可审计的判据）：
+    • proxy-hop：只是「某个门进程连上了出口代理」这个 loopback 动作
+      本身，不带真实目标，不能单独算违规（真目标由 proxy-request 记录）。
+    • process-tree：事件带 pid = 它是在我们的钩子里跑的进程 = 门进程
+      树自己发的（不在树里的进程根本没有钩子，报不出 pid）。域名清单
+      再像宿主遥测也不能把它洗掉；proxy-request（哪个进程请求了哪个目标）
+      就算：原生 socket 自己发 CONNECT 时不会过 set_tunnel，没这一条就
+      只能看目标域名，产品拿原生连接连白名单目标就能漏过去。
+    • domain-fallback：归属不到发起进程，只能按 #227 的域名分类只记
+      不判红。
     • unattributed：既没 pid 也不是已知噪声 kind → 保守判红。
+
+    不做「同一目标被别的 pid 请求过就把这条噪声升级」的跨事件 join：产品
+    自己的请求本来带 pid、本来就按 process-tree 判红；join 只会把宿主噪声
+    改名成产品违规（证据里产品连接数虚高），且只在 join 范围内生效。
     """
-    requested = {
-        str(event.get("target") or "").strip().lower()
-        for event in events
-        if event.get("kind") == "proxy-request" and event.get("pid")
-    }
     classified = []
     for event in events:
         kind = str(event.get("kind") or "")
-        target = str(event.get("target") or "").strip().lower()
-        if event.get("pid"):
+        if kind == "proxy-egress" and not event.get("target"):
+            # 没带目标的就只是「某个进程连了代理」这一跳，不是目的地声明；
+            # 带目标的（我们知道 CONNECT 连向哪）才按进程树判白名单。
+            label = "proxy-hop"
+        elif event.get("pid"):
             label = "process-tree"
         elif kind in NON_BLOCKING_GUARD_KINDS:
-            label = "process-tree" if target in requested else "domain-fallback"
+            label = "domain-fallback"
         else:
             label = "unattributed"
         classified.append({**event, "attributed_by": label})
@@ -2213,15 +2231,15 @@ def build_severity_findings(
     make the auditable severity record explicit."""
     findings: list[dict] = []
     attributed_steps = {
-        (event.get("kind"), str(event.get("target"))): step.get("name")
+        # key 要带 pid：不带的话，两个 step 各自违规同一个 (kind, target) 时
+        # dict 推导后写胜出，两条 S0 会被归到同一个 step。
+        (event.get("kind"), str(event.get("target")), event.get("pid")): step.get("name")
         for step in steps
         for event in step.get("guard_events") or []
     }
-    # #230：对账要整批做。proxy-request（产口自己请求了哪个目标，带 pid）与代理
-    # 日志里的目标分类是两个不同的事件，逐事件单判看不到「同一个目标已经被
-    # 门进程树里的进程请求过」，那样产品自己的连接会被域名白名单洗掉。
-    # 这里不能用 id() 比对：blocking_guard_events 现在会给每条事件贴判据标签，
+    # 这里不能用 id() 比对：blocking_guard_events 会给每条事件贴判据标签，
     # 返回的是新字典，拿对象身份比就再也对不上了（S0 记录会默默消失）。
+    # 分类现在只看事件自身，所以逐 step 筛与全量筛结果一致，这里取全量。
     def event_key(event: dict) -> tuple:
         return (
             str(event.get("kind") or ""),
@@ -2237,7 +2255,12 @@ def build_severity_findings(
                     "severity": "S0",
                     "source": "guard",
                     "step": attributed_steps.get(
-                        (event.get("kind"), str(event.get("target"))), "unattributed"
+                        (
+                            event.get("kind"),
+                            str(event.get("target")),
+                            event.get("pid"),
+                        ),
+                        "unattributed",
                     ),
                     "frequency": "FU",
                     "observations": 1,
@@ -3697,9 +3720,7 @@ def main(argv: list[str] | None = None) -> int:
             "unattributable_background": sum(
                 1
                 for event in guard_events
-                if event.get("kind")
-                in {"browser-background-network", "host-tool-network"}
-                and not event.get("pid")
+                if event.get("attributed_by") == "domain-fallback"
             ),
             "blocking": attribute_blocking_guard_events(steps),
         },

@@ -20,6 +20,9 @@ from tools.quality_gate import (
     MODE_STEPS,
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
+    blocking_guard_events,
+    build_severity_findings,
+    classify_guard_events,
     compute_unit_contract_shards,
     discover_unit_contract_modules,
     expected_native_focus,
@@ -1309,6 +1312,14 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         guard_events = self.report()["guard_events"]
+        attribution = self.report().get("guard_attribution") or {}
+        # 背景噪声计数与判据计数必须自洽：归属不到的背景噪声就是 domain-fallback
+        # 那批，不能出现「同一条事件既算进程树又算无法归属」。
+        self.assertEqual(
+            attribution.get("unattributable_background"),
+            (attribution.get("by_method") or {}).get("domain-fallback"),
+            "背景噪声计数与 by_method 不自洽：" + json.dumps(attribution, ensure_ascii=False)[:800],
+        )
         for target in ("edge.microsoft.com", "cn.bing.com", "www.bing.com"):
             self.assertIn(
                 {"kind": "browser-background-network", "target": target, "attributed_by": "domain-fallback"},
@@ -1617,12 +1628,51 @@ class QualityGateTests(unittest.TestCase):
         blocking = (report.get("guard_attribution") or {}).get("blocking") or []
         self.assertTrue(
             any(
-                event.get("kind") == "host-tool-network"
+                event.get("kind") == "proxy-request"
                 and str(event.get("target", "")).lower() == "play.googleapis.com"
                 and event.get("attributed_by") == "process-tree"
+                and isinstance(event.get("pid"), int)
                 for event in blocking
             ),
-            f'升级后的连接没标出归属来源（谁发的）：{blocking}',
+            f'产品自己的 CONNECT 记录（带 pid）没按进程树判红：{blocking}',
+        )
+        # 宿主噪声不能被改名成产品违规。判红靠的是带 pid 的那条 proxy-request，
+        # 不需要给代理日志里那条噪声换归属；一换就会同现「产品连接数」虚高，
+        # 而且 step 视图与全量视图会给出两个不同的归属。
+        noise = [
+            event
+            for event in report["guard_events"]
+            if event.get("kind") == "host-tool-network"
+            and str(event.get("target", "")).lower() == "play.googleapis.com"
+        ]
+        self.assertTrue(noise, "代理日志里没有那条宿主噪声事件，fixture 没跑到")
+        self.assertEqual(
+            {event.get("attributed_by") for event in noise},
+            {"domain-fallback"},
+            f'宿主噪声被升级成产品归属：{noise}',
+        )
+        # 同一条事件在 step 视图和全量视图里必须同一个判据。
+        step_view = {
+            (event.get("kind"), str(event.get("target")), event.get("pid")): event.get("attributed_by")
+            for step in report.get("steps", [])
+            for event in (step.get("guard_events") or [])
+        }
+        merged_view = {
+            (event.get("kind"), str(event.get("target")), event.get("pid")): event.get("attributed_by")
+            for event in report["guard_events"]
+        }
+        shared = set(step_view) & set(merged_view)
+        self.assertTrue(shared, "step 视图与全量视图没有共同事件，无法对账")
+        self.assertEqual(
+            {key: step_view[key] for key in shared},
+            {key: merged_view[key] for key in shared},
+            "同一条事件在两个视图里判据不同（#230 证据自相矛盾）",
+        )
+        attribution = report.get("guard_attribution") or {}
+        self.assertEqual(
+            attribution.get("unattributable_background"),
+            (attribution.get("by_method") or {}).get("domain-fallback"),
+            "背景噪声计数与 by_method 不自洽：" + json.dumps(attribution, ensure_ascii=False)[:800],
         )
     def test_google_account_oauth_connect_is_classified_as_browser_noise(self):
         # 这个走真的 CONNECT，不是为了测而测：trial 门（20261027-020846）真实
@@ -2571,6 +2621,63 @@ class QualityGateTests(unittest.TestCase):
         )
         self.assertEqual(s1["source"], "step")
         self.assertEqual(s1["step"], "provider-contract")
+
+
+class GuardAttributionConsistencyTests(unittest.TestCase):
+    """#230：判据不能取决于「事件怎么分批读」。
+
+    同一条事件在 step 视图与全量视图里只能有一个 attributed_by；宿主噪声不能
+    因为「另一个 step 里产品请求过同名目标」就被改名成产品归属。
+    """
+
+    PRODUCT_REQUEST = {"kind": "proxy-request", "target": "play.googleapis.com", "pid": 7}
+    HOST_NOISE = {"kind": "host-tool-network", "target": "play.googleapis.com"}
+
+    def test_host_noise_stays_domain_fallback_even_if_the_tree_requested_the_target(self):
+        merged = classify_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])
+        labels = {event["kind"]: event["attributed_by"] for event in merged}
+        self.assertEqual(
+            labels.get("host-tool-network"),
+            "domain-fallback",
+            f'宿主噪声被升级成产品归属：{merged}',
+        )
+        self.assertEqual(labels.get("proxy-request"), "process-tree")
+        blocking = [event["kind"] for event in blocking_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])]
+        self.assertEqual(
+            blocking,
+            ["proxy-request"],
+            "判红应该只靠带 pid 的那条，不该靠给噪声改名",
+        )
+
+    def test_classification_is_identical_per_step_or_merged(self):
+        per_step = classify_guard_events([dict(self.PRODUCT_REQUEST)]) + classify_guard_events([dict(self.HOST_NOISE)])
+        merged = classify_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])
+        self.assertEqual(
+            [event["attributed_by"] for event in per_step],
+            [event["attributed_by"] for event in merged],
+            "同一条事件因为分批不同而得到不同判据",
+        )
+
+    def test_findings_keep_the_step_that_actually_violated(self):
+        steps = [
+            {
+                "name": "surface-contract",
+                "status": "passed",
+                "guard_events": [{"kind": "network", "target": "203.0.113.1", "pid": 11}],
+            },
+            {
+                "name": "project-contract",
+                "status": "passed",
+                "guard_events": [{"kind": "network", "target": "203.0.113.1", "pid": 22}],
+            },
+        ]
+        merged = [dict(event) for step in steps for event in step["guard_events"]]
+        findings = [finding for finding in build_severity_findings(steps, merged, []) if finding["severity"] == "S0"]
+        self.assertEqual(
+            sorted(finding.get("step") for finding in findings),
+            ["project-contract", "surface-contract"],
+            f'两条同名目标的违规没能各自归到自己的 step：{findings}',
+        )
 
 
 if __name__ == "__main__":
