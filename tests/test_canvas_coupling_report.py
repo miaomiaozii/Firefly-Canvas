@@ -145,10 +145,14 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # —— 下载层从 smart-canvas.js 抽成模块后，核心按名调它的 4 个函数
         # （downloadCanvasArchive / canvasReceiveBlob / canvasSaveBlobAsFile / canvasDownloadSkipSummary）。
         # 方向是 #154 要求的「核心调模块」，不是新债；但口径上漂就必须同步 ADR 0020 的表。
-        self.assertEqual(rev["reverse_names"], 235)
-        self.assertEqual(rev["reverse_core_refs"], 938)
-        self.assertEqual(rev["core_dominant_names"], 166)
-        self.assertEqual(rev["core_dominant_core_refs"], 788)
+        # → 236/940/167/790：#224 让素材抽屉的名字格改调 canvas-media-history.js 的
+        # markedItemDisplayName（smart-canvas.js 两处：可见文本 + title），同样是「核心调模块」，
+        # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
+        # 直接拼 item.name 会一排重复）。
+        self.assertEqual(rev["reverse_names"], 236)
+        self.assertEqual(rev["reverse_core_refs"], 940)
+        self.assertEqual(rev["core_dominant_names"], 167)
+        self.assertEqual(rev["core_dominant_core_refs"], 790)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

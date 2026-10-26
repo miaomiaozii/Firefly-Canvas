@@ -139,15 +139,19 @@
 
 | 口径 | 名字 | 核心侧引用处 |
 |---|---|---|
-| 核心引用模块声明的名字（反向总面） | **235** | **938** |
-| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **166** | **788** |
+| 核心引用模块声明的名字（反向总面） | **236** | **940** |
+| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **167** | **790** |
 
 （从 231/933/163/784 上漂：全部来自 #223 新建的 `canvas-download.js`——下载层从 smart-canvas.js
 抽成模块后，核心改为按名调它的 4 个函数（downloadCanvasArchive / canvasReceiveBlob /
 canvasSaveBlobAsFile / canvasDownloadSkipSummary）。这是 #154 要求的「核心调模块」方向，不是新债，
 但口径就是口径，上漂就必须同步这里。）
 
-owner 分布：`canvas-media-history.js` 58、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
+（再到 236/940/167/790：#224 让素材抽屉的名字格改调 `canvas-media-history.js` 的
+`markedItemDisplayName`（smart-canvas.js 两处：可见文本 + title）。同样是「核心调模块」方向，
+目的是避免两处显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，直接拼 item.name 会一排重复）。）
+
+owner 分布：`canvas-media-history.js` 59、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、
 `canvas-download.js` 4。
@@ -155,7 +159,7 @@ owner 分布：`canvas-media-history.js` 58、`canvas-image-editor.js` 54、`can
 
 **两个口径都不是「债」的判定，只是证据。** 核心是 UI 编排层，调模块功能本身合法（正常组合关系）。
 典型误判例：`NODE_TYPE_*` 常量核心用 24-28 处、owner 模块用 2 处——常量本来就是给全仓用的，
-不是债。所以 166 这个数不能直接当工作量。
+不是债。所以 167 这个数不能直接当工作量。
 
 **轨道 3 现行结论：保持 #202 的判定（不搬）。** 若将来要重开，必须先逐名过一遍上表的
  `core_dominant_rows`，并区分「常量/工具——应共享」与「行为——可能真搬错了」。
