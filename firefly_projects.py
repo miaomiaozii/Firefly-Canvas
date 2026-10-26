@@ -190,6 +190,11 @@ def _library_manifest(root: Path) -> Dict[str, Any]:
 from firefly_projects_deletion import ProjectDeletionMixin
 from firefly_projects_cleanup import ProjectCleanupMixin
 
+# 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
+# 塞回用户眼前（#224 要修的就是这个），所以按裸 ID 形态剔除。
+_BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
+
+
 class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
@@ -2495,6 +2500,95 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             history = self._load_history(project_id)
             self._histories[project_id] = history
         _write_json_atomic(self.root / project_id / "history.json", {"records": history}, keep_backup=False)
+
+    def _readable_output_name(self, project_id: str, canvas: Dict[str, Any], asset_id: str) -> str:
+        """给一个 asset_id 找可读名字：先媒体记录（生成时保存的文件名），再引用它的画布节点。
+
+        找不到就返回空串，让前端按自己的顺序回退到素材 ID，不编造名字。
+        """
+        candidates: List[str] = []
+        try:
+            candidates.append(str(self.media_record(project_id, asset_id).get("name") or ""))
+        except ProjectStoreError:
+            pass
+        for node in canvas.get("nodes") or []:
+            if isinstance(node, dict) and asset_id in self._collect_asset_ids(node):
+                candidates.append(str(node.get("alias") or node.get("name") or ""))
+        for candidate in candidates:
+            cleaned = str(candidate or "").strip()
+            if not cleaned or _BARE_ASSET_ID_RE.match(Path(cleaned).stem):
+                continue
+            return cleaned[:160]
+        return ""
+
+    def backfill_history_output_names(
+        self,
+        *,
+        project_id: str | None = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """一次性回填：给老生成历史里的 outputs 补上可读 name（#224 存量数据）。
+
+        改动前写入的 outputs 只有 {asset_id, kind}，名字其实在媒体记录里存着。
+        只补没有 name 的项，已有名字一律不动，所以第二次跑是空操作（幂等）。
+        历史归 store 管（apply_mutations 会 canvas.pop("history")），因此必须在
+        store 内部改 _histories 再走 _persist_history，不能直接编辑 data 下的 JSON。
+        """
+        summary = {
+            "projects_scanned": 0,
+            "projects_changed": 0,
+            "records_scanned": 0,
+            "outputs_total": 0,
+            "outputs_named": 0,
+            "outputs_unresolved": 0,
+            "changed_projects": [],
+            "dry_run": bool(dry_run),
+        }
+        with self._lock:
+            if project_id is None:
+                project_ids = [str(item.get("id") or "") for item in self.list_projects()]
+            else:
+                project_ids = [_clean_project_id(project_id)]
+            for current_project_id in project_ids:
+                if not current_project_id:
+                    continue
+                summary["projects_scanned"] += 1
+                try:
+                    canvas = self.open_project(current_project_id)["canvas"]
+                except ProjectNotFound:
+                    continue
+                history = copy.deepcopy(
+                    self._histories.get(current_project_id) or self._load_history(current_project_id)
+                )
+                changed = False
+                for record in history:
+                    if not isinstance(record, dict):
+                        continue
+                    summary["records_scanned"] += 1
+                    for entry in record.get("outputs") or []:
+                        if not isinstance(entry, dict):
+                            continue
+                        summary["outputs_total"] += 1
+                        if str(entry.get("name") or "").strip():
+                            continue
+                        asset_id = str(entry.get("asset_id") or "").strip()
+                        if not asset_id:
+                            continue
+                        name = self._readable_output_name(current_project_id, canvas, asset_id)
+                        if not name:
+                            summary["outputs_unresolved"] += 1
+                            continue
+                        entry["name"] = name
+                        summary["outputs_named"] += 1
+                        changed = True
+                if changed and not dry_run:
+                    self._histories[current_project_id] = history
+                    self._persist_history(current_project_id)
+                    summary["projects_changed"] += 1
+                if changed:
+                    # 预演时也要知道是哪个项目会变，运维脚本才能先备份再写。
+                    summary["changed_projects"].append(current_project_id)
+        return summary
 
     def complete_media_generation(
         self,
