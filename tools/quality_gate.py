@@ -3682,9 +3682,12 @@ def main(argv: list[str] | None = None) -> int:
         # 域名白名单只在这种情况下用。
         "guard_attribution": {
             # #230 期望 2：按判据计数（process-tree / domain-fallback /
-            # unattributed / proxy-hop）。注意这里的标签是对全量事件做的（跨
-            # step 看目标），而「判不判红」仍然是逐 step 定的。
+            # unattributed / proxy-hop）。口径要写进证据：这里是对**全量合并事件流**
+            # （跨 step 看目标）做的，而 guard_attribution.blocking 是逐 step 定的，
+            # 两者可能不相等（A step 请求过、B step 噪声——全量流会升级，单看 step
+            # 不会）。对账时先比口径再比数。
             "by_method": guard_attribution_method_counts(guard_events),
+            "by_method_scope": "run-level merged guard event stream (cross-step)",
             "attributed_to_gate_tree": sum(
                 1 for event in guard_events if event.get("pid")
             ),

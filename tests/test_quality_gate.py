@@ -1456,6 +1456,12 @@ class QualityGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         report = self.report()
         by_method = (report.get("guard_attribution") or {}).get("by_method") or {}
+        # 口径也要在证据里：by_method 是全量合并流，blocking 是逐 step，两者
+        # 不相等时得能看出是口径差异而不是归类错。
+        self.assertTrue(
+            str((report.get("guard_attribution") or {}).get("by_method_scope") or "").strip(),
+            "by_method 没标明统计口径",
+        )
         self.assertGreaterEqual(
             by_method.get("process-tree", 0), 1,
             f'门进程树自己发起的事件没按进程树归类：{by_method}',
@@ -1516,6 +1522,49 @@ class QualityGateTests(unittest.TestCase):
             f'出口代理 hop 没被按进程树归为违规：{blocking}',
         )
 
+    def test_loopback_traffic_to_a_non_proxy_port_is_not_a_violation(self):
+        # #230 的反向钉：proxy-egress 只在「连的就是出口代理那个端口」时才记
+        # （_deny_non_loopback 里 port == _browser_proxy_port）。产品跑本地服务
+        # （127.0.0.1 上其他端口）不能被当成走了出口代理，否则每个用到本地
+        # 服务的 step 都会静默变红。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import http.server\n"
+            "import socket\n"
+            "import threading\n"
+            "import unittest\n\n"
+            "class LoopbackToLocalServer(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
+            "        class Handler(http.server.BaseHTTPRequestHandler):\n"
+            "            def do_GET(self):\n"
+            "                self.send_response(200)\n"
+            "                self.send_header('Content-Length', '0')\n"
+            "                self.end_headers()\n"
+            "            def log_message(self, *args):\n"
+            "                pass\n\n"
+            "        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)\n"
+            "        worker = threading.Thread(target=server.serve_forever, daemon=True)\n"
+            "        worker.start()\n"
+            "        try:\n"
+            "            connection = socket.create_connection(server.server_address)\n"
+            "            try:\n"
+            "                connection.sendall(b'GET / HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\n\\r\\n')\n"
+            "                connection.recv(1024)\n"
+            "            finally:\n"
+            "                connection.close()\n"
+            "        finally:\n"
+            "            server.shutdown()\n"
+            "            server.server_close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        self.assertFalse(
+            [event for event in self.report()["guard_events"] if event.get("kind") == "proxy-egress"],
+            "连本地非代理端口被记成了出口代理 hop",
+        )
+
     def test_gate_tree_process_reaching_a_host_tool_target_is_still_blocking(self):
         # #230：域名白名单回答的是「目标像不像宿主遥测」，不是「连接是谁发的」。
         # 产品自己的进程（在门进程树里）去连 play.googleapis.com 这种白名单目标，
@@ -1547,7 +1596,6 @@ class QualityGateTests(unittest.TestCase):
 
         report = self.report()
         counts = report.get("guard_event_counts", {})
-        print("RED-CHECK returncode=", result.returncode, "counts=", json.dumps(counts, ensure_ascii=False))
         self.assertEqual(
             result.returncode, 1,
             '门进程树自己的连接被判成宿主噪声放过了（#230）：' + result.stdout[-2000:],
