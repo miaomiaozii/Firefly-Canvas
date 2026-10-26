@@ -5303,11 +5303,16 @@ function renderAssetLibrary(){
     if(assetDetectUnusedBtn) assetDetectUnusedBtn.hidden = !projectMode || Boolean(smartClass);
     if(!projectMode) setAssetBatchMode(false);
     updateAssetBatchBar();
-    assetGrid.innerHTML = items.length ? items.map(item => `
+    // 名字去歧义按整列算：供应商占位名（generated-1.jpg）在同一批里全一样，
+    // 只靠单个名字分不出哪张是哪张。逻辑和已标记面板共用 markedDisplayNames。
+    const assetLabels = markedDisplayNames(items.map(item => ({
+        name: item.name || 'asset', url: item.url, asset_id: item.id,
+    })));
+    assetGrid.innerHTML = items.length ? items.map((item, i) => `
         <div class="asset-item" draggable="true" data-asset-id="${escapeHtml(item.id)}" data-url="${escapeHtml(item.url)}" data-name="${escapeHtml(item.name || 'asset')}" data-kind="${escapeHtml(assetMediaKind(item))}">
             ${assetThumbHtml(item)}
             <div class="asset-meta">
-                <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(markedItemDisplayName({ name: item.name || 'asset', url: item.url, asset_id: item.id }))}">${escapeHtml(markedItemDisplayName({ name: item.name || 'asset', url: item.url, asset_id: item.id }))}</span>
+                <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(assetLabels[i])}">${escapeHtml(assetLabels[i])}</span>
                 ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="${escapeHtml(tr('smart.select'))}">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
                     : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>

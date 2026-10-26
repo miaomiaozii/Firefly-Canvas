@@ -179,6 +179,29 @@ test('markedImageItems + 显示名：真实形状（4 个同名输出同一记�
     assert.equal(new Set(shown).size, 4, `显示名重复：${JSON.stringify(shown)}`);
 });
 
+// #224 第三轮（真实数据实测）：资源库列表把占位名直接显示出来，
+// 既不补时间也不补序号，也没有撞名兜底——实测 21 张同批图在列表里全一样。
+// 去歧义因此提到整列级（markedDisplayNames），两个列表共用。
+test('markedDisplayNames: 同批同分钟的占位名整列必须两两不同', () => {
+    const { ctx } = loadMediaHistory();
+    const items = Array.from({ length: 12 }, (_, i) => ({
+        name: 'generated-1.jpg', url: mediaUrl(ID_A.slice(0, 20) + String(i).padStart(2, '0')),
+        asset_id: String(i).padStart(4, '0') + ID_A.slice(4), createdAt: CREATED_A,
+    }));
+    const labels = fn(ctx, 'markedDisplayNames')(items);
+    assert.equal(labels.length, 12, `丢了项：${labels.length}`);
+    assert.equal(new Set(labels).size, 12, `整列去歧义后仍重复：${JSON.stringify(labels.slice(0, 4))}`);
+});
+
+test('markedDisplayNames: 不撞名的列不加任何后缀', () => {
+    const { ctx } = loadMediaHistory();
+    const labels = fn(ctx, 'markedDisplayNames')([
+        { name: 'DSC08791.jpg', url: '/output/gen/DSC08791.jpg', asset_id: ID_A },
+        { name: 'DSC08792.jpg', url: '/output/gen/DSC08792.jpg', asset_id: ID_B },
+    ]);
+    assert.deepEqual(labels, ['DSC08791.jpg', 'DSC08792.jpg'], JSON.stringify(labels));
+});
+
 test('markedItemDisplayName: 真实文件名不加任何后缀（占位名才去歧义）', () => {
     const { ctx } = loadMediaHistory();
     const shown = fn(ctx, 'markedItemDisplayName')({

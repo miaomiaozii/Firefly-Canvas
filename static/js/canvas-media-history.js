@@ -579,6 +579,19 @@ function markedItemDisplayName(item){
     return String(item?.asset_id || '');
 }
 
+function markedDisplayNames(items){
+    // 按整列去歧义：单看一个名字分不出重复，同一批同名同分钟的图光靠名字本身
+    // 一模一样。已标记面板和资源库两个列表共用这一份逻辑——之前只有
+    // 已标记面板自带兜底，素材库那边直接显示名字，于是一排 generated-1.jpg
+    // 看起来全一样。
+    const list = Array.isArray(items) ? items : [];
+    const labels = list.map(item => markedItemDisplayName(item));
+    const hits = new Map();
+    labels.forEach(label => hits.set(label, (hits.get(label) || 0) + 1));
+    return labels.map((label, index) => (hits.get(label) > 1
+        ? `${label} · ${markedItemDisambiguation(list[index])}` : label));
+}
+
 function renderSmartMarkedPanel(){
     const count = getMarkedAssetIds().length;
     const badge = document.getElementById('smartMarkedCount');
@@ -592,12 +605,9 @@ function renderSmartMarkedPanel(){
         return;
     }
     // 列表内的图必然都是已标记状态：星标按钮直接渲染填充态（image-marked）。
-    // 同一分钟生成的同名默认名连时间都分不开，这时才逐行退回 asset_id 短前缀。
-    const displayNames = items.map(item => markedItemDisplayName(item));
-    const nameHits = new Map();
-    displayNames.forEach(label => nameHits.set(label, (nameHits.get(label) || 0) + 1));
-    const markedName = (item, i) => (nameHits.get(displayNames[i]) > 1
-        ? `${displayNames[i]} · ${markedItemDisambiguation(item)}` : displayNames[i]);
+    // 同名同分钟的生成器默认名在这一列里会撞，去歧义统一走 markedDisplayNames。
+    const displayNames = markedDisplayNames(items);
+    const markedName = (item, i) => displayNames[i];
     list.innerHTML = items.map((item, i) => `
         <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
             <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">

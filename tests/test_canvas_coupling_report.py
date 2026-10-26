@@ -149,13 +149,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # markedItemDisplayName（smart-canvas.js 两处：可见文本 + title），同样是「核心调模块」，
         # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
         # 直接拼 item.name 会一排重复）。
-        # → 237/941/168/791：#228 让已标记面板的「下载记录」入口调 canvas-download.js 的
-        # canvasDownloadRecordsHtml（下载记录存在模块那侧，核心只负责把面板打开），
-        # 依旧是指向 #154 要的「核心调模块」方向，canvas-download.js owner 计数 4→5。
+        # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
         self.assertEqual(rev["reverse_names"], 237)
-        self.assertEqual(rev["reverse_core_refs"], 941)
-        self.assertEqual(rev["core_dominant_names"], 168)
-        self.assertEqual(rev["core_dominant_core_refs"], 791)
+        self.assertEqual(rev["reverse_core_refs"], 940)
+        self.assertEqual(rev["core_dominant_names"], 167)
+        self.assertEqual(rev["core_dominant_core_refs"], 789)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

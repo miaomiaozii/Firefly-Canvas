@@ -33,13 +33,16 @@ class AssetDisplayNameContractTests(unittest.TestCase):
         )
 
     def test_asset_grid_name_cell_delegates_to_shared_helper(self):
+        # #224 第三轮：去歧义是整列级的（同批同名同分钟的单看名字分不开），
+        # 所以名字格不再逐条调 markedItemDisplayName，而是用整列结果 assetLabels。
         lines = [line for line in HUB.splitlines() if 'class="asset-name"' in line]
         self.assertTrue(lines, "没找到素材抽屉的名字格，改动前先看渲染点还在不在")
+        self.assertIn("markedDisplayNames(items.map", HUB,
+                      "素材抽屉必须走整列去歧义的 markedDisplayNames")
         for line in lines:
             self.assertIn(
-                "markedItemDisplayName(",
-                line,
-                "素材抽屉的名字格必须调用 markedItemDisplayName，别再直接拼 item.name",
+                "assetLabels[", line,
+                "素材抽屉的名字格必须用 markedDisplayNames 的整列结果，别再直接拼 item.name",
             )
 
     def test_asset_grid_title_matches_visible_text(self):
@@ -50,22 +53,18 @@ class AssetDisplayNameContractTests(unittest.TestCase):
                 continue
             title = line.split('class="asset-name"', 1)[1]
             self.assertEqual(
-                title.count("markedItemDisplayName("), 2,
-                f"title 和文本要用同一个函数各一次：{title[:200]}",
+                title.count("assetLabels["), 2,
+                f"title 和文本要用同一个整列结果各一次：{title[:200]}",
             )
 
     def test_asset_display_name_passes_the_asset_id(self):
-        # 没有时间信息时会退回 asset_id 短前缀，所以调用时必须把 id 传进去。
+        # 没有时间信息时会退回 asset_id 短前缀，所以构调用时必须把 id 传进去。
         # 素材抽屉的条目用 item.id（不是 item.asset_id）。
-        for line in HUB.splitlines():
-            if 'class="asset-name"' not in line:
-                continue
-            self.assertRegex(
-                line,
-                r"markedItemDisplayName\(\{[^}]*asset_id:\s*(item\.(?:id|asset_id))",
-                "调用处必须带上 asset_id，否则同分钟的同名素材分不开",
-            )
-            break
+        self.assertRegex(
+            HUB,
+            r"markedDisplayNames\(items\.map\([^)]*asset_id:\s*item\.(?:id|asset_id)",
+            "调用处必须带上 asset_id，否则同分钟的同名素材分不开",
+        )
 
 
 if __name__ == "__main__":
