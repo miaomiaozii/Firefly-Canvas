@@ -37,6 +37,10 @@ function canvasDownloadReportFromResponse(response){
         return {
             total: Number(parsed.total) || 0,
             packed: Number(parsed.packed) || 0,
+            // #229：打包改为流式后，某张图尺寸读不准时后端宁可不发 Content-Length。
+            // 这两个字段就是「没有 Content-Length 时仍然可用的完整性信号」。
+            expectedBytes: Number(parsed.expected_bytes) || 0,
+            sizeKnown: Boolean(parsed.size_known),
             skipped: Array.isArray(parsed.skipped) ? parsed.skipped.map(s => ({
                 name: String(s?.name || ''),
                 reason: String(s?.reason || 'unknown'),
@@ -117,6 +121,15 @@ async function canvasReceiveBlob(response){
         error.report = report;
         throw error;
     }
+    // #229：流式打包下 Content-Length 可能缺席（某张图尺寸读不准时后端不发，也不发一个错的）。
+    // 这时用回执里的素材字节合计做**下界**：STORED（不压缩）zip 必然 ≥ 素材字节之和，
+    // 所以只可能偏大不会偏小 —— 收到更少就是被截断。没有回执时不做无根据的判定。
+    if(declared <= 0 && report?.sizeKnown && report.expectedBytes > 0 && bytes < report.expectedBytes){
+        const error = new Error(`${tr('smart.downloadTruncated')} (${bytes}/${report.expectedBytes})`);
+        error.reason = 'truncated';
+        error.report = report;
+        throw error;
+    }
     // 0 字节绝不落盘：以前正是这里静默「成功」。
     if(bytes <= 0){
         const error = new Error(tr('smart.downloadEmpty'));
@@ -127,15 +140,87 @@ async function canvasReceiveBlob(response){
     return { blob, bytes, report };
 }
 
+// #228 本地下载记录：打包回执只闪一次就没了，用户回头想查「那次到底进了几张」无处可查。
+// 存进 localStorage（有上限，最新在前），面板入口读它回查。任何异常都不能影响下载本身，
+// 所以读写一律吞掉异常（回查是附加能力，不是主流程）。
+const CANVAS_DOWNLOAD_RECORDS_KEY = 'canvasDownloadRecords';
+const CANVAS_DOWNLOAD_RECORDS_LIMIT = 50;
+
+function canvasDownloadRecords(){
+    try{
+        const raw = localStorage.getItem(CANVAS_DOWNLOAD_RECORDS_KEY);
+        if(!raw) return [];
+        const parsed = JSON.parse(raw);
+        if(!Array.isArray(parsed)) return [];
+        return parsed.filter(r => r && typeof r === 'object');
+    }catch(e){
+        return [];
+    }
+}
+
+function canvasRecordDownload({ filename, bytes = 0, report = null, status = 'ok', reason = '' } = {}){
+    const record = {
+        at: new Date().toISOString(),
+        filename: String(filename || 'download.zip'),
+        bytes: Number(bytes) || 0,
+        status: String(status || 'ok'),
+        total: Number(report?.total) || 0,
+        packed: Number(report?.packed) || 0,
+        skipped: Array.isArray(report?.skipped) ? report.skipped.slice(0, 12) : [],
+    };
+    if(reason) record.reason = String(reason);
+    try{
+        const list = canvasDownloadRecords();
+        list.unshift(record);
+        localStorage.setItem(CANVAS_DOWNLOAD_RECORDS_KEY, JSON.stringify(list.slice(0, CANVAS_DOWNLOAD_RECORDS_LIMIT)));
+    }catch(e){ /* 存不下就算了，下载结果已经拿到 */ }
+    return record;
+}
+
+// 面板里给人看的一行：时间 · 文件名 · 进了几张/共几张 · 大小 · 跳过原因。
+function canvasFormatDownloadRecord(record){
+    if(!record) return '';
+    const when = String(record.at || '').replace('T', ' ').slice(5, 16);
+    const parts = [when, record.filename];
+    if(record.total > 0) parts.push(`${record.packed}/${record.total}`);
+    if(Number(record.bytes) > 0) parts.push(`${(Number(record.bytes) / 1024 / 1024).toFixed(1)}MB`);
+    if(record.status === 'failed') parts.push(tr('smart.batchDownloadFailed'));
+    const reasons = Array.isArray(record.skipped) ? record.skipped.slice(0, 3).map(s => {
+        const key = CANVAS_DOWNLOAD_SKIP_REASON_KEYS[s?.reason];
+        return `${s?.name || tr('smart.downloadSkippedUnnamed')}（${key ? tr(key) : s?.reason}）`;
+    }) : [];
+    if(reasons.length) parts.push(reasons.join(' · '));
+    return parts.filter(Boolean).join(' · ');
+}
+
+// 面板回查用的 HTML（#228）：直接交给 innerHTML，所以全部 escapeHtml。
+// 复用现有 .smart-marked-export-files / -file 样式，不新增 CSS。
+function canvasDownloadRecordsHtml({ limit = 8 } = {}){
+    const records = canvasDownloadRecords().slice(0, Math.max(1, Number(limit) || 8));
+    if(!records.length) return `<div class="smart-marked-export-file">${escapeHtml(tr('smart.downloadRecordsEmpty'))}</div>`;
+    return records.map(r => `<div class="smart-marked-export-file" title="${escapeHtml(canvasFormatDownloadRecord(r))}">` +
+        `<i data-lucide="${r.status === 'failed' ? 'triangle-alert' : 'check'}" aria-hidden="true"></i>` +
+        `<span>${escapeHtml(canvasFormatDownloadRecord(r))}</span></div>`).join('');
+}
+
 // 主入口：POST /api/canvas-assets/download 并把 zip 落成文件。
 // 失败一律 throw（带可读原因），绝不静默产出空文件；返回值带 report 供上层提示。
+// 成功/部分成功/失败都要落一条本地记录（#228），否则回查是空的。
 async function downloadCanvasArchive({ filename, urls = [], items = [] } = {}){
     const response = await fetch('/api/canvas-assets/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename, urls, items }),
     });
-    const { blob, bytes, report } = await canvasReceiveBlob(response);
+    let received;
+    try{
+        received = await canvasReceiveBlob(response);
+    }catch(error){
+        canvasRecordDownload({ filename, bytes: 0, report: error?.report || null, status: 'failed', reason: error?.reason || 'failed' });
+        throw error;
+    }
+    const { blob, bytes, report } = received;
     const href = canvasSaveBlobAsFile(blob, filename, canvasDownloadRevokeDelayMs(bytes));
+    canvasRecordDownload({ filename, bytes, report, status: report?.skipped?.length ? 'partial' : 'ok' });
     return { filename, bytes, href, report };
 }

@@ -61,8 +61,21 @@ def _report(response) -> dict:
     return json.loads(urllib.parse.unquote(raw))
 
 
+def _response_bytes(response) -> bytes:
+    """取响应字节。#229 之后下载端点返回的是流式响应（StreamingResponse），
+    必须走 body_iterator；攒在内存里的旧实现才走 response.body。"""
+    iterator = getattr(response, 'body_iterator', None)
+    if iterator is None:
+        return response.body or b''
+
+    async def _drain():
+        return b''.join([chunk async for chunk in iterator])
+
+    return asyncio.run(_drain())
+
+
 def _zip_names(response) -> list[str]:
-    with zipfile.ZipFile(io.BytesIO(response.body)) as zf:
+    with zipfile.ZipFile(io.BytesIO(_response_bytes(response))) as zf:
         return zf.namelist()
 
 

@@ -90,10 +90,12 @@
                 <span class="smart-marked-title"><i data-lucide="star"></i><span data-i18n="smart.markedImages">已标记图片</span></span>
                 <div class="smart-marked-head-actions">
                     <button id="smartMarkedDownloadAll" class="smart-marked-download-all" type="button" title="一键下载全部已标记图片（zip）" aria-label="下载全部已标记图片"><i data-lucide="download"></i><span data-i18n="smart.markedDownloadAll">全部下载</span></button>
+                    <button id="smartMarkedRecords" class="smart-marked-records-toggle" type="button" title="下载记录（本机回查）" aria-label="下载记录"><i data-lucide="history"></i><span data-i18n="smart.downloadRecords">下载记录</span></button>
                     <button id="smartMarkedClose" class="smart-marked-close" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
                 </div>
             </div>
             <div id="smartMarkedList" class="smart-marked-list"></div>
+            <div id="smartMarkedRecordsList" class="smart-marked-export-files" hidden></div>
             <div id="smartMarkedExport" class="smart-marked-export">
                 <label class="smart-marked-export-label" for="smartMarkedExportDir" data-i18n="smart.exportDirLabel">服务器导出目录</label>
                 <input id="smartMarkedExportDir" class="smart-marked-export-input" type="text" placeholder="留空=zip 下载；如 exports/2026-09" spellcheck="false" autocomplete="off">

@@ -441,6 +441,8 @@
         "smart.unmarkImage": { zh: "取消标记", en: "Unmark this image" },
         "smart.markedEmpty": { zh: "还没有标记图片。把鼠标移到画布图片上，点右上角的星形即可标记。", en: "No marked images yet. Hover an image on the canvas and click the star in its top-right corner." },
         "smart.markedDownloadAll": { zh: "全部下载", en: "Download all" },
+        "smart.downloadRecords": { zh: "下载记录", en: "Download log" },
+        "smart.downloadRecordsEmpty": { zh: "还没有下载记录", en: "No downloads yet" },
         "smart.markUnavailable": { zh: "这张图没有资源库文件，暂不能标记", en: "This image has no library asset and can't be marked yet" },
         "smart.markNotOnCanvas": { zh: "该图片当前不在画布节点上，无法使用编辑工具", en: "This image is not on a canvas node, so the edit tools are unavailable" },
         "smart.trashForeverConfirm": { zh: "彻底删除该资源？删除后无法恢复。", en: "Delete this item forever? This cannot be undone." },

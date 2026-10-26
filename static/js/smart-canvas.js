@@ -14503,6 +14503,21 @@ document.getElementById('smartMarkedClose')?.addEventListener('click', e => {
     e.stopPropagation();
     toggleSmartMarkedPanel(false);
 });
+document.getElementById('smartMarkedRecords')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    // #228：打包回执只闪一次就没了。这里给一个本机回查入口，
+    // 记录由 canvas-download.js 落在 localStorage（canvasDownloadRecords）。
+    const box = document.getElementById('smartMarkedRecordsList');
+    if(!box) return;
+    if(box.hidden){
+        box.innerHTML = canvasDownloadRecordsHtml();
+        box.hidden = false;
+        if(window.lucide) lucide.createIcons();
+    }else{
+        box.hidden = true;
+    }
+});
 document.getElementById('smartMarkedDownloadAll')?.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();

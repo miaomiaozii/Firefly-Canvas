@@ -139,8 +139,8 @@
 
 | 口径 | 名字 | 核心侧引用处 |
 |---|---|---|
-| 核心引用模块声明的名字（反向总面） | **236** | **940** |
-| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **167** | **790** |
+| 核心引用模块声明的名字（反向总面） | **237** | **941** |
+| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **168** | **791** |
 
 （从 231/933/163/784 上漂：全部来自 #223 新建的 `canvas-download.js`——下载层从 smart-canvas.js
 抽成模块后，核心改为按名调它的 4 个函数（downloadCanvasArchive / canvasReceiveBlob /
@@ -151,10 +151,13 @@ canvasSaveBlobAsFile / canvasDownloadSkipSummary）。这是 #154 要求的「�
 `markedItemDisplayName`（smart-canvas.js 两处：可见文本 + title）。同样是「核心调模块」方向，
 目的是避免两处显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，直接拼 item.name 会一排重复）。）
 
+（再到 237/941/168/791：#228 给已标记面板加「下载记录」入口，核心调 `canvas-download.js` 的
+`canvasDownloadRecordsHtml`——记录存在下载模块那一侧，核心只负责把面板打开。方向不变。）
+
 owner 分布：`canvas-media-history.js` 59、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、
-`canvas-download.js` 4。
+`canvas-download.js` 5。
 （`canvas-core.js` 已排除：核心调它是合法下层依赖。）
 
 **两个口径都不是「债」的判定，只是证据。** 核心是 UI 编排层，调模块功能本身合法（正常组合关系）。
