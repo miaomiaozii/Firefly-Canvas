@@ -491,15 +491,28 @@ function toggleMarkedImage(node, imageIndex){
 function markedImageItems(){
     const found = new Map();
     const hasName = value => Boolean(String(value?.name || value?.alias || '').trim());
+    // asset_id → 生成时间。磁盘上的 history outputs 和节点图片都没有时间字段，
+    // url 也是前端补的（smart-canvas.js:5682 的 hydrateProjectMediaReferences 只补
+    // url/preview_url），所以时间只能从 history 记录借。
+    const momentById = new Map();
+    (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
+        const moment = log?.created_at ?? log?.createdAt ?? log?.completed_at ?? log?.updated_at;
+        if(!moment) return;
+        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
+            const id = String(output?.asset_id || '');
+            if(id && !momentById.has(id)) momentById.set(id, moment);
+        });
+    });
     const adopt = (id, item) => {
         if(!id || !item?.url) return;
+        const stamped = (item.createdAt || !momentById.has(id)) ? item : { ...item, createdAt: momentById.get(id) };
         const prev = found.get(id);
-        if(!prev){ found.set(id, item); return; }
+        if(!prev){ found.set(id, stamped); return; }
         // #224：生成历史输出只有 {asset_id, kind, url}（后端 history_record['outputs']
         // 不带 name），而节点图片带归档文件名。原先「先到先得」会让无名条目遮蔽
         // 有名条目，markedItemDisplayName 只能退回裸 64 位 asset_id。
         // 同名素材后到时补齐缺失字段，而不是丢弃后到者。
-        if(!hasName(prev) && hasName(item)) found.set(id, {...prev, ...item});
+        if(!hasName(prev) && hasName(item)) found.set(id, {...prev, ...stamped});
     };
     (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
         (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => adopt(String(output?.asset_id || ''), output));
@@ -512,7 +525,9 @@ function markedImageItems(){
 
 // 生成器默认名（app/core.py 的 generated_image_filename 产出 generated-N.png/.jpg/.webp/.gif）
 // 在全库里只有十几个不同值（实测 1053 个输出项里 generated-1.jpg 就占 479 条），
-// 光看名字分不出是哪一张，所以要带 asset_id 短前缀去歧义。真实文件名不加后缀，保持干净。
+// 光看名字分不出是哪一张。用户否决了拿提示词当名字（提示词高度模板化），
+// 要求引入生成时间日期：默认名后拼 created_at；同一分钟再接连则退回 asset_id 短前缀。
+// 真实文件名（DSC08791.jpg）不加任何后缀。
 const GENERATOR_DEFAULT_NAME_PATTERN = /^generated-\d+\.(?:png|jpe?g|webp|gif)$/i;
 const MARKED_NAME_ID_SUFFIX_LENGTH = 6;
 
@@ -521,9 +536,26 @@ function markedItemDisambiguation(item){
     return /^[0-9a-f]{8,}$/i.test(assetId) ? assetId.slice(0, MARKED_NAME_ID_SUFFIX_LENGTH).toLowerCase() : '';
 }
 
+// 生成时间：outputs 本身没有时间字段（实测 1053 个输出只有 asset_id/kind/
+// output_id/output_order/name），靠 markedImageItems 从 history 记录带上 createdAt。
+function markedItemCreatedAt(item){
+    const ms = Number(item?.createdAt ?? item?.created_at ?? item?.completed_at);
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+function markedItemCreatedAtLabel(item){
+    const ms = markedItemCreatedAt(item);
+    if(!ms) return '';
+    const date = new Date(ms);
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function markedItemDisplayName(item){
-    const suffix = markedItemDisambiguation(item);
-    const decorate = value => (suffix && GENERATOR_DEFAULT_NAME_PATTERN.test(value) ? `${value} · ${suffix}` : value);
+    const fallback = markedItemCreatedAtLabel(item) || markedItemDisambiguation(item);
+    const decorate = value => (fallback && GENERATOR_DEFAULT_NAME_PATTERN.test(value)
+        ? `${value} · ${fallback}` : value);
     const name = String(item?.name || item?.alias || '').trim();
     if(name) return decorate(name);
     try{
@@ -547,10 +579,16 @@ function renderSmartMarkedPanel(){
         return;
     }
     // 列表内的图必然都是已标记状态：星标按钮直接渲染填充态（image-marked）。
+    // 同一分钟生成的同名默认名连时间都分不开，这时才逐行退回 asset_id 短前缀。
+    const displayNames = items.map(item => markedItemDisplayName(item));
+    const nameHits = new Map();
+    displayNames.forEach(label => nameHits.set(label, (nameHits.get(label) || 0) + 1));
+    const markedName = (item, i) => (nameHits.get(displayNames[i]) > 1
+        ? `${displayNames[i]} · ${markedItemDisambiguation(item)}` : displayNames[i]);
     list.innerHTML = items.map((item, i) => `
         <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
             <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
-            <span class="smart-marked-name" title="${escapeAttr(markedItemDisplayName(item))}">${escapeHtml(markedItemDisplayName(item))}</span>
+            <span class="smart-marked-name" title="${escapeAttr(markedName(item, i))}">${escapeHtml(markedName(item, i))}</span>
             <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><i data-lucide="download"></i></button>
             <button class="mini-x smart-marked-unmark image-marked" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
         </div>`).join('');

@@ -104,75 +104,93 @@ test('renderSmartMarkedPanel: title 带完整名字，不被截断', () => {
     assert.equal(shown[1], '一张非常长的中文素材名字-最终确认稿-v12.png');
 });
 
-// --- 生成器默认名去歧义（#224 存量回填后暴露的问题，用户选定方案 1）----
+// --- 生成器默认名去歧义（#224 存量回填后暴露，用户定的方案：带生成时间）----
 // 回填补回来的名字全是生成器默认名 generated-N.png/.jpg/.webp/.gif
-// （名字由 app/core.py 的 generated_image_filename(index, mime_type) 生成）。
-// 实测 1053 个输出项只有 14 个不同名字，generated-1.jpg 一个就占 479 条：
-// 名字本身不再唯一，光看列表分不出是哪张。所以默认名要带 asset_id 短前缀。
-// 真实文件名（DSC08791.jpg）不加后缀，保持干净。
+// （名字由 app/core.py 的 generated_image_filename 产出）。实测 1053 个输出项
+// 只有 14 个不同名字，generated-1.jpg 一种就占 479 条 —— 光看名字根本分不出是哪张。
+// 用户否决了「用提示词当名字」（提示词高度模板化），要求引入时间日期。
+// 时间来源：history 记录的 created_at/createdAt（firefly_projects.py:1232 会把
+// history 整份挂到 canvas.history 上给前端，毫秒字符串）。outputs 本身没有时间字段，
+// 所以 markedImageItems 必须把记录时间带到素材上。
+// 时间标签不断言具体值（依赖本机时区），只钉格式与「不同时间必须不同文本」。
 
 const ID_A = '0f02737013cc4b4c9af179c5b8459b84';   // #223/#224 复现里出现过的真实 ID
 const ID_B = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const mediaUrl = id => `/api/project-library/p1/media/${id}`;
+// 真实历史记录里的 created_at（毫秒字符串）。
+const CREATED_A = '1792383388944';
+const CREATED_B = '1792470420000';
+const MOMENT_LABEL = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
 
-test('markedItemDisplayName: 生成器默认名要带 asset_id 短前缀去歧义', () => {
-    const { ctx } = loadMediaHistory();
-    const name = fn(ctx, 'markedItemDisplayName');
-    assert.equal(
-        name({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A }),
-        'generated-1.jpg · 0f0273',
-    );
+test('markedImageItems: 必须把历史记录的 created_at 带到素材上（名字里没有别的时间来源）', () => {
+    const { ctx } = loadMediaHistory({
+        marked: [ID_A],
+        history: [{ created_at: CREATED_A, outputs: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] }],
+        nodes: [],
+    });
+    const [item] = fn(ctx, 'markedImageItems')();
+    assert.ok(item, '素材项丢了');
+    assert.ok(Number(item.createdAt) > 0, `素材上没有生成时间：${JSON.stringify(item)}`);
 });
 
-test('markedItemDisplayName: 两个同名默认名必须显示成不同文本', () => {
-    // 这是方案 1 的全部意义：光看名字分不出 479 张 generated-1.jpg 里的哪一张。
+test('markedItemDisplayName: 生成器默认名要带生成时间去歧义', () => {
     const { ctx } = loadMediaHistory();
-    const name = fn(ctx, 'markedItemDisplayName');
-    const first = name({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A });
-    const second = name({ name: 'generated-1.jpg', url: mediaUrl(ID_B), asset_id: ID_B });
-    assert.notEqual(first, second, `同名默认名显示成了一样的：${first}`);
-    assert.ok(first.includes('0f0273') && second.includes('a1b2c3'));
+    const shown = fn(ctx, 'markedItemDisplayName')({
+        name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A,
+    });
+    assert.match(shown, /^generated-1\.jpg · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `时间后缀不对：${shown}`);
 });
 
-test('markedItemDisplayName: generated-N 的扩展名变体都算默认名', () => {
+test('markedItemDisplayName: 同名默认名但生成时间不同 → 文本必须不同', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    const first = name({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A });
+    const second = name({ name: 'generated-1.jpg', url: mediaUrl(ID_B), asset_id: ID_B, createdAt: CREATED_B });
+    assert.notEqual(first, second, `不同时间显示成了一样：${first}`);
+});
+
+test('markedItemDisplayName: generated-N 的各扩展名都算默认名', () => {
     const { ctx } = loadMediaHistory();
     const name = fn(ctx, 'markedItemDisplayName');
     for (const ext of ['png', 'jpg', 'jpeg', 'webp', 'gif']) {
-        const shown = name({ name: `generated-12.${ext}`, url: mediaUrl(ID_A), asset_id: ID_A });
-        assert.ok(shown.endsWith(' · 0f0273'), `generated-12.${ext} 没加后缀：${shown}`);
+        const shown = name({ name: `generated-12.${ext}`, url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A });
+        assert.match(shown, new RegExp(`^generated-12\.${ext} · `), `generated-12.${ext} 没加时间：${shown}`);
+        assert.match(shown, MOMENT_LABEL, `时间标签格式不对：${shown}`);
     }
 });
 
-test('markedItemDisplayName: 真实文件名不加后缀，保持干净', () => {
+test('markedItemDisplayName: 没有时间信息时才退回 asset_id 短前缀（不能退回裸名字）', () => {
+    const { ctx } = loadMediaHistory();
+    const shown = fn(ctx, 'markedItemDisplayName')({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A });
+    assert.equal(shown, 'generated-1.jpg · 0f0273', `没有时间就该用短前缀兜底：${shown}`);
+});
+
+test('markedItemDisplayName: 真实文件名不加任何后缀', () => {
     const { ctx } = loadMediaHistory();
     const name = fn(ctx, 'markedItemDisplayName');
     for (const real of ['DSC08791.jpg', 'generated-1-final.jpg', 'generated_image-1.jpg', '海报 generated-1.jpg']) {
-        assert.equal(name({ name: real, url: mediaUrl(ID_A), asset_id: ID_A }), real,
+        assert.equal(name({ name: real, url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A }), real,
             `${real} 不是生成器默认名，不该被改`);
     }
 });
 
-test('markedItemDisplayName: 没有任何名字时仍只给 asset_id，不要拼成「id · id」', () => {
+test('markedItemDisplayName: 没有任何名字时仍只给 asset_id，不要拼成「id · 时间」', () => {
     const { ctx } = loadMediaHistory();
-    const name = fn(ctx, 'markedItemDisplayName');
-    assert.equal(name({ url: mediaUrl(ID_A), asset_id: ID_A }), ID_A);
+    assert.equal(fn(ctx, 'markedItemDisplayName')({ url: mediaUrl(ID_A), asset_id: ID_A, createdAt: CREATED_A }), ID_A);
 });
 
-test('markedItemDisplayName: 名字来自 URL 末段（generated-N.png）时同样要去歧义', () => {
+test('markedItemDisplayName: 名字来自 URL 末段（generated-N.png）时同样要带时间', () => {
     const { ctx } = loadMediaHistory();
-    const name = fn(ctx, 'markedItemDisplayName');
-    assert.equal(
-        name({ url: '/media/outputs/generated-3.png', asset_id: ID_A }),
-        'generated-3.png · 0f0273',
-    );
+    const shown = fn(ctx, 'markedItemDisplayName')({ url: '/media/outputs/generated-3.png', asset_id: ID_A, createdAt: CREATED_A });
+    assert.match(shown, /^generated-3\.png · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `没带时间：${shown}`);
 });
 
-test('renderSmartMarkedPanel: 同名默认名在列表里渲染成两行不同文本', () => {
+test('renderSmartMarkedPanel: 同名的默认名必须在列表里显示成不同文本', () => {
     const { ctx, harness } = loadMediaHistory({
         marked: [ID_A, ID_B],
         history: [
-            { outputs: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] },
-            { outputs: [{ asset_id: ID_B, url: mediaUrl(ID_B), kind: 'image', name: 'generated-1.jpg' }] },
+            { created_at: CREATED_A, outputs: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] },
+            { created_at: CREATED_B, outputs: [{ asset_id: ID_B, url: mediaUrl(ID_B), kind: 'image', name: 'generated-1.jpg' }] },
         ],
         nodes: [],
     });
@@ -182,6 +200,39 @@ test('renderSmartMarkedPanel: 同名默认名在列表里渲染成两行不同�
     const shown = [...String(list.innerHTML || '').matchAll(/<span class="smart-marked-name"[^>]*>([^<]*)</g)]
         .map(match => match[1]);
     assert.equal(shown.length, 2, `两行都没渲染出来：${list.innerHTML}`);
-    assert.notEqual(shown[0], shown[1], `两行同名默认名显示成一样了：${shown.join(' | ')}`);
-    assert.ok(shown.every(text => text.startsWith('generated-1.jpg · ')), `缺后缀：${shown.join(' | ')}`);
+    assert.notEqual(shown[0], shown[1], `同名默认名显示成一样了：${shown.join(' | ')}`);
+});
+
+test('renderSmartMarkedPanel: 同一分钟生成的同名默认名要再退回短前缀区分', () => {
+    const sameMinuteB = String(Number(CREATED_A) + 25000);   // 同一分钟内的第二次生成（本分钟第 28.9s → 53.9s）
+    const { ctx, harness } = loadMediaHistory({
+        marked: [ID_A, ID_B],
+        history: [
+            { created_at: CREATED_A, outputs: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] },
+            { created_at: sameMinuteB, outputs: [{ asset_id: ID_B, url: mediaUrl(ID_B), kind: 'image', name: 'generated-1.jpg' }] },
+        ],
+        nodes: [],
+    });
+    const list = harness.element('smartMarkedList');
+    harness.element('smartMarkedCount');
+    fn(ctx, 'renderSmartMarkedPanel')();
+    const shown = [...String(list.innerHTML || '').matchAll(/<span class="smart-marked-name"[^>]*>([^<]*)</g)]
+        .map(match => match[1]);
+    assert.equal(shown.length, 2);
+    assert.notEqual(shown[0], shown[1], `同一分钟的同名默认名没区分开：${shown.join(' | ')}`);
+    assert.ok(shown.every(text => /(?:0f0273|a1b2c3)$/.test(text)), `没退回短前缀：${shown.join(' | ')}`);
+});
+
+test('markedImageItems: 节点图片自己没有更新时间时，要向同 asset_id 的生成记录借时间', () => {
+    // 真实形态：磁盘上的 history outputs 和节点图片都**没有 url**（url 由前端
+    // hydrateProjectMediaReferences 补，smart-canvas.js:5682），而补 url 不会带时间。
+    // 于是「只有节点图片能进列表」的素材拿不到 createdAt，日期显示会退化成短前缀。
+    const { ctx } = loadMediaHistory({
+        marked: [ID_A],
+        history: [{ created_at: CREATED_A, outputs: [{ asset_id: ID_A, kind: 'image', name: 'generated-1.jpg' }] }],
+        nodes: [{ id: 'n1', images: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] }],
+    });
+    const [item] = fn(ctx, 'markedImageItems')();
+    assert.ok(item, '素材项丢了');
+    assert.ok(Number(item.createdAt) > 0, `没从生成记录借到时间：${JSON.stringify(item)}`);
 });
