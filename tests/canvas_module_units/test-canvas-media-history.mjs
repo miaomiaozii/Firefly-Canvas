@@ -43,7 +43,9 @@ test('markedItemDisplayName: 有 name 用 name，中文/空格名原样保留', 
 test('markedItemDisplayName: 无 name 时用 URL 里的文件名', () => {
     const { ctx } = loadMediaHistory();
     const name = fn(ctx, 'markedItemDisplayName');
-    assert.equal(name({ url: '/output/gen/generated-1.png', asset_id: HEX_ID }), 'generated-1.png');
+    // 这里用真实文件名：URL 末段是 generated-N.png 时要走去歧义分支，
+    // 那个行为在下面单独钉（「名字来自 URL 末段时同样要去歧义」）。
+    assert.equal(name({ url: '/output/gen/DSC08791.png', asset_id: HEX_ID }), 'DSC08791.png');
 });
 
 test('markedItemDisplayName: 确实没有任何名字时才退回 asset_id', () => {
@@ -100,4 +102,86 @@ test('renderSmartMarkedPanel: title 带完整名字，不被截断', () => {
     const shown = /<span class="smart-marked-name"[^>]*>([^<]*)</.exec(html);
     assert.ok(shown, `没有渲染出 .smart-marked-name：${html}`);
     assert.equal(shown[1], '一张非常长的中文素材名字-最终确认稿-v12.png');
+});
+
+// --- 生成器默认名去歧义（#224 存量回填后暴露的问题，用户选定方案 1）----
+// 回填补回来的名字全是生成器默认名 generated-N.png/.jpg/.webp/.gif
+// （名字由 app/core.py 的 generated_image_filename(index, mime_type) 生成）。
+// 实测 1053 个输出项只有 14 个不同名字，generated-1.jpg 一个就占 479 条：
+// 名字本身不再唯一，光看列表分不出是哪张。所以默认名要带 asset_id 短前缀。
+// 真实文件名（DSC08791.jpg）不加后缀，保持干净。
+
+const ID_A = '0f02737013cc4b4c9af179c5b8459b84';   // #223/#224 复现里出现过的真实 ID
+const ID_B = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const mediaUrl = id => `/api/project-library/p1/media/${id}`;
+
+test('markedItemDisplayName: 生成器默认名要带 asset_id 短前缀去歧义', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    assert.equal(
+        name({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A }),
+        'generated-1.jpg · 0f0273',
+    );
+});
+
+test('markedItemDisplayName: 两个同名默认名必须显示成不同文本', () => {
+    // 这是方案 1 的全部意义：光看名字分不出 479 张 generated-1.jpg 里的哪一张。
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    const first = name({ name: 'generated-1.jpg', url: mediaUrl(ID_A), asset_id: ID_A });
+    const second = name({ name: 'generated-1.jpg', url: mediaUrl(ID_B), asset_id: ID_B });
+    assert.notEqual(first, second, `同名默认名显示成了一样的：${first}`);
+    assert.ok(first.includes('0f0273') && second.includes('a1b2c3'));
+});
+
+test('markedItemDisplayName: generated-N 的扩展名变体都算默认名', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    for (const ext of ['png', 'jpg', 'jpeg', 'webp', 'gif']) {
+        const shown = name({ name: `generated-12.${ext}`, url: mediaUrl(ID_A), asset_id: ID_A });
+        assert.ok(shown.endsWith(' · 0f0273'), `generated-12.${ext} 没加后缀：${shown}`);
+    }
+});
+
+test('markedItemDisplayName: 真实文件名不加后缀，保持干净', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    for (const real of ['DSC08791.jpg', 'generated-1-final.jpg', 'generated_image-1.jpg', '海报 generated-1.jpg']) {
+        assert.equal(name({ name: real, url: mediaUrl(ID_A), asset_id: ID_A }), real,
+            `${real} 不是生成器默认名，不该被改`);
+    }
+});
+
+test('markedItemDisplayName: 没有任何名字时仍只给 asset_id，不要拼成「id · id」', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    assert.equal(name({ url: mediaUrl(ID_A), asset_id: ID_A }), ID_A);
+});
+
+test('markedItemDisplayName: 名字来自 URL 末段（generated-N.png）时同样要去歧义', () => {
+    const { ctx } = loadMediaHistory();
+    const name = fn(ctx, 'markedItemDisplayName');
+    assert.equal(
+        name({ url: '/media/outputs/generated-3.png', asset_id: ID_A }),
+        'generated-3.png · 0f0273',
+    );
+});
+
+test('renderSmartMarkedPanel: 同名默认名在列表里渲染成两行不同文本', () => {
+    const { ctx, harness } = loadMediaHistory({
+        marked: [ID_A, ID_B],
+        history: [
+            { outputs: [{ asset_id: ID_A, url: mediaUrl(ID_A), kind: 'image', name: 'generated-1.jpg' }] },
+            { outputs: [{ asset_id: ID_B, url: mediaUrl(ID_B), kind: 'image', name: 'generated-1.jpg' }] },
+        ],
+        nodes: [],
+    });
+    const list = harness.element('smartMarkedList');
+    harness.element('smartMarkedCount');
+    fn(ctx, 'renderSmartMarkedPanel')();
+    const shown = [...String(list.innerHTML || '').matchAll(/<span class="smart-marked-name"[^>]*>([^<]*)</g)]
+        .map(match => match[1]);
+    assert.equal(shown.length, 2, `两行都没渲染出来：${list.innerHTML}`);
+    assert.notEqual(shown[0], shown[1], `两行同名默认名显示成一样了：${shown.join(' | ')}`);
+    assert.ok(shown.every(text => text.startsWith('generated-1.jpg · ')), `缺后缀：${shown.join(' | ')}`);
 });

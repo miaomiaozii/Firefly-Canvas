@@ -510,13 +510,26 @@ function markedImageItems(){
 // #89 星标列表显示名：优先 name/alias，其次 url 里的文件名（generated-1.png 这类），最后才退回 asset_id。
 // 裸 asset_id（32 位十六进制）当文件名展示既丑又无信息量。
 
+// 生成器默认名（app/core.py 的 generated_image_filename 产出 generated-N.png/.jpg/.webp/.gif）
+// 在全库里只有十几个不同值（实测 1053 个输出项里 generated-1.jpg 就占 479 条），
+// 光看名字分不出是哪一张，所以要带 asset_id 短前缀去歧义。真实文件名不加后缀，保持干净。
+const GENERATOR_DEFAULT_NAME_PATTERN = /^generated-\d+\.(?:png|jpe?g|webp|gif)$/i;
+const MARKED_NAME_ID_SUFFIX_LENGTH = 6;
+
+function markedItemDisambiguation(item){
+    const assetId = String(item?.asset_id || '');
+    return /^[0-9a-f]{8,}$/i.test(assetId) ? assetId.slice(0, MARKED_NAME_ID_SUFFIX_LENGTH).toLowerCase() : '';
+}
+
 function markedItemDisplayName(item){
+    const suffix = markedItemDisambiguation(item);
+    const decorate = value => (suffix && GENERATOR_DEFAULT_NAME_PATTERN.test(value) ? `${value} · ${suffix}` : value);
     const name = String(item?.name || item?.alias || '').trim();
-    if(name) return name;
+    if(name) return decorate(name);
     try{
         const path = String(item?.url || '').split('?')[0];
         const file = path.slice(path.lastIndexOf('/') + 1);
-        if(file && !/^[0-9a-f]{24,}$/i.test(file)) return decodeURIComponent(file);
+        if(file && !/^[0-9a-f]{24,}$/i.test(file)) return decorate(decodeURIComponent(file));
     }catch(e){}
     return String(item?.asset_id || '');
 }
