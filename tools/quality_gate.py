@@ -608,6 +608,41 @@ def is_browser_control_plane_target(target: str) -> bool:
         for suffix in BROWSER_CONTROL_PLANE_SUFFIXES
     )
 
+
+# #227：跑在同一个宿主上的 AI 工具（Google Antigravity / Cloud Code）会把它自己的
+# 遥测与控制面流量送进同一个进程级 deny proxy。这些不是产品外联，但以前跟真的
+# 违规同构：记成 kind=network（S0）且归因不到任何 step，于是把整道门判红（实测
+# 一轮 85 条）。issue 要的是**分类**宿主噪声，不是放宽边界证据：这些目标仍然
+# 会被记录（guard_events + S3 观察），只是归到自己的 kind。
+# 清单来自实测门日志的 target 计数（46/8/8/4/2），不是凭名字猜的。
+# 故意用完整域名 + 一条带前缀后缀的形态规则，不做 *.googleapis.com 这种宽后缀，
+# 以免把仿冒域名（antigravity-unleash.goog.evil.com）一起洗白。
+HOST_TOOL_CONTROL_PLANE_TARGETS = frozenset(
+    {
+        "antigravity-unleash.goog",
+        "daily-cloudcode-pa.googleapis.com",
+        "play.googleapis.com",
+        "www.googleapis.com",
+        "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+    }
+)
+# 自动更新器域名里带项目编号，会漂；只认这个前缀 + .run.app 的形状。
+HOST_TOOL_CONTROL_PLANE_PREFIXES = ("antigravity-cli-auto-updater-",)
+HOST_TOOL_CONTROL_PLANE_SUFFIXES = (".run.app",)
+
+
+def is_host_tool_control_plane_target(target: str) -> bool:
+    normalized = (target or "").strip("[]").lower().rstrip(".")
+    if not normalized:
+        return False
+    if normalized in HOST_TOOL_CONTROL_PLANE_TARGETS:
+        return True
+    return any(
+        normalized.startswith(prefix) and normalized.endswith(suffix)
+        for prefix in HOST_TOOL_CONTROL_PLANE_PREFIXES
+        for suffix in HOST_TOOL_CONTROL_PLANE_SUFFIXES
+    )
+
 GUARD_SOURCE = r'''
 import asyncio
 import ipaddress
@@ -1207,7 +1242,9 @@ class BrowserDenyProxy:
                     parsed = urlsplit(self.path)
                     target = parsed.hostname or self.headers.get("Host", "").rsplit(":", 1)[0]
                 kind = (
-                    "browser-background-network"
+                    "host-tool-network"
+                    if is_host_tool_control_plane_target(target)
+                    else "browser-background-network"
                     if is_browser_control_plane_target(target)
                     else "network"
                 )
@@ -1516,8 +1553,18 @@ def read_child_events(path: Path, sensitive_values: list[str]) -> list[dict]:
     )
 
 
+# #227：host-tool-network 是宿主 AI 工具自己的控制面遥测（上面分类过），跟浏览器
+# 后台流量同级：仍然记录、仍然进 S3 观察，但不算产品隔离违规。除这两种 kind 以外
+# 的任何非 localhost 外联都还是 S0。
+NON_BLOCKING_GUARD_KINDS = frozenset(
+    {"browser-background-network", "host-tool-network"}
+)
+
+
 def blocking_guard_events(events: list[dict]) -> list[dict]:
-    return [event for event in events if event.get("kind") != "browser-background-network"]
+    return [
+        event for event in events if event.get("kind") not in NON_BLOCKING_GUARD_KINDS
+    ]
 
 
 # Children whose shutdown tail the gate waits on for longer than ordinary
@@ -2004,7 +2051,7 @@ SEVERITY_POLICY = {
     },
     "S3": {
         "blocks": [],
-        "source": "recorded observations (e.g. browser background networking)",
+        "source": "recorded observations (browser background networking, host tool control plane)",
     },
 }
 
@@ -2078,7 +2125,11 @@ def build_severity_findings(
                     "source": "guard-background",
                     "frequency": "FU",
                     "observations": 1,
-                    "message": "recorded browser background networking observation",
+                    "message": (
+                        "recorded host tool control-plane observation"
+                        if event.get("kind") == "host-tool-network"
+                        else "recorded browser background networking observation"
+                    ),
                 }
             )
     for event in retry_events:

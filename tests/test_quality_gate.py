@@ -1338,6 +1338,87 @@ class QualityGateTests(unittest.TestCase):
             self.report()["guard_events"],
         )
 
+    def test_host_ai_tool_control_plane_noise_is_a_background_observation(self):
+        # #227：宿主侧 Google Antigravity / Cloud Code 的遥测（不是产品外联）走的是
+        # 同一个进程级 deny proxy，以前记成 kind=network（S0）且归因不到任何 step，
+        # 把整道门判红。要求是**分类**宿主噪声，不是放宽证据：这些目标仍必须被
+        # 记录（可审计），但归到自己的 kind，不算产品隔离违规。
+        # 目标清单来自实测门日志（同一机器上反复出现）：
+        #   daily-cloudcode-pa.googleapis.com / antigravity-unleash.goog /
+        #   play.googleapis.com / www.googleapis.com /
+        #   antigravity-cli-auto-updater-974169037036.us-central1.run.app
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class HostToolControlPlaneContract(unittest.TestCase):\n"
+            "    def test_blocked_host_tool_probes(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        for target in ('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com',\n"
+            "                       'antigravity-cli-auto-updater-974169037036.us-central1.run.app'):\n"
+            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "            try:\n"
+            "                connection.sendall(\n"
+            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
+            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
+            "                )\n"
+            "                connection.recv(1024)\n"
+            "            finally:\n"
+            "                connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        guard_events = self.report()["guard_events"]
+        for target in (
+            "antigravity-unleash.goog",
+            "daily-cloudcode-pa.googleapis.com",
+            "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+        ):
+            self.assertIn(
+                {"kind": "host-tool-network", "target": target},
+                guard_events,
+            )
+        # 不能归到任何 step（它本来就不是 step 干的），也不能进 verdict 理由。
+        reasons = self.report()["verdict_reasons"]
+        self.assertNotIn(
+            "antigravity-unleash.goog",
+            json.dumps(reasons, ensure_ascii=False),
+        )
+
+    def test_host_ai_tool_look_alike_host_is_still_a_blocking_network_target(self):
+        # 分类不能变成放宽：长得像宿主工具控制面的域名必须仍旧判红。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class HostToolLookAlikeContract(unittest.TestCase):\n"
+            "    def test_blocked_look_alike_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT antigravity-unleash.goog.evil.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: antigravity-unleash.goog.evil.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "network", "target": "antigravity-unleash.goog.evil.com"},
+            self.report()["guard_events"],
+        )
+
     def test_google_update_look_alike_host_is_still_a_blocking_network_target(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
             "import os\n"
