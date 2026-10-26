@@ -38,7 +38,45 @@ ROOT = Path(__file__).resolve().parents[1]
 QUALITY_GATE = ROOT / "tools" / "quality_gate.py"
 
 
+
+def unattributable_noise_source(targets, kind):
+    """生成「归属不到任何进程」的出口噪声 fixture。
+
+    #230：出口代理只看得到目标域名，看不到发起者。真实宿主工具（Antigravity、
+    Gemini CLI 那类）不在门的进程树里，也不会被我们的进程内钩子看到，所以它们在
+    证据里的形态就是「只有 kind + target、没有 pid」。这里直接往守卫事件文件里写
+    这个形态，而不是让门的子进程去连代理——后者按 #230 的判据属于「可归属到门
+    进程树」，必须判红；用它模拟宿主噪声会把语义搞反（#227 的容忍会被误伤）。
+    """
+    lines = [
+        "import json",
+        "import os",
+        "import unittest",
+        "",
+        "class ControlPlaneNoiseContract(unittest.TestCase):",
+        "    def test_control_plane_noise_is_observed(self):",
+        "        sink = os.environ['FIREFLY_QUALITY_GATE_GUARD_EVENTS']",
+        "        targets = [" + ", ".join(repr(str(target)) for target in targets) + "]",
+        "        payload = " + repr(kind),
+        "        for target in targets:",
+        "            with open(sink, 'a', encoding='utf-8') as handle:",
+        "                handle.write(json.dumps({'kind': payload, 'target': target}) + chr(10))",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 class QualityGateTests(unittest.TestCase):
+
+    @staticmethod
+    def guard_events(events):
+        # #230：守卫事件现在带发起进程 pid（进程树归属证据），所以断言只比
+        # kind + target，不再假定事件字典只有这两个键。
+        return [
+            {"kind": event.get("kind"), "target": event.get("target")}
+            for event in events or []
+        ]
+
     def test_trial_covers_every_discoverable_unit_contract_module_once(self):
         modules = discover_unit_contract_modules(ROOT)
         shards = compute_unit_contract_shards(ROOT)
@@ -1248,22 +1286,7 @@ class QualityGateTests(unittest.TestCase):
 
     def test_blocked_browser_control_plane_noise_is_reported_without_failing_product_gate(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
-            "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class BrowserControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_chrome_probe(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
-            "        try:\n"
-            "            connection.sendall(\n"
-            "                b'CONNECT clients2.google.com:443 HTTP/1.1\\r\\n'\n"
-            "                b'Host: clients2.google.com:443\\r\\n\\r\\n'\n"
-            "            )\n"
-            "            connection.recv(1024)\n"
-            "        finally:\n"
-            "            connection.close()\n",
+            unattributable_noise_source(('clients2.google.com',), 'browser-background-network'),
             encoding="utf-8",
         )
 
@@ -1272,28 +1295,13 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "browser-background-network", "target": "clients2.google.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_microsoft_and_bing_control_plane_noise_is_a_background_observation(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
-            "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class EdgeControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_edge_probes(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        for target in ('edge.microsoft.com', 'cn.bing.com', 'www.bing.com'):\n"
-            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
-            "            try:\n"
-            "                connection.sendall(\n"
-            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
-            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
-            "                )\n"
-            "                connection.recv(1024)\n"
-            "            finally:\n"
-            "                connection.close()\n",
+            unattributable_noise_source(
+                ('edge.microsoft.com', 'cn.bing.com', 'www.bing.com'), 'browser-background-network'),
             encoding="utf-8",
         )
 
@@ -1311,22 +1319,7 @@ class QualityGateTests(unittest.TestCase):
         # Chrome 自身的更新/组件检查（update.googleapis.com）属于浏览器控制面，
         # 不是产品发起的网络调用；必须记为 S3 观察，不能当作 S0 隔离守卫违规。
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
-            "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class ChromeUpdateControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_chrome_update_probe(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
-            "        try:\n"
-            "            connection.sendall(\n"
-            "                b'CONNECT update.googleapis.com:443 HTTP/1.1\\r\\n'\n"
-            "                b'Host: update.googleapis.com:443\\r\\n\\r\\n'\n"
-            "            )\n"
-            "            connection.recv(1024)\n"
-            "        finally:\n"
-            "            connection.close()\n",
+            unattributable_noise_source(('update.googleapis.com',), 'browser-background-network'),
             encoding="utf-8",
         )
 
@@ -1335,7 +1328,28 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "browser-background-network", "target": "update.googleapis.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
+        )
+
+    def test_google_account_oauth_endpoint_is_browser_background_noise(self):
+        # 实测（trial 门 20261027-020846）：登录了 Google 账号的 Edge 会自己
+        # 拨 oauth2.googleapis.com，代理把它归成 S0 kind=network 且归不到 step，
+        # 于是整道门判红。它和清单里已有的 accounts.google.com 同一个
+        # 登录控制面族，属于浏览器配置文件自己的后台流量。
+        # 产品侧不能躲到这个条目后面：产品进程走出口代理时会在 set_tunnel
+        # 上留下带 pid 的 proxy-request，目标对得上就被 blocking_guard_events
+        # 拉回判红。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('oauth2.googleapis.com',), 'browser-background-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "oauth2.googleapis.com"},
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_host_ai_tool_control_plane_noise_is_a_background_observation(self):
@@ -1348,24 +1362,7 @@ class QualityGateTests(unittest.TestCase):
         #   play.googleapis.com / www.googleapis.com /
         #   antigravity-cli-auto-updater-974169037036.us-central1.run.app
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
-            "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class HostToolControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_host_tool_probes(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        for target in ('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com',\n"
-            "                       'antigravity-cli-auto-updater-974169037036.us-central1.run.app'):\n"
-            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
-            "            try:\n"
-            "                connection.sendall(\n"
-            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
-            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
-            "                )\n"
-            "                connection.recv(1024)\n"
-            "            finally:\n"
-            "                connection.close()\n",
+            unattributable_noise_source(('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com', 'antigravity-cli-auto-updater-974169037036.us-central1.run.app'), 'host-tool-network'),
             encoding="utf-8",
         )
 
@@ -1393,24 +1390,7 @@ class QualityGateTests(unittest.TestCase):
         # #227 期望 3：evidence 里要直接给出按 kind 的计数，换机器时能一眼对比
         # 「这台机器的宿主噪声有多少」，而不是要人去 guard-events.jsonl 里手工数。
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
-            "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class HostToolCountContract(unittest.TestCase):\n"
-            "    def test_blocked_host_tool_probes(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        for target in ('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com',\n"
-            "                       'play.googleapis.com'):\n"
-            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
-            "            try:\n"
-            "                connection.sendall(\n"
-            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
-            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
-            "                )\n"
-            "                connection.recv(1024)\n"
-            "            finally:\n"
-            "                connection.close()\n",
+            unattributable_noise_source(('antigravity-unleash.goog', 'play.googleapis.com', 'www.googleapis.com'), 'host-tool-network'),
             encoding="utf-8",
         )
 
@@ -1426,6 +1406,99 @@ class QualityGateTests(unittest.TestCase):
         self.assertFalse(
             counts.get("network"),
             "没有真违规却出现 network 计数 = 分类把真违规洗掉了",
+        )
+
+    def test_gate_tree_process_reaching_a_host_tool_target_is_still_blocking(self):
+        # #230：域名白名单回答的是「目标像不像宿主遥测」，不是「连接是谁发的」。
+        # 产品自己的进程（在门进程树里）去连 play.googleapis.com 这种白名单目标，
+        # 必须还是 S0——否则白名单就把真违规洗掉了（#227 期望 1 的反向版）。
+        # 注意：必须覆写 fast 步骤实际会跑的那个文件，否则 fixture 根本不被执行，
+        # 门当然绿——这是一个真实踩过的 vacuous 陷阱。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import http.client\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class ProductTreeReachesHostTarget(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        # 用真实 HTTP 客户端（requests/httpx 也是这么 CONNECT 的），\n"
+            "        # 目标主机走 set_tunnel，守卫才能记下产品请求的目标。\n"
+            "        connection = http.client.HTTPConnection(proxy.hostname, proxy.port)\n"
+            "        connection.set_tunnel('play.googleapis.com', 443)\n"
+            "        try:\n"
+            "            connection.request('GET', '/')\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        report = self.report()
+        counts = report.get("guard_event_counts", {})
+        print("RED-CHECK returncode=", result.returncode, "counts=", json.dumps(counts, ensure_ascii=False))
+        self.assertEqual(
+            result.returncode, 1,
+            '门进程树自己的连接被判成宿主噪声放过了（#230）：' + result.stdout[-2000:],
+        )
+        self.assertGreaterEqual(
+            counts.get("proxy-request", 0), 1,
+            '证据里没有「这个进程请求了这个目标」的归属记录 = 无法按进程树归属（#230 期望 1）',
+        )
+        attributed = [
+            event
+            for step in report.get("steps", [])
+            for event in (step.get("guard_events") or [])
+            if event.get("kind") == "proxy-request"
+        ]
+        self.assertTrue(
+            attributed and all(isinstance(event.get("pid"), int) and event["pid"] > 0 for event in attributed),
+            f'归属记录没带发起进程 pid：{attributed}',
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "host-tool-network"
+                and str(event.get("target", "")).lower() == "play.googleapis.com"
+                and event.get("attributed_by") == "process-tree"
+                for event in blocking
+            ),
+            f'升级后的连接没标出归属来源（谁发的）：{blocking}',
+        )
+    def test_google_account_oauth_connect_is_classified_as_browser_noise(self):
+        # 这个走真的 CONNECT，不是为了测而测：trial 门（20261027-020846）真实
+        # 看到登录了 Google 账号的 Edge 拨 oauth2.googleapis.com，代理把它
+        # 归成 S0 network、归不到任何 step，整道门判红。它和清单里已有的
+        # accounts.google.com 是同一个登录控制面族。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class GoogleAccountOauthContract(unittest.TestCase):\n"
+            "    def test_oauth_connect_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT oauth2.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: oauth2.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "oauth2.googleapis.com"},
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_host_ai_tool_look_alike_host_is_still_a_blocking_network_target(self):
@@ -1455,7 +1528,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "network", "target": "antigravity-unleash.goog.evil.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_google_update_look_alike_host_is_still_a_blocking_network_target(self):
@@ -1484,7 +1557,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "network", "target": "evil-update.googleapis.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_microsoft_look_alike_host_is_still_a_blocking_network_target(self):
@@ -1513,7 +1586,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "network", "target": "evil-microsoft.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_python_child_cannot_remove_guard_with_a_custom_environment(self):
@@ -1640,9 +1713,17 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
         self.assertEqual(report["first_failure"]["name"], shard_name)
-        self.assertIn(
-            {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()},
-            report["guard_events"],
+        subprocess_events = [
+            event
+            for event in report["guard_events"]
+            if event.get("kind") == "subprocess-executable"
+            and event.get("target") == Path(sys.executable).name.lower()
+        ]
+        self.assertTrue(subprocess_events, report["guard_events"])
+        # #230：证据要能回答「这条是谁发的」，所以守卫事件现在都带发起进程 pid。
+        self.assertTrue(
+            all(isinstance(event.get("pid"), int) and event["pid"] > 0 for event in subprocess_events),
+            f'守卫事件没带 pid：{subprocess_events}',
         )
 
     # issue #174：并行组里一个步骤产生的 S0 边界事件，绝不能把同组其它步骤改红。
@@ -1710,7 +1791,7 @@ class QualityGateTests(unittest.TestCase):
                 f"{name} 的 guard_events 里出现了不属于它的边界事件",
             )
         # 执法不能放松：越界事件仍完整进入全局证据，整个门仍然是红的。
-        self.assertIn(violation, report["guard_events"])
+        self.assertIn(violation, self.guard_events(report["guard_events"]))
 
     def test_blocking_guard_event_attribution_is_visible_in_verdict_reasons(self):
         violation = self.write_parallel_boundary_fixture()

@@ -576,6 +576,12 @@ BROWSER_CONTROL_PLANE_TARGETS = frozenset(
         "clients2.google.com",
         "content-autofill.googleapis.com",
         "optimizationguide-pa.googleapis.com",
+    # 浏览器配置文件的 Google 登录/OAuth 端点（和 accounts.google.com 同族）。
+    # trial 门 20261027-020846 真实看到登录账号的 Edge 拨这个域，当时被归成
+    # S0 network 且归不到 step，把整道门判红。产品进程不能躲在这里：它走
+    # 出口代理时会在 set_tunnel 上留下带 pid 的 proxy-request，
+    # blocking_guard_events 按目标对账后会把它拉回判红。
+    "oauth2.googleapis.com",
         "redirector.gvt1.com",
         # Chrome's own update / component updater.  Like the Edge update checks
         # below it is browser control-plane traffic, never a product call, so it
@@ -645,6 +651,7 @@ def is_host_tool_control_plane_target(target: str) -> bool:
 
 GUARD_SOURCE = r'''
 import asyncio
+import http.client
 import ipaddress
 import json
 import os
@@ -655,6 +662,13 @@ import shutil
 
 _event_file = os.environ.get("FIREFLY_QUALITY_GATE_GUARD_EVENTS", "")
 _child_event_file = os.environ.get("FIREFLY_QUALITY_GATE_CHILD_EVENTS", "")
+# 出口代理端口：从门传给子进程的代理 URL 里取，用于识别「走了出口代理」这个动作。
+try:
+    from urllib.parse import urlsplit as _guard_urlsplit
+
+    _browser_proxy_port = _guard_urlsplit(os.environ.get("FIREFLY_QUALITY_GATE_BROWSER_PROXY", "")).port
+except Exception:
+    _browser_proxy_port = None
 _blocked_paths = {
     os.path.normcase(os.path.realpath(path))
     for path in json.loads(os.environ.get("FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES", "[]"))
@@ -713,7 +727,9 @@ _guard_environment_names = {
 def _record(kind, target):
     if not _event_file:
         return
-    event = json.dumps({"kind": kind, "target": str(target)}, ensure_ascii=True) + "\n"
+    # #230：证据要能回答「这条连接是谁发的」。pid 由钩子所在进程自己报，
+    # 不依赖端口→pid 的表查询（实测短命连接在快照间就消失了，不可靠）。
+    event = json.dumps({"kind": kind, "target": str(target), "pid": os.getpid()}, ensure_ascii=True) + "\n"
     descriptor = os.open(_event_file, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
         os.write(descriptor, event.encode("utf-8"))
@@ -756,6 +772,13 @@ def _deny_non_loopback(address):
     if not _is_loopback(host):
         _record("network", host)
         raise PermissionError(f"quality gate denied non-localhost network target: {host}")
+    # #230：连到出口代理本身是 loopback，原先静默放行——所以代理那侧永远不知道
+    # 是谁发的连接（它只看得到目标域名，只能按域名白名单分类，这就是
+    # 「产品自己的连接被当宿主遥测洗掉」的根源）。这里把「本进程走了出口代理」
+    # 连 pid 一起记下来，门侧才能按进程树归属。
+    port = address[1] if isinstance(address, tuple) and len(address) > 1 else None
+    if _browser_proxy_port and port == _browser_proxy_port:
+        _record("proxy-egress", f"127.0.0.1:{port}")
 
 
 _real_getaddrinfo = socket.getaddrinfo
@@ -800,6 +823,17 @@ def _guarded_socket_connect(instance, address):
     _deny_non_loopback(address)
     return _real_socket_connect(instance, address)
 socket.socket.connect = _guarded_socket_connect
+
+
+# #230：走出口代理时，socket 层只看到代理（loopback），真正的目标主机只在
+# set_tunnel（CONNECT）里出现。带 pid 把它记下来 = 「门进程树里的这个进程请求了
+# 这个目标」，门侧才能把代理日志里的目标对到发起进程上，而不是拿域名
+# 白名单猜发起者。
+_real_http_set_tunnel = http.client.HTTPConnection.set_tunnel
+def _guarded_http_set_tunnel(instance, host, port=None, *args, **kwargs):
+    _record("proxy-request", host)
+    return _real_http_set_tunnel(instance, host, port, *args, **kwargs)
+http.client.HTTPConnection.set_tunnel = _guarded_http_set_tunnel
 
 
 _real_socket_connect_ex = socket.socket.connect_ex
@@ -1213,18 +1247,26 @@ def merge_event_lines(source: Path, target: Path) -> None:
 
 
 def attribute_blocking_guard_events(steps: list[dict]) -> list[dict]:
-    """Blocking guard events paired with the step that produced them (issue #174)."""
+    """Blocking guard events paired with the step that produced them (issue #174).
+
+    #230：判定要拿到该步的完整事件集才能做进程树升级（proxy-egress 与
+    host-tool-network 是不用的事件），所以这里改成按步整体过一次
+    blocking_guard_events，不再逐事件单判。
+    """
     attributed: list[dict] = []
     for step in steps:
-        for event in step.get("guard_events") or []:
-            if blocking_guard_events([event]):
-                attributed.append(
-                    {
-                        "kind": event.get("kind"),
-                        "target": event.get("target"),
-                        "step": step.get("name"),
-                    }
-                )
+        for event in blocking_guard_events(list(step.get("guard_events") or [])):
+            entry = {
+                "kind": event.get("kind"),
+                "target": event.get("target"),
+                "pid": event.get("pid"),
+                "step": step.get("name"),
+            }
+            # #230：「这条违规是按进程树归属出来的」本身要进证据，不能只停在
+            # blocking_guard_events 里——否则排查时看不出是谁发的。
+            if event.get("attributed_by"):
+                entry["attributed_by"] = event["attributed_by"]
+            attributed.append(entry)
     return attributed
 
 
@@ -1557,14 +1599,38 @@ def read_child_events(path: Path, sensitive_values: list[str]) -> list[dict]:
 # 后台流量同级：仍然记录、仍然进 S3 观察，但不算产品隔离违规。除这两种 kind 以外
 # 的任何非 localhost 外联都还是 S0。
 NON_BLOCKING_GUARD_KINDS = frozenset(
-    {"browser-background-network", "host-tool-network"}
+    {
+        "browser-background-network",
+        "host-tool-network",
+        # #230：这两个 kind 是归属证据（谁用了出口代理、用了哪个目标），不是
+        # 违规本身；违规由下面 blocking_guard_events 按目标对账后得出。
+        "proxy-egress",
+        "proxy-request",
+    }
 )
 
 
 def blocking_guard_events(events: list[dict]) -> list[dict]:
-    return [
-        event for event in events if event.get("kind") not in NON_BLOCKING_GUARD_KINDS
-    ]
+    # #230：归属优先用进程树，域名白名单只在无法判定时用。
+    # 代理日志只看到目标域名（分得出宿主遥测、分不出是谁发的）；守卫在
+    # set_tunnel 上记录的 proxy-request 带了发起进程 pid。两边同一个目标对上
+    # = 这条「像宿主噪声」的连接其实是门进程树里的产品自己请求的 → 真违规，
+    # 必须判红（否则就是拿域名白名单把产品连接洗掉）。
+    # 对不上 = 无法归属（真实宿主工具不跑我们的钩子）→ 仍按 #227 只记不判红。
+    attributed = {
+        str(event.get("target") or "").strip().lower()
+        for event in events
+        if event.get("kind") == "proxy-request" and event.get("pid")
+    }
+    blocking = []
+    for event in events:
+        kind = event.get("kind")
+        if kind in NON_BLOCKING_GUARD_KINDS:
+            if str(event.get("target") or "").strip().lower() in attributed:
+                blocking.append({**event, "attributed_by": "process-tree"})
+            continue
+        blocking.append(event)
+    return blocking
 
 
 def summarize_guard_events(events: list[dict]) -> dict[str, int]:
@@ -2110,8 +2176,12 @@ def build_severity_findings(
         for step in steps
         for event in step.get("guard_events") or []
     }
+    # #230：对账要整批做。proxy-request（产口自己请求了哪个目标，带 pid）与代理
+    # 日志里的目标分类是两个不同的事件，逐事件单判看不到「同一个目标已经被
+    # 门进程树里的进程请求过」，那样产品自己的连接会被域名白名单洗掉。
+    blocking_ids = {id(event) for event in blocking_guard_events(guard_events)}
     for event in guard_events:
-        if blocking_guard_events([event]):
+        if id(event) in blocking_ids:
             findings.append(
                 {
                     "severity": "S0",
@@ -2124,6 +2194,11 @@ def build_severity_findings(
                     "message": (
                         "isolated environment guard violation: "
                         f"{event.get('kind')} {event.get('target') or ''}".strip()
+                        + (
+                            " (attributed to the gate process tree)"
+                            if event.get("attributed_by") == "process-tree"
+                            else ""
+                        )
                     ),
                 }
             )
@@ -2137,7 +2212,11 @@ def build_severity_findings(
                     "message": (
                         "recorded host tool control-plane observation"
                         if event.get("kind") == "host-tool-network"
-                        else "recorded browser background networking observation"
+                        else (
+                            "recorded gate-tree egress attribution"
+                            if event.get("kind") in {"proxy-egress", "proxy-request"}
+                            else "recorded browser background networking observation"
+                        )
                     ),
                 }
             )
@@ -3544,6 +3623,26 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "guard_events": guard_events,
         "guard_event_counts": summarize_guard_events(guard_events),
+        # #230：证据要能回答「这条连接是谁发的」。blocking 里每条带 pid、
+        # 所在 step 和 attributed_by（= 目标被门进程树里的进程请求过）。
+        # 对不上的目标就是无法归属（真实宿主工具不跑我们的钩子），
+        # 域名白名单只在这种情况下用。
+        "guard_attribution": {
+            "attributed_to_gate_tree": sum(
+                1 for event in guard_events if event.get("pid")
+            ),
+            "proxy_requests": sum(
+                1 for event in guard_events if event.get("kind") == "proxy-request"
+            ),
+            "unattributable_background": sum(
+                1
+                for event in guard_events
+                if event.get("kind")
+                in {"browser-background-network", "host-tool-network"}
+                and not event.get("pid")
+            ),
+            "blocking": attribute_blocking_guard_events(steps),
+        },
         "retry_events": retry_events,
         "child_events": child_events,
         "first_failure": first_failure,
