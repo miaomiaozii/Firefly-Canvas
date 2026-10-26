@@ -1,6 +1,35 @@
 {
-  "batch-1": "done",
-  "batch-2": "done",
-  "batch-3": "done",
-  "issue-117": "closed"
+  "branch": "pipeline/canvas-modularization",
+  "batches": {
+    "batch-1": {
+      "issue": 159,
+      "state": "done",
+      "twin_runId": "477f58ec-a446-4268-84dd-508eafdd6b64",
+      "review": "PASS",
+      "commit": "ed199bd"
+    },
+    "batch-2": {
+      "issue": 160,
+      "state": "done",
+      "twin_runId": "3ea67223-19ea-4a27-92fa-6205d785fd7c",
+      "review": "PASS (修复轮1后: 冒烟19/19)",
+      "commit": "17eb52f"
+    },
+    "batch-3": {
+      "issue": 161,
+      "state": "done",
+      "twin_runId": "1298a7d2-2928-46ca-a4fa-82e4b221275c",
+      "review": "PASS (主会话接管修复后)",
+      "commit": "0b055d2",
+      "note": "CRLF 事故已由主会话修复（test_project_entry_ui.py 7 处断裂，5 测试文件 83/83 绿）；twin resume 续跑全量 pytest + result.md"
+    },
+    "batch-4": {
+      "issue": 162,
+      "state": "reviewing",
+      "twin_runId": "c3f4ecf8-b4cd-42c4-9dbd-45f97840ed26",
+      "review": null,
+      "commit": null,
+      "note": "4a done(主会话修复 81 属性链损坏+2 测试适配, 全绿); 4b/4c pending; 流程发现: twin 机械改写不可靠, 4b/4c 建议主会话 acorn scope-aware 改写"
+    }
+  }
 }

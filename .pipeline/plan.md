@@ -1,40 +1,44 @@
-# M4 实施计划（Agent 节点增强）
+# Twin Pipeline 计划：画布前端模块化 P2b–P3
 
-## 目标
-实施 #117 关闭时拆出的 4 个 M4 issue：
-- #140 节点级模型覆盖（US-28）
-- #141 自治级别（谨慎/标准/自主三档）
-- #142 会话分支（从历史轮次分叉重做）
-- #143 并行 Agent（多节点并发执行验证 + 修复）
+> 仓库：D:/Firefly-Canvas（miaomiaozii/Firefly-Canvas）
+> 父 issue：#154（画布前端单文件过大，按功能模块化拆分）
+> 已完成前置：#156（P0 依赖分析，docs/canvas-frontend-modularization.md）、#157（P1 布局/几何，canvas-layout-utils.js）、#158（P2a 连线，canvas-connections.js）
+> 当前主脚本：static/js/smart-canvas.js（24233 行）
 
-## twin
-- twin: vllm-remote-twin/qwen3.8-27b-twin-ultra-mtp2（thinking :max）
-- 派发：subagent worker + model 覆盖 + :max 后缀
-- 每批次：twin 实现 + 单测 → 主会话对抗审查（≤2 轮修复）→ 主会话补跑浏览器测试 → 提交（每批次一个 commit，引用对应 issue）
+## 模型与端点（已预检 200）
 
-## 批次划分（顺序执行，文件重叠：agent_host.py / api_agent_nodes.py / smart-canvas.js）
-- **batch-4**：#140 模型覆盖 + #141 自治级别 —— ✅ 完成（commit 2762c85，审查修复 2 处：后端重试/去重 + 前端刷新持久化）
-- **batch-5**：#142 会话分支（fork）—— ✅ 完成（commit 见 git log；twin 实现 + 主会话审查修复 + 13 单测 + 13 浏览器断言 + 全量回归 1030 绿）
-- **batch-6**：#143 并行 Agent（并发验证 + 修复）—— ✅ 完成（commit e3ebe00；9 并发测试 + 修复 revision conflict retry bug + 全量回归 1039 绿）
+- 主会话（编排/审核）：`vllm-remote/qwen3.8-27b-w8a16-mtp2` @ 192.168.10.147:8000
+- twin（实现/测试）：`vllm-remote-twin/qwen3.8-27b-twin-ultra-mtp2` @ 192.168.10.147:8006
 
-## 节点交互 bug 修复（2026-09-24，QA 彻查后按文件冲突分批）
-- **Batch A（#145+#146，commit 3e35430）**：`smartNodeInFlight` 加 agent-task 判定（status queued/running → in-flight，4 处删除入口拦截生成中卡片）；删除带媒体节点后归档延迟 2.5s + undo/redo 取消（`scheduleMediaArchive`/`cancelPendingMediaArchives`），修撤销后图片 404。Playwright 15/15。
-- **Batch B（#147+#148，commit 019ce46）**：新增 `isSmartGroupableNode`，agent/conversation/local-edit/agent-task 拒绝进组（入口过滤 + toast `smart.groupUnsupportedType`）；`deleteNode` 对 smart-group 改走 `ungroupNode`（删除=解散，无数据丢失）。Playwright 15/15。
-- **#150（commit 9766204）**：回收站预览 z-index 80→95，修缩略图被历史抽屉遮挡。
-- 待后续：无（#149/#151/#152 已全部修复关闭）。
-- **#144 已修复（commit 9290109）**：`adoptServerCanvas` 整体替换丢本地未保存 mutation → 改用 `rebaseProjectCanvasResponse` 3-way rebase 保留本地工作。Playwright 回归 8/8 + 后端 112 测试通过。
-- **#149 已修复（commit 080602b + f32e866）**：9 项交互一致性全部修复（A resize×3 + B 删除×2 + C 连线×3 + D 选中×1）。Playwright 回归 22/22。
-- **#151 已修复（commit 2e26dd8）**：回收站恢复去向明确化（有 deletion_id→还原画布+历史；无→toast 明确"已恢复到资源库"）。
-- **#152 已修复（commit 74a96ca）**：历史抽屉打开时节点 z-index 提升到 87（> 抽屉 86），底部节点提示词框不再被遮挡。
+## 批次划分
 
-## 关键入口（侦察所得）
-- 节点数据：`project['canvas']['nodes']` 列表，agent 节点 type=smart-agent，属性直接存节点 dict
-- 会话宿主：`app/services/agent_host.py`（416 行）——spawn_session(session, model) 已支持 model 参数
-- Agent API：`app/routers/api_agent_nodes.py`——create_agent_node 已接受 model Body 参数
-- 确认门：`app/routers/api_agent_tools.py` `/confirm` 端点（服务端，扩展总是调用，服务端决定门范围）
-- canvas-tools 扩展：`app/agent_extensions/canvas-tools.ts`（395 行）——canvas.delete_node / media.delete 两个破坏性工具
-- TUI：`static/js/smart-canvas.js` agentNodeBodyHtml（~11674 行起）、agentTuiState（~11359）
-- 模型列表：`/api/models` → chat_models（agent 用 chat 模型）
+| 批次 | Issue | 模块 | 新文件 | 状态 |
+|---|---|---|---|---|
+| batch-1 | #159 | P2b 撤销/重做 | static/js/canvas-undo.js | pending |
+| batch-2 | #160 | P2c 节点操作 | static/js/canvas-node-ops.js | pending |
+| batch-3 | #161 | P2d 媒体/历史 | static/js/canvas-media-history.js | pending |
+| batch-4 | #162 | P3 转 ES module | （改造全部模块） | pending |
 
-## 收尾
-全部批次 PASS 后：主会话逐条核对 4 issue 验收 → 全量回归 → 提交 → 合 main 推送 → 关 4 个 issue
+**划分理由**：
+- 硬规则「同批 issue 不碰同一文件」：#159/#160/#161 都要从 `static/js/smart-canvas.js` 搬函数（各自不同的簇），必然同文件 → 每批 1 条（2–4 条的吞吐指引让位于文件冲突硬规则）。
+- 依赖：#162 明确 Blocked by #159/#160/#161（先完成各 feature 模块拆分）→ 排最后。
+- 每个 P2 抽取都是高风险精细活（24K 行文件、跨引用、TDZ、混合函数排除），单批单 issue 让 twin 会话短、KV 前缀稳、审核粒度清晰。
+
+## 分支与合入策略
+
+- 工作分支：`pipeline/canvas-modularization`（从 main 建）。
+- 每批测试全绿后：分支上提交（message 引用 issue 编号）→ main 快进合并 → 推 origin main（沿用 #157/#158 的直推模式，无 PR）。
+- 全部批次完成后：更新父 issue #154 进度、写 `.pipeline/report.md`。
+
+## 验收标准（默认）
+
+每条 issue 的 Verification 段（照抄见各任务卡）+ 全量回归 `python -m pytest tests/`（基线 1040 passed / 351 subtests，约 5.5 分钟）。
+
+## 已知风险与缓解（来自 P2a 经验，写入各任务卡）
+
+1. 抽离模块只放**纯函数定义**，不放顶层执行代码（DOM 引用等顶层执行留主脚本或确认加载时序）。
+2. 混合函数（同时强依赖主脚本核心状态机 + WebSocket 等）不抽，留主脚本。
+3. 抽后 grep 确认主脚本无残留引用/重复定义；`node --check` 两文件。
+4. 浏览器冒烟（Playwright，Chrome 路径 `C:/Program Files/Google/Chrome/Application/chrome.exe`，参考 tmp/qa/qa17-p2a-extract.js）覆盖该 feature 核心交互；注意测试脚本自身缺陷（如元素遮挡命中点）——用 elementFromPoint 验证命中。
+5. 冒烟清理测试数据后显式 `await manualSaveCanvas()` 持久化，避免防抖未 flush。
+6. 全量 pytest 回归。
