@@ -193,6 +193,90 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertEqual(report["first_failure"]["status"], "timed-out")
 
+    def test_a_non_probe_proxy_hop_from_a_guarded_process_is_still_a_violation(self):
+        # #232 的反向钉：豁免只跟着探针目标走。同样走代理、但不是探针
+        # 目标的话，hop 仍必须判红——原生 socket 自己发 CONNECT 时那条 hop
+        # 是唯一带进程身份的记录（见 test_native_socket_connect_to_allowlisted_target_is_blocking）。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import unittest\n"
+            "import urllib.request\n"
+            "from urllib.error import URLError\n\n"
+            "class NonProbeEgressContract(unittest.TestCase):\n"
+            "    def test_request_through_the_gate_proxy(self):\n"
+            "        try:\n"
+            "            urllib.request.urlopen('http://not-the-probe.invalid/x', timeout=3)\n"
+            "        except (URLError, OSError):\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, "非探针目标的外连却没判红，信封不隔离")
+        blocking = (self.report().get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(event.get("kind") == "proxy-egress" for event in blocking),
+            f"非探针 pid 的 hop 被一起免掉了：{blocking}",
+        )
+
+    def test_attribution_probe_attempt_is_evidence_not_a_violation(self):
+        # #232：真实门跑里必须出现一类能按进程树归属的产品外连，否则 #230 的
+        # 进程树判据只在 fixture 里成立。探针尝试的那次外连不能计 S0——但
+        # 豁免不能变成“允许出网”：代理仍拒 CONNECT，字节出不去；豁免只把
+        # 这一次尝试降级为归属证据，且只对写死的保留域名生效。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import socket\n"
+            "import unittest\n\n"
+            "class ProbeAttemptContract(unittest.TestCase):\n"
+            "    def test_probe_target_is_denied_but_recorded(self):\n"
+            "        try:\n"
+            "            socket.create_connection(('egress-attribution-probe.invalid', 443), timeout=3)\n"
+            "        except OSError:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        report = self.report()
+        probe_events = [
+            event
+            for event in report["guard_events"]
+            if "egress-attribution-probe.invalid" in str(event.get("target", ""))
+        ]
+        self.assertTrue(probe_events, "探针尝试没进证据")
+        self.assertTrue(
+            all(event.get("pid") for event in probe_events),
+            f"探针记录没带进程身份：{probe_events}",
+        )
+        attribution = report.get("guard_attribution") or {}
+        self.assertGreaterEqual(
+            (attribution.get("by_method") or {}).get("process-tree", 0),
+            1,
+            f"真实跑里进程树归属仍为 0：{attribution.get('by_method')}",
+        )
+        self.assertFalse(attribution.get("domain_fallback_only"), "有进程树归属却标成全靠域名兜底")
+        self.assertEqual(attribution.get("blocking") or [], [])
+        self.assertEqual(
+            [reason for reason in report["verdict_reasons"] if "S0 boundary violation" in reason],
+            [],
+            "探针尝试仍被判 S0",
+        )
+
+    def test_egress_attribution_probe_runs_in_every_mode(self):
+        # #232：真实门跑里 by_method 全是 domain-fallback——#230 的进程树归属
+        # 那一半从没在真实环境生效过（产品出口走浏览器/node，没钩子）。
+        # 这一步跑产品自己的取远端素材函数（装在带钩子的进程里），让每次
+        # 真门跑都必然留下一条带 pid 的产品外连证据。四个模式都要：
+        # 只靠 fixture 证明机制存在不算，换机器跑也要能对上账。
+        step = "egress-attribution"
+        self.assertIn(step, STEP_DEFINITIONS)
+        joined = " ".join(STEP_DEFINITIONS[step](sys.executable))
+        self.assertIn("tests.test_product_egress_attribution", joined)
+        for mode in ("fast", "domain", "trial", "release"):
+            self.assertIn(step, MODE_STEPS[mode])
+
     def test_javascript_syntax_step_covers_every_canvas_module(self):
         # #167：javascript-syntax 以前只 `node --check static/js/smart-canvas.js`，
         # 拆出去的 canvas-*.js 语法错误在 fast/domain 完全漏网。
@@ -373,6 +457,16 @@ class QualityGateTests(unittest.TestCase):
             "                [NODE, '--check', str(script)], capture_output=True, text=True,\n"
             "            )\n"
             "            self.assertEqual(result.returncode, 0, script.name + ': ' + result.stderr.strip())\n",
+            encoding="utf-8",
+        )
+        # #232：egress-attribution 步骤跑的是产品自己的取远端素材路径（app.core）。
+        # 这里合成的是最小仓库骨架，没有 app/，所以给一个不碰网络的桩：这个
+        # 套件验的是「门真的把这一步排进了每种模式」，探针行为由真门跑验。
+        (self.fixture_root / "tests" / "test_product_egress_attribution.py").write_text(
+            "import unittest\n\n"
+            "class EgressAttributionProbeStub(unittest.TestCase):\n"
+            "    def test_stub(self):\n"
+            "        self.assertTrue(True)\n",
             encoding="utf-8",
         )
         # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
@@ -705,7 +799,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -1834,6 +1928,52 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_node_boundary_event_carries_process_identity(self):
+        # #232：node 钩子的 record() 只写 kind/target，不带 pid——所以 node 触发的
+        # 边界事件在证据里永远归属不到发起进程（node 是画布语法测试、Playwright
+        # 驱动的宿主）。Python 钩子早就带 pid/ppid/exe，两边必须对称；不带
+        # 目标地址也不行：只知道「node 试过 net.connect」对不了账。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import subprocess\n"
+            "import unittest\n\n"
+            "class NodeBoundaryIdentityContract(unittest.TestCase):\n"
+            "    def test_denied_socket_reports_process(self):\n"
+            "        result = subprocess.run(\n"
+            "            ['node', '-e',\n"
+            "             \"require('node:net').connect({host: 'api.example.com', port: 443})\"],\n"
+            "            capture_output=True,\n"
+            "            text=True,\n"
+            "            check=False,\n"
+            "        )\n"
+            "        self.assertNotEqual(result.returncode, 0)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        report = self.report()
+        node_events = [
+            event
+            for event in report["guard_events"]
+            if str(event.get("target", "")).startswith("node:")
+        ]
+        self.assertTrue(node_events, "fixture 没产生 node 边界事件，这条钉是空的")
+        for event in node_events:
+            self.assertTrue(event.get("pid"), f"node 边界事件没带 pid：{event}")
+            self.assertTrue(event.get("ppid"), f"node 边界事件没带 ppid：{event}")
+            self.assertTrue(event.get("exe"), f"node 边界事件没带可执行路径：{event}")
+        self.assertTrue(
+            any("api.example.com" in str(event.get("target", "")) for event in node_events),
+            f"node 边界事件没记下请求的目标：{node_events}",
+        )
+        by_method = (report.get("guard_attribution") or {}).get("by_method") or {}
+        self.assertGreaterEqual(
+            by_method.get("process-tree", 0),
+            1,
+            f"node 边界事件没按进程树归属：{by_method}",
+        )
+
     def test_node_options_cannot_preload_code_before_the_syntax_step(self):
         preload = Path(self.temp_dir.name) / "node-preload.js"
         marker = Path(self.temp_dir.name) / "node-preload-ran"
@@ -2423,9 +2563,9 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract")),
-            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer")),
+            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution")),
+            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
@@ -2448,6 +2588,7 @@ class QualityGateTests(unittest.TestCase):
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
+                    "egress-attribution",
                 ),
             ),
         }

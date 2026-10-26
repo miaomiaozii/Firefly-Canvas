@@ -432,10 +432,20 @@ STEP_DEFINITIONS = {
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
     "browser-tracer": lambda python: [python, "tests/conversation_browser.py"],
     "browser-harness-contract": lambda python: [python, "-m", "unittest", "tests.test_conversation_browser_harness"],
+    # #232：跑产品自己的取远端素材函数（装在带钩子的进程里）。这一步的产出
+    # 不是「又测了一次网络」，而是真实门跑里唯一一类能按进程树归属的产品
+    # 外连证据；没有它，#230 的进程树判据只能从 fixture 里看到。
+    "egress-attribution": lambda python: [
+        python,
+        "-m",
+        "unittest",
+        "-b",
+        "tests.test_product_egress_attribution",
+    ],
 }
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract"),
+    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution"),
     "domain": (
         "javascript-syntax",
         "surface-contract",
@@ -443,6 +453,7 @@ MODE_STEPS = {
         "provider-contract",
         "native-browser-evidence",
         "generation-lifecycle-evidence",
+        "egress-attribution",
     ),
     "trial": (
         "javascript-syntax",
@@ -462,6 +473,7 @@ MODE_STEPS = {
         "fly-fixes-evidence",
         "unit-contract-browser",
         "browser-tracer",
+        "egress-attribution",
     ),
     "release": (
         "javascript-syntax",
@@ -483,6 +495,7 @@ MODE_STEPS = {
         "unit-contract-browser",
         "browser-tracer",
         "browser-harness-contract",
+        "egress-attribution",
     ),
 }
 
@@ -1131,9 +1144,29 @@ const fs = require('node:fs');
 const eventFile = process.env.FIREFLY_QUALITY_GATE_GUARD_EVENTS || '';
 function record(kind, target) {
   if (!eventFile) return;
+  // #232：和 Python 钩子一样带 pid/ppid/可执行路径。少了这三个，node 触发的
+  // 边界事件在证据里归属不到发起进程（kind=network 又不在只记不判红的
+  // 噪声清单里），会被归成 unattributed 直接 S0，而读证据的人不知道是谁。
   try {
-    fs.appendFileSync(eventFile, JSON.stringify({kind, target: String(target)}) + '\n', {encoding: 'utf8', mode: 0o600});
+    fs.appendFileSync(eventFile, JSON.stringify({
+      kind,
+      target: String(target),
+      pid: process.pid,
+      ppid: process.ppid,
+      exe: process.execPath,
+    }) + '\n', {encoding: 'utf8', mode: 0o600});
   } catch (_) {}
+}
+function endpoint(prefix, value) {
+  // 只知道「node 调过 net.connect」对不了账：得留下它想连哪里。
+  if (value === undefined || value === null) return prefix;
+  if (typeof value === 'string' || typeof value === 'number') return `${prefix}:${value}`;
+  if (typeof value === 'object') {
+    const host = value.host || value.hostname || value.path || '';
+    const port = value.port ? `:${value.port}` : '';
+    return host ? `${prefix}:${host}${port}` : prefix;
+  }
+  return prefix;
 }
 function denied(kind, target) {
   record(kind, target);
@@ -1149,22 +1182,22 @@ for (const name of ['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spa
   );
 }
 const net = require('node:net');
-net.connect = (..._args) => denied('network', 'node:net.connect');
-net.createConnection = (..._args) => denied('network', 'node:net.createConnection');
+net.connect = (...args) => denied('network', endpoint('node:net.connect', args[0]));
+net.createConnection = (...args) => denied('network', endpoint('node:net.createConnection', args[0]));
 const dgram = require('node:dgram');
 dgram.createSocket = (..._args) => denied('network', 'node:dgram.createSocket');
 const http = require('node:http');
-http.request = (..._args) => denied('network', 'node:http.request');
-http.get = (..._args) => denied('network', 'node:http.get');
+http.request = (...args) => denied('network', endpoint('node:http.request', args[0]));
+http.get = (...args) => denied('network', endpoint('node:http.get', args[0]));
 const https = require('node:https');
-https.request = (..._args) => denied('network', 'node:https.request');
-https.get = (..._args) => denied('network', 'node:https.get');
+https.request = (...args) => denied('network', endpoint('node:https.request', args[0]));
+https.get = (...args) => denied('network', endpoint('node:https.get', args[0]));
 if (typeof globalThis.fetch === 'function') {
-  globalThis.fetch = (..._args) => denied('network', 'node:fetch');
+  globalThis.fetch = (...args) => denied('network', endpoint('node:fetch', args[0]));
 }
 if (typeof globalThis.WebSocket === 'function') {
   globalThis.WebSocket = class DeniedWebSocket {
-    constructor() { denied('network', 'node:WebSocket'); }
+    constructor(url) { denied('network', endpoint('node:WebSocket', url)); }
   };
 }
 '''
@@ -1633,6 +1666,17 @@ NON_BLOCKING_GUARD_KINDS = frozenset(
     }
 )
 
+# #232：真实门跑里必须至少有一类能按进程树归属的产品外连，否则 #230 的
+# 进程树判据只能从 fixture 里看到。egress-attribution 步骤跑产品自己的取
+# 远端素材函数，它必然尝试一次外连；那是探针自己，不是产品失控。
+#
+# 信封不变式不因此放开：代理照旧拒 CONNECT，一个字节都出不去；
+# blocking_guard_events 只把这一条**尝试**从 S0 降级成归属证据（它仍然
+# 带 pid、仍然进 by_method 和 attributed_processes）。匹配是整串相等，
+# 且主机名用 RFC 2606 保留 TLD：真实主机不可能叫这个名，也解析不到任何
+# 东西。想众外连必须改这个常量（即改代码），不能从环境或步骤参数注入。
+ATTRIBUTION_PROBE_TARGETS = frozenset({"egress-attribution-probe.invalid"})
+
 
 def classify_guard_events(events: list[dict]) -> list[dict]:
     """#230 期望 1：每条守卫事件都带上「这条结论用的哪种判据」。
@@ -1668,27 +1712,85 @@ def classify_guard_events(events: list[dict]) -> list[dict]:
             label = "domain-fallback"
         else:
             label = "unattributed"
-        classified.append({**event, "attributed_by": label})
+        classified_event = {**event, "attributed_by": label}
+        target = str(event.get("target") or "")
+        if target in ATTRIBUTION_PROBE_TARGETS:
+            # 探针自己的尝试：保留归属（下面仍然计 process-tree），只不判红。
+            classified_event["expected_probe"] = True
+        classified.append(classified_event)
     return classified
 
 
-def guard_attribution_method_counts(events: list[dict]) -> dict[str, int]:
-    # #230 期望 2：换机器跑门时要能直接比「这条证据是进程树定出来的还是
-    # 域名兜底猜的」，而不是去 jsonl 里数。
-    counts: dict[str, int] = {}
-    for event in classify_guard_events(events):
+def guard_attribution_evidence(events: list[dict]) -> dict:
+    """#232：把归属证据收成一个入口，让报告里的数字同源。
+
+    之前报告里 attributed_to_gate_tree 自己数「带 pid 的事件」，而
+    by_method["process-tree"] 走 classify_guard_events（proxy-hop 虽然也带
+    pid，但不算进程树归属）——两个分母不同，换机器跑就会对不上。这里所有
+    数字都从同一次 classify_guard_events 读数。
+
+    domain_fallback_only：真实跑里常常一条都归属不到进程（产品没发生外连、
+    宿主工具不跑我们的钩子），这时判红完全依赖域名清单。证据要自己说出来，
+    不然读报告的人会以为真实跑里真有进程归属。
+
+    attributed_processes：只列真正按进程树归属的事件，带 ppid 和可执行路径
+    （pid 每台都变，换机器时只有后两个能对上），用于「产品自己发过哪些连接」
+    这个审计问题。
+    """
+    classified = classify_guard_events(events)
+    by_method: dict[str, int] = {}
+    for event in classified:
         label = str(event.get("attributed_by") or "unknown")
-        counts[label] = counts.get(label, 0) + 1
-    return counts
+        by_method[label] = by_method.get(label, 0) + 1
+    process_tree = [event for event in classified if event.get("attributed_by") == "process-tree"]
+    return {
+        "by_method": by_method,
+        "by_method_scope": "run-level merged guard event stream (cross-step)",
+        # #232 期望 3：进程树计数只保留 by_method["process-tree"] 一个字段。
+        # 旧的 attributed_to_gate_tree 自己数「带 pid 的事件」（proxy-hop 也带
+        # pid），与 by_method 分母不同，换机器跑就会对不上；同一件事不该有两
+        # 个容易各自漂移的字段，所以直接删。
+        "proxy_requests": sum(1 for event in classified if event.get("kind") == "proxy-request"),
+        "domain_fallback_only": bool(classified) and not any(
+            event.get("attributed_by") != "domain-fallback" for event in classified
+        ),
+        "attributed_processes": [
+            {
+                "kind": str(event.get("kind") or ""),
+                "target": str(event.get("target") or ""),
+                "ppid": event.get("ppid"),
+                "exe": str(event.get("exe") or ""),
+            }
+            for event in process_tree
+        ],
+        "unattributable_background": by_method.get("domain-fallback", 0),
+        # #232：探针尝试不判红，但必须在证据里可见，不然读报告的人分不清
+        # 「没有外连」和「只有探针外连」。
+        "expected_probe_attempts": sum(1 for event in classified if event.get("expected_probe")),
+        "blocking": blocking_guard_events(events),
+    }
 
 
 def blocking_guard_events(events: list[dict]) -> list[dict]:
-    # 判据在 classify_guard_events 里定，这里只筛「哪些算违规」：只有域名兜底
-    # 不判红，其余（进程树归属、无法归属）一律 S0。
+    # 判据在 classify_guard_events 里定，这里只筛「哪些算违规」：域名兜底
+    # （归属不到发起进程）不判红，其余（进程树归属、无法归属）一律 S0。
+    classified = classify_guard_events(events)
+    # #232：探针走代理时会留下一条 hop（proxy-egress，目标就是门自己的 deny
+    # proxy）。hop 不能整体豁免——原生 socket 自己发 CONNECT 时它是唯一带
+    # 进程身份的记录（见 test_native_socket_connect_to_allowlisted_target_is_blocking）。
+    # 只免「同一个 pid 同时留下了探针目标声明」的那一条：那个 pid 就是探针
+    # 自己，hop 只是它走代理的副产品；同批里别的 pid 照旧判红。
+    probe_pids = {
+        event.get("pid")
+        for event in classified
+        if event.get("expected_probe") and event.get("pid")
+    }
     return [
         event
-        for event in classify_guard_events(events)
+        for event in classified
         if event["attributed_by"] != "domain-fallback"
+        and not event.get("expected_probe")
+        and not (event.get("kind") == "proxy-egress" and event.get("pid") in probe_pids)
     ]
 
 
@@ -3704,24 +3806,13 @@ def main(argv: list[str] | None = None) -> int:
         # 对不上的目标就是无法归属（真实宿主工具不跑我们的钩子），
         # 域名白名单只在这种情况下用。
         "guard_attribution": {
-            # #230 期望 2：按判据计数（process-tree / domain-fallback /
-            # unattributed / proxy-hop）。口径要写进证据：这里是对**全量合并事件流**
-            # （跨 step 看目标）做的，而 guard_attribution.blocking 是逐 step 定的，
-            # 两者可能不相等（A step 请求过、B step 噪声——全量流会升级，单看 step
-            # 不会）。对账时先比口径再比数。
-            "by_method": guard_attribution_method_counts(guard_events),
-            "by_method_scope": "run-level merged guard event stream (cross-step)",
-            "attributed_to_gate_tree": sum(
-                1 for event in guard_events if event.get("pid")
-            ),
-            "proxy_requests": sum(
-                1 for event in guard_events if event.get("kind") == "proxy-request"
-            ),
-            "unattributable_background": sum(
-                1
-                for event in guard_events
-                if event.get("attributed_by") == "domain-fallback"
-            ),
+            # #230 期望 2 + #232：所有数字走 guard_attribution_evidence 同一个
+            # 入口（一次 classify_guard_events 读数），不在报告里另起分母。
+            # 口径要写进证据：这里是对**全量合并事件流**（跨 step 看目标）做的，
+            # 而 guard_attribution.blocking 是逐 step 定的，两者可能不相等
+            # （A step 请求过、B step 噪声——全量流会升级，单看 step 不会）。
+            # 对账时先比口径再比数。blocking 在这里被逐 step 结果覆盖。
+            **guard_attribution_evidence(guard_events),
             "blocking": attribute_blocking_guard_events(steps),
         },
         "retry_events": retry_events,
