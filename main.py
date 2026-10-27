@@ -332,6 +332,22 @@ async def startup_event():
     except Exception as exc:
         logger.error(f"Photoshop 往返请求表对账失败: {exc}")
 
+    # #239: 启动孤儿终态化 pass + 空闲 reap watchdog（busy 会话 15min 无活动必杀进程树，
+    # 防 pi sidecar 僵尸/进程树泄漏；shutdown 路径 cleanup_all 已含树杀）
+    try:
+        from app.services.agent_host import agent_host_manager
+        reaped = await agent_host_manager.reap_orphan_sessions()
+        if reaped:
+            logger.warning(f"Reaped {reaped} orphaned agent session(s) at startup")
+    except Exception as e:
+        logger.warning(f"Startup warning (agent orphan reap): {e}")
+    try:
+        from app.services.agent_host import agent_host_manager
+        await agent_host_manager.start_idle_watchdog()
+    except Exception as e:
+        logger.warning(f"Startup warning (agent idle watchdog): {e}")
+
+
 async def shutdown_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
     conversation_runner = PROJECT_CONVERSATION_RUNNER
