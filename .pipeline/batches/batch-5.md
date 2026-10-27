@@ -6,7 +6,7 @@
 
 | 泳道 | 票 | 难度/预估 | worktree | 分支 | runId | 状态 |
 |---|---|---|---|---|---|---|
-| A | #234 取回三层断裂修复 | 大 / 120m | D:/ff-wt/wt-234 | issue/234 | del_mvqyj7a7_55p5 | 进行中 |
+| A | #234 取回三层断裂修复 | 大 / 120m | D:/ff-wt/wt-234 | issue/234 | del_mvqyj7a7_55p5 → 120m超时零commit(仍纯探索) → resume del_mvr2tzwi_8re0(100m,硬时箱:T+15m红测试commit/T+60m逐层绿/T+85m全量) | 续跑中(关键路径) |
 | B | #239 agent_host 进程树必杀 | 中 / 60m | D:/ff-wt/wt-239 | issue/239 | del_mvqyj7a8_1s1i → 超时SIGTERM(无commit) → resume del_mvr0oo53_jbh1(75m,停探索指令) | 续跑中 |
 | C | #240 agent 端点同源守卫 | 小 / 45m | D:/ff-wt/wt-240(已删) | issue/240(已删) | del_mvqyj7a8_173t → 超时 → resume del_mvr05qi1_knyh exit0 | ✅ 已合并 ff32d35，票已关，review PASS（总控复跑 7/7+41/41） |
 | D | #242 ADR 0022 MCP + #245 ADR 0006 补行 | 文档 / 45m | D:/ff-wt/wt-242(已删) | issue/242(已删) | del_mvqyj7a8_110l → 超时 → resume del_mvr05qi2_au0n exit0 | ✅ 已合并 2221329，两票已关，review PASS |
