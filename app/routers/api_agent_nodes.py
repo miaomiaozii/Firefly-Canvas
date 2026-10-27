@@ -5,8 +5,9 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from app.core import ensure_agent_same_origin
 from app.services.agent_host import agent_host_manager
 from app.routers.api_agent_tools import _find_node, _apply_mutations
 
@@ -15,7 +16,8 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 
-router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"])
+# #240：agent-nodes 全部端点（含 WebSocket stream）接入同源/Host 守卫。
+router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
 
 
 def _update_node_field(project_id: str, node_id: str, field: str, value: Any):

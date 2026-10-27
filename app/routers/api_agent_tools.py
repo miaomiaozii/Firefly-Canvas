@@ -5,27 +5,29 @@ They execute canvas mutations through the existing project store.
 """
 import asyncio
 import time
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 import json
 import uuid
 
 import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
-from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
+from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.core import OnlineImageRequest, AIReference
 from app.services.misc import build_online_image_result
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
 
-router = APIRouter(prefix="/api/projects/{project_id}/canvas", tags=["agent-tools"])
+# #240：agent-tools 系列端点接入同源/Host 守卫（与现有 API 一致；
+# 无 Origin 的本机回环 sidecar 调用按票面模型放行）。
+router = APIRouter(prefix="/api/projects/{project_id}/canvas", tags=["agent-tools"], dependencies=[Depends(ensure_agent_same_origin)])
 
-generate_router = APIRouter(prefix="/api/projects/{project_id}/generate", tags=["agent-generate"])
+generate_router = APIRouter(prefix="/api/projects/{project_id}/generate", tags=["agent-generate"], dependencies=[Depends(ensure_agent_same_origin)])
 
-media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent-media"])
+media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent-media"], dependencies=[Depends(ensure_agent_same_origin)])
 
-viewport_router = APIRouter(prefix="/api/projects/{project_id}/viewport", tags=["agent-viewport"])
+viewport_router = APIRouter(prefix="/api/projects/{project_id}/viewport", tags=["agent-viewport"], dependencies=[Depends(ensure_agent_same_origin)])
 
-confirm_router = APIRouter(prefix="/api/projects/{project_id}/agent", tags=["agent-confirm"])
+confirm_router = APIRouter(prefix="/api/projects/{project_id}/agent", tags=["agent-confirm"], dependencies=[Depends(ensure_agent_same_origin)])
 
 # Global viewport state per project
 VIEWPORT_STATE = {}
