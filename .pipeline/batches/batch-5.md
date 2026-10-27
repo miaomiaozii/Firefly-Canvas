@@ -30,7 +30,7 @@
 | 泳道 | 票 | 难度/预估 | worktree | 分支 |
 |---|---|---|---|---|
 | G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) exit0 | ✅ 已合并，票已关，review PASS（总控复跑 50 passed） |
-| H | #243 MCP streamable-HTTP 端点实现 | 中大 / 120m | D:/ff-wt/wt-243 | issue/243 | del_mvr2ozao_b3ja(150m) | 进行中 |
+| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | del_mvr2ozao_b3ja(150m) → 超时但实现完整未commit（新 api_mcp.py + test_mcp_endpoint.py + 6 文件改动） → resume 收尾班 del_mvr829mb_y3pt(70m，WS 绝对 URL 修法已注入) | 收尾中 |
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
