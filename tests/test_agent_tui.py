@@ -964,6 +964,60 @@ class TestAgentConfirmation(unittest.TestCase):
         self.assertEqual(data["approved"], False)
         self.assertEqual(data["reason"], "timeout")
 
+    def test_confirm_http_fallback_route_exists_and_2xx(self):
+        """#241: TUI 确认门 HTTP fallback 目标路由存在且 2xx（不再必 404）。
+
+        sendAgentConfirm (static/js/canvas-agent-tui.js) 在 WS 断开时 POST
+        /api/projects/{pid}/agent-nodes/{nid}/confirm。该路由曾随重构丢失，
+        fallback 必 404 且被 .catch 静默吞（WS 断线时确认按钮实际失效）。
+        回归断言：
+        1) 路由存在且同源回环请求返回 2xx（TestClient 用绝对回环 URL +
+           匹配 Origin，过 ensure_agent_same_origin）；
+        2) 与 WS 同一状态机：confirm 响应派发到 session.confirm_handlers。
+        """
+        from app.services.agent_host import agent_host_manager
+
+        project = self.store.create_project("Confirm Fallback Test")
+        project_id = project["id"]
+        node_id = "agent-confirm-6"
+
+        session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+
+        # Make the session appear running so the endpoint reuses it
+        # (get_or_create_session replaces non-running sessions).
+        fake = FakeAgentProcess(script=[])
+        session.process = fake
+        session.status = "running"
+
+        dispatched = []
+
+        async def handler(confirm_id, approved):
+            dispatched.append((confirm_id, approved))
+
+        agent_host_manager.on_confirm(session, handler)
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/agent-nodes/{node_id}/confirm",
+            json={"confirm_id": "confirm-241", "approved": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(dispatched, [("confirm-241", True)])
+
+    def test_confirm_http_fallback_missing_session_still_2xx(self):
+        """#241: 无活跃会话时 fallback 路由仍 2xx（空 handlers 为 no-op，同 WS 语义）。"""
+        project = self.store.create_project("Confirm Fallback NoSession")
+        project_id = project["id"]
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/agent-nodes/agent-confirm-7/confirm",
+            json={"confirm_id": "confirm-241b", "approved": False},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
 
 class TestCleanupProject(unittest.TestCase):
     """Tests for AgentHostManager.cleanup_project (US-27)."""
