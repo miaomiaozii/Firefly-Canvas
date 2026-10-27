@@ -29,8 +29,8 @@
 
 | 泳道 | 票 | 难度/预估 | worktree | 分支 |
 |---|---|---|---|---|
-| G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 |
-| H | #243 MCP streamable-HTTP 端点实现 | 中大 / 120m | D:/ff-wt/wt-243 | issue/243 |
+| G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) | 进行中 |
+| H | #243 MCP streamable-HTTP 端点实现 | 中大 / 120m | D:/ff-wt/wt-243 | issue/243 | del_mvr2ozao_b3ja(150m) | 进行中 |
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
