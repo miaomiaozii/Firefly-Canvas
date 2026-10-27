@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from app.core import ensure_agent_same_origin
 from app.services.agent_host import agent_host_manager
@@ -241,6 +241,40 @@ async def send_agent_abort(
 
     await agent_host_manager.send_abort(session)
     return {"success": True, "node_id": node_id}
+
+
+@router.post("/{node_id}/confirm")
+async def post_agent_node_confirm(
+    project_id: str,
+    node_id: str,
+    request: Request,
+    x_agent_project: str = Header(default=""),
+):
+    """HTTP fallback for the TUI confirm gate (#241).
+
+    Mirrors the WS "confirm" command handled in ``agent_event_stream`` below:
+    when the TUI's WebSocket stream is not connected, the confirm buttons
+    fall back to this route. The pre-refactor route at this URL was dropped,
+    leaving the TUI fallback to 404 silently — both paths now share the same
+    ``confirm_handlers`` state machine.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    confirm_id = str(body.get("confirm_id", ""))
+    approved = bool(body.get("approved", False))
+
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    # Same state machine as the WS path: dispatch to every confirm handler
+    # (each handler checks its own confirm_id and no-ops on mismatch).
+    for handler in session.confirm_handlers:
+        try:
+            await handler(confirm_id, approved)
+        except Exception:
+            pass
+
+    return {"ok": True, "confirm_id": confirm_id, "approved": approved}
 
 
 @router.get("/{node_id}/fork-messages")

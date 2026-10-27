@@ -414,10 +414,17 @@ function sendAgentConfirm(nodeId, projectId, approved) {
         }));
     } else {
         // WS not connected, send via HTTP (fire-and-forget)
+        // #241：fallback 目标是真实存在的 agent-nodes/{nodeId}/confirm 端点
+        //（app/routers/api_agent_nodes.py，与 WS 确认同一状态机）；
+        // HTTP 错误状态不再静默吞——至少 console.warn 让 WS 断线时的失败可见。
         fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
+        }).then(res => {
+            if (!res.ok) {
+                console.warn(`[agent-tui] confirm HTTP fallback 未送达 (HTTP ${res.status} ${res.statusText}, confirm_id=${confirmId})，WS 可能未连接`);
+            }
         }).catch(e => console.error('Failed to send agent confirm:', e));
     }
 
