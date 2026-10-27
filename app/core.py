@@ -65,6 +65,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse, JSONRes
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
@@ -3273,6 +3274,33 @@ def ensure_same_origin_request(request: Request):
     referer = origin_from_url(request.headers.get('referer', ''))
     actual = origin or referer
     if actual != expected:
+        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+
+def ensure_agent_same_origin(request: HTTPConnection):
+    """agent-tools / agent-nodes 端点同源/Host 守卫（#240，MCP 开放前置）。
+
+    Host 校验与 ensure_same_origin_request 一致（只允许本机回环）；差异：
+    无 Origin/Referer 的编程式回环调用（服务端自己 spawn 的 pi sidecar，
+    canvas-tools.ts：http://127.0.0.1 + X-Agent-Project 头）按票面
+    “本机回环+Host 校验”模型放行；带 Origin/Referer 的请求必须与应用来源精确匹配。
+    参数标注为 HTTPConnection：FastAPI 对 HTTP 路由注入 Request、对 WebSocket 路由
+    注入 WebSocket 实例（0.141 下 Request 标注不会被注入到 WS 依赖）。
+    """
+    host = str(request.headers.get('host') or '').lower()
+    try:
+        hostname = (urllib.parse.urlsplit(f'//{host}').hostname or '').lower()
+    except ValueError:
+        hostname = ''
+    if hostname not in {'localhost', '127.0.0.1', '::1', '0.0.0.0', '::'}:
+        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+    scheme = request.url.scheme
+    # WebSocket 握手：生产 ASGI 为 websocket/wss，starlette TestClient 为 ws/wss
+    scheme = {'ws': 'http', 'wss': 'https', 'websocket': 'http', 'websockets': 'https'}.get(scheme, scheme)
+    expected = f'{scheme}://{host}'.lower()
+    origin = origin_from_url(request.headers.get('origin', ''))
+    referer = origin_from_url(request.headers.get('referer', ''))
+    actual = origin or referer
+    if actual and actual != expected:
         raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
 
 def normalize_local_image_path(value):

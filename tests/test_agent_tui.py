@@ -660,8 +660,8 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session_a.process = FakeAgentProcess(script=script_a)
         session_b.process = FakeAgentProcess(script=script_b)
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
-            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
                 # Dispatch on each session's portal loop: the WS ASGI tasks (and
                 # their send channels) live there, not on run_async's temp loop.
                 for event in script_a:
@@ -704,8 +704,8 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session_a.process = FakeAgentProcess(script=script_a)
         session_b.process = FakeAgentProcess(script=script_b)
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
-            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
                 for event in script_a:
                     ws_a.portal.call(agent_host_manager._dispatch_event, session_a, event)
                 for event in script_b:
@@ -739,7 +739,7 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
         session.process = FakeAgentProcess(script=[])
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/{node_id}/stream") as ws:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/{node_id}/stream") as ws:
             first = self._receive_with_timeout(ws)
             self.assertEqual(
                 first.get("type"), "session",
