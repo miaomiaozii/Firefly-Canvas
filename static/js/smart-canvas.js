@@ -14899,6 +14899,23 @@ window.onmousemove = e => {
         n.x = item.ox + moveDx;
         n.y = item.oy + moveDy;
     });
+    // #253：拖拽对齐吸附——对被拖主节点做 center/edge 阈值吸附（屏幕 8px 阈值换算世界坐标），
+    // 整组同步偏移并画参考线；ctrlGroup 连线拖拽时跳过并清线。
+    if(!dragState.ctrlGroup){
+        const snapThreshold = Math.max(2, 8 / (viewport.scale || 1));
+        const dragIds = new Set(dragState.groupIds || [dragState.id]);
+        const otherRects = canvasState.nodes.filter(n => !dragIds.has(n.id)).map(nodeRect);
+        const snapResult = FireflySnap.computeSnap(nodeRect(node), otherRects, {threshold: snapThreshold});
+        if(snapResult.dx || snapResult.dy){
+            (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
+                const n = canvasState.nodes.find(x => x.id === item.id);
+                if(n){ n.x += snapResult.dx; n.y += snapResult.dy; }
+            });
+        }
+        FireflySnapUI.showGuides(world, snapResult.guides);
+    } else {
+        FireflySnapUI.clearGuides(world);
+    }
     if(assetLibraryOpen){
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         if(hit && assetPanel?.contains(hit)){
@@ -14925,6 +14942,7 @@ window.onmouseup = e => {
     const nodeDragMoved = Boolean(dragState?.moved);
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
+    FireflySnapUI.clearGuides(world); // #253：拖拽结束清参考线
     if(nodeDragMoved){
         document.body.classList.add('smart-node-drag-settling');
         if(composerDragSettleTimer) clearTimeout(composerDragSettleTimer);
