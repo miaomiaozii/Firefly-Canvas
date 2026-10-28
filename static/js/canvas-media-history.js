@@ -1141,7 +1141,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         event.stopPropagation();
     };
     image.onkeydown = event => {
-        if(event.key === 'Enter'){
+        if(event.key === 'Enter' && !event.isComposing && event.keyCode !== 229){ // #252
             event.preventDefault();
             event.stopPropagation();
             selectSmartHistoryImage(image.closest('.log-media-card'));
@@ -1977,7 +1977,7 @@ function bindLongContentHistoryTriggers(){
         };
         button.onclick = activate;
         button.onkeydown = event => {
-            if(event.key === 'Enter' || event.key === ' ') activate(event);
+            if(!event.isComposing && event.keyCode !== 229 && (event.key === 'Enter' || event.key === ' ')) activate(event); // #252
         };
     });
 }
