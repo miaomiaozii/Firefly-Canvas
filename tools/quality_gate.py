@@ -431,6 +431,9 @@ STEP_DEFINITIONS = {
     "node-flow-cascade-evidence": lambda python: [python, "tests/node_flow_browser.py"],
     "fly-fixes-evidence": lambda python: [python, "tests/fly_fixes_browser.py"],
     "canvas-boundaries-evidence": lambda python: [python, "tests/canvas_boundaries_browser.py"],
+    # #269：#255 图层面板的浏览器证据（多层创建→显隐切换→拖拽重排→合成 PNG 像素断言）。
+    # 按 #167/#185 先例接进 trial/release（并行组），fast/domain 保持快。
+    "layers-panel-evidence": lambda python: [python, "tests/layers_panel_browser.py"],
     "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
     "browser-tracer": lambda python: [python, "tests/conversation_browser.py"],
@@ -476,6 +479,7 @@ MODE_STEPS = {
         "ui-integrity-evidence",
         "excel-import-evidence",
         "canvas-boundaries-evidence",
+        "layers-panel-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -497,6 +501,7 @@ MODE_STEPS = {
         "excel-import-evidence",
         "edge-compatibility",
         "canvas-boundaries-evidence",
+        "layers-panel-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -525,6 +530,7 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "edge-compatibility",
         "browser-tracer",
         "canvas-boundaries-evidence",
+        "layers-panel-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
