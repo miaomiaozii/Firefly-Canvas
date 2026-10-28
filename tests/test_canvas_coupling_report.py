@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import functools
 import unittest
 
 from tests.test_canvas_core_layer import REVERSE_REFERENCE_CEILINGS
@@ -32,9 +33,22 @@ from tools.canvas_coupling_report import (
 UNCLASSIFIED_REFERENCE_CEILING = 0
 
 
+# 155s→~15s：coupling() 每次调用都重解析全部画布 JS（~13s），而 11 个方法吃同一份
+# 输入——缓存一次，结果确定性不变。旧行为下单模块在 #204 分片里是 155.2s 巨块，
+# 并行争抢下膨胀到 189-195s 超单片守卫（trial-39888/71728 实败）。
+@functools.lru_cache(maxsize=1)
+def _cached_summary():
+    return summarize(coupling())
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_reverse():
+    return reverse_coupling()
+
+
 class CanvasCouplingReportTests(unittest.TestCase):
     def setUp(self):
-        self.summary = summarize(coupling())
+        self.summary = _cached_summary()
 
     def test_total_matches_the_ratchet_ceilings(self):
         # 两个工具必须同一口径，否则「降了多少」有两个互相矛盾的答案。
@@ -140,7 +154,7 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
         # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
-        rev = reverse_coupling()
+        rev = _cached_reverse()
         # 231/933/163/784 → 235/938/166/788：增量全部来自 #223 新建的 canvas-download.js
         # —— 下载层从 smart-canvas.js 抽成模块后，核心按名调它的 4 个函数
         # （downloadCanvasArchive / canvasReceiveBlob / canvasSaveBlobAsFile / canvasDownloadSkipSummary）。
