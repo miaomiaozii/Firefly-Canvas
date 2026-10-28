@@ -22,13 +22,14 @@
 | `static/js/canvas-node-ops.js` | `createNodeFromMenu` 加 ocr 分支；`createPromptNode` 支持 `options.title` |
 | `static/js/i18n/smart-canvas.js` | 8 个 key 中英双补（createOcrTitle/Sub + ocrWorking/Done/Empty/Failed/NoImage/PromptTitle） |
 | `NOTICE.md` | 新增「第三方来源登记」节：ComfyArt MIT 来源与引用范围 |
+| `tests/test_terminology_guard.py` + `tests/test_canvas_coupling_report.py` + `docs/adr/0020-*.md` | 守卫钉值按先例随功能更新：`本地轻量后处理模型` 加白名单；反向钉值 246/957/173/803→246/959/174/806（新增核心→模块引用 createPromptNode 1→2、NODE_TYPE_IMAGE 15→16，方向为既有的「核心调模块」，ADR 0020 记一笔漂移） |
 
 ## 测试证据
 
 | 项 | 结果 |
 |---|---|
-| `tests/test_ocr_api.py`（真实引擎跑真实 PNG） | 9/9 passed |
-| `python tools/quality_gate.py fast` | passed（15s，含 javascript-syntax / surface-contract / egress-attribution） |
-| 全量 pytest 对照（e879b6b 基线 vs 本分支） | 基线：1413 passed, 1 skipped（rc=0, 523s）；本分支：__待补__ |
-| `python tools/quality_gate.py domain` | __待补__ |
-| `python tools/quality_gate.py trial` | __待补__ |
+| `tests/test_ocr_api.py`（真实引擎跑真实 PNG） | 9/9 passed（0.02s，含引擎首次加载） |
+| `python tools/quality_gate.py fast` | passed（15s，含 javascript-syntax / surface-contract / egress-attribution / canvas-core-layer / coupling-report / terminology） |
+| 全量 pytest 对照 | 基线 e879b6b：`1413 passed, 1 skipped, rc=0`（523s）；本分支：`1432 passed, 1 skipped, rc=0`（541s）→ +19 全为新文件/守卫用例，无既有回归 |
+| `python tools/quality_gate.py domain` | 20/24 步过；4 个浏览器步（browser-evidence / surface-behavior / visual-baseline / visual-baseline-legacy）**未跑成**——本环境无显示/无法启动浏览器（各步输出「无法启动浏览器」），非代码问题；视觉基线 diff 请在有显示器的维护者环境复跑后回填 |
+| `python tools/quality_gate.py trial` | 未跑——与 domain 同因（含同样的浏览器步，本环境必败），留维护者环境 |
