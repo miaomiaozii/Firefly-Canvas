@@ -640,7 +640,24 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     task.recoverTaskId = recoverTaskId;
     canvasCore.render();
     try {
-        const data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
+        let data;
+        const taskUrl = projectImageTaskUrl(task.taskId || localTaskId);
+        if(taskUrl.startsWith('/api/project-library/')){
+            // #234：项目任务走项目 GET 主动取回（?recover=1），succeeded 成品直接落本项目画布/历史
+            const response = await fetch(taskUrl + (taskUrl.includes('?') ? '&' : '?') + 'recover=1');
+            if(!response.ok) throw new Error(await response.text());
+            const body = await response.json();
+            const result = body.result || {};
+            data = {
+                status: (body.recover && body.recover.status === 'running') ? 'running' : body.status,
+                images: result.images || [],
+                image_items: result.image_items || [],
+                error: (body.recover && body.recover.error) || body.error || '',
+                message: (body.recover && body.recover.status === 'running') ? (body.recover.error || tr('smart.taskStillGenerating')) : ''
+            };
+        } else {
+            data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
+        }
         if(data.status === 'succeeded'){
             task.failed = false;
             task.querying = false;
