@@ -6579,6 +6579,9 @@ async function loadCanvas(){
         // local node set is treated as a deliberate user action and autosave may
         // commit it (with force_empty) instead of being treated as a load failure.
         canvasLoadReady = true;
+        // #251：画布加载完成后恢复跨刷新的 undo/redo 栈（ops.db undo_snapshots 租户；
+        // 逻辑全在 canvas-undo.js，这里只接线；fire-and-forget，不阻塞渲染）。
+        void restorePersistedUndoStack();
         return true;
     } catch(e) {
         toast(tr('smart.toastCanvasFail'));

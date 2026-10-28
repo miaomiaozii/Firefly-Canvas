@@ -185,8 +185,13 @@ smartVideoPreviewHtml/smartVideoFallbackHtml 从宿主上移到模块（与档�
 （canvas-snap.js）、就地快编（canvas-quick-edit.js）、tidy/快捷键扩表，新增 5 处
 「核心调模块」引用，同名入 core_dominant（+5 调用点），方向非新债。
 
+再到 247/965/175/812（2026-10-29 #251 undo 栈跨刷新持久化）：`smart-canvas.js`
+loadCanvas 接线 `canvas-undo.js` 的 `restorePersistedUndoStack()`（1 处引用，
+owner 分布 canvas-undo.js 15→16），方向「核心调模块」，非新债——
+持久化/恢复逻辑全在 canvas-undo.js 内，核心只接线。
+
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
-`canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
+`canvas-layout-utils.js` 16、`canvas-undo.js` 16、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、
 `canvas-download.js` 5。
 （`canvas-core.js` 已排除：核心调它是合法下层依赖。）

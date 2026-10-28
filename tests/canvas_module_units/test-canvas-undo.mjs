@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCanvasContext, loadModules, globalFunction, evaluate } from './harness.mjs';
+import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
 // 把 canvas-undo.js 单独加载进假核心，注入它引用的 11 个外部名（手写桩，非自动桩）。
 // 每个桩要么记录调用（calls），要么是可断言的真实行为；按钮用 harness.element 显式注册，
@@ -239,4 +239,142 @@ test('pushUndo is a no-op while undoSuppressed (a restore must not record a fres
     evaluate(ctx, 'undoSuppressed = false');
     pushUndo({ label: 'recorded-again' });
     assert.equal(evaluate(ctx, 'undoStack.length'), 2, 'recording resumes once suppression is cleared');
+});
+
+// ── #251：undo/redo 栈跨刷新持久化（ops.db ADR 0021 租户之二，undo_snapshots）──────────────
+// 防的回归：刷新后 undo 栈失忆。可观察行为：
+//   - 栈变更 → 防抖合并 → 单条 PUT /api/project-library/{projectId}/undo-stack（整栈深拷贝）；
+//   - 持久化失败（网络/5xx）静默吞掉，不炸画布；
+//   - 页面加载时 GET 恢复（restorePersistedUndoStack 种回栈 + 按钮同步），本地栈非空不覆盖；
+//   - 非项目画布（无 project_id）不触发任何请求。
+
+// 宿主侧等一拍，让 vm 里的 async persist 跑完（fetch 是宿主注入的 stub，微任务链跨 realm）。
+const tick = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('#251: rapid stack mutations coalesce into a single debounced PUT carrying the whole stack', async () => {
+    const { ctx, harness } = loadUndoModule({ nodes: [{ id: 'n1' }] });
+    const requests = [];
+    ctx.fetch = async (url, options) => {
+        requests.push({ url, method: options && options.method, body: options && options.body });
+        return { ok: true, json: async () => ({}) };
+    };
+    const pushUndo = globalFunction(ctx, 'pushUndo');
+
+    pushUndo({ label: 'p1' });
+    pushUndo({ label: 'p2' });
+    // 两次快速变更在防抖窗口内：只有一个定时器存活（前一个被 clearTimeout）。
+    const fired = harness.advanceTimers();
+    assert.equal(fired, 1, 'two rapid pushes coalesce into one debounced timer');
+    await tick();
+
+    assert.equal(requests.length, 1, 'exactly one PUT in flight');
+    assert.equal(requests[0].method, 'PUT');
+    assert.ok(requests[0].url.includes('/api/project-library/proj/undo-stack'), `project-scoped URL, got ${requests[0].url}`);
+    const payload = JSON.parse(requests[0].body);
+    assert.deepEqual(fromContext(payload), {
+        undo: [
+            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, label: 'p1' },
+            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, label: 'p2' },
+        ],
+        redo: [],
+    }, 'payload is a deep copy of the stacks at fire time (both entries, redo empty)');
+});
+
+test('#251: persist failures (network error / 5xx) are swallowed, canvas keeps working', async () => {
+    const { ctx } = loadUndoModule({ nodes: [{ id: 'n1' }] });
+    const persistUndoStackNow = globalFunction(ctx, 'persistUndoStackNow');
+
+    ctx.fetch = async () => { throw new Error('network down'); };
+    await persistUndoStackNow('proj');   // 不得抛出
+
+    ctx.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+    await persistUndoStackNow('proj');   // 5xx 也不得抛出
+
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, 'stack untouched by the persist attempts');
+});
+
+test('#251: restorePersistedUndoStack seeds the stacks on page load and syncs buttons', async () => {
+    const { ctx, harness } = loadUndoModule({ nodes: [{ id: 'n1' }] });
+    const serverUndo = [
+        { nodes: [{ id: 'n0' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {} },
+        { nodes: [{ id: 'n0' }, { id: 'n1' }], connections: [{ from: 'n0', to: 'n1' }], selectedId: 'n1', selectedIds: ['n1'], selectedImage: {} },
+    ];
+    const serverRedo = [{ nodes: [{ id: 'n1' }], connections: [], selectedId: 'n1', selectedIds: ['n1'], selectedImage: {} }];
+    const urls = [];
+    ctx.fetch = async (url) => {
+        urls.push(url);
+        return { ok: true, json: async () => ({ project_id: 'proj', undo: serverUndo, redo: serverRedo, updated_at: '2026-01-01T00:00:00Z' }) };
+    };
+    const restorePersistedUndoStack = globalFunction(ctx, 'restorePersistedUndoStack');
+
+    await restorePersistedUndoStack();
+
+    assert.equal(urls.length, 1, 'one GET on restore');
+    assert.ok(urls[0].includes('/api/project-library/proj/undo-stack'), `project-scoped GET, got ${urls[0]}`);
+    assert.equal(evaluate(ctx, 'undoStack.length'), 2, 'undo stack seeded from the server');
+    assert.equal(evaluate(ctx, 'redoStack.length'), 1, 'redo stack seeded from the server');
+    assert.deepEqual(fromContext(JSON.parse(JSON.stringify(serverUndo))), fromContext(evaluate(ctx, 'undoStack')), 'entries kept verbatim (dangling-media guards run later, in performUndo)');
+    assert.equal(undoBtn(harness).disabled, false, 'undo button enabled after restore');
+    assert.equal(redoBtn(harness).disabled, false, 'redo button enabled after restore');
+});
+
+test('#251: restore is a no-op when local stacks are non-empty (project switch keeps in-flight state)', async () => {
+    const { ctx } = loadUndoModule({ nodes: [{ id: 'n1' }] });
+    const pushUndo = globalFunction(ctx, 'pushUndo');
+    const restorePersistedUndoStack = globalFunction(ctx, 'restorePersistedUndoStack');
+
+    pushUndo({ label: 'local' });
+    let fetchCalls = 0;
+    ctx.fetch = async () => {
+        fetchCalls++;
+        return { ok: true, json: async () => ({ undo: [{ nodes: [{ id: 'server' }] }], redo: [] }) };
+    };
+
+    await restorePersistedUndoStack();
+
+    assert.equal(fetchCalls, 0, 'no request when the local stack is already non-empty');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, 'local stack untouched');
+    assert.equal(evaluate(ctx, "undoStack[0].label"), 'local', 'no server entry leaked in');
+});
+
+test('#251: restore no-ops silently on 404 (project has no ops.db yet)', async () => {
+    const { ctx, harness } = loadUndoModule({ nodes: [{ id: 'n1' }] });
+    ctx.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+    const restorePersistedUndoStack = globalFunction(ctx, 'restorePersistedUndoStack');
+
+    await restorePersistedUndoStack();
+
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0, 'stack stays empty');
+    assert.equal(undoBtn(harness).disabled, true, 'buttons stay disabled');
+});
+
+test('#251: non-project canvas (no project_id) never touches the network', async () => {
+    const { ctx, harness } = createCanvasContext();
+    const connections = [];
+    ctx.canvasState = { nodes: [{ id: 'n1' }], connections, selectedId: '', selectedIds: [], selectedImage: {}, activeComposerSubject: null, lastComposerNodeId: '', projectMediaLibrary: { items: [] } };
+    ctx.canvas = { id: 'classic-canvas', nodes: ctx.canvasState.nodes, connections };   // 无 project / project_id
+    ctx.sourceProjectId = '';
+    ctx.canvasId = 'classic-canvas';
+    ctx.toast = () => {};
+    ctx.tr = (k) => k;
+    ctx.render = () => {};
+    ctx.scheduleSave = () => {};
+    ctx.scheduleMediaArchive = () => {};
+    ctx.cancelPendingMediaArchives = () => {};
+    ctx.restoreSmartProjectOriginalUndo = async () => {};
+    harness.element('smartUndoButton');
+    harness.element('smartRedoButton');
+    let fetchCalls = 0;
+    ctx.fetch = async () => { fetchCalls++; return { ok: true, json: async () => ({}) }; };
+    loadModules(ctx, ['canvas-undo.js']);
+    const pushUndo = globalFunction(ctx, 'pushUndo');
+    const restorePersistedUndoStack = globalFunction(ctx, 'restorePersistedUndoStack');
+
+    pushUndo({ label: 'classic' });
+    harness.advanceTimers();   // 防抖窗口走完也不得发出请求
+    await restorePersistedUndoStack();
+    await tick();
+
+    assert.equal(fetchCalls, 0, 'no persist/restore request for a classic (non-project) canvas');
+    assert.equal(evaluate(ctx, 'undoStack.length'), 1, 'in-memory undo still works locally');
 });

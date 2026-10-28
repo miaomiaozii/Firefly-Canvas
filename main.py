@@ -1266,6 +1266,8 @@ from app.routers import api_ocr as _r_api_ocr
 app.include_router(_r_api_ocr.router)
 from app.routers import api_project_library as _r_api_project_library
 app.include_router(_r_api_project_library.router)
+from app.routers import api_project_undo as _r_api_project_undo
+app.include_router(_r_api_project_undo.router)
 from app.routers import api_project_usage as _r_api_project_usage
 app.include_router(_r_api_project_usage.router)
 from app.routers import api_projects as _r_api_projects

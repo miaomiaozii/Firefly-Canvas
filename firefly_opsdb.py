@@ -70,6 +70,21 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_usage_turns_project_time ON usage_turns (project_id, created_at)",
         ],
     ),
+    (
+        # 画布级 undo/redo 栈租户（issue #251；每项目单行整栈 upsert；表前缀 undo_* 符合 ADR 0021 决策 5）。
+        # 与 versions_snapshots 是不同租户：版本树（flush 触发、供回滚）vs 会话级 undo 连续性。
+        "undo_001",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS undo_snapshots (
+                project_id TEXT PRIMARY KEY,
+                undo_json TEXT NOT NULL DEFAULT '[]',
+                redo_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+            """
+        ],
+    ),
 ]
 
 

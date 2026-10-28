@@ -176,10 +176,13 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 246/964/174/811：#253 交互套件——smart-canvas.js 接线 snap 拖拽吸附、
         # quick-edit 就地重命名、tidy/快捷键扩表，新增 5 处「核心调模块」引用
         # （canvas-snap.js / canvas-quick-edit.js 等），非新债。
-        self.assertEqual(rev["reverse_names"], 246)
-        self.assertEqual(rev["reverse_core_refs"], 964)
-        self.assertEqual(rev["core_dominant_names"], 174)
-        self.assertEqual(rev["core_dominant_core_refs"], 811)
+        # 247/965/175/812：#251 undo 栈跨刷新持久化——smart-canvas.js loadCanvas 接线
+        # canvas-undo.js 的 restorePersistedUndoStack()（1 处引用），方向「核心调模块」，
+        # 非新债（持久化/恢复逻辑全在 canvas-undo.js 内，核心只接线）。
+        self.assertEqual(rev["reverse_names"], 247)
+        self.assertEqual(rev["reverse_core_refs"], 965)
+        self.assertEqual(rev["core_dominant_names"], 175)
+        self.assertEqual(rev["core_dominant_core_refs"], 812)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

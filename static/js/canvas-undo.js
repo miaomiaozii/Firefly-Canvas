@@ -28,6 +28,7 @@ function commitPendingUndo(){
         undoStack.push(pendingUndoSnapshot);
         if(undoStack.length > UNDO_LIMIT) undoStack.shift();
         pendingUndoSnapshot = null;
+        scheduleUndoStackPersist();
     }
 }
 
@@ -52,6 +53,7 @@ function pushUndo(extra=null){
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
     if(!redoPushing && redoStack.length) redoStack.length = 0;
     syncUndoRedoButtons();
+    scheduleUndoStackPersist();
 }
 
 async function performUndo(){
@@ -63,6 +65,7 @@ async function performUndo(){
             try {
                 await restoreSmartProjectOriginalUndo(snap);
                 toast(tr('smart.toastUndone'));
+                scheduleUndoStackPersist();
                 return;
             } catch(err){
                 if(err?.permanentUndoFailure) continue;
@@ -94,6 +97,7 @@ async function performUndo(){
         undoSuppressed = false;
         toast(tr('smart.toastUndone'));
         syncUndoRedoButtons();
+        scheduleUndoStackPersist();
         return;
     }
     toast(tr('smart.toastNoUndo'));
@@ -142,6 +146,7 @@ async function performRedo(){
         undoSuppressed = false;
         toast(tr('smart.toastRedone'));
         syncUndoRedoButtons();
+        scheduleUndoStackPersist();
         return;
     }
     toast(tr('smart.toastNoRedo'));
@@ -197,7 +202,7 @@ function stripDeletedMediaFromUndoStacks(assetId){
     };
     stripFrom(undoStack);
     stripFrom(redoStack);
-    if(removed) syncUndoRedoButtons();
+    if(removed){ syncUndoRedoButtons(); scheduleUndoStackPersist(); }
     return removed;
 }
 
@@ -207,11 +212,77 @@ function removeProjectOriginalUndoTokens(assetId, deletionId, projectId){
     const match = token => token && token.assetId === assetId
         && (!deletionId || token.deletionId === deletionId)
         && (token.projectId || projectId) === projectId;
+    let removed = 0;
     for(let index = undoStack.length - 1; index >= 0; index--){
-        if(match(undoStack[index]?.projectOriginalDelete)) undoStack.splice(index, 1);
+        if(match(undoStack[index]?.projectOriginalDelete)){ undoStack.splice(index, 1); removed++; }
     }
     for(let index = redoStack.length - 1; index >= 0; index--){
-        if(match(redoStack[index]?.projectOriginalDelete)) redoStack.splice(index, 1);
+        if(match(redoStack[index]?.projectOriginalDelete)){ redoStack.splice(index, 1); removed++; }
     }
     syncUndoRedoButtons();
+    if(removed) scheduleUndoStackPersist();
+}
+
+// ── #251：undo/redo 栈跨刷新持久化（ops.db ADR 0021 租户之二：undo_snapshots）────────────────
+// 快照栈原先只在内存（buildSavePayload 不含 undoStack，canvas 加载也不重建）→ 刷新即失忆。
+// 现在整栈（undo + redo）按项目持久化进工程 ops.db 的 undo_snapshots 租户（单行 upsert，
+// 后端裁剪到 40 条 = 本模块 UNDO_LIMIT 同口径）：任何栈变更触发防抖自动保存，页面加载时
+// 由 smart-canvas.js loadCanvas 调 restorePersistedUndoStack() 从服务端拉回。
+// 与 #257 versions 端点不同概念：这里是会话级 undo 连续性（不是版本树），不同表、勿混。
+// 恢复的快照走同一条 performUndo/performRedo 路径——悬空媒体守卫（#62 L1/B-5、#146）原样生效。
+const UNDO_PERSIST_DELAY_MS = 1500;
+let undoPersistTimer = null;
+
+// 只有项目画布才持久化（API 是 project-library 作用域）：classic 画布没有 project_id → 空。
+function undoStackProjectId(){
+    return canvas?.project_id || canvas?.project || '';
+}
+
+// 防抖自动保存：栈变更后等 UNDO_PERSIST_DELAY_MS 静默窗口发一次 PUT（连串操作合并成一条请求）。
+function scheduleUndoStackPersist(){
+    const projectId = undoStackProjectId();
+    if(!projectId || !canvas) return;
+    if(undoPersistTimer) clearTimeout(undoPersistTimer);
+    undoPersistTimer = setTimeout(() => {
+        undoPersistTimer = null;
+        void persistUndoStackNow(projectId);
+    }, UNDO_PERSIST_DELAY_MS);
+}
+
+async function persistUndoStackNow(projectId){
+    try {
+        // 发送时取整栈深拷贝（快照窗口内的最终状态；栈可能仍在变，下次变更会再排一次）。
+        const payload = {
+            undo: JSON.parse(JSON.stringify(undoStack)),
+            redo: JSON.parse(JSON.stringify(redoStack)),
+        };
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/undo-stack`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if(!res.ok) console.warn('[canvas-undo] undo-stack 持久化失败', res.status);
+    } catch(err) {
+        console.warn('[canvas-undo] undo-stack 持久化失败', err && err.message);
+    }
+}
+
+// 页面加载恢复：loadCanvas 完成后 fire-and-forget 调用（void，不阻塞渲染）。
+// 本地栈非空时不覆盖（项目切换/已在操作中）；404（无 ops.db）= 首次使用，静默跳过。
+async function restorePersistedUndoStack(){
+    const projectId = undoStackProjectId();
+    if(!projectId || !canvas) return;
+    if(undoStack.length || redoStack.length) return;
+    try {
+        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/undo-stack`);
+        if(!res.ok){ syncUndoRedoButtons(); return; }   // 404（无 ops.db）= 首次使用；按钮与空栈对齐
+        const data = await res.json();
+        const undoEntries = (data && Array.isArray(data.undo)) ? data.undo : [];
+        const redoEntries = (data && Array.isArray(data.redo)) ? data.redo : [];
+        undoEntries.forEach(snap => { if(snap && typeof snap === 'object') undoStack.push(snap); });
+        redoEntries.forEach(snap => { if(snap && typeof snap === 'object') redoStack.push(snap); });
+        syncUndoRedoButtons();
+    } catch(err) {
+        // 静默：恢复失败只回到「刷新失忆」的旧行为，不影响画布可用。
+    }
 }
