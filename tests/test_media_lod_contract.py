@@ -6,7 +6,9 @@
 1. singleMediaHtml 用 smartNodePreviewTier（而不是写死 768）选图片/视频预览档；
 2. applyViewport 挂 schedulePreviewLodRefresh（zoom 稳定后重刷已渲染预览的 w 档）；
 3. shell 上有 pointerover/pointerout 委托的 hover 播放（muted+loop+暂停归零），
-   且只命中 data-video-preview="1"（不误触内联播放器/音频）。
+   且只命中 data-video-preview="1"（不误触内联播放器/音频）；
+4. 视频预览装配走模块 seam videoPreviewHtml，宿主包装器带 #238 标记（reverse-ref
+   棘轮把 builder 留在宿主侧）。
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ class MediaLodContractTests(unittest.TestCase):
         self.assertIn("function refreshCanvasPreviewLodWidths()", src)
         # 只重写带 w 参数的预览 URL，不碰原始 URL。
         self.assertIn("setPreviewUrlWidth(current, tier)", src)
-        self.assertIn('setPreviewUrlWidth(poster, tier)', src)
+        self.assertIn("setPreviewUrlWidth(poster, tier)", src)
 
     def test_hover_play_listers_target_preview_videos_only(self):
         src = _source("smart-canvas.js")
@@ -49,11 +51,15 @@ class MediaLodContractTests(unittest.TestCase):
 
     def test_module_video_preview_builders_preload_none(self):
         src = _source("canvas-media-history.js")
-        body = re.search(r"function smartVideoFallbackHtml\(.*?\n\}", src, re.S)
-        self.assertIsNotNone(body, "smartVideoFallbackHtml 应在 canvas-media-history.js")
-        self.assertIn('preload="none"', body.group(0))
-        self.assertNotIn('preload="metadata"', body.group(0))
-        self.assertIn('poster="${escapeHtml(posterUrl)}"', body.group(0))
+        fallback = re.search(r"function smartVideoFallbackHtml\(.*?\n\}", src, re.S)
+        self.assertIsNotNone(fallback, "smartVideoFallbackHtml 应在 canvas-media-history.js（#238 上移紧邻档位逻辑）")
+        self.assertIn('preload="none"', fallback.group(0))
+        self.assertIn('data-video-preview="1"', fallback.group(0))
+        self.assertNotIn('preload="metadata"', fallback.group(0))
+        preview = re.search(r"function smartVideoPreviewHtml\(.*?\n\}", src, re.S)
+        self.assertIsNotNone(preview, "smartVideoPreviewHtml 应在 canvas-media-history.js")
+        self.assertIn("smartVideoFallbackHtml(", preview.group(0))
+        self.assertIn('poster="${escapeHtml(posterUrl)}"', fallback.group(0))
         # 宿主不得重复声明（同一全局词法作用域会 SyntaxError）。
         host = _source("smart-canvas.js")
         self.assertIsNone(re.search(r"function smartVideoFallbackHtml\(", host))

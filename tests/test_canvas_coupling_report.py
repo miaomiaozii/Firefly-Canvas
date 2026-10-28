@@ -150,10 +150,12 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
         # 直接拼 item.name 会一排重复）。
         # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
-        self.assertEqual(rev["reverse_names"], 237)
-        self.assertEqual(rev["reverse_core_refs"], 940)
-        self.assertEqual(rev["core_dominant_names"], 167)
-        self.assertEqual(rev["core_dominant_core_refs"], 789)
+        # 241/950/170/798：#238 核心改调 canvas-media-history.js 档位层（smartNodePreviewTier 等 4 名），
+        # 「核心调模块」方向，非新债。
+        self.assertEqual(rev["reverse_names"], 241)
+        self.assertEqual(rev["reverse_core_refs"], 950)
+        self.assertEqual(rev["core_dominant_names"], 170)
+        self.assertEqual(rev["core_dominant_core_refs"], 798)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

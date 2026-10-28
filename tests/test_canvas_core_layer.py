@@ -168,7 +168,9 @@ REVERSE_REFERENCE_CEILINGS = {
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
     "canvas-generation-cascade.js": 155,  # 147 -> 155
-    "canvas-media-history.js": 98,  # 83 -> 98
+    "canvas-media-history.js": 99,  # 83 -> 98 -> 99（实测）：#238 把视频预览 builder（smartVideoPreviewHtml/
+    # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
+    # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
     "canvas-generation-tasks.js": 115,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
     # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。

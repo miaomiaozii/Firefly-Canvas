@@ -139,8 +139,8 @@
 
 | 口径 | 名字 | 核心侧引用处 |
 |---|---|---|
-| 核心引用模块声明的名字（反向总面） | **237** | **940** |
-| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **167** | **789** |
+| 核心引用模块声明的名字（反向总面） | **241** | **950** |
+| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **170** | **798** |
 
 （从 231/933/163/784 上漂：全部来自 #223 新建的 `canvas-download.js`——下载层从 smart-canvas.js
 抽成模块后，核心改为按名调它的 4 个函数（downloadCanvasArchive / canvasReceiveBlob /
@@ -159,6 +159,13 @@ canvasSaveBlobAsFile / canvasDownloadSkipSummary）。这是 #154 要求的「�
 同批同名同分钟的占位名（generated-N）单看一条分不出谁是谁，去歧义必须看整列。
 核心引用少 1、「核心用得比 owner 多」的名字少 1（`markedItemDisplayName` 回到模块
 内部调用）；`canvas-media-history.js` 的 owner 计数 59→60。
+
+再到 241/950/170/798（#238 缩放自适应缩略图）：核心 `singleMediaHtml`/`applyViewport` 改调
+`canvas-media-history.js` 的档位层（`smartNodePreviewTier` / `setPreviewUrlWidth` /
+`mediaPreviewTierFor` / `isRealPreviewEndpoint`）——预览档位逻辑住在模块（紧邻
+`smartMediaPreviewUrl`），核心只做接线。方向仍是「核心调模块」，不是新债；同时
+smartVideoPreviewHtml/smartVideoFallbackHtml 从宿主上移到模块（与档位逻辑同居），
+模块反向引用 98→99（+1，`displayMediaUrl` 经 canvasCore 接口）。
 
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
