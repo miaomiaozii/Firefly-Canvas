@@ -39,12 +39,11 @@
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
-## Wave 1c/1d 状态（刷新）
+## Wave 1c/1d 状态（刷新 10:4x）
 
-- 已关 8 票：#234 #239 #240 #241 #242 #243 #245 #250（#243 合并 c58287a；总控查明 harness sys.modules 污染根因并修隔离）。
-- 在跑：#235（del_mvrhaem0_73gb） #238（del_mvrhaem0_4q7g） #263（del_mvre0g3z_2h0k）。
-- 待解锁：#237（#243 已合，可派）；#236→#254（待 #235）；#252/#253（待 #238）；#251/#257/#258（待 ADR 0021 签署）；#260（待 #259）。
-- 人工闸口：#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署**；#247（needs-info：已评论要求复现证据）、#248（needs-info：已评论要求产品澄清）wayfinder。
-- 暂缓评估：#249、#246、#261（#261 与 #249 同抢 tests/test_workflows.py，排后）。
-- 暂缓：#249（可能与 smart-canvas/测试文件重叠，待 #234 合并后评估）、#246、#261（#261 与 #249 同抢 tests/test_workflows.py，排后）。
-- 人工闸口：#233（ready-for-human）、#259（产品决策）；#247/#248 为 wayfinder 地图票。
+- ⚠️ 主线事实：本地工作线 = wave1-live（原 pipeline/canvas-modularization 改名；main 直系后代 + 8 票合并）；已推 origin 并开 **PR #264**（base main，待人工审阅）。新 worktree 均基于 wave1-live。
+- 已关 8 票：#234 #239 #240 #241 #242 #243 #245 #250。
+- 在跑 6 条：#235 #238（旧基线）+ #263（del_mvri56q3_93si）+ #244（del_mvri31rv_jp7y）+ #249（del_mvri37ra_h6cb）。
+- 待解锁：#237（再押后：与 #244 同触 agent_host/project_sessions）；#236→#254（待 #235）；#252/#253（待 #238）；#251/#257/#258（待 ADR 0021 签署）；#260（待 #259）。
+- 人工闸口：**PR #264 审阅**、#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署**；#247/#248 已标 needs-info 并评论索要证据/澄清。
+- 排队：#246、#261（与 #249 同抢 tests/test_workflows.py，待 #249 合并）。
