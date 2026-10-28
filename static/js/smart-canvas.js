@@ -432,15 +432,6 @@ function loadSmartOriginalImageDimensions(url){
         img.src = src;
     });
 }
-function smartVideoPreviewHtml(itemOrUrl, size=512, attrs=''){
-    const original = smartOriginalMediaUrl(itemOrUrl);
-    return smartVideoFallbackHtml(original, attrs);
-}
-function smartVideoFallbackHtml(url, attrs=''){
-    const original = smartOriginalMediaUrl(url);
-    const src = displayMediaUrl({url:original});
-    return `<video src="${escapeHtml(src)}" data-url="${escapeAttr(original)}" muted preload="metadata" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
-}
 function smartVideoPlayerHtml(url, attrs=''){
     const original = smartOriginalMediaUrl(url);
     const safe = escapeHtml(displayMediaUrl({url:original}));
@@ -1943,8 +1934,56 @@ function scheduleSmartNodeFloatingMenuPosition(){
     if(smartNodeMenuPositionFrame) return;
     smartNodeMenuPositionFrame = requestAnimationFrame(positionSmartNodeFloatingMenus);
 }
+// #238 Perf(W1): on zoom settle, re-tier rendered canvas previews (img src /
+// video poster) without re-rendering nodes.
+let previewLodTimer = null;
+function schedulePreviewLodRefresh(){
+    if(previewLodTimer) clearTimeout(previewLodTimer);
+    previewLodTimer = setTimeout(refreshCanvasPreviewLodWidths, 200);
+}
+function refreshCanvasPreviewLodWidths(){
+    previewLodTimer = null;
+    const dpr = window.devicePixelRatio || 1;
+    world.querySelectorAll('img[data-preview-src], video[data-video-preview="1"][poster]').forEach(el => {
+        const cssW = parseFloat(el.style.width) || el.offsetWidth || 0;
+        const cssH = parseFloat(el.style.height) || el.offsetHeight || 0;
+        const tier = mediaPreviewTierFor(Math.max(cssW, cssH), viewport.scale, dpr);
+        if(el.tagName === 'IMG'){
+            const current = el.getAttribute('data-preview-src') || el.getAttribute('src') || '';
+            const next = setPreviewUrlWidth(current, tier);
+            if(next && next !== current){
+                el.setAttribute('data-preview-src', next);
+                el.src = next;
+            }
+        } else {
+            const poster = el.getAttribute('poster') || '';
+            const next = setPreviewUrlWidth(poster, tier);
+            if(next && next !== poster) el.setAttribute('poster', next);
+        }
+    });
+}
+// #238: hover-to-play for canvas video previews (muted, looping); the click
+// play button keeps the existing controls-activation path untouched.
+shell.addEventListener('pointerover', event => {
+    const video = event.target?.closest?.('video[data-video-preview="1"]');
+    if(!video || video.dataset.hoverPlaying === '1') return;
+    video.dataset.hoverPlaying = '1';
+    video.muted = true;
+    video.loop = true;
+    const playing = video.play();
+    if(playing?.catch) playing.catch(() => {});
+});
+shell.addEventListener('pointerout', event => {
+    const video = event.target?.closest?.('video[data-video-preview="1"]');
+    if(!video || video.dataset.hoverPlaying !== '1') return;
+    if(event.relatedTarget && video.contains(event.relatedTarget)) return;
+    video.dataset.hoverPlaying = '';
+    video.pause();
+    try { video.currentTime = 0; } catch(error) {}
+});
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
+    schedulePreviewLodRefresh();
     if(isProjectCanvasData()) persistProjectViewport();
     // world 被 transform:scale 缩放后，其内部带 backdrop-filter 的卡片（参数设置/合成卡等）
     // 会被部分浏览器（Chrome/Edge 等 Blink 内核）当作独立合成层先按 1x 栅格化、再整体缩放，
@@ -7384,8 +7423,12 @@ function updateImageResolutionBadgeElement(itemEl, img){
 function singleMediaHtml(img, w, h){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i></div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
     if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="file-audio"></i></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
-    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
-    return smartPreviewImgHtml(img, 768, `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
+    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, smartNodePreviewTier(w, h), 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
+    return smartPreviewImgHtml(img, smartNodePreviewTier(w, h), `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
+}
+// #238: tier for a canvas node of CSS size w×h under current zoom/dpr.
+function smartNodePreviewTier(w, h){
+    return mediaPreviewTierFor(Math.max(Math.abs(Number(w) || 0), Math.abs(Number(h) || 0)), viewport.scale, window.devicePixelRatio || 1);
 }
 function smartNodeHasLiveMedia(node){
     return Boolean(!node?.pending && (node?.images || []).some(img => img?.url));
