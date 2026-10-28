@@ -1018,6 +1018,7 @@ function syncSelectionUi(){
     if(canvasState.selectedImage.nodeId) touchedIds.add(canvasState.selectedImage.nodeId);
     world.classList.toggle('smart-multi-selected', ids.length > 1);
     if(smartArrangeBtn) smartArrangeBtn.disabled = ids.length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = ids.length < 2;
     smartNodeElementsByIds(touchedIds).forEach(el => {
         const id = el.dataset.id || '';
         el.classList.toggle('selected', isNodeSelected(id));
@@ -2073,6 +2074,7 @@ function frameSmartCanvasContentIfNeeded(){
 function renderMinimap(){
     if(!minimapContent || !minimapViewport) return;
     if(smartArrangeBtn) smartArrangeBtn.disabled = selectedNodeIds().length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = selectedNodeIds().length < 2;
     const width = minimapContent.clientWidth || 170;
     const height = minimapContent.clientHeight || 108;
     const viewW = shell.clientWidth / viewport.scale;
@@ -5878,6 +5880,29 @@ async function smartAssetBatchDelete(){
 }
 if(assetBatchDeleteBtn) assetBatchDeleteBtn.onclick = () => void smartAssetBatchDelete();
 
+// #260 批量重命名：入口（工具栏按钮 / F2）+ 弹窗控件绑定。逻辑本体在 canvas-node-ops.js。
+const smartBatchRenameBtn = document.getElementById('smartBatchRenameBtn');
+const smartBatchRenameBackdrop = document.getElementById('smartBatchRenameBackdrop');
+const smartBatchRenameCancelBtn = document.getElementById('smartBatchRenameCancel');
+const smartBatchRenameApplyBtn = document.getElementById('smartBatchRenameApply');
+if(smartBatchRenameBtn){
+    smartBatchRenameBtn.addEventListener('mousedown', e => e.stopPropagation());
+    smartBatchRenameBtn.onclick = e => { e.preventDefault(); openBatchRenameDialog(); };
+}
+['smartBatchRenamePrefix', 'smartBatchRenamePad', 'smartBatchRenameStart'].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input', () => renderBatchRenamePreview());
+    el.addEventListener('change', () => renderBatchRenamePreview());
+    el.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if(e.key === 'Enter'){ e.preventDefault(); applyBatchRename(); }
+    });
+});
+if(smartBatchRenameBackdrop) smartBatchRenameBackdrop.addEventListener('mousedown', e => { if(e.target === smartBatchRenameBackdrop) closeBatchRenameDialog(); });
+if(smartBatchRenameCancelBtn) smartBatchRenameCancelBtn.onclick = e => { e.preventDefault(); closeBatchRenameDialog(); };
+if(smartBatchRenameApplyBtn) smartBatchRenameApplyBtn.onclick = e => { e.preventDefault(); applyBatchRename(); };
+
 // ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
 const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
 const smartTrashCloseBtn = document.getElementById('smartTrashCloseBtn');
@@ -7697,7 +7722,14 @@ function generationStageProgressHtml(progress={}){
     const segments = GENERATION_PROGRESS_PHASES.map(([key, title], index) => `<span class="generation-stage-segment${index < phaseIndex ? ' done' : index === phaseIndex ? ' active' : ''}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-stage="${escapeAttr(key)}"></span>`).join('');
     return `<div class="generation-stage-progress${failed ? ' is-failed' : ''}" data-phase="${escapeAttr(phase)}" data-phase-index="${phaseIndex}" role="status" aria-label="${escapeAttr(`${label} · ${elapsed}`)}"><div class="generation-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detailText)}</span></div><div class="generation-stage-track" aria-hidden="true">${segments}</div><div class="generation-stage-labels" aria-hidden="true">${GENERATION_PROGRESS_PHASES.map(([, title]) => `<span>${escapeHtml(title)}</span>`).join('')}</div></div>`;
 }
+// #260 Upscale 菜单的重采样通道：长边贴齐 maxEdge（允许 >1 的插值放大）。
+// 注意：“增强放大”（走服务商真放大，ADR 0004）不在这条路径上，见 issue #260。
+// SMART_UPSCALE_MAX_PIXELS（浏览器 canvas 像素预算）在 canvas-media-history.js 里声明（先于本文件加载）。
 async function smartHistoryImage2kPngBlob(item){
+    return smartHistoryImageUpscaledPngBlob(item, 2048);
+}
+async function smartHistoryImageUpscaledPngBlob(item, maxEdge=2048){
+    const targetEdge = Math.max(1, Number(maxEdge) || 2048);
     const sourceUrl = displayMediaUrl(item);
     if(!sourceUrl) throw new Error(tr('smart.imageUrlUnavailable'));
     const response = await fetch(sourceUrl, {credentials:'same-origin'});
@@ -7706,10 +7738,13 @@ async function smartHistoryImage2kPngBlob(item){
     const bitmap = await createImageBitmap(sourceBlob);
     try {
         const longest = Math.max(bitmap.width, bitmap.height, 1);
-        const scale = Math.min(1, 2048 / longest);
+        const scale = targetEdge / longest;
         const canvas2k = document.createElement('canvas');
         canvas2k.width = Math.max(1, Math.round(bitmap.width * scale));
         canvas2k.height = Math.max(1, Math.round(bitmap.height * scale));
+        if(canvas2k.width * canvas2k.height > SMART_UPSCALE_MAX_PIXELS){
+            throw new Error(trf('smart.upscaleTooLarge', {size:`${canvas2k.width}×${canvas2k.height}`}));
+        }
         const context = canvas2k.getContext('2d', {alpha:false});
         if(!context) throw new Error(tr('smart.cannotCreatePair'));
         context.fillStyle = '#ffffff';
@@ -7724,13 +7759,16 @@ async function smartHistoryImage2kPngBlob(item){
     }
 }
 async function copySmartHistoryImage2k(item){
+    return copySmartHistoryImageUpscaled(item, 2048);
+}
+async function copySmartHistoryImageUpscaled(item, maxEdge=2048){
     if(!item?.url) throw new Error(tr('smart.imageUrlUnavailable'));
     if(typeof ClipboardItem !== 'function' || !navigator.clipboard?.write){
         throw new Error(tr('smart.copyImageUnsupported'));
     }
-    const blob = await smartHistoryImage2kPngBlob(item);
+    const blob = await smartHistoryImageUpscaledPngBlob(item, maxEdge);
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
-    return {width:'≤2048', mime:'image/png'};
+    return {width:`≤${Math.max(1, Number(maxEdge) || 2048)}`, mime:'image/png'};
 }
 function openSmartImageDetail(nodeId, imageIndex=0){
     const node = canvasState.nodes.find(n => n.id === nodeId);
@@ -15186,6 +15224,13 @@ window.addEventListener('keydown', e => {
             if(e.repeat) return;
             e.preventDefault();
             toggleAssetLibrary();
+            return;
+        }
+        // #260：F2 批量重命名选中节点（ComfyArt BatchRename）。
+        if(key === 'f2'){
+            if(e.repeat) return;
+            e.preventDefault();
+            openBatchRenameDialog();
             return;
         }
     }

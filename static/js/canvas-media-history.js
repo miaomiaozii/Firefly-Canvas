@@ -90,6 +90,59 @@ function smartMediaPreviewUrl(itemOrUrl, size=512){
     return `/api/media-preview?w=${width}&url=${encodeURIComponent(raw)}`;
 }
 
+// #260 Upscale 档位（对照 ComfyArt UpscaleMenu，主笔记 §92.4）：生成历史详情里把原图按目标长边
+// 重采样后复制到剪贴板。菜单先把目标像素尺寸（按原图比例换算）显示出来，档位不高于原图长边时
+// 禁用（重采样不会增加细节）。“增强放大”（走服务商真放大，ADR 0004）尚未接入，见 issue #260。
+const SMART_UPSCALE_TIERS = [
+    {key:'2k', label:'2K', longEdge:2048},
+    {key:'4k', label:'4K', longEdge:4096},
+    {key:'8k', label:'8K', longEdge:8192},
+];
+// 目标尺寸：长边贴齐档位，短边按原图比例。scale > 1 意味着只是重采样放大（不会凭空多出细节）。
+function smartUpscaleTargetDims(source, longEdge){
+    const width = Math.max(0, Number(source?.width) || 0);
+    const height = Math.max(0, Number(source?.height) || 0);
+    const target = Math.max(1, Number(longEdge) || 0);
+    if(width < 1 || height < 1 || target < 1) return null;
+    const scale = target / Math.max(width, height);
+    return {width:Math.max(1, Math.round(width * scale)), height:Math.max(1, Math.round(height * scale)), longEdge:target, scale, pixels:Math.round(width * scale) * Math.round(height * scale)};
+}
+
+function smartHistoryImageNaturalSize(box, item){
+    const img = box?.querySelector?.('.smart-log-detail-image');
+    if(img?.naturalWidth > 0 && img?.naturalHeight > 0) return {width:img.naturalWidth, height:img.naturalHeight};
+    const width = Math.max(0, Number(item?.width) || 0);
+    const height = Math.max(0, Number(item?.height) || 0);
+    return width > 0 && height > 0 ? {width, height} : null;
+}
+
+// 把每个档位的标签写成「复制 4K · 4096×2732」（先显示目标尺寸），并把不可用的档位置 disabled + 说清原因
+// （不静默变灰）：插值超过 SMART_UPSCALE_MAX_SCALE 倍、或目标超过浏览器 canvas 像素预算的档位不可用。
+// 在预算内的重采样仍可用，但 title 里要说清不会多出细节（ADR 0006：不承诺做不到的事）。
+// 60M px ≈ 240MB RGBA：再大浏览器 canvas 会直接分配失败（8K 方形 67M px 已经越过）。
+const SMART_UPSCALE_MAX_PIXELS = 60000000;
+const SMART_UPSCALE_MAX_SCALE = 4;
+function syncSmartHistoryUpscaleButtons(box, item, position=''){
+    const source = smartHistoryImageNaturalSize(box, item);
+    box.querySelectorAll('[data-upscale-tier]').forEach(button => {
+        const tier = SMART_UPSCALE_TIERS.find(entry => entry.key === button.dataset.upscaleTier) || null;
+        if(!tier) return;
+        const dims = smartUpscaleTargetDims(source, tier.longEdge);
+        const sizeText = dims ? `${dims.width}×${dims.height}` : `${tier.longEdge}px`;
+        const sizeEl = button.querySelector('.smart-log-detail-upscale-size');
+        if(sizeEl) sizeEl.textContent = sizeText;
+        const tooManyPixels = Boolean(dims && dims.pixels > SMART_UPSCALE_MAX_PIXELS);
+        const tooMuchUpscale = Boolean(dims && dims.scale > SMART_UPSCALE_MAX_SCALE + 0.001);
+        button.disabled = tooManyPixels || tooMuchUpscale;
+        let title = trf('smart.upscaleCopy', {tier: tier.label, size: sizeText});
+        if(tooManyPixels) title = trf('smart.upscaleTooLarge', {size: sizeText});
+        else if(tooMuchUpscale) title = trf('smart.upscaleMaxScale', {scale: SMART_UPSCALE_MAX_SCALE, size: sizeText});
+        else if(dims && dims.scale > 1.001) title += ` · ${tr('smart.upscaleResampleHint')}`;
+        button.setAttribute('title', position ? `${title} · ${position}` : title);
+        button.setAttribute('aria-label', title);
+    });
+}
+
 // #238 Perf(W1): zoom-adaptive preview LOD tiers (ComfyArt 95ab202 a/b).
 // Smallest tier covering node long edge × zoom × dpr: deep zoom-ins upgrade,
 // zoom-outs downgrade. Zero backend change — /api/media-preview and project
@@ -1389,7 +1442,7 @@ function ensureSmartHistoryDetail(){
             </section>
             <button type="button" class="smart-log-detail-mark image-mark" data-smart-log-detail-mark data-marked-asset="" data-marked-title="1" title="${escapeAttr(tr('smart.markImage'))}"><i data-lucide="star"></i></button>
             <section class="smart-log-detail-prompt-wrap"><h3>${escapeHtml(tr('smart.generationPromptDetail'))}</h3><div class="smart-log-detail-prompt" tabindex="0"></div></section>
-            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
+            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button" data-upscale-tier="2k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-4k" type="button" data-upscale-tier="4k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy4k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-8k" type="button" data-upscale-tier="8k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy8k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
         </aside>
     </article>`;
     document.body.appendChild(box);
@@ -1499,27 +1552,37 @@ function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
         syncMarkedImageButtons();
     }
     const copy2k = box.querySelector('.smart-log-detail-copy-2k');
-    copy2k.dataset.outputIndex = String(item.outputIndex);
-    copy2k.dataset.outputId = String(item.output_id || '');
-    copy2k.dataset.assetId = String(item.asset_id || '');
-    copy2k.title = `${tr('smart.copy2k')} · ${position}`;
-    copy2k.setAttribute('aria-label', copy2k.title);
-    copy2k.disabled = false;
-    copy2k.removeAttribute('aria-busy');
-    copy2k.onclick = async event => {
-        event.preventDefault();
-        copy2k.disabled = true;
-        copy2k.setAttribute('aria-busy', 'true');
-        try {
-            await copySmartHistoryImage2k(item);
-            toast(tr('smart.copy2kDone'));
-        } catch(error){
-            toast(error?.message || tr('smart.pairCopyFailed'));
-        } finally {
-            copy2k.disabled = false;
-            copy2k.removeAttribute('aria-busy');
-        }
-    };
+    // #260：2K/4K/8K 三个档位共用同一段绑定（.smart-log-detail-copy-2k 的选择器/行为保持
+    // 不变，#249 前后的 ui_integrity 证据继续可比）。
+    box.querySelectorAll('[data-upscale-tier]').forEach(button => {
+        const tier = SMART_UPSCALE_TIERS.find(entry => entry.key === button.dataset.upscaleTier);
+        if(!tier) return;
+        button.dataset.outputIndex = String(item.outputIndex);
+        button.dataset.outputId = String(item.output_id || '');
+        button.dataset.assetId = String(item.asset_id || '');
+        button.removeAttribute('aria-busy');
+        button.onclick = async event => {
+            event.preventDefault();
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            try {
+                const result = await copySmartHistoryImageUpscaled(item, tier.longEdge);
+                toast(trf('smart.upscaleCopyDone', {tier: tier.label}));
+                void result;
+            } catch(error){
+                toast(error?.message || tr('smart.pairCopyFailed'));
+            } finally {
+                button.removeAttribute('aria-busy');
+                syncSmartHistoryUpscaleButtons(box, item, position);
+            }
+        };
+    });
+    syncSmartHistoryUpscaleButtons(box, item, position);
+    if(copy2k){
+        copy2k.dataset.outputIndex = String(item.outputIndex);
+        copy2k.dataset.outputId = String(item.output_id || '');
+        copy2k.dataset.assetId = String(item.asset_id || '');
+    }
     const img = box.querySelector('.smart-log-detail-image');
     let triedFallback = false;
     img.onerror = () => {
@@ -1528,6 +1591,8 @@ function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
         const fallback = smartMediaPreviewUrl(item, 2048);
         if(fallback && fallback !== img.getAttribute('src')) img.src = fallback;
     };
+    // #260：档位标签里的目标尺寸要等原图真实像素知道后才能算，加载完再同步一次。
+    img.addEventListener('load', () => syncSmartHistoryUpscaleButtons(box, item, position));
     img.dataset.outputIndex = String(item.outputIndex);
     img.dataset.outputId = String(item.output_id || '');
     img.dataset.assetId = String(item.asset_id || '');
