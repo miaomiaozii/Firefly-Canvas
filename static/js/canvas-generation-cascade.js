@@ -526,27 +526,17 @@ function nonPreviewOutputImages(images=[]){
 
 function candidatePoolPosition(node, estW, estH){
     const r = canvasCore.nodeRect(node);
-    const x = Math.round((Number(node.x) || 0) + r.width + 80);
-    let y = Math.round(Number(node.y) || 0);
-    const overlapsAny = (px, py) => canvasState.nodes.some(n => {
-        if(!n || n.id === node.id) return false;
-        if(n.isHistoryGroup && n.historyFor === node.id) return false;
-        const nr = canvasCore.nodeRect(n);
-        return px < nr.x + nr.width && px + estW > nr.x && py < nr.y + nr.height && py + estH > nr.y;
-    });
-    for(let i = 0; i < 8; i++){
-        if(!overlapsAny(x, y)) break;
-        const blocker = canvasState.nodes.find(n => {
-            if(!n || n.id === node.id) return false;
-            if(n.isHistoryGroup && n.historyFor === node.id) return false;
-            const nr = canvasCore.nodeRect(n);
-            return y < nr.y + nr.height && y + estH > nr.y && x < nr.x + nr.width && x + estW > nr.x;
-        });
-        if(!blocker) break;
-        const br = canvasCore.nodeRect(blocker);
-        y = Math.round((Number(blocker.y) || 0) + br.height + 24);
-    }
-    if(!overlapsAny(x, y)) return {x, y};
+    // #246 freeSpot 落点扫描（canvas-placement.js）：锚点 = 原右侧列位置；静态碰撞盒 =
+    // 除自身与本节点历史池外的全部节点（排除口径与旧实现一致）。碰撞则向右推进到
+    // 碰撞盒 maxX + 40，200 步上限；用尽仍碰撞则回退旧的「源正下方居中」（防池彻底飞出视野）。
+    const boxes = canvasState.nodes
+        .filter(n => n && n.id !== node.id && !(n.isHistoryGroup && n.historyFor === node.id))
+        .map(n => canvasCore.nodeRect(n))
+        .filter(Boolean);
+    const spot = CanvasPlacement.findFreeSpot(
+        { x: Math.round((Number(node.x) || 0) + r.width + 80), y: Math.round(Number(node.y) || 0) },
+        { w: estW, h: estH }, boxes);
+    if(!spot.exhausted) return { x: Math.round(spot.x), y: Math.round(spot.y) };
     return {x:Math.round((Number(node.x) || 0) + Math.max(0, (r.width - estW) / 2)), y:Math.round((Number(node.y) || 0) + r.height + 56)};
 }
 

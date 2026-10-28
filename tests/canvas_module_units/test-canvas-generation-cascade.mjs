@@ -82,6 +82,7 @@ const MODULES = [
     'canvas-state.js',
     'project-canvas-mutations.js',
     'canvas-layout-utils.js',
+    'canvas-placement.js',
     'canvas-connections.js',
     'canvas-media-history.js',
     'canvas-undo.js',
@@ -797,37 +798,43 @@ test('pushRightSideNodes: 下游无条件右移，其余按右侧 + 520 纵向�
     assert.doesNotThrow(() => f(null, 10));
 });
 
-test('candidatePoolPosition: 初始右侧列 → 碰撞下移（≤8 次）→ 仍撞则回退下方居中', t => {
+test('candidatePoolPosition: #246 freeSpot — 初始右侧列 → 碰撞右移（x = 挡块 maxX + 40，y 不变）→ 用尽 200 步回退下方居中', t => {
     const { ctx, fn, D } = loadCascadeModule();
     const f = fn('candidatePoolPosition');
     const A = { id: 'A', x: 10, y: 20 };
     ctx.canvasState.nodes.push(A);
     D.rects.set('A', { x: 10, y: 20, width: 100, height: 50 });
-    // 无碰撞 → {x: 10+100+80, y: 20}
+    // 无碰撞 → {x: 10+100+80, y: 20}（锚点原样）
     assert.deepEqual(fromContext(f(A, 80, 60)), { x: 190, y: 20 });
-    // 一个挡块 → 下移到挡块下方 +24
+    // 一个挡块 → 不再下移：x = 挡块 maxX + 40，y 不变
     const B = { id: 'B', x: 180, y: 10 };
     ctx.canvasState.nodes.push(B);
     D.rects.set('B', { x: 180, y: 10, width: 200, height: 50 });
-    assert.deepEqual(fromContext(f(A, 80, 60)), { x: 190, y: 84 });
+    assert.deepEqual(fromContext(f(A, 80, 60)), { x: 380 + 40, y: 20 }, 'B maxX=380 → 420；y 恒 20');
+    // 链式两挡块：第一步 420 再撞 B2 → 420+? 推进到 B2 maxX + 40
+    const B2 = { id: 'B2', x: 400, y: 30 };
+    ctx.canvasState.nodes.push(B2);
+    D.rects.set('B2', { x: 400, y: 30, width: 200, height: 50 });
+    assert.deepEqual(fromContext(f(A, 80, 60)), { x: 600 + 40, y: 20 }, '步 1 → 420（B maxX+40）；步 2 → 640（B2 maxX+40）');
     // 历史组（historyFor 指向自身）不参与碰撞：清场只留 A + 历史组 C
     const C = { id: 'C', x: 180, y: 70, isHistoryGroup: true, historyFor: 'A' };
     ctx.canvasState.nodes.length = 0;
     ctx.canvasState.nodes.push(A, C);
     D.rects.set('C', { x: 190, y: 20, width: 300, height: 100 });
     assert.deepEqual(fromContext(f(A, 80, 60)), { x: 190, y: 20 }, '历史组被排除');
-    // 连续 8 次下移后仍撞（第 9 个挡块）→ 回退：源下方居中 +56
+    // 201 个递增挡块 → 200 步用尽仍碰撞（exhausted）→ 回退：源下方居中 +56
     ctx.canvasState.nodes.length = 0;
     ctx.canvasState.nodes.push(A);
-    for (let i = 0; i < 9; i++) {
-        const bk = { id: `BK${i}`, x: 190, y: 10 + i * 74 };
+    for (let i = 0; i < 201; i++) {
+        const bx = 100 + 2 * i;
+        const bk = { id: `BK${i}`, x: bx, y: 10 };
         ctx.canvasState.nodes.push(bk);
-        D.rects.set(`BK${i}`, { x: 190, y: 10 + i * 74, width: 300, height: 50 });
+        D.rects.set(`BK${i}`, { x: bx, y: 10, width: 10000, height: 50 });
     }
     assert.deepEqual(fromContext(f(A, 80, 60)), {
         x: Math.round(10 + Math.max(0, (100 - 80) / 2)), // 20
         y: 20 + 50 + 56,                                  // 126
-    }, '8 次内消不掉碰撞 → 源正下方居中');
+    }, '200 步用尽仍碰撞 → 源正下方居中（防池飞出视野）');
 });
 
 test('coolNodeRunningState: token 单调、计时器清 running + render，clear 使计时器失效', t => {
