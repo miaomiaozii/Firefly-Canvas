@@ -41,3 +41,4 @@
 - #269 收口：issue/269（layers_panel_browser 33 断言全链旅程，注册 trial+release+并行组；零产品 bug——#253/#255 交互获裁判背书）。总控 int-256 合入后 fast 16.0s + trial 214.5s 全绿（含新步）。
 - #251 收口：undo_snapshots 租户+GET/PUT 路由+前端 1.5s 防抖/恢复（棘轮 247/965/175/812 随分支入 wave1-live）；总控 fast+domain 见上。
 - #246 真集成完成：wave1-live merge（干净合入）+ 总控 fast 16.1s + domain 130.8s 全绿；此前误提前关票（门证据未落地即关），已补真证据并纠偏评论。
+- #237 收口（总控代交，三波 worker 接力）：worker1 死于110m（留取消响应修复+RED测试）、worker2 死于thinking-only、worker3 完成审计并确认**票面语义为准**（ops.db 租约表系简报误引旧草案，票面=ComfyArt 285fd93 先例：即时终态+interrupted 表达+partial 保留）；总控接管固化 db2e81f，fast 16.1s + domain 130.6s 全绿（/tmp/gate-237-fast|domain），merge 进 wave1-live 后再过 fast（/tmp/gate-237-integration）。
