@@ -38,7 +38,9 @@ def is_video_preview_file(path: str) -> bool:
 async def media_preview(url: str, w: int=512):
     path = _app_main.output_file_from_url(url)
     if not path or not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail='媒体文件不存在')
+        # #249：媒体已被清理/删除时返回 204 No Content（ComfyArt userdata 缺资源约定），
+        # 前端 <img> 的 onerror 兜底链不变，console 不再被 404 刷屏。
+        return Response(status_code=204)
     width = max(64, min(2048, int(w or 512)))
     webp_path, png_path = media_preview_cache_paths(path, width)
     if os.path.exists(webp_path):

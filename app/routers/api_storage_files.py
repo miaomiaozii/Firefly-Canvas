@@ -58,7 +58,9 @@ async def list_storage_files(kind: str='generated', offset: int=0, limit: int=80
 async def get_storage_file(kind: str, rel_path: str):
     path = storage_file_path(kind, rel_path)
     if not path or not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail='文件不存在')
+        # #249：文件已被清理时返回 204 No Content（ComfyArt userdata 缺资源约定），
+        # 避免前端缩略图/预览轮询把 console 刷满 404。
+        return Response(status_code=204)
     return FileResponse(path, media_type=content_type_for_path(path))
 
 @router.post('/api/storage-files/delete')
