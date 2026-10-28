@@ -143,6 +143,7 @@ function loadNodeOpsModule({ nodes = [], connections = [] } = {}) {
         'canvas-core.js',
         'canvas-state.js',
         'canvas-layout-utils.js',
+        'canvas-placement.js',
         'canvas-undo.js',
         'canvas-media-history.js',
         'canvas-agent-tui.js',
@@ -675,48 +676,48 @@ test('createLocalEditNodeFromImage: 位置公式（源右缘+140、y 下限 40�
 
 // ---------- 新建节点菜单 ----------
 
-test('createNodeFromMenu: 七种类型偏移矩阵 + closeCreateMenu + 分组早退 + 入组触发 arrange(skipUndo) + groupId 还原-清零', () => {
+test('createNodeFromMenu: 七种类型偏移矩阵（逐类型独立 harness：无碰撞 → 固定偏移不变）+ closeCreateMenu + groupId 清零', () => {
+    // #246 后每次创建都会避让既有节点（含刚建的），故偏移矩阵用逐类型独立 harness
+    // （空画布 → 无碰撞 → 锚点 = 原固定偏移位）验证；碰撞扫描行为见下方 freeSpot 用例。
+    const expected = {
+        group: { x: 500 - 170, y: 400 - 110, type: 'smart-group' },
+        prompt: { x: 500 - 158, y: 400 - 97, type: 'smart-prompt' },
+        conversation: { x: 500 - 195, y: 400 - 215, type: 'smart-conversation' },
+        agent: { x: 500 - 191, y: 400 - 180, type: 'smart-agent' },
+        'local-edit': { x: 500 - 180, y: 400 - 165, type: 'local-edit' },
+        loop: { x: 500 - 135, y: 400 - 95, type: 'smart-loop' },
+        image: { x: 500 - Math.round(180 / 2), y: 400 - Math.round(110 / 2), type: 'smart-image' },
+    };
+    for (const [type, exp] of Object.entries(expected)) {
+        const { ctx, harness } = loadNodeOpsModule();
+        evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
+        const node = fromContext(globalFunction(ctx, 'createNodeFromMenu')(type));
+        assert.equal(node.type, exp.type, `${type}: 真实类型常量`);
+        assert.equal(node.x, exp.x, `${type}: 无碰撞 → x = 原固定偏移`);
+        assert.equal(node.y, exp.y, `${type}: 无碰撞 → y = 原固定偏移`);
+        if (type === 'group') {
+            assert.deepEqual(harness.addNodeToGroupCalls, [], 'group 类型在入组逻辑前早退 return');
+        } else {
+            assert.deepEqual(harness.addNodeToGroupCalls, [{ group: null, node: node.id }], `${type}: createMenuGroupId 空 → group null 也走 addNodeToSmartGroup`);
+        }
+        assert.equal(harness.closeMenuCalls, 1, `${type}: closeCreateMenu`);
+        assert.equal(evaluate(ctx, 'canvasState.createMenuGroupId'), '', `${type}: 调用后清零`);
+    }
+});
+
+test('createNodeFromMenu: 分组入组 → arrange(skipUndo) + groupId 还原-清零', () => {
     const { ctx, harness, calls } = loadNodeOpsModule({
-        nodes: [{ id: 'G', type: 'smart-group', items: [] }],
+        nodes: [{ id: 'G', type: 'smart-group', x: -1000, y: -1000, items: [] }],
     });
     evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
     const menu = globalFunction(ctx, 'createNodeFromMenu');
-
-    const prompt = fromContext(menu('prompt'));
-    assert.equal(prompt.type, 'smart-prompt');
-    assert.equal(prompt.x, 500 - 158); assert.equal(prompt.y, 400 - 97);
-    assert.equal(harness.closeMenuCalls, 1, 'closeCreateMenu 每次调用');
-    assert.deepEqual(harness.addNodeToGroupCalls, [{ group: null, node: prompt.id }], 'createMenuGroupId 空 → group null 也走 addNodeToSmartGroup');
-    assert.equal(harness.addNodeToGroupCalls.length, 1);
-    assert.deepEqual(harness.arrangeCalls, [], 'addNodeToSmartGroup 返回 false → 不 arrange');
-    assert.equal(evaluate(ctx, 'canvasState.createMenuGroupId'), '', '调用后清零');
-
-    const group = fromContext(menu('group'));
-    assert.equal(group.type, 'smart-group');
-    assert.equal(group.x, 500 - 170); assert.equal(group.y, 400 - 110);
-    assert.equal(harness.addNodeToGroupCalls.length, 1, 'group 类型在入组逻辑前早退 return');
-    assert.equal(harness.closeMenuCalls, 2);
-
-    const conv = fromContext(menu('conversation'));
-    assert.equal(conv.x, 500 - 195); assert.equal(conv.y, 400 - 215);
-    const agent = fromContext(menu('agent'));
-    assert.equal(agent.x, 500 - 191); assert.equal(agent.y, 400 - 180);
-    const localEdit = fromContext(menu('local-edit'));
-    assert.equal(localEdit.x, 500 - 180); assert.equal(localEdit.y, 400 - 165);
-    const loop = fromContext(menu('loop'));
-    assert.equal(loop.x, 500 - 135); assert.equal(loop.y, 400 - 95);
-    const image = fromContext(menu('image'));
-    assert.equal(image.x, 500 - Math.round(180 / 2), '未知类型 → createImageNodeAt 中心对齐');
-    assert.equal(image.y, 400 - Math.round(110 / 2));
-    assert.equal(image.type, 'smart-image');
-    assert.equal(harness.addNodeToGroupCalls.length, 6, '每种非 group 类型都走一次入组检查');
-
-    // 分组入组：createMenuGroupId 指向真实分组节点 + addNodeToSmartGroup 返回 true →
-    // arrangeSmartGroupMembers(group, {skipUndo:true}) + render/save。
+    // 分组入组：createMenuGroupId 指向真实分组节点（远离锚点 → 不触发扫描）+
+    // addNodeToSmartGroup 返回 true → arrangeSmartGroupMembers(group, {skipUndo:true}) + render/save。
     ctx.canvasState.createMenuGroupId = 'G';
     harness.addNodeToGroupResult = true;
     const callsBefore = calls.length;
     const inGroup = fromContext(menu('agent'));
+    assert.equal(inGroup.x, 500 - 191, '无碰撞 → 偏移不变');
     assert.deepEqual(harness.addNodeToGroupCalls.at(-1), { group: 'G', node: inGroup.id }, '分组节点对象传入');
     assert.deepEqual(fromContext(harness.arrangeCalls), [{ group: 'G', options: { skipUndo: true } }], '入组后自动整理且 skipUndo（创建已压过 undo）');
     assert.deepEqual(calls.slice(callsBefore), ['render', 'scheduleSave', 'render', 'scheduleSave'], 'createAgentNode 自身 + 入组整理各一次 render/save');
@@ -730,6 +731,54 @@ test('createNodeFromMenu: createMenuPoint=null 回退 viewportCenter', () => {
     const node = fromContext(globalFunction(ctx, 'createNodeFromMenu')('image'));
     assert.equal(node.x, 700 - Math.round(180 / 2), 'viewportCenter 作为中心点');
     assert.equal(node.y, 300 - Math.round(110 / 2));
+});
+
+// ---------- #246 freeSpot 落点扫描（createNodeFromMenu 接线） ----------
+
+test('createNodeFromMenu: #246 freeSpot — 锚点碰撞 → 向右扫描首个空位（x = 碰撞盒 maxX + 40，y 不变）', () => {
+    const { ctx } = loadNodeOpsModule({
+        nodes: [{ id: 'B1', x: 300, y: 300, images: [{ url: 'u' }] }],
+    });
+    // nodeRect 契约镜像：B1 → {x:300, y:300, width:180, height:110}（harness.layout）
+    evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
+    const menu = globalFunction(ctx, 'createNodeFromMenu');
+
+    const prompt = fromContext(menu('prompt'));
+    // 锚点 (342,303) 316×240：342 < 300+180+40=520 ✓ 且 342+316+40=698 > 300 ✓，
+    // y: 303 < 300+110+40=450 ✓ 且 303+240+40=583 > 300 ✓ → 碰撞
+    // → x = 300+180+40 = 520；复检 520 < 520 为假 → 无碰撞。
+    assert.equal(prompt.x, 520, '碰撞 → x = 碰撞盒 maxX + GAP(40)');
+    assert.equal(prompt.y, 400 - 97, 'y 不变（仅 x 向右扫描）');
+});
+
+test('createNodeFromMenu: #246 freeSpot — 图片节点同走扫描（尺寸经 imageLayout 同参重算）', () => {
+    const { ctx } = loadNodeOpsModule({
+        nodes: [{ id: 'B1', x: 300, y: 300, images: [{ url: 'u' }] }],
+    });
+    evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
+    const image = fromContext(globalFunction(ctx, 'createNodeFromMenu')('image'));
+    // 锚点 (410,345) 180×110：410 < 520 ✓ 且 410+180+40=630 > 300 ✓，y 同向相交 → 碰撞
+    // → x = 520 → 中心 (610,400) → node.x = 610 - 90 = 520
+    assert.equal(image.x, 520);
+    assert.equal(image.y, 400 - 55, 'y = 锚点 y（345）');
+});
+
+test('createNodeFromMenu: #246 freeSpot — 多挡块链式右移逐箱推进到首个空位', () => {
+    const { ctx } = loadNodeOpsModule({
+        nodes: [
+            { id: 'B1', x: 300, y: 300, images: [{ url: 'u' }] },
+            { id: 'B2', x: 560, y: 350, images: [{ url: 'u' }] },
+        ],
+    });
+    // B1 → maxX=480；B2 → {x:560, y:350, w:180, h:110} maxX=740
+    evaluate(ctx, 'createMenuPoint = { x: 500, y: 400 }');
+    const loop = fromContext(globalFunction(ctx, 'createNodeFromMenu')('loop'));
+    // 锚点 (365,305) 340×168：
+    // 步 1：撞 B1（365<520 且 365+340+40=745>300；y: 305<450 且 305+208=513>300）→ x = 520
+    // 步 2：B1 不再撞；撞 B2（520<780 且 520+380=900>560；y: 305<500 且 513>350）→ x = 780
+    // 步 3：B2: 780 < 780? 否 → 无碰撞 → 停在 (780, 305)
+    assert.equal(loop.x, 780, '步 1 → 520（B1 maxX+40）；步 2 → 780（B2 maxX+40）');
+    assert.equal(loop.y, 400 - 95, 'y 不变');
 });
 
 // ---------- rAF 交互层刷新调度 ----------
