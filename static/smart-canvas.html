@@ -173,6 +173,14 @@
                         <div class="create-card-sub" data-i18n="smart.createLoopSub">控制运行轮数、批次和变量</div>
                     </span>
                 </button>
+                <!-- #256：右键图片节点才可见（openCreateMenu 按 imageNodeId 切换 hidden） -->
+                <button class="create-card" type="button" data-create-type="ocr" hidden>
+                    <span class="create-card-icon"><i data-lucide="type"></i></span>
+                    <span>
+                        <div class="create-card-title" data-i18n="smart.createOcrTitle">提取文字</div>
+                        <div class="create-card-sub" data-i18n="smart.createOcrSub">OCR 识别图片文字，落可编辑 prompt 节点</div>
+                    </span>
+                </button>
             </div>
         </div>
         <input id="fileInput" type="file" accept="image/*,video/*,audio/*" multiple hidden>
