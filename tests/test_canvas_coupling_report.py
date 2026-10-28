@@ -173,10 +173,13 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 246/959/174/806：#256 图片节点右键「提取文字」——核心 smart-canvas.js 新增
         # createPromptNodeFromOcr，调 canvas-node-ops.js 的 createPromptNode（1→2）与
         # canvas-node-types.js 的 NODE_TYPE_IMAGE（15→16），方向「核心调模块」，非新债。
+        # 246/964/174/811：#253 交互套件——smart-canvas.js 接线 snap 拖拽吸附、
+        # quick-edit 就地重命名、tidy/快捷键扩表，新增 5 处「核心调模块」引用
+        # （canvas-snap.js / canvas-quick-edit.js 等），非新债。
         self.assertEqual(rev["reverse_names"], 246)
-        self.assertEqual(rev["reverse_core_refs"], 959)
+        self.assertEqual(rev["reverse_core_refs"], 964)
         self.assertEqual(rev["core_dominant_names"], 174)
-        self.assertEqual(rev["core_dominant_core_refs"], 806)
+        self.assertEqual(rev["core_dominant_core_refs"], 811)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

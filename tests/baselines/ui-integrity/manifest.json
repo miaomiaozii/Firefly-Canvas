@@ -2,9 +2,9 @@
   "schema_version": 1,
   "contract": "desktop-ui-integrity",
   "accepted": true,
-  "accepted_by": "miaomiaozii (总控代录，先例4c887f2)",
-  "reason": "#260 工具栏新增批量重命名入口（F2/工具栏），顶部工具栏 61x45 区域像素变化；800x600 动作区两行布局修复",
-  "accepted_at": "2026-10-28T10:11:10.880103+00:00",
+  "accepted_by": "总控会话A",
+  "reason": "#253 createMenu 新增节点操作卡（重命名/整理排版）——真实有意 UI 变化（先例 eb86d56）",
+  "accepted_at": "2026-10-28T18:02:04.126912+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
@@ -35,7 +35,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1920x1080/canvas-composer.png",
-      "sha256": "29fecc21013a4439aba91845f37820f1bf3c49b896c14e024b8d4c71c59d14d6"
+      "sha256": "cf073923c2db4e6745a99f87700a8a1f934ddb1d31a9b6c598219513cd29c63b"
     },
     {
       "viewport": [
@@ -44,7 +44,7 @@
       ],
       "scene": "composer-size",
       "path": "1920x1080/composer-size.png",
-      "sha256": "0b47e871922a490dd6347e2dd4eac523d870a4ffe17369cde4c7ec8a7d911843"
+      "sha256": "f8360276a994bfe96fbd08f8e659b75ba3ee98d14ba8a3611626cf96b64c0f96"
     },
     {
       "viewport": [
@@ -62,7 +62,7 @@
       ],
       "scene": "create-menu",
       "path": "1920x1080/create-menu.png",
-      "sha256": "14e6c9e2132d8cb46b82d04828f27846fe2ec51fd066f1ab99fd618273c02ff9"
+      "sha256": "2836b2e6a459207678da0000e82d2a79220c29cb6e65d5c963f50089952de3f7"
     },
     {
       "viewport": [
@@ -89,7 +89,7 @@
       ],
       "scene": "settings",
       "path": "1920x1080/settings.png",
-      "sha256": "489a7be01f8ba34f615c46c3e0d31c741ff0718a18378662f709bc9b89eca7ec"
+      "sha256": "669c2f96ce50068838cea5a2997c2b49bf310aa18693c1b31fb69ece32f4dfcc"
     },
     {
       "viewport": [
@@ -107,7 +107,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1440x900/canvas-composer.png",
-      "sha256": "ea511f7cf1428ab511a2e26cdf7fd3db8cfb6b0622e67100a5faace843d1ca43"
+      "sha256": "87ee14aec6894cc90f946a1c6744e7de485b46cb00ba3d386ee02b3039a38838"
     },
     {
       "viewport": [
@@ -116,7 +116,7 @@
       ],
       "scene": "composer-size",
       "path": "1440x900/composer-size.png",
-      "sha256": "c5368c671b788e6c7ae8bedd835ca7e00fd50d5dd48ff1dc7831eeb697c822c8"
+      "sha256": "54b7ed41e90116d759c93b2d900fe7c491e6b4446e753da41a5ca03aa71b5ec3"
     },
     {
       "viewport": [
@@ -134,7 +134,7 @@
       ],
       "scene": "create-menu",
       "path": "1440x900/create-menu.png",
-      "sha256": "dbcf5f979c9aaa646a57205fb9bc1caf10fb6488d3d90b0dc691c2617edfd220"
+      "sha256": "2513ce3a6b92f35c026a3fdfa6751c5d1ab94c7a2640743d947ea49182c2f919"
     },
     {
       "viewport": [
@@ -161,7 +161,7 @@
       ],
       "scene": "settings",
       "path": "1440x900/settings.png",
-      "sha256": "3cdad098460130c9e7bf638aeaa4be359fbdd84edee6f097a587386941f4ece9"
+      "sha256": "16bb5c78bbbfb14cce41a986fc7c035cdde14dd9bf39738a69ee04af4d702c2d"
     },
     {
       "viewport": [
@@ -179,7 +179,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1280x720/canvas-composer.png",
-      "sha256": "6a28ebe06861111c421d19a31b1d3d01af17954c3b46b7ed5ce4f7ff84152e5c"
+      "sha256": "f03590591dd6ffc5658466bd53bacfa18ee2f7238cdcdf763085b4acd39ec763"
     },
     {
       "viewport": [
@@ -188,7 +188,7 @@
       ],
       "scene": "composer-size",
       "path": "1280x720/composer-size.png",
-      "sha256": "7cd914a9c4db466f88c79187956ec0e0ac04e5ef836c9205dc2a9fb9a787147e"
+      "sha256": "1ff72e514a3bb6f1407d10c3abdd8209c856a4fb4dd6adb5f4550334457d7c6d"
     },
     {
       "viewport": [
@@ -206,7 +206,7 @@
       ],
       "scene": "create-menu",
       "path": "1280x720/create-menu.png",
-      "sha256": "951bb35f84ef91d2cc6eb802c6618f15bfa875a4ea87729f2acffd712af9374f"
+      "sha256": "ec045974a9cf63e42a1d7b484df0a491a241d0f9415a5cac1eae396bef10b624"
     },
     {
       "viewport": [
@@ -278,7 +278,7 @@
       ],
       "scene": "create-menu",
       "path": "1024x768/create-menu.png",
-      "sha256": "b2678b31f5050d60111783f4a11312888bf63c69a3eff8b392d112e8bf555deb"
+      "sha256": "d07fedc66277565c12a4668b81ca1a3fd52c118be672923cc5c0cba054b703eb"
     },
     {
       "viewport": [
@@ -305,7 +305,7 @@
       ],
       "scene": "settings",
       "path": "1024x768/settings.png",
-      "sha256": "15d28ecca8218c2b6883ef386dd4e6e8169426a461c2e087b91e4768b6f33f60"
+      "sha256": "ba426af47d6064311cb043bea005be6bd51e323249e65247a01c32a38ce0076b"
     },
     {
       "viewport": [
@@ -350,7 +350,7 @@
       ],
       "scene": "create-menu",
       "path": "800x600/create-menu.png",
-      "sha256": "e5b87a61ab9405f08b1e47f379456004ae904d8ed60082357e55ca5ca851e77f"
+      "sha256": "4fc0eca35099fc53dc6710afa74f433a8ba2a6f714e3f5201b9c57637809ebf2"
     },
     {
       "viewport": [

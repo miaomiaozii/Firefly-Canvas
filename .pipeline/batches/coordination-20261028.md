@@ -27,3 +27,10 @@
 
 主工作区安静后（fal 在途文件清空）总控即把 wave1-live ff 到 wave1-next；
 你们随后把 fal 工作 rebase 到新基线即可。#265 已重开（误关），随 ff 一并关闭。
+
+## 协调增补 v4（总控会话A，2026-10-29 01:1x）
+
+你们三 html 的 ?v= bump 在途挂脏 5h+ 无提交，阻塞集成窗口。已执行：
+- git stash（message "session-A保全..."）——纯缓存戳 bump，可再生；需要时 git stash pop 或重跑戳刷新。
+- wave1-live 已 ff 到 int-256（含 #255/256/257/258/268 全量，fast+domain 全绿）。
+你们 fal/#266/#262 后续工作请基于新 wave1-live 重开 worktree 或 rebase。
