@@ -20,7 +20,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, NODE_TYPE_CONVERSATION, NODE_TYPE_IMAGE, NODE_TYPE_LOCAL_EDIT, NODE_TYPE_PROMPT, NODE_TYPE_TASK, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
+from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, NODE_TYPE_CONVERSATION, NODE_TYPE_IMAGE, NODE_TYPE_LOCAL_EDIT, NODE_TYPE_PROMPT, NODE_TYPE_TASK, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, extract_task_id_from_text, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_jimeng_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.services.agent_host import agent_host_manager
 from app.project_activity import (
@@ -33,7 +33,8 @@ from app.project_activity import (
 from app.project_downloads import ProjectMediaFileResponse
 from app.project_sessions import project_has_open_session
 from firefly_projects import CleanupDrift
-_from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
+from app.routers import api_image_task_query as _api_image_task_query
+_from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'get_api_provider', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -427,6 +428,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
             'request_payload': copy.deepcopy(record.get('request_payload') or {}),
             'idempotency_key': record.get('idempotency_key') or clean_task_id,
             'error': record.get('error') or '',
+            'upstream_task_id': record.get('upstream_task_id') or '',
             'history_record': copy.deepcopy(record),
         }
     for node in canvas.get('nodes') or []:
@@ -876,6 +878,11 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             await cleanup_project_generation_orphans(project_id)
             return
         detail = getattr(exc, 'detail', None) or str(exc)
+        # #234 手动取回：上游任务 id 随失败终态持久化（内存注册表 + canvas history），
+        # 失败/重启后 GET 端点凭它主动重查上游成品。
+        upstream_task_id = str(getattr(exc, 'upstream_task_id', '') or '')
+        if not upstream_task_id:
+            upstream_task_id = extract_task_id_from_text(str(detail))
         failure_time = _app_main.now_ms()
         fail_project_image_task_progress(task_id)
         with CANVAS_TASK_LOCK:
@@ -884,7 +891,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         resolved_status = 'timeout' if isinstance(exc, ImageGenerationTaskTimeout) else 'failed'
         # 取回兑底：已归档成功的图写进失败记录 outputs，客户端可凭 task_id 重新取回。
         failed_outputs = _history_output_entries(generated_items, 'image')
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail)}
+        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail), 'upstream_task_id': upstream_task_id}
         try:
             failed_canvas = await asyncio.to_thread(
                 _app_main.project_store_call,
@@ -927,6 +934,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             CANVAS_TASKS[task_id].update({
                 'status': resolved_status,
                 'error': '' if resolved_status == 'succeeded' else str(detail),
+                'upstream_task_id': upstream_task_id,
                 'status_code': 200 if resolved_status == 'succeeded' else getattr(exc, 'status_code', 500),
                 'result': failure_result,
                 'updated_at': time.time(),
@@ -1175,15 +1183,165 @@ async def wait_for_project_image_registration(project_id: str, task_id: str, *, 
     raise HTTPException(status_code=409, detail='幂等任务注册超时，请稍后查询')
 
 
+async def _maybe_recover_project_image_task(project_id: str, task_id: str, task: Dict[str, Any], recover: Optional[int]) -> Optional[Dict[str, Any]]:
+    """#234 手动取回：failed/timeout 且带上游任务 id 的任务，GET 主动重查上游成品（recover=0 显式关闭）。
+
+    上游已出图 → 归档进项目媒体、succeeded 终态覆盖写入 canvas history（failed→succeeded）、
+    同步内存注册表；仍在生成/失败/出错 → 保持原失败快照，响应附 recover 诊断。
+    返回 None 表示未触发取回（调用方原样返回快照）。
+    """
+    if recover is not None and not int(recover):
+        return None
+    if str(task.get('status') or '') not in {'failed', 'timeout'}:
+        return None
+    upstream_task_id = str(task.get('upstream_task_id') or '').strip()
+    if not upstream_task_id:
+        return None
+    provider_id = str(task.get('provider_id') or (task.get('route') or {}).get('provider_id') or '').strip()
+    provider = None
+    if provider_id:
+        try:
+            candidate = get_api_provider(provider_id)
+            if isinstance(candidate, dict) and str(candidate.get('id') or '').strip().lower() == provider_id.lower():
+                provider = candidate
+        except Exception:
+            provider = None
+    if provider is None and provider_id:
+        # 平台配置已变更/删除：仍按记录的原平台尝试（无 base_url 时 fetch 会自然失败），
+        # 避免把「平台下线」误判成「不可取回」。
+        provider = {'id': provider_id, 'name': ''}
+    if provider is None:
+        return None
+    try:
+        upstream = await _api_image_task_query.query_upstream_image_task(provider, upstream_task_id, record_history=False)
+    except Exception as exc:
+        logger.warning(f'[recover {task_id[:8]}] upstream query failed: {exc}')
+        return {**task, 'recover': {'status': 'failed', 'error': str(exc)[:300]}}
+    if not isinstance(upstream, dict) or upstream.get('status') != 'succeeded':
+        return {
+            **task,
+            'recover': {
+                'status': str(upstream.get('status') or 'unknown') if isinstance(upstream, dict) else 'unknown',
+                'error': str((upstream or {}).get('error') or (upstream or {}).get('message') or '')[:300],
+            },
+        }
+    image_urls = [str(url).strip() for url in (upstream.get('images') or []) if str(url or '').strip()]
+    if not image_urls:
+        return {**task, 'recover': {'status': 'failed', 'error': '上游已出图但未解析到图片成品'}}
+    result_node_id = str(task.get('result_node_id') or (task.get('history_record') or {}).get('result_node_id') or '').strip()
+    try:
+        recovered_items: List[Dict[str, Any]] = []
+        for image_url in image_urls:
+            recovered_items.append(await archive_project_generated_image(project_id, {'type': 'url', 'value': image_url, 'mime_type': 'image/png'}, len(recovered_items)))
+    except Exception as exc:
+        logger.warning(f'[recover {task_id[:8]}] 成品归档失败: {exc}')
+        return {**task, 'recover': {'status': 'failed', 'error': f'成品归档失败：{str(exc)[:200]}'}}
+    if not recovered_items:
+        return {**task, 'recover': {'status': 'failed', 'error': '没有可归档的图片成品'}}
+    now = _app_main.now_ms()
+    try:
+        created_at = float(task.get('created_at') or 0)
+    except (TypeError, ValueError):
+        created_at = 0.0
+    created_ms = int(created_at * 1000) if created_at and created_at < 1e12 else int(now)
+    route = copy.deepcopy(task.get('route') or {})
+    request_payload = copy.deepcopy(task.get('request_payload') or {})
+    success_record = {
+        'id': f'generation-{uuid.uuid4().hex}',
+        'task_id': task_id,
+        'idempotency_key': str(task.get('idempotency_key') or task_id),
+        'type': 'online-image',
+        'status': 'succeeded',
+        'prompt': str(request_payload.get('prompt') or ''),
+        'executed_prompt': str(request_payload.get('prompt') or ''),
+        'created_at': created_ms,
+        'createdAt': created_ms,
+        'completed_at': now,
+        'runMs': max(0, now - created_ms),
+        'routing_mode': str(request_payload.get('routing_mode') or ''),
+        'requested_provider_id': str(request_payload.get('provider_id') or ''),
+        'requested_model': str(request_payload.get('model') or ''),
+        'actual_provider_id': str(task.get('provider_id') or route.get('provider_id') or ''),
+        'actual_provider_name': str(route.get('provider_name') or ''),
+        'actual_model': str(task.get('model') or route.get('model') or ''),
+        'model': str(task.get('model') or route.get('model') or ''),
+        'route': route,
+        'request_payload': request_payload,
+        'outputs': _history_output_entries(recovered_items, 'image'),
+        'result_node_id': result_node_id,
+        'recovered': True,
+        'upstream_task_id': upstream_task_id,
+    }
+    try:
+        canvas = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'complete_image_generation',
+            project_id,
+            result_node_id,
+            recovered_items,
+            success_record,
+            task_id=task_id,
+            require_pending=False,
+        )
+    except Exception as exc:
+        logger.warning(f'[recover {task_id[:8]}] succeeded 终态写入失败: {exc}')
+        return {**task, 'recover': {'status': 'failed', 'error': f'落画布失败：{str(exc)[:200]}'}}
+    base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
+    image_items = [{**item, 'url': base + urllib.parse.quote(str(item.get('asset_id') or ''), safe='')} for item in recovered_items]
+    result = {
+        'prompt': success_record['prompt'],
+        'executed_prompt': success_record['executed_prompt'],
+        'images': [item['url'] for item in image_items],
+        'image_items': image_items,
+        'provider_id': success_record['actual_provider_id'],
+        'provider_name': success_record['actual_provider_name'],
+        'model': success_record['actual_model'],
+        'route': route,
+        'history_id': success_record['id'],
+        'history_recorded': True,
+        'history_record': success_record,
+        'project_id': project_id,
+        'project_revision': canvas.get('revision'),
+        'result_node_id': result_node_id,
+        'final_node': next((item for item in canvas.get('nodes') or [] if item.get('id') == result_node_id), None),
+        'recovered': True,
+    }
+    with CANVAS_TASK_LOCK:
+        CANVAS_TASKS[task_id].update({
+            'status': 'succeeded',
+            'result': result,
+            'error': '',
+            'upstream_task_id': upstream_task_id,
+            'updated_at': time.time(),
+        })
+    try:
+        await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or now))
+    except Exception:
+        pass
+    return {
+        **task,
+        'task_id': task_id,
+        'project_id': project_id,
+        'status': 'succeeded',
+        'error': '',
+        'upstream_task_id': upstream_task_id,
+        'result': result,
+        'updated_at': time.time(),
+    }
+
+
 @router.get('/api/project-library/{project_id}/image-generation-tasks/{task_id}')
-async def get_project_image_task(project_id: str, task_id: str):
+async def get_project_image_task(project_id: str, task_id: str, recover: Optional[int] = Query(default=None)):
+    """查询项目生图任务。对 failed/timeout 且带上游任务 id 的任务默认主动重查上游成品
+    （手动取回，#234；recover=0 显式关闭）。"""
     with CANVAS_TASK_LOCK:
         current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
     if current:
         if current.get('type') != 'project-online-image' or str(current.get('project_id') or '') != str(project_id):
             raise HTTPException(status_code=404, detail='项目生图任务不存在')
         current['task_id'] = str(task_id)
-        return current
+        recovered = await _maybe_recover_project_image_task(project_id, str(task_id), current, recover)
+        return recovered if recovered is not None else current
 
     try:
         opened, durable = await asyncio.to_thread(recover_project_image_task, project_id, str(task_id))
@@ -1201,12 +1359,14 @@ async def get_project_image_task(project_id: str, task_id: str):
             'updated_at': time.time(),
         }
     await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
-    return {
+    snapshot = {
         **durable,
         'project_id': project_id,
         'task_id': str(task_id),
         'result': result,
     }
+    recovered = await _maybe_recover_project_image_task(project_id, str(task_id), durable, recover)
+    return recovered if recovered is not None else snapshot
 
 
 @router.post('/api/project-library/{project_id}/image-generation-tasks/{task_id}/cancel')
