@@ -33,11 +33,11 @@ DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执�
 - 完成任务后，如果生成了新内容，用 viewport.focus 聚焦到产物
 
 可用工具：
-- canvas.list_nodes / canvas.get_node / canvas.get_selection（查询画布）
+- canvas.list_nodes / canvas.get_node（查询画布）
 - canvas.create_node / canvas.update_node / canvas.delete_node（结构操作）
 - canvas.connect / canvas.disconnect（连线操作）
 - generate.trigger / generate.status / generate.wait（生成操作）
-- media.upload / media.list（媒体操作）
+- media.upload / media.list / media.delete（媒体操作）
 - viewport.focus（视口聚焦）"""
 
 # Autonomy level system prompt suffixes (appended to DEFAULT_SYSTEM_PROMPT at spawn)

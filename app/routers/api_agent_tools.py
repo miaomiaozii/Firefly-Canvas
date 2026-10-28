@@ -44,8 +44,13 @@ def _validate_project(project_id: str):
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
 
 
-def _apply_mutations(project_id: str, mutations: list):
-    """Apply canvas mutations with retry on revision conflict."""
+async def _apply_mutations(project_id: str, mutations: list):
+    """Apply canvas mutations with retry on revision conflict.
+
+    #243: after a successful commit, broadcast ``canvas_updated`` so every
+    other open tab re-syncs in real time (ADR 0022 known gap: agent-tools
+    mutations used to be invisible to other tabs until manual reload).
+    """
     from firefly_projects import RevisionConflict
 
     store = _app_main.FIREFLY_PROJECT_STORE
@@ -55,6 +60,7 @@ def _apply_mutations(project_id: str, mutations: list):
             canvas = store.canvas(project_id)
             revision = int(canvas.get("revision") or 0)
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
+            await _broadcast_canvas_updated(project_id)
             return result
         except RevisionConflict:
             # Revision conflict: another writer updated the canvas.
@@ -64,6 +70,44 @@ def _apply_mutations(project_id: str, mutations: list):
             raise HTTPException(status_code=409, detail="Canvas mutation failed after retries")
         except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))
+
+
+async def _broadcast_canvas_updated(project_id: str) -> None:
+    """Best-effort ``canvas_updated`` broadcast after an agent-tools mutation."""
+    manager = getattr(_app_main, "manager", None)
+    if manager is None:
+        return
+    try:
+        canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+        await manager.broadcast_canvas_updated(project_id, int(canvas.get("updated_at") or _app_main.now_ms()))
+    except Exception:
+        pass  # broadcast is best-effort; never fail the mutation because of it
+
+
+async def _dispatch_viewport_command(project_id: str, command: dict) -> bool:
+    """#243: viewport commands go to ONE owning tab, targeted (not broadcast).
+
+    Resolves the tab's client_id by walking the manager's live connections
+    against the project_sessions registry (the registry is keyed by
+    id(token), so object-keyed lookup goes through session_project), then
+    uses send_personal_message (ADR 0022: 命令单 client 定向下发). Returns
+    False when the tab is not (or no longer) connected — the viewport state
+    was still updated server-side.
+    """
+    from app.project_sessions import session_project
+    manager = getattr(_app_main, "manager", None)
+    if manager is None:
+        return False
+    for connection in list(manager.active_connections):
+        if session_project(connection) != project_id:
+            continue
+        client_id = manager.connection_clients.get(connection)
+        if not client_id:
+            continue
+        message = {"type": "canvas_viewport_command", "project_id": project_id, **command}
+        await manager.send_personal_message(message, client_id)
+        return True
+    return False
 
 
 def _open_canvas(project_id: str) -> dict:
@@ -118,80 +162,33 @@ async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(
     return _find_node(project_id, node_id)
 
 
-@router.get("/selection")
-async def get_selection(project_id: str, x_agent_project: str = Header(default="")):
-    """Get the currently selected nodes."""
-    # Selection is client-side state; for agent purposes, return empty
-    # In a real implementation, this would query the active browser session
-    return {"selected": []}
-
-
 @router.post("/nodes")
 async def create_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a new node on the canvas."""
-    _validate_project(project_id)
     body = await request.json()
-    node = body.get("node", {})
-    if not isinstance(node, dict):
-        raise HTTPException(status_code=400, detail="node must be an object")
-
-    # Ensure node has required fields
-    if not node.get("id"):
-        node["id"] = f"node-{uuid.uuid4().hex[:12]}"
-    if not node.get("type"):
-        raise HTTPException(status_code=400, detail="node.type is required")
-    if "x" not in node:
-        node["x"] = 0
-    if "y" not in node:
-        node["y"] = 0
-    node["created_at"] = _app_main.now_ms()
-
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
-    return {"success": True, "node_id": node["id"]}
+    return await create_node_core(project_id, body.get("node", {}))
 
 
 @router.patch("/nodes/{node_id}")
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
     body = await request.json()
-
-    # Get current node
-    target_node = _find_node(project_id, node_id)
-
-    # Apply updates
-    for key, value in body.items():
-        if key not in ("id", "type", "created_at"):  # Don't allow changing identity
-            target_node[key] = value
-    target_node["updated_at"] = _app_main.now_ms()
-
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": target_node}])
-    return {"success": True, "node_id": node_id}
+    return await update_node_core(project_id, node_id, body)
 
 
 @router.delete("/nodes/{node_id}")
 async def delete_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
     """Delete a node from the canvas."""
     _validate_project(project_id)
-    _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
+    await _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
     return {"success": True, "node_id": node_id}
 
 
 @router.post("/edges")
 async def create_edge(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a connection between two nodes."""
-    _validate_project(project_id)
     body = await request.json()
-    edge = body.get("edge", {})
-    if not isinstance(edge, dict):
-        raise HTTPException(status_code=400, detail="edge must be an object")
-
-    if not edge.get("id"):
-        edge["id"] = f"edge-{uuid.uuid4().hex[:12]}"
-    if not edge.get("from") or not edge.get("to"):
-        raise HTTPException(status_code=400, detail="edge.from and edge.to are required")
-
-    _apply_mutations(project_id, [{"op": "upsert_edge", "edge": edge}])
-    return {"success": True, "edge_id": edge["id"]}
+    return await create_edge_core(project_id, body.get("edge", {}))
 
 
 @router.delete("/edges/{from_node}/{to_node}")
@@ -211,8 +208,67 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
     if target_edge is None:
         raise HTTPException(status_code=404, detail=f"Edge not found: {from_node} -> {to_node}")
 
-    _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
+    await _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
     return {"success": True, "from": from_node, "to": to_node}
+
+
+# =============================================================================
+# Core (Request-free) implementations — shared by the HTTP endpoints above and
+# the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
+# =============================================================================
+
+
+async def create_node_core(project_id: str, node: dict) -> dict:
+    """Create a node on the canvas. `node` must be a dict; `type` is required."""
+    _validate_project(project_id)
+    if not isinstance(node, dict):
+        raise HTTPException(status_code=400, detail="node must be an object")
+
+    # Ensure node has required fields
+    if not node.get("id"):
+        node["id"] = f"node-{uuid.uuid4().hex[:12]}"
+    if not node.get("type"):
+        raise HTTPException(status_code=400, detail="node.type is required")
+    if "x" not in node:
+        node["x"] = 0
+    if "y" not in node:
+        node["y"] = 0
+    node["created_at"] = _app_main.now_ms()
+
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    return {"success": True, "node_id": node["id"]}
+
+
+async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:
+    """Update an existing node's properties (`updates` is a flat field dict)."""
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=400, detail="updates must be an object")
+    # Get current node
+    target_node = _find_node(project_id, node_id)
+
+    # Apply updates
+    for key, value in updates.items():
+        if key not in ("id", "type", "created_at"):  # Don't allow changing identity
+            target_node[key] = value
+    target_node["updated_at"] = _app_main.now_ms()
+
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": target_node}])
+    return {"success": True, "node_id": node_id}
+
+
+async def create_edge_core(project_id: str, edge: dict) -> dict:
+    """Create a connection between two nodes. `edge` needs `from` and `to`."""
+    _validate_project(project_id)
+    if not isinstance(edge, dict):
+        raise HTTPException(status_code=400, detail="edge must be an object")
+
+    if not edge.get("id"):
+        edge["id"] = f"edge-{uuid.uuid4().hex[:12]}"
+    if not edge.get("from") or not edge.get("to"):
+        raise HTTPException(status_code=400, detail="edge.from and edge.to are required")
+
+    await _apply_mutations(project_id, [{"op": "upsert_edge", "edge": edge}])
+    return {"success": True, "edge_id": edge["id"]}
 
 
 # =============================================================================
@@ -224,7 +280,12 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Trigger generation on a node, returns task ID."""
     body = await request.json()
-    node_id = body.get("node_id")
+    return await trigger_generation_core(project_id, body.get("node_id"))
+
+
+async def trigger_generation_core(project_id: str, node_id: str) -> dict:
+    """Trigger generation on a node, returns task ID (Request-free core)."""
+    _validate_project(project_id)
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
@@ -308,6 +369,39 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
     return {"task_id": task_id, "type": "image", "node_id": node_id}
 
 
+async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) -> dict:
+    """Wait for a generation task to complete (Request-free core; 1..600s)."""
+    _validate_project(project_id)
+
+    deadline = time.time() + timeout
+    last_status = None
+
+    while time.time() < deadline:
+        try:
+            status = await get_task_status(project_id, task_id)
+        except HTTPException as e:
+            if e.status_code == 404:
+                # Task not found yet, keep waiting
+                await asyncio.sleep(0.5)
+                continue
+            raise
+
+        last_status = status
+        if status["status"] in ("succeeded", "failed", "timeout", "cancelled", "jimeng_pending"):
+            return status
+
+        # Poll with backoff
+        await asyncio.sleep(min(1.0, (deadline - time.time()) / 2))
+
+    # Timeout reached
+    return {
+        "task_id": task_id,
+        "status": "timeout",
+        "error": f"Wait timed out after {timeout}s (last status: {last_status.get('status', 'unknown') if last_status else 'not found'})",
+        "last_status": last_status,
+    }
+
+
 async def _run_agent_generation(task_id: str, project_id: str, node_id: str, payload: dict):
     """Run generation in the background and update task status."""
     try:
@@ -358,35 +452,7 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
 @generate_router.get("/tasks/{task_id}/wait")
 async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(default=120, ge=1, le=600), x_agent_project: str = Header(default="")):
     """Wait for a generation task to complete (with timeout)."""
-    _validate_project(project_id)
-
-    deadline = time.time() + timeout
-    last_status = None
-
-    while time.time() < deadline:
-        try:
-            status = await get_task_status(project_id, task_id)
-        except HTTPException as e:
-            if e.status_code == 404:
-                # Task not found yet, keep waiting
-                await asyncio.sleep(0.5)
-                continue
-            raise
-
-        last_status = status
-        if status["status"] in ("succeeded", "failed", "timeout", "cancelled", "jimeng_pending"):
-            return status
-
-        # Poll with backoff
-        await asyncio.sleep(min(1.0, (deadline - time.time()) / 2))
-
-    # Timeout reached
-    return {
-        "task_id": task_id,
-        "status": "timeout",
-        "error": f"Wait timed out after {timeout}s (last status: {last_status.get('status', 'unknown') if last_status else 'not found'})",
-        "last_status": last_status,
-    }
+    return await wait_for_task_core(project_id, task_id, timeout)
 
 
 # =============================================================================
@@ -397,9 +463,13 @@ async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(defa
 @media_router.post("/upload")
 async def upload_media(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Upload a media file to the project library."""
-    _validate_project(project_id)
     body = await request.json()
-    file_path = body.get("file_path")
+    return await upload_media_core(project_id, body.get("file_path"))
+
+
+async def upload_media_core(project_id: str, file_path: str) -> dict:
+    """Import a local media file into the project library (Request-free core)."""
+    _validate_project(project_id)
     if not file_path:
         raise HTTPException(status_code=400, detail="file_path is required")
 
@@ -458,7 +528,25 @@ async def delete_media(project_id: str, asset_id: str, x_agent_project: str = He
 async def focus_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Scroll canvas to focus on a node."""
     body = await request.json()
-    node_id = body.get("node_id")
+    return await focus_node_core(project_id, body.get("node_id"))
+
+
+@viewport_router.post("/zoom")
+async def set_zoom(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """Set the canvas zoom level."""
+    body = await request.json()
+    return await set_zoom_core(project_id, body.get("level"))
+
+
+async def focus_node_core(project_id: str, node_id: str) -> dict:
+    """Focus the canvas viewport on a node (Request-free core).
+
+    #243: besides updating the server-side viewport state, the command is
+    dispatched TARGETED to the single tab that has the project open (not
+    broadcast, ADR 0022). Frontend consumption of `canvas_viewport_command`
+    is a follow-up (smart-canvas.js is in a separate queue).
+    """
+    _validate_project(project_id)
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
@@ -466,23 +554,23 @@ async def focus_node(project_id: str, request: Request, x_agent_project: str = H
     target_node = _find_node(project_id, node_id)
 
     # Store the viewport state
+    x = target_node.get("x", 0)
+    y = target_node.get("y", 0)
     VIEWPORT_STATE[project_id] = {
         "focus_node_id": node_id,
-        "x": target_node.get("x", 0),
-        "y": target_node.get("y", 0),
+        "x": x,
+        "y": y,
         "scale": 1.0,
         "updated_at": time.time(),
     }
 
-    return {"success": True, "node_id": node_id}
+    dispatched = await _dispatch_viewport_command(project_id, {"command": "focus", "node_id": node_id, "x": x, "y": y})
+    return {"success": True, "node_id": node_id, "dispatched": dispatched}
 
 
-@viewport_router.post("/zoom")
-async def set_zoom(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """Set the canvas zoom level."""
+async def set_zoom_core(project_id: str, level) -> dict:
+    """Set the canvas zoom level (Request-free core). See focus_node_core."""
     _validate_project(project_id)
-    body = await request.json()
-    level = body.get("level")
     if level is None:
         raise HTTPException(status_code=400, detail="level is required")
 
@@ -494,7 +582,8 @@ async def set_zoom(project_id: str, request: Request, x_agent_project: str = Hea
         "updated_at": time.time(),
     }
 
-    return {"success": True, "level": level}
+    dispatched = await _dispatch_viewport_command(project_id, {"command": "zoom", "level": float(level)})
+    return {"success": True, "level": level, "dispatched": dispatched}
 
 
 @viewport_router.get("/state")
@@ -525,12 +614,29 @@ async def request_confirmation(project_id: str, request: Request, x_agent_projec
     """
     _validate_project(project_id)
     body = await request.json()
-    node_id = body.get("node_id")
-    tool = body.get("tool", "")
-    params = body.get("params", {})
-    message = body.get("message", "")
-    timeout = body.get("timeout_seconds", 60)
+    return await request_confirmation_core(
+        project_id,
+        body.get("node_id"),
+        body.get("tool", ""),
+        body.get("params", {}),
+        body.get("message", ""),
+        body.get("timeout_seconds", 60),
+    )
 
+
+async def request_confirmation_core(
+    project_id: str,
+    node_id: str,
+    tool: str,
+    params: dict,
+    message: str,
+    timeout_seconds: float = 60,
+) -> dict:
+    """Confirmation gate core (Request-free; shared by HTTP + MCP, #243).
+
+    Blocks until the user confirms/rejects on the canvas or times out.
+    Returns {"approved": bool, "reason": "rejected" | "timeout" | None}.
+    """
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id is required")
 
@@ -579,7 +685,7 @@ async def request_confirmation(project_id: str, request: Request, x_agent_projec
 
         # Wait for the user's decision (with timeout)
         try:
-            await asyncio.wait_for(done_event.wait(), timeout=float(timeout))
+            await asyncio.wait_for(done_event.wait(), timeout=float(timeout_seconds))
         except asyncio.TimeoutError:
             result["approved"] = False
             result["reason"] = "timeout"
