@@ -31,7 +31,7 @@
 | 泳道 | 票 | 难度/预估 | worktree | 分支 |
 |---|---|---|---|---|
 | G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) exit0 | ✅ 已合并，票已关，review PASS（总控复跑 50 passed） |
-| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m 两轮：实现完整但未 commit（新 api_mcp.py+test_mcp_endpoint.py+6 文件）；卡点=approve 不解除 gate → resume del_mvrdzjnd_b5i3(80m，注入「注册键 vs 查找键」对照假设+T+35m 强制 commit) | 进行中 |
+| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m+80m 三轮后实现完成；**总控查明 MCP 全量假失败根因**=harness 测试 sys.modules 污染（非 MCP bug），总控修隔离(commit 13ea61d)；resume del_mvre0g3z_40ai(80m，只做全量+result+commit) | 进行中 |
 | I | #235 provider 未知终态化+RunningHub code+resume not-found | 中 | D:/ff-wt/wt-235 | issue/235 | del_mvrhaem0_73gb(90m，锚点已注入) | 进行中 |
 | J | #238 缩放自适应缩略图+视频悬停 | 中小 | D:/ff-wt/wt-238 | issue/238 | del_mvrhaem0_4q7g(75m) | 进行中 |
 | K | #263 #234 trial 门证据补挂 | 小 | 待派 | 待派 | — | 排队（与 #243 门区可能重叠，待其合并） |
