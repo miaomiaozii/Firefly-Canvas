@@ -24,6 +24,7 @@ function getAgentTuiState(nodeId) {
             autonomy: 'cautious',
             toolActivities: new Map(),
             thinkingVisible: false,
+            pendingImages: [], // #268：待随下一条 prompt 发出的附件（图片/视频 contact sheet/音频波形卡 dataURL）
         });
     }
     return agentTuiState.get(nodeId);
@@ -214,9 +215,13 @@ function handleAgentEvent(nodeId, event) {
 
 function sendAgentPrompt(nodeId, projectId, message, images = []) {
     const state = getAgentTuiState(nodeId);
-    
-    // Add user message to state
-    state.messages.push({ role: 'user', text: message });
+    // #268：images 可能是 {dataUrl,name,caption} 对象，发给后端的 payload 统一为 dataURL 字符串列表
+    const imageList = (images || []).map(img => (typeof img === 'string' ? img : (img && img.dataUrl) || ''))
+        .filter(Boolean);
+
+    // Add user message to state（#268：记录附件名，消息可追溯）
+    state.messages.push({ role: 'user', text: message,
+        attachments: (images || []).map(img => (img && img.name) || '').filter(Boolean) });
     state.status = 'busy';
 
     // Send via WebSocket if connected
@@ -224,17 +229,80 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
         state.socket.send(JSON.stringify({
             type: 'prompt',
             message: message,
-            images: images,
+            images: imageList,
         }));
     } else {
         // WebSocket not connected, use HTTP API
         fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, images }),
+            body: JSON.stringify({ message, images: imageList }),
         }).catch(e => console.error('Failed to send agent prompt:', e));
     }
 
+    renderAgentNode(nodeId);
+}
+
+// ---- #268：聊天附件（图片/视频/音频） ----
+// 图片 → dataURL 直发；视频 → 后端 contact sheet（抽帧+时间戳拼贴）；
+// 音频 → 后端波形卡（保守版：不转写，transcription=None）。
+function readAsDataURL(file){
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+        reader.readAsDataURL(file);
+    });
+}
+
+async function convertAgentMediaAttachment(file) {
+    const mime = (file.type || '').toLowerCase();
+    const isAudio = mime.startsWith('audio/');
+    const isVideo = mime.startsWith('video/');
+    if (!isAudio && !isVideo) throw new Error('only video/audio supported');
+    const fd = new FormData();
+    fd.append('file', file);
+    const url = isAudio ? '/api/chat-media/audio-card' : '/api/chat-media/video-contact-sheet';
+    const resp = await fetch(url, { method: 'POST', body: fd });
+    if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { detail = (await resp.json()).detail || detail; } catch (e) { /* 非 JSON 错误体 */ }
+        throw new Error(detail);
+    }
+    return resp.json();
+}
+
+async function handleAgentAttachments(nodeId, projectId, files) {
+    const state = getAgentTuiState(nodeId);
+    if (!Array.isArray(state.pendingImages)) state.pendingImages = [];
+    for (const file of files) {
+        const name = file.name || 'attachment';
+        try {
+            const mime = (file.type || '').toLowerCase();
+            if (mime.startsWith('image/')) {
+                const dataUrl = await readAsDataURL(file);
+                state.pendingImages.push({ dataUrl, name, caption: '' });
+            } else if (mime.startsWith('video/')) {
+                const body = await convertAgentMediaAttachment(file);
+                const ts = body.frames_at_s || [];
+                const range = ts.length ? `${ts[0]}s–${ts[ts.length - 1]}s` : '';
+                state.pendingImages.push({ dataUrl: body.data_url, name,
+                    caption: tr('smart.agentAttachVideoReady')
+                        .replace('{name}', name).replace('{frames}', String(ts.length)).replace('{range}', range) });
+            } else if (mime.startsWith('audio/')) {
+                const body = await convertAgentMediaAttachment(file);
+                state.pendingImages.push({ dataUrl: body.data_url, name,
+                    caption: tr('smart.agentAttachAudioReady').replace('{name}', name) });
+            } else {
+                state.messages.push({ role: 'system',
+                    text: tr('smart.agentAttachUnsupported').replace('{name}', name) });
+            }
+        } catch (e) {
+            console.error('Failed to prepare attachment:', name, e);
+            state.messages.push({ role: 'system',
+                text: tr('smart.agentAttachFailed').replace('{name}', name).replace('{err}', String(e.message || e)) });
+        }
+    }
     renderAgentNode(nodeId);
 }
 
@@ -505,7 +573,11 @@ function agentNodeBodyHtml(node) {
     let messagesHtml = '';
     for (const msg of state.messages) {
         if (msg.role === 'user') {
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+            // #268：附件名列表（小字跟在消息下方）
+            const attachNames = (msg.attachments || []).filter(Boolean);
+            const attachHtml = attachNames.length
+                ? `<div class="agent-tui-msg-attach">📎 ${attachNames.map(escapeHtml).join(' · ')}</div>` : '';
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderMarkdown(msg.text)}</span></div>`;
@@ -588,6 +660,22 @@ function agentNodeBodyHtml(node) {
     // Fork button
     const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉">🌿</button>`;
 
+    // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
+    const pendingImages = state.pendingImages || [];
+    let pendingHtml = '';
+    if (pendingImages.length) {
+        const chips = pendingImages.map((img, idx) => `
+            <div class="agent-tui-attach">
+                <img class="agent-tui-attach-thumb" src="${escapeAttr(img.dataUrl)}" alt="${escapeAttr(img.name)}">
+                <div class="agent-tui-attach-meta">
+                    <div class="agent-tui-attach-name">${escapeHtml(img.name)}</div>
+                    ${img.caption ? `<div class="agent-tui-attach-caption">${escapeHtml(img.caption)}</div>` : ''}
+                </div>
+                <button type="button" class="agent-tui-attach-remove" data-agent-attach-remove="${idx}" title="${tr('smart.agentAttachRemove')}">×</button>
+            </div>`).join('');
+        pendingHtml = `<div class="agent-tui-attach-row">${chips}</div>`;
+    }
+
     return `<div class="agent-tui-card">
         <div class="agent-tui-header">
             <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
@@ -607,15 +695,18 @@ function agentNodeBodyHtml(node) {
                 ${confirmHtml}
             </div>
         </div>
+        ${pendingHtml}
         <div class="agent-tui-input-row">
             <span class="agent-tui-prompt">&gt;</span>
             <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行，运行中 Enter 排队)" rows="1"></textarea>
             <div class="agent-tui-action-buttons">
+                <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}">📎</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
                 <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="Abort (中止当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
             </div>
+            <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
         </div>
     </div>`;
 }
@@ -685,9 +776,13 @@ function bindAgentNodeControls(el, node){
                 if (message) {
                     const inputState = getAgentTuiState(nodeId);
                     if (inputState && inputState.status === 'busy') {
+                        // #268：follow-up 通道无 images 参数，附件留在队列随下一条 prompt 发出
                         sendAgentFollowUp(nodeId, projectId, message);
                     } else {
-                        sendAgentPrompt(nodeId, projectId, message);
+                        // #268：带上待发附件（图片/视频 contact sheet/音频波形卡）
+                        const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];
+                        if (inputState) inputState.pendingImages = [];
+                        sendAgentPrompt(nodeId, projectId, message, pending);
                     }
                     inputEl.value = '';
                 }
@@ -811,6 +906,34 @@ function bindAgentNodeControls(el, node){
             if (branchId) switchAgentBranch(nodeId, projectId, branchId);
         });
     }
+
+    // #268：附件按钮 + 隐藏 file input + 待发送附件移除
+    const attachBtn = el.querySelector('[data-agent-attach]');
+    const fileInput = el.querySelector('[data-agent-tui-file]');
+    if (attachBtn && fileInput) {
+        attachBtn.addEventListener('mousedown', event => event.stopPropagation());
+        attachBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            fileInput.click();
+        });
+        fileInput.addEventListener('change', event => {
+            const files = Array.from(fileInput.files || []);
+            fileInput.value = '';
+            if (files.length) handleAgentAttachments(nodeId, projectId, files);
+        });
+    }
+    el.querySelectorAll('[data-agent-attach-remove]').forEach(btn => {
+        btn.addEventListener('mousedown', event => event.stopPropagation());
+        btn.addEventListener('click', event => {
+            event.stopPropagation();
+            const idx = Number(btn.getAttribute('data-agent-attach-remove'));
+            const s = getAgentTuiState(nodeId);
+            if (s && s.pendingImages && s.pendingImages[idx]) {
+                s.pendingImages.splice(idx, 1);
+                renderAgentNode(nodeId);
+            }
+        });
+    });
 
     // Bind body scroll to bottom on new messages
     const bodyEl = el.querySelector('[data-agent-tui-body]');

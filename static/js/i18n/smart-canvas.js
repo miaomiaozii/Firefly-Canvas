@@ -850,4 +850,14 @@
         "smart.phaseQueued": { zh: "排队", en: "Queued" },
         "smart.phaseProviderGenerating": { zh: "模型生成", en: "Provider generating" }
     });
+
+    // #268 聊天附件（视频 contact sheet / 音频波形卡）
+    window.StudioI18n.register({
+        "smart.agentAttachFile": { zh: "添加附件（图片/视频/音频）", en: "Attach (image/video/audio)" },
+        "smart.agentAttachRemove": { zh: "移除附件", en: "Remove attachment" },
+        "smart.agentAttachVideoReady": { zh: "视频 {name} → contact sheet（{frames} 帧，{range}）", en: "Video {name} → contact sheet ({frames} frames, {range})" },
+        "smart.agentAttachAudioReady": { zh: "音频 {name} → 波形卡（未转写）", en: "Audio {name} → waveform card (not transcribed)" },
+        "smart.agentAttachUnsupported": { zh: "附件 {name}：类型暂不支持（图片/视频/音频）", en: "Attachment {name}: unsupported type (image/video/audio)" },
+        "smart.agentAttachFailed": { zh: "附件 {name} 处理失败：{err}", en: "Failed to process attachment {name}: {err}" }
+    });
 })();

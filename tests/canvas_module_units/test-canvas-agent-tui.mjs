@@ -454,9 +454,20 @@ test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭�
     });
     assert.equal(open.fetchCalls.length, 0, 'WS 可用时不该再走 HTTP');
     assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages')), [
-        { role: 'user', text: '  画一只猫  ' },
+        { role: 'user', text: '  画一只猫  ', attachments: [] }, // #268：user 消息记录附件名
     ]);
     assert.equal(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").status')), 'busy');
+
+    // #268：images 传 {dataUrl,name,caption} 对象时，载荷归一化为 dataURL 字符串，附件名留在消息上
+    sendPrompt('n1', 'p1', '看附件', [
+        { dataUrl: 'data:image/png;base64,AA', name: 'sheet.png', caption: '视频 → contact sheet' },
+    ]);
+    assert.deepEqual(JSON.parse(fromContext(open.ws.sent[1])), {
+        type: 'prompt', message: '看附件', images: ['data:image/png;base64,AA'],
+    });
+    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages'))[1],
+        { role: 'user', text: '看附件', attachments: ['sheet.png'] },
+        '对象附件的名字记在消息上，payload 只带 dataURL');
 
     const closed = loadAgentTuiModule({ open: false });
     fn(closed.ctx, 'sendAgentPrompt')('n1', 'proj/2', '文本', []);

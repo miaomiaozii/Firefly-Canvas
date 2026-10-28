@@ -3920,6 +3920,68 @@ button.prompt-flow-context-image { cursor:pointer; }
     flex-shrink: 0;
 }
 
+/* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
+.agent-tui-attach-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #101018;
+    border-top: 1px solid #2f3549;
+    flex-shrink: 0;
+}
+.agent-tui-attach {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    background: #1b1b26;
+    border: 1px solid #2f3549;
+    border-radius: 6px;
+    max-width: 280px;
+}
+.agent-tui-attach-thumb {
+    width: 40px;
+    height: 30px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex-shrink: 0;
+    background: #000;
+}
+.agent-tui-attach-meta { min-width: 0; }
+.agent-tui-attach-name {
+    font-size: 11px;
+    color: #dfe3ec;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+}
+.agent-tui-attach-caption {
+    font-size: 10px;
+    color: #8b93a7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+}
+.agent-tui-attach-remove {
+    border: none;
+    background: transparent;
+    color: #8b93a7;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 4px;
+    flex-shrink: 0;
+}
+.agent-tui-attach-remove:hover { color: #ff7b7b; }
+.agent-tui-msg-attach {
+    margin-top: 2px;
+    font-size: 11px;
+    color: #8b93a7;
+}
+
 .agent-tui-prompt {
     color: #7aa2f7;
     font-weight: 600;
