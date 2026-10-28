@@ -14372,6 +14372,15 @@ function openCreateMenu(event, options={}){
     canvasState.createMenuImageNodeId = options.imageNodeId || '';
     const ocrCard = createMenu.querySelector('[data-create-type="ocr"]');
     if(ocrCard) ocrCard.hidden = !options.imageNodeId;
+    // #253：节点操作卡——重命名（右键落在节点上才可见）+ 整理排版（选中 >=2 才可见）。
+    const renameCard = createMenu.querySelector('[data-create-type="rename"]');
+    const tidyCard = createMenu.querySelector('[data-create-type="tidy"]');
+    const opVisibility = FireflyQuickEdit.operationCardVisibility({
+        nodeId: options.imageNodeId || options.groupId || '',
+        nodeCount: selectedNodeIds().length,
+    });
+    if(renameCard) renameCard.hidden = !opVisibility.rename;
+    if(tidyCard) tidyCard.hidden = !opVisibility.tidy;
     createMenu.style.left = '14px';
     createMenu.style.top = '14px';
     createMenu.classList.add('open');
@@ -14899,6 +14908,23 @@ window.onmousemove = e => {
         n.x = item.ox + moveDx;
         n.y = item.oy + moveDy;
     });
+    // #253：拖拽对齐吸附——对被拖主节点做 center/edge 阈值吸附（屏幕 8px 阈值换算世界坐标），
+    // 整组同步偏移并画参考线；ctrlGroup 连线拖拽时跳过并清线。
+    if(!dragState.ctrlGroup){
+        const snapThreshold = Math.max(2, 8 / (viewport.scale || 1));
+        const dragIds = new Set(dragState.groupIds || [dragState.id]);
+        const otherRects = canvasState.nodes.filter(n => !dragIds.has(n.id)).map(nodeRect);
+        const snapResult = FireflySnap.computeSnap(nodeRect(node), otherRects, {threshold: snapThreshold});
+        if(snapResult.dx || snapResult.dy){
+            (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
+                const n = canvasState.nodes.find(x => x.id === item.id);
+                if(n){ n.x += snapResult.dx; n.y += snapResult.dy; }
+            });
+        }
+        FireflySnapUI.showGuides(world, snapResult.guides);
+    } else {
+        FireflySnapUI.clearGuides(world);
+    }
     if(assetLibraryOpen){
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         if(hit && assetPanel?.contains(hit)){
@@ -14925,6 +14951,7 @@ window.onmouseup = e => {
     const nodeDragMoved = Boolean(dragState?.moved);
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
+    FireflySnapUI.clearGuides(world); // #253：拖拽结束清参考线
     if(nodeDragMoved){
         document.body.classList.add('smart-node-drag-settling');
         if(composerDragSettleTimer) clearTimeout(composerDragSettleTimer);
@@ -15215,6 +15242,17 @@ window.addEventListener('keydown', e => {
         void manualSaveCanvas();
         return;
     }
+    // #253：Tab = 单个选中节点就地快速重命名（仅恰好选中 1 个节点时拦截 Tab，
+    // 否则保持正常焦点移动；模态框打开/可编辑目标内不触发）。
+    if(e.key === 'Tab' && !e.shiftKey && !isEditableTarget(e.target)){
+        const tabIds = selectedNodeIds();
+        if(tabIds.length !== 1) return;
+        if(document.getElementById('imageEditModal')?.classList.contains('open')) return;
+        if(!document.getElementById('smartBatchRenameBackdrop')?.hidden) return;
+        e.preventDefault();
+        quickEditNode(canvasState.nodes.find(n => n.id === tabIds[0]));
+        return;
+    }
     if(key === 'r' && !isEditableTarget(e.target)) isRKeyDown = true;
     if(imageEditModal.classList.contains('open') && imageEditMode === 'preview' && !isEditableTarget(e.target)){
         if(e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
@@ -15230,6 +15268,20 @@ window.addEventListener('keydown', e => {
             if(e.repeat) return;
             e.preventDefault();
             toggleZoomPreview();
+            return;
+        }
+        // #253：Shift+A = 整理排版选中节点（复用现有 arrangeSelectedSmartNodes；不占裸 A 资源库键）。
+        if(key === 'a' && e.shiftKey){
+            if(e.repeat) return;
+            e.preventDefault();
+            arrangeSelectedSmartNodes();
+            return;
+        }
+        // #253：方向键微调选中节点（1px；Shift=10px）。
+        if(['arrowleft','arrowright','arrowup','arrowdown'].includes(key)){
+            if(!selectedNodeIds().length) return;
+            e.preventDefault();
+            nudgeSelectedNodes(key, e.shiftKey ? 10 : 1, e.repeat);
             return;
         }
         if(key === 'a'){
@@ -15251,6 +15303,37 @@ window.addEventListener('keydown', e => {
         if(selectionText) return;
         e.preventDefault();
         copySelectedNodes();
+        return;
+    }
+    // #253：Ctrl+A = 全选节点。
+    if((e.ctrlKey || e.metaKey) && key === 'a' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        canvasState.selectedIds = canvasState.nodes.map(n => n.id);
+        canvasState.selectedId = '';
+        canvasState.selectedImage = {nodeId:'', index:-1};
+        render();
+        return;
+    }
+    // #253：Ctrl+D = 复制选中节点。
+    if((e.ctrlKey || e.metaKey) && key === 'd' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        duplicateSelectedNodes();
+        return;
+    }
+    // #253：视图快捷键 Ctrl+= / Ctrl+- / Ctrl+0。
+    if((e.ctrlKey || e.metaKey) && (key === '=' || key === '+') && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '-' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1 / 1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '0' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        fitAllNodesViewport();
         return;
     }
     if((e.ctrlKey || e.metaKey) && key === 'v' && !isEditableTarget(e.target) && nodeClipboard?.nodes?.length){
@@ -15689,6 +15772,104 @@ async function createPromptNodeFromOcr(){
         toast(`${tr('smart.ocrFailed')}: ${err?.message || err}`);
     }
 }
+// #253：就地快速重命名——图片节点改首图名（显示名徽章），其余节点类型改 node.title。
+// 入口：Tab 快捷键、右键「重命名」卡。提交后 pushUndo + render + scheduleSave。
+function quickEditNode(node){
+    if(!node) return;
+    const target = FireflyQuickEdit.quickEditRenameTarget(node, NODE_TYPE_IMAGE);
+    if(!target) return;
+    const el = world.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
+    if(!el) return;
+    const anchor = target.kind === 'image'
+        ? (el.querySelector('.image-name-badge') || el.querySelector('.node-title'))
+        : el.querySelector('.node-title');
+    if(!anchor) return;
+    const img = target.kind === 'image' ? (node.images || [])[0] : null;
+    FireflyQuickEdit.openQuickEdit({
+        anchor,
+        getValue: () => target.kind === 'image' ? imageNameLabel(img) : (node.title || ''),
+        placeholder: tr('smart.quickEditPlaceholder'),
+        onCommit(value){
+            pushUndo();
+            if(target.kind === 'image') img.name = value;
+            else node.title = value;
+            canvasCore.render();
+            canvasCore.scheduleSave();
+        },
+    });
+}
+function quickEditFromMenu(){
+    const nodeId = canvasState.createMenuImageNodeId || canvasState.createMenuGroupId || selectedNodeIds()[0] || canvasState.selectedId || '';
+    canvasState.createMenuImageNodeId = '';
+    canvasState.createMenuGroupId = '';
+    closeCreateMenu();
+    quickEditNode(canvasState.nodes.find(n => n.id === nodeId));
+}
+// #253：方向键微调选中节点（1px；Shift=10px；分组合其成员一起移动）。
+function nudgeSelectedNodes(dir, step, repeat){
+    const ids = selectedNodeIds();
+    if(!ids.length) return;
+    const dx = dir === 'arrowleft' ? -step : dir === 'arrowright' ? step : 0;
+    const dy = dir === 'arrowup' ? -step : dir === 'arrowdown' ? step : 0;
+    if(!repeat) pushUndo();
+    ids.forEach(id => {
+        const moved = canvasState.nodes.find(n => n.id === id);
+        if(!moved) return;
+        if(isSmartGroupNode(moved)) translateSmartNodeWithMembers(moved, dx, dy);
+        else { moved.x = Math.round((Number(moved.x) || 0) + dx); moved.y = Math.round((Number(moved.y) || 0) + dy); }
+    });
+    render();
+    scheduleSave();
+}
+// #253：Ctrl+D = 复制选中节点（同 Alt 拖复制 duplicateForAltDrag 机制，固定 32px 对角偏移，选中新节点）。
+function duplicateSelectedNodes(dx=32, dy=32){
+    const ids = selectedNodeIds();
+    if(!ids.length) return;
+    pushUndo();
+    const idMap = new Map();
+    const copies = [];
+    ids.forEach(id => {
+        const sourceNode = canvasState.nodes.find(n => n.id === id);
+        if(!sourceNode) return;
+        const copy = cloneSmartNode(sourceNode, dx, dy);
+        idMap.set(sourceNode.id, copy.id);
+        copies.push(copy);
+    });
+    if(!copies.length) return;
+    copies.forEach(copy => {
+        if(Array.isArray(copy.inputNodeIds)) copy.inputNodeIds = copy.inputNodeIds.map(id => idMap.get(id) || id).filter(Boolean);
+        if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || copy.sourceNodeId;
+    });
+    const idSet = new Set(ids);
+    const nextConnections = [...(canvas.connections || [])];
+    (canvas.connections || []).forEach(conn => {
+        if(!idSet.has(conn.from) || !idSet.has(conn.to)) return;
+        const mapped = {...conn, from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to};
+        if(!mapped.from || !mapped.to || mapped.from === mapped.to) return;
+        const kind = mapped.kind || 'flow';
+        if(nextConnections.some(c => c.from === mapped.from && c.to === mapped.to && (c.kind || 'flow') === kind)) return;
+        nextConnections.push(mapped);
+    });
+    canvas.connections = nextConnections;
+    canvasState.nodes.push(...copies);
+    canvasState.selectedId = copies.length === 1 ? copies[0].id : '';
+    canvasState.selectedIds = copies.map(c => c.id);
+    canvasState.selectedImage = {nodeId:'', index:-1};
+    render();
+    scheduleSave();
+}
+// #253：以视口中心为锚点按因子缩放（Ctrl+/Ctrl-）。
+function zoomViewportAroundCenter(factor){
+    if(!shell) return;
+    const cx = shell.clientWidth / 2;
+    const cy = shell.clientHeight / 2;
+    const worldX = (cx - viewport.x) / viewport.scale;
+    const worldY = (cy - viewport.y) / viewport.scale;
+    viewport.scale = safeScale(viewport.scale * factor);
+    viewport.x = cx - worldX * viewport.scale;
+    viewport.y = cy - worldY * viewport.scale;
+    applyViewport();
+}
 createMenu?.addEventListener('mousedown', event => event.stopPropagation());
 createMenu?.addEventListener('click', event => {
     event.stopPropagation();
@@ -15696,6 +15877,8 @@ createMenu?.addEventListener('click', event => {
     if(!card) return;
     const type = card.dataset.createType || 'image';
     if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
+    if(type === 'rename') return quickEditFromMenu(); // #253：右键「重命名」→ 就地快速编辑
+    if(type === 'tidy'){ closeCreateMenu(); arrangeSelectedSmartNodes(); return; } // #253：右键「整理排版」→ 复用现有 arrangeSelectedSmartNodes
     createNodeFromMenu(type);
 });
 function createCanvasStarterImage(pickMedia=false){
