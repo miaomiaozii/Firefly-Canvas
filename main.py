@@ -1209,6 +1209,8 @@ from app.routers import api_canvas_image_tasks as _r_api_canvas_image_tasks
 app.include_router(_r_api_canvas_image_tasks.router)
 from app.routers import api_canvas_llm as _r_api_canvas_llm
 app.include_router(_r_api_canvas_llm.router)
+from app.routers import api_chat_media as _r_api_chat_media
+app.include_router(_r_api_chat_media.router)
 from app.routers import api_canvas_video as _r_api_canvas_video
 app.include_router(_r_api_canvas_video.router)
 from app.routers import api_canvases as _r_api_canvases
