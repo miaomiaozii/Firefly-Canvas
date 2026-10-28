@@ -481,11 +481,13 @@ class QualityGateTests(unittest.TestCase):
         # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
         # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
         # #185：node_flow 级联与 fly_fixes 两个 runner 同一套路接入。
+        # #269：图层面板浏览器 runner 同一套路接入（门只验接线，不验产品行为）。
         for runner_name in (
             "canvas_boundaries_browser.py",
             "video_failure_browser.py",
             "node_flow_browser.py",
             "fly_fixes_browser.py",
+            "layers_panel_browser.py",
         ):
             (self.fixture_root / "tests" / runner_name).write_text(
                 "import sys\n"
@@ -2574,7 +2576,7 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
             "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
@@ -2591,6 +2593,7 @@ class QualityGateTests(unittest.TestCase):
                     "excel-import-evidence",
                     "edge-compatibility",
                     "canvas-boundaries-evidence",
+                    "layers-panel-evidence",
                     "video-failure-evidence",
                     "node-flow-cascade-evidence",
                     "fly-fixes-evidence",
