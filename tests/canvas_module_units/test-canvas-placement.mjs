@@ -145,6 +145,18 @@ test('findFreeSpot: 退化输入不抛错', () => {
         { x: 5, y: 5, exhausted: false });
 });
 
+test('findFreeSpot: 碰撞盒兼容 {w,h} 与 {width,height}（nodeRect）两种键形', () => {
+    const P = loadPlacement();
+    // nodeRect 口径（canvas-core：{x, y, width, height}）与规范形 {w,h} 行为一致
+    const wh = fromContext(P.findFreeSpot({ x: 150, y: 10 }, { w: 10, h: 10 }, [{ x: 100, y: 0, width: 100, height: 50 }]));
+    assert.deepEqual(wh, { x: 240, y: 10, exhausted: false }, 'width/height 键形同样参与碰撞');
+    const wh2 = fromContext(P.findFreeSpot({ x: 150, y: 10 }, { w: 10, h: 10 }, [{ x: 100, y: 0, w: 100, h: 50 }]));
+    assert.deepEqual(wh, wh2, '两种键形结果一致');
+    // w 键优先（同时存在时）
+    const both = fromContext(P.findFreeSpot({ x: 150, y: 10 }, { w: 10, h: 10 }, [{ x: 100, y: 0, w: 100, h: 50, width: 500, height: 50 }]));
+    assert.deepEqual(both, wh, 'w/h 键优先于 width/height');
+});
+
 test('rowSpots: 无碰撞 → 单行横排，游标 = 上一落点右缘 + GAP', () => {
     const P = loadPlacement();
     // 三个 100×80 的件从 (10, 20) 起排：x = 10 / 150 / 290（10+100+40 / 150+100+40）

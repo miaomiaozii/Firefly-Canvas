@@ -34,11 +34,12 @@
     }
 
     function toBox(box) {
+        // 兼容两种键形：{w,h}（本模块规范形）与 {width,height}（canvas-core nodeRect 口径）。
         return {
             x: toNumber(box?.x),
             y: toNumber(box?.y),
-            w: toNumber(box?.w),
-            h: toNumber(box?.h)
+            w: toNumber(box && (box.w !== undefined ? box.w : box.width)),
+            h: toNumber(box && (box.h !== undefined ? box.h : box.height))
         };
     }
 
