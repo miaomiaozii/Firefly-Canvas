@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import functools
 import unittest
 
 from tests.test_canvas_core_layer import REVERSE_REFERENCE_CEILINGS
@@ -32,9 +33,22 @@ from tools.canvas_coupling_report import (
 UNCLASSIFIED_REFERENCE_CEILING = 0
 
 
+# 155s→~15s：coupling() 每次调用都重解析全部画布 JS（~13s），而 11 个方法吃同一份
+# 输入——缓存一次，结果确定性不变。旧行为下单模块在 #204 分片里是 155.2s 巨块，
+# 并行争抢下膨胀到 189-195s 超单片守卫（trial-39888/71728 实败）。
+@functools.lru_cache(maxsize=1)
+def _cached_summary():
+    return summarize(coupling())
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_reverse():
+    return reverse_coupling()
+
+
 class CanvasCouplingReportTests(unittest.TestCase):
     def setUp(self):
-        self.summary = summarize(coupling())
+        self.summary = _cached_summary()
 
     def test_total_matches_the_ratchet_ceilings(self):
         # 两个工具必须同一口径，否则「降了多少」有两个互相矛盾的答案。
@@ -140,7 +154,7 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
         # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
-        rev = reverse_coupling()
+        rev = _cached_reverse()
         # 231/933/163/784 → 235/938/166/788：增量全部来自 #223 新建的 canvas-download.js
         # —— 下载层从 smart-canvas.js 抽成模块后，核心按名调它的 4 个函数
         # （downloadCanvasArchive / canvasReceiveBlob / canvasSaveBlobAsFile / canvasDownloadSkipSummary）。
@@ -149,15 +163,13 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # markedItemDisplayName（smart-canvas.js 两处：可见文本 + title），同样是「核心调模块」，
         # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
         # 直接拼 item.name 会一排重复）。
-        # → 237/938/167/788：#249 Escape 栈迁移删掉 smart-canvas.js 里的散装
-        # Escape 分支（closeImageEditor 调用 + imageEditModal 检查各 1 处），
-        # 核心对模块名的引用少 2（其中 imageEditModal 在「核心用得比 owner 多」
-        # 口径内少 1）。方向是解耦，不是新债。
         # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
-        self.assertEqual(rev["reverse_names"], 237)
-        self.assertEqual(rev["reverse_core_refs"], 938)
-        self.assertEqual(rev["core_dominant_names"], 167)
-        self.assertEqual(rev["core_dominant_core_refs"], 788)
+        # 241/950/170/798：#238 核心改调 canvas-media-history.js 档位层（smartNodePreviewTier 等 4 名），
+        # 「核心调模块」方向，非新债。
+        self.assertEqual(rev["reverse_names"], 241)
+        self.assertEqual(rev["reverse_core_refs"], 950)
+        self.assertEqual(rev["core_dominant_names"], 170)
+        self.assertEqual(rev["core_dominant_core_refs"], 798)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

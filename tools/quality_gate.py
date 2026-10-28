@@ -121,7 +121,10 @@ UNIT_CONTRACT_UNKNOWN_TARGET_SECONDS = 5.0
 # 装箱后单片的目标上限（秒）：留出远大于守卫比例的余量。
 UNIT_CONTRACT_TARGET_SHARD_SECONDS = 45.0
 # 每组分片数上限，防止大量小测试把分片数量撑爆。
-UNIT_CONTRACT_MAX_SHARDS = 12
+# 2026-10-28 上调 12→24：模块数 191 后 LPT 被旧上限压成 12 片（每片估 70-80s），
+# 并行组内争抢再膨胀，实测 remainder-1 达 194.7s 超守卫上限 180s（60%×300s）
+# ——trial 连败 20261028-132753/141026 实证。目标 45s 只在片数不被上限压死时成立。
+UNIT_CONTRACT_MAX_SHARDS = 24
 # #204 守卫：任何单片的实测耗时不得超过 trial 预算的这个比例。
 UNIT_CONTRACT_SHARD_BUDGET_RATIO = 0.6
 
@@ -1432,7 +1435,10 @@ def trusted_node_executable() -> str:
 
 
 def trusted_tool_executable_paths() -> list[str]:
-    candidates = [trusted_node_executable(), shutil.which("git")]
+    # taskkill：门自己 stop_process_tree 在用（:1984），#239 的存活/杀死测试（remainder 切片）
+    # 也经 agent_host 真实调用它——不在允许表就会在子进程里被守卫拒（实测 2026-10-28
+    # remainder-7/8 denied taskkill.exe）。
+    candidates = [trusted_node_executable(), shutil.which("git"), shutil.which("taskkill")]
     return sorted(
         {
             str(Path(path).resolve())
@@ -1440,6 +1446,23 @@ def trusted_tool_executable_paths() -> list[str]:
             if path and Path(path).is_file()
         }
     )
+
+
+def trusted_media_executable_paths() -> list[str]:
+    # #238：视频预览帧抽取（app/services/generation.py:156-165）在生产路径调 ffmpeg；
+    # 门内服务器被 poster 预热触发时不能被守卫误杀。ffprobe 同族预留。
+    # 与 tool 类不同：ffmpeg 参数由应用自己控制（不是门要约束的结构化工具），
+    # 所以进「允许不加参数审」的 trusted 侧，不进 _tool_paths。
+    candidates = [shutil.which("ffmpeg"), shutil.which("ffprobe")]
+    return sorted({str(Path(path).resolve()) for path in candidates if path})
+
+
+def trusted_stub_executable_paths(execution_root: Path) -> list[str]:
+    # #239：agent-CLI 存活/杀死类测试的仓库内 .cmd 桩（tests/stubs/*.cmd）——
+    # 仓内受审文件，绝对路径动态入册，不放开任意 .cmd。
+    # 注意：必须按「门实际执行用的 workspace 副本」 glob，不是源仓库——
+    # guarded 测试跑在临时 workspace 里，stub 路径是副本路径。
+    return sorted(str(path.resolve()) for path in (execution_root / "tests" / "stubs").glob("*.cmd"))
 
 
 def git_state(repo_root: Path) -> dict:
@@ -1572,7 +1595,10 @@ def isolated_environment(
             "FIREFLY_TEST_DISABLE_CLI_PROBES": "1",
             "FIREFLY_QUALITY_GATE": "1",
             "FIREFLY_QUALITY_GATE_ALLOWED_EXECUTABLES": json.dumps(
-                trusted_executable_paths() + tool_executables
+                trusted_executable_paths()
+                + tool_executables
+                + trusted_media_executable_paths()
+                + trusted_stub_executable_paths(repo_root)
             ),
             "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES": json.dumps(tool_executables),
             "FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES": json.dumps(blocked_executables),

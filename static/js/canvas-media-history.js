@@ -90,6 +90,49 @@ function smartMediaPreviewUrl(itemOrUrl, size=512){
     return `/api/media-preview?w=${width}&url=${encodeURIComponent(raw)}`;
 }
 
+// #238 Perf(W1): zoom-adaptive preview LOD tiers (ComfyArt 95ab202 a/b).
+// Smallest tier covering node long edge × zoom × dpr: deep zoom-ins upgrade,
+// zoom-outs downgrade. Zero backend change — /api/media-preview and project
+// media /preview already honour ?w=.
+const MEDIA_PREVIEW_TIERS = [256, 512, 1024];
+function mediaPreviewTierFor(cssLongEdge, zoom=1, dpr=1){
+    const px = Math.max(1, (Number(cssLongEdge) || 0) * Math.max(0.05, Number(zoom) || 1) * Math.max(1, Number(dpr) || 1));
+    for(const tier of MEDIA_PREVIEW_TIERS){ if(px <= tier) return tier; }
+    return MEDIA_PREVIEW_TIERS[MEDIA_PREVIEW_TIERS.length - 1];
+}
+function setPreviewUrlWidth(url, width){
+    const text = String(url || '');
+    if(!text || !/([?&])w=\d+/.test(text)) return text;
+    return text.replace(/([?&])w=\d+/, `$1w=${Math.max(64, Math.min(2048, Math.round(Number(width) || 512)))}`);
+}
+function isRealPreviewEndpoint(url){
+    const text = String(url || '');
+    return /\/preview\?/.test(text) || /\/api\/media-preview\?/.test(text);
+}
+
+// #238: video preview builders moved here from smart-canvas.js so the poster
+// tier lives next to smartMediaPreviewUrl. displayMediaUrl resolves through
+// canvasCore (host-provided) with a direct-url fallback.
+function mediaDisplaySrc(itemOrUrl){
+    const raw = typeof itemOrUrl === 'string' ? itemOrUrl : (itemOrUrl?.url || '');
+    if(/^(data:|blob:)/i.test(String(raw || ''))) return String(raw || '');
+    const viaCore = typeof canvasCore !== 'undefined' && canvasCore.displayMediaUrl;
+    return viaCore ? canvasCore.displayMediaUrl(itemOrUrl) : raw;
+}
+function smartVideoPreviewHtml(itemOrUrl, size=512, attrs=''){
+    const original = smartOriginalMediaUrl(itemOrUrl);
+    const poster = smartMediaPreviewUrl(itemOrUrl, size);
+    return smartVideoFallbackHtml(original, attrs, isRealPreviewEndpoint(poster) ? poster : '');
+}
+function smartVideoFallbackHtml(url, attrs='', posterUrl=''){
+    const original = smartOriginalMediaUrl(url);
+    const src = mediaDisplaySrc({url:original});
+    const posterAttr = posterUrl ? ` poster="${escapeHtml(posterUrl)}"` : '';
+    // #238: never fetch video bytes on the canvas; poster carries the frame,
+    // hover (or the play button) starts playback muted+looping.
+    return `<video src="${escapeHtml(src)}" data-url="${escapeAttr(original)}" data-video-preview="1" muted${posterAttr} preload="none" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
+}
+
 function mediaItemForStorage(item){
     if(!item || typeof item !== 'object') return item;
     const clean = {...item};

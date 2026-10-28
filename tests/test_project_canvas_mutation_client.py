@@ -402,7 +402,8 @@ console.log(JSON.stringify({{result, confirmations}}));
         script = canvas_source()
         page = SMART_CANVAS_HTML.read_text(encoding="utf-8")
         self.assertIn("function smartVideoPreviewHtml", script)
-        self.assertIn("return smartVideoFallbackHtml(original, attrs);", script)
+        # #238：预览改走视频专属预览档（poster），但视频本体仍用原始资源，不塞 image preview。
+        self.assertIn("smartVideoFallbackHtml(original, attrs", script)
         self.assertIn("mediaKindForItem(hydrated) === 'image'", script)
         self.assertIn("(media.kind || mediaKindForItem(media)) === 'image'", script)
         self.assertNotIn("['image', 'video'].includes(mediaKindForItem(hydrated))", script)
