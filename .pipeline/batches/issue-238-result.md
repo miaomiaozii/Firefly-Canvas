@@ -42,3 +42,49 @@
 ## Commit
 
 54ea6b1（+ result commit）。基线 issue/238 @ 6feca94。
+
+## 收尾（2026-10-29，总控）
+
+**分支与票面状态**
+- 实现已全量合入 wave1-live（merge df93897，含棘轮同步+ui-integrity 基线刷新）；远端
+  issue/238 曾于合并后删除，本轮重新推送。
+- 票面 10-28 19:40 已由 miaomiaozii 关闭（关票评论引用 merge df93897 + fast 证据
+  20261029-033955-fast-58700）；本轮补挂 assignee（miaomiaozii）。
+
+**核验（wt-238，树 = origin/wave1-live @ a1b1f95）**
+1. 前向同步：`git merge origin/wave1-live` fast-forward a3c5126 → a1b1f95（吸收 110
+   提交，零冲突；batch-2/3/4 各票 + #269 已在其中）。
+2. 禁区核验：238 系提交仅触 static/js/canvas-media-history.js、static/js/smart-canvas.js、
+   tests/test_media_lod_contract.py、tests/canvas_module_units/test-canvas-media-lod.mjs、
+   tests/native_browser.py——对 app/agent_tools.py / agent_host* / static/js/agent/* /
+   fal / generation / media 零触碰。
+3. 棘轮：已按 ADR 0020 在合入时钉值（docs/adr/0020 + tests/test_canvas_coupling_report.py，
+   948/797，merge 冲突手工解决）；本轮跑 wave1-live tip 树，coupling 测试绿，无新漂移。
+4. 全量 pytest（2026-10-29 03:56，日志 /tmp/238-full-suite.log）：**1526 passed, 1 skipped,
+   628 subtests passed, 527.26s, 0 failed**。树与 wave1-live 基线同一 tip，结果与基线完全
+   一致；用例数较 10-28 同分支运行（1331 passed）的 +195 来自合入后 batch 各票（#253/#255/
+   #256/#257/#258/#268/#269 等），非本票引入。
+5. 环境性失败甄别（10-28 历史失败，根因均已修复且已含于现树，本轮 0 环境失败）：
+   - 扩展用例 4 失败：harness `--disable-extensions` 旗标杀掉 --load-extension 加载的扩展
+     → a3c5126 撤销该旗标；
+   - 棘轮 2 失败 + test_project_canvas_mutation_client 1 失败（238 预览路径相关）→
+     df93897 棘轮同步 + ui-integrity 基线刷新解决；
+   - gate 清理 PermissionError [WinError 32]（/tmp/238_gate.log）：Windows 文件锁环境
+     问题，非代码问题。
+6. 门（2026-10-29，wt-238 @ a1b1f95）：
+   - fast：**passed 15.8s** → `C:\Users\Administrator\AppData\Local\Temp\firefly-quality-gate\20261029-035503-fast-76912`
+   - domain：**passed 131.0s** → `C:\Users\Administrator\AppData\Local\Temp\firefly-quality-gate\20261029-041044-domain-72940`（一次通过，无 chrome 并发重试）
+7. 基线参照（wave1-live 当日已跑）：trial passed 214.5s（…033341-trial-43920）、
+   domain passed 130.8s（…020724-domain-70444）。
+8. 合并前链式日志（10-28）：/tmp/238_chain.log（perf500/边界/node_flow/fly_fixes/
+   experience 5 个浏览器 runner 全 PASS；末段全量 pytest 历史失败见上）、/tmp/238_pytest.log
+   （4 failed）、/tmp/238_pytest2.log（2 failed，后续修复全绿）。
+
+**完成清单**
+- [x] 前向同步 wave1-live（ff a3c5126 → a1b1f95，零冲突）
+- [x] 全量 pytest 对照基线（1526 passed / 0 failed，环境性失败甄别见上）
+- [x] 补缺口：无新增 TODO（已知权衡为环境 fake 数据问题，见「已知权衡」）
+- [x] fast + domain 门 passed（证据目录已录）
+- [x] push origin issue/238（分支 tip = 本收尾 commit）
+- [x] `gh issue edit 238 --add-assignee miaomiaozii`
+- [x] result.md 更新（本节）
