@@ -25,13 +25,22 @@ CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 TOPAZ_IMAGE = 'fal-ai/topaz/upscale/image'
 TOPAZ_GENERATIVE = 'fal-ai/topaz/upscale/image/generative'
 
+# 与同服务商其它图片模型（gpt-image-2 等）保持同一比例集。
+# 高清修复本身没有 size/ratio 参数，输出比例继承输入图；声明画布标准比例才能路由，
+# 而画布上不存在的自由比例（如外延的 1250:833）必须被停下并点名（#187 / ADR 0006）。
+COMFLY_ASPECT_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '9:21']
+
 CAPABILITIES = {
     TOPAZ_IMAGE: {
         'media_types': ['image'],
         'max_reference_images': 1,
+        # arbitrary_size：高清修复接受任意输入像素（输出=输入×倍率），没有固定像素表。
         'arbitrary_size': True,
-        'arbitrary_aspect_ratio': True,
-        'arbitrary_resolution': True,
+        # 不能声明 arbitrary_resolution/arbitrary_aspect_ratio：那等于向路由谎称
+        # 「8k / 任意比例都能出」，#187 契约要求没有模型支持时必须停下而不是静默降级。
+        'aspect_ratios': list(COMFLY_ASPECT_RATIOS),
+        # 档位即语义：model_by_resolution 只实现 1k/2k/4k（无 auto——auto 会静默用 fal 默认引擎与倍率）。
+        'resolutions': ['1k', '2k', '4k'],
         'fal_request': {
             'endpoint': TOPAZ_IMAGE,
             'path_prefix': 'fal',
@@ -49,8 +58,8 @@ CAPABILITIES = {
         'media_types': ['image'],
         'max_reference_images': 1,
         'arbitrary_size': True,
-        'arbitrary_aspect_ratio': True,
-        'arbitrary_resolution': True,
+        'aspect_ratios': list(COMFLY_ASPECT_RATIOS),
+        'resolutions': ['1k', '2k', '4k'],
         'fal_request': {
             'endpoint': TOPAZ_GENERATIVE,
             'path_prefix': 'fal',
@@ -80,12 +89,36 @@ def find_provider(providers, wanted):
     return target
 
 
+# fal 官方 OpenAPI 的 model 枚举（2026-10-28 拉取 schemas.fal.ai 核实）。
+# 写错一个引擎名会被 fal 422 拒掉，而画布只能在失败后告诉你——所以这里当场拦住。
+FAL_MODEL_ENUMS = {
+    TOPAZ_IMAGE: ['Standard V2', 'High Fidelity V2', 'Low Resolution V2', 'CGI', 'Text Refine',
+                  'Wonder 3', 'Wonder', 'Standard MAX', 'Redefine', 'Recovery V2', 'Recovery'],
+    TOPAZ_GENERATIVE: ['Wonder 3.5', 'Wonder 3', 'Wonder 2', 'Wonder', 'Recover 3', 'Standard MAX',
+                       'Redefine', 'Recovery V2', 'Recovery'],
+}
+
+
+def validate_capabilities() -> None:
+    """本地拦截：档位→引擎必须落在 fal 枚举里，比例/档位必须与 model_by_resolution 一致。"""
+    for model, capability in CAPABILITIES.items():
+        enum = FAL_MODEL_ENUMS[model]
+        by_resolution = capability['fal_request']['model_by_resolution']
+        bad = sorted(set(by_resolution.values()) - set(enum))
+        if bad:
+            raise SystemExit(f'{model} 的引擎名不在 fal 官方枚举内：{bad}；合法值：{enum}')
+        declared = set(capability['resolutions'])
+        if declared != set(by_resolution):
+            raise SystemExit(f'{model} 的 resolutions 声明 {sorted(declared)} 与 model_by_resolution 键 {sorted(by_resolution)} 不一致')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--provider', default='provider-ms5fzxu7')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
 
+    validate_capabilities()
     providers = json.load(io.open(CONFIG, encoding='utf-8'))
     if isinstance(providers, dict):
         providers = providers.get('providers', [])
@@ -106,6 +139,11 @@ def main() -> int:
     for model, capability in CAPABILITIES.items():
         merged = dict(capabilities.get(model) or {})
         merged.update(capability)
+        # 旧版本曾误写 arbitrary_aspect_ratio/arbitrary_resolution=True（向路由谎称 8k/任意比例可出，
+        # 直接违反 #187 契约）。本工具是 fal 能力的唯一事实源：新规格不再声明的开关必须清掉。
+        for key in ('arbitrary_size', 'arbitrary_aspect_ratio', 'arbitrary_resolution', 'arbitrary_quality'):
+            if key not in capability:
+                merged.pop(key, None)
         capabilities[model] = merged
 
     names = target.setdefault('model_names', {})

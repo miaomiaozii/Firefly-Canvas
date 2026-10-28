@@ -11,6 +11,7 @@ import asyncio
 import unittest
 
 import app.services.generation as GENERATION
+import app.services.media as MEDIA
 from app.core import (
     SUPPORTED_IMAGE_REQUEST_MODES,
     effective_image_request_mode,
@@ -81,7 +82,7 @@ class _stubbed_service:
         self._saved = {}
 
     def __enter__(self):
-        for name, value in (('_main', _fake_main), ('responses_input_image_url', _fake_ref_url)):
+        for name, value in (('_main', _fake_main), ('fal_reference_public_url', _fake_ref_url)):
             self._saved[name] = getattr(GENERATION._svc, name)
             setattr(GENERATION._svc, name, value)
         return self
@@ -226,10 +227,170 @@ class FalQueueModeTests(unittest.TestCase):
         self.assertEqual(payload['image']['url'], 'https://fal.media/files/lion/out.png')
         self.assertEqual(len(capture.requests), 1)
 
+    def test_reference_without_usable_image_fails_before_network(self):
+        capture = ProviderContractCapture([SUBMIT_ACK])
 
-async def _fake_ref_url(ref, require_public_url=False):
-    # fal 高清修复需要公网可拉取的输入图，回退到本地 data: 会直接 422。
-    return str(ref.get('url') or '') if require_public_url else ''
+        async def exercise():
+            with _stubbed_service():
+                await GENERATION.generate_fal_queue_image(capture.async_client(), BASE_URL, provider(), MODEL, [{'url': ''}], {})
+
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(exercise())
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn('参考图', raised.exception.detail)
+        self.assertEqual(capture.requests, [])
+
+
+class FalReferencePublicUrlTests(unittest.TestCase):
+    """站内参考图（/api/project-library/…）必须公网化后才能交给 fal：上游拉不到本机地址。"""
+
+    CANVAS_LOCAL = '/api/project-library/28f95417ff91/media/2902c86b22f6.png'
+    LOOPBACK = f'http://127.0.0.1:3000{CANVAS_LOCAL}'
+
+    def _run(self, ref, *, upload=None, data_url='', public_base='', fn='fal_reference_public_url'):
+        saved = {
+            'upload_local_video_to_cloud': MEDIA._svc.upload_local_video_to_cloud,
+            '_main': MEDIA._svc._main,
+            'local_asset_public_url': MEDIA.local_asset_public_url,
+        }
+
+        async def _upload(path):
+            if upload is None:
+                raise AssertionError('公网 URL 不应触发上传')
+            return await upload(path)
+
+        def _main(name):
+            if name == 'reference_to_data_url':
+                def make(ref, max_size=None, max_bytes=None):
+                    return data_url
+                return make
+            if name == 'output_file_from_url':
+                return lambda value: 'C:/fake/in.png'
+            raise KeyError(name)
+
+        def _public(value):
+            return f'{public_base}{value}' if public_base else ''
+
+        try:
+            MEDIA._svc.upload_local_video_to_cloud = _upload
+            MEDIA._svc._main = _main
+            MEDIA.local_asset_public_url = _public
+            return asyncio.run(getattr(MEDIA, fn)(ref))
+        finally:
+            MEDIA._svc.upload_local_video_to_cloud = saved['upload_local_video_to_cloud']
+            MEDIA._svc._main = saved['_main']
+            MEDIA.local_asset_public_url = saved['local_asset_public_url']
+
+    def test_genuine_public_url_passes_through_without_upload(self):
+        self.assertEqual(self._run({'url': 'https://cdn.invalid/a.png'}), 'https://cdn.invalid/a.png')
+
+    def test_canvas_local_path_is_uploaded_to_a_public_host(self):
+        async def upload(path):
+            self.assertEqual(path, self.CANVAS_LOCAL)
+            return {'url': 'https://litterbox.invalid/keep.png'}
+
+        # 高清修复的输入必须保留原分辨率：只能走图床，不能先被 base64 缩放。
+        self.assertEqual(self._run({'url': self.CANVAS_LOCAL}, upload=upload), 'https://litterbox.invalid/keep.png')
+
+    def test_loopback_url_is_treated_as_local_and_uploaded(self):
+        async def upload(path):
+            self.assertEqual(path, self.CANVAS_LOCAL)
+            return {'url': 'https://tmp.invalid/x.png'}
+
+        self.assertEqual(self._run({'url': self.LOOPBACK}, upload=upload), 'https://tmp.invalid/x.png')
+
+    def test_upload_failure_falls_back_to_configured_public_base(self):
+        async def failing_upload(path):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail='云端上传失败')
+
+        self.assertEqual(
+            self._run({'url': self.CANVAS_LOCAL}, upload=failing_upload, public_base='https://tunnel.invalid'),
+            f'https://tunnel.invalid{self.CANVAS_LOCAL}',
+        )
+
+    def test_upload_failure_without_public_base_raises_actionable_error(self):
+        async def failing_upload(path):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail='云端上传失败')
+
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as raised:
+            self._run({'url': self.CANVAS_LOCAL}, upload=failing_upload)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn('PUBLIC_MEDIA_BASE_URL', raised.exception.detail)
+        # fal 官方 schema 只接受 URL（image_url: type string），不能拿 base64 兜底
+        self.assertIn('只接受 URL', raised.exception.detail)
+
+    def test_unrelated_remote_path_is_rejected_not_uploaded(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as raised:
+            self._run({'url': '/somewhere/else.png'})
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_video_proxy_mode_accepts_the_same_project_library_reference(self):
+        """用户真实报错现场：openai-video-proxy 的参考图公网化只认 /output/ 与 /assets/，
+        项目库路径会被当成“不是公网 URL”拦下。两个通道必须认同一套站内形态。"""
+        async def upload(path):
+            self.assertEqual(path, self.CANVAS_LOCAL)
+            return {'url': 'https://catbox.invalid/keep.png'}
+
+        self.assertEqual(
+            self._run({'url': self.CANVAS_LOCAL}, upload=upload, fn='openai_video_proxy_public_reference_url'),
+            'https://catbox.invalid/keep.png',
+        )
+
+    def test_video_proxy_mode_without_upload_channel_gives_actionable_error(self):
+        async def failing_upload(path):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail='云端上传失败')
+
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as raised:
+            self._run({'url': self.CANVAS_LOCAL}, upload=failing_upload, fn='openai_video_proxy_public_reference_url')
+        self.assertIn('图床', raised.exception.detail)
+
+
+class FalErrorDetailTests(unittest.TestCase):
+    """中转把 fal 原始错误套在 message 的字符串 JSON 里，错误码必须挖出来才能给人可行动的提示。"""
+
+    class _Response:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+
+    LIVE_503 = ('{"code":"fail_submit_task","message":"{\\"error\\":{\\"message\\":\\"No fal API key is '
+                'available in the pool.\\",\\"type\\":\\"api_error\\",\\"param\\":null,\\"code\\":\\"no_upstream_key\\"}}","data":null}')
+
+    def test_nested_upstream_error_code_is_unwrapped_and_explained(self):
+        detail = GENERATION.fal_error_detail('comfly', '任务提交', self._Response(503, self.LIVE_503))
+        self.assertIn('HTTP 503', detail)
+        self.assertIn('no_upstream_key', detail)          # 内层真错误码，不是外层的 fail_submit_task
+        self.assertIn('No fal API key is available in the pool.', detail)
+        self.assertIn('渠道侧问题', detail)                # 告诉我们不是画布的锅
+        self.assertNotIn('fail_submit_task', detail)      # 外层噪声码不应遮住内层
+
+    def test_unparseable_body_keeps_raw_tail_and_generic_hint(self):
+        detail = GENERATION.fal_error_detail('comfly', '结果拉取', self._Response(502, '<html>gateway boom</html>'))
+        self.assertIn('gateway boom', detail)
+        self.assertIn('上游服务不可用', detail)
+
+    def test_schema_rejection_hint_points_at_the_config_knob(self):
+        body = '{"error":{"message":"Value error, unexpected key: size","code":"validation_error"}}'
+        detail = GENERATION.fal_error_detail('comfly', '任务提交', self._Response(422, body))
+        self.assertIn('unexpected key: size', detail)
+        self.assertIn('fal_request.params', detail)
+
+    def test_flat_error_shape_still_works(self):
+        detail = GENERATION.fal_error_detail('comfly', '任务提交', self._Response(401, '{"message":"invalid token","code":"invalid_api_key"}'))
+        self.assertIn('invalid_api_key', detail)
+        self.assertIn('API 平台管理', detail)
+
+
+async def _fake_ref_url(ref):
+    # fal 高清修复需要 fal 服务器可拉取的输入图（站内路径必须公网化，见 FalReferencePublicUrlTests）。
+    return str((ref or {}).get('url') or '') if isinstance(ref, dict) else str(ref or '')
 
 
 def _fake_main(name):

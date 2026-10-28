@@ -1363,6 +1363,62 @@ def fal_request_urls(base_url, model, request_id, submitted, prefix='fal'):
     return urls
 
 
+FAL_ERROR_HINTS = {
+    'no_upstream_key': '这是渠道侧问题：服务商的 fal 上游密钥池里没有可用 key（未接入或额度耗尽），画布无法绕过。请在服务商后台为 fal 渠道补密钥/额度，或换一个已开通 fal 的渠道。',
+    'invalid_api_key': '服务商拒绝了本次鉴权（token 无效或已过期），请在 API 平台管理里更新该服务商的 Key。',
+    'model_not_found': '服务商没有这个 fal 端点：请核对 image_model_capabilities[model].fal_request.endpoint 与服务商实际模型名。',
+    'insufficient_quota': '服务商余额/额度不足，高清修复无法提交。',
+}
+
+
+def fal_error_detail(provider_name, stage, response):
+    """把中转/fal 众层嵌套的错误体拆成人能读的一句，并补上可行动的下一步。
+
+    中转常见形态：{code:'fail_submit_task', message:'{"error":{"message":...,"code":"no_upstream_key"}}'}
+    —— 外层 code 无用，真正的错误码被包在 message 的字符串 JSON 里。
+    """
+    raw = str(response.text or '').strip()
+    code = ''
+    message = ''
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        code = str(data.get('code') or '').strip().lower()
+        message = str(data.get('message') or '').strip()
+        inner = None
+        try:
+            inner = json.loads(message)
+        except Exception:
+            inner = None
+        if isinstance(inner, dict):
+            error = inner.get('error') if isinstance(inner.get('error'), dict) else inner
+            code = str(error.get('code') or code).strip().lower()
+            message = str(error.get('message') or message).strip()
+        elif isinstance(data.get('error'), dict):
+            error = data['error']
+            code = str(error.get('code') or code).strip().lower()
+            message = str(error.get('message') or message).strip()
+    hint = FAL_ERROR_HINTS.get(code, '')
+    status = int(getattr(response, 'status_code', 0) or 0)
+    if not hint and status == 422:
+        hint = 'fal 的 schema 很严：提交体里多出 upscale 模型不吃的字段会被直接拒。请检查 image_model_capabilities[model].fal_request.params。'
+    if not hint and status == 429:
+        hint = 'fal 队列已满或被限流，稍后重试；也可降低档位避开高峰。'
+    if not hint and status in {502, 503, 504}:
+        hint = '上游服务不可用，稍后重试；若持续如此，请在服务商后台查该渠道状态。'
+    detail = f'{provider_name} fal {stage}失败（HTTP {status}）'
+    if code:
+        detail += f'，上游错误码 {code}'
+    body_text = message or raw[:200]
+    if body_text:
+        detail += f'：{body_text[:240]}'
+    if hint:
+        detail += f'。{hint}'
+    return detail
+
+
 async def generate_fal_queue_image(client, base_url, provider, model, image_refs, params, *, prefix='fal', progress_callback=None, resolution=None, model_by_resolution=None):
     """fal.ai 队列协议：提交 → 轮询 status → 拉取结果（Topaz 高清修复等 image-to-image 模型）。
 
@@ -1370,18 +1426,26 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
     """
     paths = fal_queue_paths(base_url, model, prefix=prefix)
     image_url = ''
+    relay_error = ''
     for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
-        image_url = await _svc.responses_input_image_url(ref, require_public_url=True)
+        # fal 不会拉本机路径：站内参考图必须先公网化（图床 → PUBLIC_MEDIA_BASE_URL 公网基址）。
+        try:
+            image_url = await _svc.fal_reference_public_url(ref)
+        except HTTPException as exc:
+            relay_error = str(exc.detail)
+            continue
         if image_url:
             break
     if not image_url:
+        if relay_error:
+            raise HTTPException(status_code=400, detail=relay_error)
         raise HTTPException(status_code=400, detail='高清修复模型需要一张参考图（选一张画布上的图作为输入）')
     body = fal_submit_body(model, image_url, params, resolution, model_by_resolution)
     headers = _svc._main('api_headers')(provider=provider, model=model)
     response = await client.post(paths, headers=headers, json=body)
     if response.status_code >= 400:
         provider_name = provider.get('name') or provider['id']
-        raise HTTPException(status_code=response.status_code, detail=f"{provider_name} fal 任务提交失败（HTTP {response.status_code}）：{(response.text or '')[:400]}")
+        raise HTTPException(status_code=response.status_code, detail=fal_error_detail(provider_name, '任务提交', response))
     try:
         submitted = response.json()
     except Exception as exc:
@@ -1400,7 +1464,7 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         status_response = await client.get(status_url, headers=headers)
         if status_response.status_code >= 400:
             provider_name = provider.get('name') or provider['id']
-            raise HTTPException(status_code=status_response.status_code, detail=f"{provider_name} fal 任务状态查询失败（HTTP {status_response.status_code}）：{(status_response.text or '')[:300]}")
+            raise HTTPException(status_code=status_response.status_code, detail=fal_error_detail(provider_name, '任务状态查询', status_response))
         try:
             status_payload = status_response.json()
         except Exception:
@@ -1424,7 +1488,7 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
     result_response = await client.get(result_url, headers=headers)
     if result_response.status_code >= 400:
         provider_name = provider.get('name') or provider['id']
-        raise HTTPException(status_code=502, detail=f"{provider_name} fal 结果拉取失败（HTTP {result_response.status_code}）：{(result_response.text or '')[:300]}")
+        raise HTTPException(status_code=502, detail=fal_error_detail(provider_name, '结果拉取', result_response))
     try:
         payload = result_response.json()
     except Exception as exc:
