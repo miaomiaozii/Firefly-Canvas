@@ -3824,3 +3824,50 @@ async def purge_project_media_trash(project_id: str, asset_id: str | None=None):
     except ProjectStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {'ok': True, 'removed': removed}
+
+# ── 版本树（issue #257；ADR 0021 ops.db 租户 + ADR 0018 回滚语义）──────────────────
+
+@router.get('/api/project-library/{project_id}/versions')
+async def list_project_versions(project_id: str):
+    """版本列表（新→旧）。无 ops.db 文件 = 空状态（ADR 0021）。"""
+    try:
+        versions = await asyncio.to_thread(_app_main.project_store_call, 'list_project_versions', project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='项目不存在') from exc
+    return {'project_id': project_id, 'versions': versions}
+
+@router.get('/api/project-library/{project_id}/versions/{version_id}/diff')
+async def diff_project_versions_endpoint(project_id: str, version_id: int, base: str = 'current'):
+    """回滚前 diff：对比 base（'current' 或版本 id）与目标版本，供前端确认弹窗展示。"""
+    try:
+        result = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'diff_project_versions',
+            project_id,
+            base,
+            version_id,
+        )
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='项目或版本不存在') from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+@router.post('/api/project-library/{project_id}/versions/{version_id}/restore')
+async def restore_project_version_endpoint(project_id: str, version_id: int):
+    """回滚到历史版本：先存当前为 pre-restore 快照，再恢复目标版本（ADR 0018 语义）。"""
+    try:
+        result = await asyncio.to_thread(
+            _app_main.project_store_call,
+            'restore_project_version',
+            project_id,
+            version_id,
+        )
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='项目或版本不存在') from exc
+    await manager.broadcast_canvas_updated(project_id, _app_main.now_ms())
+    return result

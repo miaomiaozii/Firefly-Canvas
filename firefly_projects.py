@@ -189,13 +189,14 @@ def _library_manifest(root: Path) -> Dict[str, Any]:
 
 from firefly_projects_deletion import ProjectDeletionMixin
 from firefly_projects_cleanup import ProjectCleanupMixin
+from firefly_project_versions import ProjectVersionsMixin
 
 # 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
 # 塞回用户眼前（#224 要修的就是这个），所以按裸 ID 形态剔除。
 _BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
 
 
-class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
+class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
         "input_asset_id", "inputAssetId",
@@ -623,6 +624,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             self._canvases[project_id] = canvas
             self._histories[project_id] = []
             self._saved_revisions[project_id] = 0
+            # issue #257：创建即记录初始空画布版本（版本树 v1 基线）
+            self._capture_version_snapshot_if_enabled(project_id, self._project_canvas_for_persistence(canvas))
             return self._project_record(metadata)
 
     def duplicate_project(self, project_id: str) -> Dict[str, Any]:
@@ -3023,6 +3026,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             metadata["updated_at"] = canvas["updated_at"]
             _write_json_atomic(metadata_path, metadata, keep_backup=True, backup_count=1)
             self._saved_revisions[project_id] = int(canvas.get("revision") or 0)
+            # issue #257 / ADR 0021：每次 flush 自动快照进 ops.db 版本树（non-strict，不阻塞保存）
+            self._capture_version_snapshot_if_enabled(project_id, persisted_canvas)
             return {"project_id": project_id, "revision": canvas["revision"], "saved_at": canvas["updated_at"]}
 
     # ── 文档恢复（issue #94，ADR 0018）──────────────────────────────────────
@@ -3225,6 +3230,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             pending = list(self._timers)
         for project_id in pending:
             self.flush(project_id)
+        ops = getattr(self, "_opsdb_instance", None)
+        if ops is not None:
+            ops.close_all()
 
     def _project_record(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {
