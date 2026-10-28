@@ -139,8 +139,8 @@
 
 | 口径 | 名字 | 核心侧引用处 |
 |---|---|---|
-| 核心引用模块声明的名字（反向总面） | **237** | **940** |
-| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **167** | **789** |
+| 核心引用模块声明的名字（反向总面） | **237** | **938** |
+| 其中核心用得比 owner 模块自己还多（「搬早了」信号） | **167** | **788** |
 
 （从 231/933/163/784 上漂：全部来自 #223 新建的 `canvas-download.js`——下载层从 smart-canvas.js
 抽成模块后，核心改为按名调它的 4 个函数（downloadCanvasArchive / canvasReceiveBlob /
@@ -159,6 +159,13 @@ canvasSaveBlobAsFile / canvasDownloadSkipSummary）。这是 #154 要求的「�
 同批同名同分钟的占位名（generated-N）单看一条分不出谁是谁，去歧义必须看整列。
 核心引用少 1、「核心用得比 owner 多」的名字少 1（`markedItemDisplayName` 回到模块
 内部调用）；`canvas-media-history.js` 的 owner 计数 59→60。
+
+再到 237/938/167/788（#249 Escape 栈迁移）：smart-canvas.js 删掉两处散装
+Escape 处理——核心 keydown 里的图片编辑器分支（`closeImageEditor()` 调用与
+`imageEditModal` 的 class 检查各 1 处）和设置弹窗的 window 监听。核心对模块
+声明名字的引用少 2（closeImageEditor 2→1、imageEditModal 17→16），其中
+imageEditModal 在「核心用得比 owner 多」口径内少 1。方向是解耦（模态层的
+Escape 处理收进各自的 open/close 函数，经 escape-stack.js 统一结算），不是新债。
 
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、

@@ -149,11 +149,15 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # markedItemDisplayName（smart-canvas.js 两处：可见文本 + title），同样是「核心调模块」，
         # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
         # 直接拼 item.name 会一排重复）。
+        # → 237/938/167/788：#249 Escape 栈迁移删掉 smart-canvas.js 里的散装
+        # Escape 分支（closeImageEditor 调用 + imageEditModal 检查各 1 处），
+        # 核心对模块名的引用少 2（其中 imageEditModal 在「核心用得比 owner 多」
+        # 口径内少 1）。方向是解耦，不是新债。
         # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
         self.assertEqual(rev["reverse_names"], 237)
-        self.assertEqual(rev["reverse_core_refs"], 940)
+        self.assertEqual(rev["reverse_core_refs"], 938)
         self.assertEqual(rev["core_dominant_names"], 167)
-        self.assertEqual(rev["core_dominant_core_refs"], 789)
+        self.assertEqual(rev["core_dominant_core_refs"], 788)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])
