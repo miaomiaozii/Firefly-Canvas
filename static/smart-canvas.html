@@ -385,6 +385,7 @@
                         <button type="button" data-image-edit-mode="brush"><i data-lucide="paintbrush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeBrush">画笔</span></button>
                         <button type="button" data-image-edit-mode="resize"><i data-lucide="minimize-2" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeResize">缩放</span></button>
                         <button type="button" data-image-edit-mode="grid"><i data-lucide="grid-3x3" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeGrid">宫格切分</span></button>
+                        <button type="button" data-image-edit-mode="layers"><i data-lucide="layers" class="w-3.5 h-3.5"></i><span data-i18n="canvas.layersMode">图层</span></button>
                     </div>
                     <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
                 </div>
@@ -486,6 +487,12 @@
                     <label class="grid-gap-control"><span data-i18n="canvas.gridGap">间隔(px)</span> <input id="gridGapSize" type="range" min="0" max="240" step="1" value="0"><span id="gridGapValue" class="grid-gap-value">0</span></label>
                     <span id="gridSplitCount" class="image-edit-sub"></span>
                 </div>
+                <div id="imageLayersTools" class="image-edit-tools image-layers-tools" style="gap:6px">
+                    <button id="layerAddBlankBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.addBlankLayer()"><i data-lucide="square" class="w-4 h-4"></i><span data-i18n="canvas.layersAddBlank">空白图层</span></button>
+                    <button id="layerImportBrushBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.importBrushLayer()"><i data-lucide="paintbrush" class="w-4 h-4"></i><span data-i18n="canvas.layersImportBrush">导入笔刷</span></button>
+                    <div id="layerList" class="layer-list" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;min-width:220px"></div>
+                    <button id="layerExportBtn" class="image-edit-btn primary" type="button" onclick="CanvasLayers.exportCompositePng()"><i data-lucide="image-down" class="w-4 h-4"></i><span data-i18n="canvas.layersExport">导出合成 PNG</span></button>
+                </div>
                 <div id="imageEditStage" class="image-edit-stage">
                     <button id="previewPrevBtn" class="preview-nav-btn prev" type="button" onclick="navigatePreviewImage(-1)" title="上一张"><i data-lucide="chevron-left"></i></button>
                     <button id="previewNextBtn" class="preview-nav-btn next" type="button" onclick="navigatePreviewImage(1)" title="下一张"><i data-lucide="chevron-right"></i></button>
@@ -579,7 +586,9 @@
     <script src="/static/js/escape-stack.js?v=20261028.182000.0001"></script>
     <!-- #255 分数坐标骨架（先于 image-editor 加载，editor 接线用） -->
     <script src="/static/js/canvas-geometry.js?v=20261028.213000.0001"></script>
+    <script src="/static/js/canvas-vector-path.js?v=20261028.214500.0001"></script>
     <script src="/static/js/canvas-image-editor.js?v=20261028.182000.0001"></script>
+    <script src="/static/js/canvas-layers.js?v=20261028.215000.0001"></script>
     <script src="/static/js/canvas-generation-cascade.js?v=20261028.182000.0001"></script>
     <script src="/static/js/canvas-generation-tasks.js?v=20261028.182000.0001"></script>
     <script src="/static/js/canvas-agent-tui.js?v=20261028.182000.0001"></script>

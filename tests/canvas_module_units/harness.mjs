@@ -48,7 +48,11 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-node-ops.js',
     // #255：分数坐标骨架（0..1 公共坐标，crop/mask/brush 换算地基）。
     'canvas-geometry.js',
+    // #255：ComfyArt vectorPath.ts MIT 移植（路径归一化 / 缩放纯函数）。
+    'canvas-vector-path.js',
     'canvas-image-editor.js',
+    // #255：图像分层 + 图层面板（layers.ts MIT 移植 + store/合成/面板）。
+    'canvas-layers.js',
     'canvas-generation-cascade.js',
     'canvas-generation-tasks.js',
     'canvas-agent-tui.js',

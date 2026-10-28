@@ -506,7 +506,7 @@ function setImageEditMode(mode, userTouched=false){
     if(userTouched) imageEditModeTouched = true;
     const prev = imageEditMode;
     if(mode !== 'brush') removeEditTextInlineEditor(true);
-    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid'].includes(mode) ? mode : 'preview';
+    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid','layers'].includes(mode) ? mode : 'preview';
     const cropCanvasEl = document.getElementById('cropCanvas');
     const previewStageEl = document.getElementById('previewStage');
     const editStageEl = document.getElementById('imageEditStage');
@@ -545,6 +545,7 @@ function setImageEditMode(mode, userTouched=false){
     document.getElementById('imageBrushTools').classList.toggle('active', imageEditMode === 'brush');
     document.getElementById('imageResizeTools')?.classList.toggle('active', imageEditMode === 'resize');
     document.getElementById('imageGridTools').classList.toggle('active', imageEditMode === 'grid');
+    document.getElementById('imageLayersTools')?.classList.toggle('active', imageEditMode === 'layers');
     if(imageEditMode === 'grid' && gridOperationMode === 'join' && !canGridJoinCurrentNode()) gridOperationMode = 'split';
     syncGridOperationControls();
     updateImagePreviewMarkButton();
@@ -566,6 +567,11 @@ function setImageEditMode(mode, userTouched=false){
             document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
             document.getElementById('imageEditSub').textContent = tr('smart.zoomImageSub');
             applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
+        } else if(imageEditMode === 'layers'){
+            // #255 图层模式：导出走图层面板自己的按钮，隐藏主应用按钮。
+            document.getElementById('imageEditTitle').textContent = tr('canvas.layersTitle');
+            document.getElementById('imageEditSub').textContent = tr('canvas.layersHint');
+            applyBtn.style.display = 'none';
         } else {
             const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'brush' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
             const labelKey = imageEditMode === 'crop' ? 'canvas.applyCrop' : imageEditMode === 'outpaint' ? 'canvas.applyOutpaint' : imageEditMode === 'mask' ? 'canvas.applyMask' : imageEditMode === 'brush' ? 'canvas.applyBrush' : 'canvas.applyGrid';
@@ -596,6 +602,8 @@ function setImageEditMode(mode, userTouched=false){
     syncTextToolState(true);
     updatePreviewNavButtons();
     canvasCore.refreshIcons();
+    // #255 图层面板钩子：layers 模式时初始化 store + 渲染列表（纯接线，逻辑在 canvas-layers.js）。
+    window.CanvasLayers?.onEditMode?.(imageEditMode);
 }
 
 function editDrawSnapshot(){
