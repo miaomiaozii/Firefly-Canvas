@@ -1442,6 +1442,22 @@ def trusted_tool_executable_paths() -> list[str]:
     )
 
 
+def trusted_media_executable_paths() -> list[str]:
+    # #238：视频预览帧抽取（app/services/generation.py:156-165）在生产路径调 ffmpeg；
+    # 门内服务器被 poster 预热触发时不能被守卫误杀。ffprobe 同族预留。
+    # 与 tool 类不同：ffmpeg 参数由应用自己控制（不是门要约束的结构化工具），
+    # 所以进「允许不加参数审」的 trusted 侧，不进 _tool_paths。
+    candidates = [shutil.which("ffmpeg"), shutil.which("ffprobe")]
+    return sorted({str(Path(path).resolve()) for path in candidates if path})
+
+
+def trusted_stub_executable_paths() -> list[str]:
+    # #239：agent-CLI 存活/杀死类测试的仓库内 .cmd 桩（tests/stubs/*.cmd）——
+    # 仓内受审文件，绝对路径动态入册，不放开任意 .cmd。
+    repo_root = Path(__file__).resolve().parents[1]
+    return sorted(str(path.resolve()) for path in (repo_root / "tests" / "stubs").glob("*.cmd"))
+
+
 def git_state(repo_root: Path) -> dict:
     try:
         process = subprocess.run(
@@ -1572,7 +1588,10 @@ def isolated_environment(
             "FIREFLY_TEST_DISABLE_CLI_PROBES": "1",
             "FIREFLY_QUALITY_GATE": "1",
             "FIREFLY_QUALITY_GATE_ALLOWED_EXECUTABLES": json.dumps(
-                trusted_executable_paths() + tool_executables
+                trusted_executable_paths()
+                + tool_executables
+                + trusted_media_executable_paths()
+                + trusted_stub_executable_paths()
             ),
             "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES": json.dumps(tool_executables),
             "FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES": json.dumps(blocked_executables),

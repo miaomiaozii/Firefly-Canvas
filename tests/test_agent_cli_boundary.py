@@ -29,6 +29,8 @@ if str(ROOT) not in sys.path:
 from tools.quality_gate import (
     GUARD_SOURCE,
     trusted_executable_paths,
+    trusted_media_executable_paths,
+    trusted_stub_executable_paths,
     trusted_tool_executable_paths,
 )
 from tests.fake_agent_host import install_stub_pi_cli, restore_stub_pi_cli
@@ -112,7 +114,12 @@ class TestAgentCliSpawnBoundary(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _write_guard(self) -> Path:
-        allowed = trusted_executable_paths() + trusted_tool_executable_paths()
+        allowed = (
+            trusted_executable_paths()
+            + trusted_tool_executable_paths()
+            + trusted_media_executable_paths()
+            + trusted_stub_executable_paths()
+        )
         tool_paths = trusted_tool_executable_paths()
         prelude = (
             "import json, os\n"
