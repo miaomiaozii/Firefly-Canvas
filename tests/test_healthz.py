@@ -30,7 +30,9 @@ class HealthzTests(unittest.TestCase):
             headers={"origin": "http://127.0.0.1"},
         )
         self._tokens = []
+        # Isolate from sessions leaked into the global manager by other test files.
         self.previous_agent_sessions = dict(agent_host_manager.sessions)
+        agent_host_manager.sessions.clear()
 
     def tearDown(self):
         for token in self._tokens:
