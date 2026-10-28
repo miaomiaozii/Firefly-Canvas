@@ -31,7 +31,7 @@
 | 泳道 | 票 | 难度/预估 | worktree | 分支 |
 |---|---|---|---|---|
 | G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) exit0 | ✅ 已合并，票已关，review PASS（总控复跑 50 passed） |
-| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m+80m 三轮后实现完成；**总控查明 MCP 全量假失败根因**=harness 测试 sys.modules 污染（非 MCP bug），总控修隔离(commit 13ea61d)；resume del_mvre0g3z_40ai(80m，只做全量+result+commit) | 进行中 |
+| H | #243 MCP streamable-HTTP 端点实现 | 中大 | (已删) | (已删) | 三轮 worker（150+70+80m）后总控接管：查明 harness 污染假失败根因+修隔离；全量 1360 passed | ✅ 已合 wave1-live，票已关，review PASS |
 | I | #235 provider 未知终态化+RunningHub code+resume not-found | 中 | D:/ff-wt/wt-235 | issue/235 | del_mvrhaem0_73gb(90m，锚点已注入) | 进行中 |
 | J | #238 缩放自适应缩略图+视频悬停 | 中小 | D:/ff-wt/wt-238 | issue/238 | del_mvrhaem0_4q7g(75m) | 进行中 |
 | K | #263 #234 trial 门证据补挂 | 小 | D:/ff-wt/wt-263 | issue/263 | del_mvre0g3z_2h0k(55m，总控亲跑红测试+处方注入) | 进行中 |
@@ -42,8 +42,8 @@
 ## Wave 1c/1d 状态（刷新 10:4x）
 
 - ⚠️ 主线事实：本地工作线 = wave1-live（原 pipeline/canvas-modularization 改名；main 直系后代 + 8 票合并）；已推 origin 并开 **PR #264**（base main，待人工审阅）。新 worktree 均基于 wave1-live。
-- 已关 8 票：#234 #239 #240 #241 #242 #243 #245 #250。
-- 在跑 6 条：#235 #238（旧基线）+ #263（del_mvri56q3_93si）+ #244（del_mvri31rv_jp7y）+ #249（del_mvri37ra_h6cb）。
+- 已关 8 票：#234 #239 #240 #241 #242 #243(刚合) #245 #250。全量在 wave1-live：1360 passed / 1 skipped。
+- 在跑 5 条：#235 #238（旧基线）+ #263（del_mvri56q3_93si）+ #244（del_mvri31rv_jp7y）+ #249（del_mvri37ra_h6cb）。
 - 待解锁：#237（再押后：与 #244 同触 agent_host/project_sessions）；#236→#254（待 #235）；#252/#253（待 #238）；#251/#257/#258（待 ADR 0021 签署）；#260（待 #259）。
 - 人工闸口：**PR #264 审阅**、#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署**；#247/#248 已标 needs-info 并评论索要证据/澄清。
 - 排队：#246、#261（与 #249 同抢 tests/test_workflows.py，待 #249 合并）。
