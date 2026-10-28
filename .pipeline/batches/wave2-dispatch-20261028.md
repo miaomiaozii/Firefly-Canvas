@@ -39,3 +39,4 @@
 - #253 集成进 wave1-live（merge 7cec429）：棘轮 246/964/174/811+ADR0020 漂移日志+ui-integrity createMenu 基线刷新；trial 212.3s 全绿。wave1-live 现含 batch-2/3/4 全量十一票。
 - #253 收口补记（总控代交）：core_surface 拖拽断言语义修复（存储==落盘实时位置，适配吸附）已随 int-256 合流。
 - #269 收口：issue/269（layers_panel_browser 33 断言全链旅程，注册 trial+release+并行组；零产品 bug——#253/#255 交互获裁判背书）。总控 int-256 合入后 fast 16.0s + trial 214.5s 全绿（含新步）。
+- #251 收口：undo_snapshots 租户+GET/PUT 路由+前端 1.5s 防抖/恢复（棘轮 247/965/175/812 随分支入 wave1-live）；总控 fast+domain 见上。
