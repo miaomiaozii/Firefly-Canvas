@@ -93,12 +93,12 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_get_selection(self):
-        """canvas.get_selection returns selected nodes (empty for agent)."""
+        """canvas.get_selection is removed (#243): the fake tool always
+        returned an empty selection (selection is purely client-side state),
+        so the audit stripped it from both the MCP surface and this endpoint.
+        The route must no longer exist."""
         response = self.client.get(f"/api/projects/{self.project_id}/canvas/selection")
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("selected", data)
-        self.assertEqual(data["selected"], [])
+        self.assertEqual(response.status_code, 404)
 
     def test_create_node(self):
         """canvas.create_node creates a new node."""

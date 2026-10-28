@@ -272,6 +272,7 @@ class TestAgentConcurrency(unittest.TestCase):
     def test_concurrent_canvas_mutations_with_retry(self):
         """Concurrent mutations with revision conflicts should succeed via retry."""
         from app.routers.api_agent_tools import _apply_mutations
+        import asyncio
         import threading
 
         # Simulate concurrent mutations that might conflict
@@ -289,8 +290,17 @@ class TestAgentConcurrency(unittest.TestCase):
                 "h": 80,
                 "title": f"Concurrent {i}",
             }
+            # #243: _apply_mutations is now async (broadcasts canvas_updated
+            # after a successful commit) — run each mutation on its own event
+            # loop, still racing across threads to exercise the retry-on-
+            # revision-conflict path.
             try:
-                results[i] = _apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}])
+                loop = asyncio.new_event_loop()
+                try:
+                    results[i] = loop.run_until_complete(
+                        _apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}]))
+                finally:
+                    loop.close()
             except Exception as e:
                 errors[i] = e
 

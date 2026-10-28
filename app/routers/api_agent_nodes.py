@@ -20,12 +20,12 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
 
 
-def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
+async def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
     """Update a single field on a node and persist (reuses retry-on-conflict helper)."""
     node = _find_node(project_id, node_id)
     node[field] = value
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
     return node
 
 
@@ -127,7 +127,7 @@ async def set_agent_model(
     """
     model = body.get("model", "")
     # Persist to node attributes
-    node = _update_node_field(project_id, node_id, "model", model)
+    node = await _update_node_field(project_id, node_id, "model", model)
 
     # If session is running, switch model via RPC
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -164,7 +164,7 @@ async def set_agent_autonomy(
         raise HTTPException(status_code=400, detail=f"Invalid autonomy level: {autonomy}")
 
     # Persist to node attributes
-    node = _update_node_field(project_id, node_id, "autonomy", autonomy)
+    node = await _update_node_field(project_id, node_id, "autonomy", autonomy)
 
     # Update session autonomy (affects confirm gate scope immediately)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -345,7 +345,7 @@ async def fork_session(
     node["branches"] = branches
     node["current_branch"] = branch_id
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
 
     return {
         "success": True,
@@ -387,7 +387,7 @@ async def switch_branch(
     # Update current_branch in node attributes
     node["current_branch"] = branch_id
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
 
     return {
         "success": True,
