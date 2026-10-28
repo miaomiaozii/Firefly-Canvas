@@ -8,7 +8,7 @@
   <script src="/static/js/i18n.js"></script>
   <script src="/static/js/global-preferences.js"></script>
   <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20261026.214956.6237">
-  <link rel="stylesheet" href="/static/css/project-list.css?v=20261026.214956.6237">
+  <link rel="stylesheet" href="/static/css/project-list.css?v=20261028.210423.0001">
 </head>
 <body>
   <main class="project-shell">
@@ -80,6 +80,29 @@
       <div class="dialog-actions">
         <button id="closeCleanupPreview" class="button secondary" type="button" data-i18n="projectList.cleanupClose">关闭预览</button>
         <button id="confirmCleanup" class="button danger" type="button" data-i18n="projectList.cleanupConfirm" disabled hidden>确认永久清理</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="versionsDialog" class="create-dialog versions-dialog" aria-labelledby="versionsTitle">
+    <div class="versions-content">
+      <p class="eyebrow">VERSION HISTORY</p>
+      <h2 id="versionsTitle" data-i18n="projectList.versionsTitle">版本历史</h2>
+      <p id="versionsProject" class="versions-project"></p>
+      <p id="versionsError" class="form-error" role="alert"></p>
+      <div id="versionsList" class="versions-list" aria-live="polite"></div>
+      <section id="versionsDiff" class="versions-diff" hidden aria-live="polite">
+        <h3 data-i18n="projectList.versionsDiffTitle">与当前画布的差异</h3>
+        <p id="versionsDiffSummary" class="versions-diff-summary"></p>
+        <div id="versionsDiffList" class="versions-diff-list"></div>
+        <p id="versionsDiffMore" class="versions-diff-more" hidden></p>
+        <div id="versionsConfirmArea" class="versions-confirm" hidden>
+          <p class="versions-confirm-note" data-i18n="projectList.versionsConfirmNote">确认后会把当前画布先存为“回滚前”快照，再回滚到目标版本；回滚后随时可以再回滚到回滚前状态。</p>
+          <p id="versionsRestoreError" class="form-error" role="alert"></p>
+        </div>
+      </section>
+      <div class="dialog-actions">
+        <button id="closeVersions" class="button secondary" type="button" data-i18n="projectList.versionsClose">关闭</button>
+        <button id="versionsRestore" class="button primary" type="button" data-i18n="projectList.versionsRestoreConfirm" disabled hidden>确认回滚</button>
       </div>
     </div>
   </dialog>

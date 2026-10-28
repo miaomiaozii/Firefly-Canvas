@@ -19,6 +19,19 @@
   const cleanupConfirmNote = document.getElementById('cleanupConfirmNote');
   const cleanupConfirmError = document.getElementById('cleanupConfirmError');
   const cleanupConfirmButton = document.getElementById('confirmCleanup');
+  const versionsDialog = document.getElementById('versionsDialog');
+  const versionsProject = document.getElementById('versionsProject');
+  const versionsList = document.getElementById('versionsList');
+  const versionsError = document.getElementById('versionsError');
+  const versionsDiff = document.getElementById('versionsDiff');
+  const versionsDiffSummary = document.getElementById('versionsDiffSummary');
+  const versionsDiffList = document.getElementById('versionsDiffList');
+  const versionsDiffMore = document.getElementById('versionsDiffMore');
+  const versionsConfirmArea = document.getElementById('versionsConfirmArea');
+  const versionsRestoreButton = document.getElementById('versionsRestore');
+  const versionsRestoreError = document.getElementById('versionsRestoreError');
+  let versionsProjectId = null;
+  let versionsDiffVersionId = null;
   let cleanupConfirmProjectId = null;
   let cleanupConfirmState = null;
   const tr = key => window.StudioI18n?.t?.(key) || key;
@@ -168,11 +181,14 @@
       const card = document.createElement('article');
       card.className = 'project-card';
       const updated = project.updated_at ? new Date(project.updated_at).toLocaleString(window.StudioI18n?.lang?.() === 'en' ? 'en-US' : 'zh-CN') : tr('projectList.justCreated');
-      card.innerHTML = `<button class="project-open" type="button"><span class="canvas-badge"></span><h2></h2><time></time></button><div class="project-actions"><button class="project-action project-cleanup-preview" type="button"></button><button class="project-action project-duplicate" type="button"></button><a class="project-action" download></a><button class="project-action danger" type="button"></button></div>`;
+      card.innerHTML = `<button class="project-open" type="button"><span class="canvas-badge"></span><h2></h2><time></time></button><div class="project-actions"><button class="project-action project-versions" type="button"></button><button class="project-action project-cleanup-preview" type="button"></button><button class="project-action project-duplicate" type="button"></button><a class="project-action" download></a><button class="project-action danger" type="button"></button></div>`;
       card.querySelector('.canvas-badge').textContent = tr('projectList.canvasBadge');
       card.querySelector('h2').textContent = project.name;
       card.querySelector('time').textContent = updated;
       card.querySelector('.project-open').addEventListener('click', () => openProject(project));
+      const versionsButton = card.querySelector('.project-versions');
+      versionsButton.textContent = tr('projectList.versions');
+      versionsButton.addEventListener('click', () => showVersions(project));
       const cleanupButton = card.querySelector('.project-cleanup-preview');
       if(project.cleanup_preview_available){
         cleanupButton.textContent = tr('projectList.cleanupPreview');
@@ -315,5 +331,188 @@
       createError.textContent = error.message || tr('projectList.createFailed');
     }
   });
+  // ── 版本历史 / diff 确认 / 回滚（issue #257；先存当前再回滚，ADR 0018 语义）────────
+  function versionsApiUrl(projectId, suffix){
+    return `/api/project-library/${encodeURIComponent(projectId)}/versions${suffix || ''}`;
+  }
+  function versionsLabel(label){
+    if(label === 'auto') return tr('projectList.versionsLabelAuto');
+    if(label === 'pre-restore') return tr('projectList.versionsLabelPreRestore');
+    return String(label || '');
+  }
+  function formatVersionsTime(value){
+    if(!value) return '';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(window.StudioI18n?.lang?.() === 'en' ? 'en-US' : 'zh-CN');
+  }
+  function resetVersionsDialog(project){
+    versionsProjectId = project.id;
+    versionsProject.textContent = project.name;
+    versionsError.textContent = '';
+    versionsList.replaceChildren();
+    versionsDiff.hidden = true;
+    versionsDiffSummary.textContent = '';
+    versionsDiffList.replaceChildren();
+    versionsDiffMore.hidden = true;
+    versionsConfirmArea.hidden = true;
+    versionsRestoreError.textContent = '';
+    versionsRestoreButton.hidden = true;
+    versionsRestoreButton.disabled = false;
+    versionsRestoreButton.textContent = tr('projectList.versionsRestoreConfirm');
+    versionsDiffVersionId = null;
+  }
+  function showVersions(project){
+    resetVersionsDialog(project);
+    versionsDialog.showModal();
+    loadVersionsList();
+  }
+  async function loadVersionsList(){
+    if(!versionsProjectId) return;
+    versionsError.textContent = '';
+    try {
+      const response = await fetch(versionsApiUrl(versionsProjectId), {method:'GET'});
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(String(data.detail || tr('projectList.versionsFailed')));
+      renderVersionsList(Array.isArray(data.versions) ? data.versions : []);
+    } catch(error){
+      versionsList.replaceChildren();
+      versionsError.textContent = error.message || tr('projectList.versionsFailed');
+    }
+  }
+  function renderVersionsList(versions){
+    versionsList.replaceChildren();
+    if(!versions.length){
+      const empty = document.createElement('p');
+      empty.className = 'versions-empty';
+      empty.textContent = tr('projectList.versionsEmpty');
+      versionsList.appendChild(empty);
+      return;
+    }
+    versions.forEach(version => {
+      const item = document.createElement('article');
+      item.className = 'versions-item';
+      const info = document.createElement('div');
+      info.className = 'versions-item-info';
+      const title = document.createElement('strong');
+      title.textContent = `#${version.id} · ${versionsLabel(version.label)}`;
+      const meta = document.createElement('span');
+      meta.className = 'versions-item-meta';
+      meta.textContent = tr('projectList.versionsNodes').replace('{count}', String(version.node_count || 0)) + ' · ' + formatVersionsTime(version.created_at);
+      info.append(title, meta);
+      const actions = document.createElement('div');
+      actions.className = 'versions-item-actions';
+      const diffButton = document.createElement('button');
+      diffButton.type = 'button';
+      diffButton.className = 'button secondary';
+      diffButton.textContent = tr('projectList.versionsCompare');
+      diffButton.addEventListener('click', () => showVersionDiff(version.id, {withConfirm: false}));
+      const restoreButton = document.createElement('button');
+      restoreButton.type = 'button';
+      restoreButton.className = 'button primary';
+      restoreButton.textContent = tr('projectList.versionsRestore');
+      restoreButton.addEventListener('click', () => showVersionDiff(version.id, {withConfirm: true}));
+      actions.append(diffButton, restoreButton);
+      item.append(info, actions);
+      versionsList.appendChild(item);
+    });
+  }
+  async function showVersionDiff(versionId, {withConfirm = false} = {}){
+    if(!versionsProjectId) return;
+    versionsError.textContent = '';
+    versionsDiff.hidden = false;
+    versionsDiffSummary.textContent = '…';
+    versionsDiffList.replaceChildren();
+    versionsDiffMore.hidden = true;
+    if(!withConfirm){
+      versionsConfirmArea.hidden = true;
+      versionsRestoreButton.hidden = true;
+    }
+    versionsDiffVersionId = null;
+    try {
+      const response = await fetch(versionsApiUrl(versionsProjectId, `/${encodeURIComponent(versionId)}/diff?base=current`), {method:'GET'});
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(String(data.detail || tr('projectList.versionsDiffFailed')));
+      renderVersionDiff(versionId, data, withConfirm);
+    } catch(error){
+      versionsDiffSummary.textContent = error.message || tr('projectList.versionsDiffFailed');
+      if(withConfirm){
+        versionsConfirmArea.hidden = true;
+        versionsRestoreButton.hidden = true;
+      }
+    }
+  }
+  function renderVersionDiff(versionId, data, withConfirm){
+    versionsDiffVersionId = versionId;
+    const added = Array.isArray(data.added) ? data.added : [];
+    const removed = Array.isArray(data.removed) ? data.removed : [];
+    const changed = Array.isArray(data.changed) ? data.changed : [];
+    versionsDiffSummary.textContent = tr('projectList.versionsDiffSummary')
+      .replace('{from}', String((data.stats && data.stats.nodes_from) || 0))
+      .replace('{to}', String((data.stats && data.stats.nodes_to) || 0))
+      .replace('{added}', String(added.length))
+      .replace('{removed}', String(removed.length))
+      .replace('{changed}', String(changed.length));
+    const list = versionsDiffList;
+    list.replaceChildren();
+    const MAX = 20;
+    let shown = 0;
+    let hiddenCount = 0;
+    const appendEntry = (kind, entry) => {
+      if(shown >= MAX){ hiddenCount += 1; return; }
+      const line = document.createElement('p');
+      line.className = `versions-diff-item versions-diff-${kind}`;
+      const mark = kind === 'added' ? '+' : (kind === 'removed' ? '−' : '~');
+      line.textContent = `${mark} ${entry.label || entry.id} (${entry.id})`;
+      list.appendChild(line);
+      shown += 1;
+    };
+    removed.forEach(entry => appendEntry('removed', entry));
+    added.forEach(entry => appendEntry('added', entry));
+    changed.forEach(entry => appendEntry('changed', entry));
+    if(added.length + removed.length + changed.length === 0){
+      const same = document.createElement('p');
+      same.className = 'versions-diff-item';
+      same.textContent = tr('projectList.versionsNoDiff');
+      list.appendChild(same);
+    }
+    versionsDiffMore.hidden = hiddenCount === 0;
+    versionsDiffMore.textContent = tr('projectList.versionsMore').replace('{count}', String(hiddenCount));
+    if(withConfirm){
+      versionsConfirmArea.hidden = false;
+      versionsRestoreButton.hidden = false;
+      versionsRestoreButton.disabled = false;
+    }
+  }
+  versionsRestoreButton.addEventListener('click', async () => {
+    const projectId = versionsProjectId;
+    const versionId = versionsDiffVersionId;
+    if(!projectId || !versionId) return;
+    versionsRestoreButton.disabled = true;
+    versionsRestoreButton.textContent = tr('projectList.versionsRestoring');
+    versionsRestoreError.textContent = '';
+    try {
+      const response = await fetch(versionsApiUrl(projectId, `/${encodeURIComponent(versionId)}/restore`), {method:'POST'});
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(String(data.detail || tr('projectList.versionsRestoreFailed')));
+      const preId = data.pre_restore_version_id;
+      versionsConfirmArea.hidden = true;
+      versionsRestoreButton.hidden = true;
+      const done = document.createElement('p');
+      done.className = 'versions-diff-summary';
+      done.textContent = typeof preId === 'number'
+        ? tr('projectList.versionsRestoreDone').replace('{id}', String(preId))
+        : tr('projectList.versionsRestoreDoneNoPre');
+      versionsDiffList.replaceChildren(done);
+      await loadVersionsList();
+    } catch(error){
+      versionsRestoreError.textContent = error.message || tr('projectList.versionsRestoreFailed');
+    } finally {
+      if(!versionsRestoreButton.hidden){
+        versionsRestoreButton.disabled = false;
+        versionsRestoreButton.textContent = tr('projectList.versionsRestoreConfirm');
+      }
+    }
+  });
+  document.getElementById('closeVersions').addEventListener('click', () => versionsDialog.close());
   load();
 })();
