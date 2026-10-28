@@ -31,10 +31,6 @@ class _FakeMain:
         return getattr(self.store, method_name)(*args, **kwargs)
 
 
-def _run(coro):
-    return asyncio.run(coro)
-
-
 class AgentHostUsageTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -42,6 +38,11 @@ class AgentHostUsageTests(unittest.TestCase):
         self.store = ProjectStore(self.root, snapshot_delay=60.0)
         self.project_id = self.store.create_project("Agent用量")["id"]
         self.manager = AgentHostManager()
+        # 保存主线程当前 loop：本模块用完必须原样恢复（置 None 会击穿
+        # test_agent_tui 等依赖 asyncio.get_event_loop() 的既有模块）
+        self._previous_current_loop = asyncio.get_event_loop()
+        self.loop = asyncio.new_event_loop()
+        self.addCleanup(self._close_loop)
         self._old_main = agent_host_module._app_main
         agent_host_module._app_main = _FakeMain(self.store)
         self.session = AgentSession(project_id=self.project_id, node_id="node-1", model="anthropic/claude-test")
@@ -51,11 +52,26 @@ class AgentHostUsageTests(unittest.TestCase):
         self.store.close()
         self.temp_dir.cleanup()
 
+    def _close_loop(self):
+        try:
+            self.loop.run_until_complete(self.manager.stop_all())
+        except Exception:
+            pass
+        finally:
+            previous = self._previous_current_loop
+            try:
+                self.loop.close()
+            finally:
+                asyncio.set_event_loop(previous if not previous.is_closed() else asyncio.new_event_loop())
+
+    def _run(self, coro):
+        return self.loop.run_until_complete(coro)
+
     def _dispatch_turn(self, messages):
         async def scenario():
             await self.manager._dispatch_event(self.session, {"type": "agent_start"})
             await self.manager._dispatch_event(self.session, {"type": "agent_end", "messages": messages})
-        _run(scenario())
+        self._run(scenario())
 
     def test_agent_end_records_usage_turn(self):
         self._dispatch_turn([
