@@ -170,10 +170,13 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # static/js/escape-stack.js（dd67bdc 同因 -2），#238 的 +10 与其叠加后净 -2/-1。
         # 246/957/173/803：#260 切片（批量重命名 + Upscale 档位菜单）新增 5 反向名字/9 引用，
         # 方向为「核心调模块」，非新债。
+        # 246/959/174/806：#256 图片节点右键「提取文字」——核心 smart-canvas.js 新增
+        # createPromptNodeFromOcr，调 canvas-node-ops.js 的 createPromptNode（1→2）与
+        # canvas-node-types.js 的 NODE_TYPE_IMAGE（15→16），方向「核心调模块」，非新债。
         self.assertEqual(rev["reverse_names"], 246)
-        self.assertEqual(rev["reverse_core_refs"], 957)
-        self.assertEqual(rev["core_dominant_names"], 173)
-        self.assertEqual(rev["core_dominant_core_refs"], 803)
+        self.assertEqual(rev["reverse_core_refs"], 959)
+        self.assertEqual(rev["core_dominant_names"], 174)
+        self.assertEqual(rev["core_dominant_core_refs"], 806)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

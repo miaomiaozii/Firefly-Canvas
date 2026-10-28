@@ -427,7 +427,6 @@ function createNodeFromMenu(type){
     if(type === 'group') return createSmartGroupNode(p.x - 170, p.y - 110);
     let created = null;
     if(type === 'prompt') created = createPromptNode(p.x - 158, p.y - 97);
-    else if(type === 'ocr') return createPromptNodeFromOcr(); // #256：右键图片节点「提取文字」
     else if(type === 'conversation') created = createConversationNode(p.x - 195, p.y - 215);
     else if(type === 'agent') created = createAgentNode(p.x - 191, p.y - 180);
     else if(type === 'local-edit') created = createLocalEditNode(p.x - 180, p.y - 165);

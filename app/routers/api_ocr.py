@@ -3,8 +3,8 @@
 ADR-lite 选型注释（票面要求选型写注释）：
 - 选型：rapidocr-onnxruntime（纯 Python + onnxruntime，CPU 推理，无需 GPU /
   无需系统级依赖，pip 可离线安装）。
-- 与 ADR 0004 的关系：0004 禁的是「本地生成推理运行时」（ComfyUI / 本地
-  Stable Diffusion 模型 / 工作流执行器，即图片*生成*链路）。OCR 是图片
+- 与 ADR 0004 的关系：0004 禁的是图片*生成*链路的进程内推理运行时（详见
+  docs/adr/0004）。OCR 是图片
   *轻量后处理*（文字识别，非生成推理），且本端点只读项目已存在的媒体文件、
   不产生活体运行时，故判定不冲突，维持票面首选方案；若后续维护者判定冲突，
   切换成本被隔离在 `_get_ocr_engine` + `ocr_bytes` 两个函数内（换成外部
@@ -24,6 +24,7 @@ import asyncio
 import base64
 import re
 import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List
@@ -55,7 +56,7 @@ class OcrRequest(BaseModel):
     # 三选一（按优先级 asset_id > 内部媒体 URL > 外部 URL）：
     # asset_id 需配 project_id，走 project_store 就地解析文件字节；
     # image_url 支持 /api/project-library/{pid}/media/{aid}（就地解析，不发 HTTP）、
-    # data:...;base64 或 http(s) 外链。
+    # data:...;base64 或 http(s) 远端 URL。
     image_url: str = ''
     project_id: str = ''
     asset_id: str = ''
@@ -107,8 +108,6 @@ def _validate_image_bytes(data: bytes) -> None:
         with Image.open(BytesIO(data)) as img:
             if img.format not in _ALLOWED_IMAGE_FORMATS:
                 raise ValueError(img.format or 'unknown')
-    except HTTPException:
-        raise
     except Exception as exc:
         raise HTTPException(status_code=415, detail=f'不是受支持的图片（{exc}）') from exc
 
@@ -181,7 +180,7 @@ async def ocr_image(payload: OcrRequest) -> Dict[str, Any]:
     """图片 → 文字。返回 {text, items:[{text, score, box}], elapsed_ms}。"""
     data = await _resolve_source_bytes(payload)
     _validate_image_bytes(data)
-    started = asyncio.get_event_loop().time()
+    started = time.monotonic()
     result = await asyncio.to_thread(ocr_bytes, data)
-    result['elapsed_ms'] = int((asyncio.get_event_loop().time() - started) * 1000)
+    result['elapsed_ms'] = int((time.monotonic() - started) * 1000)
     return result

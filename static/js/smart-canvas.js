@@ -15693,7 +15693,10 @@ createMenu?.addEventListener('mousedown', event => event.stopPropagation());
 createMenu?.addEventListener('click', event => {
     event.stopPropagation();
     const card = event.target.closest('[data-create-type]');
-    if(card) createNodeFromMenu(card.dataset.createType || 'image');
+    if(!card) return;
+    const type = card.dataset.createType || 'image';
+    if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
+    createNodeFromMenu(type);
 });
 function createCanvasStarterImage(pickMedia=false){
     closeCreateMenu();
