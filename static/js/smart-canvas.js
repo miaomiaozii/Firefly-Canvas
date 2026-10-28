@@ -1,4 +1,7 @@
 console.log("smart-canvas.js loading...");
+// #252 IME 守卫：中文输入法组词期间的回车（isComposing / keyCode 229）是“确认候选词”，
+// 不是提交/确认键。所有文本输入框的 Enter 分支必须套此守卫（抄 ComfyArt keys.ts isEnter）。
+function imeComposing(event){ return Boolean(event && (event.isComposing || event.keyCode === 229)); }
 const canvasId = params.get('id') || '';
 const sourceProjectId = params.get('project') || '';
 window.canvasId = canvasId;
@@ -70,7 +73,7 @@ function openSmartTitleEdit(){
         }
     };
     input.addEventListener('keydown', event => {
-        if(event.key === 'Enter'){ event.preventDefault(); finish(true); }
+        if(event.key === 'Enter' && !imeComposing(event)){ event.preventDefault(); finish(true); }
         else if(event.key === 'Escape'){ event.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
@@ -5390,8 +5393,8 @@ function openAssetNameDialog({title='', value='', placeholder='', cancelValue=''
         assetDialogOk.onclick = () => cleanup(assetDialogInput.value.trim());
         assetDialogCancel.onclick = () => cleanup(cancelValue);
         assetDialogInput.onkeydown = event => {
-            if(event.key === 'Enter' && !multiline) cleanup(assetDialogInput.value.trim());
-            if(event.key === 'Enter' && multiline && (event.ctrlKey || event.metaKey)) cleanup(assetDialogInput.value.trim());
+            if(event.key === 'Enter' && !imeComposing(event) && !multiline) cleanup(assetDialogInput.value.trim());
+            if(event.key === 'Enter' && !imeComposing(event) && multiline && (event.ctrlKey || event.metaKey)) cleanup(assetDialogInput.value.trim());
             if(event.key === 'Escape') cleanup(cancelValue);
         };
         assetDialogBackdrop.onmousedown = event => {
@@ -5523,7 +5526,7 @@ function beginAssetInlineRename(assetId){
     };
     input.addEventListener('keydown', event => {
         event.stopPropagation();
-        if(event.key === 'Enter'){
+        if(event.key === 'Enter' && !imeComposing(event)){
             event.preventDefault();
             finish(true);
         } else if(event.key === 'Escape'){
@@ -10230,7 +10233,7 @@ function bindConversationNodeControls(el, node){
         sendConversationMessage(node, input, send);
     });
     input?.addEventListener('keydown', event => {
-        if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)){
+        if(event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !imeComposing(event)){
             event.preventDefault();
             sendConversationMessage(node, input, send);
         }

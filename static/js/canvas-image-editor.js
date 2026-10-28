@@ -389,7 +389,7 @@ function beginEditTextInline(item){
     positionEditTextInlineEditor();
     el.addEventListener('input', autosizeEditTextInlineEditor);
     el.addEventListener('keydown', event => {
-        if(event.key === 'Enter' && !event.shiftKey){ event.preventDefault(); removeEditTextInlineEditor(true); }
+        if(event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229){ event.preventDefault(); removeEditTextInlineEditor(true); } // #252：IME 候选确认回车不提交行内编辑
         else if(event.key === 'Escape'){ event.preventDefault(); removeEditTextInlineEditor(false); }
     });
     el.addEventListener('blur', () => removeEditTextInlineEditor(true));

@@ -679,7 +679,7 @@ function bindAgentNodeControls(el, node){
         inputEl.addEventListener('mousedown', event => event.stopPropagation());
         inputEl.addEventListener('keydown', event => {
             event.stopPropagation();
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { // #252：IME 候选确认回车不触发发送
                 event.preventDefault();
                 const message = inputEl.value.trim();
                 if (message) {
@@ -887,10 +887,21 @@ function cleanupAgentTuiState(nodeId) {
 function renderMarkdown(text){
     if(text == null) return '';
     let html = escapeHtml(String(text));
-    // Code blocks (```) - must be done before inline code
-    html = html.replace(/```([\s\S]*?)```/g, '<pre class="agent-md-code-block"><code>$1</code></pre>');
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code class="agent-md-inline-code">$1</code>');
+    // #252 修复围栏渲染：先用占位符保护代码块/内联码，避免后续全局 \n→<br>
+    // 污染 <pre> 内部（行距翻倍）；流式输出未闭合围栏（``` 到文末）也按代码块
+    // 处理，不再把 ``` 当转义文本显示；围栏首行语言名不再混进代码正文。
+    const mdBlocks = [];
+    html = html.replace(/```[^\S\n]*([A-Za-z0-9+#._-]*)\n?([\s\S]*?)(?:```|$)/g, (match, lang, body) => {
+        const trimmed = body.replace(/\n+$/, '');
+        const langAttr = /^[A-Za-z0-9+#._-]+$/.test(lang || '') ? ` data-lang="${lang}"` : '';
+        mdBlocks.push(`<pre class="agent-md-code-block"${langAttr}><code>${trimmed}</code></pre>`);
+        return `\u0000MDB${mdBlocks.length - 1}\u0000`;
+    });
+    const mdInlines = [];
+    html = html.replace(/`([^`\n]+)`/g, (match, body) => {
+        mdInlines.push(`<code class="agent-md-inline-code">${body}</code>`);
+        return `\u0000MDI${mdInlines.length - 1}\u0000`;
+    });
     // Bold (**text**)
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     // Italic (*text*) - must be after bold
@@ -909,6 +920,9 @@ function renderMarkdown(text){
     html = '<p>' + html + '</p>';
     // Clean up empty paragraphs
     html = html.replace(/<p><\/p>/g, '');
+    // Restore protected snippets last: their content is already escaped.
+    html = html.replace(/\u0000MDI(\d+)\u0000/g, (match, index) => mdInlines[Number(index)] || '');
+    html = html.replace(/\u0000MDB(\d+)\u0000/g, (match, index) => mdBlocks[Number(index)] || '');
     return html;
 }
 function getChatModels(){
