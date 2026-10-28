@@ -787,6 +787,9 @@ async function pollSmartCanvasTask(taskId){
                 const cancelledResult = absorbProjectGenerationResult(task.result || {}, taskId);
                 const error = new Error(task.error || tr('smart.taskCancelled'));
                 error.generationCancelled = true;
+                // #237：用户主动停止（stop≠error）——后端 /cancel 端点打的标记，
+                // 与 service_shutdown 的服务端终止区分；前端据此走中性终态而非失败/重试 UI。
+                error.cancelledByUser = task.cancelled_by_user === true;
                 // 服务端终态：前端必须按服务商失败处理，不能当网络错误重试
                 error.providerFailure = true;
                 if(cancelledResult?.history_recorded) error.smartGenerationLogged = true;
@@ -1002,6 +1005,34 @@ async function resumeSmartPendingNode(node, logContext={}){
                 finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
                 node.running = false;
                 toast(tr('smart.taskNotLostLater'));
+                canvasCore.render();
+                canvasCore.scheduleSave();
+                return;
+            }
+            if(e?.generationCancelled && e?.cancelledByUser){
+                // #237 用户主动停止（stop≠error）：后端 /cancel 已写即时终态快照
+                // （final_node 清除「生成中」占位 + 取消历史含 partial 成品 + 中性文案「任务已取消」），
+                // 轮询端在抛错前已用 absorb 写回——这里只保证该任务的 pending 被移除，
+                // 不走服务商失败「失败/重试」UI，不记 error 日志，不弹 error toast。
+                const taskStillPending = smartPendingTasks(node).some(item => item.taskId === task.taskId);
+                if(taskStillPending){
+                    const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
+                    node.pendingTasks = remainingTasks;
+                    node.pending = remainingTasks.length
+                        ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
+                        : 0;
+                }
+                if(!node.pending && smartPendingTasks(node).length === 0){
+                    delete node.pendingTasks;
+                    node.running = false;
+                    if(!(node.images || []).length){
+                        delete node.w;
+                        delete node.h;
+                    }
+                }
+                // 节点仍挂着该任务（如快照因 revision 冲突未应用）时补一次中性提示；
+                // 常规 stop 流程里 POST /cancel 处理已 toast，不重复。
+                if(taskStillPending) toast(tr('smart.taskCancelled'));
                 canvasCore.render();
                 canvasCore.scheduleSave();
                 return;

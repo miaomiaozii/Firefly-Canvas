@@ -998,9 +998,14 @@ test('retryFailedGeneration: 先取回已归档输出（无新计费），无归
 test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/failed-bare/timeout/jimeng_pending/succeeded)', async () => {
     const cases = [
         {
-            name: 'cancelled → generationCancelled + providerFailure（服务端终态，不能当网络错误重试）',
-            task: { status: 'cancelled', error: 'cancelled by user', result: {} },
-            expect: (e) => e.generationCancelled === true && e.providerFailure === true && e.message === 'cancelled by user',
+            name: 'cancelled（用户主动停止）→ generationCancelled + providerFailure + cancelledByUser=true（stop≠error 中性终态标记）',
+            task: { status: 'cancelled', error: '任务已取消', cancelled_by_user: true, result: {} },
+            expect: (e) => e.generationCancelled === true && e.providerFailure === true && e.cancelledByUser === true && e.message === '任务已取消',
+        },
+        {
+            name: 'cancelled（服务端 shutdown，无用户标记）→ cancelledByUser=false（仍按服务商失败终态，不能当网络错误重试）',
+            task: { status: 'cancelled', error: '应用关闭，生成任务已明确终止', result: {} },
+            expect: (e) => e.generationCancelled === true && e.providerFailure === true && e.cancelledByUser === false && e.message === '应用关闭，生成任务已明确终止',
         },
         {
             name: 'failed + upstream_task_id → ImageTaskRecoverSignal（失败取回信息）',
@@ -1063,4 +1068,98 @@ test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/
         assert.deepEqual(result, {});
         assert.equal(evaluate(ctx, 'activeSmartTaskPolls.size'), 0);
     });
+});
+
+// #237 停止语义精修（stop≠error、即时响应、partial 成品保留）：
+// 用户主动停止后，轮询拿到 cancelled 终态快照（final_node + 含 partial outputs 的
+// 取消历史 + cancelled_by_user 标记）——resumeSmartPendingNode 必须走中性终态：
+// 不走服务商失败「失败/重试」UI（failedGenerationTasks）、不落 fail 账、
+// partial 成品经 final_node 保留在节点上、pending 全部清理。
+test('resumeSmartPendingNode: 用户主动 stop 是中性终态（stop≠error）——无失败 UI、无 fail 账、partial 成品保留', async () => {
+    const node = {
+        id: 'img-cancel-1',
+        type: 'smart-image',
+        running: true,
+        pendingTasks: [{ taskId: 'project_img_cancel_1', count: 2 }],
+        pending: 2,
+        images: [],
+        w: 1024,
+        h: 1024,
+    };
+    const nodes = [node];
+    const partialItem = { url: '/api/project-library/proj-1/media/asset-1', kind: 'image', name: 'partial-1.png' };
+    const cancelledRecord = {
+        id: 'generation-cancel-1',
+        task_id: 'project_img_cancel_1',
+        status: 'cancelled',
+        error: '任务已取消',
+        result_node_id: 'img-cancel-1',
+        outputs: [partialItem],
+    };
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    harness.fetchResponder = (url) => {
+        assert.equal(url, '/api/project-library/proj-1/image-generation-tasks/project_img_cancel_1');
+        return fakeResponse({ data: {
+            status: 'cancelled',
+            error: '任务已取消',
+            cancelled_by_user: true,
+            result: {
+                history_recorded: true,
+                history_record: cancelledRecord,
+                project_id: 'proj-1',
+                project_revision: 8,
+                registered_revision: 7,
+                result_node_id: 'img-cancel-1',
+                final_node: { id: 'img-cancel-1', images: [partialItem], pendingTasks: [], pending: 0, running: false },
+            },
+        }});
+    };
+    const resume = globalFunction(ctx, 'resumeSmartPendingNode');
+    const p = resume(node);
+    harness.advanceTimers();  // 放行 2000ms 轮询间隔
+    await p;
+    await tick();
+
+    assert.equal(node.pendingTasks, undefined, '该任务已从 pendingTasks 移除（节点不再「生成中」）');
+    assert.equal(node.pending, 0);
+    assert.equal(node.running, false);
+    assert.equal(node.failedGenerationTasks, undefined, 'stop≠error：用户主动停止不登记「失败/重试」UI');
+    assert.equal(harness.failHistoryCalls.length, 0, 'cancelled 不落 fail 账');
+    assert.deepEqual(node.images, [partialItem], 'partial 成品经 final_node 写回保留');
+    const history = fromContext(evaluate(ctx, 'canvas.history'));
+    const record = history.find(r => String(r?.task_id || '') === 'project_img_cancel_1');
+    assert.ok(record, '取消终态记录已进画布历史');
+    assert.equal(record.status, 'cancelled');
+    assert.equal(record.error, '任务已取消', '取消文案中性（interrupted vs error）');
+    assert.deepEqual(record.outputs, [partialItem], 'partial 成品不被覆盖清除');
+});
+
+test('resumeSmartPendingNode: 服务端 shutdown 取消（无用户标记）仍走服务商失败终态', async () => {
+    const node = {
+        id: 'img-cancel-2',
+        type: 'smart-image',
+        running: true,
+        pendingTasks: [{ taskId: 'project_img_cancel_2', count: 1 }],
+        pending: 1,
+        images: [],
+    };
+    const nodes = [node];
+    const { ctx, harness } = loadGenerationTasksModule({ nodes });
+    harness.fetchResponder = () => fakeResponse({ data: {
+        status: 'cancelled',
+        error: '应用关闭，生成任务已明确终止',
+        result: { history_recorded: false },
+    }});
+    const resume = globalFunction(ctx, 'resumeSmartPendingNode');
+    const p = resume(node);
+    harness.advanceTimers();
+    await p;
+    await tick();
+    // 非用户停止：保留旧语义——登记 failedGenerationTasks 让节点出现「重试」入口，
+    // pending 仍被清理（不能永远「生成中」）。
+    assert.ok(Array.isArray(node.failedGenerationTasks) && node.failedGenerationTasks.length === 1,
+        'shutdown 取消仍登记失败任务（可重试入口）');
+    assert.equal(node.failedGenerationTasks[0].taskId, 'project_img_cancel_2');
+    assert.equal(node.pendingTasks, undefined);
+    assert.equal(node.running, false);
 });
