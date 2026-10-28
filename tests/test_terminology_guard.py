@@ -174,6 +174,9 @@ WHITELIST = [
     ("tools/jimeng_cli_login.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("firefly_diagnostics.py", "logs (as history field)", "Diagnostics log directory path"),
     ("firefly_projects.py", "logs (as history field)", "Legacy logs key compatibility"),
+    # fal.ai 队列协议的上游响应字段：status 返回体的 logs 是服务商契约字段名，不是画布历史字段
+    ("app/services/generation.py", "logs (as history field)", "fal queue status response field (upstream contract)"),
+    ("tests/test_fal_queue_image_mode.py", "logs (as history field)", "fal queue ERRORED status fixture mirroring upstream field"),
     # File-level whitelists for terms with few hits
     ("static/js/smart-canvas.js", "ComfyUI", "Comment about removed ComfyUI integration"),
     ("app/services/projects.py", "默认项目", "Docstring: core product no longer creates default projects"),
