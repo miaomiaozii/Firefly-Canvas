@@ -22,7 +22,7 @@ router = APIRouter()
 async def query_upstream_image_task(provider, task_id, *, record_history: bool = True):
     """查询上游生图任务的成品（全局库 /api/image-task-query 与项目任务 GET 主动取回共用）。
 
-    record_history=False 时不写全局历史/广播（项目任务取回由项目侧自己落画布，
+    record_history=False 时不写在线历史/广播（项目任务取回由项目侧自己落画布，
     避免同一成品被记两次账）。
     """
     if is_runninghub_provider(provider):
