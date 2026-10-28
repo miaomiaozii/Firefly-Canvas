@@ -171,6 +171,10 @@ smartVideoPreviewHtml/smartVideoFallbackHtml 从宿主上移到模块（与档�
 结算进 `static/js/escape-stack.js`（dd67bdc 同因 -2），与 #238 的 +10 叠加后净 950→948、798→797。
 合并树上的实测钉值以 `tests/test_canvas_coupling_report.py` 为准。
 
+再到 246/957/173/803（2026-10-28 #260 切片）：批量重命名（`canvas-node-ops.js` 反向 60→68、
+自由 17→23）+ Upscale 2K/4K/8K 档位菜单（`canvas-media-history.js` 反向 99→103、自由 51→54）。
+两笔都是模块按名调核心的既有方向，非新债。
+
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、

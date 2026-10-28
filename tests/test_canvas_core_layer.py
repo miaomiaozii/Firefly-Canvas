@@ -168,7 +168,8 @@ REVERSE_REFERENCE_CEILINGS = {
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
     "canvas-generation-cascade.js": 155,  # 147 -> 155
-    "canvas-media-history.js": 99,  # 83 -> 98 -> 99（实测）：#238 把视频预览 builder（smartVideoPreviewHtml/
+    "canvas-media-history.js": 103,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
+    # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
     "canvas-generation-tasks.js": 116,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
@@ -178,7 +179,8 @@ REVERSE_REFERENCE_CEILINGS = {
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
     # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
     "canvas-image-editor.js": 89,  # 87 -> 89
-    "canvas-node-ops.js": 60,  # #200 实测持平：-8 被搬名字 + 8 搬回代码块新增引用；棘轮不能低于实测
+    "canvas-node-ops.js": 68,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
+    # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。
     "canvas-connections.js": 41,
     # #223 新建下载层：不引用 smart-canvas.js 的任何顶层名（只依赖 canvas-core.js 的 tr）。
     "canvas-download.js": 0,
@@ -202,14 +204,14 @@ REVERSE_REFERENCE_CEILINGS = {
 FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 50,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
-    "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51（+15）
+    "canvas-media-history.js": 54,  # #201 接口化 83->36；正则修正 36->51；2026-10-28 实测 51->54（#260 Upscale 菜单）
     "canvas-generation-tasks.js": 35,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
     # 2026-10-28 实测：#254 新增 EACH_RUN_RESULT_GAP/expandEachRuns/runEachImageGeneration 顶层名（+3）
     # 与既有内联回收抵消后 34->35；#252 imeComposing 在 smart-canvas.js 自有作域。
     # #219：reducedAspectRatio 也改走 canvasCore 接口（35->34，接口 78->79）；源码契约按
     # 99453da 模式放宽为 (?:canvasCore\.)? 前缀（tests/test_project_image_generation_ui.py:97）
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
-    "canvas-node-ops.js": 17,  # #201 接口化：自由侧 60 -> 17（13 个共享名字 43 处改走 canvasCore 接口）
+    "canvas-node-ops.js": 23,  # #201 接口化 60->17；2026-10-28 实测 17->23（#260 批量重命名自由侧新增）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
     "canvas-download.js": 0,  # #223 新建：零自由全局（tr 来自 canvas-core.js）
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）

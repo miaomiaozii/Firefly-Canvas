@@ -77,6 +77,7 @@ CATEGORY_BY_NAME = {
     "restoreSmartProjectOriginalUndo": "hub",
     "archiveProjectMediaAsset": "hub",
     "copySmartHistoryImage2k": "hub",
+    "copySmartHistoryImageUpscaled": "hub",  # #260 Upscale 档位菜单，与 2k 同族
     "smartTrashRestoreItem": "hub",
     "smartTrashPurgeItem": "hub",
     "deleteCanvasLogEntry": "hub",
@@ -174,6 +175,7 @@ CATEGORY_BY_NAME = {
     "smartTrashPurgeBtn": "dom",
     "smartTrashBackdrop": "dom",
     "smartUnusedBackdrop": "dom",
+    "smartBatchRenameBackdrop": "dom",  # #260 批量重命名遮罩，与 trash/unused 同族
     "escapeHtml": "dom",
     "escapeAttr": "dom",
     # --- 越界访问 ---
