@@ -256,6 +256,48 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
     return {taskIds:tasks.map(task => task.task_id).filter(Boolean), count, providerId:payload.provider_id, model:payload.model};
 }
 
+// #254 逐图生成（数据层，切片 1）：一句 prompt × N 参考图 → N 个标准图片子任务。
+// expandEachRuns 是纯展开器：不碰 DOM、不读全局画布状态（rect 由 ctx 注入），
+// 每个子任务共享 prompt/runSettings，参考图各归各，落点锚定参考节点右侧
+// （沿用 createLocalEditNodeFromImage 的 +140px 惯例，垂直居中）。
+const EACH_RUN_RESULT_GAP = 140;
+function expandEachRuns({refNodes, prompt, ctx = {}} = {}){
+    const nodeRect = ctx.nodeRect || (node => ({x:Number(node.x) || 0, y:Number(node.y) || 0, width:Number(node.w) || 0, height:Number(node.h) || 0}));
+    const items = [];
+    for(const refNode of Array.isArray(refNodes) ? refNodes : []){
+        if(!refNode || !refNode.id) continue;
+        const rect = nodeRect(refNode) || {};
+        items.push({
+            refNodeId:refNode.id,
+            prompt:String(prompt || ''),
+            resultAnchor:{
+                x:(Number(rect.x) || 0) + (Number(rect.width) || 0) + EACH_RUN_RESULT_GAP,
+                y:Math.max(40, (Number(rect.y) || 0) + Math.max(0, ((Number(rect.height) || 0) - 300) / 2)),
+            },
+        });
+    }
+    return items;
+}
+// 编排器（全局脚本作用域：canvas-undo.js/canvas-node-ops.js 先于本文件加载）：
+// 整批一次 pushUndo（撤销粒度=整批，与批量生成惯例一致），
+// 每个参考图 → 右侧新建结果节点 + runApiGeneration 单次提交（refs 只含该参考图）。
+async function runEachImageGeneration(refNodes, prompt, runSettings = {}){
+    const items = expandEachRuns({refNodes, prompt, ctx:{nodeRect:node => canvasCore.nodeRect(node)}});
+    if(!items.length) return {runs:[]};
+    pushUndo();
+    const runs = [];
+    for(const item of items){
+        const refNode = (canvasState.nodes || []).find(node => node.id === item.refNodeId);
+        if(!refNode) continue;
+        const imageRefs = imageRefsOnly((refNode.images || []).map(image => ({...image, node:refNode})));
+        if(!imageRefs.length) continue;
+        const resultNode = createImageNodeAt(item.resultAnchor, [], {skipUndo:true});
+        const taskResult = await runApiGeneration(item.prompt, imageRefs.slice(0, 1), runSettings, resultNode);
+        runs.push({refNodeId:item.refNodeId, resultNodeId:resultNode.id, taskIds:taskResult.taskIds || []});
+    }
+    return {runs};
+}
+
 async function runRunningHubGeneration(prompt, refs, runSettings=settings){
     const ref = selectedRunningHubRef(runSettings);
     if(!ref) throw new Error(tr('smart.rhNeedConfig'));
