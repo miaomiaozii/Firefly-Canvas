@@ -98,6 +98,10 @@ AUTONOMY_SYSTEM_PROMPT_SUFFIXES = {
 SAFETY_FLOOR_TOOLS = frozenset()  # Currently no project-level delete tool in canvas-tools
 
 
+# The full status vocabulary for AgentSession.status (stable, ordered).
+AGENT_STATUSES = ("stopped", "starting", "running", "busy", "waiting_confirm", "crashed")
+
+
 @dataclass
 class AgentSession:
     """Represents one agent node's pi subprocess session."""
@@ -775,6 +779,40 @@ class AgentHostManager:
                 logger.error(f"Agent {session.node_id} idle for {idle:.0f}s while busy — killing process tree")
                 session.result = normalize_result(RESULT_ERROR, ERROR_KIND_TIMEOUT_IDLE)
                 await self._kill_process_tree(session, reason="idle timeout")
+    async def snapshot_sessions(self) -> List[dict]:
+        """Read-only projection of live agent session state for /api/healthz.
+
+        Never mutates session state; safe for concurrent health probes.
+        """
+        async with self._lock:
+            return [
+                {
+                    "project_id": session.project_id,
+                    "node_id": session.node_id,
+                    "status": session.status,
+                    "model": session.model,
+                    "autonomy": session.autonomy,
+                    "alive": session.is_running,
+                }
+                for session in self.sessions.values()
+            ]
+    async def snapshot_sessions(self) -> List[dict]:
+        """Read-only projection of live agent session state for /api/healthz.
+
+        Never mutates session state; safe for concurrent health probes.
+        """
+        async with self._lock:
+            return [
+                {
+                    "project_id": session.project_id,
+                    "node_id": session.node_id,
+                    "status": session.status,
+                    "model": session.model,
+                    "autonomy": session.autonomy,
+                    "alive": session.is_running,
+                }
+                for session in self.sessions.values()
+            ]
 
     async def cleanup_all(self):
         """Stop all sessions (called on shutdown)."""

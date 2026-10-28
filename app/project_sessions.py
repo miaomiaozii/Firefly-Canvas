@@ -37,7 +37,8 @@ def project_has_open_session(project_id: str) -> bool:
 def open_project_ids() -> list:
     """Sorted unique project ids that have at least one open canvas transport.
 
-    #243: feeds the MCP three-level arbitration (app/routers/api_mcp.py).
+    #243: feeds the MCP three-level arbitration (app/routers/api_mcp.py);
+    also feeds /api/healthz runtime projection (#265).
     """
     with _lock:
         return sorted({owner for owner in _sessions.values()})
