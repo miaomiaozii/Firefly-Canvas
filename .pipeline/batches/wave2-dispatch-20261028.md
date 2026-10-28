@@ -34,3 +34,4 @@
 - #257 收口：issue/257（6 提交，ops.db versions_* 租户 additive 迁移，worker 自证 fast+domain 绿+UI冒烟截图）合入 int-256；总控集成 fast 15.2s + domain（见下）全绿。
 - #255 收口：issue/255（6 提交，分数坐标骨架+MIT 移植 layers/vectorPath+LayersPanel；NOTICE.md 双登记冲突已手工合并）合入 int-256；总控 fast 16.1s + domain 132.7s 全绿。票面纠偏：vectorPath.ts 实为 54 行；utils.ts:250-268 于参考版本不存在（even-odd 自研）。遗留：图层全链浏览器旅程测试 → #269。
 - #258 收口：issue/258（8 提交，firefly_usage.py MIT 移植 + usage_001 租户 + pi/codex 双采集 + 查询 API；+42 用例）合入 int-256（NOTICE 三段登记手工合并）；总控 fast 15.5s + domain 128.2s 全绿。batch-3 四票（255/256/257/258）全部收口。
+- #268 收口：合入 int-256，fast 16.1s + domain 138.1s 全绿；音频转写选型拆 #270（ready-for-human）。
