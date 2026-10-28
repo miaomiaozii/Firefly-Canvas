@@ -659,7 +659,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     "revision": 0,
                 })
                 runtime_keys = {
-                    "pending", "running", "queued", "pendingTasks", "jimengPending",
+                    "pending", "running", "queued", "pendingTasks",
                     "runStartedAt", "runFinishedAt", "runElapsedMs", "runTimerHidden",
                     "_runMetaTargetId", "conversationSending", "agentPlanning", "agentExecuting",
                 }

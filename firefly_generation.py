@@ -24,10 +24,11 @@ ANGLE_PROMPT_PRESETS = {
     "low": "低机位仰视角度",
 }
 
-CLI_PROTOCOLS = {"codex", "gemini-cli", "jimeng"}
-VIDEO_CLI_PROTOCOLS = {"jimeng"}
+CLI_PROTOCOLS = {"codex", "gemini-cli"}
+# #236 即梦整体剔除：CLI 视频链路随之清零（原唯一成员 jimeng），在线视频协议不受影响。
+VIDEO_CLI_PROTOCOLS = set()
 VIDEO_EXECUTION_PROTOCOLS = {"openai", "apimart", "volcengine", "runninghub"} | VIDEO_CLI_PROTOCOLS
-FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub"}
+FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "runninghub"}
 # 服务商文档（gpt-best.apifox.cn api-341817446 / api-420361512）：nano-banana 与
 # nano-banana-pro（gemini-3-pro-image-preview）的基础宽高比。
 # 21:9 与其镜像 9:21 一起支持（服务商档位 1280x544 / 544x1280 成对存在）。
@@ -633,7 +634,7 @@ def route_video_generation(
         best_provider, best_model = best[0], best[1]
         best_protocol = _effective_protocol(best_provider, best_model)
         if best_protocol in CLI_PROTOCOLS:
-            message = f"{target}不可执行：当前 CLI 协议没有在线视频适配器（仅保留即梦 CLI）"
+            message = f"{target}不可执行：当前 CLI 协议没有在线视频适配器"
         else:
             message = f"{target}不可执行：协议 {best_protocol or 'unknown'} 没有在线视频适配器"
         raise ModelRoutingError(
