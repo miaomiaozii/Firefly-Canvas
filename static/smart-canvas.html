@@ -253,6 +253,28 @@
                 </div>
             </div>
         </div>
+        <div id="smartBatchRenameBackdrop" class="asset-dialog-backdrop" hidden>
+            <div class="asset-dialog smart-batch-rename-dialog">
+                <div class="asset-dialog-title"><i data-lucide="pencil-ruler"></i><span data-i18n="smart.batchRename">批量重命名</span></div>
+                <label class="smart-batch-rename-field"><span data-i18n="smart.batchRenamePrefix">前缀</span><input id="smartBatchRenamePrefix" type="text" maxlength="60" placeholder="Image_" autocomplete="off"></label>
+                <div class="smart-batch-rename-row">
+                    <label class="smart-batch-rename-field"><span data-i18n="smart.batchRenamePad">编号位数</span>
+                        <select id="smartBatchRenamePad">
+                            <option value="1">1（1, 2, 3）</option>
+                            <option value="2" selected>2（01, 02, 03）</option>
+                            <option value="3">3（001, 002, 003）</option>
+                        </select>
+                    </label>
+                    <label class="smart-batch-rename-field"><span data-i18n="smart.batchRenameStart">起始编号</span><input id="smartBatchRenameStart" type="number" min="0" step="1" value="1"></label>
+                </div>
+                <div id="smartBatchRenameCount" class="smart-batch-rename-count"></div>
+                <div id="smartBatchRenamePreview" class="smart-batch-rename-preview"></div>
+                <div class="asset-dialog-actions">
+                    <button id="smartBatchRenameCancel" class="asset-dialog-btn secondary" type="button" data-i18n="common.cancel">取消</button>
+                    <button id="smartBatchRenameApply" class="asset-dialog-btn primary" type="button" data-i18n="common.confirm">确定</button>
+                </div>
+            </div>
+        </div>
         <div id="smartTrashBackdrop" class="asset-dialog-backdrop" hidden>
             <div class="asset-dialog smart-trash-dialog">
                 <div class="asset-dialog-title"><i data-lucide="archive-restore"></i><span data-i18n="smart.trashTitle">项目回收区</span></div>
