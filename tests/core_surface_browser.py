@@ -1041,6 +1041,14 @@ def run_project_roundtrip(
         timeout=30,
     )
     browser.native_drag(generated_selector, dx=31, dy=19, relative=(0.03, 0.3))
+    # #253 引入了拖拽吸附：落点可能被对齐线小幅修正，请求 delta 不再是落点。
+    # 持久化断言的正确语义：保存后存储位置 == 落盘瞬间画布实时位置，且确实发生了移动。
+    generated_position_dropped = browser.evaluate(
+        "(() => { const node = canvasState.nodes.find(item => item.id === 't05-generated-original');"
+        "  return node ? { x: node.x, y: node.y } : null; })()"
+    )
+    if not isinstance(generated_position_dropped, dict):
+        raise AssertionError("generated node is unreadable on canvas after drag")
     browser.native_click("#smartSaveButton")
     browser.wait_for("document.querySelector('#projectSaveState')?.dataset.state === 'saved'", timeout=30)
     browser.native_click(".smart-back")
@@ -1082,14 +1090,14 @@ def run_project_roundtrip(
         "x": (generated_node_after_browser or {}).get("x"),
         "y": (generated_node_after_browser or {}).get("y"),
     }
-    expected_generated_position = {
-        "x": generated_position_before["x"] + 31,
-        "y": generated_position_before["y"] + 19,
-    }
-    if generated_position_after != expected_generated_position:
+    if generated_position_dropped == generated_position_before:
+        raise AssertionError(
+            f"browser drag did not move the generated node: {generated_position_before!r}"
+        )
+    if generated_position_after != generated_position_dropped:
         raise AssertionError(
             f"browser save did not preserve generated-node movement: "
-            f"{expected_generated_position!r} != {generated_position_after!r}"
+            f"{generated_position_dropped!r} != {generated_position_after!r}"
         )
     source_scope = project_scope_snapshot(store, project_id)
 

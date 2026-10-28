@@ -53,6 +53,10 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-image-editor.js',
     // #255：图像分层 + 图层面板（layers.ts MIT 移植 + store/合成/面板）。
     'canvas-layers.js',
+    // #253：拖拽对齐吸附纯函数 + 参考线 overlay（零核心引用）。
+    'canvas-snap.js',
+    // #253：就地快速重命名 + 右键操作卡可见性纯函数（零核心引用）。
+    'canvas-quick-edit.js',
     'canvas-generation-cascade.js',
     'canvas-generation-tasks.js',
     'canvas-agent-tui.js',

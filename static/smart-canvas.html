@@ -181,6 +181,21 @@
                         <div class="create-card-sub" data-i18n="smart.createOcrSub">OCR 识别图片文字，落可编辑 prompt 节点</div>
                     </span>
                 </button>
+                <!-- #253：节点操作卡——重命名右键落在节点上才可见；整理排版选中>=2 才可见（openCreateMenu 切换 hidden） -->
+                <button class="create-card" type="button" data-create-type="rename" hidden>
+                    <span class="create-card-icon"><i data-lucide="pencil"></i></span>
+                    <span>
+                        <div class="create-card-title" data-i18n="smart.menuRename">重命名</div>
+                        <div class="create-card-sub" data-i18n="smart.menuRenameSub">就地快速重命名（Tab 同效）</div>
+                    </span>
+                </button>
+                <button class="create-card" type="button" data-create-type="tidy" hidden>
+                    <span class="create-card-icon"><i data-lucide="layout-grid"></i></span>
+                    <span>
+                        <div class="create-card-title" data-i18n="smart.menuTidy">整理排版</div>
+                        <div class="create-card-sub" data-i18n="smart.menuTidySub">自动整理选中节点（Shift+A）</div>
+                    </span>
+                </button>
             </div>
         </div>
         <input id="fileInput" type="file" accept="image/*,video/*,audio/*" multiple hidden>
@@ -375,6 +390,14 @@
                     <div class="shortcut-item"><span class="shortcut-keys"><kbd>空白处</kbd></span><span data-i18n="smart.shortcutPan">拖动画布</span></div>
                     <div class="shortcut-item"><span class="shortcut-keys"><kbd>滚轮</kbd></span><span data-i18n="smart.shortcutZoom">缩放画布或预览图片</span></div>
                     <div class="shortcut-item"><span class="shortcut-keys"><kbd>Del</kbd></span><span data-i18n="smart.shortcutDelete">删除选中节点</span></div>
+                    <!-- #253：交互套件新增键位（右键菜单/拖拽吸附/Tidy/Tab 快速编辑） -->
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Tab</kbd></span><span data-i18n="smart.shortcutQuickRename">单个选中节点就地快速重命名</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Shift</kbd><kbd>A</kbd></span><span data-i18n="smart.shortcutTidy">整理排版选中节点</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>A</kbd></span><span data-i18n="smart.shortcutSelectAll">全选节点</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>D</kbd></span><span data-i18n="smart.shortcutDuplicate">复制选中节点</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span data-i18n="smart.shortcutNudge">微调选中节点位置（Shift=10px）</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>=</kbd><kbd>/</kbd><kbd>-</kbd></span><span data-i18n="smart.shortcutZoomKeys">放大 / 缩小画布</span></div>
+                    <div class="shortcut-item"><span class="shortcut-keys"><kbd>Ctrl</kbd><kbd>0</kbd></span><span data-i18n="smart.shortcutFitAll">缩放至全部节点</span></div>
                 </div>
             </div>
         </div>
@@ -597,6 +620,8 @@
     <script src="/static/js/canvas-vector-path.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-image-editor.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-layers.js?v=20261028.225000.0001"></script>
+    <script src="/static/js/canvas-snap.js?v=20261028.225000.0001"></script>
+    <script src="/static/js/canvas-quick-edit.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-generation-cascade.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-generation-tasks.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-agent-tui.js?v=20261028.225000.0001"></script>

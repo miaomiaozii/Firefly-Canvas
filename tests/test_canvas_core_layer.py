@@ -190,6 +190,10 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-vector-path.js": 0,
     # #255 新建图像分层 + 图层面板：纯函数移植 + 面板，引用 smart-canvas.js 的 currentEditImage×2（取当前编辑图元）。
     "canvas-layers.js": 2,
+    # #253 新建拖拽对齐吸附：纯函数模块，不引用 smart-canvas.js 的任何顶层名（DOM 层由调用方传 container）。
+    "canvas-snap.js": 0,
+    # #253 新建就地快速重命名：纯函数 + DOM 层，不引用 smart-canvas.js 的任何顶层名（回调由接线方传入）。
+    "canvas-quick-edit.js": 0,
     "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
@@ -223,6 +227,10 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-geometry.js": 0,  # #255 新建：零自由全局（纯函数，无模块依赖）
     "canvas-vector-path.js": 0,  # #255 新建：零自由全局（纯函数，无模块依赖）
     "canvas-layers.js": 2,  # #255 新建：currentEditImage×2（自由全局）
+    # #253 新建拖拽对齐吸附：零自由全局（纯函数，无模块依赖）。
+    "canvas-snap.js": 0,
+    # #253 新建就地快速重命名：零自由全局（纯函数 + 回调式 DOM 层）。
+    "canvas-quick-edit.js": 0,
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,
