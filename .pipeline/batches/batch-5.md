@@ -6,7 +6,7 @@
 
 | 泳道 | 票 | 难度/预估 | worktree | 分支 | runId | 状态 |
 |---|---|---|---|---|---|---|
-| A | #234 取回三层断裂修复 | 大 | D:/ff-wt/wt-234 | issue/234 | 2 轮超时（地图含幻觉 API）→ 三派 del_mvr6my2o_d1l4（红测试 a72e058 已 commit，后连错中断）→ resume del_mvrdzjnc_y8bg(75m) | 进行中 |
+| A | #234 取回三层断裂修复 | 大 | (已删) | (已删) | 2 轮超时（地图含幻觉 API）→ 三派红测试 a72e058 → resume 75m 再超时 → **总控接管**：契约 6 绿+全量 1306 绿+domain 门 passed，a29f61a+d191006 | ✅ 合并 6feca94，票已关，review PASS；trial 证据转 #263 |
 | B | #239 agent_host 进程树必杀 | 中 | (已删) | (已删) | 3 轮 worker 超时 → **总控接管收尾** commit 94e2e4a | ✅ 合并 cbac05c，票已关，review PASS（全量 1313 passed + domain 门 passed） |
 | C | #240 agent 端点同源守卫 | 小 / 45m | D:/ff-wt/wt-240(已删) | issue/240(已删) | del_mvqyj7a8_173t → 超时 → resume del_mvr05qi1_knyh exit0 | ✅ 已合并 ff32d35，票已关，review PASS（总控复跑 7/7+41/41） |
 | D | #242 ADR 0022 MCP + #245 ADR 0006 补行 | 文档 / 45m | D:/ff-wt/wt-242(已删) | issue/242(已删) | del_mvqyj7a8_110l → 超时 → resume del_mvr05qi2_au0n exit0 | ✅ 已合并 2221329，两票已关，review PASS |
@@ -18,6 +18,7 @@
 
 - worker 普遍「探索耗尽预算」：4 个超时票全部无 commit。Wave 1b 起：总控先自己做定向 grep 把 file:line 事实写进任务卡，并在票面写明「探索预算≤N 次工具调用，X 分钟内必须有首个 commit」。
 - 新规则：issue-NNN-result.md 必须随分支 commit（#240 的 result 漏 commit，总控从 worktree 抢救）。
+- 新规则（Wave1c）：侦察摘要中的方法/路径必须带 grep 命中证据才可写进任务处方（#234 幻觉 API 教训）；resume 任务必含「T+30~35m 无条件先 commit 全部未提交改动」。
 
 ## 关键决策记录
 
@@ -31,12 +32,16 @@
 |---|---|---|---|---|
 | G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) exit0 | ✅ 已合并，票已关，review PASS（总控复跑 50 passed） |
 | H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m 两轮：实现完整但未 commit（新 api_mcp.py+test_mcp_endpoint.py+6 文件）；卡点=approve 不解除 gate → resume del_mvrdzjnd_b5i3(80m，注入「注册键 vs 查找键」对照假设+T+35m 强制 commit) | 进行中 |
+| I | #235 provider 未知终态化+RunningHub code+resume not-found | 中 | D:/ff-wt/wt-235 | issue/235 | del_mvrhaem0_73gb(90m，锚点已注入) | 进行中 |
+| J | #238 缩放自适应缩略图+视频悬停 | 中小 | D:/ff-wt/wt-238 | issue/238 | del_mvrhaem0_4q7g(75m) | 进行中 |
+| K | #263 #234 trial 门证据补挂 | 小 | 待派 | 待派 | — | 排队（与 #243 门区可能重叠，待其合并） |
+| L | #237 停止语义精修 | 小 | 暂缓 | — | — | **押后**：与 #243 同触 agent_host/project_sessions，待 #243 合并 |
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
 ## Wave 1b 待解锁队列（前置合并后派发）
 
-- #241（待 #240）；#235（待 #234）→ #236（待 234,235）；#243（待 240；#242 已合入✅）；
-- #237、#238（smart-canvas 队列，待 #234 合并）；#254（待 #236）。
+- #236（待 234✅,235）；#254（待 #236）；#237 见泳道 L；#252/#253（smart-canvas 队列，238 后）。
+- 新增 #263（#234 trial 证据，小票）。人工闸口：#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署解锁 #251/#257/#258**；#247/#248 wayfinder。
 - 暂缓：#249（可能与 smart-canvas/测试文件重叠，待 #234 合并后评估）、#246、#261（#261 与 #249 同抢 tests/test_workflows.py，排后）。
 - 人工闸口：#233（ready-for-human）、#259（产品决策）；#247/#248 为 wayfinder 地图票。
