@@ -54,6 +54,7 @@ export const HTML_SCRIPT_ORDER = [
     // #255：图像分层 + 图层面板（layers.ts MIT 移植 + store/合成/面板）。
     'canvas-layers.js',
     'canvas-snap.js',
+    'canvas-quick-edit.js',
     'canvas-generation-cascade.js',
     'canvas-generation-tasks.js',
     'canvas-agent-tui.js',
