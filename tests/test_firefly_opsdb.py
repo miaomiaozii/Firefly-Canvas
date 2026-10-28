@@ -41,17 +41,18 @@ class OpsDbTests(unittest.TestCase):
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("ops_migrations", tables)
             self.assertIn("versions_snapshots", tables)
+            self.assertIn("usage_turns", tables)
             applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
-            self.assertEqual(applied, ["versions_001"])
+            self.assertEqual(applied, ["versions_001", "usage_001"])
         # 幂等：第二次短连接迁移不重跑（done-row 标记）
         with ops.connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 1)
+            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 2)
 
     def test_migration_runs_once_across_instances(self):
         with self.make_ops().connect("p1"):
             pass
         with self.make_ops().connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 1)
+            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 2)
 
     def test_wal_and_fk_pragmas(self):
         with self.make_ops().connect("p1") as conn:
