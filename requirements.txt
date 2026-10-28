@@ -4,5 +4,6 @@ requests
 pydantic
 python-multipart
 httpx[socks]
+truststore
 pillow
 websockets>=14,<15

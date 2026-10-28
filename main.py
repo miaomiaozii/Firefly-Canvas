@@ -10,6 +10,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# 必须在任何 HTTPS 之前：企业代理用自签证书拦截 TLS 时，Python 内置根证书库会报
+# [SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate，改用系统信任库解决。
+from app.services.system_trust import enable_system_trust_store
+
+enable_system_trust_store()
+
 from contextlib import asynccontextmanager
 
 from app.core import *  # noqa: F401,F403
