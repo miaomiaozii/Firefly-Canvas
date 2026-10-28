@@ -171,7 +171,8 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-media-history.js": 99,  # 83 -> 98 -> 99（实测）：#238 把视频预览 builder（smartVideoPreviewHtml/
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 115,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
+    "canvas-generation-tasks.js": 116,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
+    # 2026-10-28 实测：#254 runEachImageGeneration 新增 1 处核心引用（canvasCore.nodeRect 落点），115->116。
     # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
@@ -202,7 +203,9 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 50,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
     "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51（+15）
-    "canvas-generation-tasks.js": 34,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
+    "canvas-generation-tasks.js": 35,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
+    # 2026-10-28 实测：#254 新增 EACH_RUN_RESULT_GAP/expandEachRuns/runEachImageGeneration 顶层名（+3）
+    # 与既有内联回收抵消后 34->35；#252 imeComposing 在 smart-canvas.js 自有作域。
     # #219：reducedAspectRatio 也改走 canvasCore 接口（35->34，接口 78->79）；源码契约按
     # 99453da 模式放宽为 (?:canvasCore\.)? 前缀（tests/test_project_image_generation_ui.py:97）
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
