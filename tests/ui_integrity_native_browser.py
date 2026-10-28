@@ -2279,4 +2279,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # manifest/摘要已落盘、退出码已定；Windows 上 Chrome 驱动的子进程 transport
+    # 常在解释器 finalize 阶段抛 "I/O operation on closed pipe"（asyncio GC 竞态），
+    # 会把 passed 的跑发伪报成 exit!=0。跳过 finalize，退出码语义不变。
+    import os as _os
+    _os._exit(_code)
