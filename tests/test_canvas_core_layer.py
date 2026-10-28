@@ -167,7 +167,8 @@ REVERSE_REFERENCE_CEILINGS = {
     # 括号里是「旧（少算） -> 修正后」。每个增量都能归因到正则修正，无一个是真回归：
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
-    "canvas-generation-cascade.js": 155,  # 147 -> 155
+    "canvas-generation-cascade.js": 153,  # 147 -> 155 -> 153：#246 candidatePoolPosition 改 freeSpot 右移扫描，
+    # 删旧「碰撞下移」循环，净 -2 核心引用（合理下降，棘轮随之收紧）。
     "canvas-media-history.js": 103,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
@@ -179,8 +180,10 @@ REVERSE_REFERENCE_CEILINGS = {
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
     # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
     "canvas-image-editor.js": 89,  # 87 -> 89
-    "canvas-node-ops.js": 68,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
-    # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。
+    "canvas-node-ops.js": 71,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
+    # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。2026-10-29 实测 68->71：#246 freeSpot
+    # 落点接线（createNodeFromMenu 扫描锚点 + 碰撞盒），canvasCore.mediaNodeDefaultScale×1 /
+    # canvasCore.nodeRect×2 接口引用净 +3，全走 canvasCore 接口，无新自由全局。
     "canvas-connections.js": 41,
     # #223 新建下载层：不引用 smart-canvas.js 的任何顶层名（只依赖 canvas-core.js 的 tr）。
     "canvas-download.js": 0,
