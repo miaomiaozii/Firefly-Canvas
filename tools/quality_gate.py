@@ -121,7 +121,10 @@ UNIT_CONTRACT_UNKNOWN_TARGET_SECONDS = 5.0
 # 装箱后单片的目标上限（秒）：留出远大于守卫比例的余量。
 UNIT_CONTRACT_TARGET_SHARD_SECONDS = 45.0
 # 每组分片数上限，防止大量小测试把分片数量撑爆。
-UNIT_CONTRACT_MAX_SHARDS = 12
+# 2026-10-28 上调 12→24：模块数 191 后 LPT 被旧上限压成 12 片（每片估 70-80s），
+# 并行组内争抢再膨胀，实测 remainder-1 达 194.7s 超守卫上限 180s（60%×300s）
+# ——trial 连败 20261028-132753/141026 实证。目标 45s 只在片数不被上限压死时成立。
+UNIT_CONTRACT_MAX_SHARDS = 24
 # #204 守卫：任何单片的实测耗时不得超过 trial 预算的这个比例。
 UNIT_CONTRACT_SHARD_BUDGET_RATIO = 0.6
 
