@@ -24,3 +24,10 @@
 - 同文件串行：260/262/263/246 都碰 smart-canvas.js 系——每波只放 1 个
 - 266（api_mcp.py 工具面）与 243 域冲突小，但 edit_* 包装碰 canvas-image-editor.js → 与 255 串行
 - 大前端票（253/251/246/260/262 的 JS 部分）总控亲自做或切片短箱派发
+
+## 更正补记（16:44）
+- #261 实际有产出（worker exit 0 迟于我误判的检查时点）：9ac5230 = tools/doc_link_check.py(194 行)+
+  tests(99)+quality_gate advisory 接线；已并入 wave1-live，fast 14.8s 绿。
+  实测报告：270 refs checked / 54 broken（missing 42 + line-out-of-range 12），advisory 不阻塞。
+- ⚠️ tools/write_journal.py 全仓不存在——此前所有 write_journal 调用被 >/dev/null 静默吞掉，
+  "journal 已写"均为误报。纪律修正：里程碑记录只用 .pipeline/batches/*.md 直接落盘。
