@@ -714,7 +714,17 @@ _tool_paths = {
     for path in json.loads(os.environ.get("FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES", "[]"))
     if path
 }
-_browser_paths = _allowed_paths - _python_paths - _tool_paths
+# #268 揭露的潜伏误分类（自 #238 预留 ffmpeg 就存在）：非 python/tool 的允许执行档
+# 全部落入「浏览器」分支，被强制注入 chrome 旗标（--disable-background-mode 等），
+# ffmpeg/ffprobe 收到未知参数直接死（VideoContactSheet 5 ERROR + audio duration None）。
+# 生产海报预热路径失败会静默回退，所以一直没暴露。媒体执行档直通：
+# 参数由应用自控，不需要浏览器网络约束（ffmpeg 不联网）。
+_media_paths = {
+    path
+    for path in _allowed_paths
+    if os.path.basename(path).lower() in {"ffmpeg", "ffmpeg.exe", "ffprobe", "ffprobe.exe"}
+}
+_browser_paths = _allowed_paths - _python_paths - _tool_paths - _media_paths
 _allow_nested_quality_gate = os.environ.get("FIREFLY_QUALITY_GATE_SELF_TEST") == "1"
 _nested_quality_gate_script = os.path.normcase(os.path.realpath(
     os.environ.get("FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT", "")
