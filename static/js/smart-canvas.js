@@ -1015,6 +1015,7 @@ function syncSelectionUi(){
     if(canvasState.selectedImage.nodeId) touchedIds.add(canvasState.selectedImage.nodeId);
     world.classList.toggle('smart-multi-selected', ids.length > 1);
     if(smartArrangeBtn) smartArrangeBtn.disabled = ids.length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = ids.length < 2;
     smartNodeElementsByIds(touchedIds).forEach(el => {
         const id = el.dataset.id || '';
         el.classList.toggle('selected', isNodeSelected(id));
@@ -2070,6 +2071,7 @@ function frameSmartCanvasContentIfNeeded(){
 function renderMinimap(){
     if(!minimapContent || !minimapViewport) return;
     if(smartArrangeBtn) smartArrangeBtn.disabled = selectedNodeIds().length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = selectedNodeIds().length < 2;
     const width = minimapContent.clientWidth || 170;
     const height = minimapContent.clientHeight || 108;
     const viewW = shell.clientWidth / viewport.scale;
@@ -5874,6 +5876,29 @@ async function smartAssetBatchDelete(){
     else toast(tr('smart.batchDeleteDone').replace('{n}', String(okCount)));
 }
 if(assetBatchDeleteBtn) assetBatchDeleteBtn.onclick = () => void smartAssetBatchDelete();
+
+// #260 批量重命名：入口（工具栏按钮 / F2）+ 弹窗控件绑定。逻辑本体在 canvas-node-ops.js。
+const smartBatchRenameBtn = document.getElementById('smartBatchRenameBtn');
+const smartBatchRenameBackdrop = document.getElementById('smartBatchRenameBackdrop');
+const smartBatchRenameCancelBtn = document.getElementById('smartBatchRenameCancel');
+const smartBatchRenameApplyBtn = document.getElementById('smartBatchRenameApply');
+if(smartBatchRenameBtn){
+    smartBatchRenameBtn.addEventListener('mousedown', e => e.stopPropagation());
+    smartBatchRenameBtn.onclick = e => { e.preventDefault(); openBatchRenameDialog(); };
+}
+['smartBatchRenamePrefix', 'smartBatchRenamePad', 'smartBatchRenameStart'].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input', () => renderBatchRenamePreview());
+    el.addEventListener('change', () => renderBatchRenamePreview());
+    el.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if(e.key === 'Enter'){ e.preventDefault(); applyBatchRename(); }
+    });
+});
+if(smartBatchRenameBackdrop) smartBatchRenameBackdrop.addEventListener('mousedown', e => { if(e.target === smartBatchRenameBackdrop) closeBatchRenameDialog(); });
+if(smartBatchRenameCancelBtn) smartBatchRenameCancelBtn.onclick = e => { e.preventDefault(); closeBatchRenameDialog(); };
+if(smartBatchRenameApplyBtn) smartBatchRenameApplyBtn.onclick = e => { e.preventDefault(); applyBatchRename(); };
 
 // ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
 const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
@@ -15183,6 +15208,13 @@ window.addEventListener('keydown', e => {
             if(e.repeat) return;
             e.preventDefault();
             toggleAssetLibrary();
+            return;
+        }
+        // #260：F2 批量重命名选中节点（ComfyArt BatchRename）。
+        if(key === 'f2'){
+            if(e.repeat) return;
+            e.preventDefault();
+            openBatchRenameDialog();
             return;
         }
     }

@@ -337,6 +337,88 @@ async function renameSmartNodeImage(nodeId, imageIndex){
     canvasCore.scheduleSave();
 }
 
+// #260 批量重命名（对照 ComfyArt BatchRename：prefix + pad + start，主笔记 §92.5）。
+// 目标 = 当前多选节点（selectedNodeIds 的选择顺序），新名 = 前缀 + 补零编号，写入 node.title
+// （节点显示名；单图图片名徐章未显式命时同样回退到节点标题）。单件改名入口不变（图片名徐章双击
+// → renameSmartNodeImage）。预览当场展示「旧名 → 新名」，与集外节点同名的行标红但不阻断（
+// 项目没有节点名唯一约束，不静默改用户输入）。
+const BATCH_RENAME_PREVIEW_MAX = 12;
+const BATCH_RENAME_PAD_MAX = 6;
+let batchRenameEscapeRelease = null;
+
+function batchRenameTargets(){
+    const ids = typeof selectedNodeIds === 'function' ? selectedNodeIds() : (canvasState.selectedIds || []).slice();
+    return ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
+}
+
+function batchRenameLabel(prefix, pad, start, index){
+    const digits = Math.max(1, Math.min(BATCH_RENAME_PAD_MAX, Math.round(Number(pad) || 0) || 2));
+    const number = Math.max(0, Math.round(Number(start) || 0));
+    const text = String(number + Math.max(0, Math.round(Number(index) || 0)));
+    return `${String(prefix || '')}${text.length >= digits ? text : '0'.repeat(digits - text.length) + text}`;
+}
+
+function batchRenamePlan(prefix, pad, start){
+    const targets = batchRenameTargets();
+    const outside = new Set(canvasState.nodes.filter(node => !targets.includes(node)).map(node => String(node.title || '').trim()).filter(Boolean));
+    return targets.map((node, index) => {
+        const to = batchRenameLabel(prefix, pad, start, index);
+        return {node, from:String(node.title || ''), to, conflict:outside.has(to)};
+    });
+}
+
+function batchRenameFormValues(){
+    const prefixEl = document.getElementById('smartBatchRenamePrefix');
+    const padEl = document.getElementById('smartBatchRenamePad');
+    const startEl = document.getElementById('smartBatchRenameStart');
+    return {prefix:String(prefixEl?.value || '').trim(), pad:Number(padEl?.value || 2), start:Number(startEl?.value || 0)};
+}
+
+function renderBatchRenamePreview(){
+    const values = batchRenameFormValues();
+    const plan = batchRenamePlan(values.prefix, values.pad, values.start);
+    const countEl = document.getElementById('smartBatchRenameCount');
+    const previewEl = document.getElementById('smartBatchRenamePreview');
+    if(countEl) countEl.textContent = trf('smart.batchRenameCount', {n: plan.length});
+    if(!previewEl) return;
+    previewEl.innerHTML = plan.slice(0, BATCH_RENAME_PREVIEW_MAX).map(entry => `
+        <div class="smart-batch-rename-line${entry.conflict ? ' warn' : ''}"><em>${escapeHtml(entry.from || '—')}</em> → <strong>${escapeHtml(entry.to)}</strong></div>`).join('')
+        + (plan.length > BATCH_RENAME_PREVIEW_MAX ? `<div class="smart-batch-rename-line">… ${plan.length - BATCH_RENAME_PREVIEW_MAX}</div>` : '');
+}
+
+function closeBatchRenameDialog(){
+    const backdrop = document.getElementById('smartBatchRenameBackdrop');
+    if(!backdrop || backdrop.hidden) return;
+    backdrop.hidden = true;
+    if(batchRenameEscapeRelease){ batchRenameEscapeRelease(); batchRenameEscapeRelease = null; }
+}
+
+function openBatchRenameDialog(){
+    const backdrop = document.getElementById('smartBatchRenameBackdrop');
+    if(!backdrop) return;
+    const plan = batchRenamePlan('', 2, 1);
+    if(plan.length < 2){ toast(tr('smart.batchRenameNeedMulti')); return; }
+    const prefixEl = document.getElementById('smartBatchRenamePrefix');
+    if(prefixEl && !String(prefixEl.value || '').trim()) prefixEl.value = 'Image_';
+    backdrop.hidden = false;
+    if(window.lucide) lucide.createIcons();
+    renderBatchRenamePreview();
+    if(!batchRenameEscapeRelease) batchRenameEscapeRelease = window.FireflyEscapeStack?.push(() => closeBatchRenameDialog(), 'batch-rename') || (() => {});
+    prefixEl?.focus({preventScroll:true});
+}
+
+function applyBatchRename(){
+    const values = batchRenameFormValues();
+    const plan = batchRenamePlan(values.prefix, values.pad, values.start);
+    if(plan.length < 2){ closeBatchRenameDialog(); toast(tr('smart.batchRenameNeedMulti')); return; }
+    pushUndo();
+    plan.forEach(entry => { entry.node.title = entry.to; });
+    canvasCore.render();
+    canvasCore.scheduleSave();
+    closeBatchRenameDialog();
+    toast(trf('smart.batchRenameDone', {n: plan.length}));
+}
+
 function createNodeFromMenu(type){
     const p = createMenuPoint || viewportCenter();
     const groupId = canvasState.createMenuGroupId;
