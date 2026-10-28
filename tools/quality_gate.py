@@ -1432,7 +1432,10 @@ def trusted_node_executable() -> str:
 
 
 def trusted_tool_executable_paths() -> list[str]:
-    candidates = [trusted_node_executable(), shutil.which("git")]
+    # taskkill：门自己 stop_process_tree 在用（:1984），#239 的存活/杀死测试（remainder 切片）
+    # 也经 agent_host 真实调用它——不在允许表就会在子进程里被守卫拒（实测 2026-10-28
+    # remainder-7/8 denied taskkill.exe）。
+    candidates = [trusted_node_executable(), shutil.which("git"), shutil.which("taskkill")]
     return sorted(
         {
             str(Path(path).resolve())
@@ -1451,11 +1454,12 @@ def trusted_media_executable_paths() -> list[str]:
     return sorted({str(Path(path).resolve()) for path in candidates if path})
 
 
-def trusted_stub_executable_paths() -> list[str]:
+def trusted_stub_executable_paths(execution_root: Path) -> list[str]:
     # #239：agent-CLI 存活/杀死类测试的仓库内 .cmd 桩（tests/stubs/*.cmd）——
     # 仓内受审文件，绝对路径动态入册，不放开任意 .cmd。
-    repo_root = Path(__file__).resolve().parents[1]
-    return sorted(str(path.resolve()) for path in (repo_root / "tests" / "stubs").glob("*.cmd"))
+    # 注意：必须按「门实际执行用的 workspace 副本」 glob，不是源仓库——
+    # guarded 测试跑在临时 workspace 里，stub 路径是副本路径。
+    return sorted(str(path.resolve()) for path in (execution_root / "tests" / "stubs").glob("*.cmd"))
 
 
 def git_state(repo_root: Path) -> dict:
@@ -1591,7 +1595,7 @@ def isolated_environment(
                 trusted_executable_paths()
                 + tool_executables
                 + trusted_media_executable_paths()
-                + trusted_stub_executable_paths()
+                + trusted_stub_executable_paths(repo_root)
             ),
             "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES": json.dumps(tool_executables),
             "FIREFLY_QUALITY_GATE_BLOCKED_EXECUTABLES": json.dumps(blocked_executables),

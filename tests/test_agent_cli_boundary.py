@@ -118,7 +118,7 @@ class TestAgentCliSpawnBoundary(unittest.TestCase):
             trusted_executable_paths()
             + trusted_tool_executable_paths()
             + trusted_media_executable_paths()
-            + trusted_stub_executable_paths()
+            + trusted_stub_executable_paths(ROOT)
         )
         tool_paths = trusted_tool_executable_paths()
         prelude = (
