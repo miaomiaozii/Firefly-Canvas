@@ -494,6 +494,9 @@ function extractUpstreamTaskId(text){
 
 const activeJimengPolls = new Set();
 
+// #249 审计：两者均为自设上限，非即梦 SLA。60s×1440=24h 轮询总上限（工程选择：
+// 付费任务不能过早判丢）；间隔 60s 为负载平滑。未知任务终态化（连续未知提前
+// 落终态）属 W1 终态机（#235，本分支 main 尚未合入），待其落地后与之对齐。
 const JIMENG_POLL_INTERVAL = 60000;
 
 const JIMENG_POLL_MAX = 1440;

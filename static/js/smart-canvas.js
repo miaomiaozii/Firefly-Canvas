@@ -9845,6 +9845,8 @@ function conversationTaskUrl(projectId, nodeId, requestId){
     return `/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(nodeId)}/messages/${encodeURIComponent(requestId)}`;
 }
 function conversationSleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+// #249 审计：自设上限（1s/次×30=30s）——请求 404 时给初始 POST 提交留有限宽限，
+// 超时放弃等待避免占位长期 pending；工程选择，非上游约束。
 const CONVERSATION_MAX_NOT_FOUND_POLLS = 30;
 function conversationMessageForRequest(node, requestId){
     return (node?.messages || []).find(item => String(item?.request_id || '') === String(requestId) && item.role === 'user') || null;
