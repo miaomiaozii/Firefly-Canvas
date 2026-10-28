@@ -26,6 +26,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-media-history.js",
     "canvas-undo.js",
     "canvas-node-ops.js",
+    # #255：分数坐标骨架（0..1 公共坐标，crop/mask/brush 换算地基）。
+    "canvas-geometry.js",
     "canvas-image-editor.js",
     "canvas-generation-cascade.js",
     "canvas-generation-tasks.js",
