@@ -70,6 +70,16 @@ DISPLAY_NAMES = {
 }
 
 
+def find_provider(providers, wanted):
+    """先按 id 找；id 不稳时回退到显示名（comfly 曾被重命名为 provider-ms5fzxu7）。"""
+    target = next((item for item in providers if item.get('id') == wanted), None)
+    if target is None:
+        target = next((item for item in providers if str(item.get('name') or '').strip().lower() == str(wanted).strip().lower()), None)
+        if target is not None:
+            print(f'按 id 未命中，已按显示名定位到 {target.get("id")}')
+    return target
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--provider', default='provider-ms5fzxu7')
@@ -77,7 +87,9 @@ def main() -> int:
     args = parser.parse_args()
 
     providers = json.load(io.open(CONFIG, encoding='utf-8'))
-    target = next((item for item in providers if item.get('id') == args.provider), None)
+    if isinstance(providers, dict):
+        providers = providers.get('providers', [])
+    target = find_provider(providers, args.provider)
     if target is None:
         print(f'未找到服务商 {args.provider}；现有：{[p.get("id") for p in providers]}', file=sys.stderr)
         return 1
