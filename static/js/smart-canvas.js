@@ -14368,6 +14368,10 @@ function openCreateMenu(event, options={}){
     if(!createMenu) return;
     createMenuPoint = screenToWorld(event);
     canvasState.createMenuGroupId = options.groupId || '';
+    // #256：右键图片节点时记下源节点，并让「提取文字」卡片可见（其余入口隐藏它）。
+    canvasState.createMenuImageNodeId = options.imageNodeId || '';
+    const ocrCard = createMenu.querySelector('[data-create-type="ocr"]');
+    if(ocrCard) ocrCard.hidden = !options.imageNodeId;
     createMenu.style.left = '14px';
     createMenu.style.top = '14px';
     createMenu.classList.add('open');
@@ -14452,7 +14456,15 @@ shell.oncontextmenu = e => {
         openCreateMenu(e, {groupId:groupEl.dataset.id});
         return;
     }
-    if(e.target.closest('.image-node')) return;
+    // #256：右键图片节点 → 打开创建菜单（带 imageNodeId，「提取文字」卡片可见）。
+    const imageNodeEl = e.target.closest('.image-node');
+    if(imageNodeEl?.dataset?.id){
+        canvasState.selectedId = imageNodeEl.dataset.id;
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId: imageNodeEl.dataset.id, index: -1};
+        openCreateMenu(e, {imageNodeId: imageNodeEl.dataset.id});
+        return;
+    }
     openCreateMenu(e);
 };
 shell.ondblclick = e => {
@@ -15636,11 +15648,55 @@ assetDropZone?.addEventListener('drop', handleAssetPanelDrop);
 assetPanel?.addEventListener('dragover', handleAssetPanelDragOver);
 assetPanel?.addEventListener('dragleave', e => { if(!assetPanel?.contains(e.relatedTarget)) setAssetDragOver(false); });
 assetPanel?.addEventListener('drop', handleAssetPanelDrop);
+// #256：右键图片节点「提取文字」→ 服务端 OCR → 复用现有 prompt 节点类型落可编辑文本。
+// 镜像 createLocalEditNodeFromImage 的「从图片节点旁创建节点」模式：
+// 用 canvasCore.nodeRect 定位、createPromptNode 复用现有类型（不新增节点形态）。
+async function createPromptNodeFromOcr(){
+    const sourceNodeId = canvasState.createMenuImageNodeId || '';
+    canvasState.createMenuImageNodeId = '';
+    const sourceNode = canvasState.nodes.find(n => n.id === sourceNodeId);
+    const img = sourceNode?.type === NODE_TYPE_IMAGE ? (sourceNode.images || [])[0] : null;
+    const assetId = img?.asset_id || '';
+    const imageUrl = img?.url || '';
+    if(!sourceNode || !img || (!assetId && !imageUrl)){
+        toast(tr('smart.ocrNoImage'));
+        return;
+    }
+    const projectId = (canvas?.project_id || canvas?.project || canvasCore.sourceProjectId || '') || '';
+    toast(tr('smart.ocrWorking'));
+    try{
+        const res = await fetch('/api/ocr', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({project_id: projectId, asset_id: assetId, image_url: imageUrl})
+        });
+        const data = await res.json().catch(() => null);
+        if(!res.ok){
+            toast(`${tr('smart.ocrFailed')}: ${data?.detail || res.status}`);
+            return;
+        }
+        const text = String(data?.text || '').trim();
+        if(!text){
+            toast(tr('smart.ocrEmpty'));
+            return;
+        }
+        const rect = canvasCore.nodeRect(sourceNode);
+        const x = rect.x + rect.width + 48;
+        const y = Math.max(40, rect.y + Math.max(0, (rect.height - 240) / 2));
+        createPromptNode(x, y, {text, sourceNodeId: sourceNode.id, title: tr('smart.ocrPromptTitle')});
+        toast(tr('smart.ocrDone'));
+    }catch(err){
+        toast(`${tr('smart.ocrFailed')}: ${err?.message || err}`);
+    }
+}
 createMenu?.addEventListener('mousedown', event => event.stopPropagation());
 createMenu?.addEventListener('click', event => {
     event.stopPropagation();
     const card = event.target.closest('[data-create-type]');
-    if(card) createNodeFromMenu(card.dataset.createType || 'image');
+    if(!card) return;
+    const type = card.dataset.createType || 'image';
+    if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
+    createNodeFromMenu(type);
 });
 function createCanvasStarterImage(pickMedia=false){
     closeCreateMenu();

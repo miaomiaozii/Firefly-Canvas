@@ -175,6 +175,12 @@ smartVideoPreviewHtml/smartVideoFallbackHtml 从宿主上移到模块（与档�
 自由 17→23）+ Upscale 2K/4K/8K 档位菜单（`canvas-media-history.js` 反向 99→103、自由 51→54）。
 两笔都是模块按名调核心的既有方向，非新债。
 
+再到 246/959/174/806（2026-10-28 #256 图片节点右键「提取文字」）：核心 `smart-canvas.js`
+新增 `createPromptNodeFromOcr`，调 `canvas-node-ops.js` 的 `createPromptNode`（1→2）与
+`canvas-node-types.js` 的 `NODE_TYPE_IMAGE`（15→16）。方向是「核心调模块」，非新债；
+`createPromptNode` 核心用次（2）超过 owner 自用处（1）进 core_dominant 口径（173→174），
+调用点仅 2 处，不构成「搬早了」信号。
+
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、

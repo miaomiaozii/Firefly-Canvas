@@ -54,6 +54,7 @@ function createPromptNode(x, y, options={}){
         llmInstruction:'',
         created_at:Date.now()
     };
+    if(options.title) node.title = String(options.title); // #256：OCR 落点可自定义标题
     if(options.sourceNodeId) node.source_node_id = String(options.sourceNodeId);
     if(options.sourceMessageId) node.source_message_id = String(options.sourceMessageId);
     canvasState.nodes.push(node);
