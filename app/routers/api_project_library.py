@@ -1489,6 +1489,7 @@ async def cancel_project_image_task(project_id: str, task_id: str, request: Requ
             current.update({
                 'status': 'cancelled',
                 'error': '任务已取消',
+                'cancelled_by_user': True,
                 'result': {
                     'history_recorded': True,
                     'history_record': history_record,
@@ -2081,11 +2082,24 @@ async def cancel_project_video_task(project_id: str, task_id: str, request: Requ
                 current.update({'status': 'failed', 'error': f'取消结果持久化失败，任务已停止：{exc}', 'updated_at': time.time()})
                 current.pop('cancel_requested', None)
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    # #237：与图片取消端点对称——store 实际落历史的是合并记录（running 进度记录 + 取消终态 +
+    # partial outputs），响应/内存必须用合并后的版本 + final_node，前端 stop 时立即写回终态快照。
+    merged_history_record = history_record
+    for item in (canvas or {}).get('history') or []:
+        if isinstance(item, dict) and str(item.get('task_id') or '') == str(task_id) and str(item.get('status') or '') == 'cancelled':
+            merged_history_record = copy.deepcopy(item)
+            break
+    final_node = next(
+        (item for item in (canvas or {}).get('nodes') or [] if str(item.get('id') or '') == str(payload.result_node_id)),
+        None,
+    )
+    result_snapshot = None
     with CANVAS_TASK_LOCK:
         current = CANVAS_TASKS.get(str(task_id))
         if isinstance(current, dict):
-            current.update({'status': 'cancelled', 'error': '任务已取消', 'result': {'history_recorded': True, 'history_record': history_record, 'project_id': project_id, 'project_revision': (canvas or {}).get('revision'), 'result_node_id': payload.result_node_id}, 'updated_at': time.time()})
+            current.update({'status': 'cancelled', 'error': '任务已取消', 'cancelled_by_user': True, 'result': {'history_recorded': True, 'history_record': merged_history_record, 'project_id': project_id, 'project_revision': (canvas or {}).get('revision'), 'registered_revision': task.get('registered_revision') or 0, 'result_node_id': payload.result_node_id, 'final_node': final_node}, 'updated_at': time.time()})
             current.pop('cancel_requested', None)
+            result_snapshot = copy.deepcopy(current.get('result'))
         future = PROJECT_VIDEO_GENERATION_FUTURES.get(str(task_id))
     if future is not None:
         future.cancel()
@@ -2097,7 +2111,13 @@ async def cancel_project_video_task(project_id: str, task_id: str, request: Requ
         await manager.broadcast_canvas_updated(project_id, int((canvas or {}).get('updated_at') or completed_at))
     except Exception:
         pass
-    return {'task_id': task_id, 'status': 'cancelled'}
+    return {
+        'task_id': task_id,
+        'status': 'cancelled',
+        'project_revision': (canvas or {}).get('revision'),
+        'result_node_id': payload.result_node_id,
+        'result': result_snapshot,
+    }
 
 
 def project_canvas_video_payload(request: VideoGenerationRequest, provider_id: str, model: str, references: List[Dict[str, Any]]) -> CanvasVideoRequest:
