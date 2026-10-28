@@ -46,6 +46,30 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
             """
         ],
     ),
+    (
+        # LLM 用量/成本遥测租户（issue #258；每 turn 一行；表前缀 usage_* 符合 ADR 0021 决策 5）
+        "usage_001",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS usage_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                node_id TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL,
+                duration_seconds REAL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_usage_turns_project_time ON usage_turns (project_id, created_at)",
+        ],
+    ),
 ]
 
 

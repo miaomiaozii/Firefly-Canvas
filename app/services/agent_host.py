@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from firefly_usage import collect_pi_turn_usage, usage_has_data
+
 logger = logging.getLogger(__name__)
 
 # --- #239：子进程超时必杀 + 退出树杀（防 pi sidecar 僵尸/进程树泄漏，抄 ComfyArt 7eab251 P0） ---
@@ -118,6 +120,7 @@ class AgentSession:
     _reader_task: Optional[asyncio.Task] = None
     _started_at: float = 0.0
     _last_activity: float = 0.0
+    _turn_started_at: float = 0.0  # #258：当前 turn 起点（agent_start → agent_end 时长）
     # --- #239：超时必杀 / 退出树杀 / 错误五元组 ---
     _stopping: bool = False  # 手动 stop 进行中：reader finally 不得自动 respawn
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
@@ -349,6 +352,7 @@ class AgentHostManager:
         # Update session status based on event
         if event_type == "agent_start":
             session.status = "busy"
+            session._turn_started_at = time.time()  # #258：turn 起点（用量时长用）
         elif event_type == "agent_end":
             session.status = "running"
         elif event_type == "tool_execution_start":
@@ -360,12 +364,42 @@ class AgentHostManager:
         # #239: 完成一个真实回合即视为恢复健康，清零连续崩溃计数（崩溃循环永不清零）
         if event_type == "agent_end":
             session._respawn_count = 0
+            await self._record_turn_usage(session, event)  # #258：pi sidecar 采集点（best-effort）
 
         for handler in session.event_handlers:
             try:
                 await handler(session, event)
             except Exception as e:
                 logger.error(f"Error in event handler for agent {session.node_id}: {e}")
+
+    async def _record_turn_usage(self, session: AgentSession, event: dict) -> None:
+        """#258：agent_end 后把 turn 用量写入 ops.db（pi sidecar 采集点）。
+
+        遥测 best-effort：任何异常仅记日志，绝不影响事件流/主流程。
+        provider/model 取自 session.model（"provider/model" 斜杠形式；无斜杠记 pi）。
+        """
+        try:
+            usage = collect_pi_turn_usage(event.get("messages"))
+            if not usage_has_data(usage):
+                return
+            duration = time.time() - session._turn_started_at if session._turn_started_at else None
+            model = str(session.model or "")
+            provider = model.split("/", 1)[0] if "/" in model else "pi"
+            store_call = getattr(_app_main, "project_store_call", None)
+            if store_call is None:
+                return
+            await asyncio.to_thread(
+                store_call,
+                "record_usage_turn",
+                session.project_id,
+                provider=provider,
+                model=model,
+                node_id=session.node_id,
+                usage=usage,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record usage for agent {session.node_id}: {e}")
 
     async def send_command(self, session: AgentSession, command: dict) -> None:
         """Send a JSONL command to the pi subprocess."""

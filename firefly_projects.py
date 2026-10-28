@@ -190,13 +190,14 @@ def _library_manifest(root: Path) -> Dict[str, Any]:
 from firefly_projects_deletion import ProjectDeletionMixin
 from firefly_projects_cleanup import ProjectCleanupMixin
 from firefly_project_versions import ProjectVersionsMixin
+from firefly_usage import ProjectUsageMixin
 
 # 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
 # 塞回用户眼前（#224 要修的就是这个），所以按裸 ID 形态剔除。
 _BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
 
 
-class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin):
+class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin, ProjectUsageMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
         "input_asset_id", "inputAssetId",

@@ -59,3 +59,12 @@ SOFTWARE.
 | `src/layers.ts` `regionSplit` 掩膜合成 | `window.CanvasLayers.composeWithMask` | 忠实原版：掩膜判断用 m[p]（灰度图 RGBA 的 R 通道），mask>=128 保留原像素、alpha 置 255、union 累积 |
 
 未移植（依赖 tldraw / comfy 后端 / paper.js / DOM）：`registerPlacer` 系、`grow`（canvas blur）、`canvasOf`/`pixels`、`loadPaper`/`normalized`。点-多边形命中不在 ComfyArt 仓库内（票面所引 `utils.ts:250-268` 于参考版本中不存在），改用标准 even-odd 射线法自研实现于 `static/js/canvas-geometry.js` `pointInPolygon`。
+
+
+
+### ComfyArt — LLM 用量归一/累加逻辑（MIT License）
+
+issue #258 将 ComfyArt 仓库 `bot/_cli_common.py`（约 62-87 行）的 `normalize_usage` / `merge_usage` 逻辑及其字段别名表（`_USAGE_KEY_ALIASES`）移植为本项目的 `firefly_usage.py`：多 provider 字段别名归一（OpenAI 风格 prompt_tokens/completion_tokens 等）与跨 turn 累加。移植方式为按本项目 schema 重写（别名表另增 ACP camelCase 与 pi SDK Usage 短键），未逐行复制原文件。
+
+- 来源文件：`bot/_cli_common.py`（normalize_usage / merge_usage / _USAGE_KEY_ALIASES）
+- 许可协议：MIT
