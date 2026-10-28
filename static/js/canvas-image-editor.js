@@ -5,6 +5,8 @@
 
 const imageEditModal = document.getElementById('imageEditModal');
 
+let releaseImageEditorEscape = () => {}; // #249：Escape 栈登记释放（openImageEditor push，closeImageEditor release）
+
 let cropState = null;
 
 let cropDrag = null;
@@ -1629,6 +1631,8 @@ function openImageEditor(nodeId, imageIndex=0){
     const img = document.getElementById('cropImage');
     img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
     imageEditModal.classList.add('open');
+    // #249：Escape 栈——图片编辑器是最顶层全局层，Escape 只关它，不再穿透到画布。
+    releaseImageEditorEscape = window.FireflyEscapeStack?.push(() => closeImageEditor(), 'image-editor') || (() => {});
     previewCompareOn = false;
     previewCompareIndex = -1;
     resetPreviewTransform();
@@ -1697,6 +1701,8 @@ function openImageEditor(nodeId, imageIndex=0){
 }
 
 function closeImageEditor(){
+    releaseImageEditorEscape();
+    releaseImageEditorEscape = () => {};
     cleanupSmartHistoryPreviewNode();
     imageEditModal.classList.remove('open');
     document.querySelector('.image-edit-panel')?.classList.remove('video-preview-mode');

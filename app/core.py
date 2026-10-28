@@ -208,12 +208,25 @@ CHAT_MODEL = os.getenv('CHAT_MODEL', 'gpt-5.4')
 IMAGE_MODEL = os.getenv('IMAGE_MODEL', 'nano-banana-pro')
 SYSTEM_PROMPT = os.getenv('SYSTEM_PROMPT', 'You are a helpful assistant.')
 MAX_HISTORY_MESSAGES = int(os.getenv('MAX_HISTORY_MESSAGES', '30'))
+# ---- #249 一次性审计：轮询/超时常量性质（数值不变，只把「是什么」写成事实）----
+# *_TIMEOUT：自设安全阀，不是上游 SLA——没有 provider 承诺「N 秒内必须完成」，
+#   1800s（30 分钟）是工程选择：超过即判定 provider 挂起，任务转 timeout 终态。
+#   均可 env 覆盖（REQUEST_TIMEOUT / IMAGE_TASK_TIMEOUT / APIMART_IMAGE_TASK_TIMEOUT / VIDEO_POLL_TIMEOUT）。
+# *_POLL_INTERVAL / INITIAL_POLL_DELAY：负载平滑参数（轮询节奏），不是上限。
+# 任务级硬上限由 image/video_generation_task_timeout_seconds()（见上方）负责；
+# VIDEO_POLL_TIMEOUT 管的是 provider 侧轮询截止，两者职责不同、互不替代。
 AI_REQUEST_TIMEOUT = float(os.getenv('REQUEST_TIMEOUT', '1800'))
+# 图片生成轮询节奏：每 2s 一次（负载平滑的工程选择，非 provider 约束）。
 IMAGE_POLL_INTERVAL = float(os.getenv('IMAGE_POLL_INTERVAL', '2'))
+# 图片任务截止：默认与 AI_REQUEST_TIMEOUT 一致（30 分钟安全阀）。
 IMAGE_TASK_TIMEOUT = float(os.getenv('IMAGE_TASK_TIMEOUT', str(AI_REQUEST_TIMEOUT)))
+# APIMART 图片任务截止：30 分钟安全阀（APIMART 无公开完成时限承诺）。
 APIMART_IMAGE_TASK_TIMEOUT = float(os.getenv('APIMART_IMAGE_TASK_TIMEOUT', '1800'))
+# APIMART 轮询节奏：每 5s 一次（其队列比直连 API 慢，间隔放宽降负载）。
 APIMART_IMAGE_POLL_INTERVAL = float(os.getenv('APIMART_IMAGE_POLL_INTERVAL', '5'))
+# APIMART 首次查询前等 10s：给 provider 入队/预热时间（工程选择，非上游约束）。
 APIMART_IMAGE_INITIAL_POLL_DELAY = float(os.getenv('APIMART_IMAGE_INITIAL_POLL_DELAY', '10'))
+# 视频 provider 轮询截止：30 分钟；任务级硬上限另见 video_generation_task_timeout_seconds()（默认 3600s）。
 VIDEO_POLL_TIMEOUT = float(os.getenv('VIDEO_POLL_TIMEOUT', '1800'))
 ONLINE_IMAGE_PROMPT_MAX_LENGTH = int(os.getenv('ONLINE_IMAGE_PROMPT_MAX_LENGTH', '20000'))
 VIDEO_PROMPT_MAX_LENGTH = int(os.getenv('VIDEO_PROMPT_MAX_LENGTH', '4000'))
@@ -235,8 +248,11 @@ IMAGE_OUTPUT_KEY_HINTS = ('url', 'image_url', 'imageUrl', 'image', 'output_url',
 IMAGE_CONTAINER_KEY_HINTS = ('images', 'image', 'output', 'outputs', 'result', 'results', 'data', 'items', 'files')
 IMAGE_BASE64_KEY_HINTS = ('b64_json', 'base64', 'image_base64', 'imageBase64')
 RESPONSES_REJECT_STATUSES = {400, 404, 405, 415, 422}
+# /v1/responses 后台任务轮询：5s 一周期（负载平滑选择）；25 分钟上限故意短于
+# AI_REQUEST_TIMEOUT（默认 30 分钟）——后端必须抢先报「未完成」502，
+# 前端才会在 HTTP 超时前拿到明确错误文本，而不是先被请求超时截断（见下方轮询 deadline/报错）。
 RESPONSES_POLL_INTERVAL = 5.0
-RESPONSES_POLL_MAX_SECONDS = 1500.0
+RESPONSES_POLL_MAX_SECONDS = 25 * 60.0
 PER_MODEL_PROTOCOL_OPTIONS = {'openai', 'gemini'}
 FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'jimeng', 'runninghub'}
 AVATAR_SUPPORTED_PLATFORMS = {'apimart', 'volcengine'}
@@ -262,6 +278,8 @@ EXCEL_MAX_SHEETS = 8
 EXCEL_MAX_ROWS_PER_SHEET = 80
 EXCEL_MAX_COLS_PER_ROW = 30
 MAX_ATTACHMENT_TEXT_CHARS = 12000
+# APIMART 上传：共 3 次尝试（首次 + 最多 2 次重试），且只对瞬时 TLS 错误重试
+# （is_transient_tls_error）；工程惯例，上游无重试配额约束。
 APIMART_UPLOAD_RETRY_ATTEMPTS = 3
 AVATAR_TASK_DONE_STATUSES = {'completed', 'complete', 'succeeded', 'success', 'active', 'done'}
 AVATAR_TASK_FAIL_STATUSES = {'failed', 'fail', 'error', 'rejected', 'canceled', 'cancelled', 'expired'}
