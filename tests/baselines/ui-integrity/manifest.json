@@ -2,15 +2,15 @@
   "schema_version": 1,
   "contract": "desktop-ui-integrity",
   "accepted": true,
-  "accepted_by": "user #154收尾 选项1",
-  "reason": "尺寸面板 preset 自 1e03602/5dbac0a 起新增 4:5、5:4 等档位，把 9:16 顶出 5 个视口的可视区；已逐张核对差异仅限该面板，443d3a3 候选与旧基线一致（判红指标 peak_delta 136>48）",
-  "accepted_at": "2026-10-22T17:20:45.721576+00:00",
+  "accepted_by": "coordinator(batch-5)",
+  "reason": "Chrome 155.0.8059.80→.85 自动小版本升级：composer-flow 卡片边框 1px 平移（paired_linear_displacement=True，两次运行确定性复现，其余 37 张全过，画面内容目视一致）；先例 855e8e5 同因刷新",
+  "accepted_at": "2026-10-28T05:27:45.124229+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
       "name": "Google Chrome",
       "channel": "stable",
-      "version": "Chrome/155.0.8059.80"
+      "version": "Chrome/155.0.8059.85"
     },
     "dpr": 1,
     "color_scheme": "light",
@@ -35,7 +35,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1920x1080/canvas-composer.png",
-      "sha256": "ec30d932c403520755a9331487dfc258185b89d0a5934bde7db61fc29bbc49f7"
+      "sha256": "c75841a9ccf8abf5a2f2c7e774404c9a65f4e1451c696353008f27b47994c934"
     },
     {
       "viewport": [
@@ -44,7 +44,7 @@
       ],
       "scene": "composer-size",
       "path": "1920x1080/composer-size.png",
-      "sha256": "38b0126bf2ee199062ad23b1c64b17c59eac123cd7d02a4a4d6a3645d71021a1"
+      "sha256": "856e776bcb74bb7462d438960dafbd0569ee8e7666a00671375b94f627b83c88"
     },
     {
       "viewport": [
@@ -53,7 +53,7 @@
       ],
       "scene": "composer-flow",
       "path": "1920x1080/composer-flow.png",
-      "sha256": "1bbcb4c6e8f31826d92a010d9a05df45e8b106c7509f0fde8262f0d017a00d3d"
+      "sha256": "f51752c16422ab98fc3932ef7ac9b1125380548d164e764dedb8484fecc21a1b"
     },
     {
       "viewport": [
@@ -62,7 +62,7 @@
       ],
       "scene": "create-menu",
       "path": "1920x1080/create-menu.png",
-      "sha256": "9b5973b9515806147b4cd63e788282fd57e229469b41f38fb56098e287def6a1"
+      "sha256": "81702831f8b619469f48896751c65b3faf8edd235d0529eaeb86469603f29cec"
     },
     {
       "viewport": [
@@ -71,7 +71,7 @@
       ],
       "scene": "history",
       "path": "1920x1080/history.png",
-      "sha256": "b4e1a0b4b8586b96f1ef599664c5ae2611e36c95f46876a34d1989fa27976b3c"
+      "sha256": "265b4f433f6569a7a0f6d4ac303be45a1d35f5516b4794687a4e4c5858e453e7"
     },
     {
       "viewport": [
@@ -80,7 +80,7 @@
       ],
       "scene": "generation-detail",
       "path": "1920x1080/generation-detail.png",
-      "sha256": "cf744d96878a9413a30dd2e48e8e6618123757b2f49f6d51940f708de6ebac43"
+      "sha256": "6498040f29e9d2bcee3dd34a29a8868941a661f1ffdbc5ac7ce02c43d323cfa7"
     },
     {
       "viewport": [
@@ -98,7 +98,7 @@
       ],
       "scene": "shortcuts",
       "path": "1920x1080/shortcuts.png",
-      "sha256": "9f372bb65a56909b50e2f2ae14e33dcdf718d9e1462c6636c1ad4bbc57a24a68"
+      "sha256": "5a5846b759658f91052b15b611439e9b96da217edcb23c901d2bd81e06590bd1"
     },
     {
       "viewport": [
@@ -107,7 +107,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1440x900/canvas-composer.png",
-      "sha256": "82fc22addbec7752775cc32f248a578c40e572753969b2df917b33221b1685a8"
+      "sha256": "f5ebd394200420762542b6f88e42ea2fbd0a7244b34c8063f7f2a8a538c6bfb5"
     },
     {
       "viewport": [
@@ -116,7 +116,7 @@
       ],
       "scene": "composer-size",
       "path": "1440x900/composer-size.png",
-      "sha256": "342c51627bb40b2de026625f5d10bef76333cabd28080f04917d7d606d3e579e"
+      "sha256": "159376f2968a20326e04a7bb86a361fe66011a8331da9af1e138e464d45323c0"
     },
     {
       "viewport": [
@@ -125,7 +125,7 @@
       ],
       "scene": "composer-flow",
       "path": "1440x900/composer-flow.png",
-      "sha256": "a170f0b204e30af199216a824c5e13cd55f21bd2ef649e49533319bc7d6ace33"
+      "sha256": "3b5f9b347487d94a40c681eba2c90d5ba7dc6dfd91aa44d0a3298f55252013c7"
     },
     {
       "viewport": [
@@ -179,7 +179,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1280x720/canvas-composer.png",
-      "sha256": "57c6d1b1fcd03510653beb41d06dbbaca7eb4cc8d431759def03736c5d7d2196"
+      "sha256": "73fa918ee375a1e6590a36bead7b7879a31b60c6547fdf24a01d53167257c8c2"
     },
     {
       "viewport": [
@@ -188,7 +188,7 @@
       ],
       "scene": "composer-size",
       "path": "1280x720/composer-size.png",
-      "sha256": "bd766e8ffa6fad58a94d0b5c734c507dd09dc12dfa4abd5e6d81a12fbfc6c578"
+      "sha256": "53853adf900393bf14ef0d435064df9eeb2812a60b66167af48af51e18f08954"
     },
     {
       "viewport": [
@@ -197,7 +197,7 @@
       ],
       "scene": "composer-flow",
       "path": "1280x720/composer-flow.png",
-      "sha256": "ce52dc89a1fee61737747f24f0186e6d59ffe1b5dc60d3f448fa3202285737a6"
+      "sha256": "701820dffaf348d534abc74decdc684e95e594ee7c9b192062de968eebccbb63"
     },
     {
       "viewport": [
@@ -206,7 +206,7 @@
       ],
       "scene": "create-menu",
       "path": "1280x720/create-menu.png",
-      "sha256": "9a1ea2d750c1341cd33a09bc05437c892db239c4e065aa3ee85132d3c4f59f01"
+      "sha256": "f5ad226d446f45d026797c39ceae0a38250ddfc0d8470114aff7c30a0a48f2e9"
     },
     {
       "viewport": [
@@ -215,7 +215,7 @@
       ],
       "scene": "history",
       "path": "1280x720/history.png",
-      "sha256": "d6c5789c51be31fd0b3f56c4af5d19086ca06103c4a964f70a1717688a907e48"
+      "sha256": "08b7b9952b5a321b0d65c244f62cf28f75748c1aa43b8792eef1cf4af049a9a7"
     },
     {
       "viewport": [
@@ -224,7 +224,7 @@
       ],
       "scene": "generation-detail",
       "path": "1280x720/generation-detail.png",
-      "sha256": "dfe4fde54d1f4a2929ad22aabae1b55b245815758f678b91c3253224c222c933"
+      "sha256": "c3fe29d7e23384d2fa30b12c01cf737b367183425c840865da31fed1ebf6aa9c"
     },
     {
       "viewport": [
@@ -233,7 +233,7 @@
       ],
       "scene": "settings",
       "path": "1280x720/settings.png",
-      "sha256": "11617547164b11bf0b5bd732523159647008fdb5e2a7f242ca03331cca6dc0cb"
+      "sha256": "34b534b987a034eec0cf27238b057568b26d2b590417ec2a7bf11bddd4d74439"
     },
     {
       "viewport": [
@@ -242,7 +242,7 @@
       ],
       "scene": "shortcuts",
       "path": "1280x720/shortcuts.png",
-      "sha256": "e41404f31c6452d6a0b643932a2bef0014ab0024575c3a433cc829393d3f18be"
+      "sha256": "ebb942a2ed6c25da5df894fb8c0e17dfca443b66cabee5a6e385057f510273d2"
     },
     {
       "viewport": [
@@ -251,7 +251,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1024x768/canvas-composer.png",
-      "sha256": "bd2cc89524fabf655b24cb17d36318822aeae997b484804b5ac71ccf5d20a51a"
+      "sha256": "01911d40acae530e90b6e4f355395259643da92371bf66cedae51d2eb051e07c"
     },
     {
       "viewport": [
@@ -260,7 +260,7 @@
       ],
       "scene": "composer-size",
       "path": "1024x768/composer-size.png",
-      "sha256": "56059016c45956a39cedd8969ef8aca3220de513930ff03d8458cdb692c4738c"
+      "sha256": "6d483bf9feb55103b3854953a1ea4af8ff688739331d047c6a4891ce4d6e400d"
     },
     {
       "viewport": [
@@ -269,7 +269,7 @@
       ],
       "scene": "composer-flow",
       "path": "1024x768/composer-flow.png",
-      "sha256": "5163d6f4fe91ae037c13079cece8104a42aff1887a1e4402219c50e301ba0d98"
+      "sha256": "56085d431013714519bc3a15558d49f093029c4eb21da3a259845c92ba623aeb"
     },
     {
       "viewport": [
@@ -278,7 +278,7 @@
       ],
       "scene": "create-menu",
       "path": "1024x768/create-menu.png",
-      "sha256": "06e8bef62459f90a9962161110524427e9422155dd14fcff3e6f268071a045e9"
+      "sha256": "f5281ede27669ca447f555f0eca123578c45fbcaa284516c6f47cf53cf59962c"
     },
     {
       "viewport": [
@@ -287,7 +287,7 @@
       ],
       "scene": "history",
       "path": "1024x768/history.png",
-      "sha256": "fba2c0cd89223609de525d8432e145a85eafe000602bc18939b991f895041e0e"
+      "sha256": "efec1fba66744b7a11a733f7b3b95083e6665d3e8f2170b37ed4cb883f6989b9"
     },
     {
       "viewport": [
@@ -296,7 +296,7 @@
       ],
       "scene": "generation-detail",
       "path": "1024x768/generation-detail.png",
-      "sha256": "be5438bf89820ea584f948fc40db6c964f52d469e0c09b408cb8170d511ac3c8"
+      "sha256": "2c26b877da975dbbe7264140f5b0626141c1bd822a02d67a3814fcce6fa54334"
     },
     {
       "viewport": [
@@ -305,7 +305,7 @@
       ],
       "scene": "settings",
       "path": "1024x768/settings.png",
-      "sha256": "94213cea0ca609dbc76b504e715b1d03c82afeff8711eddb3f966792cd4d5848"
+      "sha256": "d9c253aad992fc47e565e307625646b7a7dabfebb6c3058fa85819b5f5606346"
     },
     {
       "viewport": [
@@ -314,7 +314,7 @@
       ],
       "scene": "shortcuts",
       "path": "1024x768/shortcuts.png",
-      "sha256": "a12d419ff4f3468aa2c20ee25f482bf78409bee65dc2a96070db7daa816ac398"
+      "sha256": "9660489060e9881f624838bf481e40a5f0da0644d46ea4d5fa306ddf7a3f570f"
     },
     {
       "viewport": [
@@ -341,7 +341,7 @@
       ],
       "scene": "composer-flow",
       "path": "800x600/composer-flow.png",
-      "sha256": "bf7b92f842341eb56e98d7d3194d22ed16b8ae7288da5ee7bf2a0ef5a00201e5"
+      "sha256": "82e2d356edf95e374507070d5a7bcc50549ac2de121a579d300fddb2d8efd216"
     },
     {
       "viewport": [
@@ -350,7 +350,7 @@
       ],
       "scene": "create-menu",
       "path": "800x600/create-menu.png",
-      "sha256": "7f0654103a3fb627bc7afc4ee19ea71f48ae089e6b60e5dd0cb7709dde2b088b"
+      "sha256": "aab3ecc0cd98b0f1b93e3adea55f62255c62d58ac3d5ae6f96cb6ccdadedf914"
     },
     {
       "viewport": [
@@ -359,7 +359,7 @@
       ],
       "scene": "history",
       "path": "800x600/history.png",
-      "sha256": "03c7f3d0c5ea0a8c4e5dda71b7c3acdaadbafb94bd4e61e0d095ade6353516c2"
+      "sha256": "873709b801b884a3762ac6a5ef59f83588420f4f48fb8b119f82aea1e7d546fa"
     },
     {
       "viewport": [
@@ -368,7 +368,7 @@
       ],
       "scene": "generation-detail",
       "path": "800x600/generation-detail.png",
-      "sha256": "63f3badf0f001d6b3ed721d74ec6f044803fb899dd1c0bf22983fcf5deb6aa9a"
+      "sha256": "2474e3c50dde77197d6a3b837bf949355988fcc2ffd5afc519ac5bb940e33751"
     },
     {
       "viewport": [
@@ -377,7 +377,7 @@
       ],
       "scene": "settings",
       "path": "800x600/settings.png",
-      "sha256": "e13f032dcc20dcc969a0b1ade3808c3ed3ff3020d578a8b1c8e4df67f88937d0"
+      "sha256": "30c926a6cdbdb2bf7b923c3d44e525fc487726529eb035c2aa814466e9b26711"
     },
     {
       "viewport": [
@@ -386,7 +386,7 @@
       ],
       "scene": "shortcuts",
       "path": "800x600/shortcuts.png",
-      "sha256": "98b9d422dbdc84ffd1151e0cbdc88e9eb5b7ed3442a48c1c26f2c1df85177db9"
+      "sha256": "99500d0ed9f0b91bf0097cee0e5ac07c013f9da051961037b3ee801bf838545b"
     }
   ]
 }
