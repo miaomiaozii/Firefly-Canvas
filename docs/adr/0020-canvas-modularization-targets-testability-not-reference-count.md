@@ -418,3 +418,7 @@ implementation, this would be a UI picker"）；fork / switch-branch / model / a
   新增名字进核心时必须在这里补一行。
 - 棘轮守卫保留，但**不再是唯一指标**；轨道 1 必须配一个新指标才有效。
 - 「拆得越多越好」这个隐含假设被否掉：拆分的收益边界由「该模块能否独立测」判定。
+
+再到 247/967/174/812（2026-10-29 #246 freeSpot 接线，叠于 #251 之上）：素材粘贴行排新增
+NODE_TYPE_IMAGE 核心引用 +2；createPromptNode owner 侧 +1 退出核心主导体（175→174）；
+core_dominant_core_refs +2/-2 对冲净 0。均系落点扫描接线的「核心调模块」方向，非新债。

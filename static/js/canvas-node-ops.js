@@ -423,17 +423,22 @@ function applyBatchRename(){
 // #246 freeSpot 落点扫描（canvas-placement.js）：菜单点只是扫描锚点——从原固定偏移位
 // 向右扫描首个无碰撞空位；碰撞则 x = 碰撞盒 maxX + GAP(40)，200 步上限防死循环。
 // 尺寸表必须与各创建函数写的节点 w/h 一致（碰撞盒用的就是落点后的真实尺寸）。
+// group 尺寸惰性读取（与 createSmartGroupNode 体内引用同口径——顶层引用会让
+// 最小桩 harness 在模块求值期报 ReferenceError）。
 // LOCAL_EDIT_NODE_W/H 提前到此处声明（createLocalEditNode 与本表共用，原声明位置在本表之后会触发 TDZ）。
 const LOCAL_EDIT_NODE_W = 400;
 const LOCAL_EDIT_NODE_H = 520;
 const CREATE_MENU_NODE_SIZE = {
-    group: { w: SMART_GROUP_DEFAULT_WIDTH, h: SMART_GROUP_DEFAULT_HEIGHT },
     prompt: { w: 316, h: 240 },            // 与 createPromptNode 一致
     conversation: { w: 390, h: 430 },      // 与 createConversationNode 一致
     agent: { w: 382, h: 360 },             // 与 createAgentNode 一致
     'local-edit': { w: LOCAL_EDIT_NODE_W, h: LOCAL_EDIT_NODE_H },
     loop: { w: 340, h: 168 },              // 与 createLoopNode 一致
 };
+function createMenuNodeSizeFor(type){
+    if(type === 'group') return { w: SMART_GROUP_DEFAULT_WIDTH, h: SMART_GROUP_DEFAULT_HEIGHT };
+    return CREATE_MENU_NODE_SIZE[type];
+}
 
 function createNodeFromMenu(type){
     const p = createMenuPoint || viewportCenter();
@@ -445,7 +450,7 @@ function createNodeFromMenu(type){
         const s = CanvasPlacement.findFreeSpot({ x, y }, size, boxes);
         return { x: s.x, y: s.y };
     };
-    if(type === 'group'){ const s = spot(p.x - 170, p.y - 110, CREATE_MENU_NODE_SIZE.group); return createSmartGroupNode(s.x, s.y); }
+    if(type === 'group'){ const s = spot(p.x - 170, p.y - 110, createMenuNodeSizeFor('group')); return createSmartGroupNode(s.x, s.y); }
     let created = null;
     if(type === 'prompt'){ const s = spot(p.x - 158, p.y - 97, CREATE_MENU_NODE_SIZE.prompt); created = createPromptNode(s.x, s.y); }
     else if(type === 'conversation'){ const s = spot(p.x - 195, p.y - 215, CREATE_MENU_NODE_SIZE.conversation); created = createConversationNode(s.x, s.y); }
