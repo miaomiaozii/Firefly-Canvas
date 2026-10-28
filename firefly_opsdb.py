@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Tuple
 
@@ -49,8 +49,9 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
 ]
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _now_ms() -> int:
+    """epoch 毫秒（ADR 0021 约定：ops_migrations.done_at 为 INTEGER）。"""
+    return int(time.time() * 1000)
 
 
 class OpsDb:
@@ -100,7 +101,7 @@ class OpsDb:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS ops_migrations ("
             " key TEXT PRIMARY KEY, "
-            " applied_at TEXT NOT NULL"
+            " done_at INTEGER NOT NULL"
             ")"
         )
         applied = {row[0] for row in conn.execute("SELECT key FROM ops_migrations")}
@@ -111,8 +112,8 @@ class OpsDb:
                 for statement in statements:
                     conn.execute(statement)
                 conn.execute(
-                    "INSERT INTO ops_migrations (key, applied_at) VALUES (?, ?)",
-                    (key, _now_iso()),
+                    "INSERT INTO ops_migrations (key, done_at) VALUES (?, ?)",
+                    (key, _now_ms()),
                 )
                 conn.commit()
             except sqlite3.Error:
