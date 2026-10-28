@@ -32,3 +32,12 @@ def project_has_open_session(project_id: str) -> bool:
     clean_project_id = str(project_id or "").strip()
     with _lock:
         return any(owner == clean_project_id for owner in _sessions.values())
+
+
+def open_project_ids() -> list:
+    """Return the sorted unique project ids with at least one open session.
+
+    Read-only projection for runtime status endpoints (e.g. /api/healthz).
+    """
+    with _lock:
+        return sorted(set(_sessions.values()))

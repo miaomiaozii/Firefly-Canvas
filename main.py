@@ -1168,6 +1168,8 @@ from app.routers import api_ai as _r_api_ai
 app.include_router(_r_api_ai.router)
 from app.routers import api_app_info as _r_api_app_info
 app.include_router(_r_api_app_info.router)
+from app.routers import api_health as _r_api_health
+app.include_router(_r_api_health.router)
 from app.routers import api_asset_classification_prompt as _r_api_asset_classification_prompt
 app.include_router(_r_api_asset_classification_prompt.router)
 from app.routers import api_asset_library as _r_api_asset_library
