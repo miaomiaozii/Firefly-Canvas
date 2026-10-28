@@ -1343,6 +1343,26 @@ def fal_submit_body(model, image_url, params, resolution=None, model_by_resoluti
     return body
 
 
+def fal_url_host(value):
+    return str(value or '').split('://')[-1].split('/', 1)[0].strip().lower()
+
+
+def fal_request_urls(base_url, model, request_id, submitted, prefix='fal'):
+    """轮询/取结果的地址：只相信同源，否则用本地前缀重建。
+
+    中转商把 fal 官方的 status_url/response_url（https://queue.fal.run/…）原样回填，
+    直连会绕过中转鉴权（fal 官方用 `Authorization: key`，不是 Bearer）→ 必须换回自己域名。
+    """
+    own = fal_queue_paths(base_url, model, request_id, prefix)
+    base_host = fal_url_host(base_url)
+    urls = {}
+    for name, fallback in (('status', own['status']), ('result', own['result'])):
+        raw = str((submitted or {}).get(f'{name}_url') or '').strip()
+        parsed_host = fal_url_host(raw)
+        urls[name] = raw if raw.startswith('http') and base_host and parsed_host == base_host else fallback
+    return urls
+
+
 async def generate_fal_queue_image(client, base_url, provider, model, image_refs, params, *, prefix='fal', progress_callback=None, resolution=None, model_by_resolution=None):
     """fal.ai 队列协议：提交 → 轮询 status → 拉取结果（Topaz 高清修复等 image-to-image 模型）。
 
@@ -1372,9 +1392,8 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         if extract_image_flexible(submitted):
             return _FalQueueResponse(submitted)
         raise HTTPException(status_code=502, detail=f"fal 任务提交未返回 request_id：{json.dumps(submitted, ensure_ascii=False)[:400]}")
-    status_url = str(submitted.get('status_url') or '').strip()
-    if not status_url.startswith('http'):
-        status_url = f"{fal_queue_paths(base_url, model, request_id, prefix)['status']}"
+    request_urls = fal_request_urls(base_url, model, request_id, submitted, prefix)
+    status_url = request_urls['status']
     deadline = time.monotonic() + RESPONSES_POLL_MAX_SECONDS
     last_status = ''
     while time.monotonic() < deadline:
@@ -1401,8 +1420,7 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         await asyncio.sleep(RESPONSES_POLL_INTERVAL)
     else:
         raise HTTPException(status_code=502, detail=f"fal 任务未在 {RESPONSES_POLL_MAX_SECONDS / 60:g} 分钟内完成（最后状态：{last_status or '未知'}），可在服务商后台用 request_id {request_id} 查询")
-    response_url = str(submitted.get('response_url') or '').strip()
-    result_url = response_url if response_url.startswith('http') else fal_queue_paths(base_url, model, request_id, prefix)['result']
+    result_url = request_urls['result']
     result_response = await client.get(result_url, headers=headers)
     if result_response.status_code >= 400:
         provider_name = provider.get('name') or provider['id']
