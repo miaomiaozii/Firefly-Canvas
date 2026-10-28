@@ -445,10 +445,15 @@ STEP_DEFINITIONS = {
         "-b",
         "tests.test_product_egress_attribution",
     ],
+    # #261：docs 死链门禁（advisory，失败不阻塞）。扫 docs/、.pipeline/、CONTEXT.md 的
+    # path:line 引用与相对 .md 链接，报告存量腐烂（行号漂移/死链）。--advisory 把
+    # 退出码钉 0：存量未清前不挡门，报告进门跑输出供人工跟进；存量修清后
+    # 去掉 --advisory 即可提级为阻塞。
+    "doc-link-check": lambda python: [python, "tools/doc_link_check.py", "--advisory"],
 }
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution"),
+    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"),
     "domain": (
         "javascript-syntax",
         "surface-contract",

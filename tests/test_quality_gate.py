@@ -469,6 +469,15 @@ class QualityGateTests(unittest.TestCase):
             "        self.assertTrue(True)\n",
             encoding="utf-8",
         )
+        # #261：doc-link-check（fast advisory）跑 tools/doc_link_check.py。fixture 是
+        # 最小仓库骨架没有 docs/，给一个桩（门只验接线，报告行为由真门跑/单测验）。
+        (self.fixture_root / "tools").mkdir(exist_ok=True)
+        (self.fixture_root / "tools" / "doc_link_check.py").write_text(
+            "import sys\n"
+            "print('doc-link-check fixture stub')\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
         # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
         # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
         # #185：node_flow 级联与 fly_fixes 两个 runner 同一套路接入。
@@ -799,7 +808,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -2563,7 +2572,7 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution")),
+            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
             "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
             "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
