@@ -3327,6 +3327,8 @@ button.log-prompt-preview svg { width:11px; height:11px; flex:0 0 auto; margin-l
 .smart-log-detail-delete-original { grid-column:1 / -1; color:var(--danger) !important; }
 .smart-log-detail-delete-original:hover,.smart-log-detail-delete-original:focus-visible { border-color:var(--danger) !important; background:color-mix(in srgb, var(--danger) 9%, var(--card)) !important; }
 .smart-log-detail-actions button:disabled { opacity:.55; cursor:wait; }
+.smart-log-detail-actions button[data-upscale-tier]:disabled { cursor:not-allowed; }
+.smart-log-detail-upscale-size { font-style:normal; font-size:11px; font-weight:600; color:var(--muted); }
 .smart-log-detail-actions svg { width:15px; height:15px; }
 
 /* Focus mode is a centered creative workspace: visual context first, original editor below. */
