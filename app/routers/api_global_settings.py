@@ -112,7 +112,7 @@ def project_library_status():
 
 @router.get('/api/global-settings')
 async def global_settings():
-    statuses = await asyncio.gather(_app_main.codex_status(), _app_main.gemini_cli_status(), _app_main.jimeng_status(), return_exceptions=True)
+    statuses = await asyncio.gather(_app_main.codex_status(), _app_main.gemini_cli_status(), return_exceptions=True)
 
     def safe_cli_status(label, value):
         if isinstance(value, BaseException):
@@ -122,9 +122,8 @@ async def global_settings():
         return {'installed': False, 'logged_in': False, 'message': f'{label} 状态不可用'}
     codex = safe_cli_status('Codex', statuses[0])
     gemini = safe_cli_status('Antigravity', statuses[1])
-    jimeng = safe_cli_status('即梦', statuses[2])
     library = await asyncio.to_thread(project_library_status)
-    return {'providers': public_api_providers(), 'cli': {'codex': codex, 'gemini': gemini, 'jimeng': jimeng}, 'project_library': library, 'preferences': load_global_preferences(), 'photoshop': photoshop_connection_status()}
+    return {'providers': public_api_providers(), 'cli': {'codex': codex, 'gemini': gemini}, 'project_library': library, 'preferences': load_global_preferences(), 'photoshop': photoshop_connection_status()}
 
 @router.patch('/api/global-settings/preferences')
 async def update_global_preferences(payload: GlobalPreferencesPayload):
