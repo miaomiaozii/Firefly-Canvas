@@ -34,14 +34,17 @@
 | H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m+80m 三轮后实现完成；**总控查明 MCP 全量假失败根因**=harness 测试 sys.modules 污染（非 MCP bug），总控修隔离(commit 13ea61d)；resume del_mvre0g3z_40ai(80m，只做全量+result+commit) | 进行中 |
 | I | #235 provider 未知终态化+RunningHub code+resume not-found | 中 | D:/ff-wt/wt-235 | issue/235 | del_mvrhaem0_73gb(90m，锚点已注入) | 进行中 |
 | J | #238 缩放自适应缩略图+视频悬停 | 中小 | D:/ff-wt/wt-238 | issue/238 | del_mvrhaem0_4q7g(75m) | 进行中 |
-| K | #263 #234 trial 门证据补挂 | 小 | 待派 | 待派 | — | 排队（与 #243 门区可能重叠，待其合并） |
-| L | #237 停止语义精修 | 小 | 暂缓 | — | — | **押后**：与 #243 同触 agent_host/project_sessions，待 #243 合并 |
+| K | #263 #234 trial 门证据补挂 | 小 | D:/ff-wt/wt-263 | issue/263 | del_mvre0g3z_2h0k(55m，总控亲跑红测试+处方注入) | 进行中 |
+| L | #237 停止语义精修 | 小 | 待派 | 待派 | — | 可派（#243 已合并），下一波 |
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
-## Wave 1b 待解锁队列（前置合并后派发）
+## Wave 1c/1d 状态（刷新）
 
-- #236（待 234✅,235）；#254（待 #236）；#237 见泳道 L；#252/#253（smart-canvas 队列，238 后）。
-- 新增 #263（#234 trial 证据，小票）。人工闸口：#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署解锁 #251/#257/#258**；#247/#248 wayfinder。
+- 已关 8 票：#234 #239 #240 #241 #242 #243 #245 #250（#243 合并 c58287a；总控查明 harness sys.modules 污染根因并修隔离）。
+- 在跑：#235（del_mvrhaem0_73gb） #238（del_mvrhaem0_4q7g） #263（del_mvre0g3z_2h0k）。
+- 待解锁：#237（#243 已合，可派）；#236→#254（待 #235）；#252/#253（待 #238）；#251/#257/#258（待 ADR 0021 签署）；#260（待 #259）。
+- 人工闸口：#233（ready-for-human）、#259（产品决策）、**ADR 0021 签署**；#247（needs-info：已评论要求复现证据）、#248（needs-info：已评论要求产品澄清）wayfinder。
+- 暂缓评估：#249、#246、#261（#261 与 #249 同抢 tests/test_workflows.py，排后）。
 - 暂缓：#249（可能与 smart-canvas/测试文件重叠，待 #234 合并后评估）、#246、#261（#261 与 #249 同抢 tests/test_workflows.py，排后）。
 - 人工闸口：#233（ready-for-human）、#259（产品决策）；#247/#248 为 wayfinder 地图票。
