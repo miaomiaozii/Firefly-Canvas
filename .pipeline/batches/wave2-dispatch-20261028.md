@@ -31,3 +31,4 @@
 - #256 收口：issue/256（4 提交，禁区零触碰）合入 int-256（基线 b21aae1）；
   总控干净 worktree 门 fast 15.9s ✅ domain 139.5s ✅（含浏览器步——worker 环境报"无法启动浏览器"
   为并发 chrome 争用，非代码问题）。待主区 html 脏文件清后 wave1-live 吸收 int-256。
+- #257 收口：issue/257（6 提交，ops.db versions_* 租户 additive 迁移，worker 自证 fast+domain 绿+UI冒烟截图）合入 int-256；总控集成 fast 15.2s + domain（见下）全绿。
