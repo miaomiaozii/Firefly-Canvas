@@ -7179,17 +7179,21 @@ function pasteAssetsFromInbox(){
     const items = readAssetInbox();
     if(!items) return false;
     const center = lastMouseWorld || viewportCenter();
-    const cell = 260; // 网格间距（世界坐标）
-    const cols = Math.max(1, Math.min(items.length, Math.ceil(Math.sqrt(items.length))));
-    const rows = Math.ceil(items.length / cols);
-    const startX = center.x - (cols - 1) * cell / 2;
-    const startY = center.y - (rows - 1) * cell / 2;
+    // #246 freeSpot 批量行排（canvas-placement.js rowSpots）：从锚点单行横向排布，
+    // 每件避让静态碰撞盒（既有节点），游标 = 上一落点右缘 + GAP(40)；替代旧网格。
+    const imagesPerItem = items.map(it => [assetNodeImageFromItem(it)]);
+    const sizes = imagesPerItem.map(imgs => {
+        const layout = canvasCore.imageLayout(imgs, canvasCore.mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:imgs}), {type:NODE_TYPE_IMAGE, images:imgs});
+        return { w: layout.width, h: layout.height };
+    });
+    const boxes = canvasState.nodes.map(n => canvasCore.nodeRect(n)).filter(Boolean);
+    const spots = CanvasPlacement.rowSpots({ x: center.x, y: center.y }, sizes, boxes);
     pushUndo();
     const created = [];
     items.forEach((it, i) => {
-        const r = Math.floor(i / cols), c = i % cols;
-        const p = {x: startX + c * cell, y: startY + r * cell};
-        const node = createImageNodeAt(p, [assetNodeImageFromItem(it)], {skipUndo:true, select:false});
+        // spot 是左边缘 → createImageNodeAt 取中心对齐同一落点。
+        const p = { x: spots[i].x + Math.round(sizes[i].w / 2), y: spots[i].y + Math.round(sizes[i].h / 2) };
+        const node = createImageNodeAt(p, imagesPerItem[i], {skipUndo:true, select:false});
         if(node) created.push(node.id);
     });
     canvasState.selectedId = created.length === 1 ? created[0] : '';
