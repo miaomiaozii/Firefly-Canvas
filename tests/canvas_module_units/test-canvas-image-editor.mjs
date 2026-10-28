@@ -204,6 +204,8 @@ function loadImageEditorModule() {
         'canvas-node-types.js',
         'canvas-core.js',
         'canvas-state.js',
+        // #255：分数坐标骨架（editor 的 editScaleRectToNatural/editDrawPoint 接线依赖）。
+        'canvas-geometry.js',
         'canvas-image-editor.js',
     ]);
 
@@ -1237,3 +1239,20 @@ test('resetEditDrawingHistory: 清栈/清文本/计数器归 1 + 历史按钮 di
     }
 });
 
+
+// #255：显示像素 → 原图像素统一走分数坐标骨架（editScaleRectToNatural）。
+// 防的回归：接线后换算行为与旧「直连缩放」同构；骨架模块缺失时回退路径结果一致。
+test('editScaleRectToNatural: 走 CanvasGeometry 与直连缩放同构；模块缺失时回退', () => {
+    const { ctx } = loadImageEditorModule();
+    const f = globalFunction(ctx, 'editScaleRectToNatural');
+    const img = { clientWidth: 500, clientHeight: 500, naturalWidth: 2000, naturalHeight: 2000 };
+    const rect = { x: 100, y: 50, w: 200, h: 100 };
+    // 几何模块在场（loadImageEditorModule 已按 HTML 顺序加载）
+    assert.deepEqual(fromContext(f(rect, img)), { x: 400, y: 200, w: 800, h: 400 }, '骨架路径');
+    // 模拟骨架模块缺失（单独加载 editor 的旧部署形态）→ 回退直连缩放，结果一致
+    evaluate(ctx, 'delete window.CanvasGeometry');
+    assert.deepEqual(fromContext(f(rect, img)), { x: 400, y: 200, w: 800, h: 400 }, '回退路径');
+    // 非正方形缩放
+    const img2 = { clientWidth: 400, clientHeight: 250, naturalWidth: 1600, naturalHeight: 1500 };
+    assert.deepEqual(fromContext(f({ x: 40, y: 25, w: 120, h: 50 }, img2)), { x: 160, y: 150, w: 480, h: 300 }, '各向异性缩放');
+});

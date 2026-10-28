@@ -506,7 +506,7 @@ function setImageEditMode(mode, userTouched=false){
     if(userTouched) imageEditModeTouched = true;
     const prev = imageEditMode;
     if(mode !== 'brush') removeEditTextInlineEditor(true);
-    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid'].includes(mode) ? mode : 'preview';
+    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid','layers'].includes(mode) ? mode : 'preview';
     const cropCanvasEl = document.getElementById('cropCanvas');
     const previewStageEl = document.getElementById('previewStage');
     const editStageEl = document.getElementById('imageEditStage');
@@ -545,6 +545,7 @@ function setImageEditMode(mode, userTouched=false){
     document.getElementById('imageBrushTools').classList.toggle('active', imageEditMode === 'brush');
     document.getElementById('imageResizeTools')?.classList.toggle('active', imageEditMode === 'resize');
     document.getElementById('imageGridTools').classList.toggle('active', imageEditMode === 'grid');
+    document.getElementById('imageLayersTools')?.classList.toggle('active', imageEditMode === 'layers');
     if(imageEditMode === 'grid' && gridOperationMode === 'join' && !canGridJoinCurrentNode()) gridOperationMode = 'split';
     syncGridOperationControls();
     updateImagePreviewMarkButton();
@@ -566,6 +567,11 @@ function setImageEditMode(mode, userTouched=false){
             document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
             document.getElementById('imageEditSub').textContent = tr('smart.zoomImageSub');
             applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
+        } else if(imageEditMode === 'layers'){
+            // #255 图层模式：导出走图层面板自己的按钮，隐藏主应用按钮。
+            document.getElementById('imageEditTitle').textContent = tr('canvas.layersTitle');
+            document.getElementById('imageEditSub').textContent = tr('canvas.layersHint');
+            applyBtn.style.display = 'none';
         } else {
             const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'brush' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
             const labelKey = imageEditMode === 'crop' ? 'canvas.applyCrop' : imageEditMode === 'outpaint' ? 'canvas.applyOutpaint' : imageEditMode === 'mask' ? 'canvas.applyMask' : imageEditMode === 'brush' ? 'canvas.applyBrush' : 'canvas.applyGrid';
@@ -596,6 +602,8 @@ function setImageEditMode(mode, userTouched=false){
     syncTextToolState(true);
     updatePreviewNavButtons();
     canvasCore.refreshIcons();
+    // #255 图层面板钩子：layers 模式时初始化 store + 渲染列表（纯接线，逻辑在 canvas-layers.js）。
+    window.CanvasLayers?.onEditMode?.(imageEditMode);
 }
 
 function editDrawSnapshot(){
@@ -692,9 +700,28 @@ function syncBrushToolButtons(){
 }
 
 function editDrawPoint(event){
+    // #255：client 像素 → 画布像素统一走分数坐标骨架（0..1 公共坐标系）。
+    // brush / mask / text 绘图共用此换算入口；与旧「直连缩放」逐式同构（不钳制，越界靠画布裁剪）。
     const canvasEl = editDrawCanvas();
     const rect = canvasEl.getBoundingClientRect();
-    return {x:(event.clientX - rect.left) * canvasEl.width / Math.max(1, rect.width), y:(event.clientY - rect.top) * canvasEl.height / Math.max(1, rect.height)};
+    const geometry = window.CanvasGeometry || null;
+    if(!geometry) return {x:(event.clientX - rect.left) * canvasEl.width / Math.max(1, rect.width), y:(event.clientY - rect.top) * canvasEl.height / Math.max(1, rect.height)};
+    const fraction = geometry.fractionFromPoint({x:event.clientX - rect.left, y:event.clientY - rect.top}, {x:0, y:0, w:Math.max(1, rect.width), h:Math.max(1, rect.height)});
+    return geometry.pointFromFraction(fraction, {x:0, y:0, w:canvasEl.width, h:canvasEl.height});
+}
+
+// #255：显示像素 → 原图像素统一走分数坐标骨架（显示 box → 0..1 分数 → 自然尺寸 box）。
+// crop / outpaint 应用时共用；骨架模块缺失时回退到旧「直连缩放」。
+function editScaleRectToNatural(rect, img){
+    const geometry = window.CanvasGeometry || null;
+    if(geometry){
+        return geometry.rectFromFractionRect(
+            geometry.fractionRectFromRect(rect, {x:0, y:0, w:img.clientWidth || 1, h:img.clientHeight || 1}),
+            {x:0, y:0, w:img.naturalWidth, h:img.naturalHeight}
+        );
+    }
+    const scaleX = img.naturalWidth / (img.clientWidth || 1), scaleY = img.naturalHeight / (img.clientHeight || 1);
+    return {x:rect.x * scaleX, y:rect.y * scaleY, w:rect.w * scaleX, h:rect.h * scaleY};
 }
 
 function gridCustomLineHit(point){
@@ -1907,9 +1934,10 @@ async function applyImageCrop(){
     const {node, image} = currentEditImage();
     const img = document.getElementById('cropImage');
     if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
-    const scaleX = img.naturalWidth / (img.clientWidth || 1), scaleY = img.naturalHeight / (img.clientHeight || 1);
-    const sx = Math.max(0, Math.round(cropState.x * scaleX)), sy = Math.max(0, Math.round(cropState.y * scaleY));
-    const sw = Math.max(1, Math.round(cropState.w * scaleX)), sh = Math.max(1, Math.round(cropState.h * scaleY));
+    // #255：显示像素 → 原图像素走分数坐标骨架（见 editScaleRectToNatural）。
+    const target = editScaleRectToNatural(cropState, img);
+    const sx = Math.max(0, Math.round(target.x)), sy = Math.max(0, Math.round(target.y));
+    const sw = Math.max(1, Math.round(target.w)), sh = Math.max(1, Math.round(target.h));
     const canvasEl = document.createElement('canvas');
     canvasEl.width = sw; canvasEl.height = sh;
     canvasEl.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
@@ -1925,11 +1953,12 @@ async function applyImageOutpaint(){
     const img = document.getElementById('cropImage');
     if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
     clampOutpaint();
-    const scaleX = img.naturalWidth / (img.clientWidth || 1), scaleY = img.naturalHeight / (img.clientHeight || 1);
-    const outW = Math.max(img.naturalWidth, Math.round(cropState.w * scaleX));
-    const outH = Math.max(img.naturalHeight, Math.round(cropState.h * scaleY));
-    const dx = Math.round(cropState.x * scaleX);
-    const dy = Math.round(cropState.y * scaleY);
+    // #255：显示像素 → 原图像素走分数坐标骨架（见 editScaleRectToNatural）。
+    const target = editScaleRectToNatural(cropState, img);
+    const outW = Math.max(img.naturalWidth, Math.round(target.w));
+    const outH = Math.max(img.naturalHeight, Math.round(target.h));
+    const dx = Math.round(target.x);
+    const dy = Math.round(target.y);
     const canvasEl = document.createElement('canvas');
     canvasEl.width = outW; canvasEl.height = outH;
     const ctx = canvasEl.getContext('2d');
