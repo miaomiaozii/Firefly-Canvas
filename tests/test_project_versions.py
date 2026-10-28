@@ -42,9 +42,6 @@ class ProjectVersionsStoreTests(unittest.TestCase):
         self.store = ProjectStore(self.root, snapshot_delay=60.0)
 
     def tearDown(self):
-        ops = getattr(self.store, "_opsdb_instance", None)
-        if ops is not None:
-            ops.close_all()
         self.store.close()
         self.temp_dir.cleanup()
 
@@ -201,9 +198,6 @@ class ProjectVersionsApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
-        ops = getattr(self.store, "_opsdb_instance", None)
-        if ops is not None:
-            ops.close_all()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()

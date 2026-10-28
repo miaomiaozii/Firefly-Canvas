@@ -64,9 +64,6 @@ class ProjectVersionsMixin:
             self._opsdb_instance = db
         return db
 
-    def _ops(self, project_id: str):
-        return self._opsdb().connection_for(project_id)
-
     def _require_project_id(self, project_id: str) -> str:
         """规范化项目 id；不存在时抛 KeyError（路由映射 404）。"""
         project_id = _clean_project_id(project_id)
@@ -94,16 +91,16 @@ class ProjectVersionsMixin:
         node_count = len(canvas.get("nodes") or [])
         version_id: Optional[int] = None
         try:
-            ops = self._ops(project_id)
-            with ops.lock:
-                last = ops.conn.execute(
+            db = self._opsdb()
+            with db.project_lock(project_id), db.connect(project_id) as conn:
+                last = conn.execute(
                     "SELECT id, canvas_sha256 FROM versions_snapshots "
                     "WHERE project_id = ? ORDER BY id DESC LIMIT 1",
                     (project_id,),
                 ).fetchone()
                 if last is not None and last["canvas_sha256"] == digest:
                     return None
-                cursor = ops.conn.execute(
+                cursor = conn.execute(
                     "INSERT INTO versions_snapshots "
                     "(project_id, label, canvas_json, canvas_sha256, node_count, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
@@ -111,12 +108,12 @@ class ProjectVersionsMixin:
                 )
                 version_id = cursor.lastrowid
                 # 保留上限：只留最新 KEEP_VERSIONS 条，裁剪最旧（对照上游 KEEP_VERSIONS=30）
-                ops.conn.execute(
+                conn.execute(
                     "DELETE FROM versions_snapshots WHERE id NOT IN ("
                     "SELECT id FROM versions_snapshots WHERE project_id = ? ORDER BY id DESC LIMIT ?)",
                     (project_id, self.KEEP_VERSIONS),
                 )
-                ops.conn.commit()
+                conn.commit()
         except Exception:
             if strict:
                 raise
@@ -128,9 +125,9 @@ class ProjectVersionsMixin:
         return self._get_version_row(project_id, version_id)
 
     def _get_version_row(self, project_id: str, version_id: int) -> Optional[Dict[str, Any]]:
-        ops = self._ops(project_id)
-        with ops.lock:
-            row = ops.conn.execute(
+        db = self._opsdb()
+        with db.project_lock(project_id), db.connect(project_id) as conn:
+            row = conn.execute(
                 "SELECT id, label, node_count, created_at, canvas_sha256, canvas_json "
                 "FROM versions_snapshots WHERE project_id = ? AND id = ?",
                 (project_id, version_id),
@@ -151,7 +148,7 @@ class ProjectVersionsMixin:
         project_id = _clean_project_id(project_id)
         if not self._opsdb().has_db(project_id):
             return []
-        ops = self._ops(project_id)
+        db = self._opsdb()
         sql = (
             "SELECT id, label, node_count, created_at, canvas_sha256 "
             "FROM versions_snapshots WHERE project_id = ? ORDER BY id DESC"
@@ -160,8 +157,8 @@ class ProjectVersionsMixin:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(int(limit))
-        with ops.lock:
-            rows = ops.conn.execute(sql, params).fetchall()
+        with db.project_lock(project_id), db.connect(project_id) as conn:
+            rows = conn.execute(sql, params).fetchall()
         return [
             {
                 "id": row["id"],

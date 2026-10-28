@@ -3230,9 +3230,6 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             pending = list(self._timers)
         for project_id in pending:
             self.flush(project_id)
-        ops = getattr(self, "_opsdb_instance", None)
-        if ops is not None:
-            ops.close_all()
 
     def _project_record(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {
