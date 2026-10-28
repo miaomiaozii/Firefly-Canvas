@@ -273,7 +273,6 @@ class NativeBrowser:
                 "--disable-default-apps",
                 "--disable-domain-reliability",
                 "--disable-sync",
-                "--disable-extensions",
                 "--disable-gpu",
                 "--force-color-profile=srgb",
                 "--hide-scrollbars",
