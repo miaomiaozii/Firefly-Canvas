@@ -6,7 +6,7 @@
 
 | 泳道 | 票 | 难度/预估 | worktree | 分支 | runId | 状态 |
 |---|---|---|---|---|---|---|
-| A | #234 取回三层断裂修复 | 大 | D:/ff-wt/wt-234 | issue/234 | 2 轮 worker 超时（根因：探索地图含幻觉 API）→ 总控亲验真地图（pendingTasks 持久 + history 终态标记 + query_upstream_image_task 引擎）→ 三派 del_mvr6my2o_d1l4(115m，含完整处方) | 进行中 |
+| A | #234 取回三层断裂修复 | 大 | D:/ff-wt/wt-234 | issue/234 | 2 轮超时（地图含幻觉 API）→ 三派 del_mvr6my2o_d1l4（红测试 a72e058 已 commit，后连错中断）→ resume del_mvrdzjnc_y8bg(75m) | 进行中 |
 | B | #239 agent_host 进程树必杀 | 中 | (已删) | (已删) | 3 轮 worker 超时 → **总控接管收尾** commit 94e2e4a | ✅ 合并 cbac05c，票已关，review PASS（全量 1313 passed + domain 门 passed） |
 | C | #240 agent 端点同源守卫 | 小 / 45m | D:/ff-wt/wt-240(已删) | issue/240(已删) | del_mvqyj7a8_173t → 超时 → resume del_mvr05qi1_knyh exit0 | ✅ 已合并 ff32d35，票已关，review PASS（总控复跑 7/7+41/41） |
 | D | #242 ADR 0022 MCP + #245 ADR 0006 补行 | 文档 / 45m | D:/ff-wt/wt-242(已删) | issue/242(已删) | del_mvqyj7a8_110l → 超时 → resume del_mvr05qi2_au0n exit0 | ✅ 已合并 2221329，两票已关，review PASS |
@@ -30,7 +30,7 @@
 | 泳道 | 票 | 难度/预估 | worktree | 分支 |
 |---|---|---|---|---|
 | G | #241 TUI confirm fallback 404 | 小 / 40m | D:/ff-wt/wt-241 | issue/241 | del_mvr2ozan_if2l(60m) exit0 | ✅ 已合并，票已关，review PASS（总控复跑 50 passed） |
-| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | del_mvr2ozao_b3ja(150m) → 超时但实现完整未commit（新 api_mcp.py + test_mcp_endpoint.py + 6 文件改动） → resume 收尾班 del_mvr829mb_y3pt(70m，WS 绝对 URL 修法已注入) | 收尾中 |
+| H | #243 MCP streamable-HTTP 端点实现 | 中大 | D:/ff-wt/wt-243 | issue/243 | 150m+70m 两轮：实现完整但未 commit（新 api_mcp.py+test_mcp_endpoint.py+6 文件）；卡点=approve 不解除 gate → resume del_mvrdzjnd_b5i3(80m，注入「注册键 vs 查找键」对照假设+T+35m 强制 commit) | 进行中 |
 
 合并序纪律：#241 先于 #243（可能同触 confirm 端点区）；#243 开工先读 docs/adr/0022（含已知缺口清单）。
 
