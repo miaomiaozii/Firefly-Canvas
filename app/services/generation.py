@@ -1359,7 +1359,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
-    request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses'} else AI_REQUEST_TIMEOUT
+    # 长耗时模式（gpt-image-2 / APIMART / openai-json 系）：read 超时收敛到 AI_REQUEST_TIMEOUT
+    # （#249 审计：此处原硬编码 1800.0，不跟随 REQUEST_TIMEOUT env，现统一单一事实来源，默认值不变）；
+    # connect/write/pool 为固定工程值（非 provider 约束）。
+    request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses'} else AI_REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
 

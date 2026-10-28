@@ -93,6 +93,7 @@ const smartSettingsModal = document.getElementById('smartSettingsModal');
 const smartSettingsFrame = document.getElementById('smartSettingsFrame');
 const smartSettingsClose = document.getElementById('smartSettingsClose');
 let smartSettingsLastFocus = null;
+let releaseSmartSettingsEscape = () => {}; // #249：Escape 栈登记释放（openSmartSettings push，closeSmartSettings release）
 const selectionBox = document.getElementById('selectionBox');
 const assetToggle = document.getElementById('assetToggle');
 const assetPanel = document.getElementById('assetPanel');
@@ -8060,6 +8061,8 @@ function openSmartSettings(){
         smartSettingsFrame.setAttribute('src', '/static/global-settings.html?embedded=1');
     }
     smartSettingsModal.classList.add('open');
+    // #249：Escape 栈——设置弹窗打开期间 Escape 只关它，不再连带关 popover/穿透画布。
+    releaseSmartSettingsEscape = window.FireflyEscapeStack?.push(() => closeSmartSettings(), 'settings') || (() => {});
     smartSettingsModal.setAttribute('aria-hidden', 'false');
     smartSettingsLink?.setAttribute('aria-expanded', 'true');
     closeCreateMenu();
@@ -8067,6 +8070,8 @@ function openSmartSettings(){
 }
 function closeSmartSettings(){
     if(!smartSettingsModal) return;
+    releaseSmartSettingsEscape();
+    releaseSmartSettingsEscape = () => {};
     smartSettingsModal.classList.remove('open');
     smartSettingsModal.setAttribute('aria-hidden', 'true');
     smartSettingsLink?.setAttribute('aria-expanded', 'false');
@@ -8583,7 +8588,7 @@ async function cancelNodeGenerationTask(nodeId, button=null){
 //（任务 ID / 阶段 / 进度 / 已用时），支持取消指定任务。
 // 数据从 node.pendingTasks + canvas.history 现读，每秒重渲（状态签名变化时），
 // 任务完成/失败后行内状态实时变化；关闭时清理定时器与事件。
-let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, onKey}
+let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, releaseEscape}
 function smartBatchTaskRows(node){
     const tasks = smartPendingTasks(node);
     const batchProgress = (tasks.find(task => task?.progress) || {}).progress || {};
@@ -8680,9 +8685,9 @@ function openBatchTaskDetail(nodeId, cellIndex=0){
         <p class="batch-task-detail-sub" data-batch-task-detail-sub></p>
         <div class="batch-task-detail-list" data-batch-task-detail-list></div>
     </div>`;
-    const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); closeBatchTaskDetail(); } };
-    batchTaskDetailState = {nodeId: String(node.id), cellIndex, timer:null, backdrop, onKey};
-    document.addEventListener('keydown', onKey, true);
+    // #249：Escape 栈——不再单独挂 document 捕获监听，统一由栈结算最顶层。
+    const releaseEscape = window.FireflyEscapeStack?.push(() => closeBatchTaskDetail(), 'batch-task-detail') || (() => {});
+    batchTaskDetailState = {nodeId: String(node.id), cellIndex, timer:null, backdrop, releaseEscape};
     backdrop.addEventListener('click', e => { if(e.target === backdrop) closeBatchTaskDetail(); });
     backdrop.querySelector('[data-batch-task-detail-close]').addEventListener('click', e => { e.stopPropagation(); closeBatchTaskDetail(); });
     document.body.appendChild(backdrop);
@@ -8695,7 +8700,7 @@ function closeBatchTaskDetail(){
     if(!state) return;
     batchTaskDetailState = null;
     if(state.timer) clearInterval(state.timer);
-    document.removeEventListener('keydown', state.onKey, true);
+    state.releaseEscape?.();
     state.backdrop.remove();
 }
 setInterval(() => {
@@ -9840,6 +9845,8 @@ function conversationTaskUrl(projectId, nodeId, requestId){
     return `/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(nodeId)}/messages/${encodeURIComponent(requestId)}`;
 }
 function conversationSleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+// #249 审计：自设上限（1s/次×30=30s）——请求 404 时给初始 POST 提交留有限宽限，
+// 超时放弃等待避免占位长期 pending；工程选择，非上游约束。
 const CONVERSATION_MAX_NOT_FOUND_POLLS = 30;
 function conversationMessageForRequest(node, requestId){
     return (node?.messages || []).find(item => String(item?.request_id || '') === String(requestId) && item.role === 'user') || null;
@@ -11133,12 +11140,13 @@ function confirmCanvasImageDeleteScope(){
         const backdrop = document.createElement('div');
         backdrop.id = 'smartImageDeleteScopeBackdrop';
         backdrop.className = 'asset-delete-warning-backdrop';
+        let releaseEscape = () => {}; // #249：Escape 栈
         const finish = choice => {
             backdrop.remove();
-            document.removeEventListener('keydown', onKey, true);
+            releaseEscape();
+            releaseEscape = () => {};
             resolve(choice);
         };
-        const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); finish('cancel'); } };
         backdrop.innerHTML = `
             <div class="asset-delete-warning-dialog" role="dialog" aria-modal="true">
                 <h3>${tr('smart.imageDeleteScopeTitle')}</h3>
@@ -11149,7 +11157,7 @@ function confirmCanvasImageDeleteScope(){
                     <button class="asset-delete-warning-confirm" data-scope="both">${tr('smart.imageDeleteScopeBoth')}</button>
                 </div>
             </div>`;
-        document.addEventListener('keydown', onKey, true);
+        releaseEscape = window.FireflyEscapeStack?.push(() => finish('cancel'), 'delete-scope') || (() => {});
         backdrop.addEventListener('click', e => {
             if(e.target === backdrop){ finish('cancel'); return; }
             const scope = e.target.closest('[data-scope]')?.dataset.scope;
@@ -15150,10 +15158,8 @@ window.addEventListener('keydown', e => {
             pasteNodes();
         }, 90);
     }
-    if(e.key === 'Escape' && imageEditModal.classList.contains('open')){
-        closeImageEditor();
-        return;
-    }
+    // #249：图片编辑器的 Escape 已迁入 Escape 栈（canvas-image-editor.js openImageEditor/closeImageEditor），
+    // 一次 Escape 只关最顶层，不再与下方画布快捷键同时触发。
     if((e.ctrlKey || e.metaKey) && (e.shiftKey && key === 'z' || key === 'y') && !isEditableTarget(e.target)){
         e.preventDefault();
         performRedo();
@@ -16021,12 +16027,6 @@ window.addEventListener('message', event => {
     if(event.data?.type === 'canvas_updated') handleCanvasUpdatedMessage(event.data);
     if(event.data?.type === 'studio-lang' && window.StudioI18n) {
         window.StudioI18n.set(event.data.lang || 'zh');
-    }
-});
-window.addEventListener('keydown', event => {
-    if(event.key === 'Escape' && smartSettingsModal?.classList.contains('open')){
-        event.preventDefault();
-        closeSmartSettings();
     }
 });
 window.addEventListener('studio-lang-change', () => {

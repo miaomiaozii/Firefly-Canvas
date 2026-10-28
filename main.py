@@ -1059,6 +1059,8 @@ PROJECT_AGENT_MAX_PENDING = 32
 
 PROJECT_AGENT_MAX_PER_NODE = 8
 
+# 单条 agent（CLI）任务上限：15 分钟，自设上限（上游 CLI 无 SLA）；
+# 由 app/services/agents.py 经 _svc._main() 动态读取，asyncio.wait_for 超时即杀、任务转终态。
 PROJECT_AGENT_TASK_TIMEOUT_SECONDS = 15 * 60
 
 agent_image_adapter = None
