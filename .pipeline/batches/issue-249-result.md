@@ -95,9 +95,19 @@
    `REQUEST_TIMEOUT`（非常规），长耗时模式 read 超时随之变化——这是审计意图
    （单一事实来源），非回归。
 3. **UI 浏览器基线**：本票为卫生包，票面验收仅 `quality_gate fast/domain` + 204 单测，
-   未做浏览器证据 accept；Escape 行为变化（一次只关顶层）如需浏览器证据留总控排期。
+   未做人工浏览器 accept；domain 门内自动化浏览器证据（native/generation-lifecycle）
+   已过。Escape 行为变化（一次只关顶层）如需人工浏览器证据留总控排期。
 4. 未 push、未建 PR；合入后建议跑一次 `trial` 层浏览器证据确认 Escape 交互。
 
 ## 验证结果
 
-（pytest / quality_gate 运行后回填）
+| 验证项 | 结果 |
+|---|---|
+| `pytest tests/ -q`（全量） | **PASS** — 1378 passed, 1 skipped, 618 subtests passed，771s，exit 0 |
+| `python tools/quality_gate.py fast` | **PASS** — 17.5s，exit 0 |
+| `python tools/quality_gate.py domain` | **PASS** — 154.5s，exit 0（8/8 步含 worktree-preservation） |
+| 204 单测 `tests/test_missing_media_204.py` | **PASS**（4/4，已含在全量内） |
+| 耦合报告测试（钉值同步后） | **PASS**（含在全量内；dd67bdc 修正后） |
+
+注：首次全量在 `test_canvas_coupling_report.py` 首个失败（#249 解耦导致反向引用
+940→938，按 ADR 0020 流程同步钉值后重跑全绿）。
