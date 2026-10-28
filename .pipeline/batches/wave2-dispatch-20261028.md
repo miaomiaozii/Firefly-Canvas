@@ -32,3 +32,4 @@
   总控干净 worktree 门 fast 15.9s ✅ domain 139.5s ✅（含浏览器步——worker 环境报"无法启动浏览器"
   为并发 chrome 争用，非代码问题）。待主区 html 脏文件清后 wave1-live 吸收 int-256。
 - #257 收口：issue/257（6 提交，ops.db versions_* 租户 additive 迁移，worker 自证 fast+domain 绿+UI冒烟截图）合入 int-256；总控集成 fast 15.2s + domain（见下）全绿。
+- #255 收口：issue/255（6 提交，分数坐标骨架+MIT 移植 layers/vectorPath+LayersPanel；NOTICE.md 双登记冲突已手工合并）合入 int-256；总控 fast 16.1s + domain 132.7s 全绿。票面纠偏：vectorPath.ts 实为 54 行；utils.ts:250-268 于参考版本不存在（even-odd 自研）。遗留：图层全链浏览器旅程测试 → #269。
