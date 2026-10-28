@@ -18,3 +18,22 @@
 2. worker 纪律新增：发现「派工指令与票面正文不符」→ 立即停工上报，不得自行选边实施。
 3. 总控关票前必须验证：分支 merge-base + 交付文件确在目标分支（`git ls-tree`），不得只凭 result 文件存在。
 4. 压缩摘要中的「已合并」类结论要用 git 实况复核后才能对外报告。
+
+---
+
+## 第二轮审计（2026-10-28，产物级验证）：全部已关票种真实
+
+对 wave1-live 树逐票 ls-tree/grep 验证：
+
+| 票 | 产物证据（wave1-live） |
+|---|---|
+| #240 | tests/test_agent_same_origin.py ✓ |
+| #241 | app/routers/api_agent_nodes.py（confirm×21 处）+ tests/test_agent_tui.py ✓ |
+| #242 | docs/adr/0022-mcp-streamable-http-canvas-endpoint.md ✓（票面是 ADR 文档票，先前"viewport-domains.js"为摘要记忆错误——该文件在任何分支都不存在） |
+| #245 | tests/test_project_stats_endpoint.py ✓ |
+| #243 | app/services/mcp_http.py + routers/api_mcp.py + tests/test_mcp_endpoint.py ✓ |
+| #239 | agent_host.py `_kill_process_tree`/`stop_idle_watchdog`（8 处）✓ |
+| #234 | 合并 6feca94 stat 完整：api_image_task_query.py+31 / api_project_library.py+172（recover 实现实际落点，非先前记忆的 generation.py）/ tests/test_project_image_recover.py+223 / canvas-generation-tasks.js+19 ✓ |
+| #265(healthz) | e571927+bf0f212 在历史 ✓ |
+
+结论：8 张已关票全部真实；错误仅存在于我的压缩摘要措辞（viewport-domains、"api_image_task_query recover" 定位），已在此更正。
