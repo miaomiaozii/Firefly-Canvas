@@ -166,10 +166,12 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
         # 241/950/170/798：#238 核心改调 canvas-media-history.js 档位层（smartNodePreviewTier 等 4 名），
         # 「核心调模块」方向，非新债。
+        # 241/948/170/797：wave1-live 合并态——#249 Escape 栈迁移把 2 处核心引用结算进
+        # static/js/escape-stack.js（dd67bdc 同因 -2），#238 的 +10 与其叠加后净 -2/-1。
         self.assertEqual(rev["reverse_names"], 241)
-        self.assertEqual(rev["reverse_core_refs"], 950)
+        self.assertEqual(rev["reverse_core_refs"], 948)
         self.assertEqual(rev["core_dominant_names"], 170)
-        self.assertEqual(rev["core_dominant_core_refs"], 798)
+        self.assertEqual(rev["core_dominant_core_refs"], 797)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

@@ -167,6 +167,10 @@ canvasSaveBlobAsFile / canvasDownloadSkipSummary）。这是 #154 要求的「�
 smartVideoPreviewHtml/smartVideoFallbackHtml 从宿主上移到模块（与档位逻辑同居），
 模块反向引用 98→99（+1，`displayMediaUrl` 经 canvasCore 接口）。
 
+再到 241/948/170/797（wave1-live 合并态）：#249 Escape 栈迁移把 2 处核心内联 Escape 处理
+结算进 `static/js/escape-stack.js`（dd67bdc 同因 -2），与 #238 的 +10 叠加后净 950→948、798→797。
+合并树上的实测钉值以 `tests/test_canvas_coupling_report.py` 为准。
+
 owner 分布：`canvas-media-history.js` 60、`canvas-image-editor.js` 54、`canvas-connections.js` 21、
 `canvas-layout-utils.js` 16、`canvas-undo.js` 15、`canvas-generation-cascade.js` 15、
 `canvas-node-ops.js` 13、`canvas-node-types.js` 8、`canvas-agent-tui.js` 7、`canvas-generation-tasks.js` 24、
