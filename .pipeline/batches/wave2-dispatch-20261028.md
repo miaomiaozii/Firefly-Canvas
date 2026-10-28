@@ -36,3 +36,4 @@
 - #258 收口：issue/258（8 提交，firefly_usage.py MIT 移植 + usage_001 租户 + pi/codex 双采集 + 查询 API；+42 用例）合入 int-256（NOTICE 三段登记手工合并）；总控 fast 15.5s + domain 128.2s 全绿。batch-3 四票（255/256/257/258）全部收口。
 - #268 收口：合入 int-256，fast 16.1s + domain 138.1s 全绿；音频转写选型拆 #270（ready-for-human）。
 - #253 收口：issue/253（4 提交：snap+对齐线/右键操作卡+Tab 快编/快捷键扩表）合入 int-256；worker 140m 时箱在门调查阶段被杀但工件全推；总控代跑 fast 16.2s，domain 首败（snap 与旅程断言语义冲突）→ 修断言语义后 domain 133.8s 绿。
+- #253 收口（总控代交）：int-256 合入 issue/253（a029a61 snap/c0c381b tidy/2521d55 quick-edit）+ core_surface 漂移断言修复 + 棘轮 246/964/174/811；主区 fast 16.1s + domain 130.8s 全绿。worker 死于 140m 时箱的属性调查（其全部产出已在分支）。
