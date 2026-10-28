@@ -24,7 +24,7 @@
   "tests.test_canvas_asset_zip_streaming": 0.703,
   "tests.test_canvas_browser_runner_guards": 0.109,
   "tests.test_canvas_core_layer": 18.063,
-  "tests.test_canvas_coupling_report": 155.156,
+  "tests.test_canvas_coupling_report": 14.203,
   "tests.test_canvas_frontend_sources": 2.672,
   "tests.test_canvas_log_cleanup": 1.734,
   "tests.test_canvas_merge_position_guard": 1.657,
