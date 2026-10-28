@@ -3,8 +3,8 @@
   "contract": "desktop-ui-integrity",
   "accepted": true,
   "accepted_by": "总控会话A",
-  "reason": "#256 创建菜单新增「提取文字」OCR 卡片——真实有意 UI 变化（先例 eb86d56）",
-  "accepted_at": "2026-10-28T17:22:17.557331+00:00",
+  "reason": "#253 createMenu 新增节点操作卡（重命名/整理排版）——真实有意 UI 变化（先例 eb86d56）",
+  "accepted_at": "2026-10-28T18:02:04.126912+00:00",
   "environment": {
     "os": "Windows",
     "browser": {
@@ -62,7 +62,7 @@
       ],
       "scene": "create-menu",
       "path": "1920x1080/create-menu.png",
-      "sha256": "265ed1c986509898ae99227b4d6c848ba71f3e4f7d8aec01d2a2149b7c77fcb0"
+      "sha256": "2836b2e6a459207678da0000e82d2a79220c29cb6e65d5c963f50089952de3f7"
     },
     {
       "viewport": [
@@ -80,7 +80,7 @@
       ],
       "scene": "generation-detail",
       "path": "1920x1080/generation-detail.png",
-      "sha256": "54a8ce4a05d46d6cfe6efbb6df8b1ced7a49de60dddbedb0d7a8c930723c6d54"
+      "sha256": "91f4c16c5d904b36d56614e7aa1b7737201c414d08bb73940d268cc63eefc541"
     },
     {
       "viewport": [
@@ -89,7 +89,7 @@
       ],
       "scene": "settings",
       "path": "1920x1080/settings.png",
-      "sha256": "489a7be01f8ba34f615c46c3e0d31c741ff0718a18378662f709bc9b89eca7ec"
+      "sha256": "669c2f96ce50068838cea5a2997c2b49bf310aa18693c1b31fb69ece32f4dfcc"
     },
     {
       "viewport": [
@@ -134,7 +134,7 @@
       ],
       "scene": "create-menu",
       "path": "1440x900/create-menu.png",
-      "sha256": "d370e767bf58ddb6138c1f2a375f2227bb41e393837c961db445844719f6a16c"
+      "sha256": "2513ce3a6b92f35c026a3fdfa6751c5d1ab94c7a2640743d947ea49182c2f919"
     },
     {
       "viewport": [
@@ -161,7 +161,7 @@
       ],
       "scene": "settings",
       "path": "1440x900/settings.png",
-      "sha256": "3cdad098460130c9e7bf638aeaa4be359fbdd84edee6f097a587386941f4ece9"
+      "sha256": "16bb5c78bbbfb14cce41a986fc7c035cdde14dd9bf39738a69ee04af4d702c2d"
     },
     {
       "viewport": [
@@ -179,7 +179,7 @@
       ],
       "scene": "canvas-composer",
       "path": "1280x720/canvas-composer.png",
-      "sha256": "6a28ebe06861111c421d19a31b1d3d01af17954c3b46b7ed5ce4f7ff84152e5c"
+      "sha256": "f03590591dd6ffc5658466bd53bacfa18ee2f7238cdcdf763085b4acd39ec763"
     },
     {
       "viewport": [
@@ -188,7 +188,7 @@
       ],
       "scene": "composer-size",
       "path": "1280x720/composer-size.png",
-      "sha256": "7cd914a9c4db466f88c79187956ec0e0ac04e5ef836c9205dc2a9fb9a787147e"
+      "sha256": "1ff72e514a3bb6f1407d10c3abdd8209c856a4fb4dd6adb5f4550334457d7c6d"
     },
     {
       "viewport": [
@@ -206,7 +206,7 @@
       ],
       "scene": "create-menu",
       "path": "1280x720/create-menu.png",
-      "sha256": "baaccb0740965ba91a8d94792456a553cef6367db996b65dd56ea6e813cc0a46"
+      "sha256": "ec045974a9cf63e42a1d7b484df0a491a241d0f9415a5cac1eae396bef10b624"
     },
     {
       "viewport": [
@@ -233,7 +233,7 @@
       ],
       "scene": "settings",
       "path": "1280x720/settings.png",
-      "sha256": "081147c4604c6578bc010de2cd9c96c45b81262b3ec1e8ade964f570d8b2a29a"
+      "sha256": "c5b7b969c73b3836c16d3e5b14aa199f367dd224bede6a1f1ce01bcb91817214"
     },
     {
       "viewport": [
@@ -278,7 +278,7 @@
       ],
       "scene": "create-menu",
       "path": "1024x768/create-menu.png",
-      "sha256": "96335bdccb553bb315186369460d18fcf3503c1494901faf8b9cc6d2cdb7a6d5"
+      "sha256": "d07fedc66277565c12a4668b81ca1a3fd52c118be672923cc5c0cba054b703eb"
     },
     {
       "viewport": [
@@ -305,7 +305,7 @@
       ],
       "scene": "settings",
       "path": "1024x768/settings.png",
-      "sha256": "15d28ecca8218c2b6883ef386dd4e6e8169426a461c2e087b91e4768b6f33f60"
+      "sha256": "ba426af47d6064311cb043bea005be6bd51e323249e65247a01c32a38ce0076b"
     },
     {
       "viewport": [
@@ -350,7 +350,7 @@
       ],
       "scene": "create-menu",
       "path": "800x600/create-menu.png",
-      "sha256": "306b96cd830f93279f71d849e73b33cb1c94133b04b57fb52ef00dbd0c2d90b1"
+      "sha256": "4fc0eca35099fc53dc6710afa74f433a8ba2a6f714e3f5201b9c57637809ebf2"
     },
     {
       "viewport": [
