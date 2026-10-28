@@ -13,3 +13,18 @@
 失踪审计：#254 两轮 worker（95 分钟）无 commit——canvas-generation-tasks.js 395KB 通读耗尽预算；教训：大文件票必须切片+限时地图。
 #246 从未开工（两轮记录空），仍 OPEN，排队重派。
 #249 已按卫生包实质关票（范围纠偏注释补挂），工具面范围由 #266 承接。
+
+## batch-3 派发 + 全面对账（19:4x）
+
+真相修正：会话B并行管线已将 #244/#249/#254(切片)/#252/#261/#260(切片) 合入 wave1-live
+（git merge-base --is-ancestor 实测全部 IN）。我的 wave1-next 系冗余，已删；
+其 fast 14.9s + domain 122.7s 全绿结果对 wave1-live 现内容依然有效。
+
+- push：origin/wave1-live = e879b6b（+49 提交首次推送完成）
+- 关票：#252(1e41bae)、#261(0924f41)、#265(92ceda8 已在基线)、#254(fd2357f 切片1+数据层)
+- #260 口径修正：部分交付（聊天附件扩视音频 TODO）→ 拆出 #268
+- 新派发（基线 e879b6b）：#256 OCR→prompt 节点（del_mvs00djy_6tvf）、
+  #257 版本树 ops.db（del_mvs00djy_slvl）
+- 排队：#258（usage 租户，待 257 ops.db 迁移合入后串行）、#255 分层大票（3h 时箱，错峰）、#253
+- 会话B在途：#262 任务中心、#263 234证据补挂、#266 cache_backend、#267 fal
+- 分工纪律重申：A 不碰 agent/fal/generation/media；B 不碰集成线 ff。
