@@ -268,7 +268,6 @@ class NativeBrowser:
                 "--headless=new",
                 "--disable-background-networking",
                 "--disable-component-update",
-                "--disable-background-networking",
                 "--disable-breakpad",
                 "--disable-client-side-phishing-detection",
                 "--disable-default-apps",
