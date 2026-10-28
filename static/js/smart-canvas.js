@@ -15270,6 +15270,20 @@ window.addEventListener('keydown', e => {
             toggleZoomPreview();
             return;
         }
+        // #253：Shift+A = 整理排版选中节点（复用现有 arrangeSelectedSmartNodes；不占裸 A 资源库键）。
+        if(key === 'a' && e.shiftKey){
+            if(e.repeat) return;
+            e.preventDefault();
+            arrangeSelectedSmartNodes();
+            return;
+        }
+        // #253：方向键微调选中节点（1px；Shift=10px）。
+        if(['arrowleft','arrowright','arrowup','arrowdown'].includes(key)){
+            if(!selectedNodeIds().length) return;
+            e.preventDefault();
+            nudgeSelectedNodes(key, e.shiftKey ? 10 : 1, e.repeat);
+            return;
+        }
         if(key === 'a'){
             if(e.repeat) return;
             e.preventDefault();
@@ -15289,6 +15303,37 @@ window.addEventListener('keydown', e => {
         if(selectionText) return;
         e.preventDefault();
         copySelectedNodes();
+        return;
+    }
+    // #253：Ctrl+A = 全选节点。
+    if((e.ctrlKey || e.metaKey) && key === 'a' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        canvasState.selectedIds = canvasState.nodes.map(n => n.id);
+        canvasState.selectedId = '';
+        canvasState.selectedImage = {nodeId:'', index:-1};
+        render();
+        return;
+    }
+    // #253：Ctrl+D = 复制选中节点。
+    if((e.ctrlKey || e.metaKey) && key === 'd' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        duplicateSelectedNodes();
+        return;
+    }
+    // #253：视图快捷键 Ctrl+= / Ctrl+- / Ctrl+0。
+    if((e.ctrlKey || e.metaKey) && (key === '=' || key === '+') && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '-' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1 / 1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '0' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        fitAllNodesViewport();
         return;
     }
     if((e.ctrlKey || e.metaKey) && key === 'v' && !isEditableTarget(e.target) && nodeClipboard?.nodes?.length){
