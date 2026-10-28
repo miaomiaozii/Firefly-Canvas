@@ -1254,6 +1254,8 @@ from app.routers import api_models as _r_api_models
 app.include_router(_r_api_models.router)
 from app.routers import api_online_image as _r_api_online_image
 app.include_router(_r_api_online_image.router)
+from app.routers import api_ocr as _r_api_ocr
+app.include_router(_r_api_ocr.router)
 from app.routers import api_project_library as _r_api_project_library
 app.include_router(_r_api_project_library.router)
 from app.routers import api_projects as _r_api_projects

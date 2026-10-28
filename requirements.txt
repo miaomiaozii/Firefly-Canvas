@@ -6,3 +6,6 @@ python-multipart
 httpx[socks]
 pillow
 websockets>=14,<15
+# #256 OCR：rapidocr-onnxruntime（CPU 轻量后处理，非 ADR 0004 的生成推理运行时）；
+# 精确锁版本防 onnx 模型随版本漂移。
+rapidocr-onnxruntime==1.4.4
