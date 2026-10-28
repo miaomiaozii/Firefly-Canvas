@@ -28,3 +28,6 @@
 - 排队：#258（usage 租户，待 257 ops.db 迁移合入后串行）、#255 分层大票（3h 时箱，错峰）、#253
 - 会话B在途：#262 任务中心、#263 234证据补挂、#266 cache_backend、#267 fal
 - 分工纪律重申：A 不碰 agent/fal/generation/media；B 不碰集成线 ff。
+- #256 收口：issue/256（4 提交，禁区零触碰）合入 int-256（基线 b21aae1）；
+  总控干净 worktree 门 fast 15.9s ✅ domain 139.5s ✅（含浏览器步——worker 环境报"无法启动浏览器"
+  为并发 chrome 争用，非代码问题）。待主区 html 脏文件清后 wave1-live 吸收 int-256。
