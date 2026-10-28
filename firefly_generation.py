@@ -273,6 +273,10 @@ def normalize_image_model_capabilities(value: Any, models: Sequence[str]) -> dic
         for key in ("arbitrary_size", "arbitrary_aspect_ratio", "arbitrary_resolution"):
             if key in raw:
                 normalized[key] = bool(raw.get(key))
+        # fal 队列协议（fal.ai 平台兼容）的端点参数表：与视频 adapter_schema 同理，
+        # 参数集来自服务商/fal 官方 schema，必须随能力一起存活，不能写死在代码里。
+        if isinstance(raw.get("fal_request"), Mapping):
+            normalized["fal_request"] = copy.deepcopy(dict(raw["fal_request"]))
         normalized.setdefault("media_types", ["image"])
         result[model] = normalized
     return result

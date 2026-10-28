@@ -155,7 +155,13 @@ JIMENG_LOGIN_SESSION = {'proc': None, 'stdout': '', 'stderr': '', 'started_at': 
 PROVIDER_ID_RE = re.compile('^[a-zA-Z0-9_-]{2,40}$')
 SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'jimeng', 'codex'}
 REMOVED_PROVIDER_IDS = {'modelscope', 'runninghub'}
-SUPPORTED_IMAGE_REQUEST_MODES = {'openai', 'openai-json', 'openai-video-proxy', 'openai-responses'}
+SUPPORTED_IMAGE_REQUEST_MODES = {'openai', 'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'}
+# fal.ai 平台兼容（中转商把 queue.fal.run 反代到自己的 /fal 前缀）：
+# POST {base}/fal/{model} → {request_id,status_url,response_url}
+# GET  {base}/fal/{model}/requests/{request_id}/status → IN_QUEUE/IN_PROGRESS/COMPLETED
+# GET  {base}/fal/{model}/requests/{request_id}         → 完整结果（图片在 images / image）
+FAL_QUEUE_BASE_URL = 'https://queue.fal.run'
+PER_MODEL_REQUEST_MODE_OPTIONS = SUPPORTED_IMAGE_REQUEST_MODES
 RUNNINGHUB_DEFAULT_BASE_URL = 'https://www.runninghub.cn'
 RUNNINGHUB_OPENAPI_BASE_URL = 'https://www.runninghub.cn/openapi/v2'
 RUNNINGHUB_LLM_BASE_URL = 'https://llm.runninghub.cn/v1'
@@ -757,6 +763,37 @@ def normalize_image_request_mode(value):
     mode = str(value or '').strip().lower()
     return mode if mode in SUPPORTED_IMAGE_REQUEST_MODES else 'openai'
 
+def effective_image_request_mode(provider, model=''):
+    """某模型实际生效的图片请求形态：优先单模型覆盖（model_request_modes），否则平台全局。"""
+    detected = detect_image_request_mode((provider or {}).get('base_url'), [model])
+    if detected:
+        return detected
+    overrides = (provider or {}).get('model_request_modes')
+    if isinstance(overrides, dict):
+        val = str(overrides.get(str(model or '').strip()) or '').strip().lower()
+        if val in PER_MODEL_REQUEST_MODE_OPTIONS:
+            return val
+    return normalize_image_request_mode((provider or {}).get('image_request_mode'))
+
+def fal_request_spec(provider, model=''):
+    """fal 队列模型的请求规格：端点、提交参数、上游路径前缀。
+
+    参数集不写死在代码里 —— fal 官方每个端点 schema 不同（Topaz 高清修复与
+    flux 完全不同），所以每个模型的参数放在服务商配置的
+    image_model_capabilities[model]['fal_request'] 里，代码只负责透传与轮询。
+    """
+    capabilities = (provider or {}).get('image_model_capabilities')
+    capability = capabilities.get(model) if isinstance(capabilities, dict) else None
+    spec = capability.get('fal_request') if isinstance(capability, dict) else None
+    if not isinstance(spec, dict):
+        spec = {}
+    prefix = str(spec.get('path_prefix') or 'fal').strip().strip('/')
+    endpoint = str(spec.get('endpoint') or model or '').strip().strip('/')
+    params = {str(key): value for key, value in (spec.get('params') or {}).items() if str(key).strip()} if isinstance(spec.get('params'), dict) else {}
+    tiers = spec.get('model_by_resolution')
+    return {'endpoint': endpoint, 'path_prefix': prefix, 'params': params,
+            'model_by_resolution': {str(k).strip().lower(): v for k, v in tiers.items() if str(k).strip()} if isinstance(tiers, dict) else {}}
+
 def locked_recommended_provider_rule(provider_id='', name='', base_url=''):
     pid = str(provider_id or '').strip().lower()
     pname = str(name or '').strip().lower()
@@ -863,7 +900,7 @@ def normalize_provider(item):
         model_selection_version = max(0, int(item.get('model_selection_version') or 0))
     except (TypeError, ValueError):
         model_selection_version = 0
-    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
+    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
 
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip('/')
@@ -1101,6 +1138,7 @@ class ApiProviderPayload(BaseModel):
     model_selection_version: int = 0
     model_names: Dict[str, str] = {}
     model_protocols: Dict[str, str] = {}
+    model_request_modes: Dict[str, str] = {}
     ms_loras: List[Dict[str, Any]] = []
     ms_defaults_version: int = 0
     rh_apps: List[Dict[str, Any]] = []
@@ -2211,6 +2249,17 @@ async def post_openai_responses_stream(client, url, headers, body):
 def provider_protocol(provider):
     return str((provider or {}).get('protocol') or 'openai').strip().lower()
 
+def normalize_model_request_modes(value):
+    """规整 {模型名: 图片请求形态} 覆盖表（如 fal-ai/topaz/* → fal 队列协议）。"""
+    out = {}
+    if isinstance(value, dict):
+        for raw_name, raw_mode in value.items():
+            name = str(raw_name or '').strip()
+            mode = str(raw_mode or '').strip().lower()
+            if name and mode in PER_MODEL_REQUEST_MODE_OPTIONS:
+                out[name] = mode
+    return out
+
 def normalize_model_protocols(value):
     """规整 {模型名: 协议} 覆盖表，仅保留 openai/gemini。"""
     out = {}
@@ -2267,12 +2316,6 @@ def detect_image_request_mode(base_url='', models=None):
         if str(model or '').strip().lower().startswith('agnes-image-'):
             return 'openai-json'
     return ''
-
-def effective_image_request_mode(provider, model=''):
-    detected = detect_image_request_mode((provider or {}).get('base_url'), [model])
-    if detected:
-        return detected
-    return normalize_image_request_mode((provider or {}).get('image_request_mode'))
 
 def is_gemini_provider(provider):
     return provider_protocol(provider) == 'gemini'

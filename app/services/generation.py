@@ -1296,6 +1296,141 @@ async def run_provider_generation_with_backoff(provider_id: str, generate_callab
             await asyncio.sleep(sleep_seconds)
 
 
+def fal_queue_paths(base_url, endpoint, request_id='', prefix='fal'):
+    """fal 队列三个端点的 URL 拼接（中转商将 queue.fal.run 反代到自己的 /fal 前缀）。
+
+    base_url 不带 /v1：comfly 的 fal 兼容层挂在站点根，{BASE}/fal/{model}。
+    """
+    root = str(base_url or '').strip().rstrip('/')
+    if root.lower().endswith('/v1'):
+        root = root[:-3].rstrip('/')
+    prefix = str(prefix or 'fal').strip().strip('/')
+    model_path = str(endpoint or '').strip().strip('/')
+    base = f'{root}/{prefix}/{model_path}'
+    if not request_id:
+        return base
+    rid = str(request_id).strip().strip('/')
+    return {'request': base, 'status': f'{base}/requests/{rid}/status', 'result': f'{base}/requests/{rid}'}
+
+
+def fal_resolution_upscale_factor(value):
+    """画布分辨率档位 → fal 高清修复的 upscale_factor（1k=1×/2k=2×/4k=4×）。
+
+    只在服务商未显式配定 upscale_factor 时作为默认，不覆盖 fal_request.params。
+    """
+    tier = str(value or '').strip().lower()
+    return {'1k': 1, '1080p': 1, '720p': 1, '2k': 2, '4k': 4}.get(tier)
+
+
+def fal_submit_body(model, image_url, params, resolution=None, model_by_resolution=None):
+    """组装 fal 队列提交体：model 只出现在 URL，参数来自服务商配置（fal_request.params）。
+
+    fal 的 schema 是严格的：多余的 size/aspect_ratio/quality 会被 422 拒，
+    所以这里只发 image_url + 配置的参数，最多从画布档位补 upscale_factor / model。
+    """
+    body = {str(key): value for key, value in (params or {}).items() if str(key).strip()}
+    if image_url:
+        body['image_url'] = image_url
+    tier = str(resolution or '').strip().lower()
+    if 'upscale_factor' not in body:
+        factor = fal_resolution_upscale_factor(tier)
+        if factor:
+            body['upscale_factor'] = factor
+    if 'model' not in body and model_by_resolution:
+        engine = model_by_resolution.get(tier)
+        if engine:
+            body['model'] = engine
+    return body
+
+
+async def generate_fal_queue_image(client, base_url, provider, model, image_refs, params, *, prefix='fal', progress_callback=None, resolution=None, model_by_resolution=None):
+    """fal.ai 队列协议：提交 → 轮询 status → 拉取结果（Topaz 高清修复等 image-to-image 模型）。
+
+    必须提供参考图：fal 高清修复类模型没有「文生图」语义，提前提而不是让上游 422。
+    """
+    paths = fal_queue_paths(base_url, model, prefix=prefix)
+    image_url = ''
+    for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
+        image_url = await _svc.responses_input_image_url(ref, require_public_url=True)
+        if image_url:
+            break
+    if not image_url:
+        raise HTTPException(status_code=400, detail='高清修复模型需要一张参考图（选一张画布上的图作为输入）')
+    body = fal_submit_body(model, image_url, params, resolution, model_by_resolution)
+    headers = _svc._main('api_headers')(provider=provider, model=model)
+    response = await client.post(paths, headers=headers, json=body)
+    if response.status_code >= 400:
+        provider_name = provider.get('name') or provider['id']
+        raise HTTPException(status_code=response.status_code, detail=f"{provider_name} fal 任务提交失败（HTTP {response.status_code}）：{(response.text or '')[:400]}")
+    try:
+        submitted = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fal 任务提交返回非 JSON：{(response.text or '')[:300]}") from exc
+    request_id = str(submitted.get('request_id') or submitted.get('requestId') or submitted.get('id') or '').strip()
+    if not request_id:
+        # 部分中转源站同步回结果：直接当完成体处理，不再轮询。
+        if extract_image_flexible(submitted):
+            return _FalQueueResponse(submitted)
+        raise HTTPException(status_code=502, detail=f"fal 任务提交未返回 request_id：{json.dumps(submitted, ensure_ascii=False)[:400]}")
+    status_url = str(submitted.get('status_url') or '').strip()
+    if not status_url.startswith('http'):
+        status_url = f"{fal_queue_paths(base_url, model, request_id, prefix)['status']}"
+    deadline = time.monotonic() + RESPONSES_POLL_MAX_SECONDS
+    last_status = ''
+    while time.monotonic() < deadline:
+        status_response = await client.get(status_url, headers=headers)
+        if status_response.status_code >= 400:
+            provider_name = provider.get('name') or provider['id']
+            raise HTTPException(status_code=status_response.status_code, detail=f"{provider_name} fal 任务状态查询失败（HTTP {status_response.status_code}）：{(status_response.text or '')[:300]}")
+        try:
+            status_payload = status_response.json()
+        except Exception:
+            status_payload = {}
+        status = str(status_payload.get('status') or '').strip().upper()
+        last_status = status or last_status
+        if status in {'COMPLETED', 'SUCCEEDED', 'SUCCESS'}:
+            break
+        if status in {'ERRORED', 'ERROR', 'FAILED', 'CANCELLED'}:
+            logs = ' | '.join(str(item)[:200] for item in (status_payload.get('logs') or [])[:4])
+            raise HTTPException(status_code=502, detail=f"fal 任务失败（{status}）：{logs or '上游未给出日志'}")
+        if callable(progress_callback):
+            try:
+                progress_callback('provider_generating', queue_position=status_payload.get('queue_position'), fal_status=status)
+            except Exception:
+                pass
+        await asyncio.sleep(RESPONSES_POLL_INTERVAL)
+    else:
+        raise HTTPException(status_code=502, detail=f"fal 任务未在 {RESPONSES_POLL_MAX_SECONDS / 60:g} 分钟内完成（最后状态：{last_status or '未知'}），可在服务商后台用 request_id {request_id} 查询")
+    response_url = str(submitted.get('response_url') or '').strip()
+    result_url = response_url if response_url.startswith('http') else fal_queue_paths(base_url, model, request_id, prefix)['result']
+    result_response = await client.get(result_url, headers=headers)
+    if result_response.status_code >= 400:
+        provider_name = provider.get('name') or provider['id']
+        raise HTTPException(status_code=502, detail=f"{provider_name} fal 结果拉取失败（HTTP {result_response.status_code}）：{(result_response.text or '')[:300]}")
+    try:
+        payload = result_response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fal 结果返回非 JSON：{(result_response.text or '')[:300]}") from exc
+    payload.setdefault('request_id', request_id)
+    return _FalQueueResponse(payload)
+
+
+class _FalQueueResponse:
+    """把 fal 队列结果体适配成与 HTTP 响应同形的对象，复用调用点的统一尾段。"""
+
+    status_code = 200
+    text = ''
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
 async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
     def report_progress(phase, **details):
         if not callable(progress_callback):
@@ -1362,7 +1497,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     # 长耗时模式（gpt-image-2 / APIMART / openai-json 系）：read 超时收敛到 AI_REQUEST_TIMEOUT
     # （#249 审计：此处原硬编码 1800.0，不跟随 REQUEST_TIMEOUT env，现统一单一事实来源，默认值不变）；
     # connect/write/pool 为固定工程值（非 provider 约束）。
-    request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses'} else AI_REQUEST_TIMEOUT
+    request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'} else AI_REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
 
@@ -1391,7 +1526,16 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             content = await response.aread()
             report_progress('receiving', bytes_done=len(content), bytes_total=response_total or len(content))
             return response
-        if image_request_mode == 'openai-video-proxy':
+        if image_request_mode == 'fal':
+            # fal.ai 平台兼容（comfly /fal/ 前缀）：Topaz 高清修复等队列模型。
+            # 参数不写死 —— fal_request.params 来自服务商配置；body 里没有 model/size/quality。
+            fal_spec = fal_request_spec(provider, model)
+            response = await generate_fal_queue_image(
+                client, base_url, provider, fal_spec['endpoint'] or model, image_refs, fal_spec['params'],
+                prefix=fal_spec['path_prefix'], progress_callback=progress_callback,
+                resolution=(image_parameters or {}).get('resolution'), model_by_resolution=fal_spec['model_by_resolution'],
+            )
+        elif image_request_mode == 'openai-video-proxy':
             body = {'model': model, 'prompt': prompt, 'aspect_ratio': routed_image_params.get('aspect_ratio') or runninghub_aspect_from_size(size, '1:1')}
             if routed_image_params.get('resolution'):
                 body['resolution'] = routed_image_params['resolution']
