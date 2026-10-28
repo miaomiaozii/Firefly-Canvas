@@ -1476,6 +1476,13 @@ async def cancel_project_image_task(project_id: str, task_id: str, request: Requ
             status_code = 409 if isinstance(exc, (ProjectStoreError, InvalidMutation)) else 500
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
+    # #237：store 实际落历史的是合并记录（running 进度记录 + 取消终态 + partial outputs），
+    # 响应/内存必须用合并后的版本——否则取消响应丢 partial outputs，「即时终态快照」不完整。
+    for item in canvas.get('history') or []:
+        if isinstance(item, dict) and str(item.get('task_id') or '') == task_id and str(item.get('status') or '') == 'cancelled':
+            history_record = copy.deepcopy(item)
+            break
+    final_node = next((item for item in canvas.get('nodes') or [] if str(item.get('id') or '') == payload.result_node_id), None)
     with CANVAS_TASK_LOCK:
         current = CANVAS_TASKS.get(str(task_id))
         if isinstance(current, dict):
@@ -1487,7 +1494,9 @@ async def cancel_project_image_task(project_id: str, task_id: str, request: Requ
                     'history_record': history_record,
                     'project_id': project_id,
                     'project_revision': canvas['revision'],
+                    'registered_revision': task.get('registered_revision') or 0,
                     'result_node_id': payload.result_node_id,
+                    'final_node': final_node,
                 },
                 'updated_at': time.time(),
             })
