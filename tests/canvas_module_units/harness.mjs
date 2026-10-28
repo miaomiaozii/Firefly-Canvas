@@ -48,6 +48,8 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-node-ops.js',
     // #255：分数坐标骨架（0..1 公共坐标，crop/mask/brush 换算地基）。
     'canvas-geometry.js',
+    // #246：freeSpot 落点扫描（右移碰撞扫描 + 200 步上限 + 批量行排）。
+    'canvas-placement.js',
     // #255：ComfyArt vectorPath.ts MIT 移植（路径归一化 / 缩放纯函数）。
     'canvas-vector-path.js',
     'canvas-image-editor.js',

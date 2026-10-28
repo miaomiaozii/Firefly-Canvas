@@ -117,6 +117,7 @@
 | `canvas-undo.js` | 撤销/重做 | `tests/undo_redo_browser.py` |
 | `canvas-node-ops.js` | 节点增删、替换、分组等单节点操作 | `tests/node_replace_browser.py`、`tests/canvas_interactions_browser.py` |
 | `canvas-geometry.js` | 分数坐标（0..1 公共坐标）骨架：像素↔分数互转、矩形归一化、even-odd 点-多边形命中（自研；#255 票面所引 ComfyArt `utils.ts` 在参考仓库中不存在） | `tests/canvas_module_units/test-canvas-geometry.mjs` |
+| `canvas-placement.js` | #246 freeSpot 落点扫描纯函数：从锚点向右扫描首个无碰撞空位（碰撞 → x = 碰撞盒 maxX + GAP(40)，200 步上限）+ 批量行排 `rowSpots`（ComfyArt `src/jobs.ts:231-243/:115-119` 算法移植）；createNodeFromMenu/候选池/素材粘贴的落点接线 | `tests/canvas_module_units/test-canvas-placement.mjs` |
 | `canvas-vector-path.js` | ComfyArt `vectorPath.ts` MIT 移植：`scalePath`（归一化路径→像素）与 `nodesToPath`（贝塞尔节点→0..1 路径） | `tests/canvas_module_units/test-canvas-vector-path.mjs` |
 | `canvas-image-editor.js` | 图片编辑器：裁剪、旋转、预览导航与对比 | `tests/image_editor_browser.py`、`tests/image_editor_func_browser.py`、`tests/fly_fixes_browser.py` |
 | `canvas-layers.js` | 图像分层 + 图层面板：ComfyArt `layers.ts` 纯函数 MIT 移植（measure/overlap/crop/分区/掩膜合成）、图层 store、离屏 canvas 按层序合成导出 PNG | `tests/canvas_module_units/test-canvas-layers.mjs` |

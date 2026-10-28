@@ -420,18 +420,45 @@ function applyBatchRename(){
     toast(trf('smart.batchRenameDone', {n: plan.length}));
 }
 
+// #246 freeSpot 落点扫描（canvas-placement.js）：菜单点只是扫描锚点——从原固定偏移位
+// 向右扫描首个无碰撞空位；碰撞则 x = 碰撞盒 maxX + GAP(40)，200 步上限防死循环。
+// 尺寸表必须与各创建函数写的节点 w/h 一致（碰撞盒用的就是落点后的真实尺寸）。
+// LOCAL_EDIT_NODE_W/H 提前到此处声明（createLocalEditNode 与本表共用，原声明位置在本表之后会触发 TDZ）。
+const LOCAL_EDIT_NODE_W = 400;
+const LOCAL_EDIT_NODE_H = 520;
+const CREATE_MENU_NODE_SIZE = {
+    group: { w: SMART_GROUP_DEFAULT_WIDTH, h: SMART_GROUP_DEFAULT_HEIGHT },
+    prompt: { w: 316, h: 240 },            // 与 createPromptNode 一致
+    conversation: { w: 390, h: 430 },      // 与 createConversationNode 一致
+    agent: { w: 382, h: 360 },             // 与 createAgentNode 一致
+    'local-edit': { w: LOCAL_EDIT_NODE_W, h: LOCAL_EDIT_NODE_H },
+    loop: { w: 340, h: 168 },              // 与 createLoopNode 一致
+};
+
 function createNodeFromMenu(type){
     const p = createMenuPoint || viewportCenter();
     const groupId = canvasState.createMenuGroupId;
     closeCreateMenu();
-    if(type === 'group') return createSmartGroupNode(p.x - 170, p.y - 110);
+    // 碰撞盒 = 现有节点的真实矩形（nodeRect 口径与候选池一致）；新节点自身不在盒内。
+    const boxes = canvasState.nodes.map(n => canvasCore.nodeRect(n)).filter(Boolean);
+    const spot = (x, y, size) => {
+        const s = CanvasPlacement.findFreeSpot({ x, y }, size, boxes);
+        return { x: s.x, y: s.y };
+    };
+    if(type === 'group'){ const s = spot(p.x - 170, p.y - 110, CREATE_MENU_NODE_SIZE.group); return createSmartGroupNode(s.x, s.y); }
     let created = null;
-    if(type === 'prompt') created = createPromptNode(p.x - 158, p.y - 97);
-    else if(type === 'conversation') created = createConversationNode(p.x - 195, p.y - 215);
-    else if(type === 'agent') created = createAgentNode(p.x - 191, p.y - 180);
-    else if(type === 'local-edit') created = createLocalEditNode(p.x - 180, p.y - 165);
-    else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
-    else created = createImageNodeAt(p);
+    if(type === 'prompt'){ const s = spot(p.x - 158, p.y - 97, CREATE_MENU_NODE_SIZE.prompt); created = createPromptNode(s.x, s.y); }
+    else if(type === 'conversation'){ const s = spot(p.x - 195, p.y - 215, CREATE_MENU_NODE_SIZE.conversation); created = createConversationNode(s.x, s.y); }
+    else if(type === 'agent'){ const s = spot(p.x - 191, p.y - 180, CREATE_MENU_NODE_SIZE.agent); created = createAgentNode(s.x, s.y); }
+    else if(type === 'local-edit'){ const s = spot(p.x - 180, p.y - 165, CREATE_MENU_NODE_SIZE['local-edit']); created = createLocalEditNode(s.x, s.y); }
+    else if(type === 'loop'){ const s = spot(p.x - 135, p.y - 95, CREATE_MENU_NODE_SIZE.loop); created = createLoopNode(s.x, s.y); }
+    else {
+        // 图片节点尺寸 = imageLayout 同参重算（与 createImageNodeAt 内部同口径）。
+        const layout = canvasCore.imageLayout([], canvasCore.mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:[]}), {type:NODE_TYPE_IMAGE, images:[]});
+        const size = { w: layout.width, h: layout.height };
+        const s = spot(p.x - Math.round(size.w / 2), p.y - Math.round(size.h / 2), size);
+        created = createImageNodeAt({ x: s.x + Math.round(size.w / 2), y: s.y + Math.round(size.h / 2) });
+    }
     canvasState.createMenuGroupId = groupId;
     addCreatedNodeToMenuGroup(created);
     canvasState.createMenuGroupId = '';
@@ -449,8 +476,6 @@ function scheduleInteractionLayerRefresh(){
         renderMinimap();
     });
 }
-const LOCAL_EDIT_NODE_W = 400;
-const LOCAL_EDIT_NODE_H = 520;
 function addCreatedNodeToMenuGroup(node){
     const group = canvasState.createMenuGroupId ? canvasState.nodes.find(n => n.id === canvasState.createMenuGroupId) : null;
     if(addNodeToSmartGroup(group, node)){

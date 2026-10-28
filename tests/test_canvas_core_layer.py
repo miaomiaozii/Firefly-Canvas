@@ -186,6 +186,11 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-download.js": 0,
     # #255 新建分数坐标骨架：纯函数模块，不引用 smart-canvas.js 的任何顶层名。
     "canvas-geometry.js": 0,
+    # #246 新建 freeSpot 落点扫描：纯函数模块（UMD IIFE 无顶层声明名），
+    # 不引用 smart-canvas.js 的任何顶层名；核心接线（smart-canvas.js 调
+    # CanvasPlacement.rowSpots）属「核心调模块」方向——UMD IIFE 无顶层声明名，
+    # reverse_coupling 口径（模块顶层名 × 核心引用）天然不覆盖，钉值不飘。
+    "canvas-placement.js": 0,
     # #255 新建 ComfyArt vectorPath.ts MIT 移植：纯函数模块，不引用 smart-canvas.js 的任何顶层名。
     "canvas-vector-path.js": 0,
     # #255 新建图像分层 + 图层面板：纯函数移植 + 面板，引用 smart-canvas.js 的 currentEditImage×2（取当前编辑图元）。
@@ -225,6 +230,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
     "canvas-download.js": 0,  # #223 新建：零自由全局（tr 来自 canvas-core.js）
     "canvas-geometry.js": 0,  # #255 新建：零自由全局（纯函数，无模块依赖）
+    "canvas-placement.js": 0,  # #246 新建：零自由全局（纯函数，无模块依赖）
     "canvas-vector-path.js": 0,  # #255 新建：零自由全局（纯函数，无模块依赖）
     "canvas-layers.js": 2,  # #255 新建：currentEditImage×2（自由全局）
     # #253 新建拖拽对齐吸附：零自由全局（纯函数，无模块依赖）。
