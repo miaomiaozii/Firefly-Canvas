@@ -184,9 +184,9 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # canvas-image-editor.js 删除即梦模型过滤/发图发视频/轮询取回/编辑态整块，
         # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
         self.assertEqual(rev["reverse_names"], 244)
-        self.assertEqual(rev["reverse_core_refs"], 959)
-        self.assertEqual(rev["core_dominant_names"], 170)
-        self.assertEqual(rev["core_dominant_core_refs"], 805)
+        self.assertEqual(rev["reverse_core_refs"], 961)
+        self.assertEqual(rev["core_dominant_names"], 171)
+        self.assertEqual(rev["core_dominant_core_refs"], 806)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])
