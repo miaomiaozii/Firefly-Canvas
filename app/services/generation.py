@@ -18,6 +18,7 @@ async def wait_for_image_task(client, task_id, provider=None):
     initial_delay = APIMART_IMAGE_INITIAL_POLL_DELAY if is_apimart else 0
     deadline = time.monotonic() + timeout
     last_payload = {}
+    unknown_streak = 0
     while time.monotonic() < deadline:
         if initial_delay:
             await asyncio.sleep(min(initial_delay, max(0.0, deadline - time.monotonic())))
@@ -36,6 +37,14 @@ async def wait_for_image_task(client, task_id, provider=None):
             return last_payload
         if status in IMAGE_TASK_FAILED_STATUSES:
             raise HTTPException(status_code=502, detail=f'生图任务失败：{image_task_fail_reason(last_payload)}')
+        if status in IMAGE_TASK_UNKNOWN_STATUSES:
+            # #235：连续 N 次 provider 明确返回未知/不存在 → 终态 fail（文案显式带 task ID），
+            # 不再空转到超时 504；单次抖动容忍——出现可识别状态即重置计数。
+            unknown_streak += 1
+            if unknown_streak >= IMAGE_TASK_UNKNOWN_TERMINAL_AFTER:
+                raise HTTPException(status_code=502, detail=f'生图任务不存在或状态未知（task_id={task_id}，连续 {unknown_streak} 次查询返回 {status}），请确认任务 ID 后显式重试')
+        else:
+            unknown_streak = 0
         await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
     raw_text = json.dumps(last_payload, ensure_ascii=False)[:800] if last_payload else ''
     extra = f'，最后响应：{raw_text}' if raw_text else ''
@@ -665,6 +674,10 @@ def image_task_url_for_provider(provider, task_id):
 async def fetch_image_task_payload(client, task_id, provider=None):
     task_url = image_task_url_for_provider(provider, task_id)
     response = await httpx_request_with_transient_retries(client, 'GET', task_url, attempts=3, headers=_svc._main('api_headers')(provider=provider))
+    if response.status_code == 404:
+        # #235：上游 404 → 结构化 not-found 载荷（status=NOT_FOUND），不再裸抛 httpx.HTTPStatusError；
+        # 由状态机（wait_for_image_task / query_upstream_image_task）按未知态终态化。
+        return {'status': 'NOT_FOUND', 'task_id': task_id, 'message': f'生图任务不存在（task_id={task_id}）'}
     response.raise_for_status()
     return response.json()
 
@@ -2076,6 +2089,7 @@ async def wait_for_video_task(client, provider, task_id, submit_url=''):
         await asyncio.sleep(delay)
         raw = None
         last_error = None
+        only_not_found = True
         for task_url in task_urls:
             try:
                 response = await client.get(task_url, headers=_svc._main('api_headers')(provider=provider))
@@ -2084,8 +2098,14 @@ async def wait_for_video_task(client, provider, task_id, submit_url=''):
                 break
             except Exception as exc:
                 last_error = exc
+                # #235：仅当全部候选都 404 → 显式「服务商侧任务不存在」（文案带 task ID）；
+                # 有任何非 404 错误保持旧行为抛最后一个错误。
+                if not (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404):
+                    only_not_found = False
                 continue
         if raw is None:
+            if last_error is not None and only_not_found:
+                raise HTTPException(status_code=502, detail=f'服务商侧视频任务不存在（task_id={task_id}），请确认任务 ID 后显式重试')
             if last_error:
                 raise last_error
             raise HTTPException(status_code=502, detail=f'视频任务查询失败：{task_id}')

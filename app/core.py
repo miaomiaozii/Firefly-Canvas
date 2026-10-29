@@ -256,6 +256,11 @@ FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'runninghub'}
 AVATAR_SUPPORTED_PLATFORMS = {'apimart', 'volcengine'}
 IMAGE_TASK_SUCCESS_STATUSES = {'SUCCESS', 'SUCCESSFUL', 'SUCCEED', 'SUCCEEDED', 'COMPLETED', 'COMPLETE', 'DONE', 'FINISHED', 'OK', 'READY'}
 IMAGE_TASK_FAILED_STATUSES = {'FAILURE', 'FAILED', 'FAIL', 'ERROR', 'ERRORED', 'CANCELED', 'CANCELLED', 'TIMEOUT', 'REJECTED', 'EXPIRED'}
+# #235：provider 明确返回的「未知/不存在」状态（任务已消失或无法确认），
+# 区别于普通进行中状态（RUNNING/PROCESSING/PENDING 等照常轮询）。
+IMAGE_TASK_UNKNOWN_STATUSES = {'NOT_FOUND', 'NOTFOUND', 'NOT_FOUND_ERROR', 'TASK_NOT_FOUND', 'UNKNOWN'}
+# #235：连续这么多次未知/不存在 → 终态 fail（错误文案带 task ID），不再空转到超时 504。
+IMAGE_TASK_UNKNOWN_TERMINAL_AFTER = 2
 PROJECT_MEDIA_ADAPTER_SCHEME = 'project-media'
 PROJECT_MEDIA_ADAPTER_PROJECT: ContextVar[Optional[str]] = ContextVar('project_media_adapter_project', default=None)
 STORAGE_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif'}
