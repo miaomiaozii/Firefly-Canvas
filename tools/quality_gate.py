@@ -570,10 +570,8 @@ PROVIDER_EXECUTABLE_ENV_NAMES = (
     "ANTIGRAVITY_BIN",
     "AGY_BIN",
     "CODEX_BIN",
-    "DREAMINA_BIN",
     "GEMINI_BIN",
     "GPT_IMAGE_2_SKILL_BIN",
-    "JIMENG_BIN",
 )
 
 PASSTHROUGH_ENV_NAMES = {
@@ -704,10 +702,8 @@ _blocked_paths = {
 _blocked_names = {
     "agy", "agy.exe", "antigravity", "antigravity.exe",
     "codex", "codex.cmd", "codex.exe",
-    "dreamina", "dreamina.cmd", "dreamina.exe",
     "gemini", "gemini.cmd", "gemini.exe",
     "gpt-image-2-skill", "gpt-image-2-skill.cmd", "gpt-image-2-skill.exe",
-    "jimeng", "jimeng.cmd", "jimeng.exe", "wsl", "wsl.exe",
 }
 _allowed_paths = {
     os.path.normcase(os.path.realpath(path))

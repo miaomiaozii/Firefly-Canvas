@@ -761,10 +761,6 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=can
         return rememberRoundOutputs(ctx, outputNode, additions);
     } catch(e) {
         settings = previousSettings;
-        if(handleJimengPendingSignal(outputNode, e)){
-            canvasCore.render();
-            return [];
-        }
         outputNode.running = false;
         if(!e?.smartGenerationLogged) addSmartGenerationHistory({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         canvasCore.render();
@@ -915,7 +911,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 await saveCanvas();
             }
             await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
-            if(outputSlot.jimengPending || canvasCore.smartRecoverableImageTask(outputSlot)){
+            if(canvasCore.smartRecoverableImageTask(outputSlot)){
                 outputSlot.queued = false;
                 return [];
             }
@@ -949,10 +945,6 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         delete outputSlot._serverGenerationHistoryRecorded;
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {
-        if(handleJimengPendingSignal(outputSlot, e)){
-            outputSlot.queued = false;
-            return [];
-        }
         outputSlot.queued = false;
         outputSlot.pending = 0;
         outputSlot.running = false;

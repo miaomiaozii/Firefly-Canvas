@@ -92,32 +92,6 @@ async def gemini_cli_chat_text(payload, history_messages=None):
             except Exception:
                 pass
 
-async def run_jimeng_cli(args, timeout=120, raw_text=False):
-    exe = _svc.jimeng_cli_executable()
-    if not exe:
-        raise HTTPException(status_code=400, detail='未找到 dreamina CLI。请先安装：curl -fsSL https://jimeng.jianying.com/cli | bash，并完成 dreamina login。')
-    clean_args = [str(arg) for arg in args if str(arg) != '']
-    command = _svc.jimeng_command(clean_args, exe)
-    try:
-        proc = await asyncio.create_subprocess_exec(*command, cwd=BASE_DIR, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail=f"即梦 CLI 执行超时：{' '.join(command[:3])}") from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=f'未找到即梦 CLI：{exe}') from exc
-    out_text, clean_err_text = _svc.jimeng_decode_cli_output(stdout, stderr)
-    if proc.returncode != 0:
-        message = clean_err_text or out_text or f'exit={proc.returncode}'
-        raise HTTPException(status_code=502, detail=f'即梦 CLI 调用失败：{message[:1000]}')
-    if raw_text:
-        return {'_stdout': out_text, '_stderr': clean_err_text}
-    raw = jimeng_extract_json(f'{out_text}\n{clean_err_text}'.strip())
-    if isinstance(raw, dict):
-        raw.setdefault('_stdout', out_text)
-        if clean_err_text:
-            raw.setdefault('_stderr', clean_err_text)
-    return raw
-
 def gemini_reference_part(ref):
     value = _svc._main('reference_to_data_url')(ref, max_size=1536)
     if not value:

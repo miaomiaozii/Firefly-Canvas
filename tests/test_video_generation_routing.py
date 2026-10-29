@@ -164,7 +164,8 @@ class VideoGenerationRoutingTests(unittest.TestCase):
             )
         self.assertIn("image_reference_count", raised.exception.incompatible_parameters)
 
-    def test_video_routing_rejects_unsupported_cli_protocols_but_keeps_jimeng(self):
+    def test_video_routing_rejects_cli_protocols_including_retired_jimeng(self):
+        # #236：即梦已全量退役 —— VIDEO_CLI_PROTOCOLS 已清零，CLI 视频协议（含 jimeng）全部不再可执行。
         capability = {
             "sizes": ["1280x720"],
             "aspect_ratios": ["16:9"],
@@ -180,14 +181,17 @@ class VideoGenerationRoutingTests(unittest.TestCase):
             {"id": "gemini-cli-video", "enabled": True, "protocol": "gemini-cli", "video_models": ["text-to-video"], "video_model_capabilities": {"text-to-video": capability}},
             {"id": "jimeng-video", "enabled": True, "protocol": "jimeng", "video_models": ["text-to-video"], "video_model_capabilities": {"text-to-video": capability}},
         ]
-        route = route_video_generation(self.request(), providers)
-        self.assertIsInstance(route, GenerationRoute)
-        self.assertEqual((route.provider_id, route.adapter), ("jimeng-video", "cli"))
         with self.assertRaises(ModelRoutingError) as raised:
-            route_video_generation(self.request(), providers, provider_id="codex-video", model="text-to-video")
+            route_video_generation(self.request(), providers)
         self.assertEqual(raised.exception.code, "no_compatible_video_model")
         self.assertIn("protocol", raised.exception.incompatible_parameters)
-        self.assertIn("CLI", str(raised.exception))
+        for provider_id, marker in (("codex-video", "CLI"), ("gemini-cli-video", "CLI"), ("jimeng-video", "jimeng")):
+            with self.subTest(provider=provider_id):
+                with self.assertRaises(ModelRoutingError) as raised:
+                    route_video_generation(self.request(), providers, provider_id=provider_id, model="text-to-video")
+                self.assertEqual(raised.exception.code, "no_compatible_video_model")
+                self.assertIn("protocol", raised.exception.incompatible_parameters)
+                self.assertIn(marker, str(raised.exception))
 
     def test_image_and_video_routes_use_one_neutral_route_type(self):
         self.assertIs(route_video_generation(self.request(), self.providers).__class__, GenerationRoute)

@@ -6,7 +6,7 @@
 // 生成提交（firefly-canvas-v1 项目 API 路径）、#189 预生成 flush 失败后的持久化续跑
 // （idempotency_key 服务端去重）、#197 四道保存关卡的 pending-action 队列
 // （queue→mirror→clear-on-send→seed 恢复）、#198 重放失败的有界重试写回、
-// 失败任务取回/重试（retryFailedGeneration）、Jimeng 排队与任务轮询。
+// 失败任务取回/重试（retryFailedGeneration）与任务轮询。
 // 本文件顶层只有声明（window.__fc* 可观测句柄除外），加载期不触碰外部名。
 //
 // 依赖面实测（tests/test_canvas_core_layer.py 棘轮口径：独立外部名，总数/自由/接口）：
@@ -75,8 +75,8 @@
 //   - runPromptLLMNode / runRunningHubGeneration / runApiVideoGeneration：依赖
 //     smart-canvas.js 13 个自由名（LLM 输入收集、RunningHub 节点构造、视频参考处理），
 //     本轮 22 名预算只覆盖图像路径；这些路径由浏览器 runner 兜底。
-//   - startJimengPoll（1440×60s）与 pollSmartCanvasTask（900×2s）的长轮询循环本身：
-//     单测只覆盖单次状态迁移（succeeded/cancelled/failed/timeout/jimeng_pending），
+//   - pollSmartCanvasTask（900×2s）的长轮询循环本身：
+//     单测只覆盖单次状态迁移（succeeded/cancelled/failed/timeout），
 //     分钟级真实轮询无法在单测层有意义地验证。
 
 import assert from 'node:assert/strict';
@@ -230,10 +230,9 @@ test('loads canvas-generation-tasks.js standalone: all lifecycle functions exist
         'runPromptLLMNode', 'queueSmartGenerationRegistration', 'upsertSmartGenerationSubmission',
         'clearSmartGenerationSubmission', 'postProjectImageTaskWithReplay', 'runApiGeneration',
         'runRunningHubGeneration', 'projectVideoSizeForRun', 'runApiVideoGeneration',
-        'smartPendingTasks', 'projectImageTaskUrl', 'extractUpstreamTaskId', 'jimengQueueText',
-        'setNodeJimengPending', 'handleJimengPendingSignal', 'finalizeJimengPending',
-        'applyJimengQueryResult', 'fetchJimengQuery', 'queryJimengNow', 'providerIdForSmartTask',
-        'fetchImageTaskQuery', 'querySmartImageTaskNow', 'startJimengPoll', 'resumeJimengPendingNodes',
+        'smartPendingTasks', 'projectImageTaskUrl', 'extractUpstreamTaskId',
+        'providerIdForSmartTask',
+        'fetchImageTaskQuery', 'querySmartImageTaskNow',
         'pollSmartCanvasTask', 'absorbProjectGenerationResult', 'finalizeSmartPendingTask',
         'resumeSmartPendingNode', 'retryFailedGeneration', 'retryFailedGenerationInner',
         'resumeSmartGenerationSubmission', 'resumeSmartPendingTasks', 'resumeSmartPersistencePendingTasks',
@@ -244,7 +243,6 @@ test('loads canvas-generation-tasks.js standalone: all lifecycle functions exist
         'manualSmartMediaLinks', 'applySmartTaskProgress', 'aspectRatioForRun', 'sleep',
     ]) globalFunction(ctx, name);
     // class 声明只落在全局词法环境（不在 window 上），用表达式探测。
-    assert.equal(evaluate(ctx, 'typeof JimengPendingSignal'), 'function', 'JimengPendingSignal 类已声明');
     assert.equal(evaluate(ctx, 'typeof ImageTaskRecoverSignal'), 'function', 'ImageTaskRecoverSignal 类已声明');
     // 词法 let/const 绑定可读写（模块私有状态，#197/#198 的账本都在这里）。
     assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 0, 'pending-action 队列初始为空');
@@ -995,7 +993,7 @@ test('retryFailedGeneration: 先取回已归档输出（无新计费），无归
     }
 });
 
-test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/failed-bare/timeout/jimeng_pending/succeeded)', async () => {
+test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/failed-bare/timeout/succeeded)', async () => {
     const cases = [
         {
             name: 'cancelled（用户主动停止）→ generationCancelled + providerFailure + cancelledByUser=true（stop≠error 中性终态标记）',
@@ -1025,11 +1023,6 @@ test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/
             expect: (e) => e.generationTimedOut === true && e.providerFailure === true && e.message === 'timed out',
             expectFailLog: { taskId: 'project_img_X', error: 'timed out' },
         },
-        {
-            name: 'jimeng_pending → JimengPendingSignal（带 submitId/kind，交给轮询续接）',
-            task: { status: 'jimeng_pending', submit_id: 'sub-1', kind: 'video', queue_info: {}, message: '排队中', result: {} },
-            expect: (e) => e.jimengPending === true && e.submitId === 'sub-1' && e.kind === 'video',
-        },
     ];
     for (const c of cases) {
         test(c.name, async () => {
@@ -1050,7 +1043,7 @@ test('pollSmartCanvasTask: terminal state transitions (cancelled/failed+recover/
                 assert.equal(harness.failHistoryCalls.length, 1);
                 assert.deepEqual(harness.failHistoryCalls[0], c.expectFailLog);
             } else {
-                assert.equal(harness.failHistoryCalls.length, 0, 'cancelled/jimeng_pending 不落 fail 账');
+                assert.equal(harness.failHistoryCalls.length, 0, 'cancelled 不落 fail 账');
             }
             assert.equal(evaluate(ctx, 'activeSmartTaskPolls.size'), 0, 'settled 后轮询去重 Map 清空');
         });

@@ -151,10 +151,10 @@ CANVAS_LOCK = RLock()
 LOAD_LOCK = Lock()
 NEXT_TASK_ID = 1
 UPDATE_LOCK = Lock()
-JIMENG_LOGIN_SESSION = {'proc': None, 'stdout': '', 'stderr': '', 'started_at': 0.0}
 PROVIDER_ID_RE = re.compile('^[a-zA-Z0-9_-]{2,40}$')
-SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'jimeng', 'codex'}
-REMOVED_PROVIDER_IDS = {'modelscope', 'runninghub'}
+SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'codex'}
+# #236 即梦整体剔除：存量配置里的 jimeng 服务商条目在加载时一并清除（与 modelscope/runninghub 同机制）。
+REMOVED_PROVIDER_IDS = {'modelscope', 'runninghub', 'jimeng'}
 SUPPORTED_IMAGE_REQUEST_MODES = {'openai', 'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'}
 # fal.ai 平台兼容（中转商把 queue.fal.run 反代到自己的 /fal 前缀）：
 # POST {base}/fal/{model} → {request_id,status_url,response_url}
@@ -169,8 +169,6 @@ RUNNINGHUB_FILE_HOST_REWRITES = {'rh-images-1252422369.cos.ap-beijing.myqcloud.c
 LINGJING_DEFAULT_BASE_URL = 'https://apistudio.vip'
 RUNNINGHUB_LLM_MODELS_URLS = ['https://llm.runninghub.cn/v1/models', 'https://llm.runninghub.ai/v1/models']
 RUNNINGHUB_FALLBACK_CHAT_MODELS = ['google/gemini-3.1-flash-lite-preview', 'qwen/qwen3-vl-235b-a22b-instruct', 'qwen/qwen-plus', 'openai/gpt-5.1']
-JIMENG_DEFAULT_IMAGE_MODELS = ['5.0', '4.6', '4.5', '4.1', '4.0', '3.1', '3.0']
-JIMENG_DEFAULT_VIDEO_MODELS = ['seedance2.0_vip', 'seedance2.0fast_vip', 'seedance2.0', 'seedance2.0fast', '3.5pro', '3.0pro', '3.0', '3.0fast']
 CODEX_DEFAULT_IMAGE_MODELS = ['gpt-image-2']
 CODEX_DEFAULT_CHAT_MODELS = ['gpt-5.4']
 GEMINI_CLI_DEFAULT_IMAGE_MODELS = ['auto']
@@ -184,12 +182,6 @@ try:
 except Exception:
     GEMINI_CLI_DEFAULT_TIMEOUT = 900
 AGNES_DEFAULT_VIDEO_MODELS = ['agnes-video-v2.0']
-JIMENG_LEGACY_IMAGE_MODELS = {'jimeng-image-2k', 'jimeng-image-4k'}
-JIMENG_LEGACY_VIDEO_MODELS = {'jimeng-video-720p', 'jimeng-video-1080p'}
-try:
-    JIMENG_DEFAULT_POLL_SECONDS = max(1, min(3600, int(os.getenv('JIMENG_POLL_SECONDS', '900'))))
-except Exception:
-    JIMENG_DEFAULT_POLL_SECONDS = 900
 VOLCENGINE_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 VOLCENGINE_DEFAULT_PROJECT_NAME = 'default'
 VOLCENGINE_DEFAULT_REGION = 'cn-beijing'
@@ -260,13 +252,8 @@ RESPONSES_REJECT_STATUSES = {400, 404, 405, 415, 422}
 RESPONSES_POLL_INTERVAL = 5.0
 RESPONSES_POLL_MAX_SECONDS = 25 * 60.0
 PER_MODEL_PROTOCOL_OPTIONS = {'openai', 'gemini'}
-FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'jimeng', 'runninghub'}
+FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'runninghub'}
 AVATAR_SUPPORTED_PLATFORMS = {'apimart', 'volcengine'}
-JIMENG_MIN_CLI_VERSION = (1, 4, 2)
-JIMENG_RATIO_CHOICES = [(21, 9), (16, 9), (3, 2), (4, 3), (1, 1), (3, 4), (2, 3), (9, 16)]
-JIMENG_TEXT2IMAGE_MODELS = {'3.0', '3.1', '4.0', '4.1', '4.5', '4.6', '5.0'}
-JIMENG_IMAGE2IMAGE_MODELS = {'4.0', '4.1', '4.5', '4.6', '5.0'}
-JIMENG_VIDEO_1080P_MODELS = {'seedance2.0_vip', 'seedance2.0fast_vip'}
 IMAGE_TASK_SUCCESS_STATUSES = {'SUCCESS', 'SUCCESSFUL', 'SUCCEED', 'SUCCEEDED', 'COMPLETED', 'COMPLETE', 'DONE', 'FINISHED', 'OK', 'READY'}
 IMAGE_TASK_FAILED_STATUSES = {'FAILURE', 'FAILED', 'FAIL', 'ERROR', 'ERRORED', 'CANCELED', 'CANCELLED', 'TIMEOUT', 'REJECTED', 'EXPIRED'}
 PROJECT_MEDIA_ADAPTER_SCHEME = 'project-media'
@@ -531,13 +518,6 @@ def merge_default_api_providers(providers, inject_missing=True):
             current['protocol'] = 'volcengine'
             current['volcengine_project_name'] = str(current.get('volcengine_project_name') or VOLCENGINE_DEFAULT_PROJECT_NAME).strip() or VOLCENGINE_DEFAULT_PROJECT_NAME
             current['volcengine_region'] = str(current.get('volcengine_region') or VOLCENGINE_DEFAULT_REGION).strip() or VOLCENGINE_DEFAULT_REGION
-    for current in merged:
-        if not is_jimeng_provider(current):
-            continue
-        current['protocol'] = 'jimeng'
-        current['base_url'] = ''
-        current['image_models'] = model_list_from_values([*[item for item in current.get('image_models') or [] if str(item or '').strip() not in JIMENG_LEGACY_IMAGE_MODELS], *JIMENG_DEFAULT_IMAGE_MODELS])
-        current['video_models'] = model_list_from_values([*[item for item in current.get('video_models') or [] if str(item or '').strip() not in JIMENG_LEGACY_VIDEO_MODELS], *JIMENG_DEFAULT_VIDEO_MODELS])
     for current in merged:
         current_protocol = str((current or {}).get('protocol') or '').strip().lower()
         if current_protocol not in {'codex', 'gemini-cli'}:
@@ -880,9 +860,6 @@ def normalize_provider(item):
         base_url = base_url or VOLCENGINE_DEFAULT_BASE_URL
         volc_project = volc_project or VOLCENGINE_DEFAULT_PROJECT_NAME
         volc_region = volc_region or VOLCENGINE_DEFAULT_REGION
-    if provider_id == 'jimeng' or protocol == 'jimeng':
-        protocol = 'jimeng'
-        base_url = ''
     if protocol in {'codex', 'gemini-cli'}:
         base_url = ''
     if provider_id == 'runninghub':
@@ -1103,18 +1080,11 @@ class RunningHubUploadAssetRequest(BaseModel):
     url: str = ''
     useWallet: bool = False
 
-class JimengHelpRequest(BaseModel):
-    command: str = ''
-
 class CodexHelpRequest(BaseModel):
     command: str = ''
 
 class GeminiCliHelpRequest(BaseModel):
     command: str = ''
-
-class JimengQueryMediaRequest(BaseModel):
-    submit_id: str = ''
-    kind: str = 'image'
 
 class ApiProviderPayload(BaseModel):
     id: str = ''
@@ -2326,9 +2296,6 @@ def is_volcengine_provider(provider):
 def is_runninghub_provider(provider):
     return provider_protocol(provider) == 'runninghub' or str((provider or {}).get('id') or '').strip().lower() == 'runninghub'
 
-def is_jimeng_provider(provider):
-    return provider_protocol(provider) == 'jimeng' or str((provider or {}).get('id') or '').strip().lower() == 'jimeng'
-
 def is_codex_provider(provider):
     return provider_protocol(provider) == 'codex'
 
@@ -2651,7 +2618,7 @@ def gemini_cli_parse_stdout(out_text):
         return (raw, gemini_cli_text_from_raw(raw, text))
     except Exception:
         pass
-    parsed = jimeng_extract_json(text)
+    parsed = lenient_extract_json(text)
     if isinstance(parsed, (dict, list)) and parsed != {'text': text}:
         return (parsed, gemini_cli_text_from_raw(parsed, text))
     return ({'text': text}, text)
@@ -2742,8 +2709,6 @@ def is_unified_format_video_model(model=''):
 def video_adapter_label(model='', provider=None):
     model_id = str(model or '').strip().lower()
     provider = provider or {}
-    if is_jimeng_provider(provider):
-        return ('官方-即梦 CLI', True)
     if is_runninghub_provider(provider):
         return ('官方-RunningHub', True)
     if is_kling_model(model_id):
@@ -2802,82 +2767,7 @@ def avatar_platform_for_provider(provider) -> str:
 def provider_supports_avatar(provider) -> bool:
     return avatar_platform_for_provider(provider) in AVATAR_SUPPORTED_PLATFORMS
 
-def decode_utf16_auto(raw: bytes) -> str:
-    try:
-        le = raw.decode('utf-16le', errors='ignore')
-    except Exception:
-        le = ''
-    try:
-        be = raw.decode('utf-16be', errors='ignore')
-    except Exception:
-        be = ''
-
-    def ascii_score(text):
-        return sum((1 for ch in text if 32 <= ord(ch) <= 126))
-    return le if ascii_score(le) >= ascii_score(be) else be
-
-def decode_wsl_output(data: bytes) -> str:
-    data = data or b''
-    if not data:
-        return ''
-    if b'\x00' in data[:400]:
-        lines = []
-        for raw_line in data.splitlines():
-            if not raw_line:
-                lines.append('')
-                continue
-            sample = raw_line[:200]
-            nul_ratio = sample.count(0) / max(1, len(sample))
-            if nul_ratio > 0.2:
-                try:
-                    lines.append(decode_utf16_auto(raw_line))
-                    continue
-                except Exception:
-                    pass
-            lines.append(raw_line.decode('utf-8-sig', errors='ignore'))
-        return '\n'.join(lines)
-    if b'\x00' in data[:200]:
-        try:
-            return decode_utf16_auto(data)
-        except Exception:
-            pass
-    return data.decode('utf-8-sig', errors='ignore')
-
-def jimeng_clean_wsl_stderr(text):
-    lines = []
-    skip_next_warning_context = False
-    for line in str(text or '').splitlines():
-        clean = line.replace('\x00', '').strip()
-        low = clean.lower()
-        is_proxy_warning = 'localhost' in low and 'wsl' in low and ('nat' in low or 'proxy' in low or '代理' in clean)
-        is_python_warning = 'requestsdependencywarning' in low or (skip_next_warning_context and clean.startswith('warnings.warn('))
-        skip_next_warning_context = 'requestsdependencywarning' in low
-        if clean and (not is_proxy_warning) and (not is_python_warning):
-            lines.append(clean)
-    return '\n'.join(lines).strip()
-
-def windows_path_to_wsl(path):
-    text = str(path or '').replace('\\', '/')
-    match = re.match('^([A-Za-z]):/(.*)$', text)
-    if match:
-        return f'/mnt/{match.group(1).lower()}/{match.group(2)}'
-    return text
-
-def wsl_path_to_windows(path):
-    text = str(path or '').strip()
-    match = re.match('^/mnt/([A-Za-z])/(.*)$', text)
-    if match:
-        tail = match.group(2).replace('/', '\\')
-        return f'{match.group(1).upper()}:\\{tail}'
-    return text
-
-def jimeng_poll_seconds(default=JIMENG_DEFAULT_POLL_SECONDS):
-    try:
-        return max(1, min(3600, int(os.getenv('JIMENG_POLL_SECONDS', str(default)) or default)))
-    except Exception:
-        return default
-
-def jimeng_extract_json(text):
+def lenient_extract_json(text):
     text = str(text or '').strip()
     if not text:
         return {}
@@ -2906,47 +2796,6 @@ def jimeng_extract_json(text):
         return weight
     return max(parsed, key=score)[1] if parsed else {'text': text}
 
-def jimeng_parse_version(text):
-    match = re.search('(\\d+)\\.(\\d+)\\.(\\d+)', str(text or ''))
-    if not match:
-        return None
-    return tuple((int(part) for part in match.groups()))
-
-def jimeng_login_text():
-    parts = []
-    for key in ('stdout', 'stderr'):
-        value = str(JIMENG_LOGIN_SESSION.get(key) or '').strip()
-        if value:
-            parts.append(value)
-    return '\n'.join(parts).strip()
-
-def jimeng_login_qr_from_text(text):
-    text = str(text or '')
-    candidates = []
-    patterns = ['(https?://[^\\s\\"\'<>]+)', '(dreamina://[^\\s\\"\'<>]+)', '(data:image/[^\\s\\"\'<>]+)']
-    for pattern in patterns:
-        candidates.extend(re.findall(pattern, text))
-    for value in candidates:
-        if 'login' in value.lower() or 'qr' in value.lower() or value.startswith(('data:image', 'dreamina://')):
-            return value
-    return candidates[0] if candidates else ''
-
-def jimeng_submit_id(raw):
-    found = []
-
-    def visit(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if str(key).lower() in {'submit_id', 'submitid', 'task_id', 'taskid'} and item:
-                    found.append(str(item))
-                else:
-                    visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-    visit(raw)
-    return found[0] if found else ''
-
 class IncompatibleGenerationParameterError(Exception):
     """Raised when a user-requested generation parameter is not supported by the selected model.
 
@@ -2969,204 +2818,6 @@ class IncompatibleGenerationParameterError(Exception):
             msg += f". {detail}"
         super().__init__(msg)
 
-
-class JimengPendingError(Exception):
-    """即梦任务还在云端排队/生成（轮询超时但未失败）。submit_id 可用于后续续查。"""
-
-    def __init__(self, submit_id, kind='image', queue_info=None, raw=None):
-        self.submit_id = str(submit_id or '')
-        self.kind = kind or 'image'
-        self.queue_info = queue_info if isinstance(queue_info, dict) else {}
-        self.raw = raw
-        super().__init__(f'jimeng pending submit_id={self.submit_id}')
-
-def jimeng_queue_info(raw):
-    """从即梦原始返回里就近取出 queue_info（含 queue_idx/queue_length/queue_status）。"""
-    found = []
-
-    def visit(value):
-        if isinstance(value, dict):
-            qi = value.get('queue_info')
-            if isinstance(qi, dict) and qi:
-                found.append(qi)
-            for item in value.values():
-                if isinstance(item, (dict, list)):
-                    visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-    visit(raw)
-    return found[0] if found else {}
-
-def jimeng_pending_payload(exc: 'JimengPendingError'):
-    qi = exc.queue_info or {}
-    idx = qi.get('queue_idx')
-    length = qi.get('queue_length')
-    if idx is not None and length is not None:
-        msg = f'即梦云端排队中（第 {idx}/{length} 位），任务未丢失，可继续等待或手动查询。submit_id={exc.submit_id}'
-    else:
-        msg = f'即梦任务仍在生成中，任务未丢失。submit_id={exc.submit_id}'
-    return {'jimeng_pending': True, 'submit_id': exc.submit_id, 'kind': exc.kind, 'queue_info': qi, 'message': msg}
-
-async def jimeng_pending_exception_handler(request: Request, exc: JimengPendingError):
-    return JSONResponse(status_code=202, content=jimeng_pending_payload(exc))
-
-def jimeng_failure_reason(raw):
-    found = []
-
-    def visit(value):
-        if isinstance(value, dict):
-            status = str(value.get('gen_status') or value.get('status') or '').strip().lower()
-            reason = value.get('fail_reason') or value.get('failReason') or value.get('error') or value.get('message') or value.get('msg')
-            if reason and (status in {'fail', 'failed', 'error'} or 'fail' in str(reason).lower() or 'invalid param' in str(reason).lower()):
-                found.append(str(reason))
-            for item in value.values():
-                if isinstance(item, (dict, list)):
-                    visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-    visit(raw)
-    return found[0] if found else ''
-
-def jimeng_collect_media_values(value, outputs):
-    media_ext = re.compile('\\.(png|jpe?g|webp|gif|bmp|mp4|webm|mov|m4v|avi|mkv)(\\?|#|$)', re.I)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return
-        if text.startswith(('http://', 'https://', '/output/', '/assets/', 'file://')) or media_ext.search(text):
-            outputs.append(text)
-        return
-    if isinstance(value, list):
-        for item in value:
-            jimeng_collect_media_values(item, outputs)
-        return
-    if isinstance(value, dict):
-        for key in ('url', 'urls', 'image', 'images', 'image_url', 'image_urls', 'video', 'videos', 'video_url', 'video_urls', 'output', 'outputs', 'result', 'results', 'file', 'files', 'path', 'paths', 'download_url', 'download_urls', 'downloadUrl', 'file_path', 'filePath'):
-            if key in value:
-                jimeng_collect_media_values(value.get(key), outputs)
-        for item in value.values():
-            if isinstance(item, (dict, list)):
-                jimeng_collect_media_values(item, outputs)
-
-def jimeng_output_values(raw):
-    outputs = []
-    jimeng_collect_media_values(raw, outputs)
-    deduped = []
-    for value in outputs:
-        if value not in deduped:
-            deduped.append(value)
-    return deduped
-
-def jimeng_ratio_from_size(size, fallback='1:1'):
-    width, height = parse_size_pair(size)
-    if not width or not height:
-        return fallback
-    ratio = width / max(1, height)
-    left, right = min(JIMENG_RATIO_CHOICES, key=lambda item: abs(ratio - item[0] / item[1]))
-    return f'{left}:{right}'
-
-def jimeng_normalize_image_model(model):
-    match = re.search('(\\d+\\.\\d+)', str(model or ''))
-    return match.group(1) if match else ''
-
-def jimeng_image_model_version(model, mode='text2image'):
-    version = jimeng_normalize_image_model(model)
-    allowed = JIMENG_IMAGE2IMAGE_MODELS if mode == 'image2image' else JIMENG_TEXT2IMAGE_MODELS
-    return version if version in allowed else ''
-
-def jimeng_image_resolution(model, size, mode='text2image'):
-    text = str(model or '').lower()
-    if '4k' in text:
-        desired = '4k'
-    elif '1k' in text:
-        desired = '1k'
-    elif '2k' in text:
-        desired = '2k'
-    else:
-        width, height = parse_size_pair(size)
-        desired = '4k' if max(width, height) > 2048 else '2k'
-    version = jimeng_normalize_image_model(model)
-    if mode == 'image2image':
-        return '4k' if desired == '4k' else '2k'
-    if version in ('3.0', '3.1'):
-        return '1k' if desired == '1k' else '2k'
-    return '4k' if desired == '4k' else '2k'
-
-def jimeng_video_resolution(model, resolution):
-    version = jimeng_video_model_version(model)
-    requested = str(resolution or '').strip().upper()
-    if requested not in {'480P', '720P', '1080P'}:
-        text = str(model or '').lower()
-        requested = '1080P' if '1080' in text else '720P'
-    if requested == '1080P' and version in JIMENG_VIDEO_1080P_MODELS:
-        return '1080P'
-    return '720P'
-
-def jimeng_video_duration_range(model):
-    version = jimeng_video_model_version(model)
-    if version in ('3.0', '3.0fast', '3.0pro'):
-        return (3, 10)
-    if version == '3.5pro':
-        return (4, 12)
-    return (4, 15)
-
-def jimeng_video_duration(duration, model=None):
-    low, high = jimeng_video_duration_range(model)
-    default = max(low, min(high, 5))
-    try:
-        text = str(duration).strip() if duration is not None else ''
-        value = default if text == '' else int(text)
-    except Exception:
-        value = default
-    return max(low, min(high, value))
-
-def jimeng_transition_duration(total_duration, transition_count):
-    count = max(1, int(transition_count or 1))
-    try:
-        total = float(total_duration or 5)
-    except Exception:
-        total = 5.0
-    return max(0.5, min(8.0, total / count))
-
-def jimeng_video_model_version(model):
-    value = str(model or '').strip()
-    low = value.lower()
-    aliases = {'seedance2.0fast_vip': 'seedance2.0fast_vip', 'seedance2.0_vip': 'seedance2.0_vip', 'seedance2.0fast': 'seedance2.0fast', 'seedance2.0': 'seedance2.0', '3.0_fast': '3.0fast', '3.0fast': '3.0fast', '3.0_pro': '3.0pro', '3.0pro': '3.0pro', '3.5_pro': '3.5pro', '3.5pro': '3.5pro', '3.0': '3.0'}
-    for key, mapped in aliases.items():
-        if key in low:
-            return mapped
-    return ''
-
-def jimeng_video_resolution_arg(model, resolution):
-    return jimeng_video_resolution(model, resolution).lower()
-
-def jimeng_video_ratio_arg(aspect_ratio):
-    value = str(aspect_ratio or '').strip()
-    allowed = {'1:1', '3:4', '16:9', '4:3', '9:16', '21:9'}
-    if value in allowed:
-        return value
-    return ''
-
-def jimeng_append_model_resolution_args(args, payload: CanvasVideoRequest, include_model=False):
-    model_version = jimeng_video_model_version(payload.model)
-    if include_model and model_version:
-        args.append(f'--model_version={model_version}')
-    if payload.resolution:
-        args.append(f'--video_resolution={jimeng_video_resolution_arg(payload.model, payload.resolution)}')
-
-def jimeng_video_ref_role(ref):
-    role = getattr(ref, 'role', '')
-    if isinstance(ref, dict):
-        role = ref.get('role', role)
-    return str(role or '').lower()
-
-def jimeng_video_ref_url(ref):
-    url = getattr(ref, 'url', '')
-    if isinstance(ref, dict):
-        url = ref.get('url', url)
-    return str(url or '').strip()
 
 def image_task_data(payload):
     if isinstance(payload, dict) and isinstance(payload.get('data'), dict):
@@ -5266,8 +4917,6 @@ def protocol_from_payload(payload):
         return 'volcengine'
     if provider_id == 'runninghub':
         return 'runninghub'
-    if provider_id == 'jimeng':
-        return 'jimeng'
     base_url = str(getattr(payload, 'base_url', '') or '').strip().lower()
     if 'runninghub.cn' in base_url or 'runninghub.ai' in base_url:
         return 'runninghub'

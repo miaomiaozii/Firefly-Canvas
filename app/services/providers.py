@@ -196,70 +196,6 @@ def gemini_cli_executable():
 def gemini_cli_display_name(exe=None):
     return 'Antigravity CLI' if is_antigravity_cli(exe or _svc._main('gemini_cli_executable')()) else 'Gemini CLI'
 
-def jimeng_env_value(key):
-    return os.getenv(key, '') or read_api_env_value(key)
-
-def jimeng_use_wsl():
-    value = str(jimeng_env_value('JIMENG_USE_WSL') or '').strip().lower()
-    return value in {'1', 'true', 'yes', 'on', 'wsl'}
-
-def jimeng_cli_executable():
-    if jimeng_use_wsl():
-        return shutil.which('wsl.exe') or shutil.which('wsl') or 'wsl.exe'
-    configured = str(jimeng_env_value('JIMENG_BIN') or jimeng_env_value('DREAMINA_BIN') or '').strip()
-    if configured:
-        return configured
-    return shutil.which('dreamina') or shutil.which('dreamina.exe') or shutil.which('dreamina.cmd') or ''
-
-def jimeng_wsl_base_args(exe='wsl.exe'):
-    configured = str(jimeng_env_value('JIMENG_WSL_DISTRO') or '').strip()
-    names = []
-    try:
-        proc = subprocess.run([exe, '-l', '-q'], cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
-        names = [line.replace('\x00', '').strip().lstrip('*').strip() for line in decode_wsl_output(proc.stdout).splitlines() if line.replace('\x00', '').strip()]
-    except Exception:
-        names = []
-    if configured and (not names or configured in names):
-        return ['-d', configured]
-    if configured and names:
-        logger.warning(f'JIMENG_WSL_DISTRO={configured} 不存在，已回退自动选择。可用发行版：{names}')
-    try:
-        ubuntu = next((name for name in names if re.match('^Ubuntu($|-)', name)), '')
-        if ubuntu:
-            return ['-d', ubuntu]
-    except Exception:
-        pass
-    return []
-
-def jimeng_cli_path_arg(path):
-    return windows_path_to_wsl(path) if jimeng_use_wsl() else path
-
-async def jimeng_cli_version():
-    for flag in ('--version', '-V', 'version'):
-        try:
-            raw = await _svc.run_jimeng_cli([flag], timeout=15)
-        except HTTPException:
-            continue
-        text = raw if isinstance(raw, str) else raw.get('_stdout') or raw.get('_stderr') or '' if isinstance(raw, dict) else ''
-        version = jimeng_parse_version(text)
-        if version:
-            return (version, str(text).strip())
-    return (None, '')
-
-async def jimeng_login_reader(proc):
-
-    async def read_stream(stream, key):
-        while True:
-            chunk = await stream.readline()
-            if not chunk:
-                break
-            text = decode_wsl_output(chunk) if jimeng_use_wsl() else chunk.decode('utf-8', errors='replace')
-            if key == 'stderr':
-                text = jimeng_clean_wsl_stderr(text)
-            if text:
-                JIMENG_LOGIN_SESSION[key] = str(JIMENG_LOGIN_SESSION.get(key) or '') + text
-    await asyncio.gather(read_stream(proc.stdout, 'stdout'), read_stream(proc.stderr, 'stderr'))
-
 def volcengine_media_reference_url(value, max_image_size=1536):
     if not isinstance(value, str):
         return ''
@@ -464,8 +400,6 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
         payload = gemini_cli_models_payload(raw={'status': status})
         payload['message'] = status.get('message') or payload['message']
         return payload
-    if protocol == 'jimeng':
-        return {'total': len(JIMENG_DEFAULT_IMAGE_MODELS) + len(JIMENG_DEFAULT_VIDEO_MODELS), 'image_models': JIMENG_DEFAULT_IMAGE_MODELS, 'chat_models': [], 'video_models': JIMENG_DEFAULT_VIDEO_MODELS, 'all': [*JIMENG_DEFAULT_IMAGE_MODELS, *JIMENG_DEFAULT_VIDEO_MODELS]}
     if protocol == 'runninghub':
         provider = {'id': 'runninghub', 'name': 'RunningHub', 'base_url': base_url or RUNNINGHUB_DEFAULT_BASE_URL, 'protocol': 'runninghub', 'api_key': api_key}
         return await _svc._main('runninghub_models_payload')(provider)

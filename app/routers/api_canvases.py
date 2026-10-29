@@ -241,7 +241,7 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
                     node['pending'] = 0
                     node['running'] = False
                     node['queued'] = False
-                    for key in ('jimengPending', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
+                    for key in ('pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
                         node.pop(key, None)
         elif node_type == 'image' and any((json_references_media_path(node.get('url'), path) for path in paths)):
             node['url'] = ''

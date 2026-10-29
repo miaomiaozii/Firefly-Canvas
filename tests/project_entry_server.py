@@ -30,7 +30,6 @@ def run() -> None:
             return {"installed": False, "logged_in": False, "message": "隔离测试未启用 CLI 探测"}
         main.codex_status = unavailable_cli
         main.gemini_cli_status = unavailable_cli
-        main.jimeng_status = unavailable_cli
     # Product startup also performs legacy asset migrations. They are unrelated
     # to this browser seam and must never run in an isolated project-entry test.
     main.app.router.on_startup.clear()

@@ -235,7 +235,7 @@ test('loads canvas-image-editor.js standalone: target functions + real modules i
         'undoEditDrawing', 'redoEditDrawing', 'resetEditDrawingHistory',
         // 结构性锚点
         'smartImageEditorIsOpen', 'editDrawCanvas', 'editTextCanvas', 'editTextContext',
-        'defaultEditTextText', 'beginTextEditChange', 'cropBounds', 'jimengImageEditMode',
+        'defaultEditTextText', 'beginTextEditChange', 'cropBounds',
     ]) globalFunction(ctx, name);
     // 真实底层模块就位。
     assert.equal(typeof evaluate(ctx, 'canvasState.nodes'), 'object', 'canvasState 来自真实 canvas-state.js');

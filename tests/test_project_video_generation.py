@@ -186,10 +186,11 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
                 routing_mode="manual", provider_id="jimeng", model="seedance2.0_vip",
             ))
 
+        # #236：即梦已全量退役 —— 手动固定退役协议直接按“协议不可执行”短路（protocol 计入不兼容参数）。
         self.assertEqual(manual.status_code, 400, manual.text)
         self.assertEqual(
             set(manual.json()["detail"]["incompatible_parameters"]),
-            {"width", "height", "size", "quality", "seed", "camera_fixed"},
+            {"protocol"},
         )
         self.assertEqual(self.store.open_project(project["id"])["canvas"], canvas_before)
         with main.CANVAS_TASK_LOCK:
@@ -883,6 +884,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
             main.project_media_adapter_path(own_references[0]["adapter_url"], "image")
 
     def test_public_canvas_video_rejects_project_media_handle_before_adapter(self):
+        import app.routers.api_canvas_video as canvas_video_router
         project = self.store.create_project("公开接口隔离")
         image = self.store.import_media(project["id"], tiny_png_bytes(), "reference.png", "image/png")
         forged_handle = main.project_media_adapter_reference(project["id"], image["asset_id"])
@@ -890,7 +892,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         adapter = AsyncMock(return_value={"videos": ["/output/should-not-run.mp4"]})
 
         with patch.object(main, "get_api_provider", return_value=provider), patch.object(
-            main, "generate_jimeng_video", adapter
+            canvas_video_router, "execute_canvas_video", adapter
         ):
             response = self.client.post("/api/canvas-video", json={
                 "prompt": "不应读取项目媒体",
@@ -905,7 +907,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         adapter.assert_not_awaited()
 
         with patch.object(main, "get_api_provider", return_value=provider), patch.object(
-            main, "generate_jimeng_video", adapter
+            canvas_video_router, "execute_canvas_video", adapter
         ):
             ordinary = self.client.post("/api/canvas-video", json={
                 "prompt": "普通本地路径仍走既有适配器",
@@ -1182,8 +1184,9 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         }
         cases = [
             (
-                "jimeng", {"id": "jimeng", "protocol": "jimeng"}, "seedance2.0_vip",
-                {"width", "height", "size", "quality", "seed", "enhance_prompt", "enable_upsample", "watermark", "camera_fixed", "return_last_frame", "generate_audio"},
+                # #236：即梦已全量退役 —— 退役协议不再进专项适配器矩阵，只报 protocol 不兼容。
+                "jimeng-retired", {"id": "jimeng", "protocol": "jimeng"}, "seedance2.0_vip",
+                {"protocol"},
             ),
             (
                 "runninghub", {"id": "runninghub", "protocol": "runninghub"}, "video-app",
@@ -1294,14 +1297,6 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
             url=f"https://example.invalid/{index}.png", kind="image", role=role,
         )
         cases = (
-            (
-                {"id": "jimeng", "protocol": "jimeng"},
-                main.CanvasVideoRequest(
-                    prompt="即梦首尾帧不能吞第三张", model="seedance2.0",
-                    images=[ref(1, "first_frame"), ref(2, "last_frame"), ref(3)],
-                ),
-                "image_reference_count",
-            ),
             (
                 {"id": "apimart", "protocol": "apimart", "base_url": "https://api.apimart.ai"},
                 main.CanvasVideoRequest(

@@ -422,3 +422,11 @@ implementation, this would be a UI picker"）；fork / switch-branch / model / a
 再到 247/967/174/812（2026-10-29 #246 freeSpot 接线，叠于 #251 之上）：素材粘贴行排新增
 NODE_TYPE_IMAGE 核心引用 +2；createPromptNode owner 侧 +1 退出核心主导体（175→174）；
 core_dominant_core_refs +2/-2 对冲净 0。均系落点扫描接线的「核心调模块」方向，非新债。
+
+再到 242/959/170/805（2026-10-29 #236 即梦服务商全量退役）：smart-canvas.js 删即梦模型
+过滤/pill 区块与视频命令映射、canvas-generation-tasks.js 删 jimeng 发图/发视频/轮询/取回
+整块（setNodeJimengPending、startJimengPoll、resumeJimengPendingNodes 等 9 个顶层名 +
+JimengPendingSignal）、canvas-image-editor.js 删 jimengImageEditMode 等编辑态引用。四口径
+全降（reverse_names -5、reverse_core_refs -8、core_dominant_names -4、
+core_dominant_core_refs -7），每模块棘轮同步收紧（generation-tasks 116→101、
+cascade 153→152、image-editor 89→87）。纯还债，无新耦合。

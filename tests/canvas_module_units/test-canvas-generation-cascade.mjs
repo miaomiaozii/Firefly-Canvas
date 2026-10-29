@@ -58,7 +58,7 @@
 //     由门步骤 generation-lifecycle-evidence（tests/generation_lifecycle_browser.py）与
 //     complete-generation-lifecycle-evidence（tests/generation_task_native_browser.py）兜。
 //   - runCascadeStepIntoNode（30 个 hub 名：buildPromptRequestForNode/smartRunSnapshot/
-//     rememberRecentSmartSettings/handleJimengPendingSignal/…）与
+//     rememberRecentSmartSettings/…）与
 //     runLoopRoundIntoSlot（189 行/34 个 hub 名：runApiGeneration/
 //     acceptProjectGenerationRegistration/resumeSmartPendingNode/…）：同上两个
 //     generation 证据步骤 + node-flow-cascade-evidence（tests/node_flow_browser.py）兜。

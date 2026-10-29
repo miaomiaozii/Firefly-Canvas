@@ -2,21 +2,9 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 
-def jimeng_command(clean_args, exe=None):
-    exe = exe or _svc.jimeng_cli_executable()
-    if _svc.jimeng_use_wsl():
-        shell_line = '. ~/.profile >/dev/null 2>&1 || true; . ~/.bashrc >/dev/null 2>&1 || true; DREAMINA_BIN=$(command -v dreamina || find "$HOME" -maxdepth 4 -type f -name dreamina 2>/dev/null | head -n 1); if [ -z "$DREAMINA_BIN" ]; then echo \'dreamina CLI not found in WSL\' >&2; exit 127; fi; "$DREAMINA_BIN" ' + ' '.join((shlex.quote(arg) for arg in clean_args))
-        return [exe, *_svc.jimeng_wsl_base_args(exe), '-e', 'sh', '-lc', shell_line]
-    return [exe, *clean_args]
-
-def jimeng_decode_cli_output(stdout, stderr):
-    out_text = (decode_wsl_output(stdout) if _svc.jimeng_use_wsl() else stdout.decode('utf-8', errors='replace')).strip()
-    err_text = (decode_wsl_output(stderr) if _svc.jimeng_use_wsl() else stderr.decode('utf-8', errors='replace')).strip()
-    clean_err_text = jimeng_clean_wsl_stderr(err_text) if _svc.jimeng_use_wsl() else err_text
-    return (out_text, clean_err_text)
-
 # #212: 默认全局资源库的规范名 + 历史默认名（加载时一次性迁移）。
 # 只认默认库的稳定身份 id='default' 且名字为已知历史名，用户自己重命名的库不受影响。
+# （#236 误删后恢复：与即梦退役无关，d18a238 批量删即梦函数时误伤。）
 DEFAULT_LIBRARY_NAME = '默认全局资源库'
 DEFAULT_LIBRARY_LEGACY_NAMES = {'默认资产库', '默认素材抽屉'}
 
@@ -116,124 +104,6 @@ def codex_output_url_from_path(path):
     except Exception:
         return ''
     return ''
-
-def jimeng_local_output_url(path, kind='image'):
-    path = os.path.abspath(str(path or ''))
-    if not os.path.isfile(path):
-        return ''
-    output_root = os.path.abspath(_svc._main('OUTPUT_OUTPUT_DIR'))
-    try:
-        if os.path.commonpath([output_root, path]) == output_root:
-            return _svc.output_url_for(os.path.basename(path), 'output')
-    except Exception:
-        pass
-    ext = os.path.splitext(path)[1].lower()
-    allowed = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv'}
-    if ext not in allowed:
-        ct = content_type_for_path(path)
-        ext = '.mp4' if ct.startswith('video/') else '.png'
-    prefix = 'jimeng_video_' if kind == 'video' else 'jimeng_'
-    filename = f'{prefix}{uuid.uuid4().hex[:10]}{ext}'
-    dest = _svc.output_path_for(filename, 'output')
-    shutil.copyfile(path, dest)
-    return _svc.output_url_for(filename, 'output')
-
-async def jimeng_store_output_value(value, kind='image'):
-    text = str(value or '').strip()
-    if not text:
-        return ''
-    if text.startswith('/output/') or text.startswith('/assets/'):
-        return text
-    if text.startswith('file://'):
-        text = urllib.parse.unquote(urllib.parse.urlparse(text).path)
-        if os.name == 'nt' and re.match('^/[A-Za-z]:/', text):
-            text = text[1:]
-    if _svc.jimeng_use_wsl() and text.startswith('/mnt/'):
-        text = wsl_path_to_windows(text)
-    if text.startswith(('http://', 'https://')):
-        if kind == 'video':
-            return await _svc._main('save_remote_video_to_output')(text, prefix='jimeng_video_')
-        return await _svc.save_ai_image_to_output({'type': 'url', 'value': text}, prefix='jimeng_')
-    if os.path.isfile(text):
-        return jimeng_local_output_url(text, kind)
-    return ''
-
-async def jimeng_query_result(submit_id, kind='image'):
-    args = ['query_result', f'--submit_id={submit_id}', f"--download_dir={_svc.jimeng_cli_path_arg(_svc._main('OUTPUT_OUTPUT_DIR'))}"]
-    return await _svc.run_jimeng_cli(args, timeout=min(300, jimeng_poll_seconds() + 60))
-
-async def jimeng_store_outputs(raw, kind='image', allow_query=True):
-    failure = jimeng_failure_reason(raw)
-    if failure:
-        raise HTTPException(status_code=502, detail=f'即梦生成失败：{failure}')
-    values = jimeng_output_values(raw)
-    urls = []
-    for value in values:
-        local_url = await jimeng_store_output_value(value, kind)
-        if local_url and local_url not in urls:
-            urls.append(local_url)
-    if urls:
-        return urls
-    submit_id = jimeng_submit_id(raw)
-    if submit_id and allow_query:
-        queried = await jimeng_query_result(submit_id, kind)
-        try:
-            return await jimeng_store_outputs(queried, kind, allow_query=False)
-        except HTTPException as exc:
-            if getattr(exc, 'status_code', None) == 502:
-                status_text = json.dumps(queried, ensure_ascii=False)[:800] if isinstance(queried, (dict, list)) else str(queried)[:800]
-                raise HTTPException(status_code=502, detail=f'即梦任务已返回但没有下载到媒体：{status_text}') from exc
-            raise
-    status_text = json.dumps(raw, ensure_ascii=False)[:800] if isinstance(raw, (dict, list)) else str(raw)[:800]
-    if submit_id:
-        raise JimengPendingError(submit_id, kind, jimeng_queue_info(raw), raw)
-    raise HTTPException(status_code=502, detail=f'即梦 CLI 未返回可用媒体结果：{status_text}')
-
-async def jimeng_prepare_local_media(ref_url, kind='image'):
-    text = str(ref_url or '').strip()
-    if not text:
-        return ('', [])
-    adapter_path = _svc.local_media_adapter_path(text, kind)
-    if adapter_path:
-        return (adapter_path, [])
-    if text.startswith('/output/') or text.startswith('/assets/'):
-        path = _svc._main('output_file_from_url')(text)
-        if path:
-            return (path, [])
-        raise HTTPException(status_code=404, detail=f'即梦参考素材不存在：{text}')
-    if text.startswith('file://'):
-        path = urllib.parse.unquote(urllib.parse.urlparse(text).path)
-        if os.name == 'nt' and re.match('^/[A-Za-z]:/', path):
-            path = path[1:]
-        if os.path.isfile(path):
-            return (path, [])
-    if os.path.isfile(text):
-        return (text, [])
-    suffix = '.mp4' if kind == 'video' else '.mp3' if kind == 'audio' else '.png'
-    temp_paths = []
-    if text.startswith('data:'):
-        if ';base64,' not in text:
-            raise HTTPException(status_code=400, detail='即梦参考素材 data URL 缺少 base64 数据')
-        header, encoded = text.split(';base64,', 1)
-        mime = header.split(':', 1)[1].split(';', 1)[0] if ':' in header else ''
-        suffix = mimetypes.guess_extension(mime) or suffix
-        fd, path = tempfile.mkstemp(prefix='jimeng_ref_', suffix=suffix)
-        with os.fdopen(fd, 'wb') as f:
-            f.write(base64.b64decode(encoded))
-        temp_paths.append(path)
-        return (path, temp_paths)
-    if text.startswith(('http://', 'https://')):
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0), follow_redirects=True) as client:
-            response = await client.get(text)
-            response.raise_for_status()
-            clean_path = urllib.parse.urlparse(text).path
-            suffix = os.path.splitext(clean_path)[1] or mimetypes.guess_extension(response.headers.get('content-type', '')) or suffix
-            fd, path = tempfile.mkstemp(prefix='jimeng_ref_', suffix=suffix)
-            with os.fdopen(fd, 'wb') as f:
-                f.write(response.content)
-            temp_paths.append(path)
-            return (path, temp_paths)
-    raise HTTPException(status_code=400, detail=f'即梦 CLI 只支持本地文件参考素材，无法读取：{text[:120]}')
 
 def apimart_video_reference_error(value: str) -> str:
     text = str(value or '').strip()

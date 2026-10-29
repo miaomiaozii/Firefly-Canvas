@@ -28,11 +28,3 @@ gemini
 ```
 
 首次运行会提示使用 Google 账号或 Gemini 凭据登录。
-
-## Jimeng CLI
-
-- 安装/更新：`CLI/windows/jimeng/install_jimeng_cli.bat`
-- 登录/检查：`CLI/windows/jimeng/login_jimeng_cli.bat`
-- WSL Ubuntu 辅助程序：`CLI/windows/jimeng/install_wsl_ubuntu.bat`
-
-根目录的 `.bat` 文件仅作为兼容启动器保留；CLI 仍通过线上服务生成内容。

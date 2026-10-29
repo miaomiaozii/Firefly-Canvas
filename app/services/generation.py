@@ -11,113 +11,6 @@ from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
 
-async def generate_jimeng_provider_image(prompt, size, model, reference_images=None, provider=None):
-    refs = [ref for ref in reference_images or [] if ref.get('url')]
-    temp_paths = []
-    try:
-        args = []
-        if refs:
-            image_paths = []
-            for ref in refs[:10]:
-                image_path, created = await _svc._main('jimeng_prepare_local_media')(ref.get('url'), 'image')
-                image_paths.append(_svc.jimeng_cli_path_arg(image_path))
-                temp_paths.extend(created)
-            model_version = jimeng_image_model_version(model, 'image2image')
-            args = ['image2image', f"--images={','.join(image_paths)}", f'--prompt={prompt}', f"--resolution_type={jimeng_image_resolution(model, size, 'image2image')}", f'--poll={jimeng_poll_seconds()}']
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        else:
-            model_version = jimeng_image_model_version(model, 'text2image')
-            args = ['text2image', f'--prompt={prompt}', f'--ratio={jimeng_ratio_from_size(size)}', f"--resolution_type={jimeng_image_resolution(model, size, 'text2image')}", f'--poll={jimeng_poll_seconds()}']
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        raw = await _svc.run_jimeng_cli(args, timeout=jimeng_poll_seconds() + 120)
-        urls = await _svc._main('jimeng_store_outputs')(raw, 'image')
-        return ({'type': 'url', 'value': urls[0]}, raw)
-    finally:
-        for path in temp_paths:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
-async def generate_jimeng_video(payload: CanvasVideoRequest, provider):
-    image_refs = [ref for ref in payload.images or [] if jimeng_video_ref_url(ref)]
-    video_refs = [url for url in payload.videos or [] if str(url or '').strip()]
-    audio_refs = [url for url in payload.audios or [] if str(url or '').strip()][:3]
-    duration = jimeng_video_duration(payload.duration, payload.model)
-    temp_paths = []
-    try:
-        if payload.multimodal or video_refs or audio_refs:
-            image_paths = []
-            video_paths = []
-            audio_paths = []
-            for ref in image_refs[:9]:
-                image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(ref), 'image')
-                temp_paths.extend(created)
-                image_paths.append(image_path)
-            for ref_url in video_refs[:3]:
-                video_path, created = await _svc._main('jimeng_prepare_local_media')(ref_url, 'video')
-                temp_paths.extend(created)
-                video_paths.append(video_path)
-            for ref_url in audio_refs:
-                audio_path, created = await _svc._main('jimeng_prepare_local_media')(ref_url, 'audio')
-                temp_paths.extend(created)
-                audio_paths.append(audio_path)
-            args = ['multimodal2video', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-            ratio = jimeng_video_ratio_arg(payload.aspect_ratio)
-            if ratio:
-                args.append(f'--ratio={ratio}')
-            jimeng_append_model_resolution_args(args, payload, include_model=True)
-            for image_path in image_paths:
-                args.append(f'--image={_svc.jimeng_cli_path_arg(image_path)}')
-            for video_path in video_paths:
-                args.append(f'--video={_svc.jimeng_cli_path_arg(video_path)}')
-            for audio_path in audio_paths:
-                args.append(f'--audio={_svc.jimeng_cli_path_arg(audio_path)}')
-        elif len(image_refs) >= 2:
-            first_frame = next((ref for ref in image_refs if jimeng_video_ref_role(ref) == 'first_frame'), None)
-            last_frame = next((ref for ref in image_refs if jimeng_video_ref_role(ref) == 'last_frame'), None)
-            if first_frame and last_frame:
-                first_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(first_frame), 'image')
-                temp_paths.extend(created)
-                last_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(last_frame), 'image')
-                temp_paths.extend(created)
-                args = ['frames2video', f'--first={_svc.jimeng_cli_path_arg(first_path)}', f'--last={_svc.jimeng_cli_path_arg(last_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-            else:
-                image_paths = []
-                for ref in image_refs:
-                    image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(ref), 'image')
-                    temp_paths.extend(created)
-                    image_paths.append(image_path)
-                args = ['multiframe2video', f"--images={','.join((_svc.jimeng_cli_path_arg(path) for path in image_paths))}", f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-        elif image_refs:
-            image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(image_refs[0]), 'image')
-            temp_paths.extend(created)
-            ratio = jimeng_video_ratio_arg(payload.aspect_ratio)
-            if ratio:
-                args = ['multimodal2video', f'--image={_svc.jimeng_cli_path_arg(image_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--ratio={ratio}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-            else:
-                args = ['image2video', f'--image={_svc.jimeng_cli_path_arg(image_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-        else:
-            args = ['text2video', f'--prompt={payload.prompt}', f'--duration={duration}', f"--ratio={payload.aspect_ratio or '16:9'}", f'--video_resolution={jimeng_video_resolution(payload.model, payload.resolution)}', f'--poll={jimeng_poll_seconds()}']
-            model_version = jimeng_video_model_version(payload.model)
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        raw = await _svc.run_jimeng_cli(args, timeout=jimeng_poll_seconds() + 180)
-        urls = await _svc._main('jimeng_store_outputs')(raw, 'video')
-        return {'videos': urls, 'task_id': jimeng_submit_id(raw) or None, 'raw': raw}
-    finally:
-        for path in temp_paths:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
 async def wait_for_image_task(client, task_id, provider=None):
     is_apimart = is_apimart_provider(provider)
     timeout = APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT
@@ -1530,8 +1423,6 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         return await generate_codex_provider_image(prompt, size, model, reference_images, provider)
     if is_gemini_cli_provider(provider):
         return await generate_gemini_cli_provider_image(prompt, size, model, reference_images, provider)
-    if is_jimeng_provider(provider):
-        return await generate_jimeng_provider_image(prompt, size, model, reference_images, provider)
     if is_runninghub_provider(provider):
         return await generate_runninghub_provider_image(prompt, size, model, reference_images, provider, image_parameters)
     if effective_protocol(provider, model) == 'gemini':
@@ -2166,10 +2057,6 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
         result = await _svc.build_online_image_result(payload)
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
-    except JimengPendingError as exc:
-        info = jimeng_pending_payload(exc)
-        with CANVAS_TASK_LOCK:
-            CANVAS_TASKS[task_id].update({'status': 'jimeng_pending', 'jimeng_pending': True, 'submit_id': exc.submit_id, 'kind': exc.kind, 'queue_info': exc.queue_info, 'message': info['message'], 'error': '', 'updated_at': time.time()})
     except Exception as exc:
         detail = getattr(exc, 'detail', None) or str(exc)
         status_code = getattr(exc, 'status_code', 500)
@@ -2448,7 +2335,7 @@ def kling_video_output_urls(raw):
     return urls or video_output_urls(raw)
 
 def project_video_candidate_inline_reference_kinds(provider: Mapping[str, Any], model: str) -> set[str]:
-    if is_runninghub_provider(provider) or is_jimeng_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
+    if is_runninghub_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
         return set()
     if is_volcengine_provider(provider):
         base_url = _svc.video_api_root(provider)
@@ -2467,7 +2354,7 @@ def project_video_candidate_execution_incompatible_parameters(provider: Mapping[
         wallet_key = str(provider.get('wallet_api_key') or '').strip() or _svc._main('runninghub_wallet_key_value')()
         if not wallet_key:
             add('api_key')
-    elif not is_jimeng_provider(provider):
+    else:
         if not _svc.video_api_root(provider):
             add('base_url')
         if not _svc._main('provider_env_key_value')(str(provider.get('id') or '')):
@@ -2513,7 +2400,6 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
     audio_count = len(payload.audios or [])
     if effective_protocol(provider, payload.model) not in VIDEO_EXECUTION_PROTOCOLS:
         add('protocol')
-    is_jimeng = is_jimeng_provider(provider)
     is_runninghub = is_runninghub_provider(provider)
     is_apimart = is_apimart_provider(provider)
     is_volcengine = is_volcengine_provider(provider)
@@ -2522,53 +2408,13 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
     is_yuli = is_yuli_provider(provider)
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
-    specialized = is_jimeng or is_runninghub or is_apimart or is_volcengine_direct or is_yuli or is_lingjing or is_agnes
+    specialized = is_runninghub or is_apimart or is_volcengine_direct or is_yuli or is_lingjing or is_agnes
     if (not specialized) and 'protocol' in incompatible:
         return incompatible
     if not specialized:
         return incompatible
     if quality != 'auto':
         add('quality')
-    if is_jimeng:
-        if payload.width is not None:
-            add('width')
-        if payload.height is not None:
-            add('height')
-        if size:
-            add('size')
-        low, high = jimeng_video_duration_range(payload.model)
-        if payload.duration < low or payload.duration > high:
-            add('duration')
-        if image_count > 9:
-            add('image_reference_count')
-        image_roles = [jimeng_video_ref_role(ref) for ref in payload.images or []]
-        if image_count > 2 and 'first_frame' in image_roles and ('last_frame' in image_roles) and (not payload.multimodal) and (not video_count) and (not audio_count):
-            add('image_reference_count')
-        if video_count > 3:
-            add('video_reference_count')
-        if audio_count > 3:
-            add('audio_reference_count')
-        if aspect_ratio and (not jimeng_video_ratio_arg(aspect_ratio)):
-            add('aspect_ratio')
-        if aspect_ratio not in {'', '16:9'} and image_count >= 2 and (not payload.multimodal) and (not video_count) and (not audio_count):
-            add('aspect_ratio')
-        if resolution and jimeng_video_resolution(payload.model, resolution).lower() != resolution:
-            add('resolution')
-        if payload.seed is not None:
-            add('seed')
-        if payload.enhance_prompt:
-            add('enhance_prompt')
-        if payload.enable_upsample:
-            add('enable_upsample')
-        if payload.watermark:
-            add('watermark')
-        if canvas_video_camera_fixed(payload):
-            add('camera_fixed')
-        if payload.return_last_frame:
-            add('return_last_frame')
-        if payload.generate_audio:
-            add('generate_audio')
-        return incompatible
     if is_runninghub:
         if payload.width is not None:
             add('width')
@@ -2769,9 +2615,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
         raise HTTPException(status_code=400, detail={'code': 'unsupported_video_adapter_parameters', 'message': str(provider.get('name') or provider['id']) + ' 不支持请求的参数'})
     adapter_label, adapter_ready = _svc._main('video_adapter_label')(payload.model, provider)
     if not adapter_ready:
-        raise HTTPException(status_code=400, detail=f"模型 {payload.model} 未适配（{adapter_label}）。可用适配器：官方-可灵/火山/即梦/RunningHub、中转站统一格式(veo3.1/wan 等)、OpenAI 兼容。请先在 API 设置中更换为已适配模型。")
-    if is_jimeng_provider(provider):
-        return await _svc._main('generate_jimeng_video')(payload, provider)
+        raise HTTPException(status_code=400, detail=f"模型 {payload.model} 未适配（{adapter_label}）。可用适配器：官方-可灵/火山/RunningHub、中转站统一格式(veo3.1/wan 等)、OpenAI 兼容。请先在 API 设置中更换为已适配模型。")
     if is_runninghub_provider(provider):
         try:
             return await generate_runninghub_video(payload, provider)
@@ -3132,7 +2976,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             if task_id and on_provider_task is not None:
                 try:
                     # #82：提交成功即持久化服务商任务标识，服务重启后可按 task_id 重轮询，避免重复计费。
-                    # 仅统一格式路径（APIMart/veo3/veo3.1/火山/玉玉/OpenAI 兼容）；专属适配器（可灵/即梦/RunningHub 等）后续补。
+                    # 仅统一格式路径（APIMart/veo3/veo3.1/火山/玉玉/OpenAI 兼容）；专属适配器（可灵/RunningHub 等）后续补。
                     await on_provider_task({
                         'provider_id': str(provider.get('id') or ''),
                         'provider_name': str(provider.get('name') or ''),

@@ -50,7 +50,7 @@ def test_is_vision_model():
     # Should be True for models the spec marks as vision-capable
     assert is_vision_model("gpt-4o") == True, "gpt-4o should support vision"
     assert is_vision_model("nano-banana-2") == True, "nano-banana-2 should support vision"
-    assert is_vision_model("seedance2.0") == True, "seedance2.0 should support vision"
+    assert is_vision_model("doubao-seedance-2-0-260128") == True, "seedance2.0 统一格式 ID should support vision"
     assert is_vision_model("gpt-image-2") == True, "gpt-image-2 supports image editing (JSON declares 'image' param)"
     print("OK: is_vision_model() for supported models")
     

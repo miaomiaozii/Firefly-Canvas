@@ -773,7 +773,6 @@ function clearSmartNodeTransientRunState(node, options={}){
     node.running = false;
     node.pending = 0;
     node.queued = false;
-    delete node.jimengPending;
     delete node.pendingTasks;
     delete node._runMetaTargetId;
     if(options.clearRunHistory){
@@ -2453,64 +2452,6 @@ function providerImageModels(providerId){
     const provider = providerId === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === providerId);
     return mergeSpecModels('image', orderedProviderModels(provider, 'image_models', 'image'), provider);
 }
-// 即梦图生图（挂了参考图）不支持 3.0/3.1，此时从模型下拉里隐藏它们。
-const JIMENG_IMAGE2IMAGE_UNSUPPORTED = ['3.0', '3.1'];
-function filterJimengImageModels(models){
-    if(settings.provider_id !== 'jimeng' || !jimengImageEditMode()) return models;
-    return (models || []).filter(m => !JIMENG_IMAGE2IMAGE_UNSUPPORTED.includes(String(m)));
-}
-let _jimengLastEditMode = null;
-let _jimengModelRefreshing = false;
-// 参考图增删导致即梦文生图/图生图切换时，重新渲染参数面板以更新模型下拉。
-function syncJimengModelPillForRefs(){
-    if(_jimengModelRefreshing) return;
-    if(settings.provider_id !== 'jimeng' || settings.engine !== 'api' || settings.apiKind === 'video'){
-        _jimengLastEditMode = null;
-        return;
-    }
-    const mode = jimengImageEditMode();
-    if(mode === _jimengLastEditMode) return;
-    _jimengLastEditMode = mode;
-    _jimengModelRefreshing = true;
-    try { scheduleDynamicParamsRefresh(80); } finally { _jimengModelRefreshing = false; }
-}
-// 即梦各视频指令支持的模型集合不同，按当前参考素材推断指令并过滤模型下拉。
-const JIMENG_SEEDANCE_VIDEO_MODELS = ['seedance2.0_vip', 'seedance2.0fast_vip', 'seedance2.0', 'seedance2.0fast'];
-const JIMENG_VIDEO_MODELS_BY_COMMAND = {
-    text2video: JIMENG_SEEDANCE_VIDEO_MODELS,
-    multimodal2video: JIMENG_SEEDANCE_VIDEO_MODELS,
-    image2video: ['3.0', '3.0fast', '3.0pro', '3.5pro', ...JIMENG_SEEDANCE_VIDEO_MODELS],
-    frames2video: ['3.0', '3.5pro', ...JIMENG_SEEDANCE_VIDEO_MODELS],
-};
-function jimengVideoCommand(){
-    const node = activeComposerNode() || selectedNode();
-    const refs = node ? visibleReferenceImagesFor(node) : [];
-    const imageRefs = imageRefsOnly(refs);
-    const hasVideoRef = videoRefsOnly(refs).length > 0 || Boolean(manualSmartVideoLink(settings));
-    if(settings.videoMultimodal || hasVideoRef) return 'multimodal2video';
-    if(imageRefs.length >= 2) return settings.videoUseFrameRoles ? 'frames2video' : 'multiframe2video';
-    if(imageRefs.length >= 1) return 'image2video';
-    return 'text2video';
-}
-function filterJimengVideoModels(models){
-    if(settings.videoProvider !== 'jimeng') return models;
-    const allowed = JIMENG_VIDEO_MODELS_BY_COMMAND[jimengVideoCommand()];
-    if(!allowed) return models; // multiframe2video 等：官方规格未知，不过滤
-    return (models || []).filter(m => allowed.includes(String(m)));
-}
-let _jimengLastVideoCommand = null;
-function syncJimengVideoModelPillForRefs(){
-    if(_jimengModelRefreshing) return;
-    if(settings.videoProvider !== 'jimeng' || settings.engine !== 'api' || settings.apiKind !== 'video'){
-        _jimengLastVideoCommand = null;
-        return;
-    }
-    const command = jimengVideoCommand();
-    if(command === _jimengLastVideoCommand) return;
-    _jimengLastVideoCommand = command;
-    _jimengModelRefreshing = true;
-    try { scheduleDynamicParamsRefresh(80); } finally { _jimengModelRefreshing = false; }
-}
 function sanitizeSmartApiSelection(target=settings){
     if(!target || typeof target !== 'object') return target;
     if(target.engine === 'volcengine'){
@@ -2547,7 +2488,7 @@ function modelscopeProvider(){
 function modelscopeImageModels(){
     return modelscopeProvider()?.image_models || [];
 }
-const DEFAULT_VIDEO_MODELS = ['veo3-fast','veo3','sora','runway','kling','pika','minimax-video','wan-v2','seedance-1.0-pro','jimeng-vide-3.0','jimeng-video-3.0-pro'];
+const DEFAULT_VIDEO_MODELS = ['veo3-fast','veo3','sora','runway','kling','pika','minimax-video','wan-v2','seedance-1.0-pro'];
 function videoApiProviders(){
     const fromConfig = (apiProviders || []).filter(p => p.enabled !== false && p.id !== 'volcengine' && (p.video_models || []).length);
     if(fromConfig.length) return fromConfig;
@@ -2912,7 +2853,7 @@ function renderDynamicParams(){
 function renderApiParams(){
     const providers = imageProviders();
     if(!settings.provider_id || !providers.some(p => p.id === settings.provider_id)) settings.provider_id = providers[0]?.id || '';
-    const models = filterJimengImageModels(providerImageModels(settings.provider_id));
+    const models = providerImageModels(settings.provider_id);
     if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
     // 切换平台/模型时保留用户已选的分辨率（记忆），normalizeApiSizeSettings 只会修正非法的 auto。
     normalizeApiSizeSettings('');
@@ -2930,7 +2871,7 @@ function renderApiParams(){
 function renderApiVideoParams(){
     const providers = videoApiProviders();
     if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || 'comfly';
-    const models = filterJimengVideoModels(providerVideoModels(settings.videoProvider));
+    const models = providerVideoModels(settings.videoProvider);
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
     dynamicParams.innerHTML = `
         ${renderVideoRoutingControl()}
@@ -2947,7 +2888,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
-        ${settings.videoProvider === 'jimeng' ? '' : renderVideoTrustedAssetControl()}
+        ${renderVideoTrustedAssetControl()}
     `;
 }
 function renderVolcengineParams(){
@@ -4002,13 +3943,13 @@ function specModelIds(kind){
     return Array.isArray(arr) ? arr : [];
 }
 // 取某模型在 spec 中的定义（参数选项/能力）。未适配返回 null。
-// 判断是否为通用 OpenAI 兼容 provider（非 codex/jimeng/runninghub/volcengine/gemini-cli 专属）。
+// 判断是否为通用 OpenAI 兼容 provider（非 codex/runninghub/volcengine/gemini-cli 专属）。
 // spec 模型是针对这类网关的；provider 专属入口沿用各自的模型来源。
 function isGenericOpenAIProvider(provider){
     if(!provider) return false;
     const proto = String(provider.protocol || 'openai').toLowerCase();
     const id = String(provider.id || '').toLowerCase();
-    const specific = ['codex','jimeng','runninghub','volcengine','gemini-cli'];
+    const specific = ['codex','runninghub','volcengine','gemini-cli'];
     return !specific.includes(proto) && !specific.includes(id);
 }
 // 将 spec 的适配模型合并进 provider 模型列表（additive：保留原序，补入缺失的 spec 模型）。
@@ -4870,7 +4811,7 @@ function smartNodeInFlight(node){
     // #145: agent-task 节点用 node.status（'queued'/'running'/'succeeded'/'failed'/'uncertain'/'planned'），
     // 不映射到 running/pending 字段，需单独判定。'planned' 未派发不算 in-flight。
     if(isSmartAgentTaskNode(node)) return node.status === 'queued' || node.status === 'running';
-    return Boolean(node && (node.running || node.pending || node.queued || node.jimengPending || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
+    return Boolean(node && (node.running || node.pending || node.queued || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
 }
 function smartNodeHasDisplayResult(node){
     return Boolean((node?.images || []).some(img => img?.url && !img.loopInputPreview));
@@ -4878,7 +4819,7 @@ function smartNodeHasDisplayResult(node){
 function smartNodeHasCompletedResult(node){
     if(!smartNodeHasDisplayResult(node)) return false;
     if(node?.runFinishedAt) return true;
-    return !node?.jimengPending && !smartPendingTasks(node).length && !smartGenerationSubmissions(node).length && !Number(node?.pending || 0) && !node?.queued;
+    return !smartPendingTasks(node).length && !smartGenerationSubmissions(node).length && !Number(node?.pending || 0) && !node?.queued;
 }
 function liveSmartNode(node){
     if(!node?.id) return node;
@@ -4890,7 +4831,6 @@ function clearSmartNodeBusyState(node){
     node.running = false;
     node.pending = 0;
     node.queued = false;
-    delete node.jimengPending;
     delete node.pendingTasks;
     return node;
 }
@@ -4917,7 +4857,7 @@ function completedDownstreamOutputForNode(sourceNode){
 }
 function clearSourceBusyStateIfDownstreamDone(sourceNode, options={}){
     if(!sourceNode || !smartNodeInFlight(sourceNode)) return false;
-    if(sourceNode.jimengPending || smartPendingTasks(sourceNode).length) return false;
+    if(smartPendingTasks(sourceNode).length) return false;
     if(!completedDownstreamOutputForNode(sourceNode)) return false;
     clearSmartNodeBusyState(sourceNode);
     if(!sourceNode.runFinishedAt){
@@ -4939,7 +4879,7 @@ function hideCompletedRunTimers(){
     let changed = false;
     (canvasState.nodes || []).forEach(node => {
         if(!node || node.type === NODE_TYPE_PROMPT) return;
-        if(node.pending || node.running || node.jimengPending || !node.runFinishedAt || node.runTimerHidden) return;
+        if(node.pending || node.running || !node.runFinishedAt || node.runTimerHidden) return;
         node.runTimerHidden = true;
         changed = true;
     });
@@ -5014,8 +4954,7 @@ function smartNodeUsesGenerationMerge(node){
         || Array.isArray(node.generationSubmissions)
         || Object.prototype.hasOwnProperty.call(node, 'pending')
         || Object.prototype.hasOwnProperty.call(node, 'running')
-        || Object.prototype.hasOwnProperty.call(node, 'queued')
-        || Object.prototype.hasOwnProperty.call(node, 'jimengPending');
+        || Object.prototype.hasOwnProperty.call(node, 'queued');
 }
 function markNodePositionsLocallyUpdated(group){
     // #165: once a drag is released the new position only exists locally until
@@ -5148,7 +5087,6 @@ function applyMergedServerCanvas(serverCanvas){
     // #192: 只有合并真正带来了更新的状态才强制历史 rail 重建；no-op 合并不替换 rail 的 DOM。
     if(remoteStateNewer && smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
-    resumeJimengPendingNodes();
     return true;
 }
 async function mergeReloadCanvasNow(){
@@ -6568,7 +6506,6 @@ async function loadCanvas(){
         if(cleanedDetachedInputs || recoveredLoopOutputs) scheduleSave();
         resumeConversationTasks();
         resumeSmartPendingTasks();
-        resumeJimengPendingNodes();
         // #197: replay gate requests whose persisted "not-yet-sent" mark survived the
         // reload (clear-on-send: the mark is removed from disk only after the fetch
         // fires; an absent mark means already sent — the gate's own recovery path picks
@@ -8875,9 +8812,6 @@ function nodeBodyHtml(node, layout){
     if(node.type === NODE_TYPE_LOOP) return smartLoopBodyHtml(node);
     if(node.type === NODE_TYPE_LOCAL_EDIT) return localEditBodyHtml(node);
     const imgs = (node.images || []).map(imageForDisplay);
-    if(node.jimengPending && node.jimengPending.submitId && imgs.length === 0){
-        return jimengPendingBodyHtml(node, layout);
-    }
     const recoverTask = smartRecoverableImageTask(node);
     if(recoverTask && imgs.length === 0){
         return imageTaskRecoverBodyHtml(node, recoverTask, layout);
@@ -8927,19 +8861,6 @@ function nodeBodyHtml(node, layout){
         <span class="upload-node-sub">${escapeHtml(tr('smart.uploadNodeHint'))}</span>
     </div>`;
 }
-function jimengPendingBodyHtml(node, layout){
-    const jp = node.jimengPending || {};
-    const querying = Boolean(jp.querying);
-    const queueText = jimengQueueText(jp.queueInfo);
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
-        <div class="jimeng-pending-overlay">
-            <div class="jimeng-pending-spinner"><i data-lucide="loader-2"></i></div>
-            <div class="jimeng-pending-text">${escapeHtml(queueText)}</div>
-            <div class="jimeng-pending-sub">${escapeHtml(tr('smart.taskNotLost'))}</div>
-            <button class="jimeng-pending-query" type="button" data-jimeng-query="${escapeAttr(node.id)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
-        </div>
-    </div>`;
-}
 function smartRecoverableImageTask(node){
     const fromPending = smartPendingTasks(node).find(task => task.failed && task.recoverTaskId) || null;
     if(fromPending) return fromPending;
@@ -8968,12 +8889,12 @@ function imageTaskRecoverBodyHtml(node, task, layout){
         + (Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks.filter(item => item.failed && item.recoverTaskId).length : 0);
     const title = querying ? tr('smart.querying') : tr('smart.taskNotLost');
     const sub = failedCount > 1 ? trf('smart.moreTasksToQuery', {n: failedCount}) : trf('smart.taskIdLabel', {id: task.recoverTaskId || ''});
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
-        <div class="jimeng-pending-overlay">
-            <div class="jimeng-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
-            <div class="jimeng-pending-text">${escapeHtml(title)}</div>
-            <div class="jimeng-pending-sub">${escapeHtml(sub)}</div>
-            <button class="jimeng-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
+    return `<div class="task-pending-cell loading-cell single" style="width:100%;height:100%">
+        <div class="task-pending-overlay">
+            <div class="task-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
+            <div class="task-pending-text">${escapeHtml(title)}</div>
+            <div class="task-pending-sub">${escapeHtml(sub)}</div>
+            <button class="task-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
         </div>
     </div>`;
 }
@@ -9175,7 +9096,7 @@ function nodeRunElapsedMs(node){
 }
 function runTimePillHtml(node){
     if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) return '';
-    const running = Boolean(node.pending || node.running || node.jimengPending);
+    const running = Boolean(node.pending || node.running);
     if(!running && !node.runFinishedAt) return '';
     const elapsed = nodeRunElapsedMs(node);
     // Bug fix: 已完成但耗时为 0 的节点（如重试/重新生成时 runStartedAt 与 runFinishedAt 相同）不显示计时器
@@ -9184,13 +9105,13 @@ function runTimePillHtml(node){
     return `<span class="run-time-pill${cls}" data-run-timer="${escapeHtml(node.id)}">${formatRunDuration(elapsed)}</span>`;
 }
 function hideRunTimerForNode(node){
-    if(!node || node.runTimerHidden || node.pending || node.running || node.jimengPending || !node.runFinishedAt) return false;
+    if(!node || node.runTimerHidden || node.pending || node.running || !node.runFinishedAt) return false;
     node.runTimerHidden = true;
     scheduleStateSave();
     return true;
 }
 function refreshRunTimerPills(){
-    const active = canvasState.nodes.some(n => n.type !== NODE_TYPE_PROMPT && !n.runTimerHidden && (n.pending || n.running || n.jimengPending || n.runFinishedAt));
+    const active = canvasState.nodes.some(n => n.type !== NODE_TYPE_PROMPT && !n.runTimerHidden && (n.pending || n.running || n.runFinishedAt));
     document.querySelectorAll('[data-run-timer]').forEach(el => {
         const node = canvasState.nodes.find(n => n.id === el.dataset.runTimer);
         if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) {
@@ -9198,7 +9119,7 @@ function refreshRunTimerPills(){
             return;
         }
         el.textContent = formatRunDuration(nodeRunElapsedMs(node));
-        el.classList.toggle('done', Boolean(!node.pending && !node.running && !node.jimengPending && node.runFinishedAt));
+        el.classList.toggle('done', Boolean(!node.pending && !node.running && node.runFinishedAt));
     });
     if(active && !runTimerInterval) runTimerInterval = setInterval(refreshRunTimerPills, 1000);
     if(!active && runTimerInterval){ clearInterval(runTimerInterval); runTimerInterval = null; }
@@ -9257,12 +9178,11 @@ function render(){
         const isSmartGroup = node.type === NODE_TYPE_GROUP;
         const isCompactMember = isSmartGroupCompactMember(node);
         const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
-        const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
-        const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
-        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
+        const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
+        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued;
         const isHistory = isHistoryGroupNode(node);
         const isGroup = isImageNode && imgs.length > 1;
-        const isPending = Boolean(node.pending || isQueued || isJimengPending);
+        const isPending = Boolean(node.pending || isQueued);
         const body = nodeBodyHtml(node, layout);
         // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
         const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
@@ -9281,7 +9201,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -10820,13 +10740,6 @@ function bindNodeEvents(){
                 runSmartGroupToolbarAction(btn.dataset.nodeId || id, btn.dataset.smartGroupAction);
             });
         });
-        el.querySelectorAll('[data-jimeng-query]').forEach(btn => {
-            btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
-            btn.addEventListener('click', e => {
-                e.preventDefault(); e.stopPropagation();
-                queryJimengNow(btn.dataset.jimengQuery);
-            });
-        });
         el.querySelectorAll('[data-image-task-query]').forEach(btn => {
             btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
             btn.addEventListener('click', e => {
@@ -12288,8 +12201,6 @@ function renderInputPromptPreview(node){
 }
 function renderInputThumbsRow(node){
     if(!inputThumbsRow) return;
-    syncJimengModelPillForRefs();
-    syncJimengVideoModelPillForRefs();
     const dedup = node ? visibleReferenceImagesFor(node) : [];
     const manualRefKeys = new Set(manualReferenceImagesFor(node).map(img => inputRefKey(img)));
     const addActive = mentionInsertMode === 'manual-ref';
@@ -13985,7 +13896,7 @@ async function runGeneration(){
                 }
                 await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
                 const completedVideoNode = liveNode(pendingNode);
-                if(completedVideoNode.jimengPending || smartRecoverableImageTask(completedVideoNode)){
+                if(smartRecoverableImageTask(completedVideoNode)){
                     if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                     clearPromptInput({preserveDraft:true});
                     settings = previousSettings;
@@ -14054,7 +13965,7 @@ async function runGeneration(){
             }
             await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
             const completedImageNode = liveNode(pendingNode);
-            if(completedImageNode.jimengPending || smartRecoverableImageTask(completedImageNode)){
+            if(smartRecoverableImageTask(completedImageNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -14095,12 +14006,6 @@ async function runGeneration(){
             pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
             scheduleSave();
             toast((e.message || tr('smart.submitUnknownRecover')).slice(0, 160));
-            return;
-        }
-        if(handleJimengPendingSignal(pendingNode, e)){
-            if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            delete pendingNode._runMetaTargetId;
-            clearPromptInput({preserveDraft:true});
             return;
         }
         const remainingTasks = smartPendingTasks(pendingNode);

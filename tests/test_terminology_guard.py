@@ -170,8 +170,6 @@ WHITELIST = [
     # "logs" in legitimate contexts (directory paths, legacy keys)
     ("CLI/windows/gemini/install_gemini_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("CLI/windows/openai/install_openai_codex_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
-    ("tools/jimeng_cli_install.ps1", "logs (as history field)", "PowerShell $logDir variable"),
-    ("tools/jimeng_cli_login.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("firefly_diagnostics.py", "logs (as history field)", "Diagnostics log directory path"),
     ("firefly_projects.py", "logs (as history field)", "Legacy logs key compatibility"),
     # fal.ai 队列协议的上游响应字段：status 返回体的 logs 是服务商契约字段名，不是画布历史字段

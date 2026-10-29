@@ -387,7 +387,7 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
             raise
 
         last_status = status
-        if status["status"] in ("succeeded", "failed", "timeout", "cancelled", "jimeng_pending"):
+        if status["status"] in ("succeeded", "failed", "timeout", "cancelled"):
             return status
 
         # Poll with backoff

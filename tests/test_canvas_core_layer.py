@@ -167,19 +167,20 @@ REVERSE_REFERENCE_CEILINGS = {
     # 括号里是「旧（少算） -> 修正后」。每个增量都能归因到正则修正，无一个是真回归：
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
-    "canvas-generation-cascade.js": 153,  # 147 -> 155 -> 153：#246 candidatePoolPosition 改 freeSpot 右移扫描，
-    # 删旧「碰撞下移」循环，净 -2 核心引用（合理下降，棘轮随之收紧）。
+    "canvas-generation-cascade.js": 152,  # 147 -> 155 -> 153 -> 152：#236 即梦退役删
+    # cascade 里即梦相关发图路径引用，净 -1 核心引用（2026-10-29 实测，棘轮随之收紧）。
     "canvas-media-history.js": 103,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 116,  # 103 -> 113（正则修正）-> 115：bf1a04d 两条发图路径各新增
-    # 2026-10-28 实测：#254 runEachImageGeneration 新增 1 处核心引用（canvasCore.nodeRect 落点），115->116。
+    "canvas-generation-tasks.js": 101,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
+    # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
     # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
     # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
-    "canvas-image-editor.js": 89,  # 87 -> 89
+    "canvas-image-editor.js": 87,  # 87 -> 89 -> 87：#236 即梦退役删 jimengImageEditMode 等
+    # 即梦编辑态引用，净 -2 核心引用（2026-10-29 实测），棘轮随之收紧。
     "canvas-node-ops.js": 71,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
     # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。2026-10-29 实测 68->71：#246 freeSpot
     # 落点接线（createNodeFromMenu 扫描锚点 + 碰撞盒），canvasCore.mediaNodeDefaultScale×1 /
