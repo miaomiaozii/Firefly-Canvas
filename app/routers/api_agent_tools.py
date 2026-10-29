@@ -233,6 +233,13 @@ async def canvas_edit_crop(project_id: str, request: Request, x_agent_project: s
     return await crop_node_image_core(project_id, body.get("node_id"), body.get("rect"))
 
 
+@router.post("/batch_edit")
+async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）。"""
+    body = await request.json()
+    return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"))
+
+
 # =============================================================================
 # Core (Request-free) implementations — shared by the HTTP endpoints above and
 # the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
@@ -896,6 +903,35 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
         "asset_id": str(picked["asset_id"]),
         "name": str(picked.get("name") or record.get("name") or ""),
     }
+
+
+BATCH_EDIT_MAX_NODES = 10
+
+
+async def batch_edit_core(project_id: str, node_ids, prompt) -> dict:
+    """#266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成，结果放各自旁边。
+
+    非本地处理：逐节点把 batch prompt 写入节点（upsert），再走既有 trigger_generation_core
+    通路（独立 CANVAS_TASKS 任务 + 后台运行，Spike 已验证连续 N 次调用安全），消耗 N 个生成任务。
+    错误文案带下一步建议（票面规范）。
+    """
+    _validate_project(project_id)
+    if not isinstance(node_ids, list) or not node_ids or not all(isinstance(n, str) and n for n in node_ids):
+        raise HTTPException(status_code=400, detail="node_ids 必须是非空节点 ID 数组；先调用 canvas.list_nodes 获取节点 ID。")
+    if len(node_ids) > BATCH_EDIT_MAX_NODES:
+        raise HTTPException(status_code=400, detail=f"node_ids 单次最多 {BATCH_EDIT_MAX_NODES} 个节点（本次 {len(node_ids)}）；请拆成多批重试。")
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt 必须是非空字符串；请填写批量 prompt 后重试。")
+    tasks = []
+    for node_id in node_ids:
+        node = _find_node_for_view(project_id, node_id)
+        node["prompt"] = prompt
+        node["updated_at"] = _app_main.now_ms()
+        await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+        triggered = await trigger_generation_core(project_id, node_id)
+        tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
+    return {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}
 
 
 def _node_image_for_edit(node: dict, node_id: str) -> dict:

@@ -47,6 +47,7 @@ from app.routers.api_agent_tools import (
     create_edge_core,
     create_node_core,
     crop_node_image_core,
+    batch_edit_core,
     delete_edge,
     delete_media,
     delete_node,
@@ -312,6 +313,8 @@ TOOLS = [
     {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
     # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
+    # #266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成（调既有生成通路，非本地处理；结果放各自旁边）
+    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
     {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120"}}, "required": ["task_id"]}},
@@ -424,6 +427,14 @@ async def _impl_edit_crop(project_id, agent_node_id, args):
         raise ValueError(str(exc.detail)) from exc
 
 
+async def _impl_batch_edit(project_id, agent_node_id, args):
+    # #266 §59.3：N 节点 + 一句 prompt = N 次生成（调既有生成通路；与 generate.trigger 一致不走确认门）
+    try:
+        return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
 TOOL_IMPLS = {
     "canvas.list_nodes": _impl_list_nodes,
     "canvas.get_node": _impl_get_node,
@@ -444,6 +455,7 @@ TOOL_IMPLS = {
     "canvas.view": _impl_view,
     "canvas.view_media": _impl_view_media,
     "canvas.edit_crop": _impl_edit_crop,
+    "canvas.batch_edit": _impl_batch_edit,
 }
 
 

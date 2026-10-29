@@ -283,6 +283,27 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    // #266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）
+    pi.registerTool({
+        name: "canvas.batch_edit",
+        description:
+            "Batch generation: write one prompt to up to 10 selected nodes and trigger one generation per node (consumes external generation, unlike local edit_*; results stay on each node). Returns per-node task_ids — poll generate.status or wait with generate.wait",
+        parameters: Type.Object({
+            node_ids: Type.Array(Type.String(), { description: "Node IDs to generate on (1..10)" }),
+            prompt: Type.String({ description: "The batch prompt, written to every node" }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit`, "POST", {
+                node_ids: params.node_ids,
+                prompt: params.prompt,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",
