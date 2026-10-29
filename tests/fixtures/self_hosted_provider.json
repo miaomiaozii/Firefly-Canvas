@@ -16,7 +16,8 @@
         "media_types": ["image"],
         "max_reference_images": 3,
         "arbitrary_size": true,
-        "arbitrary_aspect_ratio": true
+        "arbitrary_aspect_ratio": true,
+        "arbitrary_resolution": true
       }
     },
     "chat_models": ["qwen2.5-72b-instruct"],

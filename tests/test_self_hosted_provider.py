@@ -199,5 +199,42 @@ class SelfHostedProviderImageEndToEndTests(SelfHostedProviderBase):
         self.assertEqual(body['size'], '1024x1024')
 
 
+class SelfHostedProviderCapabilityRegistrationTests(SelfHostedProviderBase):
+    """第三条熔断线：model_specs 能力登记 + 契约族声明表对齐。
+
+    能力登记走 provider 记录的 image_model_capabilities（单一事实来源，禁
+    _inferred 兑底冒充）；全局 model_specs.json 只登记第三方适配模型，
+    私有模型条目属于方案 §6 未决问题 3（待维护者裁定），本票不写入。
+    """
+
+    def test_capability_registration_routes_pinned_provider(self):
+        from firefly_generation import ImageGenerationRequest, route_image_generation
+
+        provider = self.self_hosted()
+        request = ImageGenerationRequest(
+            prompt='a cat', size='1024x1024', width=1024, height=1024,
+            aspect_ratio='1:1', resolution='',
+        )
+        route = route_image_generation(request, [provider], provider_id=PROVIDER_ID, model=IMAGE_MODEL)
+        self.assertEqual(route.provider_id, PROVIDER_ID)
+        self.assertEqual(route.model, IMAGE_MODEL)
+        self.assertEqual(route.protocol, 'openai')
+        self.assertEqual(route.adapter, 'http')
+
+    def test_capability_violation_is_reported_not_silently_passed(self):
+        # 能力声明必须被路由层真正执行：max_reference_images=3 之外 → 不兼容
+        from firefly_generation import ImageGenerationRequest, route_image_generation
+
+        provider = self.self_hosted()
+        request = ImageGenerationRequest(
+            prompt='a cat', size='1024x1024', width=1024, height=1024,
+            aspect_ratio='1:1', resolution='',
+            reference_asset_ids=('a1', 'a2', 'a3', 'a4'),
+        )
+        with self.assertRaises(Exception) as ctx:
+            route_image_generation(request, [provider], provider_id=PROVIDER_ID, model=IMAGE_MODEL)
+        self.assertIn('reference_count', str(getattr(ctx.exception, 'incompatible_parameters', str(ctx.exception))))
+
+
 if __name__ == '__main__':
     unittest.main()
