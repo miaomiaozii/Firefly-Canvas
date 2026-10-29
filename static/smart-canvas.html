@@ -25,6 +25,8 @@
     <script src="/static/js/global-preferences.js?v=20261028.225000.0001"></script>
     <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20261028.225000.0001">
     <link rel="stylesheet" href="/static/css/smart-canvas.css?v=20261028.225000.0001">
+    <!-- #272 画布批注层（独立 CSS，不动 smart-canvas.css） -->
+    <link rel="stylesheet" href="/static/css/canvas-annotations.css?v=20261028.225000.0001">
     <link rel="stylesheet" href="/static/css/excel-import.css?v=20261028.225000.0001">
 </head>
 <body>
@@ -613,6 +615,8 @@
     <script src="/static/js/canvas-download.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-media-history.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-undo.js?v=20261028.225000.0001"></script>
+    <!-- #272 画布批注层（先于 smart-canvas.js 加载；逻辑独立，render/loadCanvas 各接线 1 行） -->
+    <script src="/static/js/canvas-annotations.js?v=20261028.225000.0001"></script>
     <script src="/static/js/canvas-node-ops.js?v=20261028.225000.0001"></script>
     <script src="/static/js/escape-stack.js?v=20261028.225000.0001"></script>
     <!-- #255 分数坐标骨架（先于 image-editor 加载，editor 接线用） -->

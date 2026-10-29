@@ -1,0 +1,34 @@
+/* 画布批注层（issue #272；#259 产品决策：批注=画布可持久对象）。
+   .image-node 是 position:absolute + overflow:visible —— anno-layer 绝对定位铺满节点
+   （inset:0），气泡按节点内归一化坐标 x/y 定位，随画板移动/缩放走。
+   与 #262 任务中心 UI 的冲突面：本文件独立，不动 smart-canvas.css。 */
+
+.image-node .anno-layer { position:absolute; inset:0; z-index:30; pointer-events:none; }
+.image-node .anno-layer > * { pointer-events:auto; }
+
+/* 钉按钮：图片节点右上角（hover 显形），top 上移出节点边缘避开 .node-head .node-delete */
+.anno-pin { position:absolute; top:-11px; right:8px; z-index:32; width:22px; height:22px; padding:0; border-radius:50%; border:1px solid var(--line); background:var(--panel); color:var(--muted); box-shadow:0 6px 18px var(--shadow); backdrop-filter:blur(10px); cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; line-height:1; opacity:0; transform:scale(.85); transition:opacity .14s ease, transform .14s ease, color .14s ease, border-color .14s ease; }
+.image-node:hover .anno-pin, .anno-pin:focus-visible { opacity:1; transform:scale(1); }
+.anno-pin:hover { color:var(--strong); border-color:var(--strong); }
+
+/* 批注气泡：节点内 (x%, y%)，锚点圆点 + 截断文本 + hover 删除钮 */
+.anno-bubble { position:absolute; transform:translate(-5px, -50%); max-width:190px; display:flex; align-items:center; gap:5px; padding:3px 18px 3px 4px; border-radius:999px; background:color-mix(in srgb, var(--panel) 94%, transparent); border:1px solid var(--line); box-shadow:0 8px 22px var(--shadow); backdrop-filter:blur(10px); font-size:11px; font-weight:750; color:var(--text); cursor:pointer; white-space:nowrap; }
+.anno-bubble:hover { border-color:var(--strong); }
+.anno-bubble:focus-visible { outline:2px solid var(--strong); outline-offset:1px; }
+.anno-bubble-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; background:var(--strong); }
+.anno-bubble-text { overflow:hidden; text-overflow:ellipsis; }
+.anno-bubble.anno-converted { opacity:.62; }
+.anno-bubble.anno-converted .anno-bubble-dot { background:var(--muted); }
+.anno-bubble-del { position:absolute; right:3px; top:50%; transform:translateY(-50%); width:15px; height:15px; padding:0; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:13px; font-weight:800; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity .12s ease, color .12s ease, background .12s ease; }
+.anno-bubble:hover .anno-bubble-del, .anno-bubble:focus-within .anno-bubble-del { opacity:1; }
+.anno-bubble-del:hover { color:var(--strong); background:var(--soft); }
+
+/* 批注编辑器（节点内小弹层；Ctrl/⌘+Enter 保存，Esc 取消） */
+.anno-editor { position:absolute; z-index:40; width:200px; display:flex; flex-direction:column; gap:6px; padding:8px; border-radius:12px; background:var(--panel); border:1px solid var(--line); box-shadow:0 16px 40px var(--shadow); backdrop-filter:blur(14px); }
+.anno-editor textarea { width:100%; min-height:56px; max-height:140px; resize:vertical; border:1px solid var(--line); border-radius:8px; background:var(--soft); color:var(--text); font-size:12px; font-weight:600; line-height:1.5; padding:6px 8px; font-family:inherit; }
+.anno-editor textarea:focus { outline:none; border-color:var(--strong); }
+.anno-editor-actions { display:flex; gap:6px; justify-content:flex-end; }
+.anno-editor-actions button { height:24px; padding:0 10px; border-radius:999px; border:1px solid var(--line); background:transparent; color:var(--muted); font-size:11px; font-weight:750; cursor:pointer; transition:color .12s ease, border-color .12s ease; }
+.anno-editor-actions button:hover { color:var(--strong); border-color:var(--strong); }
+.anno-editor-actions .anno-editor-save { background:var(--strong); border-color:var(--strong); color:var(--panel); }
+.anno-editor-actions .anno-editor-save:hover { color:var(--panel); opacity:.88; }

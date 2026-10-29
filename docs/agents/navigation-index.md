@@ -115,6 +115,7 @@
 | `canvas-download.js` | 下载层：接收响应 blob、与 Content-Length 对账、落盘与按体积给撤销窗口（#223 不再静默产出 0 字节包；#225 回执回传） | `tests/canvas_module_units/test-canvas-download.mjs` |
 | `canvas-media-history.js` | 项目媒体与历史抽屉 | `tests/history_drawer_browser.py`、`tests/test_creative_history_experience.py` |
 | `canvas-undo.js` | 撤销/重做 | `tests/undo_redo_browser.py` |
+| `canvas-annotations.js` | 画布批注层（issue #272；#259 产品决策：批注=可持久画布对象）：图片节点批注钉/气泡/编辑器，锚定 node_id + 节点内归一化坐标 x/y∈[0,1]（随画板走）；持久化走 ops.db anno_* 租户（刷新恢复、可撤销——annotations 进 undo 快照）；孤儿批注（节点已删）隐藏不删库 | `tests/canvas_module_units/test-canvas-annotations.mjs` |
 | `canvas-node-ops.js` | 节点增删、替换、分组等单节点操作 | `tests/node_replace_browser.py`、`tests/canvas_interactions_browser.py` |
 | `canvas-geometry.js` | 分数坐标（0..1 公共坐标）骨架：像素↔分数互转、矩形归一化、even-odd 点-多边形命中（自研；#255 票面所引 ComfyArt `utils.ts` 在参考仓库中不存在） | `tests/canvas_module_units/test-canvas-geometry.mjs` |
 | `canvas-placement.js` | #246 freeSpot 落点扫描纯函数：从锚点向右扫描首个无碰撞空位（碰撞 → x = 碰撞盒 maxX + GAP(40)，200 步上限）+ 批量行排 `rowSpots`（ComfyArt `src/jobs.ts:231-243/:115-119` 算法移植）；createNodeFromMenu/候选池/素材粘贴的落点接线 | `tests/canvas_module_units/test-canvas-placement.mjs` |
