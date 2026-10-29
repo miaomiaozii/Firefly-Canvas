@@ -1,0 +1,38 @@
+[
+  {
+    "id": "self_hosted",
+    "name": "自有服务器（OpenAI 兼容）",
+    "base_url": "http://127.0.0.1:8318/v1",
+    "protocol": "openai",
+    "image_request_mode": "openai",
+    "image_generation_endpoint": "",
+    "image_edit_endpoint": "",
+    "video_generation_endpoint": "",
+    "enabled": true,
+    "primary": false,
+    "image_models": ["flux-dev"],
+    "image_model_capabilities": {
+      "flux-dev": {
+        "media_types": ["image"],
+        "max_reference_images": 3,
+        "arbitrary_size": true,
+        "arbitrary_aspect_ratio": true,
+        "arbitrary_resolution": true
+      }
+    },
+    "chat_models": ["qwen2.5-72b-instruct"],
+    "chat_audio_input": false,
+    "video_models": [],
+    "video_model_capabilities": {},
+    "model_names": {},
+    "model_protocols": {},
+    "model_request_modes": {},
+    "recommended_models": {},
+    "available_models": {
+      "image_models": ["flux-dev"],
+      "chat_models": ["qwen2.5-72b-instruct"],
+      "video_models": []
+    },
+    "model_selection_version": 1
+  }
+]
