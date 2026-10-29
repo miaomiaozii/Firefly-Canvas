@@ -67,6 +67,33 @@ def crop_rect(image: Image.Image | bytes, rect: Sequence[int]) -> Image.Image:
     return source.crop((left, top, right, bottom))
 
 
+ROTATE_ANGLES = (90, 180, 270)
+FLIP_DIRECTIONS = ("horizontal", "vertical")
+
+
+def rotate_image(image: Image.Image | bytes, angle: int) -> Image.Image:
+    """#266b canvas.edit_rotate: 逆时针旋转 90/180/270（PIL transpose 语义）；其余角度拒绝。"""
+    source = as_rgba(image)
+    try:
+        angle = int(angle)
+    except (TypeError, ValueError):
+        raise ValueError(f"rotate angle must be one of {ROTATE_ANGLES}, got {angle!r}") from None
+    if angle not in ROTATE_ANGLES:
+        raise ValueError(f"rotate angle must be one of {ROTATE_ANGLES}, got {angle}")
+    constant = {90: Image.ROTATE_90, 180: Image.ROTATE_180, 270: Image.ROTATE_270}[angle]
+    return source.transpose(constant)
+
+
+def flip_image(image: Image.Image | bytes, direction: str) -> Image.Image:
+    """#266b canvas.edit_flip: horizontal=左右镜像 / vertical=上下镜像；其余方向拒绝。"""
+    source = as_rgba(image)
+    direction = str(direction or "").strip().lower()
+    if direction not in FLIP_DIRECTIONS:
+        raise ValueError(f"flip direction must be one of {FLIP_DIRECTIONS}, got {direction!r}")
+    constant = Image.FLIP_LEFT_RIGHT if direction == "horizontal" else Image.FLIP_TOP_BOTTOM
+    return source.transpose(constant)
+
+
 def _blurred_mask(mask: Image.Image, feather_radius: float) -> Image.Image:
     radius = max(0.0, float(feather_radius or 0))
     return mask.filter(ImageFilter.GaussianBlur(radius)) if radius else mask
