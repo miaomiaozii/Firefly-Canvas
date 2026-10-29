@@ -173,8 +173,11 @@ REVERSE_REFERENCE_CEILINGS = {
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 101,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
+    "canvas-generation-tasks.js": 103,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
     # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
+    # 101 -> 103：#237 stop≠error 中性终态在本模块新增 scheduleStateSave/scheduleSave/
+    # render/trf 引用 +17，#236 合入后净 -15，结算 103（origin/main 实测 2026-10-29，
+    # 棘轮同步——de4e9c5 定 101 后 #237/db2e81f 合入未同步，main 存量红）。
     # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
