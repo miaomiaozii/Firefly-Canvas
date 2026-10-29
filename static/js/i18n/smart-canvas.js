@@ -869,4 +869,14 @@
         "smart.agentAttachUnsupported": { zh: "附件 {name}：类型暂不支持（图片/视频/音频）", en: "Attachment {name}: unsupported type (image/video/audio)" },
         "smart.agentAttachFailed": { zh: "附件 {name} 处理失败：{err}", en: "Failed to process attachment {name}: {err}" }
     });
+
+    // #272 画布批注层（钉/气泡/编辑器）
+    window.StudioI18n.register({
+        "smart.annoPin": { zh: "添加批注", en: "Add annotation" },
+        "smart.annoPlaceholder": { zh: "写批注…（可逐条转为改图任务）", en: "Write an annotation… (each can become an edit task)" },
+        "smart.annoSave": { zh: "保存", en: "Save" },
+        "smart.annoCancel": { zh: "取消", en: "Cancel" },
+        "smart.annoDelete": { zh: "删除批注", en: "Delete annotation" },
+        "smart.annoToastFail": { zh: "批注保存失败", en: "Failed to save annotation" }
+    });
 })();

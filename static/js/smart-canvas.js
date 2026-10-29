@@ -6519,6 +6519,8 @@ async function loadCanvas(){
         // #251：画布加载完成后恢复跨刷新的 undo/redo 栈（ops.db undo_snapshots 租户；
         // 逻辑全在 canvas-undo.js，这里只接线；fire-and-forget，不阻塞渲染）。
         void restorePersistedUndoStack();
+        // #272：画布加载完成后恢复画布批注（ops.db anno_* 租户；逻辑在 canvas-annotations.js；fire-and-forget）
+        void restorePersistedAnnotations();
         return true;
     } catch(e) {
         toast(tr('smart.toastCanvasFail'));
@@ -9249,6 +9251,8 @@ function render(){
     measureSmartNodeImages();
     scheduleSmartNodeFloatingMenuPosition();
     refreshRunTimerPills();
+    // #272：画布批注层重绘（钉/气泡；逻辑全在 canvas-annotations.js，这里只接线）
+    renderAnnotationLayer();
     return;
     world.innerHTML = '';
     if(composerEl) world.appendChild(composerEl);

@@ -40,7 +40,9 @@ function snapshotForUndo(){
         connections: JSON.parse(JSON.stringify(canvas?.connections || [])),
         selectedId: canvasState.selectedId,
         selectedIds: canvasState.selectedIds.slice(),
-        selectedImage: {...canvasState.selectedImage}
+        selectedImage: {...canvasState.selectedImage},
+        // #272：批注=可持久画布对象 → 进 undo 快照（可撤销）；持久化走 anno_* 租户，不进 canvas.json。
+        annotations: (canvasState.annotations || []).map(a => ({...a}))
     };
 }
 
@@ -90,6 +92,8 @@ async function performUndo(){
         canvasState.selectedId = snap.selectedId;
         canvasState.selectedIds = snap.selectedIds;
         canvasState.selectedImage = snap.selectedImage;
+        // #272：批注随 undo 快照恢复（render() 内的 renderAnnotationLayer 会重绘）
+        canvasState.annotations = (snap.annotations || []).slice();
         canvasState.activeComposerSubject = null;
         canvasState.lastComposerNodeId = '';
         render();
@@ -137,6 +141,8 @@ async function performRedo(){
         canvasState.selectedId = snap.selectedId;
         canvasState.selectedIds = snap.selectedIds;
         canvasState.selectedImage = snap.selectedImage;
+        // #272：批注随 redo 快照恢复（render() 内的 renderAnnotationLayer 会重绘）
+        canvasState.annotations = (snap.annotations || []).slice();
         canvasState.activeComposerSubject = null;
         canvasState.lastComposerNodeId = '';
         render();

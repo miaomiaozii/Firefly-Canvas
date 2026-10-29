@@ -173,8 +173,11 @@ REVERSE_REFERENCE_CEILINGS = {
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 101,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
+    "canvas-generation-tasks.js": 103,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
     # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
+    # 101 -> 103：#237 stop≠error 中性终态在本模块新增 scheduleStateSave/scheduleSave/
+    # render/trf 引用 +17，#236 合入后净 -15，结算 103（origin/main 实测 2026-10-29，
+    # 棘轮同步——de4e9c5 定 101 后 #237/db2e81f 合入未同步，main 存量红）。
     # 1 处对核心 alignRatioToModel() 的调用（生成前先收敛到模型能力内的比例），已改走
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
@@ -203,6 +206,11 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-snap.js": 0,
     # #253 新建就地快速重命名：纯函数 + DOM 层，不引用 smart-canvas.js 的任何顶层名（回调由接线方传入）。
     "canvas-quick-edit.js": 0,
+    # #272 新建画布批注层：实测 3 处全是 `getElementById('world')` 字符串字面量（棘轮口径的误计，
+    # 真实自由全局耦合为 0——本模块只依赖 canvas-core 的 tr/escapeHtml 与 canvas-undo 的
+    # pushUndo/undoStack，核心只调 renderAnnotationLayer/restorePersistedAnnotations 两处接线）。
+    # 钉 3 是防未来出现真·smart-canvas.js 顶层名引用而漏计。
+    "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
@@ -241,6 +249,9 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-snap.js": 0,
     # #253 新建就地快速重命名：零自由全局（纯函数 + 回调式 DOM 层）。
     "canvas-quick-edit.js": 0,
+    # #272 新建画布批注层：同 REVERSE_REFERENCE_CEILINGS 注释——3 处为字符串字面量误计，
+    # 真实自由全局为 0；钉 3 防真·自由全局引用增长。
+    "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,

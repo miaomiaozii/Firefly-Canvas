@@ -85,6 +85,29 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
             """
         ],
     ),
+    (
+        # 画布批注对象租户（issue #272；#259 产品决策：批注=画布可持久对象，可撤销、刷新恢复、随画板走）。
+        # 批注锚定节点（node_id）+ 节点内归一化坐标（x/y ∈ [0,1]，随画板缩放不失真）；
+        # status 状态机 pending→converted（converted 由 runAll 批注→任务转化写入，下一票）。
+        # 表前缀 anno_* 符合 ADR 0021 决策 5；与 versions/undo 是不同租户（批注是独立内容对象），不同表、勿混。
+        "anno_001",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS anno_annotations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                x REAL NOT NULL DEFAULT 0.5,
+                y REAL NOT NULL DEFAULT 0.2,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_anno_annotations_project_node ON anno_annotations (project_id, node_id)",
+        ],
+    ),
 ]
 
 

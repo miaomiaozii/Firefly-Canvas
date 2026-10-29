@@ -273,11 +273,11 @@ test('#251: rapid stack mutations coalesce into a single debounced PUT carrying 
     const payload = JSON.parse(requests[0].body);
     assert.deepEqual(fromContext(payload), {
         undo: [
-            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, label: 'p1' },
-            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, label: 'p2' },
+            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, annotations: [], label: 'p1' },
+            { nodes: [{ id: 'n1' }], connections: [], selectedId: '', selectedIds: [], selectedImage: {}, annotations: [], label: 'p2' },
         ],
         redo: [],
-    }, 'payload is a deep copy of the stacks at fire time (both entries, redo empty)');
+    }, 'payload is a deep copy of the stacks at fire time (both entries, redo empty; #272 起快照含 annotations)');
 });
 
 test('#251: persist failures (network error / 5xx) are swallowed, canvas keeps working', async () => {

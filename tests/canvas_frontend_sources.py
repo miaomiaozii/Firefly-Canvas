@@ -25,6 +25,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-download.js",
     "canvas-media-history.js",
     "canvas-undo.js",
+    # #272：画布批注层（可持久画布对象；ops.db anno_* 租户前端；逻辑独立，smart-canvas.js 只接线 2 行）。
+    "canvas-annotations.js",
     "canvas-node-ops.js",
     # #255：分数坐标骨架（0..1 公共坐标，crop/mask/brush 换算地基）。
     "canvas-geometry.js",
