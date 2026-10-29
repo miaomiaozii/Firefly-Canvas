@@ -25,7 +25,11 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.services.agent_host import AgentHostManager, agent_host_manager
-from tests.fake_agent_host import FakeAgentProcess
+from tests.fake_agent_host import (
+    FakeAgentProcess,
+    install_stub_pi_cli,
+    restore_stub_pi_cli,
+)
 
 
 def run_async(coro):
@@ -35,6 +39,16 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def setUpModule():
+    """#179: never let this module resolve the real pi CLI ("pi" -> pi.cmd)."""
+    global _PREVIOUS_PI_CLI
+    _PREVIOUS_PI_CLI = install_stub_pi_cli()
+
+
+def tearDownModule():
+    restore_stub_pi_cli(_PREVIOUS_PI_CLI)
 
 
 class TestAgentModelOverride(unittest.TestCase):

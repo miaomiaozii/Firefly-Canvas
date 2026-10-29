@@ -1,6 +1,7 @@
 import re
 import unittest
 from pathlib import Path
+from tests.canvas_frontend_sources import canvas_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,14 +20,14 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertIn("id=\"emptyState\"", page)
 
     def test_project_canvas_websocket_registers_the_open_project_session(self):
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         self.assertIn("project_id=${encodeURIComponent(canvasId)}", script)
         self.assertIn("client_id=${clientId}${projectQuery}", script)
         self.assertIn("socket?.close()", script)
 
     def test_empty_canvas_has_a_visible_first_step(self):
         page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         self.assertIn('id="canvasEmptyState"', page)
         self.assertIn('id="canvasEmptyCreate"', page)
         self.assertIn('id="canvasEmptyImport"', page)
@@ -104,7 +105,7 @@ class ProjectEntryUiTests(unittest.TestCase):
         )
 
     def test_core_canvas_sends_node_and_edge_diffs_to_incremental_endpoint(self):
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         mutation_script = (ROOT / "static" / "js" / "project-canvas-mutations.js").read_text(encoding="utf-8")
         translations = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
         self.assertIn("buildCoreMutations", script)
@@ -130,7 +131,7 @@ class ProjectEntryUiTests(unittest.TestCase):
 
     def test_canvas_history_entry_and_view_only_navigation_do_not_persist(self):
         page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         toggle = re.search(r'<button id="smartHistoryToggle".*?</button>', page, re.S)
         self.assertIsNotNone(toggle)
         self.assertIn('data-i18n="canvas.generationHistory"', toggle.group(0))
@@ -142,7 +143,7 @@ class ProjectEntryUiTests(unittest.TestCase):
 
     def test_autosave_is_content_coalesced_and_drag_only_updates_layout(self):
         page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         self.assertNotIn('id="smartAutosaveCountdown"', page)
         self.assertIn('id="smartSaveButton"', page)
         self.assertIn('aria-keyshortcuts="Control+S"', page)
@@ -165,7 +166,7 @@ class ProjectEntryUiTests(unittest.TestCase):
 
     def test_global_settings_are_isolated_from_canvas_navigation(self):
         page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        canvas_script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        canvas_script = canvas_source()
         settings_script = (ROOT / "static" / "js" / "global-settings.js").read_text(encoding="utf-8")
         self.assertNotIn('target="_blank"', page)
         self.assertIn('id="smartSettingsModal"', page)
@@ -187,7 +188,7 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertNotIn("textarea.value = joinModels(value)", settings_script)
 
     def test_asset_drawer_separates_project_media_from_explicit_global_library(self):
-        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        script = canvas_source()
         translations = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
         self.assertIn("PROJECT_ASSET_LIBRARY_ID = '__project_media__'", script)
         self.assertIn("projectMediaSourceLibrary()", script)

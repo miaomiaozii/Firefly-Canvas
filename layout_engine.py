@@ -14,6 +14,7 @@
 
 from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass
+from app.constants import NODE_TYPE_IMAGE, NODE_TYPE_PROMPT
 
 # 默认生图模型（nano-banana 系列）
 DEFAULT_IMAGE_MODEL = "nano-banana-2"
@@ -130,7 +131,7 @@ class DeterministicLayout:
                 operations.append({
                     "type": "create_node",
                     "node_id": prompt_id,
-                    "node_type": "smart-prompt",
+                    "node_type": NODE_TYPE_PROMPT,
                     "x": px,
                     "y": ty,
                     "width": self.PROMPT_NODE_W,
@@ -149,7 +150,7 @@ class DeterministicLayout:
                 operations.append({
                     "type": "create_node",
                     "node_id": image_id,
-                    "node_type": "smart-image",
+                    "node_type": NODE_TYPE_IMAGE,
                     "x": ix,
                     "y": ty,
                     "width": self.IMAGE_NODE_W,
@@ -188,7 +189,7 @@ class DeterministicLayout:
                     operations.append({
                         "type": "create_node",
                         "node_id": ref_id,
-                        "node_type": "smart-image",
+                        "node_type": NODE_TYPE_IMAGE,
                         "x": ref_x,
                         "y": ref_y,
                         "width": self.REF_NODE_W,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -189,6 +190,23 @@ def output_identity(record: dict) -> str:
     return asset_id
 
 
+
+def output_item_id(record: dict) -> str:
+    """生成输出项身份（output_id），不是列表位置。
+
+    前端删除原件按钮把 `data-history-delete-original` 写成 output_id
+    （static/js/canvas-media-history.js 的 historyDeleteOriginal 赋值），
+    runner 以前用列表位置 "0" 选不到按钮。
+    """
+    outputs = record.get("outputs") or []
+    if len(outputs) != 1:
+        raise AssertionError(f"expected one output: {record}")
+    value = str(outputs[0].get("output_id") or "")
+    if not value:
+        raise AssertionError(f"missing output_id: {record}")
+    return value
+
+
 def wait_for_retry(store: ProjectStore, project_id: str, failed_id: str, timeout: float = 20) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -289,7 +307,13 @@ def main() -> int:
             production.generate_ai_image = fake_generate
             downloads = root / "downloads"
             downloads.mkdir()
-            with AsgiBrowserServer(app) as server:
+            with contextlib.ExitStack() as stack:
+                server = stack.enter_context(AsgiBrowserServer(app))
+                # 退出顺序必须是 LIFO：先放行仍在 fake provider 里阻塞的生成任务，再让 uvicorn 线程停。
+                # 否则 AsgiBrowserServer.close() 里 server.run() 的 asyncio.run() 收尾会调
+                # loop.shutdown_default_executor()，等不到被 release_overlapping.wait(20) 卡住的
+                # worker 线程，10s join 必然超时，抛 "ASGI browser server failed to stop" 把真实失败顶掉。
+                stack.callback(release_overlapping.set)
                 old_record_task = submit(server.base_url, store, project_id, "failed-node", "NATIVE_OLD_RECORD", "native-old-record")
                 wait_task(server.base_url, project_id, old_record_task, {"succeeded"})
                 old_original_task = submit(server.base_url, store, project_id, "cancel-node", "NATIVE_OLD_ORIGINAL", "native-old-original")
@@ -298,6 +322,7 @@ def main() -> int:
                 old_original = task_record(store, project_id, old_original_task, "succeeded")
                 record_asset_id = output_identity(old_record)
                 original_asset_id = output_identity(old_original)
+                original_output_id = output_item_id(old_original)
                 record_url = f"/api/project-library/{urllib.parse.quote(project_id)}/media/{record_asset_id}"
                 original_url = f"/api/project-library/{urllib.parse.quote(project_id)}/media/{original_asset_id}"
                 original_path = Path(store.media_record(project_id, original_asset_id)["path"])
@@ -330,7 +355,7 @@ def main() -> int:
                 for task_id in (failed_id, download_id, cancel_id):
                     browser.wait_for(f"document.querySelector('[data-history-cancel-task=\"{task_id}\"]')", timeout=15)
                 status_card_task_ids = browser.evaluate(
-                    "[...document.querySelectorAll('[data-history-cancel-task]')].map(item => item.dataset.logCancelTask)"
+                    "[...document.querySelectorAll('[data-history-cancel-task]')].map(item => item.dataset.historyCancelTask)"
                 )
                 if set(status_card_task_ids) != {failed_id, download_id, cancel_id}:
                     raise AssertionError(f"overlapping task cards are not independent: {status_card_task_ids}")
@@ -364,7 +389,7 @@ def main() -> int:
                 snap("record-deleted")
                 pass_step("record-delete-during-pending")
 
-                original_selector = f'[data-canvas-history-id="{old_original["id"]}"] [data-history-delete-original="0"]'
+                original_selector = f'[data-canvas-history-id="{old_original["id"]}"] [data-history-delete-original="{original_output_id}"]'
                 browser.wait_for(f"document.querySelector({json.dumps(original_selector)})")
                 browser.native_click(original_selector, accept_dialog=True)
                 restore_selector = f'[data-history-restore-original="{original_asset_id}"]'
@@ -461,7 +486,7 @@ def main() -> int:
 
                 browser.native_click(restore_selector, accept_dialog=True)
                 browser.wait_for(
-                    f"document.querySelector('[data-canvas-history-id=\"{old_original["id"]}\"] [data-history-delete-original=\"0\"]')",
+                    f"document.querySelector('[data-canvas-history-id=\"{old_original["id"]}\"] [data-history-delete-original=\"{original_output_id}\"]')",
                     timeout=15,
                 )
                 restored_status, restored_bytes = api_bytes(
@@ -494,6 +519,7 @@ def main() -> int:
                     "original_history_id": str(old_original["id"]),
                     "record_asset_id": record_asset_id,
                     "original_asset_id": original_asset_id,
+                    "original_output_id": original_output_id,
                     "independent_status_cards": True,
                     "status_card_task_ids": status_card_task_ids,
                     "old_output_retained_with_new_task": old_output_retained,

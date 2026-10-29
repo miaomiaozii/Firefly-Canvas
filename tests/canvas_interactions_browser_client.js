@@ -96,8 +96,15 @@
         // Ordinary multi-image nodes must preserve each image card's aspect ratio.
         {
             const node = evalCanvas()?.nodes?.find(item => item.id === 'seed-img-a');
+            const seededW = node?.w;
+            const seededH = node?.h;
             if(node?.images?.[0]){
                 node.images = [node.images[0], {...node.images[0], name:'landscape-copy.png'}];
+                // #172：fixture 里的 316x194 是显式尺寸（等价于用户拖拽过的框），
+                // 产品按 #89 规则永不把显式框弹回内容尺寸；要测「外框贴合图片行」必须用
+                // 自动尺寸路径，所以这里临时清掉显式 w/h 让 imageLayout 重算。
+                delete node.w;
+                delete node.h;
                 evalFn('render')?.();
             }
             const thumbsReady = await waitFor(() => {
@@ -119,6 +126,8 @@
             assertion('ordinary multi-image outer frame fits image rows', bottomGap >= 0 && bottomGap <= 20, `outerH=${outerRect?.height} gridTop=${gridRect && outerRect ? gridRect.top - outerRect.top : 'n/a'} gridH=${gridRect?.height} bottomGap=${bottomGap}`);
             if(node){
                 node.images = node.images.slice(0, 1);
+                node.w = seededW;
+                node.h = seededH;
                 evalFn('render')?.();
                 await sleep(80);
             }
@@ -142,9 +151,9 @@
             const mu = new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:bx, clientY:by, button:0, buttons:0, ctrlKey:true});
             window.dispatchEvent(mu);
             await sleep(150);
-            const selected = (function(){ try { return eval('selectedIds'); } catch(_) { return []; } })() || [];
+            const selected = (function(){ try { return eval('canvasState.selectedIds'); } catch(_) { return []; } })() || [];
             const diagSel = () => {
-                try { return `selState=${JSON.stringify(eval('selectionState'))} selIds=${JSON.stringify(eval('selectedIds'))}`; } catch(_) { return 'diag-error'; }
+                try { return `selState=${JSON.stringify(eval('selectionState'))} selIds=${JSON.stringify(eval('canvasState.selectedIds'))}`; } catch(_) { return 'diag-error'; }
             };
             result.diagnostics.push(`after box-select: ${diagSel()}`);
             assertion('box-select picks 2 nodes', selected.length === 2, JSON.stringify(selected));
@@ -179,7 +188,7 @@
             }
             const diag = () => {
                 try {
-                    const selId = eval('selectedId'), selIds = JSON.stringify(eval('selectedIds'));
+                    const selId = eval('canvasState.selectedId'), selIds = JSON.stringify(eval('canvasState.selectedIds'));
                     const uStack = eval('undoStack.length');
                     return `selId=${selId} selIds=${selIds} undoStack=${uStack} nodes=${evalCanvas()?.nodes?.length}`;
                 } catch(_) { return 'diag-error'; }
@@ -188,7 +197,7 @@
             const beforeCount = evalCanvas()?.nodes?.length || 0;
             const prevented = dispatchKey('Delete', {});
             await sleep(150);
-            result.diagnostics.push(`after delete: ${diag()} prevented=${prevented} sameArray=${(function(){ try { return eval('nodes === canvas.nodes'); } catch(_) { return 'err'; } })()}`);
+            result.diagnostics.push(`after delete: ${diag()} prevented=${prevented} sameArray=${(function(){ try { return eval('canvasState.nodes === canvas.nodes'); } catch(_) { return 'err'; } })()}`);
             const afterCount = evalCanvas()?.nodes?.length || 0;
             const deletedCount = beforeCount - afterCount;
             assertion('delete removes selected nodes', deletedCount >= 1, `${beforeCount} -> ${afterCount}`);
@@ -222,14 +231,14 @@
             const c = evalCanvas();
             const images = c.nodes.filter(n => n.type === 'smart-image' && String(n.id).startsWith('seed-'));
             if(images.length === 2){
-                eval('selectedIds.splice(0, selectedIds.length, ' + images.map(node => JSON.stringify(node.id)).join(', ') + ')');
-                eval('selectedId = ' + JSON.stringify(images[0].id));
+                eval('canvasState.selectedIds.splice(0, canvasState.selectedIds.length, ' + images.map(node => JSON.stringify(node.id)).join(', ') + ')');
+                eval('canvasState.selectedId = ' + JSON.stringify(images[0].id));
             }
             await sleep(80);
             groupSelectedNodes();
             const group = (evalCanvas()?.nodes || []).find(n => n.type === 'smart-group');
             const groupCount = group ? 1 : 0;
-            result.diagnostics.push(`group diag: count=${groupCount} selId=${eval('selectedId')} selIds=${JSON.stringify(eval('selectedIds'))}`);
+            result.diagnostics.push(`group diag: count=${groupCount} selId=${eval('canvasState.selectedId')} selIds=${JSON.stringify(eval('canvasState.selectedIds'))}`);
             assertion('group creates smart-group node', groupCount > 0, `groups=${groupCount}`);
             const thumbsReady = await waitFor(() => {
                 const thumbs = [...document.querySelectorAll('.smart-group-node .smart-group-thumb-grid .thumb-item')];

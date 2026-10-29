@@ -27,7 +27,12 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.services.agent_host import AgentHostManager
-from tests.fake_agent_host import FakeAgentProcess, make_streaming_response_script
+from tests.fake_agent_host import (
+    FakeAgentProcess,
+    install_stub_pi_cli,
+    make_streaming_response_script,
+    restore_stub_pi_cli,
+)
 
 
 def run_async(coro):
@@ -37,6 +42,16 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def setUpModule():
+    """#179: never let this module resolve the real pi CLI ("pi" -> pi.cmd)."""
+    global _PREVIOUS_PI_CLI
+    _PREVIOUS_PI_CLI = install_stub_pi_cli()
+
+
+def tearDownModule():
+    restore_stub_pi_cli(_PREVIOUS_PI_CLI)
 
 
 class TestAgentConcurrency(unittest.TestCase):
@@ -257,6 +272,7 @@ class TestAgentConcurrency(unittest.TestCase):
     def test_concurrent_canvas_mutations_with_retry(self):
         """Concurrent mutations with revision conflicts should succeed via retry."""
         from app.routers.api_agent_tools import _apply_mutations
+        import asyncio
         import threading
 
         # Simulate concurrent mutations that might conflict
@@ -274,8 +290,17 @@ class TestAgentConcurrency(unittest.TestCase):
                 "h": 80,
                 "title": f"Concurrent {i}",
             }
+            # #243: _apply_mutations is now async (broadcasts canvas_updated
+            # after a successful commit) — run each mutation on its own event
+            # loop, still racing across threads to exercise the retry-on-
+            # revision-conflict path.
             try:
-                results[i] = _apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}])
+                loop = asyncio.new_event_loop()
+                try:
+                    results[i] = loop.run_until_complete(
+                        _apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}]))
+                finally:
+                    loop.close()
             except Exception as e:
                 errors[i] = e
 

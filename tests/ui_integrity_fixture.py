@@ -7,10 +7,12 @@ from PIL import Image
 
 from tests.native_input_fixture import selector_owner_click_evidence
 from tools.ui_integrity_evidence import (
+    DETAIL_PAN_CONTRACT,
     EXPECTED_NODE_ACTION_IDS,
     EXPECTED_SCENES,
     EXPECTED_VIEWPORTS,
     REQUIRED_FLAGS,
+    product_node_action_ids,
 )
 
 
@@ -191,12 +193,16 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
         )
         write_json(attempt_root / "console-errors.json", [])
         write_json(attempt_root / "requests.json", [])
+        # #176: expected is the declared contract, actual is read out of the
+        # product toolbar source. Echoing the same constant into both fields made
+        # the validator's exact-set check unfalsifiable.
+        observed_action_ids = product_node_action_ids()
         selection_actions = {
             "expectedActionIds": list(EXPECTED_NODE_ACTION_IDS),
-            "actualActionIds": list(EXPECTED_NODE_ACTION_IDS),
+            "actualActionIds": observed_action_ids,
             "actions": [
                 {"action": action_id, "visible": True, "inViewport": True, "hit": True}
-                for action_id in EXPECTED_NODE_ACTION_IDS
+                for action_id in observed_action_ids
             ],
             "allReachable": True,
         }
@@ -356,14 +362,14 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
                         "canvasDomAssetIds": ["asset-1", "asset-2", "asset-3", "asset-5", "asset-6", "asset-7", "asset-8"],
                         "canvasDomOutputIds": ["occ-1", "occ-2", "occ-3", "occ-5", "occ-6", "occ-7", "occ-8"],
                         "canvasSelectedOutputId": "occ-5",
-                        "destructiveGroupDeleteHiddenWhileRestorable": True,
+                        "destructiveGroupDeleteVisibleWhileOutputsAlive": True,
                         "singleAssetSynchronized": True,
                     },
                     "viewportWidthShare": 0.84,
                     "viewportHeightShare": 0.85,
                     "sharedPreviewFrame": True,
                     "wheelZoom": 1.12,
-                    "dragPan": {"x": 54, "y": 28},
+                    "dragPan": dict(DETAIL_PAN_CONTRACT),
                     "escapeKeptHistory": True,
                 },
                 "clipboardFacts": {"png": True, "width": 2048, "height": 1117, "longest": 2048, "centerPixel": [156, 112, 64, 255], "matchesSelectedOutput": True},

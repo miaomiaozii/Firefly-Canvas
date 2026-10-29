@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -37,6 +38,9 @@ EXPECTED_SCENES = (
     "settings",
     "shortcuts",
 )
+# The generation-detail lightbox pan is part of the geometry evidence, so it is
+# pinned to the exact displacement the journey performs instead of a range.
+DETAIL_PAN_CONTRACT = {"x": 54, "y": 28}
 REQUIRED_FLAGS = (
     "no_horizontal_scroll",
     "critical_surfaces_in_viewport",
@@ -79,16 +83,37 @@ SCREENSHOT_GEOMETRY_MIN_LENGTH = 20
 SCREENSHOT_GEOMETRY_MAX_THICKNESS = 2
 SCREENSHOT_GEOMETRY_MIN_OVERLAP = 0.80
 SCREENSHOT_GEOMETRY_MAX_SEPARATION = 96
+PRODUCT_SMART_CANVAS_JS = ROOT / "static" / "js" / "smart-canvas.js"
+# Issue #176: this list had drifted to 8 entries while the product toolbar
+# (static/js/smart-canvas.js, smartNodeToolbarHtml) rendered 10, so the gate
+# rejected evidence that the browser itself considered complete. It is the
+# declared contract; the evidence side must read the product toolbar instead of
+# echoing this tuple back, otherwise the check compares the list with itself.
 EXPECTED_NODE_ACTION_IDS = (
     "preview",
+    "detail",
     "crop",
     "outpaint",
     "mask",
+    "local-edit",
     "brush",
     "grid",
     "send-ps",
     "download",
 )
+
+
+def product_node_action_ids(source_path: Path = PRODUCT_SMART_CANVAS_JS) -> list[str]:
+    """Return the selection-action keys the product toolbar actually renders."""
+    source = Path(source_path).read_text(encoding="utf-8")
+    start = source.find("function smartNodeToolbarHtml(")
+    if start < 0:
+        raise ValueError("smartNodeToolbarHtml is missing from static/js/smart-canvas.js")
+    array = re.compile(r"const actions\s*=\s*\[").search(source, start)
+    if array is None:
+        raise ValueError("the node toolbar action list is missing from static/js/smart-canvas.js")
+    end = source.index("]", array.end())
+    return re.findall(r"\{\s*key\s*:\s*'([^']+)'", source[array.end() : end])
 
 
 def write_json(path: Path, value) -> None:
@@ -446,7 +471,7 @@ def _validate_scene_facts(geometry: list[dict]) -> None:
         and post_delete.get("actionAssetIds") == [before_assets[4]] * 4
         and post_delete.get("actionOutputIds") == [before_output_ids[4]] * 4
         and post_delete.get("detailStayedOpen") is True
-        and post_delete.get("destructiveGroupDeleteHiddenWhileRestorable") is True
+        and post_delete.get("destructiveGroupDeleteVisibleWhileOutputsAlive") is True
         and post_delete.get("singleAssetSynchronized") is True
     ) if isinstance(before_assets, list) and len(before_assets) == 8 else False
     if not isinstance(detail, dict) or not isinstance(clipboard, dict) or not (
@@ -479,8 +504,7 @@ def _validate_scene_facts(geometry: list[dict]) -> None:
         and float(detail.get("viewportHeightShare") or 0) >= 0.8
         and detail.get("sharedPreviewFrame") is True
         and float(detail.get("wheelZoom") or 0) > 1
-        and abs(float((detail.get("dragPan") or {}).get("x") or 0)) >= 20
-        and abs(float((detail.get("dragPan") or {}).get("y") or 0)) >= 10
+        and (detail.get("dragPan") or {}) == DETAIL_PAN_CONTRACT
         and detail.get("escapeKeptHistory") is True
         and clipboard.get("png") is True
         and clipboard.get("longest") == 2048
@@ -555,6 +579,22 @@ def _validate_scene_facts(geometry: list[dict]) -> None:
         raise ValueError("settings geometry is missing the unscaled full-width contract")
 
 
+def chrome_major(version: object) -> int | None:
+    """Return the Chrome major version of a version string, or None if unparsable.
+
+    Accepts both the DevTools product form ("Chrome/151.0.7922.77") and the bare
+    dotted form ("151.0.7922.77").
+    """
+    text = str(version or "").strip()
+    if "/" in text:
+        product, _, rest = text.partition("/")
+        if product.strip().lower() != "chrome":
+            return None
+        text = rest.strip()
+    match = re.fullmatch(r"(\d+)(?:\.\d+)*", text)
+    return int(match.group(1)) if match else None
+
+
 def _environment_contract(environment: dict) -> dict:
     browser = environment.get("browser") or {}
     return {
@@ -597,6 +637,56 @@ def _validate_environment(environment: dict) -> None:
         or not all(value is True for value in fonts.values())
     ):
         raise ValueError("UI integrity evidence is missing the fixed font-availability contract")
+
+
+# #180: the accepted baseline pins the collection environment so screenshots are
+# compared against like-for-like rendering. Chrome on the stable channel updates
+# itself, and every run still re-runs the strict raster comparison below, so a
+# browser build bump must not invalidate an otherwise identical environment.
+# The tolerance is therefore explicit and auditable: the accepted baseline
+# manifest lists the Chrome major versions it covers under
+# "accepted_browser_versions" (accept_baseline writes the captured major, and a
+# reviewer widens the list on purpose). Everything else — browser name and
+# channel, OS, DPR, color scheme, locale, timezone, fonts, provider, animations —
+# must still match the baseline exactly.
+ACCEPTED_BROWSER_VERSIONS_KEY = "accepted_browser_versions"
+
+
+def _environment_without_browser(contract: dict) -> dict:
+    return {key: value for key, value in contract.items() if key != "browser"}
+
+
+def _environment_matches_baseline(baseline: dict, candidate_environment: dict) -> None:
+    """Compare a candidate environment against the accepted baseline environment."""
+    baseline_environment = baseline.get("environment")
+    if not isinstance(baseline_environment, dict):
+        raise ValueError("accepted UI baseline environment is missing")
+    baseline_contract = _environment_contract(baseline_environment)
+    candidate_contract = _environment_contract(candidate_environment)
+    if baseline_contract == candidate_contract:
+        return
+    if _environment_without_browser(baseline_contract) != _environment_without_browser(candidate_contract):
+        raise ValueError("candidate environment does not exactly match the accepted UI baseline environment")
+    baseline_browser = baseline_contract["browser"]
+    candidate_browser = candidate_contract["browser"]
+    if baseline_browser["name"] != candidate_browser["name"] or baseline_browser["channel"] != candidate_browser["channel"]:
+        raise ValueError("candidate browser name and channel must match the accepted UI baseline environment")
+    accepted_majors = baseline.get(ACCEPTED_BROWSER_VERSIONS_KEY)
+    if (
+        not isinstance(accepted_majors, list)
+        or not all(isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in accepted_majors)
+    ):
+        raise ValueError(
+            "candidate environment does not exactly match the accepted UI baseline environment: "
+            f"the baseline declares no auditable {ACCEPTED_BROWSER_VERSIONS_KEY} allow list"
+        )
+    major = chrome_major(candidate_browser["version"])
+    if major is None or major not in accepted_majors:
+        raise ValueError(
+            "candidate browser version is outside the accepted UI baseline browser versions: "
+            f"{candidate_browser['version']!r} is not covered by "
+            f"{ACCEPTED_BROWSER_VERSIONS_KEY}={accepted_majors}"
+        )
 
 
 def _request_is_offline(item: object) -> bool:
@@ -1073,8 +1163,7 @@ def validate(root: Path, baselines: Path = DEFAULT_BASELINES) -> dict:
     baselines = baselines.resolve()
     candidate = validate_candidate(root)
     baseline = _load_accepted_baseline(baselines)
-    if baseline.get("environment") != candidate["environment"]:
-        raise ValueError("candidate environment does not exactly match the accepted UI baseline environment")
+    _environment_matches_baseline(baseline, candidate["environment"])
     baseline_rows = baseline.get("screenshots")
     if not isinstance(baseline_rows, list) or not all(isinstance(item, dict) for item in baseline_rows):
         raise ValueError("accepted UI baseline screenshots must be a list of objects")
@@ -1118,6 +1207,8 @@ def validate(root: Path, baselines: Path = DEFAULT_BASELINES) -> dict:
         "operations": candidate["operations"],
         "screenshots": candidate["screenshots"],
         "comparison": "sha256-or-strict-raster-v1",
+        "browser_version": candidate["environment"]["browser"].get("version"),
+        "accepted_browser_versions": baseline.get(ACCEPTED_BROWSER_VERSIONS_KEY),
         "tolerated_screenshot_differences": tolerated_differences,
         "baseline": str((baselines / "manifest.json").resolve()),
     }
@@ -1162,6 +1253,7 @@ def accept_baseline(
                     "sha256": sha256(destination),
                 }
             )
+        captured_major = chrome_major(candidate["environment"]["browser"].get("version"))
         manifest = {
             "schema_version": 1,
             "contract": "desktop-ui-integrity",
@@ -1170,6 +1262,9 @@ def accept_baseline(
             "reason": reason,
             "accepted_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "environment": candidate["environment"],
+            # An accepted baseline initially tolerates only the Chrome major it was
+            # captured with; widening the list is an explicit review decision (#180).
+            ACCEPTED_BROWSER_VERSIONS_KEY: [captured_major] if captured_major is not None else [],
             "screenshots": screenshots,
         }
         write_json(temporary / "manifest.json", manifest)

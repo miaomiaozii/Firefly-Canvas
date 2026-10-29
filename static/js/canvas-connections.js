@@ -1,11 +1,13 @@
 // 画布节点连线模块（从 smart-canvas.js 抽离，#158 P2a）。
 // 连线渲染/操作函数：渲染、刷新、事件绑定、拖拽连线、擦除、断开、
-// reroute、级联键等。引用主脚本全局（canvas/nodes/shell/world 等），
+// reroute、级联键等。引用主脚本全局（canvas/canvasState.nodes/shell/world 等），
 // 本文件只含函数定义（无顶层执行代码），先于 smart-canvas.js 加载，
 // 所有调用都发生在主脚本全局初始化之后，安全。
 // 注意：WebSocket 的 connectAssetLibrarySyncSocket / connectAgentWebSocket
 // 不是画布连线，仍留在主脚本。
 
+// 这些状态本来属于本模块，#173 核心下沉第 2 步从 smart-canvas.js 搬回此处。
+let connectionEraseState = null;
 function rerouteSmartConnections(fromId, toId){
     if(canvas){
         canvas.connections = (canvas.connections || []).map(c => {
@@ -15,13 +17,13 @@ function rerouteSmartConnections(fromId, toId){
             return conn;
         }).filter((c, i, arr) => c.from !== c.to && arr.findIndex(x => x.from === c.from && x.to === c.to && (x.kind || 'flow') === (c.kind || 'flow')) === i);
     }
-    nodes.forEach(n => {
+    canvasState.nodes.forEach(n => {
         if(Array.isArray(n.inputNodeIds)) n.inputNodeIds = Array.from(new Set(n.inputNodeIds.map(id => id === fromId ? toId : id).filter(id => id !== n.id)));
     });
 }
 
 function connectedSmartClusterIds(seedId){
-    const ids = new Set(nodes.map(n => n.id));
+    const ids = new Set(canvasState.nodes.map(n => n.id));
     if(!ids.has(seedId)) return [];
     const seen = new Set([seedId]);
     const queue = [seedId];
@@ -40,9 +42,9 @@ function connectedSmartClusterIds(seedId){
 
 function arrangeSmartIdsByConnections(ids){
     const idSet = new Set(smartArrangeAtomicIds(ids));
-    const selectedNodes = [...idSet].map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    const selectedNodes = [...idSet].map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(selectedNodes.length < 2) return false;
-    const rects = selectedNodes.map(node => ({node, rect:nodeRect(node)}));
+    const rects = selectedNodes.map(node => ({node, rect:canvasCore.nodeRect(node)}));
     const startX = Math.min(...rects.map(item => item.rect.x));
     const startY = Math.min(...rects.map(item => item.rect.y));
     const internal = (canvas?.connections || []).filter(c => idSet.has(c.from) && idSet.has(c.to));
@@ -73,11 +75,11 @@ function arrangeSmartIdsByConnections(ids){
     const sortedDepths = [...groups.keys()].sort((a, b) => a - b);
     let x = startX;
     sortedDepths.forEach(d => {
-        const col = groups.get(d).slice().sort((a, b) => nodeRect(a).y - nodeRect(b).y || String(a.id).localeCompare(String(b.id)));
+        const col = groups.get(d).slice().sort((a, b) => canvasCore.nodeRect(a).y - canvasCore.nodeRect(b).y || String(a.id).localeCompare(String(b.id)));
         let y = startY;
         let maxW = 0;
         col.forEach(node => {
-            const rect = nodeRect(node);
+            const rect = canvasCore.nodeRect(node);
             moveSmartNodeAtom(node, x, y);
             y += Math.max(110, rect.height) + 56;
             maxW = Math.max(maxW, Math.max(180, rect.width));
@@ -101,9 +103,9 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
 }
 
 function renderConnections(){
-    const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => nodes.some(n => n.id === c.from) && nodes.some(n => n.id === c.to));
+    const conns = (canvas?.connections || []).map((conn, index) => ({...conn, index})).filter(c => canvasState.nodes.some(n => n.id === c.from) && canvasState.nodes.some(n => n.id === c.to));
     const cascadeKeys = cascadeConnectionKeys();
-    const activeRunPath = [...smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
+    const activeRunPath = [...canvasCore.smartCascadeRuns.values()].filter(run => run?.runPath).pop()?.runPath || null;
     const activeCascadeCount = (activeRunPath?.states && Object.values(activeRunPath.states).filter(state => state && state !== 'done').length) || 0;
     const reduceMotion = activeCascadeCount > 24;
     const selectedConnIds = new Set(selectedNodeIds());
@@ -133,10 +135,10 @@ function renderConnections(){
         }
     });
     const paths = items.map(item => {
-        const fromNode = nodes.find(n => n.id === item.from);
-        const toNode = nodes.find(n => n.id === item.toId);
+        const fromNode = canvasState.nodes.find(n => n.id === item.from);
+        const toNode = canvasState.nodes.find(n => n.id === item.toId);
         if(!fromNode || !toNode) return '';
-        const fr = nodeRect(fromNode), tr = nodeRect(toNode);
+        const fr = canvasCore.nodeRect(fromNode), tr = canvasCore.nodeRect(toNode);
         const kind = item.kind;
         const isHistory = kind === 'history';
         const dataIndex = item.indices.join(',');
@@ -148,7 +150,7 @@ function renderConnections(){
         else if(states.some(s => s !== 'done')) cascadeState = states.find(s => s !== 'done');
         else if(states.length) cascadeState = 'done';
         const isCascade = !isHistory && (edgeKeys.some(k => cascadeKeys.has(k)) || Boolean(cascadeState) || isInsertPreview);
-        const isPendingLine = !isCascade && item.targets.some(t => nodes.find(n => n.id === t)?.pending);
+        const isPendingLine = !isCascade && item.targets.some(t => canvasState.nodes.find(n => n.id === t)?.pending);
         const isSelectedLine = selectedConnIds.size > 0 && (selectedConnIds.has(item.from) || selectedConnIds.has(item.toId) || item.targets.some(t => selectedConnIds.has(t)));
         const fx = isHistory ? fr.x + fr.width / 2 : fr.x + fr.width;
         const fy = isHistory ? fr.y + fr.height : fr.y + fr.height / 2;
@@ -178,8 +180,8 @@ function renderConnections(){
 }
 
 function refreshConnectionLayer(){
-    connectionLayerRaf = 0;
-    const oldSvg = world.querySelector('svg.connection-layer');
+    canvasState.connectionLayerRaf = 0;
+    const oldSvg = canvasCore.world.querySelector('svg.connection-layer');
     if(!oldSvg) return;
     const tpl = document.createElement('template');
     tpl.innerHTML = renderConnections().trim();
@@ -189,12 +191,12 @@ function refreshConnectionLayer(){
 }
 
 function scheduleConnectionLayerRefresh(){
-    if(connectionLayerRaf) return;
-    connectionLayerRaf = requestAnimationFrame(refreshConnectionLayer);
+    if(canvasState.connectionLayerRaf) return;
+    canvasState.connectionLayerRaf = requestAnimationFrame(refreshConnectionLayer);
 }
 
 function bindConnectionEvents(){
-    world.querySelectorAll('[data-conn-index]').forEach(el => {
+    canvasCore.world.querySelectorAll('[data-conn-index]').forEach(el => {
         if(el.classList.contains('conn-hit')){
             el.addEventListener('dblclick', e => {
                 e.preventDefault(); e.stopPropagation();
@@ -210,26 +212,26 @@ function bindConnectionEvents(){
 }
 
 function dragConnectTargetFor(sourceNode, point=lastMouseWorld){
-    if(!sourceNode || (dragState?.group || []).length > 1) return null;
-    if(['smart-prompt', 'smart-loop'].includes(sourceNode.type) && point){
-        return rectOverlapNode(sourceNode.id, point.x - 1, point.y - 1, 2, 2, dragState?.groupIds || []);
+    if(!sourceNode || (canvasCore.dragState?.group || []).length > 1) return null;
+    if([NODE_TYPE_PROMPT, NODE_TYPE_LOOP].includes(sourceNode.type) && point){
+        return rectOverlapNode(sourceNode.id, point.x - 1, point.y - 1, 2, 2, canvasCore.dragState?.groupIds || []);
     }
-    const r = nodeRect(sourceNode);
-    return rectOverlapNode(sourceNode.id, r.x, r.y, r.width, r.height, dragState?.groupIds || []);
+    const r = canvasCore.nodeRect(sourceNode);
+    return rectOverlapNode(sourceNode.id, r.x, r.y, r.width, r.height, canvasCore.dragState?.groupIds || []);
 }
 
 function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     if(isHistoryGroupNode(sourceNode) || isHistoryGroupNode(targetNode)) return false;
     if(isSmartGroupNode(targetNode)) return false;
-    if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt' || targetNode.type === 'smart-conversation';
-    if(sourceNode.type === 'smart-prompt') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
-    if(sourceNode.type === 'smart-loop') return isSmartImageNode(targetNode);
-    if(sourceNode.type === 'smart-group') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop';
+    if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT || targetNode.type === NODE_TYPE_CONVERSATION;
+    if(sourceNode.type === NODE_TYPE_PROMPT) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP;
+    if(sourceNode.type === NODE_TYPE_LOOP) return isSmartImageNode(targetNode);
+    if(sourceNode.type === NODE_TYPE_GROUP) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP;
     // #149 C7: 补齐 local-edit/conversation/agent 源类型（与端口拖拽 connectInputNode 一致）
-    if(sourceNode.type === 'local-edit') return isSmartImageNode(targetNode);
-    if(sourceNode.type === 'smart-conversation') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
-    if(sourceNode.type === 'agent') return isSmartImageNode(targetNode) || targetNode.type === 'smart-loop' || targetNode.type === 'smart-prompt';
+    if(sourceNode.type === NODE_TYPE_LOCAL_EDIT) return isSmartImageNode(targetNode);
+    if(sourceNode.type === NODE_TYPE_CONVERSATION) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT;
+    if(sourceNode.type === 'agent') return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT;
     // agent-task 是只读结果卡，不接受输入连线（#149 C8）
     return false;
 }
@@ -246,19 +248,19 @@ function disconnectConnections(spec){
     pushUndo();
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
-        const toNode = nodes.find(n => n.id === conn.to);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
-        if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
+        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
-            const group = nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
+            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
             demoteHistoryGroupNode(group);
         }
     });
-    render();
-    scheduleSave();
+    canvasCore.render();
+    canvasCore.scheduleSave();
 }
 
 function connectionIndexSpecFromPoint(clientX, clientY){
@@ -278,7 +280,7 @@ function eraseConnectionsAtClientPoint(clientX, clientY){
     indices.forEach(index => connectionEraseState.indices.add(index));
     connectionEraseState.started = true;
     connectionEraseState.count = connectionEraseState.indices.size;
-    world.querySelectorAll('[data-conn-index]').forEach(el => {
+    canvasCore.world.querySelectorAll('[data-conn-index]').forEach(el => {
         const hasHit = String(el.dataset.connIndex || '').split(',').some(v => connectionEraseState.indices.has(Number(v)));
         if(hasHit) el.classList.add('conn-erasing-mark');
     });
@@ -294,18 +296,18 @@ function finishConnectionErase(){
     pushUndo();
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
-        const toNode = nodes.find(n => n.id === conn.to);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(toNode && Array.isArray(toNode.inputNodeIds)){
             toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
         }
-        if(toNode?.type === 'local-edit') syncLocalEditInputRoles(toNode);
+        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
         if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
         if((conn.kind || 'flow') === 'history'){
-            const group = nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
+            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
             demoteHistoryGroupNode(group);
         }
     });
-    render();
+    canvasCore.render();
     return true;
 }
 
@@ -331,13 +333,13 @@ function eraseConnectionsAlongPointer(event){
 }
 
 function ensureConnectionEraseTrail(){
-    let svg = shell.querySelector(':scope > svg.connection-erase-trail');
+    let svg = canvasCore.shell.querySelector(':scope > svg.connection-erase-trail');
     if(svg) return svg;
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'connection-erase-trail');
     svg.setAttribute('aria-hidden', 'true');
     svg.innerHTML = '<path class="connection-erase-trail-glow" fill="none"></path><path class="connection-erase-trail-line" fill="none"></path>';
-    shell.appendChild(svg);
+    canvasCore.shell.appendChild(svg);
     return svg;
 }
 
@@ -347,24 +349,24 @@ function updateConnectionEraseTrail(event){
     connectionEraseState.trail = [...(connectionEraseState.trail || []), p].slice(-80);
     const points = connectionEraseState.trail;
     const svg = ensureConnectionEraseTrail();
-    const rect = shell.getBoundingClientRect();
+    const rect = canvasCore.shell.getBoundingClientRect();
     svg.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${Math.max(1, rect.height)}`);
     const d = points.map((pt, index) => `${index ? 'L' : 'M'}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ');
     svg.querySelectorAll('path').forEach(path => path.setAttribute('d', d));
 }
 
 function clearConnectionEraseTrail(){
-    const svg = shell.querySelector(':scope > svg.connection-erase-trail');
+    const svg = canvasCore.shell.querySelector(':scope > svg.connection-erase-trail');
     if(!svg) return;
     svg.classList.add('fading');
     setTimeout(() => svg.remove(), 180);
 }
 
 function connectionMidpoint(conn){
-    const fromNode = nodes.find(n => n.id === conn?.from);
-    const toNode = nodes.find(n => n.id === conn?.to);
+    const fromNode = canvasState.nodes.find(n => n.id === conn?.from);
+    const toNode = canvasState.nodes.find(n => n.id === conn?.to);
     if(!fromNode || !toNode) return null;
-    const fr = nodeRect(fromNode), tr = nodeRect(toNode);
+    const fr = canvasCore.nodeRect(fromNode), tr = canvasCore.nodeRect(toNode);
     if((conn.kind || 'flow') === 'history'){
         return {x:(fr.x + fr.width / 2 + tr.x + tr.width / 2) / 2, y:(fr.y + fr.height + tr.y) / 2};
     }
@@ -372,8 +374,8 @@ function connectionMidpoint(conn){
 }
 
 function insertionConnectionForNode(node){
-    if(!node || node.type !== 'smart-loop' || !canvas?.connections?.length) return null;
-    const r = nodeRect(node);
+    if(!node || node.type !== NODE_TYPE_LOOP || !canvas?.connections?.length) return null;
+    const r = canvasCore.nodeRect(node);
     const cx = (Number(r.x) || 0) + (Number(r.width) || 0) / 2;
     const cy = (Number(r.y) || 0) + (Number(r.height) || 0) / 2;
     let best = null;
@@ -381,8 +383,8 @@ function insertionConnectionForNode(node){
         const kind = conn.kind || 'flow';
         if(!['input','flow'].includes(kind)) return;
         if(conn.from === node.id || conn.to === node.id) return;
-        const fromNode = nodes.find(n => n.id === conn.from);
-        const toNode = nodes.find(n => n.id === conn.to);
+        const fromNode = canvasState.nodes.find(n => n.id === conn.from);
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
         if(!fromNode || !toNode || isHistoryGroupNode(fromNode) || isHistoryGroupNode(toNode)) return;
         const mid = connectionMidpoint(conn);
         if(!mid) return;
@@ -402,20 +404,20 @@ function addConnection(fromId, toId, kind='flow'){
 }
 
 function connectInputNode(fromId, toId){
-    const from = nodes.find(n => n.id === fromId);
-    const to = nodes.find(n => n.id === toId);
+    const from = canvasState.nodes.find(n => n.id === fromId);
+    const to = canvasState.nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
     // #149 C8: agent-task 是只读结果卡，不接受输入连线
-    if(to.type === 'agent-task'){
+    if(to.type === NODE_TYPE_TASK){
         toast(tr('smart.connectAgentTaskReadOnly'));
         return false;
     }
     // #149 C8: Prompt→Conversation 连线不生效（Conversation 只把图片类上游当参考图，Prompt 文本被忽略）
-    if(from.type === 'smart-prompt' && to.type === 'smart-conversation'){
+    if(from.type === NODE_TYPE_PROMPT && to.type === NODE_TYPE_CONVERSATION){
         toast(tr('smart.connectPromptToConversationIgnored'));
         return false;
     }
-    if(to.type === 'local-edit'){
+    if(to.type === NODE_TYPE_LOCAL_EDIT){
         const role = ['original','references','prompt'].includes(to.localEditActiveRole) ? to.localEditActiveRole : '';
         if(!role) return false; // role must be explicitly selected before connecting
         to.localEditInputRoles = to.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
@@ -433,11 +435,11 @@ function connectInputNode(fromId, toId){
         if(!canvas.connections.some(c => c.from === from.id && c.to === to.id && (c.role || '') === role)) canvas.connections.push({from:from.id, to:to.id, kind:'input', role});
         return true;
     }
-    if(to.type === 'smart-loop'){
+    if(to.type === NODE_TYPE_LOOP){
         const groupImages = isSmartGroupNode(from) ? imagesForNode(from).filter(img => img?.url) : [];
         const groupPrompts = isSmartGroupNode(from) ? promptTextItemsForNode(from).filter(Boolean) : [];
-        const looksImage = isSmartImageNode(from) || groupImages.length > 0 || (from.type === 'smart-loop' && from.imageInput);
-        const looksPrompt = from.type === 'smart-prompt' || groupPrompts.length > 0 || (from.type === 'smart-loop' && from.showPrompt);
+        const looksImage = isSmartImageNode(from) || groupImages.length > 0 || (from.type === NODE_TYPE_LOOP && from.imageInput);
+        const looksPrompt = from.type === NODE_TYPE_PROMPT || groupPrompts.length > 0 || (from.type === NODE_TYPE_LOOP && from.showPrompt);
         if(looksImage && !to.imageInput) to.imageInput = true;
         if(looksPrompt && !to.showPrompt) to.showPrompt = true;
         if(looksImage || looksPrompt) fitSmartLoopNode(to);
@@ -469,10 +471,10 @@ function cascadeConnectionKeys(){
     const addKey = (from, to) => {
         if(from && to) keys.add(`${from}->${to}`);
     };
-    const activeLoopIds = new Set(smartCascadeRuns.keys());
+    const activeLoopIds = new Set(canvasCore.smartCascadeRuns.keys());
     const loops = activeLoopIds.size
-        ? nodes.filter(n => n?.type === 'smart-loop' && activeLoopIds.has(n.id))
-        : nodes.filter(n => n?.type === 'smart-loop');
+        ? canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP && activeLoopIds.has(n.id))
+        : canvasState.nodes.filter(n => n?.type === NODE_TYPE_LOOP);
     loops.forEach(loop => {
         const tail = cascadeTailForLoop(loop.id);
         if(!tail) return;
@@ -482,13 +484,38 @@ function cascadeConnectionKeys(){
         graph.edges.forEach(edge => addKey(edge.source.id, edge.target.id));
         (canvas?.connections || []).forEach(conn => {
             if((conn.kind || 'flow') === 'history') return;
-            const toNode = nodes.find(n => n.id === conn.to);
+            const toNode = canvasState.nodes.find(n => n.id === conn.to);
             if(conn.from === loop.id && (chainIds.has(conn.to) || downstreamNodesForId(conn.to).some(n => chainIds.has(n.id)))) addKey(conn.from, conn.to);
             if(toNode && chainIds.has(toNode.id)){
-                inputNodesFor(toNode).filter(n => n?.type === 'smart-loop' && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
+                canvasCore.inputNodesFor(toNode).filter(n => n?.type === NODE_TYPE_LOOP && n.showPrompt).forEach(inputLoop => addKey(inputLoop.id, toNode.id));
             }
         });
     });
     return keys;
 }
 
+// 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
+let loopInsertPreview = null;
+let lastMouseWorld = null;
+function smartCascadeEdgeState(edgeKey){
+    for(const run of canvasCore.smartCascadeRuns.values()){
+        const state = run?.runPath?.states?.[edgeKey];
+        if(state) return state;
+    }
+    return '';
+}
+function smartGroupScopeId(nodeId){
+    const group = canvasCore.smartGroupContainingNode(nodeId);
+    if(group) return group.id;
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    return isSmartGroupNode(node) ? node.id : '';
+}
+function moveSmartNodeAtom(node, x, y){
+    const dx = Math.round(x - (Number(node.x) || 0));
+    const dy = Math.round(y - (Number(node.y) || 0));
+    translateSmartNodeWithMembers(node, dx, dy);
+}
+function shellPoint(event){
+    const rect = canvasCore.shell.getBoundingClientRect();
+    return {x:event.clientX - rect.left, y:event.clientY - rect.top};
+}

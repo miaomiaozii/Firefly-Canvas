@@ -614,8 +614,11 @@ video.node-img { object-fit:cover; background:#0f172a; }
 @keyframes dash-flow { to { stroke-dashoffset:-13; } }
 @keyframes dash-flow-pending { to { stroke-dashoffset:-9; } }
 .image-node { z-index:2; }
-/* #152: 历史抽屉打开时，节点提升到抽屉之上（87 > 86），底部节点的提示词框不被遮挡 */
-body:has(.log-modal.open) .image-node { z-index:87; }
+/* #163 + #164: 层级契约只有一套，与历史抽屉关闭/打开/折叠无关：
+生成分组框（.smart-group-node，最底层背板）< 普通节点 < 选中 < 拖动中 < 提示词框
+< 面板类浮层 < 历史抽屉 < 提示词流。
+历史抽屉始终浮在画布之上；提示词框的可达性由平移画布保证（keepComposerReachableByPanningCanvas），
+不再靠抽屉开态改写 z-index——那会把选中(10)/拖动中(12)压平到同一个值，并把提示词流(120)压到 88。*/
 .image-node.smart-group-node { z-index:0; }
 .image-node.selected:not(.smart-group-node) { z-index:10; }
 .image-node.dragging:not(.smart-group-node) { z-index:12; }
@@ -719,17 +722,17 @@ body:has(.log-modal.open) .image-node { z-index:87; }
 @keyframes generation-placeholder-spin { to { transform:rotate(360deg); } }
 @keyframes generation-placeholder-breathe { 0%,100% { opacity:.42; transform:scale(.9); } 50% { opacity:1; transform:scale(1.08); } }
 @media (prefers-reduced-motion:reduce) { .generation-placeholder, .generation-placeholder::after, .generation-placeholder-spinner { animation:none; } }
-.jimeng-pending-cell { position:relative; display:flex; align-items:center; justify-content:center; }
-.jimeng-pending-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:14px; box-sizing:border-box; text-align:center; }
-.jimeng-pending-spinner i { width:26px; height:26px; color:var(--accent, #6366f1); animation:spin 1s linear infinite; }
+.task-pending-cell { position:relative; display:flex; align-items:center; justify-content:center; }
+.task-pending-overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:14px; box-sizing:border-box; text-align:center; }
+.task-pending-spinner i { width:26px; height:26px; color:var(--accent, #6366f1); animation:spin 1s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
-.jimeng-pending-text { font-size:12px; font-weight:600; color:var(--text, #0f172a); line-height:1.3; }
-.jimeng-pending-sub { font-size:11px; color:var(--muted, #64748b); line-height:1.3; }
-.jimeng-pending-query { display:inline-flex; align-items:center; gap:6px; margin-top:4px; padding:6px 12px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--text, #0f172a); font-size:12px; cursor:pointer; }
-.jimeng-pending-query:hover:not(:disabled) { background:var(--soft); }
-.jimeng-pending-query:disabled { opacity:.6; cursor:default; }
-.jimeng-pending-query i { width:14px; height:14px; }
-.jimeng-pending-query:disabled i { animation:spin 1s linear infinite; }
+.task-pending-text { font-size:12px; font-weight:600; color:var(--text, #0f172a); line-height:1.3; }
+.task-pending-sub { font-size:11px; color:var(--muted, #64748b); line-height:1.3; }
+.task-pending-query { display:inline-flex; align-items:center; gap:6px; margin-top:4px; padding:6px 12px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--text, #0f172a); font-size:12px; cursor:pointer; }
+.task-pending-query:hover:not(:disabled) { background:var(--soft); }
+.task-pending-query:disabled { opacity:.6; cursor:default; }
+.task-pending-query i { width:14px; height:14px; }
+.task-pending-query:disabled i { animation:spin 1s linear infinite; }
 .image-edit-mode button[data-image-edit-mode="preview"] i { stroke-width:2; }
 .preview-stage { position:relative; display:inline-flex; align-items:center; justify-content:center; line-height:0; user-select:none; cursor:grab; }
 .preview-stage.panning { cursor:grabbing; }
@@ -1467,6 +1470,18 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
 .asset-dialog-btn { height:30px; padding:0 12px; border-radius:999px; font-size:11px; font-weight:700; }
 .asset-dialog-btn.secondary { background:var(--soft); color:var(--muted); border:1px solid var(--line); }
 .asset-dialog-btn.primary { background:var(--strong); color:var(--strong-text); }
+.smart-batch-rename-field { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:10px; font-size:12px; font-weight:600; color:var(--muted); }
+.smart-batch-rename-field span { flex:0 0 auto; }
+.smart-batch-rename-field input, .smart-batch-rename-field select { flex:1; height:34px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--text); outline:none; padding:0 10px; font-size:12px; font-weight:600; }
+.smart-batch-rename-field input:focus, .smart-batch-rename-field select:focus { border-color:var(--strong); }
+.smart-batch-rename-row { display:flex; gap:12px; }
+.smart-batch-rename-row .smart-batch-rename-field { flex:1; }
+.smart-batch-rename-count { margin-top:10px; font-size:12px; font-weight:700; color:var(--muted); }
+.smart-batch-rename-preview { margin-top:8px; max-height:132px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:var(--soft); padding:8px; display:flex; flex-direction:column; gap:4px; }
+.smart-batch-rename-preview .smart-batch-rename-line { font-size:11px; font-weight:600; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.smart-batch-rename-preview .smart-batch-rename-line em { font-style:normal; color:var(--muted); opacity:.7; }
+.smart-batch-rename-preview .smart-batch-rename-line strong { color:var(--text); font-weight:700; }
+.smart-batch-rename-preview .smart-batch-rename-line.warn strong { color:#dc2626; }
 .asset-hover-preview { position:fixed; z-index:88; display:none; width:260px; max-height:300px; border-radius:16px; overflow:hidden; background:var(--card); border:1px solid var(--line); box-shadow:0 24px 70px rgba(15,23,42,.22); pointer-events:none; }
 .asset-hover-preview img,.asset-hover-preview video { width:100%; max-height:260px; display:block; object-fit:contain; background:var(--soft); }
 .asset-hover-preview .asset-hover-name { padding:8px 10px; color:var(--text); font-size:11px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-top:1px solid var(--line); }
@@ -3312,6 +3327,8 @@ button.log-prompt-preview svg { width:11px; height:11px; flex:0 0 auto; margin-l
 .smart-log-detail-delete-original { grid-column:1 / -1; color:var(--danger) !important; }
 .smart-log-detail-delete-original:hover,.smart-log-detail-delete-original:focus-visible { border-color:var(--danger) !important; background:color-mix(in srgb, var(--danger) 9%, var(--card)) !important; }
 .smart-log-detail-actions button:disabled { opacity:.55; cursor:wait; }
+.smart-log-detail-actions button[data-upscale-tier]:disabled { cursor:not-allowed; }
+.smart-log-detail-upscale-size { font-style:normal; font-size:11px; font-weight:600; color:var(--muted); }
 .smart-log-detail-actions svg { width:15px; height:15px; }
 
 /* Focus mode is a centered creative workspace: visual context first, original editor below. */
@@ -3341,7 +3358,14 @@ button.prompt-flow-context-image { cursor:pointer; }
     .smart-log-detail-stage { padding:10px; }
     .smart-log-detail-info { gap:12px; padding:14px; }
     .smart-log-detail-head h2 { font-size:18px; }
-    .smart-log-detail-actions { grid-template-columns:1fr; }
+    .smart-log-detail-actions { grid-template-columns:repeat(6,1fr); gap:6px; }
+    /* #260 后动作按钮 2→5 个：窄屏下保持两行（下载|删除 + 2K/4K/8K 三等分），
+       避免单列 5 行撑爆 info 栏盖住 prompt 区（ui-integrity 800x600 实测回归）。*/
+    .smart-log-detail-download { grid-column:1/4; grid-row:1; }
+    .smart-log-detail-delete-original { grid-column:4/7; grid-row:1; }
+    .smart-log-detail-copy-2k { grid-column:1/3; grid-row:2; }
+    .smart-log-detail-copy-4k { grid-column:3/5; grid-row:2; }
+    .smart-log-detail-copy-8k { grid-column:5/7; grid-row:2; }
     .composer.prompt-flow .prompt-flow-context { flex-basis:150px; grid-template-columns:minmax(260px, .72fr) minmax(0, 1.28fr); }
     .prompt-flow-context-image { max-width:none; min-width:0; }
     .composer.prompt-flow .prompt-input { padding:20px; font-size:16px; }
@@ -3365,6 +3389,8 @@ button.prompt-flow-context-image { cursor:pointer; }
     .smart-log-detail-modes button { padding:4px 7px; font-size:10px; }
     .smart-log-detail-mark { width:26px; height:26px; margin:2px 12px 6px; }
     .smart-log-detail-prompt-wrap { gap:6px; }
+    .smart-log-detail-actions button { min-height:30px; font-size:11px; }
+    .smart-log-detail-upscale-size { display:none; }
     .smart-log-detail-prompt { min-height:56px; padding:10px; }
     .smart-log-detail-actions { gap:6px; }
     .smart-log-detail-actions button { min-height:32px; font-size:11px; }
@@ -3554,20 +3580,20 @@ button.prompt-flow-context-image { cursor:pointer; }
 .asset-dialog-btn.danger:disabled { opacity:.5; cursor:not-allowed; }
 .smart-trash-dialog { width:min(560px, calc(100vw - 40px)); max-height:min(72vh, 640px); display:flex; flex-direction:column; }
 .smart-trash-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:4px 2px; }
-.smart-trash-empty { padding:28px 12px; text-align:center; color:#94a3b8; font-size:13px; }
+/* #211：回收区列表配色统一走主题变量（定义在 static/css/studio-foundation.css：:root 浅色 + html.studio-theme-dark 深色） */
+.smart-trash-empty { padding:28px 12px; text-align:center; color:var(--muted); font-size:13px; }
 .smart-trash-item {
     display:flex; align-items:center; gap:10px;
-    padding:8px 10px; border:1px solid rgba(100,116,139,.18); border-radius:8px;
+    padding:8px 10px; border:1px solid var(--line); border-radius:8px;
 }
-.smart-trash-icon { width:18px; height:18px; color:#64748b; flex-shrink:0; }
+.smart-trash-icon { width:18px; height:18px; color:var(--muted); flex-shrink:0; }
 .smart-trash-meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
-.smart-trash-name { font-size:13px; color:#1f2937; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.theme-dark .smart-trash-name { color:#e5e7eb; }
-.smart-trash-sub { font-size:11px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.smart-trash-name { font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.smart-trash-sub { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* #86：回收区缩略图（点开放大预览）+ 大图预览弹窗 */
-.smart-trash-thumb-wrap { width:56px; height:42px; border-radius:8px; overflow:hidden; flex:none; background:var(--soft, rgba(100,116,139,.12)); display:flex; align-items:center; justify-content:center; cursor:zoom-in; border:1px solid rgba(100,116,139,.18); position:relative; }
+.smart-trash-thumb-wrap { width:56px; height:42px; border-radius:8px; overflow:hidden; flex:none; background:var(--soft); display:flex; align-items:center; justify-content:center; cursor:zoom-in; border:1px solid var(--line); position:relative; }
 .smart-trash-thumb-wrap .smart-trash-icon { position:absolute; display:none; }
-.smart-trash-thumb-wrap.no-thumb .smart-trash-icon { display:inline-flex; align-items:center; justify-content:center; color:#94a3b8; }
+.smart-trash-thumb-wrap.no-thumb .smart-trash-icon { display:inline-flex; align-items:center; justify-content:center; color:var(--muted); }
 .smart-trash-thumb { width:100%; height:100%; object-fit:cover; display:block; }
 .smart-trash-thumb-wrap.no-thumb .smart-trash-thumb { display:none; }
 .smart-trash-preview-backdrop { position:fixed; inset:0; z-index:95; background:rgba(15,23,42,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; }
@@ -3892,6 +3918,68 @@ button.prompt-flow-context-image { cursor:pointer; }
     background: #16161e;
     border-top: 1px solid #2f3549;
     flex-shrink: 0;
+}
+
+/* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
+.agent-tui-attach-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #101018;
+    border-top: 1px solid #2f3549;
+    flex-shrink: 0;
+}
+.agent-tui-attach {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    background: #1b1b26;
+    border: 1px solid #2f3549;
+    border-radius: 6px;
+    max-width: 280px;
+}
+.agent-tui-attach-thumb {
+    width: 40px;
+    height: 30px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex-shrink: 0;
+    background: #000;
+}
+.agent-tui-attach-meta { min-width: 0; }
+.agent-tui-attach-name {
+    font-size: 11px;
+    color: #dfe3ec;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+}
+.agent-tui-attach-caption {
+    font-size: 10px;
+    color: #8b93a7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+}
+.agent-tui-attach-remove {
+    border: none;
+    background: transparent;
+    color: #8b93a7;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 4px;
+    flex-shrink: 0;
+}
+.agent-tui-attach-remove:hover { color: #ff7b7b; }
+.agent-tui-msg-attach {
+    margin-top: 2px;
+    font-size: 11px;
+    color: #8b93a7;
 }
 
 .agent-tui-prompt {

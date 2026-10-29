@@ -169,6 +169,11 @@ class ImageGenerationRoutingTests(unittest.TestCase):
             ("nano-banana", ("nano-banana", "nano-banana-hd", "nano-banana-hd")),
             ("nano-banana-pro", ("nano-banana-pro", "nano-banana-pro-2k", "nano-banana-pro-4k")),
             ("nano-banana-2", ("nano-banana-2", "nano-banana-2-2k", "nano-banana-2-4k")),
+            ("gemini-nano-banana-2.1", (
+                "gemini-nano-banana-2.1",
+                "gemini-nano-banana-2.1-2k",
+                "gemini-nano-banana-2.1-4k",
+            )),
             ("gemini-3.1-flash-image-preview", (
                 "gemini-3.1-flash-image-preview",
                 "gemini-3.1-flash-image-preview-2k",
@@ -209,6 +214,58 @@ class ImageGenerationRoutingTests(unittest.TestCase):
                         model=model,
                     )
                     self.assertEqual(route.model, expected)
+
+    def test_pinned_friendly_display_name_routes_to_raw_model_id(self):
+        """友好名（provider.model_names 展示名）可直接用作路由模型名，参考 Nano Banana 2 模式。"""
+        models = ("gemini-nano-banana-2.1", "gemini-nano-banana-2.1-2k", "gemini-nano-banana-2.1-4k")
+        providers = [{
+            "id": "comfly",
+            "name": "comfly",
+            "enabled": True,
+            "protocol": "openai",
+            "image_models": list(models),
+            "image_model_capabilities": {model: {
+                "sizes": ["1024x1024", "2048x2048", "4096x4096"],
+                "aspect_ratios": ["1:1"],
+                "resolutions": ["1k", "2k", "4k"],
+                "max_reference_images": 20,
+            } for model in models},
+            "model_names": {
+                "gemini-nano-banana-2.1": "Nano Banana 2.1",
+                "gemini-nano-banana-2.1-2k": "Nano Banana 2.1 2K",
+                "gemini-nano-banana-2.1-4k": "Nano Banana 2.1 4K",
+            },
+        }]
+        one_k = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="1024x1024", width=1024, height=1024,
+                aspect_ratio="1:1", resolution="1k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="Nano Banana 2.1",
+        )
+        self.assertEqual(one_k.model, "gemini-nano-banana-2.1")
+        four_k = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="4096x4096", width=4096, height=4096,
+                aspect_ratio="1:1", resolution="4k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="Nano Banana 2.1",
+        )
+        self.assertEqual(four_k.model, "gemini-nano-banana-2.1-4k")
+        direct = route_image_generation(
+            ImageGenerationRequest(
+                prompt="t", size="2048x2048", width=2048, height=2048,
+                aspect_ratio="1:1", resolution="2k",
+            ),
+            providers,
+            provider_id="comfly",
+            model="Nano Banana 2.1 2K",
+        )
+        self.assertEqual(direct.model, "gemini-nano-banana-2.1-2k")
 
     def test_pinned_model_without_variant_still_reports_incompatible_resolution(self):
         providers = [

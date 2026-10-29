@@ -1806,6 +1806,111 @@ class MediaCleanupEndpointTests(unittest.TestCase):
         self.assertEqual(response.content, b"preview-bytes")
         self.assertIn("image/webp", response.headers["content-type"])
 
+    def test_trash_media_preview_view_original_serves_original(self):
+        # issue #208：view=original 返回生成原件（而不是预览图）；响应头告知前端本次返回的是哪一种。
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        (trash_dir / "previews").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "previews" / "v1-preview.webp").write_bytes(b"v1-preview-bytes")
+        (trash_dir / "media").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "media" / "v1-original.png").write_bytes(b"v1-original-bytes")
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [{
+                "asset_id": "v1", "deleted_at": 1, "expires_at": 4102444800000, "name": "V1",
+                "mime_type": "image/png", "media_filename": "v1-original.png",
+                "preview_filenames": ["v1-preview.webp"],
+            }]}),
+            encoding="utf-8",
+        )
+        base = f"/api/project-library/{project['id']}/trash/media/v1/preview"
+        original = self.client.get(base, params={"view": "original"})
+        self.assertEqual(original.status_code, 200)
+        self.assertEqual(original.content, b"v1-original-bytes")
+        self.assertIn("image/png", original.headers["content-type"])
+        self.assertEqual(original.headers.get("x-canvas-media-view"), "original")
+        preview = self.client.get(base, params={"view": "preview"})
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.content, b"v1-preview-bytes")
+        self.assertEqual(preview.headers.get("x-canvas-media-view"), "preview")
+        # 默认与未知取值保持旧行为（预览优先），列表缩略图不受影响。
+        default = self.client.get(base)
+        self.assertEqual(default.content, b"v1-preview-bytes")
+        self.assertEqual(default.headers.get("x-canvas-media-view"), "preview")
+        unknown = self.client.get(base, params={"view": "weird"})
+        self.assertEqual(unknown.content, b"v1-preview-bytes")
+        self.assertEqual(unknown.headers.get("x-canvas-media-view"), "preview")
+
+    def test_trash_media_preview_view_original_falls_back_to_preview(self):
+        # issue #208：原件文件缺失时回退预览图，响应头告知本次实际返回的是预览图。
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        (trash_dir / "previews").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "previews" / "v2-preview.webp").write_bytes(b"v2-preview-bytes")
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [{
+                "asset_id": "v2", "deleted_at": 1, "expires_at": 4102444800000, "name": "V2",
+                "mime_type": "image/png", "media_filename": "v2-original-missing.png",
+                "preview_filenames": ["v2-preview.webp"],
+            }]}),
+            encoding="utf-8",
+        )
+        response = self.client.get(
+            f"/api/project-library/{project['id']}/trash/media/v2/preview", params={"view": "original"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"v2-preview-bytes")
+        self.assertEqual(response.headers.get("x-canvas-media-view"), "preview")
+
+    def test_trash_media_preview_view_original_missing_files_404(self):
+        # issue #208：索引存在但预览/原件文件都缺失时 404。
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [{
+                "asset_id": "v3", "deleted_at": 1, "expires_at": 4102444800000, "name": "V3",
+                "media_filename": "v3-original-missing.png",
+                "preview_filenames": ["v3-preview-missing.webp"],
+            }]}),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/project-library/{project['id']}/trash/media/v3/preview", params={"view": "original"}).status_code,
+            404)
+
+    def test_download_output_serves_trash_media_original(self):
+        # issue #207/#208：「生成详情」面板（回收区收口）的「下载原图」走 /api/download-output：
+        # 返回生成原件（view=original），文件名取回收区记录而不是 URL 尾段 "preview"。
+        project = self._project()
+        trash_dir = Path(self.temp_dir.name) / "projects" / project["id"] / "trash"
+        (trash_dir / "previews").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "previews" / "d1-preview.webp").write_bytes(b"d1-preview-bytes")
+        (trash_dir / "media").mkdir(parents=True, exist_ok=True)
+        (trash_dir / "media" / "d1-original.png").write_bytes(b"d1-original-bytes")
+        (trash_dir / "index.json").write_text(
+            json.dumps({"items": [{
+                "asset_id": "d1", "deleted_at": 1, "expires_at": 4102444800000, "name": "D1-original-final.png",
+                "mime_type": "image/png", "media_filename": "d1-original.png",
+                "preview_filenames": ["d1-preview.webp"],
+            }]}),
+            encoding="utf-8",
+        )
+        url = f"/api/project-library/{project['id']}/trash/media/d1/preview?view=original"
+        response = self.client.get("/api/download-output", params={"url": url, "name": "preview.png"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"d1-original-bytes")
+        disposition = response.headers.get("content-disposition", "")
+        self.assertIn("D1-original-final.png", disposition)
+        self.assertNotIn("d1-original.png", disposition)
+        self.assertNotIn("preview.png", disposition)
+
+    def test_download_output_trash_media_missing_404(self):
+        # issue #207：回收区 URL 条目不存在 → 404（不再落到远程下载分支报 400）。
+        project = self._project()
+        url = f"/api/project-library/{project['id']}/trash/media/nope/preview?view=original"
+        response = self.client.get("/api/download-output", params={"url": url, "name": ""})
+        self.assertEqual(response.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

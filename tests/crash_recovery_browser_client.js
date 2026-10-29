@@ -27,8 +27,11 @@
     throw new Error(`等待 ${name} 超时: ${last || '无结果'}`);
   }
   const evalFn = fn => Function('"use strict";return (' + fn + ')')();
-  const nodeCount = () => evalFn('() => nodes.filter(n => n.id !== "seed-prompt" && n.id !== "seed-image").length')();
-  const nodeIds = () => evalFn('() => nodes.filter(n => n.id !== "seed-prompt" && n.id !== "seed-image").map(n => n.id)')();
+  // #213：2d3381b（#162 P2e 4a）起 nodes 不再是裸全局，挂在 window.canvasState.nodes
+  // （static/js/canvas-state.js:8）；兼容访问器同 tests/fly_fixes_browser_client.js:48。
+  const nodesRef = '(function(){ const s = window.canvasState; return (s && Array.isArray(s.nodes)) ? s.nodes : (0, eval)("nodes"); })()';
+  const nodeCount = () => evalFn(`() => { const list = ${nodesRef}; return list.filter(n => n.id !== "seed-prompt" && n.id !== "seed-image").length; }`)();
+  const nodeIds = () => evalFn(`() => { const list = ${nodesRef}; return list.filter(n => n.id !== "seed-prompt" && n.id !== "seed-image").map(n => n.id); }`)();
 
   async function serverCanvasHasNode(nodeId) {
     const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}`);
@@ -62,7 +65,7 @@
   })();
 
   const hasSeedNodes = () => {
-    const ids = evalFn('() => nodes.map(n => n.id)')();
+    const ids = evalFn(`() => { const list = ${nodesRef}; return list.map(n => n.id); }`)();
     return ids.includes('seed-prompt') && ids.includes('seed-image');
   };
 
@@ -71,17 +74,17 @@
       await waitFor('画布加载', () => hasSeedNodes() && evalFn('() => typeof render === "function"'), 30000);
       check('画布加载完成（seed 两节点）', hasSeedNodes());
 
-      const preDiag = evalFn('() => ({ timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: nodes.length, saved: (document.getElementById("projectSaveState")||{}).dataset?.state })')();
+      const preDiag = evalFn(`() => { const list = ${nodesRef}; return { timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: list.length, saved: (document.getElementById("projectSaveState")||{}).dataset?.state }; }`)();
       check('基线状态（createNode 前）', Boolean(preDiag), JSON.stringify(preDiag));
       const createdId = evalFn('() => { const n = createNode(900, 400); return n.id; }')();
       check('创建新节点（3s 防抖窗口内）', Boolean(createdId) && nodeCount() === 1, String(createdId));
 
       await sleep(300);
-      const baseDiag = evalFn('() => ({ timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: nodes.length })')();
+      const baseDiag = evalFn(`() => { const list = ${nodesRef}; return { timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: list.length }; }`)();
       check('防抖计时器尚未触发（仍在窗口内）', baseDiag.timer === true, JSON.stringify(baseDiag));
 
       await sleep(300);
-      const afterDiag = evalFn('() => ({ timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: nodes.length })')();
+      const afterDiag = evalFn(`() => { const list = ${nodesRef}; return { timer: !!debouncedSaveTimer, dirty: contentDirty, durable: hasDurableCanvasChanges(), inflight: canvasSyncInFlight, rev: canvas?.revision, nodes: list.length }; }`)();
       check('触发 pagehide（模拟关页/崩溃）', true, JSON.stringify(afterDiag));
       window.dispatchEvent(new PageTransitionEvent('pagehide'));
 

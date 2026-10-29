@@ -155,13 +155,74 @@ def run_viewport(
             "(() => { const input=document.querySelector('#promptInput'); const run=document.querySelector('#runBtn').getBoundingClientRect(); "
             "return {height:input.getBoundingClientRect().height, editor:input, run:{left:run.left,top:run.top,right:run.right,bottom:run.bottom}}; })()"
         )
+        pan_before_expand = browser.evaluate("({x: viewport.x, y: viewport.y})")
         browser.native_click("#composerExpandBtn")
         browser.wait_for("composerPromptView.mode === 'expanded'", timeout=10)
         expanded_before = browser.evaluate("document.querySelector('#promptInput').getBoundingClientRect().height")
-        browser.wait_for(
-            "(() => { const r=document.querySelector('#runBtn').getBoundingClientRect(); return r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight; })()",
-            timeout=5,
-        )
+        # #164: canvas content (nodes, the Composer) may leave the viewport. The product
+        # must NOT pan the canvas to pull the Composer back; the user pans to reach it,
+        # so the test pans the same way instead of waiting for an automatic rescue.
+        pan_after_expand = browser.evaluate("({x: viewport.x, y: viewport.y})")
+        if pan_after_expand != pan_before_expand:
+            raise AssertionError(
+                "the canvas was auto-panned to keep the Composer in view, which #164 removed: "
+                f"{pan_before_expand} -> {pan_after_expand}"
+            )
+
+        def run_btn_visible() -> bool:
+            return browser.evaluate(
+                "(() => { const r=document.querySelector('#runBtn').getBoundingClientRect(); "
+                "return r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight; })()"
+            )
+
+        user_pan_required = not run_btn_visible()
+        lifecycle["user_pan_required_to_reach_run_btn"] = user_pan_required
+
+        def pan_canvas(dy: int) -> None:
+            """Pan the canvas the way a user does: left-drag on empty canvas.
+
+            The start point is found by hit-testing, because the shell is covered by
+            toolbars and nodes at the usual anchor points.
+            """
+            point = browser.evaluate(
+                """(() => {
+                  const shell = document.querySelector('#shell');
+                  const r = shell.getBoundingClientRect();
+                  for (let y = r.top + 8; y < r.bottom - 8; y += 16) {
+                    for (let x = r.left + 8; x < r.right - 8; x += 16) {
+                      const hit = document.elementFromPoint(x, y);
+                      if (hit && (hit === shell || hit.id === 'world' || hit.classList.contains('canvas-grid'))) {
+                        return {x: Math.round(x), y: Math.round(y)};
+                      }
+                    }
+                  }
+                  return null;
+                })()"""
+            )
+            if not point:
+                raise AssertionError("no empty canvas point found to start a user pan")
+            send = lambda payload: browser.cdp.command("Input.dispatchMouseEvent", payload)
+            send({"type": "mouseMoved", "x": point["x"], "y": point["y"]})
+            send({"type": "mousePressed", "x": point["x"], "y": point["y"],
+                  "button": "left", "buttons": 1, "clickCount": 1})
+            moved = 0.0
+            for _ in range(6):
+                moved += dy / 6
+                send({"type": "mouseMoved", "x": point["x"], "y": point["y"] + moved,
+                      "button": "left", "buttons": 1})
+            send({"type": "mouseReleased", "x": point["x"], "y": point["y"] + moved,
+                  "button": "left", "buttons": 0, "clickCount": 1})
+            time.sleep(0.2)
+
+        for _ in range(8):
+            if run_btn_visible():
+                break
+            pan_canvas(-120)
+        if not run_btn_visible():
+            raise AssertionError(
+                "#runBtn is still outside the viewport after panning the canvas the way a user would"
+            )
+        lifecycle["viewport_pan_after_user_pan"] = browser.evaluate("({x: viewport.x, y: viewport.y})")
         snap("expanded")
 
         browser.native_drag("#promptResize", dx=0, dy=64, steps=6, release_selector="#shell")

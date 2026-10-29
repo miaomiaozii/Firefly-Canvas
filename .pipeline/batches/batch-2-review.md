@@ -1,28 +1,45 @@
-# batch-2 审查记录（#117 US-27 + US-22）
+# batch-2 审核（#160 P2c 节点操作模块）
 
-## 第 1 轮：PASS（2026-09-24，主会话审查）
+**判定：PASS**（修复轮 1 后复审通过）
 
-| # | 验收标准 | 判定 | 验证方式 |
-|---|---|---|---|
-| 1 | 项目永久删除 kill 会话 | PASS | diff 亲核：purge_trashed_project 成功后调 cleanup_project |
-| 2 | 进回收站 kill 会话 | PASS | diff 亲核：trash_firefly_project 同上；无批量删除入口（grep 确认） |
-| 3 | 恢复无需特殊处理 | PASS | 会话文件随目录回来 + spawn 自动 --continue（agent_host.py:123-128） |
-| 4 | 导出含 agent_nodes/ | PASS | diff 亲核：export 收集+manifest 声明+ZIP_DEFLATED；导入验证放行前缀；提取有 zip-slip 防护（commonpath 检查） |
-| 5 | cleanup_project 方法 | PASS | 代码亲核：key 前缀 `{project_id}:` 与 `_session_key` 格式一致；锁内移除记录防竞态、锁外 stop 进程；stop_session 容错（terminate→5s→kill） |
-| 6 | fake host 单测 | PASS | 读测试：kill/多项目隔离/幂等/无 session 4 例，断言到位 |
-| 7 | 全量回归 | PASS | 单测 1005（twin）+ 浏览器 57+22 subtests（主会话亲跑 73.72s）+ import main OK |
-| 8 | result.md | PASS | 完整准确 |
-| 9 | 不提交 | PASS | — |
+## 修复轮 1 复审
 
-US-22：设计满足（app 无全局文本模型设置，spawn 空 model 不传 --model，pi 用自身默认）——与主会话独立侦察结论一致。
+- 测试脚本修复验证：spot 重查移入循环内、行距 200→250，冒烟 19/19 全过（agent/group 创建 PASS，拖拽/缩放 PASS）。
+- 功能代码未动：`git diff ed199bd --stat -- static/` 与首轮审核时一致（324−/1+），纯移动结论不变。
+- 测试 gate 豁免说明：功能代码与上次 pytest 全绿（1040/351）状态字节级一致，修复轮只改不入库的 QA 脚本（tmp/qa/），gate 目的（入库代码全绿）由传递性满足，不重复跑。
+- 记录在案（不阻塞）：重查仍只含 `.image-node` 未含其他类型节点，当前布局下 19/19 稳定通过；若未来节点尺寸变化可能需再调。
 
-备注（不阻塞）：
-- 导出未对 agent_nodes/ 文件做大小限制（会话 JSONL 通常 <1MB，可接受）
-- twin 的"全量回归"又是单测（316.30s）；浏览器测试由主会话补跑全绿（连续两个批次如此，收尾前已确认）
+## 首轮问题清单（已修复）
 
-## 审查中额外发现（转入 batch-3）
-主会话对照 spec Implementation Decisions 逐条核 TUI 形态，发现 4 处 M1 遗留缺口（前几轮会话实现 TUI 时未覆盖）：
-1. US-05 活动行"可折叠"未实现——工具活动行是平的（icon+name+80 字符 args 预览），无展开/收起交互
-2. 节点卡片（画布上）无状态灯（空闲/运行中/等待确认）+ 最后行预览——状态灯只在 TUI 面板内（11676 行）
-3. 消息渲染无 markdown（纯文本 escapeHtml），spec 要求"流式 markdown"
-4. 输入行是单行 `<input type="text">`，placeholder 宣称"Shift+Enter 换行"但单行 input 无法换行——spec 要求终端式输入行（Enter 发送/Shift+Enter 换行）
+## 首轮逐条对照
+
+| 验收项 | 结果 |
+|---|---|
+| 语法检查（node --check 两文件） | PASS |
+| 新模块 16 函数全局可用、主脚本无重复定义 | PASS |
+| HTML `<script>` 位置（canvas-undo.js 之后、smart-canvas.js 之前，无 ?v=） | PASS（L547） |
+| 纯位置移动零逻辑改动 | PASS（diff 对照 ed199bd：324 删除行与新文件逐行一致，仅 15 个新增空行，无标识符/注释改动） |
+| 搬/留清单符合任务卡边界纪律（拖拽接线/复制粘贴/布局辅助留主脚本） | PASS |
+| 0 ReferenceError / 0 console error | PASS |
+| 全量回归 1040 passed / 351 subtests | PASS |
+| **浏览器冒烟：各类型节点创建均正常** | **FAIL**（agent/group 2 类型未验证成功） |
+| 浏览器冒烟：删除/移动/缩放/重命名 | 删除 PASS；移动/缩放 best-effort PARTIAL（可接受，见下）；重命名 PASS（函数可用） |
+
+## 问题清单（需修复）
+
+1. **agent/group 节点创建冒烟未通过（必须修复）**：`tmp/qa/qa19-p2c-nodeops.js` 的 spot 计算有 bug——重叠检查（L64）只在循环前查询一次 `.image-node` 的 box，不含循环中创建的节点。实际落点：i=0 图片节点 (200,400) 292×292 延伸到 y≈692，i=4 的 spot (200,600) 落在其内部；i=2 loop 节点被调整到 (900,550)，i=6 的 spot (900,600) 落在其内部 → 右键命中节点而非空白画布 → `#createMenu` 不出现。
+   - 修复方式：循环内每次右键前重新查询**所有类型**节点的 box 做重叠检查（或加大 spot 间距到 >400px 垂直），确保右键落在空白画布。
+   - 修复后重跑冒烟：**agent/group 创建必须 PASS**（目标 19/19）。
+2. **拖拽/缩放 best-effort 项（尽力修复，可留 PARTIAL）**：若坐标问题同源（spot 落在节点上导致选不中目标节点），随 1 一并修复；若无法修好，保持 PARTIAL 并在 result.md 说明（已可接受：拖拽事件接线未搬、移动/缩放同步函数已验证可用且字节级未改）。
+
+## 接受的项（无需修复）
+
+- 15 个新增空行（纯空白，与 batch-1 先例一致）。
+- 移动/缩放 best-effort PARTIAL（若第 2 条修不好）。
+
+## 修复要求
+
+- 只改测试脚本 `tmp/qa/qa19-p2c-nodeops.js`（不动功能代码——功能代码 diff 已确认纯移动，任何功能代码改动都会破坏审核结论）。
+- 重跑冒烟，agent/group 创建 PASS。
+- 更新 `.pipeline/batches/batch-2-result.md`。
+- 全量 pytest 不必重跑（无功能代码改动）。

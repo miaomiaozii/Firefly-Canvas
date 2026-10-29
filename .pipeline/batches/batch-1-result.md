@@ -1,77 +1,94 @@
-# batch-1 结果（#117 US-21）：移除旧"先计划后执行"Agent UI 与后端机制
+# batch-1 结果：#159 画布前端模块化 P2b：抽取撤销/重做模块
 
-## 完成时间
-2026-09-23
+## 最终搬/留函数清单
 
-## 删除清单
+### 搬到 `static/js/canvas-undo.js`（12 个函数 + 8 个状态声明）
 
-### 前端（static/js/smart-canvas.js）
-- `agentTaskNodeBodyHtml`：移除 cancel/retry 按钮，改为只读 legacy 卡片（保留 `.agent-task-card-readonly` class）
-- 节点创建死字段：`agentTaskDraft`、`agentTaskDrafts`、`agent_plan`（createAgentNode）
-- `agentTaskControlAction` 函数（cancel/retry API 调用）
-- `refreshAgentPlanState` 函数
-- `bindAgentTaskNodeControls` 简化为仅绑定 result link（移除 cancel/retry 按钮绑定）
-- 补回缺失的 `agentTaskStatusText` 函数（legacy 卡片渲染依赖）
+**状态：**
+- `UNDO_LIMIT` (const = 40)
+- `undoStack` (const = [])
+- `redoStack` (const = [])
+- `undoSuppressed` (let = false)
+- `pendingUndoSnapshot` (let = null)
+- `redoPushing` (let = false)
+- `smartUndoButton` (const = document.get('smartUndoButton'))
+- `smartRedoButton` (const = document.get('smartRedoButton'))
 
-### 后端端点（app/routers/api_project_library.py）
-- `GET /api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}`（get_project_agent_task）
-- `POST /api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}/cancel`（cancel_project_agent_task）
-- `POST /api/project-library/{project_id}/agent/{node_id}/tasks/{task_id}/retry`（retry_project_agent_task）
+**函数：**
+1. `syncUndoRedoButtons()` — 按钮启用/禁用同步
+2. `capturePendingUndo()` — 捕获待提交快照
+3. `commitPendingUndo()` — 提交待提交快照到 undo 栈
+4. `discardPendingUndo()` — 丢弃待提交快照
+5. `snapshotForUndo()` — 生成当前画布快照
+6. `pushUndo(extra)` — 推入 undo 栈
+7. `performUndo()` — 执行撤销（async）
+8. `performRedo()` — 执行重做（async）
+9. `filterDanglingProjectMediaImages(snapshotNodes)` — 过滤悬空媒体引用
+10. `refreshProjectMediaLibraryItems()` — 刷新内存媒体库（async）
+11. `stripDeletedMediaFromUndoStacks(asset_id)` — 从 undo/redo 栈移除已删媒体引用
+12. `removeProjectOriginalUndoTokens(asset_id, deletion_id, project_id)` — 清理 projectOriginalDelete 令牌
 
-### 后端模型（app/core.py）
-- `ProjectAgentPlanRequest` class
-- `ProjectAgentExecuteRequest` class
-- `PROJECT_AGENT_MAX_TASKS_PER_PLAN` 全局量
+### 留在 `smart-canvas.js`（排除项及理由）
 
-### i18n（static/js/i18n/smart-canvas.js）
-移除旧 plan-execute UI 专属键：
-- agentTaskLabel, agentTaskMeta, agentTaskPrompt
-- agentPlanAria, agentPlanTitle, agentPlanId, agentPlanEmpty
-- agentSubtitle, agentGoalPlaceholder
-- agentTaskType, agentTaskCountLabel, removeTask, remove
-- agentTaskPromptPlaceholder, dependentTask, agentTaskDeps, noDependency
-- taskLabel, addTask, generatePlan, confirmAndRun
+- **媒体归档簇**（`ARCHIVE_DELAY_MS`, `pendingMediaArchives`, `scheduleMediaArchive`, `cancelPendingMediaArchives`）：属 P2d 领域（媒体归档），本批不搬。`performUndo`/`performRedo` 会调用它们，但共享全局作用域下跨模块调用无碍。
+- **`restoreSmartProjectOriginalUndo(snapshot)`**（L10153，async，约 70 行）：深度依赖主脚本其他函数（`settleProjectCanvasBeforeOriginalMutation`, `smartHistoryIdForDeletedOutput`, `captureSmartOriginalDeletionUiState`, `canvasForStorage`, `projectCanvasSnapshot`, `buildCoreMutations`, `smartActiveHistoryTaskLogs`, `hydrateProjectMediaReferences`, `normalizeLegacySmartNode`, `rebuildMarkedAssetIdsFromNodes`, `updateSmartMarkedBadge`, `reconcileSmartOriginalDeletionUi`, `render`, `saveProjectCanvasUntilSettled`, `materializeProjectMediaReferences`, `durableSnapshotForCanvas`, `markAutosaveSaved`, `renderSmartCanvasHistory`, `refreshSmartProjectMediaTrashButton`），搬移成本大于收益，留主脚本。
+- **grid 自定义线 undo 系统**（`undoGridCustomLine`/`syncGridCustomUndoBtn`/`gridCustomHistory`）：独立的小 undo 系统，不搬。
+- **绘制编辑 undo 系统**（`undoEditDrawing`/`redoEditDrawing`/`editDrawUndoStack`/`editDrawRedoStack`）：独立的小 undo 系统，不搬。
+- **生成中禁删守卫**：内嵌在 `deleteNodeFromButton`（L14866-14867）和选中删除逻辑中，属节点操作（P2c 领域），不搬。
 
-保留 legacy 卡片所需键：agentTaskTitle, agentTaskModelCount, agentTaskParams, agentKindImage/Video/Prompt, viewResultNode, waitingResultNode
+## 改了什么
 
-### import 链修复（main.py, api_project_library.py）
-- main.py：移除 get_project_agent_task、ProjectAgentPlanRequest、ProjectAgentExecuteRequest、PROJECT_AGENT_MAX_TASKS_PER_PLAN 的 import
-- api_project_library.py：移除 ProjectAgentPlanRequest、ProjectAgentExecuteRequest 的 import（不再使用）
+| 文件 | 变化 |
+|------|------|
+| `static/js/canvas-undo.js` | 新建，242 行（12 函数 + 8 状态声明 + 头部注释） |
+| `static/js/smart-canvas.js` | 删除 L304-306（UNDO 状态）、L320-329（undo 状态/按钮/sync）、L334-521（12 个函数）；净减约 237 行 |
+| `static/smart-canvas.html` | 在 `canvas-connections.js` 与 `smart-canvas.js` 之间插入 `<script src="/static/js/canvas-undo.js"></script>` |
 
-## 保留的共享符号（及理由）
+## 为什么（关键决策）
 
-### _agent_* 函数（core.py）
-全部保留，因为被旧流程执行引擎（services/agents.py、services/_base.py、routers/startup.py、api_project_library.py）使用：
-- _agent_clean_params, _agent_forbidden_value, _agent_plan_response, _agent_public_task, _agent_task_specs（api_project_library.py 使用）
-- _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout（services/agents.py、services/_base.py 使用）
-- _agent_int_param, _agent_normalize_candidates, _agent_history_output（services/agents.py、services/_base.py 使用）
+1. **纯位置移动，零逻辑改动**：所有搬移的代码连注释一起原样搬，未改任何逻辑、参数名、变量名。
+2. **共享全局作用域模式**：沿用 P2a（canvas-connections.js）模式，新模块先于主脚本加载，所有标识符在同一个全局作用域中互相可见。
+3. **`restoreSmartProjectOriginalUndo` 留主脚本**：该函数深度依赖 20+ 个主脚本函数，搬移会导致 canvas-undo.js 引入大量新的跨模块依赖，违背模块化初衷。
+4. **媒体归档簇不搬**：属 P2d 领域，避免本批范围蔓延。
 
-### PROJECT_AGENT_* 全局量（core.py）
-全部保留（除 PROJECT_AGENT_MAX_TASKS_PER_PLAN），因为被旧流程执行引擎使用：
-- PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_AGENT_FUTURES, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_MAX_PER_PROJECT（api_project_library.py、services/agents.py 使用）
-- PROJECT_AGENT_RECOVERY_LOCK（routers/startup.py 使用）
+## 验证结果
 
-## 旧项目兼容验证
-- legacy agent-task 节点渲染保留（只读卡片，无按钮/交互）
-- `agentTaskStatusText` 函数补回（之前意外删除导致 legacy 卡片渲染报错）
-- 测试中创建 agent-task 节点的用例（test_project_api.py、test_project_history.py、test_project_canvas_mutation_client.py）原样通过
-- 浏览器测试（agent_browser_client.js 等）引用 `.agent-task-node`、`.agent-task-card`、`[data-agent-task-status]`、`.agent-task-meta`、`.agent-task-params`、`[data-agent-result-link]`，这些 CSS 选择器在 legacy 卡片中保留
+| 验证项 | 结果 | 关键输出 |
+|--------|------|----------|
+| `node --check canvas-undo.js` | PASS | 语法正确 |
+| `node --check smart-canvas.js` | PASS | 语法正确 |
+| grep 重复定义检查 | PASS | 主脚本无重复定义，仅有调用引用 |
+| 浏览器冒烟：全局可用性 | PASS | 12 个 undo 函数全部 window 可见 |
+| 浏览器冒烟：创建→undo→redo | PASS | 节点正确消失/恢复 |
+| 浏览器冒烟：删除→undo（含连线） | PASS | 节点和连线均正确恢复 |
+| 浏览器冒烟：移动→undo/redo | PASS | 位置精确恢复（误差 <5px） |
+| 浏览器冒烟：生成中禁删守卫 | PASS | `smartNodeInFlight` 守卫代码存在 |
+| 浏览器冒烟：ReferenceError | PASS | 0 个 |
+| 浏览器冒烟：console error | PASS | 0 个 |
+| 浏览器冒烟：清理+保存 | PASS | 恢复基线，保存成功 |
+| 全量回归 `pytest tests/` | PASS | **1040 passed, 351 subtests passed**（与基线完全一致） |
 
-## 验收标准逐条核对
-1. ✅ 前端删除旧交互 UI（cancel/retry 按钮、死字段）
-2. ✅ 旧项目兼容（legacy 只读渲染保留，测试通过）
-3. ✅ 后端删除旧流程专属端点（plan/execute/cancel/retry/get task）；共享 helper/全局量保留并记录
-4. ✅ i18n 删除旧 UI 专属键；通用键（cancelTask/retryTask）保留
-5. ✅ 测试：覆盖旧流程的测试用例（创建 agent-task 节点）原样通过；新流程测试未受影响
-6. ✅ 全量回归：1001 passed, 12 warnings, 351 subtests passed in 319.99s
-7. ✅ 本文件
-8. ✅ 未提交 commit
+**冒烟测试总结果：18/18 全部通过 ✓**
 
-## 测试输出
-```
-1001 passed, 12 warnings, 351 subtests passed in 319.99s (0:05:19)
-```
+## 审核修复（round 1）
+
+审核发现 3 处局部标识符被错误改名（camelCase → snake_case），已恢复原样：
+
+1. `refreshProjectMediaLibraryItems`：`project_id` → `projectId`（3 处）
+2. `stripDeletedMediaFromUndoStacks`：参数 `asset_id` → `assetId`（3 处）
+3. `removeProjectOriginalUndoTokens`：第 3 参数 `project_id` → `projectId`（2 处）
+
+修复后重跑验证：
+- `node --check` 两文件：PASS
+- 浏览器冒烟：18/18 全部通过
+
+## 测试 gate（审核 PASS 后）
+
+审核 PASS 后重跑全量回归：
+- `python -m pytest tests/ -q`：**1040 passed, 12 warnings, 351 subtests passed**（与基线完全一致）
 
 ## 遗留风险
-- 旧"先计划后执行"的执行引擎（services/agents.py 等）仍保留，因为新 TUI 流程的工具调用结果仍创建 agent-task 节点。未来如果新流程完全独立，可以进一步清理。
-- legacy 卡片是只读的，旧项目的 agent-task 节点无法通过 UI 取消/重试（符合 US-21 要求：旧形态整体移除）。
+
+1. **状态变量不在 window 上**：`UNDO_LIMIT`、`undoStack` 等用 `const`/`let` 声明，是块级作用域，不会成为 `window` 属性。但这不影响功能——同一页面内的所有脚本共享同一个全局作用域，都能访问这些变量。这与 P2a 的 canvas-connections.js 行为一致。
+2. **`refreshProjectMediaLibraryItems` 参数名**：原代码用 `project_id`（下划线），保持一致。
+3. **缓存 busting**：`smart-canvas.js` 有 `?v=20260923.152613.9017` 参数，`canvas-undo.js` 没有。如果用户有浏览器缓存，可能需要刷新。但新文件首次加载不受影响。

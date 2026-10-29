@@ -13,6 +13,7 @@ import io
 import json
 import mimetypes
 import os
+from app.constants import NODE_TYPE_IMAGE
 import re
 import shutil
 import stat
@@ -55,17 +56,47 @@ class CleanupDrift(ProjectStoreError):
     """A cleanup confirmation no longer matches the project's current state."""
 
 
+def _canonical_drive_key(path_text: str) -> str:
+    """返回用于包含比较的路径形式（规范化大小写，并去掉 Windows 扩展长度前缀）。
+
+    ``Path.resolve()``（``ntpath.realpath``）在非严格解析时可能保留 ``\\?\\``
+    前缀：它对同一目标做两次 ``_getfinalpathname`` 查询，仅当两次 winerror
+    一致才剥离前缀；父目录被并发创建时 winerror 由 3 变为 2，前缀残留。
+    ``splitdrive`` 把 ``\\?\\c:`` 当作与 ``c:`` 不同的盘，会把同盘的合法
+    路径误判为越界，因此比较前先把两侧都归一化。
+    """
+    text = os.path.normcase(path_text)
+    if text.startswith("\\\\?\\unc\\"):
+        return "\\\\" + text[len("\\\\?\\unc\\"):]
+    if text.startswith("\\\\?\\"):
+        return text[len("\\\\?\\"):]
+    return text
+
+
+def path_is_within(root: Path | str, candidate: Path | str) -> bool:
+    """``candidate`` 是否位于 ``root`` 内（含相等）；跨盘或不可比时返回 ``False``。
+
+    #195：两侧先过 ``_canonical_drive_key``。直接 ``os.path.commonpath`` 在
+    一侧带 ``\\?\\`` 扩展前缀、另一侧不带时会抛
+    ``ValueError: Paths don't have the same drive``；调用方若用
+    ``except ValueError: pass`` 兑底，就会把安全检查静默跳过。
+    """
+    root_key = _canonical_drive_key(str(root))
+    candidate_key = _canonical_drive_key(str(candidate))
+    try:
+        return os.path.commonpath([root_key, candidate_key]) == root_key
+    except ValueError:
+        return False
+
+
 def _validated_projects_root(value: Path | str) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         raise ProjectStoreError("项目库路径必须是绝对路径")
     resolved = candidate.resolve()
     repository = Path(__file__).resolve().parent
-    try:
-        if os.path.commonpath([os.path.normcase(str(repository)), os.path.normcase(str(resolved))]) == os.path.normcase(str(repository)):
-            raise ProjectStoreError("项目库不能位于 Git 代码仓库内")
-    except ValueError:
-        pass
+    if path_is_within(repository, resolved):
+        raise ProjectStoreError("项目库不能位于 Git 代码仓库内")
     return resolved
 
 
@@ -158,8 +189,16 @@ def _library_manifest(root: Path) -> Dict[str, Any]:
 
 from firefly_projects_deletion import ProjectDeletionMixin
 from firefly_projects_cleanup import ProjectCleanupMixin
+from firefly_project_versions import ProjectVersionsMixin
+from firefly_project_undo import ProjectUndoStackMixin
+from firefly_usage import ProjectUsageMixin
 
-class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
+# 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
+# 塞回用户眼前（#224 要修的就是这个），所以按裸 ID 形态剔除。
+_BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
+
+
+class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin, ProjectUsageMixin, ProjectUndoStackMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
         "input_asset_id", "inputAssetId",
@@ -216,6 +255,54 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         return persisted
 
     @staticmethod
+    def _migrate_retired_jimeng_nodes(canvas: Dict[str, Any]) -> bool:
+        """#236: 即梦服务商全量退役 —— 把遗留 jimengPending 节点定格为失败终态（幂等）。
+
+        即梦服务商已移除，其 in-flight 提交无法再轮询/取回：将每个带 jimengPending
+        的节点（含卡在“生成中”的僵尸态）写入 failedGenerationTasks（message 携带
+        submit_id，引导重新生成/服务商侧核对），并清空 running/pending/queued/
+        pendingTasks 等运行时忙态。首次迁移后即幂等：jimengPending 键已删，
+        后续打开不再变更。历史记录（canvas history）不做删除，保留可追溯性。
+        """
+        changed = False
+        now_val = _now_ms()
+        for node in canvas.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            jp = node.get("jimengPending")
+            if not isinstance(jp, dict):
+                continue
+            submit_id = str(jp.get("submitId") or "").strip()
+            node.pop("jimengPending", None)
+            pending_tasks = node.get("pendingTasks")
+            tasks = [t for t in pending_tasks if isinstance(t, dict)] if isinstance(pending_tasks, list) else []
+            failed_tasks = node.get("failedGenerationTasks")
+            if not isinstance(failed_tasks, list):
+                failed_tasks = []
+            seen = {str(t.get("taskId")) for t in failed_tasks if isinstance(t, dict)}
+            candidates = [str(t.get("taskId")) for t in tasks if str(t.get("taskId") or "")]
+            if not candidates:
+                candidates = [submit_id or "jimeng-retired"]
+            if submit_id:
+                message = f"即梦服务商已退役，任务未完成（提交号 {submit_id}）；可重新生成或到服务商侧核对"
+            else:
+                message = "即梦服务商已退役，任务未完成；可重新生成"
+            for task_id in candidates:
+                if task_id and task_id not in seen:
+                    failed_tasks.append({"taskId": task_id, "error": message, "at": now_val})
+                    seen.add(task_id)
+            node["failedGenerationTasks"] = failed_tasks
+            node["running"] = False
+            node["pending"] = 0
+            node["queued"] = False
+            node.pop("pendingTasks", None)
+            if not node.get("runFinishedAt"):
+                node["runFinishedAt"] = now_val
+            node["runTimerHidden"] = False
+            changed = True
+        return changed
+
+    @staticmethod
     def _is_path_redirect(path: Path) -> bool:
         """Return whether an existing component can redirect filesystem access."""
         try:
@@ -258,12 +345,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 raise ProjectStoreError("项目路径不能经过符号链接或重解析点")
         try:
             candidate = (project_dir / relative).resolve(strict=False)
-            if os.path.commonpath(
-                [os.path.normcase(str(resolved_root)), os.path.normcase(str(candidate))]
-            ) != os.path.normcase(str(resolved_root)):
-                raise ProjectStoreError("项目媒体路径越界")
+            root_key = _canonical_drive_key(str(resolved_root))
+            candidate_key = _canonical_drive_key(str(candidate))
+            if os.path.commonpath([root_key, candidate_key]) != root_key:
+                raise ProjectStoreError(f"项目媒体路径越界: {candidate_key} 不在 {root_key} 内")
         except (OSError, ValueError) as exc:
-            raise ProjectStoreError("项目媒体路径无效") from exc
+            raise ProjectStoreError(f"项目媒体路径无效: {exc.__class__.__name__}: {exc}") from exc
         return candidate
 
     def _project_directory(self, project_id: str) -> Path:
@@ -274,9 +361,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         try:
             root = self.root.resolve(strict=True)
             resolved = lexical.resolve(strict=True)
-            contained = os.path.commonpath(
-                [os.path.normcase(str(root)), os.path.normcase(str(resolved))]
-            ) == os.path.normcase(str(root))
+            # #195：strict=True 只保护第一次 _getfinalpathname 调用；对已存在路径
+            # realpath 的第二次校验调用以不同 winerror 失败时（并发删除 / 瞬时
+            # FS 错误）仍会残留 \\?\\ 前缀。比较前两侧都过 _canonical_drive_key，
+            # 否则 commonpath 把 \\?\\c: 与 c: 判为不同盘抛 ValueError。
+            root_key = _canonical_drive_key(str(root))
+            resolved_key = _canonical_drive_key(str(resolved))
+            contained = os.path.commonpath([root_key, resolved_key]) == root_key
         except FileNotFoundError as exc:
             raise ProjectNotFound("项目不存在") from exc
         except (OSError, ValueError) as exc:
@@ -583,6 +674,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             self._canvases[project_id] = canvas
             self._histories[project_id] = []
             self._saved_revisions[project_id] = 0
+            # issue #257：创建即记录初始空画布版本（版本树 v1 基线）
+            self._capture_version_snapshot_if_enabled(project_id, self._project_canvas_for_persistence(canvas))
             return self._project_record(metadata)
 
     def duplicate_project(self, project_id: str) -> Dict[str, Any]:
@@ -614,7 +707,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     "revision": 0,
                 })
                 runtime_keys = {
-                    "pending", "running", "queued", "pendingTasks", "jimengPending",
+                    "pending", "running", "queued", "pendingTasks",
                     "runStartedAt", "runFinishedAt", "runElapsedMs", "runTimerHidden",
                     "_runMetaTargetId", "conversationSending", "agentPlanning", "agentExecuting",
                 }
@@ -1102,7 +1195,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     relative = Path(*name.split("/")[1:])
                     media_root = (directory / "media").resolve()
                     target = (media_root / relative).resolve()
-                    if os.path.commonpath([str(media_root), str(target)]) != str(media_root):
+                    if not path_is_within(media_root, target):
                         raise ProjectStoreError("Fly 项目包含不安全媒体路径")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, target.open("wb") as destination:
@@ -1138,7 +1231,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     relative = Path(*name.split("/")[1:])
                     agent_root = (directory / "agent_nodes").resolve()
                     target = (agent_root / relative).resolve()
-                    if os.path.commonpath([str(agent_root), str(target)]) != str(agent_root):
+                    if not path_is_within(agent_root, target):
                         raise ProjectStoreError("Fly 项目包含不安全 Agent 会话路径")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, target.open("wb") as destination:
@@ -1187,6 +1280,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             if history is None:
                 history = self._load_history(project_id)
                 self._histories[project_id] = history
+            # #236: 即梦已全量退役 —— 遗留 jimengPending 节点定格为失败终态（幂等，变更即持久化）。
+            if self._migrate_retired_jimeng_nodes(canvas):
+                self.flush(project_id)
             self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
             opened_canvas["history"] = copy.deepcopy(history)
@@ -1332,7 +1428,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                 raise ProjectNotFound("项目媒体不存在")
             media_root = (self.root / project_id / "media").resolve()
             path = (media_root / str(record.get("filename") or "")).resolve()
-            if os.path.commonpath([str(media_root), str(path)]) != str(media_root) or not path.is_file():
+            if not path_is_within(media_root, path) or not path.is_file():
                 raise ProjectNotFound("项目媒体不存在")
             cleaned_source = self._media_source(record["source"]) if isinstance(record.get("source"), dict) else None
             cleaned_sources = [self._media_source(item) for item in record.get("sources") or [] if isinstance(item, dict)] if isinstance(record.get("sources"), list) else None
@@ -1579,7 +1675,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             # 删除物理文件
             if delete_file:
                 path = (media_root / str(record.get("filename") or "")).resolve()
-                if os.path.commonpath([str(media_root), str(path)]) == str(media_root) and path.is_file():
+                if path_is_within(media_root, path) and path.is_file():
                     path.unlink(missing_ok=True)
             # 从索引中移除
             del index["items"][asset_id]
@@ -2197,7 +2293,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas = copy.deepcopy(opened)
             canvas.pop("history", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
-            if node is None or str(node.get("type") or "") not in {"image", "smart-image"}:
+            if node is None or str(node.get("type") or "") not in {"image", NODE_TYPE_IMAGE}:
                 raise InvalidMutation("媒体生成任务必须绑定已保存的媒体节点")
             existing_tasks = list(node.get("pendingTasks") or [])
             if not existing_tasks:
@@ -2461,6 +2557,95 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             self._histories[project_id] = history
         _write_json_atomic(self.root / project_id / "history.json", {"records": history}, keep_backup=False)
 
+    def _readable_output_name(self, project_id: str, canvas: Dict[str, Any], asset_id: str) -> str:
+        """给一个 asset_id 找可读名字：先媒体记录（生成时保存的文件名），再引用它的画布节点。
+
+        找不到就返回空串，让前端按自己的顺序回退到素材 ID，不编造名字。
+        """
+        candidates: List[str] = []
+        try:
+            candidates.append(str(self.media_record(project_id, asset_id).get("name") or ""))
+        except ProjectStoreError:
+            pass
+        for node in canvas.get("nodes") or []:
+            if isinstance(node, dict) and asset_id in self._collect_asset_ids(node):
+                candidates.append(str(node.get("alias") or node.get("name") or ""))
+        for candidate in candidates:
+            cleaned = str(candidate or "").strip()
+            if not cleaned or _BARE_ASSET_ID_RE.match(Path(cleaned).stem):
+                continue
+            return cleaned[:160]
+        return ""
+
+    def backfill_history_output_names(
+        self,
+        *,
+        project_id: str | None = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """一次性回填：给老生成历史里的 outputs 补上可读 name（#224 存量数据）。
+
+        改动前写入的 outputs 只有 {asset_id, kind}，名字其实在媒体记录里存着。
+        只补没有 name 的项，已有名字一律不动，所以第二次跑是空操作（幂等）。
+        历史归 store 管（apply_mutations 会 canvas.pop("history")），因此必须在
+        store 内部改 _histories 再走 _persist_history，不能直接编辑 data 下的 JSON。
+        """
+        summary = {
+            "projects_scanned": 0,
+            "projects_changed": 0,
+            "records_scanned": 0,
+            "outputs_total": 0,
+            "outputs_named": 0,
+            "outputs_unresolved": 0,
+            "changed_projects": [],
+            "dry_run": bool(dry_run),
+        }
+        with self._lock:
+            if project_id is None:
+                project_ids = [str(item.get("id") or "") for item in self.list_projects()]
+            else:
+                project_ids = [_clean_project_id(project_id)]
+            for current_project_id in project_ids:
+                if not current_project_id:
+                    continue
+                summary["projects_scanned"] += 1
+                try:
+                    canvas = self.open_project(current_project_id)["canvas"]
+                except ProjectNotFound:
+                    continue
+                history = copy.deepcopy(
+                    self._histories.get(current_project_id) or self._load_history(current_project_id)
+                )
+                changed = False
+                for record in history:
+                    if not isinstance(record, dict):
+                        continue
+                    summary["records_scanned"] += 1
+                    for entry in record.get("outputs") or []:
+                        if not isinstance(entry, dict):
+                            continue
+                        summary["outputs_total"] += 1
+                        if str(entry.get("name") or "").strip():
+                            continue
+                        asset_id = str(entry.get("asset_id") or "").strip()
+                        if not asset_id:
+                            continue
+                        name = self._readable_output_name(current_project_id, canvas, asset_id)
+                        if not name:
+                            summary["outputs_unresolved"] += 1
+                            continue
+                        entry["name"] = name
+                        summary["outputs_named"] += 1
+                        changed = True
+                if changed and not dry_run:
+                    self._histories[current_project_id] = history
+                    self._persist_history(current_project_id)
+                    summary["projects_changed"] += 1
+                if changed:
+                    # 预演时也要知道是哪个项目会变，运维脚本才能先备份再写。
+                    summary["changed_projects"].append(current_project_id)
+        return summary
+
     def complete_media_generation(
         self,
         project_id: str,
@@ -2512,12 +2697,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             canvas.pop("history", None)
             nodes = canvas.setdefault("nodes", [])
             node = next((item for item in nodes if str(item.get("id") or "") == node_id), None)
-            if node is not None and str(node.get("type") or "") not in {"image", "smart-image"}:
+            if node is not None and str(node.get("type") or "") not in {"image", NODE_TYPE_IMAGE}:
                 raise InvalidMutation("生成结果只能写入图片节点")
             if node is None:
                 node = {
                     "id": node_id,
-                    "type": "smart-image",
+                    "type": NODE_TYPE_IMAGE,
                     "x": 0,
                     "y": 0,
                     "created_at": _now_ms(),
@@ -2782,7 +2967,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
                     active_generation_task_ids = {
                         str(task.get("taskId") or task.get("task_id") or "")
                         for node in canvas.get("nodes") or []
-                        if isinstance(node, dict) and str(node.get("type") or "") in {"image", "smart-image"}
+                        if isinstance(node, dict) and str(node.get("type") or "") in {"image", NODE_TYPE_IMAGE}
                         for task in node.get("pendingTasks") or []
                         if isinstance(task, dict) and str(task.get("taskId") or task.get("task_id") or "")
                     }
@@ -2894,6 +3079,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             metadata["updated_at"] = canvas["updated_at"]
             _write_json_atomic(metadata_path, metadata, keep_backup=True, backup_count=1)
             self._saved_revisions[project_id] = int(canvas.get("revision") or 0)
+            # issue #257 / ADR 0021：每次 flush 自动快照进 ops.db 版本树（non-strict，不阻塞保存）
+            self._capture_version_snapshot_if_enabled(project_id, persisted_canvas)
             return {"project_id": project_id, "revision": canvas["revision"], "saved_at": canvas["updated_at"]}
 
     # ── 文档恢复（issue #94，ADR 0018）──────────────────────────────────────
@@ -3042,12 +3229,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         source = self.root.resolve()
         if os.path.normcase(str(destination)) == os.path.normcase(str(source)):
             raise ProjectStoreError("新项目库与当前项目库相同")
-        try:
-            common = Path(os.path.commonpath([str(source), str(destination)]))
-            if common == source or common == destination:
-                raise ProjectStoreError("新旧项目库不能互相嵌套")
-        except ValueError:
-            pass
+        if path_is_within(source, destination) or path_is_within(destination, source):
+            raise ProjectStoreError("新旧项目库不能互相嵌套")
         if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
             raise ProjectStoreError("目标项目库必须为空")
 
@@ -3184,6 +3367,29 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
         except (OSError, ValueError, json.JSONDecodeError):
             return {"items": {}}
 
+    def wait_for_snapshot(self, project_id: str, timeout: float = 30.0) -> bool:
+        """等该项目的后台快照真的落盘完成（issue #231 的确定性同步点）。
+
+        后台快照由 threading.Timer 触发，而 flush 在全局 _lock 里做磁盘写：
+        别的线程持锁（另一项目的写盘/刷库/删除）或 CPU 被抢时，落盘时间没有
+        上界——所以“等它写完”只能等事件，不能睡固定秒数（门里并行步骤抢资
+        源时，任何墙钟窗口都会报假红）。返回 True 表示已写完或本来就没待写
+        快照；False 表示超超时仍未写完。
+
+        不能在持 _lock 时 join：Timer 线程里的 flush 正是要那把锁，会死锁。
+        """
+        project_id = _clean_project_id(project_id)
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                timer = self._timers.get(project_id)
+            if timer is None:
+                return True
+            timer.join(max(0.0, deadline - time.monotonic()))
+            if timer.is_alive() or time.monotonic() >= deadline:
+                with self._lock:
+                    return project_id not in self._timers
+
     def _schedule_snapshot(self, project_id: str) -> None:
         previous = self._timers.pop(project_id, None)
         if previous is not None:
@@ -3218,9 +3424,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin):
             incoming_tasks = node.get("pendingTasks")
             existing_type = str(existing.get("type") or "") if isinstance(existing, dict) else ""
             incoming_type = str(node.get("type") or "")
-            server_owned_generation_node = existing_type in {"image", "smart-image"} or incoming_type in {"image", "smart-image"}
+            server_owned_generation_node = existing_type in {"image", NODE_TYPE_IMAGE} or incoming_type in {"image", NODE_TYPE_IMAGE}
             if server_owned_generation_node and (isinstance(existing_tasks, list) or isinstance(incoming_tasks, list)):
-                if existing_type in {"image", "smart-image"}:
+                if existing_type in {"image", NODE_TYPE_IMAGE}:
                     node["type"] = existing_type
                 terminal_task_ids = {
                     str(record.get("task_id") or "")

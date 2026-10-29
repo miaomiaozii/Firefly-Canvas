@@ -56,8 +56,11 @@
     const saved = await waitFor(`${kind} task result`, async () => {
       const canvas = await canvasSnapshot();
       const current = (canvas.nodes || []).find(item => item.id === nodeId);
-      const logs = (canvas.history || []).filter(item => item.result_node_id === nodeId && item.status === 'succeeded');
-      return current?.images?.length && !current.pending && logs.length ? { canvas, current, logs } : null;
+      // #213：服务端 canvas 的持久化字段是 history（0b1e249 #186 重命名后），
+      // 但这里的包装对象仍用旧键 logs，导致 saved.history 为 undefined
+      // → "Cannot read properties of undefined (reading 'some')"。
+      const history = (canvas.history || []).filter(item => item.result_node_id === nodeId && item.status === 'succeeded');
+      return current?.images?.length && !current.pending && history.length ? { canvas, current, history } : null;
     }, 60000, 250);
     const current = saved.current;
     const media = current.images || [];

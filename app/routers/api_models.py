@@ -39,7 +39,7 @@ _DEFAULT_VIDEO_MODELS = [
 ]
 
 _DEFAULT_CHAT_MODELS = ["gpt-4o-mini", "gemini-3.1-flash-image-preview-2k"]
-_DEFAULT_IMAGE_MODELS = ["nano-banana-pro", "nano-banana-2"]
+_DEFAULT_IMAGE_MODELS = ["nano-banana-pro", "gemini-nano-banana-2.1", "nano-banana-2"]
 
 @router.get('/api/models')
 async def ai_models():

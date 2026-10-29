@@ -76,7 +76,7 @@ FORBIDDEN_TERMS = {
     # 生成原件 _Avoid_ (生成输出项 is a formal term, excluded)
     "缓存图", "缩略图", "节点副本",
     # 生成输出项 _Avoid_ (生成原件 is a formal term, excluded)
-    "数组下标", "缩略图 DOM",
+    "数组下标", "输出槽位", "缩略图 DOM",
     # 生成任务 _Avoid_ (生成记录, 生成原件 are formal terms, excluded)
     "结果节点",
     # 任务状态卡 _Avoid_ (生成记录, 生成历史 are formal terms, excluded)
@@ -102,8 +102,9 @@ FORBIDDEN_TERMS = {
     "项目设置",
     # 全局资源库 _Avoid_
     "项目素材库", "隐式共享目录",
-    # 素材抽屉 _Avoid_
-    "独立素材页面", "混合素材库", "全局资产面板",
+    # 素材抽屉 _Avoid_（#212：用户可见文案、存量数据与内部注释改名完成后，才把裸词“资产库”纳入守卫；
+    # CONTEXT.md 的“资源库/素材抽屉/项目回收区”三处词条均将其登记为 _Avoid_）
+    "独立素材页面", "混合素材库", "全局资产面板", "资产库",
     # 在线生成 _Avoid_
     "本地生成", "ComfyUI", "工作流生成",
     # 模型路由 _Avoid_
@@ -124,6 +125,10 @@ FORBIDDEN_TERMS = {
     "独立视频应用", "本地视频工作流",
     # 音频素材 _Avoid_
     "独立音频项目", "音频工作站",
+    # Intentionally NOT curated from new _Avoid_ lines (#171): 待恢复任务 的
+    # "重试"/"重新生成" and 循环生成 的 "批量生成" are legitimate words for
+    # other concepts elsewhere in the codebase, so enforcing them would be wrong.
+    # Only "输出槽位" (above) is enforced among the #171 additions.
 }
 
 # English patterns that indicate terminology drift (e.g., log used for history).
@@ -158,13 +163,18 @@ WHITELIST = [
     ("*", "diagnostics", "Diagnostics logging"),
     # Backward-compatible log_id read in deletion snapshots
     ("firefly_projects_deletion.py", "log_id", "Backward-compatible read of legacy log_id key"),
+    # #212: 默认库历史名一次性迁移——迁移表/迁移测试必须保留历史名本身用于识别存量数据，
+    # 不是显示文案（与 legacy log_id 兼容读取同类）
+    ("app/services/misc.py", "资产库", "#212 legacy-name migration table DEFAULT_LIBRARY_LEGACY_NAMES"),
+    ("tests/test_asset_library_naming.py", "资产库", "#212 migration tests reference legacy display names"),
     # "logs" in legitimate contexts (directory paths, legacy keys)
     ("CLI/windows/gemini/install_gemini_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("CLI/windows/openai/install_openai_codex_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
-    ("tools/jimeng_cli_install.ps1", "logs (as history field)", "PowerShell $logDir variable"),
-    ("tools/jimeng_cli_login.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("firefly_diagnostics.py", "logs (as history field)", "Diagnostics log directory path"),
     ("firefly_projects.py", "logs (as history field)", "Legacy logs key compatibility"),
+    # fal.ai 队列协议的上游响应字段：status 返回体的 logs 是服务商契约字段名，不是画布历史字段
+    ("app/services/generation.py", "logs (as history field)", "fal queue status response field (upstream contract)"),
+    ("tests/test_fal_queue_image_mode.py", "logs (as history field)", "fal queue ERRORED status fixture mirroring upstream field"),
     # File-level whitelists for terms with few hits
     ("static/js/smart-canvas.js", "ComfyUI", "Comment about removed ComfyUI integration"),
     ("app/services/projects.py", "默认项目", "Docstring: core product no longer creates default projects"),

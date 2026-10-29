@@ -200,7 +200,9 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 {key: value for key, value in item.items() if key not in {"output_id", "output_order"}}
                 for item in history["outputs"]
             ],
-            [{"asset_id": generated_asset, "kind": "image"}],
+            # #224：输出项必须带 name（归档文件名）——星标素材面板先读生成历史，
+            # 拿不到名字就只好把 64 位 asset_id 当文件名显示。
+            [{"asset_id": generated_asset, "kind": "image", "name": "generated-1.png"}],
         )
         self.assertEqual(history["outputs"][0]["output_id"], generated_image["output_id"])
         self.assertEqual(history["outputs"][0]["output_order"], 0)
@@ -437,6 +439,110 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         }
         self.assertEqual(history_by_task[first_id]["status"], "cancelled")
         self.assertEqual(history_by_task[second_id]["status"], "succeeded")
+
+    def test_cancel_returns_immediate_terminal_result_with_final_node_and_partial_outputs(self):
+        """#237：停止后 POST/GET 必须立即携带终态快照（final_node + 已取消历史含 partial outputs），
+        前端不用等 worker 下轮轮询即可清除节点「生成中」占位。"""
+        project = self.store.create_project("取消即时终态快照")
+        self.store.apply_mutations(
+            project["id"],
+            [{"op": "upsert_node", "node": {"id": "result-node", "type": "smart-image", "images": []}}],
+            base_revision=0,
+        )
+        released = threading.Event()
+        call_state = {"calls": 0}
+        call_lock = threading.Lock()
+
+        async def blocking_generate(prompt, *_args, **_kwargs):
+            # 第一次调用立即返回（触发 partial 逐张写回），其余调用阻塞到 finally 释放——
+            # 模拟用户点停止时 worker 仍卡在 provider 调用里的真实时序。
+            with call_lock:
+                call_state["calls"] += 1
+                is_first = call_state["calls"] == 1
+            if not is_first:
+                await asyncio.to_thread(released.wait, 2)
+            return ({"type": "b64", "value": tiny_png_base64(), "mime_type": "image/png"}, {"data": [{"b64_json": tiny_png_base64()}], "id": "upstream-stop"})
+
+        adapter = AsyncMock(side_effect=blocking_generate)
+        try:
+            with patch.object(main, "load_api_providers", return_value=self.providers), patch.object(main, "generate_ai_image", adapter):
+                response = self.client.post(
+                    f"/api/project-library/{project['id']}/image-generation-tasks",
+                    json={
+                        "prompt": "stop snapshot",
+                        "routing_mode": "auto",
+                        "size": "1024x1024",
+                        "aspect_ratio": "1:1",
+                        "resolution": "1k",
+                        "quality": "auto",
+                        "n": 2,
+                        "reference_asset_ids": [],
+                        "media_type": "image",
+                        "result_node_id": "result-node",
+                        "base_revision": 1,
+                    },
+                )
+                self.assertEqual(response.status_code, 202, response.text)
+                task_id = response.json()["task_id"]
+
+                # 等第一张落进节点（partial 写回）后再取消，保证有 partial 可保留。
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    node = next(
+                        item for item in self.store.open_project(project["id"])["canvas"]["nodes"]
+                        if item["id"] == "result-node"
+                    )
+                    if len(node.get("images") or []) >= 1:
+                        break
+                    time.sleep(0.02)
+                self.assertGreaterEqual(len(node.get("images") or []), 1)
+
+                cancelled = self.client.post(
+                    f"/api/project-library/{project['id']}/image-generation-tasks/{task_id}/cancel"
+                )
+                self.assertEqual(cancelled.status_code, 200, cancelled.text)
+                body = cancelled.json()
+                self.assertEqual(body["status"], "cancelled")
+                result = body.get("result") or {}
+                self.assertTrue(result.get("history_recorded"), f"cancel response result missing history: {result}")
+                record = result.get("history_record") or {}
+                self.assertEqual(record.get("status"), "cancelled")
+                # 中性措辞：取消历史不允许带失败/错误语义字样。
+                self.assertIn("取消", str(record.get("error") or ""))
+                self.assertNotIn("失败", str(record.get("error") or ""))
+                self.assertNotIn("错误", str(record.get("error") or ""))
+                # partial 已归档的图必须保留在取消记录里（取回兑底）。
+                self.assertEqual(len(record.get("outputs") or []), 1)
+                # 即时终态快照：final_node 让前端立即清除「生成中」占位，
+                # 不必等 worker 线程结束或下一轮 GET 轮询。
+                final_node = result.get("final_node")
+                self.assertIsInstance(final_node, dict, f"cancel response result missing final_node: {result}")
+                self.assertEqual(final_node["id"], "result-node")
+                self.assertNotIn(task_id, [item.get("taskId") for item in final_node.get("pendingTasks") or []])
+                self.assertFalse(final_node.get("running"))
+                self.assertEqual(final_node.get("pending"), 0)
+
+                # POST 返回后立即 GET：终态 + 历史 + final_node 已可查，不依赖 worker 下轮。
+                immediate = self.client.get(f"/api/canvas-image-tasks/{task_id}").json()
+                self.assertEqual(immediate["status"], "cancelled")
+                immediate_result = immediate.get("result") or {}
+                self.assertTrue(immediate_result.get("history_recorded"), f"immediate GET result missing history: {immediate_result}")
+                self.assertIsInstance(immediate_result.get("final_node"), dict)
+                self.assertEqual(len((immediate_result.get("history_record") or {}).get("outputs") or []), 1)
+        finally:
+            released.set()
+
+        terminal = self.wait_for_task(task_id)
+        self.assertEqual(terminal["status"], "cancelled", terminal)
+        # 历史里只有一条取消终态记录（running 进度记录被同 id 合并），且保留 partial outputs。
+        records = [
+            item for item in self.store.open_project(project["id"])["canvas"].get("history") or []
+            if str(item.get("task_id") or "") == task_id
+        ]
+        self.assertEqual(len(records), 1, records)
+        self.assertEqual(records[0]["status"], "cancelled")
+        self.assertEqual(len(records[0].get("outputs") or []), 1)
+        self.assertNotIn("失败", str(records[0].get("error") or ""))
 
     def test_cancel_flush_exception_reconciles_to_a_durable_terminal_state(self):
         project = self.store.create_project("取消落盘异常")

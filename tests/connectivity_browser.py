@@ -113,7 +113,11 @@ async def fake_generate_ai_image(prompt, size=None, quality=None, model=None,
         progress_callback('uploading', bytes_done=4, bytes_total=8)
         await asyncio.sleep(1.1)
         progress_callback('provider_generating')
-        await asyncio.sleep(1.4)
+        # #214: the frontend polls task state every 2s (pollSmartCanvasTask), so the
+        # provider_generating window must span multiple poll ticks for node/history
+        # progress to advance deterministically; it must also stay pending long enough
+        # for the concurrent-run + cancellation stage to observe both tasks live.
+        await asyncio.sleep(12.0)
         progress_callback('receiving', bytes_done=8, bytes_total=8)
     prompt_color = zlib.crc32(str(prompt or '').encode('utf-8')).to_bytes(4, 'big')
     data = {

@@ -1,7 +1,7 @@
 {
   "_schema_version": "1.0",
-  "_description": "Firefly-Canvas 模型参数规范。运行时读取此文件作为参数/能力的权威数据源（size/宽高比/vision/参数默认值）。新增模型优先在此添加条目。CLI 与 jimeng 官方为独立补充入口，不依赖本文件。",
-  "_last_updated": "2026-08-25",
+  "_description": "Firefly-Canvas 模型参数规范。运行时读取此文件作为参数/能力的权威数据源（size/宽高比/vision/参数默认值）。新增模型优先在此添加条目。",
+  "_last_updated": "2026-10-13",
   "chat_models": {
     "gpt-4o-mini": {
       "display_name": "GPT-4o mini",
@@ -332,7 +332,8 @@
             "16:9",
             "4:5",
             "5:4",
-            "21:9"
+            "21:9",
+            "9:21"
           ],
           "default": "1:1"
         },
@@ -382,7 +383,8 @@
             "1:4",
             "4:1",
             "8:1",
-            "1:8"
+            "1:8",
+            "9:21"
           ],
           "default": "1:1",
           "note": "14 种宽高比（对应 Nano-banana-3.1-Flash 文档）。待验证：8:1 等是否真正生效"
@@ -579,6 +581,117 @@
           "description": "参考图数组（图生图）。每项为 URL 或 base64"
         }
       }
+    },
+    "gemini-nano-banana-2.1": {
+      "display_name": "Nano Banana 2.1",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "4:3",
+            "3:4",
+            "16:9",
+            "9:16",
+            "2:3",
+            "3:2",
+            "1:1",
+            "4:5",
+            "5:4",
+            "21:9",
+            "1:4",
+            "4:1",
+            "8:1",
+            "1:8",
+            "9:21"
+          ],
+          "default": "1:1",
+          "note": "14 种宽高比（与 nano-banana-2 相同的 Gemini image 系列集合）"
+        },
+        "image_size": {
+          "type": "enum",
+          "options": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "note": "基础模型支持 1K/2K/4K 三档；2K/4K 亦可路由到 -2k/-4k 变体"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（支持图生图），每项为 URL 或 b64_json"
+        }
+      },
+      "notes": "Nano-banana 2.1（Gemini image 系列，nano-banana-2 的升级），支持参考图生成"
+    },
+    "gemini-nano-banana-2.1-2k": {
+      "display_name": "Nano Banana 2.1 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "2K"
+          ],
+          "default": "2K",
+          "note": "固定 2K 分辨率变体（Nano-banana 系列 size 为 1K/2K/4K 档位）"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（图生图），每项为 URL 或 base64"
+        }
+      },
+      "notes": "Nano-banana 2.1 固定 2K 变体，支持参考图输入"
+    },
+    "gemini-nano-banana-2.1-4k": {
+      "display_name": "Nano Banana 2.1 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "popular_sizes": [
+            "4K"
+          ],
+          "default": "4K",
+          "note": "固定 4K 分辨率变体（Nano-banana 系列 size 为 1K/2K/4K 档位）"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "url"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图列表（图生图），每项为 URL 或 base64"
+        }
+      },
+      "notes": "Nano-banana 2.1 固定 4K 变体，支持参考图输入"
     },
     "nano-banana-hd": {
       "display_name": "nano-banana-hd",
@@ -987,12 +1100,299 @@
           "description": "参考图数组（图生图）。每项为 URL 或 base64"
         }
       }
+    },
+    "gpt-image-2.5-flare": {
+      "display_name": "GPT Image 2.5 Flare",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-flare-2k": {
+      "display_name": "GPT Image 2.5 Flare 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-flare-4k": {
+      "display_name": "GPT Image 2.5 Flare 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515692647（文生图）/ api-515693438（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst": {
+      "display_name": "GPT Image 2.5 Sunburst",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst-2k": {
+      "display_name": "GPT Image 2.5 Sunburst 2K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "gpt-image-2.5-sunburst-4k": {
+      "display_name": "GPT Image 2.5 Sunburst 4K",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "default": "auto",
+          "description": "像素尺寸。服务商只接受 size，不接受 aspect_ratio/resolution；约束：最大边 ≤3840px、两边均为 16 的倍数、长宽比 ≤3:1、总像素 655360-8294400。画布的「比例 + 档位」由 gpt_image_2_request_size 换算成合规像素。",
+          "popular_sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536",
+            "2048x2048",
+            "2048x1152",
+            "3840x2160",
+            "2160x3840",
+            "auto"
+          ]
+        },
+        "quality": {
+          "type": "enum",
+          "options": [
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "default": "auto",
+          "description": "图片质量等级"
+        },
+        "response_format": {
+          "type": "enum",
+          "options": [
+            "url",
+            "b64_json"
+          ],
+          "default": "b64_json",
+          "description": "响应格式"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图数组（图生图，每项为 URL 或 base64）"
+        }
+      },
+      "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
     }
   },
   "video_models": {
     "doubao-seedance-2-0-260128": {
       "display_name": "Seedance 2.0",
-      "api_type": "jimeng_video",
       "supports_vision": true,
       "async_mode": true,
       "parameters": {
@@ -1072,11 +1472,10 @@
           "description": "工具数组。支持: [{type: 'web_search'}]"
         }
       },
-      "notes": "即梦 Seedance 2.0 统一格式接口。支持文生视频、图生视频、多模态参考生视频"
+      "notes": "Seedance 2.0 统一格式接口。支持文生视频、图生视频、多模态参考生视频"
     },
     "doubao-seedance-2-0-fast-260128": {
       "display_name": "Seedance 2.0 Fast",
-      "api_type": "jimeng_video",
       "supports_vision": true,
       "async_mode": true,
       "parameters": {
@@ -1148,11 +1547,10 @@
           "type": "array"
         }
       },
-      "notes": "即梦 Seedance 2.0 Fast 快速版"
+      "notes": "Seedance 2.0 Fast 快速版"
     },
     "doubao-seedance-2.0-mini": {
       "display_name": "Seedance 2.0 Mini",
-      "api_type": "jimeng_video",
       "supports_vision": true,
       "async_mode": true,
       "parameters": {
@@ -1205,7 +1603,7 @@
           "type": "array"
         }
       },
-      "notes": "即梦 Seedance 2.0 Mini 轻量版"
+      "notes": "Seedance 2.0 Mini 轻量版"
     },
     "sora-2": {
       "display_name": "sora-2",
@@ -1542,38 +1940,6 @@
           "description": "参考图数组（图生视频）"
         }
       }
-    },
-    "seedance2.0": {
-      "display_name": "即梦 Seedance 2.0",
-      "api_type": "jimeng_video",
-      "supports_vision": true,
-      "async_mode": true,
-      "parameters": {},
-      "notes": "即梦 CLI 模型 ID（app/core.py JIMENG_DEFAULT_VIDEO_MODELS），与 doubao-seedance-2-0-260128 同模型"
-    },
-    "seedance2.0fast": {
-      "display_name": "即梦 Seedance 2.0 Fast",
-      "api_type": "jimeng_video",
-      "supports_vision": true,
-      "async_mode": true,
-      "parameters": {},
-      "notes": "即梦 CLI 模型 ID，快速版，同 seedance2.0"
-    },
-    "seedance2.0_vip": {
-      "display_name": "即梦 Seedance 2.0 VIP",
-      "api_type": "jimeng_video",
-      "supports_vision": true,
-      "async_mode": true,
-      "parameters": {},
-      "notes": "即梦 CLI 模型 ID，1080P 档，同 seedance2.0"
-    },
-    "seedance2.0fast_vip": {
-      "display_name": "即梦 Seedance 2.0 Fast VIP",
-      "api_type": "jimeng_video",
-      "supports_vision": true,
-      "async_mode": true,
-      "parameters": {},
-      "notes": "即梦 CLI 模型 ID，快速 1080P 档，同 seedance2.0"
     },
     "veo3-fast": {
       "display_name": "Veo 3 Fast",

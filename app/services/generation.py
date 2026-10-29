@@ -11,113 +11,6 @@ from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
 
-async def generate_jimeng_provider_image(prompt, size, model, reference_images=None, provider=None):
-    refs = [ref for ref in reference_images or [] if ref.get('url')]
-    temp_paths = []
-    try:
-        args = []
-        if refs:
-            image_paths = []
-            for ref in refs[:10]:
-                image_path, created = await _svc._main('jimeng_prepare_local_media')(ref.get('url'), 'image')
-                image_paths.append(_svc.jimeng_cli_path_arg(image_path))
-                temp_paths.extend(created)
-            model_version = jimeng_image_model_version(model, 'image2image')
-            args = ['image2image', f"--images={','.join(image_paths)}", f'--prompt={prompt}', f"--resolution_type={jimeng_image_resolution(model, size, 'image2image')}", f'--poll={jimeng_poll_seconds()}']
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        else:
-            model_version = jimeng_image_model_version(model, 'text2image')
-            args = ['text2image', f'--prompt={prompt}', f'--ratio={jimeng_ratio_from_size(size)}', f"--resolution_type={jimeng_image_resolution(model, size, 'text2image')}", f'--poll={jimeng_poll_seconds()}']
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        raw = await _svc.run_jimeng_cli(args, timeout=jimeng_poll_seconds() + 120)
-        urls = await _svc._main('jimeng_store_outputs')(raw, 'image')
-        return ({'type': 'url', 'value': urls[0]}, raw)
-    finally:
-        for path in temp_paths:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
-async def generate_jimeng_video(payload: CanvasVideoRequest, provider):
-    image_refs = [ref for ref in payload.images or [] if jimeng_video_ref_url(ref)]
-    video_refs = [url for url in payload.videos or [] if str(url or '').strip()]
-    audio_refs = [url for url in payload.audios or [] if str(url or '').strip()][:3]
-    duration = jimeng_video_duration(payload.duration, payload.model)
-    temp_paths = []
-    try:
-        if payload.multimodal or video_refs or audio_refs:
-            image_paths = []
-            video_paths = []
-            audio_paths = []
-            for ref in image_refs[:9]:
-                image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(ref), 'image')
-                temp_paths.extend(created)
-                image_paths.append(image_path)
-            for ref_url in video_refs[:3]:
-                video_path, created = await _svc._main('jimeng_prepare_local_media')(ref_url, 'video')
-                temp_paths.extend(created)
-                video_paths.append(video_path)
-            for ref_url in audio_refs:
-                audio_path, created = await _svc._main('jimeng_prepare_local_media')(ref_url, 'audio')
-                temp_paths.extend(created)
-                audio_paths.append(audio_path)
-            args = ['multimodal2video', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-            ratio = jimeng_video_ratio_arg(payload.aspect_ratio)
-            if ratio:
-                args.append(f'--ratio={ratio}')
-            jimeng_append_model_resolution_args(args, payload, include_model=True)
-            for image_path in image_paths:
-                args.append(f'--image={_svc.jimeng_cli_path_arg(image_path)}')
-            for video_path in video_paths:
-                args.append(f'--video={_svc.jimeng_cli_path_arg(video_path)}')
-            for audio_path in audio_paths:
-                args.append(f'--audio={_svc.jimeng_cli_path_arg(audio_path)}')
-        elif len(image_refs) >= 2:
-            first_frame = next((ref for ref in image_refs if jimeng_video_ref_role(ref) == 'first_frame'), None)
-            last_frame = next((ref for ref in image_refs if jimeng_video_ref_role(ref) == 'last_frame'), None)
-            if first_frame and last_frame:
-                first_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(first_frame), 'image')
-                temp_paths.extend(created)
-                last_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(last_frame), 'image')
-                temp_paths.extend(created)
-                args = ['frames2video', f'--first={_svc.jimeng_cli_path_arg(first_path)}', f'--last={_svc.jimeng_cli_path_arg(last_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-            else:
-                image_paths = []
-                for ref in image_refs:
-                    image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(ref), 'image')
-                    temp_paths.extend(created)
-                    image_paths.append(image_path)
-                args = ['multiframe2video', f"--images={','.join((_svc.jimeng_cli_path_arg(path) for path in image_paths))}", f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-        elif image_refs:
-            image_path, created = await _svc._main('jimeng_prepare_local_media')(jimeng_video_ref_url(image_refs[0]), 'image')
-            temp_paths.extend(created)
-            ratio = jimeng_video_ratio_arg(payload.aspect_ratio)
-            if ratio:
-                args = ['multimodal2video', f'--image={_svc.jimeng_cli_path_arg(image_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--ratio={ratio}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-            else:
-                args = ['image2video', f'--image={_svc.jimeng_cli_path_arg(image_path)}', f'--prompt={payload.prompt}', f'--duration={duration}', f'--poll={jimeng_poll_seconds()}']
-                jimeng_append_model_resolution_args(args, payload, include_model=True)
-        else:
-            args = ['text2video', f'--prompt={payload.prompt}', f'--duration={duration}', f"--ratio={payload.aspect_ratio or '16:9'}", f'--video_resolution={jimeng_video_resolution(payload.model, payload.resolution)}', f'--poll={jimeng_poll_seconds()}']
-            model_version = jimeng_video_model_version(payload.model)
-            if model_version:
-                args.append(f'--model_version={model_version}')
-        raw = await _svc.run_jimeng_cli(args, timeout=jimeng_poll_seconds() + 180)
-        urls = await _svc._main('jimeng_store_outputs')(raw, 'video')
-        return {'videos': urls, 'task_id': jimeng_submit_id(raw) or None, 'raw': raw}
-    finally:
-        for path in temp_paths:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
 async def wait_for_image_task(client, task_id, provider=None):
     is_apimart = is_apimart_provider(provider)
     timeout = APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT
@@ -1296,6 +1189,223 @@ async def run_provider_generation_with_backoff(provider_id: str, generate_callab
             await asyncio.sleep(sleep_seconds)
 
 
+def fal_queue_paths(base_url, endpoint, request_id='', prefix='fal'):
+    """fal 队列三个端点的 URL 拼接（中转商将 queue.fal.run 反代到自己的 /fal 前缀）。
+
+    base_url 不带 /v1：comfly 的 fal 兼容层挂在站点根，{BASE}/fal/{model}。
+    """
+    root = str(base_url or '').strip().rstrip('/')
+    if root.lower().endswith('/v1'):
+        root = root[:-3].rstrip('/')
+    prefix = str(prefix or 'fal').strip().strip('/')
+    model_path = str(endpoint or '').strip().strip('/')
+    base = f'{root}/{prefix}/{model_path}'
+    if not request_id:
+        return base
+    rid = str(request_id).strip().strip('/')
+    return {'request': base, 'status': f'{base}/requests/{rid}/status', 'result': f'{base}/requests/{rid}'}
+
+
+def fal_resolution_upscale_factor(value):
+    """画布分辨率档位 → fal 高清修复的 upscale_factor（1k=1×/2k=2×/4k=4×）。
+
+    只在服务商未显式配定 upscale_factor 时作为默认，不覆盖 fal_request.params。
+    """
+    tier = str(value or '').strip().lower()
+    return {'1k': 1, '1080p': 1, '720p': 1, '2k': 2, '4k': 4}.get(tier)
+
+
+def fal_submit_body(model, image_url, params, resolution=None, model_by_resolution=None):
+    """组装 fal 队列提交体：model 只出现在 URL，参数来自服务商配置（fal_request.params）。
+
+    fal 的 schema 是严格的：多余的 size/aspect_ratio/quality 会被 422 拒，
+    所以这里只发 image_url + 配置的参数，最多从画布档位补 upscale_factor / model。
+    """
+    body = {str(key): value for key, value in (params or {}).items() if str(key).strip()}
+    if image_url:
+        body['image_url'] = image_url
+    tier = str(resolution or '').strip().lower()
+    if 'upscale_factor' not in body:
+        factor = fal_resolution_upscale_factor(tier)
+        if factor:
+            body['upscale_factor'] = factor
+    if 'model' not in body and model_by_resolution:
+        engine = model_by_resolution.get(tier)
+        if engine:
+            body['model'] = engine
+    return body
+
+
+def fal_url_host(value):
+    return str(value or '').split('://')[-1].split('/', 1)[0].strip().lower()
+
+
+def fal_request_urls(base_url, model, request_id, submitted, prefix='fal'):
+    """轮询/取结果的地址：只相信同源，否则用本地前缀重建。
+
+    中转商把 fal 官方的 status_url/response_url（https://queue.fal.run/…）原样回填，
+    直连会绕过中转鉴权（fal 官方用 `Authorization: key`，不是 Bearer）→ 必须换回自己域名。
+    """
+    own = fal_queue_paths(base_url, model, request_id, prefix)
+    base_host = fal_url_host(base_url)
+    urls = {}
+    for name, fallback in (('status', own['status']), ('result', own['result'])):
+        raw = str((submitted or {}).get(f'{name}_url') or '').strip()
+        parsed_host = fal_url_host(raw)
+        urls[name] = raw if raw.startswith('http') and base_host and parsed_host == base_host else fallback
+    return urls
+
+
+FAL_ERROR_HINTS = {
+    'no_upstream_key': '这是渠道侧问题：服务商的 fal 上游密钥池里没有可用 key（未接入或额度耗尽），画布无法绕过。请在服务商后台为 fal 渠道补密钥/额度，或换一个已开通 fal 的渠道。',
+    'invalid_api_key': '服务商拒绝了本次鉴权（token 无效或已过期），请在 API 平台管理里更新该服务商的 Key。',
+    'model_not_found': '服务商没有这个 fal 端点：请核对 image_model_capabilities[model].fal_request.endpoint 与服务商实际模型名。',
+    'insufficient_quota': '服务商余额/额度不足，高清修复无法提交。',
+}
+
+
+def fal_error_detail(provider_name, stage, response):
+    """把中转/fal 众层嵌套的错误体拆成人能读的一句，并补上可行动的下一步。
+
+    中转常见形态：{code:'fail_submit_task', message:'{"error":{"message":...,"code":"no_upstream_key"}}'}
+    —— 外层 code 无用，真正的错误码被包在 message 的字符串 JSON 里。
+    """
+    raw = str(response.text or '').strip()
+    code = ''
+    message = ''
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        code = str(data.get('code') or '').strip().lower()
+        message = str(data.get('message') or '').strip()
+        inner = None
+        try:
+            inner = json.loads(message)
+        except Exception:
+            inner = None
+        if isinstance(inner, dict):
+            error = inner.get('error') if isinstance(inner.get('error'), dict) else inner
+            code = str(error.get('code') or code).strip().lower()
+            message = str(error.get('message') or message).strip()
+        elif isinstance(data.get('error'), dict):
+            error = data['error']
+            code = str(error.get('code') or code).strip().lower()
+            message = str(error.get('message') or message).strip()
+    hint = FAL_ERROR_HINTS.get(code, '')
+    status = int(getattr(response, 'status_code', 0) or 0)
+    if not hint and status == 422:
+        hint = 'fal 的 schema 很严：提交体里多出 upscale 模型不吃的字段会被直接拒。请检查 image_model_capabilities[model].fal_request.params。'
+    if not hint and status == 429:
+        hint = 'fal 队列已满或被限流，稍后重试；也可降低档位避开高峰。'
+    if not hint and status in {502, 503, 504}:
+        hint = '上游服务不可用，稍后重试；若持续如此，请在服务商后台查该渠道状态。'
+    detail = f'{provider_name} fal {stage}失败（HTTP {status}）'
+    if code:
+        detail += f'，上游错误码 {code}'
+    body_text = message or raw[:200]
+    if body_text:
+        detail += f'：{body_text[:240]}'
+    if hint:
+        detail += f'。{hint}'
+    return detail
+
+
+async def generate_fal_queue_image(client, base_url, provider, model, image_refs, params, *, prefix='fal', progress_callback=None, resolution=None, model_by_resolution=None):
+    """fal.ai 队列协议：提交 → 轮询 status → 拉取结果（Topaz 高清修复等 image-to-image 模型）。
+
+    必须提供参考图：fal 高清修复类模型没有「文生图」语义，提前提而不是让上游 422。
+    """
+    paths = fal_queue_paths(base_url, model, prefix=prefix)
+    image_url = ''
+    relay_error = ''
+    for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]:
+        # fal 不会拉本机路径：站内参考图必须先公网化（图床 → PUBLIC_MEDIA_BASE_URL 公网基址）。
+        try:
+            image_url = await _svc.fal_reference_public_url(ref)
+        except HTTPException as exc:
+            relay_error = str(exc.detail)
+            continue
+        if image_url:
+            break
+    if not image_url:
+        if relay_error:
+            raise HTTPException(status_code=400, detail=relay_error)
+        raise HTTPException(status_code=400, detail='高清修复模型需要一张参考图（选一张画布上的图作为输入）')
+    body = fal_submit_body(model, image_url, params, resolution, model_by_resolution)
+    headers = _svc._main('api_headers')(provider=provider, model=model)
+    response = await client.post(paths, headers=headers, json=body)
+    if response.status_code >= 400:
+        provider_name = provider.get('name') or provider['id']
+        raise HTTPException(status_code=response.status_code, detail=fal_error_detail(provider_name, '任务提交', response))
+    try:
+        submitted = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fal 任务提交返回非 JSON：{(response.text or '')[:300]}") from exc
+    request_id = str(submitted.get('request_id') or submitted.get('requestId') or submitted.get('id') or '').strip()
+    if not request_id:
+        # 部分中转源站同步回结果：直接当完成体处理，不再轮询。
+        if extract_image_flexible(submitted):
+            return _FalQueueResponse(submitted)
+        raise HTTPException(status_code=502, detail=f"fal 任务提交未返回 request_id：{json.dumps(submitted, ensure_ascii=False)[:400]}")
+    request_urls = fal_request_urls(base_url, model, request_id, submitted, prefix)
+    status_url = request_urls['status']
+    deadline = time.monotonic() + RESPONSES_POLL_MAX_SECONDS
+    last_status = ''
+    while time.monotonic() < deadline:
+        status_response = await client.get(status_url, headers=headers)
+        if status_response.status_code >= 400:
+            provider_name = provider.get('name') or provider['id']
+            raise HTTPException(status_code=status_response.status_code, detail=fal_error_detail(provider_name, '任务状态查询', status_response))
+        try:
+            status_payload = status_response.json()
+        except Exception:
+            status_payload = {}
+        status = str(status_payload.get('status') or '').strip().upper()
+        last_status = status or last_status
+        if status in {'COMPLETED', 'SUCCEEDED', 'SUCCESS'}:
+            break
+        if status in {'ERRORED', 'ERROR', 'FAILED', 'CANCELLED'}:
+            logs = ' | '.join(str(item)[:200] for item in (status_payload.get('logs') or [])[:4])
+            raise HTTPException(status_code=502, detail=f"fal 任务失败（{status}）：{logs or '上游未给出日志'}")
+        if callable(progress_callback):
+            try:
+                progress_callback('provider_generating', queue_position=status_payload.get('queue_position'), fal_status=status)
+            except Exception:
+                pass
+        await asyncio.sleep(RESPONSES_POLL_INTERVAL)
+    else:
+        raise HTTPException(status_code=502, detail=f"fal 任务未在 {RESPONSES_POLL_MAX_SECONDS / 60:g} 分钟内完成（最后状态：{last_status or '未知'}），可在服务商后台用 request_id {request_id} 查询")
+    result_url = request_urls['result']
+    result_response = await client.get(result_url, headers=headers)
+    if result_response.status_code >= 400:
+        provider_name = provider.get('name') or provider['id']
+        raise HTTPException(status_code=502, detail=fal_error_detail(provider_name, '结果拉取', result_response))
+    try:
+        payload = result_response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fal 结果返回非 JSON：{(result_response.text or '')[:300]}") from exc
+    payload.setdefault('request_id', request_id)
+    return _FalQueueResponse(payload)
+
+
+class _FalQueueResponse:
+    """把 fal 队列结果体适配成与 HTTP 响应同形的对象，复用调用点的统一尾段。"""
+
+    status_code = 200
+    text = ''
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
 async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
     def report_progress(phase, **details):
         if not callable(progress_callback):
@@ -1313,8 +1423,6 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         return await generate_codex_provider_image(prompt, size, model, reference_images, provider)
     if is_gemini_cli_provider(provider):
         return await generate_gemini_cli_provider_image(prompt, size, model, reference_images, provider)
-    if is_jimeng_provider(provider):
-        return await generate_jimeng_provider_image(prompt, size, model, reference_images, provider)
     if is_runninghub_provider(provider):
         return await generate_runninghub_provider_image(prompt, size, model, reference_images, provider, image_parameters)
     if effective_protocol(provider, model) == 'gemini':
@@ -1331,11 +1439,21 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         image_route = route_openai_image_request(provider, model, size)
     if preserve_model and image_route['params'].get('resolution') and (banana_model_family(image_route['model']) or looks_like_gemini_image_model(image_route['model'])):
         image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
-    if is_comfly_provider:
-        image_route['params'].pop('resolution', None)
     model = image_route['model']
     routed_image_params = image_route['params']
     is_gpt2 = is_gpt_image_2_model(model)
+    if is_gpt2:
+        if routed_image_params.get('aspect_ratio') or routed_image_params.get('resolution'):
+            # gpt-image 家族（含 gpt-image-2.5-flare/-sunburst）只接受 size，
+            # 必须把画布的 比例+档位 换算成合规像素，不能透传 aspect_ratio/resolution。
+            size = gpt_image_2_request_size(size, routed_image_params.get('aspect_ratio'), routed_image_params.get('resolution'))
+            routed_image_params.pop('aspect_ratio', None)
+            routed_image_params.pop('resolution', None)
+        else:
+            # 没有比例/档位参数时，也不能把超出服务商硬约束的像素直接发出去（如 4K 正方形 4096）。
+            size = gpt_image_2_request_size(size)
+    if is_comfly_provider:
+        image_route['params'].pop('resolution', None)
     is_apimart = is_apimart_provider(provider)
     quality = str(quality or '').strip().lower()
     if quality not in {'low', 'medium', 'high'}:
@@ -1349,7 +1467,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
-    request_timeout = httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses'} else AI_REQUEST_TIMEOUT
+    # 长耗时模式（gpt-image-2 / APIMART / openai-json 系）：read 超时收敛到 AI_REQUEST_TIMEOUT
+    # （#249 审计：此处原硬编码 1800.0，不跟随 REQUEST_TIMEOUT env，现统一单一事实来源，默认值不变）；
+    # connect/write/pool 为固定工程值（非 provider 约束）。
+    request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'} else AI_REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
 
@@ -1378,7 +1499,16 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             content = await response.aread()
             report_progress('receiving', bytes_done=len(content), bytes_total=response_total or len(content))
             return response
-        if image_request_mode == 'openai-video-proxy':
+        if image_request_mode == 'fal':
+            # fal.ai 平台兼容（comfly /fal/ 前缀）：Topaz 高清修复等队列模型。
+            # 参数不写死 —— fal_request.params 来自服务商配置；body 里没有 model/size/quality。
+            fal_spec = fal_request_spec(provider, model)
+            response = await generate_fal_queue_image(
+                client, base_url, provider, fal_spec['endpoint'] or model, image_refs, fal_spec['params'],
+                prefix=fal_spec['path_prefix'], progress_callback=progress_callback,
+                resolution=(image_parameters or {}).get('resolution'), model_by_resolution=fal_spec['model_by_resolution'],
+            )
+        elif image_request_mode == 'openai-video-proxy':
             body = {'model': model, 'prompt': prompt, 'aspect_ratio': routed_image_params.get('aspect_ratio') or runninghub_aspect_from_size(size, '1:1')}
             if routed_image_params.get('resolution'):
                 body['resolution'] = routed_image_params['resolution']
@@ -1927,10 +2057,6 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
         result = await _svc.build_online_image_result(payload)
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
-    except JimengPendingError as exc:
-        info = jimeng_pending_payload(exc)
-        with CANVAS_TASK_LOCK:
-            CANVAS_TASKS[task_id].update({'status': 'jimeng_pending', 'jimeng_pending': True, 'submit_id': exc.submit_id, 'kind': exc.kind, 'queue_info': exc.queue_info, 'message': info['message'], 'error': '', 'updated_at': time.time()})
     except Exception as exc:
         detail = getattr(exc, 'detail', None) or str(exc)
         status_code = getattr(exc, 'status_code', 500)
@@ -2209,7 +2335,7 @@ def kling_video_output_urls(raw):
     return urls or video_output_urls(raw)
 
 def project_video_candidate_inline_reference_kinds(provider: Mapping[str, Any], model: str) -> set[str]:
-    if is_runninghub_provider(provider) or is_jimeng_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
+    if is_runninghub_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
         return set()
     if is_volcengine_provider(provider):
         base_url = _svc.video_api_root(provider)
@@ -2228,7 +2354,7 @@ def project_video_candidate_execution_incompatible_parameters(provider: Mapping[
         wallet_key = str(provider.get('wallet_api_key') or '').strip() or _svc._main('runninghub_wallet_key_value')()
         if not wallet_key:
             add('api_key')
-    elif not is_jimeng_provider(provider):
+    else:
         if not _svc.video_api_root(provider):
             add('base_url')
         if not _svc._main('provider_env_key_value')(str(provider.get('id') or '')):
@@ -2274,7 +2400,6 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
     audio_count = len(payload.audios or [])
     if effective_protocol(provider, payload.model) not in VIDEO_EXECUTION_PROTOCOLS:
         add('protocol')
-    is_jimeng = is_jimeng_provider(provider)
     is_runninghub = is_runninghub_provider(provider)
     is_apimart = is_apimart_provider(provider)
     is_volcengine = is_volcengine_provider(provider)
@@ -2283,53 +2408,13 @@ def video_adapter_incompatible_parameters(payload: CanvasVideoRequest, provider:
     is_yuli = is_yuli_provider(provider)
     is_lingjing = is_lingjing_provider(provider)
     is_agnes = is_agnes_provider(provider, payload.model)
-    specialized = is_jimeng or is_runninghub or is_apimart or is_volcengine_direct or is_yuli or is_lingjing or is_agnes
+    specialized = is_runninghub or is_apimart or is_volcengine_direct or is_yuli or is_lingjing or is_agnes
     if (not specialized) and 'protocol' in incompatible:
         return incompatible
     if not specialized:
         return incompatible
     if quality != 'auto':
         add('quality')
-    if is_jimeng:
-        if payload.width is not None:
-            add('width')
-        if payload.height is not None:
-            add('height')
-        if size:
-            add('size')
-        low, high = jimeng_video_duration_range(payload.model)
-        if payload.duration < low or payload.duration > high:
-            add('duration')
-        if image_count > 9:
-            add('image_reference_count')
-        image_roles = [jimeng_video_ref_role(ref) for ref in payload.images or []]
-        if image_count > 2 and 'first_frame' in image_roles and ('last_frame' in image_roles) and (not payload.multimodal) and (not video_count) and (not audio_count):
-            add('image_reference_count')
-        if video_count > 3:
-            add('video_reference_count')
-        if audio_count > 3:
-            add('audio_reference_count')
-        if aspect_ratio and (not jimeng_video_ratio_arg(aspect_ratio)):
-            add('aspect_ratio')
-        if aspect_ratio not in {'', '16:9'} and image_count >= 2 and (not payload.multimodal) and (not video_count) and (not audio_count):
-            add('aspect_ratio')
-        if resolution and jimeng_video_resolution(payload.model, resolution).lower() != resolution:
-            add('resolution')
-        if payload.seed is not None:
-            add('seed')
-        if payload.enhance_prompt:
-            add('enhance_prompt')
-        if payload.enable_upsample:
-            add('enable_upsample')
-        if payload.watermark:
-            add('watermark')
-        if canvas_video_camera_fixed(payload):
-            add('camera_fixed')
-        if payload.return_last_frame:
-            add('return_last_frame')
-        if payload.generate_audio:
-            add('generate_audio')
-        return incompatible
     if is_runninghub:
         if payload.width is not None:
             add('width')
@@ -2530,9 +2615,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
         raise HTTPException(status_code=400, detail={'code': 'unsupported_video_adapter_parameters', 'message': str(provider.get('name') or provider['id']) + ' 不支持请求的参数'})
     adapter_label, adapter_ready = _svc._main('video_adapter_label')(payload.model, provider)
     if not adapter_ready:
-        raise HTTPException(status_code=400, detail=f"模型 {payload.model} 未适配（{adapter_label}）。可用适配器：官方-可灵/火山/即梦/RunningHub、中转站统一格式(veo3.1/wan 等)、OpenAI 兼容。请先在 API 设置中更换为已适配模型。")
-    if is_jimeng_provider(provider):
-        return await _svc._main('generate_jimeng_video')(payload, provider)
+        raise HTTPException(status_code=400, detail=f"模型 {payload.model} 未适配（{adapter_label}）。可用适配器：官方-可灵/火山/RunningHub、中转站统一格式(veo3.1/wan 等)、OpenAI 兼容。请先在 API 设置中更换为已适配模型。")
     if is_runninghub_provider(provider):
         try:
             return await generate_runninghub_video(payload, provider)
@@ -2893,7 +2976,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             if task_id and on_provider_task is not None:
                 try:
                     # #82：提交成功即持久化服务商任务标识，服务重启后可按 task_id 重轮询，避免重复计费。
-                    # 仅统一格式路径（APIMart/veo3/veo3.1/火山/玉玉/OpenAI 兼容）；专属适配器（可灵/即梦/RunningHub 等）后续补。
+                    # 仅统一格式路径（APIMart/veo3/veo3.1/火山/玉玉/OpenAI 兼容）；专属适配器（可灵/RunningHub 等）后续补。
                     await on_provider_task({
                         'provider_id': str(provider.get('id') or ''),
                         'provider_name': str(provider.get('name') or ''),

@@ -118,7 +118,7 @@
             return origFetch(u, options);
         };
         // FIRST RUN: fake adapter raises -> failure path
-        try { eval('selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch(_) {}
+        try { eval('canvasState.selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch(_) {}
         await sleep(200);
         const canRunSmartCascade = evalFn('canRunSmartCascade');
         if(canRunSmartCascade && smartImage){

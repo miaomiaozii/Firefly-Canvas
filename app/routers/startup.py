@@ -14,7 +14,7 @@ import shutil
 import uuid
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from app.core import (Any, Dict, LLM_MESSAGE_MAX_LENGTH, List, Optional, PROJECT_AGENT_RECOVERY_LOCK, PROJECT_CONVERSATION_READY_RESULTS, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, ProjectNotFound, ProjectStoreError, Tuple, _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _os, _sniff_image_ext, _sniff_image_ext_bytes, _sys, asyncio, conversation_error_message, conversation_node_by_id, conversation_task_snapshot, copy, forget_project_conversation_ready_result, forget_project_conversation_task, json, logging, os, project_conversation_ready_result, project_lifecycle_lock, re, remember_project_conversation_ready_result, shutil, urllib, uuid)
+from app.core import (Any, Dict, LLM_MESSAGE_MAX_LENGTH, List, NODE_TYPE_AGENT, NODE_TYPE_TASK, Optional, PROJECT_AGENT_RECOVERY_LOCK, PROJECT_CONVERSATION_READY_RESULTS, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, ProjectNotFound, ProjectStoreError, Tuple, _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _os, _sniff_image_ext, _sniff_image_ext_bytes, _sys, asyncio, conversation_error_message, conversation_node_by_id, conversation_task_snapshot, copy, forget_project_conversation_ready_result, forget_project_conversation_task, json, logging, os, project_conversation_ready_result, project_lifecycle_lock, re, remember_project_conversation_ready_result, shutil, urllib, uuid)
 from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _sniff_image_ext, _sniff_image_ext_bytes
 _from_main_names = ['ASSET_LIBRARY_DIR', 'LOCAL_UPLOAD_DIR', 'PROJECT_CONVERSATION_MAX_PENDING', 'PROJECT_CONVERSATION_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_PER_PROJECT', '_agent_mark_recovered_uncertain', '_agent_submit_task', 'conversation_pending_task_keys', 'forget_project_conversation_durable', 'load_asset_library', 'merge_project_conversation_result', 'now_ms', 'project_conversation_adapter', 'project_conversation_durable_path', 'project_store_call', 'save_asset_library', 'schedule_project_conversation_task', 'unique_asset_category_dir']
 import app.services as _svc
@@ -384,13 +384,13 @@ def recover_project_agent_tasks() -> int:
                 continue
             canvas = opened.get('canvas') or {}
             for agent in canvas.get('nodes') or []:
-                if not isinstance(agent, dict) or str(agent.get('type') or '') != 'smart-agent':
+                if not isinstance(agent, dict) or str(agent.get('type') or '') != NODE_TYPE_AGENT:
                     continue
                 plan = agent.get('agent_plan')
                 if not isinstance(plan, dict) or str(plan.get('status') or '') not in {'running', 'confirmed'}:
                     continue
                 for node in canvas.get('nodes') or []:
-                    if not isinstance(node, dict) or str(node.get('type') or '') != 'agent-task':
+                    if not isinstance(node, dict) or str(node.get('type') or '') != NODE_TYPE_TASK:
                         continue
                     if str(node.get('agent_id') or '') != str(agent.get('id') or '') or str(node.get('status') or '') not in {'queued', 'running'}:
                         continue

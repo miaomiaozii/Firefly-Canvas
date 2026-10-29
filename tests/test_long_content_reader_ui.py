@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from tests.canvas_frontend_sources import canvas_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,7 +10,7 @@ class LongContentReaderUiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        cls.source = canvas_source()
         cls.styles = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
         cls.i18n = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
 

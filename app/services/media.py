@@ -1,6 +1,7 @@
 # media domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+from app.constants import NODE_TYPE_IMAGE
 import logging
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,9 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
             if len(kept_outputs) != len(outputs):
                 node['generatedOutputs'] = kept_outputs
                 changed = True
-        if node_type in {'smart-image', 'output'} and isinstance(node.get('images'), list):
+        if node_type in {NODE_TYPE_IMAGE, 'output'} and isinstance(node.get('images'), list):
             images = list(node.get('images') or [])
-            if node_type == 'smart-image':
+            if node_type == NODE_TYPE_IMAGE:
                 owned_items = _svc.smart_owned_result_items(images, paths)
             else:
                 owned_items = images
@@ -32,11 +33,11 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
                 if node_type == 'output':
                     node['_pending'] = []
                     node['imageComparisons'] = {}
-                if node_type == 'smart-image':
+                if node_type == NODE_TYPE_IMAGE:
                     node['pending'] = 0
                     node['running'] = False
                     node['queued'] = False
-                    for key in ('jimengPending', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
+                    for key in ('pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
                         node.pop(key, None)
         elif node_type == 'image' and any((_svc._main('json_references_media_path')(node.get('url'), path) for path in paths)):
             node['url'] = ''
@@ -313,7 +314,7 @@ def expand_canvas_generated_media_paths(canvas: Dict[str, Any], paths: List[str]
         images = list(node.get('images') or [])
         if node_type == 'output':
             owned_items = images
-        elif node_type == 'smart-image':
+        elif node_type == NODE_TYPE_IMAGE:
             owned_items = _svc.smart_owned_result_items(images, paths)
         else:
             owned_items = []
@@ -501,9 +502,48 @@ async def video_reference_to_frame_data_urls(value, max_frames=6, max_size=768):
             except OSError:
                 pass
 
+LOCAL_CANVAS_ASSET_PREFIXES = ('/output/', '/assets/', '/api/project-library/', '/api/storage-files/')
+
+
+def is_loopback_host(host) -> bool:
+    """回环/私网主机名：这类 URL 对第三方上游等于不存在，不能当公网 URL 透传。"""
+    host = str(host or '').lower()
+    return host in {'127.0.0.1', 'localhost', '::1', '0.0.0.0'} or bool(
+        re.match(r'^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)', host))
+
+
+def local_canvas_asset_path(text) -> str:
+    """站内媒体引用（项目库/输出/静态/回环 URL）→ 站内路径；公网 URL 或未知形态 → ''。
+
+    返回站内路径不等于文件存在：物理解析统一交给 output_file_from_url / local_media_path_for_cloud_upload。
+    """
+    text = str(text or '').strip()
+    if text.startswith(f'{PROJECT_MEDIA_ADAPTER_SCHEME}://') or text.startswith(LOCAL_CANVAS_ASSET_PREFIXES):
+        return text
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme in {'http', 'https'} and is_loopback_host(parsed.hostname or ''):
+        return urllib.parse.unquote(parsed.path or '')
+    return ''
+
+
+def public_reference_target(ref) -> tuple:
+    """参考图分类：('public', url) 可直接交给上游；('local', 站内路径) 需公网化；('unknown', 原文) 两者都不是。"""
+    raw = ref.get('url', '') if isinstance(ref, dict) else ref
+    text = str(raw or '').strip()
+    if not text:
+        return ('empty', '')
+    local_path = local_canvas_asset_path(text)
+    if local_path:
+        return ('local', local_path)
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme in {'http', 'https'}:
+        return ('public', text)
+    return ('unknown', text)
+
+
 def local_asset_public_url(value: str) -> str:
     text = str(value or '').strip()
-    if not text.startswith(('/output/', '/assets/')):
+    if not local_canvas_asset_path(text):
         return ''
     if not _svc._main('output_file_from_url')(text):
         return ''
@@ -516,20 +556,12 @@ async def openai_video_proxy_public_reference_url(ref) -> str:
     """异步生图（openai-video-proxy）的参考图公网化。
     不走公网隧道（暴露本机服务风险高）：本地文件上传图床（Litterbox/temp.sh，72h 短链），
     与 RS 模式同一通道；真正的公网 URL 原样透传；若手动配置了 PUBLIC_MEDIA_BASE_URL 则作为兜底。"""
-    raw = ref.get('url', '') if isinstance(ref, dict) else ref
-    text = str(raw or '').strip()
-    if not text:
+    kind, text = public_reference_target(ref)
+    if kind == 'empty':
         return ''
-    parsed = urllib.parse.urlsplit(text)
-    local_path = ''
-    if parsed.scheme in {'http', 'https'}:
-        host = (parsed.hostname or '').lower()
-        if host in {'127.0.0.1', 'localhost', '::1'} or re.match('^(192\\.168\\.|10\\.|172\\.(1[6-9]|2\\d|3[01])\\.)', host):
-            local_path = urllib.parse.unquote(parsed.path or '')
-        else:
-            return text
-    elif text.startswith(('/output/', '/assets/')):
-        local_path = text
+    if kind == 'public':
+        return text
+    local_path = text if kind == 'local' else ''
     if local_path and _svc._main('output_file_from_url')(local_path):
         upload_error = ''
         try:
@@ -544,6 +576,45 @@ async def openai_video_proxy_public_reference_url(ref) -> str:
             return public_url
         raise HTTPException(status_code=400, detail=f"参考图上传图床失败，无法转成公网 URL：{upload_error[:200] or '未知错误'}。请检查网络后重试。")
     raise HTTPException(status_code=400, detail=f'参考图不是公网 URL，无法传给上游：{text[:160]}')
+
+async def fal_reference_public_url(ref) -> str:
+    """fal 队列模型（Topaz 高清修复）的输入图公网化。
+
+    画布参考图存的是站内路径（/api/project-library/… 或本机 127.0.0.1:3000），
+    fal 服务器拉不到——必须先把输入送到 fal 能访问的地方。
+    优先图床上传（保留原分辨率：高清修复的输入被缩小会直接毁掉成品质量），
+    不可用时回退 PUBLIC_MEDIA_BASE_URL 隧道。
+
+    不做 base64 内联：fal 官方 OpenAPI 把 image_url 定义为 `type: string`（"Url of the image to be upscaled"，
+    minLength 1），没有 base64/data-URI 形态；而内联通道还会先把图缩到上限尺寸，
+    对高清修复等于先降质再升质。2026-10-28 拉取 schema 核实：fal-ai/topaz/upscale/image 与 …/generative 同形。
+    """
+    raw = ref.get('url', '') if isinstance(ref, dict) else ref
+    text = str(raw or '').strip()
+    if not text:
+        return ''
+    kind, target = public_reference_target(ref)
+    if kind == 'public':
+        return target
+    if kind != 'local':
+        raise HTTPException(status_code=400, detail=f'fal 高清修复的参考图不是公网 URL，无法传给上游：{text[:160]}')
+    local_path = target
+    try:
+        uploaded = await _svc.upload_local_video_to_cloud(local_path)
+        url = str((uploaded or {}).get('url') or '')
+        if url.startswith(('http://', 'https://')):
+            return url
+    except HTTPException as exc:
+        logger.warning(f'fal 参考图上传图床失败，尝试下一通道：{exc.detail}')
+    public_url = local_asset_public_url(local_path)
+    if public_url:
+        return public_url
+    raise HTTPException(
+        status_code=400,
+        detail='高清修复需要 fal 能拉取的输入图 URL：本地图上传图床失败，且未配置公网访问地址。'
+               '请检查网络（Litterbox / temp.sh 可达），或在 API/.env 里设置 PUBLIC_MEDIA_BASE_URL 后重试。'
+               '（fal 只接受 URL，不接受 base64；高清修复也不能先把原图缩小。）',
+    )
 
 def openai_video_proxy_local_image_path(ref) -> str:
     raw = ref.get('url', '') if isinstance(ref, dict) else ref

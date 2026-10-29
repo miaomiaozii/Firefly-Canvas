@@ -3,6 +3,7 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from tests.canvas_frontend_sources import canvas_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProjectImageGenerationUiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        cls.source = canvas_source()
         cls.styles = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 
     def test_core_canvas_uses_project_generation_endpoint_and_result_node(self):
@@ -93,7 +94,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("aspectRatio:outpaintAspectRatio", self.source)
         self.assertIn("ratio:'custom'", self.source)
         self.assertIn("customRatio:size.aspectRatio", self.source)
-        self.assertIn("return reducedAspectRatio(parsed.width, parsed.height)", self.source)
+        # #219: reducedAspectRatio 接口化后放宽为 99453da 同型契约（允许 canvasCore. 前缀）。
+        self.assertRegex(self.source, r"return (?:canvasCore\.)?reducedAspectRatio\(parsed\.width, parsed\.height\)")
 
     def test_project_task_cards_expose_scoped_cancel_retry_and_stable_idempotency(self):
         self.assertIn("idempotency_key:", self.source)
@@ -195,6 +197,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
             + "const smartHistoryImageOutputs=()=>outputs;"
             + "const smartHistoryEntryById=()=>({id:'log-1',outputs});"
             + "const document={querySelector:()=>({})};"
+            + "const canvasState={smartHistorySelectedImage,selectedImage,nodes,selectedIds:[]};"
             + match.group(0)
             + "\nconsole.log(JSON.stringify(captureSmartOriginalDeletionUiState('log-1','')));"
         )
@@ -251,7 +254,17 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
             "if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote))",
             self.source,
         )
-        self.assertIn("return {...remote};", self.source)
+        # #165：这条分支仍逐字段返回远端副本，唯一允许的本地覆盖是节点位置。
+        self.assertIn("return applyLocalNodePosition({...remote}, local, remote);", self.source)
+        helper = self.source[
+            self.source.index("function applyLocalNodePosition("):
+            self.source.index("function mergeSmartNode(")
+        ]
+        self.assertEqual(
+            sorted(set(re.findall(r"merged\.(\w+) = ", helper))),
+            ["positionUpdatedAt", "x", "y"],
+            "位置守卫只能写 x/y/positionUpdatedAt，不得把本地媒体或 busy 形状写回",
+        )
 
     def test_project_merge_preserves_independent_pending_task_identities(self):
         self.assertIn("function mergeSmartPendingTaskLists(local, remote, terminalTaskIds=new Set())", self.source)
@@ -272,7 +285,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
 
     def test_loop_archives_old_output_before_task_registration(self):
         pattern = re.compile(
-            r"if\(isApiLikeEngine\(runSettings\.engine\).*?const existing = cleanHistoryImages"
+            r"if\((?:canvasCore\.)?isApiLikeEngine\(runSettings\.engine\).*?const existing = cleanHistoryImages"
             r".*?outputSlot\.images = \[\];.*?await runApiGeneration",
             re.DOTALL,
         )
@@ -299,7 +312,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("title=\"${escapeAttr(modelMeta.raw)}\"", self.source)
 
     def test_generation_has_persistent_pending_feedback_and_result_entry_effect(self):
-        self.assertIn("const isPending = Boolean(node.pending || isQueued || isJimengPending);", self.source)
+        # #236：即梦已退役，pending 判定只剩 node.pending / 排队态。
+        self.assertIn("const isPending = Boolean(node.pending || isQueued);", self.source)
         # generationPlaceholderHtml was extended with completedImgs (progressive
         # completion: show finished thumbs in placeholder slots) and
         # candidatePhases (per-cell stage from backend progress.candidate_phases).
@@ -378,7 +392,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertNotIn("identity.includes('comfly')", self.source)
         self.assertNotIn("identity.includes('ai.comfly.org')", self.source)
         self.assertIn("settingsSnapshot.resolution = '';", self.source)
-        self.assertIn("const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);", self.source)
+        self.assertIn("const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);", self.source)
+        # #187：扩图不再门掉 resolution（旧写法带 !outpaintSize，会把用户选的 4K 发成空串）。
+        # 但扩图仍不发显式 size/width/height —— 几何由 aspect_ratio + 分辨率档位表达，
+        # 且 app/services/generation.py 在 aspect_ratio 存在时不写 body['size']。
+        self.assertNotIn("const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);", self.source)
+        self.assertIn("const sendsExplicitSize = usesExplicitResolution && !outpaintSize;", self.source)
         self.assertIn("resolution:usesExplicitResolution ? (runSettings.resolution || '') : ''", self.source)
         self.assertIn(".size-picker-popover.resolution-free", self.styles)
 

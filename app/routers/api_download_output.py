@@ -59,6 +59,44 @@ def download_output(request: Request, url: str, name: str='', inline: bool=False
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             except ProjectCleanupActive as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # #207/#208：回收区预览 URL（/api/project-library/{pid}/trash/media/{aid}/preview）——
+    # 「生成详情」面板（回收区收口）里的「下载原图」走这里：默认返回生成原件
+    #（view=original，原件缺失回退预览图），文件名取回收区记录（URL 尾段是 preview，不能当下载名）。
+    trash_media_path = (
+        not parsed.scheme
+        and not parsed.netloc
+        and len(segments) in (7, 8)
+        and segments[1:3] == ['api', 'project-library']
+        and segments[4] == 'trash'
+        and segments[5] == 'media'
+        and (len(segments) == 7 or segments[7] == 'preview')
+    )
+    if trash_media_path:
+        project_id = urllib.parse.unquote(segments[3])
+        asset_id = urllib.parse.unquote(segments[6])
+        if project_id and asset_id:
+            trash_view = urllib.parse.parse_qs(parsed.query).get('view', ['original'])[0]
+            if trash_view != 'preview':
+                trash_view = 'original'
+            try:
+                assert_project_owner_admissible(project_id)
+                with project_lifecycle_lock(project_id):
+                    record = _app_main.project_store_call('trash_media_preview_path', project_id, asset_id, view=trash_view)
+                    media_path = str(record.get('path') or '')
+                    if media_path:
+                        fallback = os.path.basename(media_path)
+                        preferred = record.get('filename') or (os.path.basename(name) if name else '')
+                        filename = sanitize_export_filename(preferred, fallback)
+                        return ProjectMediaFileResponse(
+                            media_path,
+                            project_id=project_id,
+                            media_type=record.get('media_type') or content_type_for_path(media_path),
+                            filename=None if inline else filename,
+                        )
+            except ProjectNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ProjectCleanupActive as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
     path = _app_main.output_file_from_url(url)
     if not path:
         path = local_media_file_by_basename(filename_from_media_url(url, ''))

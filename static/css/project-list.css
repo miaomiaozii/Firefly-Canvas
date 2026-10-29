@@ -461,6 +461,149 @@ h1 {
   font-size: var(--font-body);
 }
 
+/* ── 版本历史弹窗（issue #257：diff 确认 + 先存当前再回滚）────────────── */
+
+.versions-dialog {
+  width: min(640px, calc(100% - 32px));
+}
+
+.versions-content {
+  padding: var(--space-24);
+}
+
+.versions-content h2 {
+  margin: 0 0 var(--space-8);
+  font-size: var(--font-section-title);
+  font-weight: var(--weight-strong);
+  line-height: var(--line-title);
+}
+
+.versions-project {
+  margin: 0 0 var(--space-12);
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+
+.versions-list {
+  max-height: min(280px, 38vh);
+  display: grid;
+  gap: var(--space-8);
+  overflow: auto;
+  margin-bottom: var(--space-12);
+}
+
+.versions-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+
+.versions-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-utility);
+  padding: var(--space-8) var(--space-12);
+  background: var(--soft);
+}
+
+.versions-item-info {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.versions-item-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--font-card-title);
+  font-weight: var(--weight-medium);
+}
+
+.versions-item-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.versions-item-actions {
+  display: flex;
+  gap: var(--space-8);
+  flex-shrink: 0;
+}
+
+.versions-diff {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  padding: var(--space-12);
+  margin-bottom: var(--space-12);
+}
+
+.versions-diff h3 {
+  margin: 0 0 var(--space-8);
+  color: var(--text);
+  font-size: var(--font-body);
+  font-weight: var(--weight-medium);
+}
+
+.versions-diff-summary {
+  margin: 0 0 var(--space-8);
+  color: var(--muted);
+  font-size: var(--font-body);
+}
+
+.versions-diff-list {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.versions-diff-item {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-control);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.versions-diff-added { color: var(--accent); }
+.versions-diff-removed { color: var(--danger); }
+.versions-diff-changed { color: var(--muted); }
+
+.versions-diff-more {
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.versions-confirm {
+  margin-top: var(--space-12);
+  display: grid;
+  gap: var(--space-8);
+}
+
+.versions-confirm[hidden],
+#versionsRestore[hidden] {
+  display: none;
+}
+
+.versions-confirm-note {
+  margin: 0;
+  border-left: 3px solid var(--accent);
+  padding-left: var(--space-12);
+  color: var(--text);
+  font-size: var(--font-body);
+}
+
 @media (max-width: 700px) {
   .project-shell {
     width: min(calc(100% - 24px), 1180px);

@@ -1,6 +1,9 @@
 (function(){
     'use strict';
     const query = new URLSearchParams(location.search);
+    // #214：探针默认关闭（纯诊断，会显著拖慢 runner 并干扰时序）；需要取证时
+    // 页面 URL 追加 ?probe214=1 即可重新启用全部包装/采样/trap。
+    const probeEnabled = query.has('probe214');
     const projectId = query.get('project') || '';
     const browserRole = query.get('role') || 'probe';
     const result = {
@@ -19,6 +22,215 @@
     const assertion = (name, pass, actual) => result.assertions.push({name, pass:Boolean(pass), actual});
     const evalCanvas = () => { try { return eval('canvas'); } catch(_) { return null; } };
     const evalFn = name => { try { const f = eval(name); return typeof f === 'function' ? f : null; } catch(_) { return null; } };
+    // #214 probe (diagnostics only, no behavior/assertion changes): wrap the app's
+    // history-card creation and node-mutation entry points to identify (a) which
+    // call path creates task-less failed history cards and (b) which path clears
+    // gen-conn.images after the concurrent stage completes.
+    const probe214 = {events: []};
+    function probeInstall(){
+        const t0 = performance.now();
+        probe214.t0 = t0;
+        const ts = () => Math.round(performance.now() - t0);
+        const snap = () => {
+            try {
+                const c = evalCanvas();
+                const n = (c?.nodes || []).find(x => x.id === 'gen-conn');
+                return {
+                    images: (n?.images || []).map(i => String(i.url || i.name || '').slice(-20)),
+                    imagesFull: JSON.stringify((n?.images || []).map(i => Object.fromEntries(Object.entries(i || {}).filter(([k]) => ['url','name','asset_id','preview_url','status','kind'].includes(k))))).slice(0, 600),
+                    pending: n?.pending ?? null,
+                    pendingTasks: (n?.pendingTasks || []).map(p => String(p.taskId || '').slice(-8)),
+                    pendingLogs: (c?.history || []).filter(l => l.status === 'pending').map(l => String(l.id || '').slice(-8) + ':' + String(l.request?.task_id || l.task_id || '-').slice(-8)),
+                    history: (c?.history || []).map(l => String(l.status) + '|' + String(l.task_id || l.request?.task_id || '-').slice(-8) + '|' + String(l.prompt || '').slice(0, 12)),
+                };
+            } catch(_) { return null; }
+        };
+        const record = event => probe214.events.push(Object.assign({t: ts()}, event));
+        const origAdd = evalFn('addSmartGenerationHistory');
+        if (typeof origAdd === 'function') {
+            window.addSmartGenerationHistory = function(opts = {}){
+                const before = snap();
+                const stack = (new Error().stack || '').split('\n').slice(2, 5).map(s => s.trim()).join(' <- ');
+                record({type: 'addHistory', prompt: String(opts.run?.prompt || '').slice(0, 20), outputs: (opts.outputs || []).length, error: String(opts.error || '').slice(0, 80), stack, before});
+                return origAdd.call(this, opts);
+            };
+        }
+        const origAbsorb = evalFn('absorbProjectGenerationResult');
+        if (typeof origAbsorb === 'function') {
+            window.absorbProjectGenerationResult = function(result, taskId = ''){
+                const before = snap();
+                const out = origAbsorb.call(this, result, taskId);
+                const after = snap();
+                record({type: 'absorb', task: String(taskId || '').slice(-8), status: result?.status, recorded: Boolean(result?.history_recorded), revision: result?.project_revision, fnImages: (result?.final_node?.images || []).length, imgBefore: before?.images?.length, imgAfter: after?.images?.length, changed: (before?.images?.length) !== (after?.images?.length)});
+                return out;
+            };
+        }
+        const origMerge = evalFn('applyMergedServerCanvas');
+        if (typeof origMerge === 'function') {
+            window.applyMergedServerCanvas = function(serverCanvas){
+                const before = snap();
+                const out = origMerge.call(this, serverCanvas);
+                const after = snap();
+                record({type: 'merge', revision: serverCanvas?.revision, imgBefore: before?.images?.length, imgAfter: after?.images?.length, changed: (before?.images?.length) !== (after?.images?.length), images: after?.images});
+                return out;
+            };
+        }
+        const origSaveCore = evalFn('saveCoreCanvasIncrementally');
+        if (typeof origSaveCore === 'function') {
+            window.saveCoreCanvasIncrementally = async function(storageCanvas){
+                const out = await origSaveCore.apply(this, arguments);
+                try {
+                    const n = ((storageCanvas || {}).nodes || []).find(x => x.id === 'gen-conn');
+                    record({type: 'saveCore', sentImages: JSON.stringify((n?.images || []).map(i => ({url: String(i?.url || '').slice(-20), name: i?.name, asset_id: i?.asset_id}))).slice(0, 400)});
+                } catch(_){}
+                return out;
+            };
+        }
+        const origMergeReload = evalFn('mergeReloadCanvasNow');
+        if (typeof origMergeReload === 'function') {
+            window.mergeReloadCanvasNow = async function(...args){
+                record({type: 'mergeReload', args: JSON.stringify(args).slice(0, 120)});
+                return origMergeReload.apply(this, args);
+            };
+        }
+        const origFetch = window.fetch;
+        window.fetch = async function(url, opts){
+            const u = String(url);
+            if(!/^\/api\//.test(u) && !u.startsWith('/__')) {
+                const res = await origFetch.apply(this, arguments);
+                return res;
+            }
+            record({type: 'api', url: u.slice(0, 90), method: opts?.method || 'GET'});
+            return origFetch.apply(this, arguments);
+        };
+        const origSyncLive = evalFn('syncLiveProjectMediaReferences');
+        if (typeof origSyncLive === 'function') {
+            window.syncLiveProjectMediaReferences = function(storageCanvas, materializedCanvas){
+                const node = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                const before = JSON.stringify((node?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort()})));
+                origSyncLive.apply(this, arguments);
+                const afterNode = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                const after = JSON.stringify((afterNode?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort()})));
+                if (before !== after) record({type: 'syncLive', before, after, matKeys: JSON.stringify(Object.keys((node && materializedCanvas ? (materializedCanvas.nodes || []).find(x => x.id === 'gen-conn') : {}) || {}).sort()).slice(0, 200)});
+            };
+        }
+        const origMergeImages = evalFn('mergeSmartImageLists');
+        if (typeof origMergeImages === 'function') {
+            window.mergeSmartImageLists = function(localImgs, remoteImgs){
+                const out = origMergeImages.apply(this, arguments);
+                if ((localImgs || []).length || (remoteImgs || []).length) {
+                    record({type: 'mergeImages', out: JSON.stringify((out || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                }
+                return out;
+            };
+        }
+        const origResumePersist = evalFn('resumeSmartPersistencePendingTasks');
+        if (typeof origResumePersist === 'function') {
+            window.resumeSmartPersistencePendingTasks = function(nodes){
+                const keyCount = (typeof smartPendingPersistenceKeys !== 'undefined' && smartPendingPersistenceKeys) ? smartPendingPersistenceKeys.size : -1;
+                const out = origResumePersist.apply(this, arguments);
+                record({type: 'resumePersist', keys: keyCount, nodeImgs: JSON.stringify((((nodes || []).find(n => n.id === 'gen-conn') || {}).images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                return out;
+            };
+        }
+        const origMarkAutosave = evalFn('markAutosaveSaved');
+        if (typeof origMarkAutosave === 'function') {
+            window.markAutosaveSaved = function(...args){
+                const out = origMarkAutosave.apply(this, args);
+                const node = ((canvasState?.nodes) || []).find(x => x.id === 'gen-conn');
+                record({type: 'markAutosave', imgs: JSON.stringify((node?.images || []).map(i => ({url: i?.url ? String(i.url).slice(-12) : null, keys: Object.keys(i || {}).sort().join('.')})))});
+                return out;
+            };
+        }
+        const trap = evalFn(`(() => {
+            const rawToProxy = new Map();
+            const events = [];
+            const t0 = performance.now();
+            let lastArr = null;
+            let lastLen = -1;
+            function makeProxy(target, label){
+                if(!target || typeof target !== 'object') return target;
+                if(rawToProxy.has(target)) return rawToProxy.get(target);
+                const p = new Proxy(target, {
+                    get(t, k, r){ return Reflect.get(t, k, r); },
+                    set(t, k, v, r){
+                        const ks = String(k);
+                        if(ks === 'url' || ks === 'preview_url' || ks === 'asset_id'){
+                            events.push({op: 'set', label, key: ks, t: Math.round(performance.now() - t0), stack: String((new Error().stack || '').split('\\n').slice(1, 5)).join(' | ')});
+                        }
+                        return Reflect.set(t, k, v, r);
+                    },
+                    deleteProperty(t, k){
+                        const ks = String(k);
+                        if(ks === 'url' || ks === 'preview_url' || ks === 'asset_id' || ks === 'src'){
+                            events.push({op: 'del', label, key: ks, t: Math.round(performance.now() - t0), stack: String((new Error().stack || '').split('\\n').slice(1, 5)).join(' | ')});
+                        }
+                        return Reflect.deleteProperty(t, k);
+                    }
+                });
+                rawToProxy.set(target, p);
+                return p;
+            }
+            const iv = setInterval(() => {
+                try {
+                    const nodes = (typeof canvasState !== 'undefined' && canvasState && canvasState.nodes) || [];
+                    if(!Array.isArray(nodes)) return;
+                    const node = nodes.find(n => n && n.id === 'gen-conn');
+                    if(!node) return;
+                    const arr = node.images;
+                    if(arr !== lastArr){
+                        events.push({op: 'arr-swap', t: Math.round(performance.now() - t0), fromLen: lastLen, toLen: Array.isArray(arr) ? arr.length : -1, keys: Array.isArray(arr) ? JSON.stringify(arr.map(i => Object.keys(i || {}).sort().join('.') || i)) : String(arr)});
+                        lastArr = arr;
+                        lastLen = Array.isArray(arr) ? arr.length : -1;
+                    } else if(Array.isArray(arr) && arr.length !== lastLen){
+                        events.push({op: 'arr-len', t: Math.round(performance.now() - t0), fromLen: lastLen, toLen: arr.length});
+                        lastLen = arr.length;
+                    }
+                    (Array.isArray(arr) ? arr : []).forEach((img, i) => {
+                        if(!img || typeof img !== 'object') return;
+                        const w = makeProxy(img, 'gen-conn.img' + i);
+                        if(w !== arr[i]) arr[i] = w;
+                    });
+                } catch(e){ events.push({op: 'err', t: Math.round(performance.now() - t0), error: String(e)}); }
+            }, 10);
+            const api = () => events;
+            api.events = events;
+            api.stop = () => { clearInterval(iv); };
+            return api;
+        })()`);
+        if (trap && trap.stop) {
+            const iv2 = setInterval(() => {
+                try {
+                    const evs = trap.events.splice(0, trap.events.length);
+                    if (evs.length) record({type: 'trap', items: evs.slice(0, 40)});
+                } catch(_){}
+            }, 200);
+            result.diagnostics.push('probe214v5_trap_installed=' + Boolean(trap));
+        } else {
+            result.diagnostics.push('probe214v5_trap_installed=false');
+        }
+        const origSave = evalFn('saveCanvas');
+        if (typeof origSave === 'function') {
+            window.saveCanvas = async function(...args){
+                const before = snap();
+                try {
+                    const out = await origSave.apply(this, args);
+                    record({type: 'save', imgAtSave: before?.images?.length});
+                    return out;
+                } catch(error){
+                    record({type: 'save', imgAtSave: before?.images?.length, error: String(error?.message || error)});
+                    throw error;
+                }
+            };
+        }
+        let lastSig = '';
+        probe214.timer = setInterval(() => {
+            const s = snap();
+            if (!s) return;
+            const sig = JSON.stringify(s);
+            if (sig !== lastSig){ lastSig = sig; record({type: 'state', snap: s}); }
+        }, 50);
+    }
     async function waitFor(predicate, timeout=15000){
         const deadline = performance.now() + timeout;
         while(performance.now() < deadline){
@@ -92,6 +304,7 @@
             return;
         }
         if(sessionStorage.getItem('t09-submission-recovery-phase') === 'verify'){
+            if (probeEnabled) probeInstall();
             const carried = JSON.parse(sessionStorage.getItem('t09-submission-recovery-result') || '{}');
             result.assertions.push(...(carried.assertions || []));
             result.errors.push(...(carried.errors || []));
@@ -108,6 +321,8 @@
                 matchingLogs:(evalCanvas()?.history || []).filter(log => String(log.prompt || '').includes('RESPONSE_LOST_RECOVERY')).map(log => ({task:log.task_id, status:log.status})),
             });
             assertion('response-loss recovery invokes the fake adapter only once', recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length === 1, recoveredCaptured.filter(item => String(item.prompt || '').includes('RESPONSE_LOST_RECOVERY')).length);
+            if(probe214.timer) clearInterval(probe214.timer);
+            result.diagnostics.push(`probe214-verify=${JSON.stringify(probe214.events)}`);
             sessionStorage.removeItem('t09-submission-recovery-phase');
             sessionStorage.removeItem('t09-submission-recovery-result');
             return;
@@ -118,6 +333,7 @@
         }, 20000);
         assertion('second real browser client is ready before overlap begins', secondaryReady, secondaryReady);
         const settings = smartSettings();
+        if (probeEnabled) probeInstall();
         assertion('settings loaded', Boolean(settings), Boolean(settings));
 
         const mergeNode = evalFn('mergeSmartNode');
@@ -136,7 +352,7 @@
         const absorbGeneration = evalFn('absorbProjectGenerationResult');
         const probeNode = {id:'revision-probe', type:'smart-image', images:[{url:'project-media://revision-probe/local.png'}], runFinishedAt:10, pending:0};
         try {
-            eval('nodes').push(probeNode);
+            eval('canvasState.nodes').push(probeNode);
             applyMergedCanvas?.({
                 revision:40,
                 updated_at:Date.now(),
@@ -158,8 +374,8 @@
                 && !revisionProbe?.images?.some(item => item.url === 'project-media://revision-probe/stale.png')
             ), revisionProbe?.images);
         } finally {
-            eval('nodes').splice(0, eval('nodes').length, ...eval('nodes').filter(item => item.id !== 'revision-probe'));
-            evalCanvas().nodes = eval('nodes');
+            eval('canvasState.nodes').splice(0, eval('canvasState.nodes').length, ...eval('canvasState.nodes').filter(item => item.id !== 'revision-probe'));
+            evalCanvas().nodes = eval('canvasState.nodes');
             evalCanvas().history = (evalCanvas().history || []).filter(item => item.id !== 'revision-probe-history');
         }
 
@@ -189,7 +405,7 @@
         const minimap = document.getElementById('minimap');
         const shellBackground = getComputedStyle(shell).backgroundImage;
         assertion('workspace keeps one dot background layer', (shellBackground.match(/radial-gradient/g) || []).length === 1 && !/linear-gradient|ellipse/i.test(shellBackground), shellBackground);
-        assertion('workspace chrome remains one toolbar plus visible minimap', toolbar?.children.length === 8 && [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle')].every(control => control.closest('.smart-toolbar') === toolbar) && getComputedStyle(minimap).display !== 'none', {toolbar:toolbar?.children.length, minimap:getComputedStyle(minimap).display});
+        assertion('workspace chrome remains one toolbar plus visible minimap', toolbar?.children.length === 11 && [...document.querySelectorAll('.smart-back,.smart-undo,.smart-redo,.smart-settings,.smart-save,.smart-shortcut-toggle,.smart-log-toggle,.asset-toggle,#smartArrangeBtn,#smartExcelExportBtn,#smartMarkedToggle')].every(control => control.closest('.smart-toolbar') === toolbar) && getComputedStyle(minimap).display !== 'none', {toolbar:toolbar?.children.length, minimap:getComputedStyle(minimap).display});
 
         const composer = document.getElementById('composer');
         const composerRect = composer.getBoundingClientRect();
@@ -238,8 +454,20 @@
 
         clickPill('model-control');
         const optionsShown = await waitFor(() => document.querySelectorAll('#dynamicParams [data-model-option]').length >= 2, 8000);
-        const optionCount = document.querySelectorAll('#dynamicParams [data-model-option]').length;
-        assertion('model popover lists 2 models', optionsShown && optionCount === 2, optionCount);
+        const modelOptionIds = [...document.querySelectorAll('#dynamicParams [data-model-option]')].map(el => String(el.dataset.modelOption || ''));
+        // #214: generic OpenAI-compatible providers merge model_specs.json's adapted image
+        // models into the configured list (mergeSpecModels), so the contract is "2 configured
+        // fake models + every spec id not already listed" — compute the expected total from
+        // /api/model-specs instead of hard-coding 2.
+        let expectedModelCount = 2;
+        try {
+            const specJson = await fetch('/api/model-specs').then(r => (r.ok ? r.json() : null));
+            const specImageIds = Array.isArray(specJson?.image_model_ids) ? specJson.image_model_ids : [];
+            const configured = ['browser-image-model', 'browser-image-model-2'];
+            expectedModelCount = configured.length + specImageIds.filter(id => id && !configured.some(m => String(m).toLowerCase() === String(String(id)).toLowerCase())).length;
+        } catch(_){}
+        const configuredListed = ['browser-image-model', 'browser-image-model-2'].every(id => modelOptionIds.some(m => String(m).toLowerCase() === id));
+        assertion('model popover lists configured models plus spec-adapted models', optionsShown && modelOptionIds.length === expectedModelCount && configuredListed, {optionCount:modelOptionIds.length, expectedModelCount, modelOptionIds});
         const modelPopoverRect = document.querySelector('#dynamicParams .model-control .smart-popover')?.getBoundingClientRect();
         assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= layoutViewportWidth - 8, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:layoutViewportWidth} : 'missing');
 
@@ -297,9 +525,17 @@
         runBtn?.click();
         await sleep(120);
         const firstPendingNode = document.querySelector('[data-id="gen-conn"]');
-        const firstPlaceholder = firstPendingNode?.querySelector('.generation-placeholder');
-        const firstPlaceholderSpinner = firstPlaceholder?.querySelector('.generation-placeholder-spinner');
-        assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner), firstPlaceholderSpinner ? {className:firstPlaceholderSpinner.className} : 'missing');
+        // #214: for n>1 batches the spinner + stage progress live in the node-bottom
+        // .batch-statusbar (the #84 batch UI dropped the per-cell status panel); the
+        // placeholder grid still renders one .generation-placeholder cell per output.
+        const firstBatchStack = firstPendingNode?.querySelector('.pending-batch-stack');
+        const firstPlaceholderSpinner = firstBatchStack?.querySelector('.batch-statusbar .generation-placeholder-spinner');
+        const firstBatchCells = firstBatchStack?.querySelectorAll('.generation-placeholder-grid .generation-placeholder') || [];
+        assertion('first generation shows a result placeholder', Boolean(firstPlaceholderSpinner) && firstBatchCells.length === 3, {
+            spinner:Boolean(firstPlaceholderSpinner),
+            cells:firstBatchCells.length,
+            statusbar:firstBatchStack?.querySelector('.batch-statusbar')?.className || 'missing',
+        });
         const firstNodeProgress = firstPendingNode?.querySelector('.generation-stage-progress');
         assertion('node placeholder shows six honest generation stages without a fake percent', Boolean(firstNodeProgress) && firstNodeProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstNodeProgress.textContent.includes('%'), firstNodeProgress?.outerHTML || 'missing');
         document.getElementById('smartHistoryToggle')?.click();
@@ -310,15 +546,24 @@
         assertion('history pending card has an animated placeholder', Boolean(pendingHistoryPlaceholder) && getComputedStyle(pendingHistoryPlaceholder).animationName !== 'none', pendingHistoryPlaceholder ? {className:pendingHistoryPlaceholder.className, animation:getComputedStyle(pendingHistoryPlaceholder).animationName} : 'missing');
         const firstHistoryProgress = pendingHistoryCard?.querySelector('.generation-stage-progress');
         assertion('history placeholder shows the same six generation stages', Boolean(firstHistoryProgress) && firstHistoryProgress.querySelectorAll('.generation-stage-segment').length === 6 && !firstHistoryProgress.textContent.includes('%'), firstHistoryProgress?.outerHTML || 'missing');
-        const livePhaseSynced = await waitFor(() => {
+        // #214: sample the node/history phases throughout the window so a failure shows
+        // exactly which tick the 2s poller landed on instead of only the final state.
+        const livePhaseSamples = [];
+        const sampleLivePhase = () => {
             const nodeProgress = document.querySelector('[data-id="gen-conn"] .generation-stage-progress');
             const historyProgress = document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress');
-            return nodeProgress?.dataset?.phase === 'provider_generating'
-                && historyProgress?.dataset?.phase === nodeProgress.dataset.phase;
+            return {node:nodeProgress?.dataset?.phase || '', history:historyProgress?.dataset?.phase || ''};
+        };
+        const livePhaseSynced = await waitFor(() => {
+            const sample = sampleLivePhase();
+            livePhaseSamples.push(sample);
+            return sample.node === 'provider_generating' && sample.history === sample.node;
         }, 7000);
+        result.diagnostics.push(`livePhaseSamples=${JSON.stringify(livePhaseSamples)}`);
         assertion('node and history progress advance to the same live provider stage', livePhaseSynced, {
-            node:document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.dataset?.phase || '',
-            history:document.querySelector('#smartHistoryList .log-item.pending .generation-stage-progress')?.dataset?.phase || '',
+            node:sampleLivePhase().node,
+            history:sampleLivePhase().history,
+            samples:livePhaseSamples,
         });
         const concurrentRunEnabled = await waitFor(() => !runBtn?.disabled, 3000);
         assertion('run button stays enabled while the current generation is pending', concurrentRunEnabled, runBtn?.disabled);
@@ -372,19 +617,40 @@
             return Boolean(n?.images?.length && n.images.some(i => i.url) && !n.pending && n.runFinishedAt);
         }, 60000);
         assertion('generation completes on gen-conn', completed, JSON.stringify(nodeById('gen-conn')?.images?.map(i => i.url) || []));
+        // #214 产品契约（已对 static/js 代码核实）：一次运行结束时节点没有图片，
+        // 除了就地升级的卡片（cancelled/failed，保留 task 身份）外，主流程
+        // errNoOutImages（smart-canvas.js:13878）→ 外层 catch（!smartGenerationLogged）
+        // → addSmartGenerationHistory 会再新增一条无 task 身份的 failed 记录。
+        // 因此被取消的运行（连通性测试提示词）留下 2 张卡（cancelled + failed），
+        // 出图的运行（并发微调提示词）留下 1 张 succeeded 卡，共 3 张。
+        const historyTaskId = log => String(log?.task_id || log?.request?.task_id || '');
         const pendingHistoryReplaced = await waitFor(() => {
             const logs = evalCanvas()?.history || [];
-            return logs.length === historyCountBeforeRun + 2
-                && logs.filter(log => log.status === 'cancelled').length >= 1
-                && logs.filter(log => log.status === 'succeeded').length >= 1
+            const cancelledRun = logs.filter(log => String(log.prompt || '').includes('连通性测试提示词'));
+            const survivorRun = logs.filter(log => String(log.prompt || '').includes('并发微调提示词'));
+            return logs.length === historyCountBeforeRun + 3
+                && cancelledRun.length === 2
+                && cancelledRun.some(log => log.status === 'cancelled' && historyTaskId(log).startsWith('project_img_'))
+                && cancelledRun.some(log => log.status === 'failed' && !historyTaskId(log))
+                && survivorRun.length === 1
+                && survivorRun[0].status === 'succeeded'
                 && !logs.some(log => log.status === 'pending')
                 && Boolean(document.querySelector('#smartHistoryList .log-item:not(.pending) .log-history-image'));
         }, 8000);
         assertion('cancelled and completed tasks replace only their own history placeholders', pendingHistoryReplaced, {before:historyCountBeforeRun, after:(evalCanvas()?.history || []).length, statuses:(evalCanvas()?.history || []).map(log => log.status)});
         assertion('completed node no longer renders the stage progress placeholder', !document.querySelector('[data-id="gen-conn"] .generation-stage-progress'), document.querySelector('[data-id="gen-conn"] .generation-stage-progress')?.outerHTML || 'removed');
+        result.diagnostics.push(`genImagesReadAt=${Math.round(performance.now() - (probe214.t0 || 0))} imgCount=${(nodeById('gen-conn')?.images || []).length} archived=${JSON.stringify((evalCanvas()?.history || []).filter(l => !l.status).map(l => ({images:(l.images||[]).length, title:l.title})))}`);
         const genImages = nodeById('gen-conn')?.images || [];
-        const urlImage = genImages.find(i => i.url);
-        assertion('generated image has url', Boolean(urlImage?.url), urlImage?.url || '');
+        // #214 产品契约：项目媒体自动保存往返后以 asset_id 为规范引用
+        // （canvasForStorage → mediaItemForStorage 剥离瞬态 url 键；显示/水合层
+        // hydrateProjectMediaReferences/displayMediaUrl 从 asset_id 重建
+        // projectMediaUrl(asset_id)）。内存对象可能只保留 asset_id，两种形态都合法。
+        const effectiveMediaUrl = item => item?.url || (item?.asset_id && projectId
+            ? `/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(item.asset_id)}`
+            : '');
+        const urlImage = genImages.find(item => effectiveMediaUrl(item)) || genImages[0] || null;
+        const genImageUrl = urlImage ? effectiveMediaUrl(urlImage) : '';
+        assertion('generated image has url', Boolean(genImageUrl), genImageUrl || JSON.stringify(genImages));
 
         const captured = await (await fetch('/__captured_requests')).json();
         const last = [...captured].reverse().find(item => String(item.prompt || '').includes('并发微调提示词')) || {};
@@ -400,7 +666,7 @@
 
         const downloadResult = await (async () => {
             try {
-                const res = await fetch(urlImage.url, {cache: 'no-store'});
+                const res = await fetch(genImageUrl, {cache: 'no-store'});
                 if(!res.ok) return {ok: false, size: 0, status: res.status};
                 const buf = await res.arrayBuffer();
                 const bytes = new Uint8Array(buf);
@@ -412,8 +678,29 @@
         })();
         assertion('generated image downloadable', downloadResult.ok && downloadResult.size >= 60 && downloadResult.png, JSON.stringify(downloadResult));
 
+        // #214 屏障：上一个 run（并发微调）的主流程会迟到结算——轮询续体在任务完成后
+        // ~0.7-2.5s 才执行，迟到的 absorb 会把该 run 的图回写进画布（卡片早已
+        // succeeded 之后）。若在此之前启动下一个 run，回写会落进新 run 的占位窗口，
+        // 污染「占位替换」与「完成判定」。等 gen-conn 节点状态（images/pending/
+        // runFinishedAt）稳定 2s 再启动自动路由 run。
+        const nodeSettleSig = (() => {
+            let lastSig = '';
+            let lastChange = performance.now();
+            return () => {
+                const n = nodeById('gen-conn') || {};
+                const sig = JSON.stringify({
+                    i:(n.images || []).map(x => ({u:x.url, a:x.asset_id, n:x.name})),
+                    p:n.pending, t:(n.pendingTasks || []).length, f:n.runFinishedAt,
+                });
+                if(sig !== lastSig){ lastSig = sig; lastChange = performance.now(); }
+                return performance.now() - lastChange >= 2000;
+            };
+        })();
+        const nodeSettled = await waitFor(nodeSettleSig, 30000);
+        result.diagnostics.push(`nodeSettledBeforeAutoRun=${nodeSettled}`);
+
         const autoReset = await evalFn(`(p) => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
             n.pending = false;
             n.queued = false;
@@ -422,9 +709,9 @@
             return true;
         }`)();
         const reSelect = await evalFn(`(p) => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
-            selectedId = n.id;
+            canvasState.selectedId = n.id;
             updateComposer();
             renderDynamicParams();
             return true;
@@ -481,11 +768,19 @@
             return Boolean(card && placeholder && getComputedStyle(placeholder).animationName !== 'none');
         }, 5000);
         assertion('failing generation first appears as an animated history placeholder', failedPendingVisible, document.querySelector('#smartHistoryList .log-item.pending')?.dataset?.canvasHistoryId || 'missing');
+        // #214 产品契约（已核实）：无图运行结束时留下恰好 2 张 failed 卡——
+        // 就地升级的占位卡（保留 project_img_ 任务身份）+ 主流程 catch 新增的
+        // 一条无任务身份 failed 记录（errNoOutImages）。不再用全局条数断言：
+        // 上一段（自动路由）的主流程迟到记录可能落进本窗口（探针运行实测），
+        // 按 prompt 精确拆分才是稳定且同样严格的契约。
         const failedHistoryResolved = await waitFor(() => {
             const logs = evalCanvas()?.history || [];
             const matching = logs.filter(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
-            return logs.length === historyCountBeforeFailure + 1
-                && matching.length === 1
+            const inPlace = matching.filter(log => historyTaskId(log).startsWith('project_img_'));
+            const newRecords = matching.filter(log => !historyTaskId(log));
+            return matching.length === 2
+                && inPlace.length === 1
+                && newRecords.length === 1
                 && !logs.some(log => log.status === 'pending');
         }, 60000);
         assertion('failed result replaces the history placeholder without adding a duplicate', failedHistoryResolved, {
@@ -494,13 +789,16 @@
             pending: (evalCanvas()?.history || []).filter(log => log.status === 'pending').length,
             failed: (evalCanvas()?.history || []).filter(log => log.status === 'failed').length - failedCountBefore,
         });
-        const failedLog = (evalCanvas()?.history || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
+        // #214：取就地升级的 failed 卡（保留任务身份，才有停止阶段 progress 与
+        // 重试按钮 canvas-media-history.js: failed && projectTask），而不是
+        // 主流程新增的无任务身份记录。
+        const failedLog = (evalCanvas()?.history || []).find(log => log.status === 'failed' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE') && historyTaskId(log).startsWith('project_img_'));
         evalFn('renderSmartCanvasLog')?.();
         const failedStageProgress = failedLog ? document.querySelector(`[data-canvas-history-id="${CSS.escape(String(failedLog.id || ''))}"] .generation-stage-progress.is-failed`) : null;
         assertion('failed history keeps the stage where generation stopped', failedStageProgress?.dataset?.phase === 'provider_generating', failedStageProgress?.outerHTML || failedLog?.progress || 'missing');
         const failedTaskId = failedLog?.task_id || failedLog?.request?.task_id || '';
         const retryButton = failedLog ? document.querySelector(`[data-canvas-history-id="${failedLog.id}"] [data-history-retry-task]`) : null;
-        assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.logRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
+        assertion('failed project task exposes an explicit retry control', Boolean(retryButton) && retryButton.dataset.historyRetryTask === failedTaskId, retryButton?.outerHTML || 'missing');
         retryButton?.click();
         const retryPending = await waitFor(() => {
             const retryLog = (evalCanvas()?.history || []).find(log => log.status === 'pending' && String(log.prompt || '').includes('FORCE_HISTORY_FAILURE'));
@@ -534,9 +832,9 @@
         assertion('node count grew by 4', finalCount === beforeCount + 4, `${beforeCount} -> ${finalCount}`);
 
         const recoverySelected = await evalFn(`() => {
-            const n = nodes.find(n => n.id === 'gen-conn');
+            const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
-            selectedId = n.id;
+            canvasState.selectedId = n.id;
             n.runSettings = {...(n.runSettings || {}), engine:'api', apiKind:'image', routingMode:'auto', count:1};
             updateComposer();
             renderDynamicParams();
@@ -575,6 +873,8 @@
             droppedSubmissionResponses,
             submissions:nodeById('gen-conn')?.generationSubmissions || [],
         });
+        if(probe214.timer) clearInterval(probe214.timer);
+        result.diagnostics.push(`probe214=${JSON.stringify(probe214.events)}`);
         sessionStorage.setItem('t09-submission-recovery-result', JSON.stringify({assertions:result.assertions, errors:result.errors, diagnostics:result.diagnostics}));
         sessionStorage.setItem('t09-submission-recovery-phase', 'verify');
         location.reload();

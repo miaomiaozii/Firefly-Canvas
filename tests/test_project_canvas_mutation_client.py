@@ -2,11 +2,11 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
+from tests.canvas_frontend_sources import canvas_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MUTATION_CLIENT = ROOT / "static" / "js" / "project-canvas-mutations.js"
-SMART_CANVAS = ROOT / "static" / "js" / "smart-canvas.js"
 SMART_CANVAS_HTML = ROOT / "static" / "smart-canvas.html"
 
 
@@ -172,7 +172,7 @@ console.log(JSON.stringify({{calls, result}}));
         self.assertIn("local", [node["id"] for node in payload["result"]["canvas"]["nodes"]])
 
     def test_save_core_requeues_original_mutations_after_conflict_limit(self):
-        source = SMART_CANVAS.read_text(encoding="utf-8")
+        source = canvas_source()
         self.assertIn(
             "if(flushResult.mutations.length || lateChangeSet.mutations.length) scheduleStateSave();",
             source,
@@ -399,10 +399,11 @@ console.log(JSON.stringify({{result, confirmations}}));
         self.assertEqual(payload["result"]["canvas"]["revision"], 3)
 
     def test_non_image_project_media_uses_original_resource_instead_of_image_preview(self):
-        script = SMART_CANVAS.read_text(encoding="utf-8")
+        script = canvas_source()
         page = SMART_CANVAS_HTML.read_text(encoding="utf-8")
         self.assertIn("function smartVideoPreviewHtml", script)
-        self.assertIn("return smartVideoFallbackHtml(original, attrs);", script)
+        # #238：预览改走视频专属预览档（poster），但视频本体仍用原始资源，不塞 image preview。
+        self.assertIn("smartVideoFallbackHtml(original, attrs", script)
         self.assertIn("mediaKindForItem(hydrated) === 'image'", script)
         self.assertIn("(media.kind || mediaKindForItem(media)) === 'image'", script)
         self.assertNotIn("['image', 'video'].includes(mediaKindForItem(hydrated))", script)

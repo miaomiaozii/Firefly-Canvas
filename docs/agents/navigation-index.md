@@ -93,6 +93,41 @@
 | 0013 | 生成历史使用避让缩略图的底部抽屉 | 可折叠调高的历史抽屉 |
 | 0014 | 生成输出项拥有独立身份 | 输出项/记录/任务/原件独立，删除单项不级联 |
 
+## 画布前端模块地图（#154 渐进拆分）
+
+画布前端是 classic `<script>`（非 ES module），按 `static/smart-canvas.html` 的 `<script src>` 顺序加载，
+共享同一全局词法作用域。拆出的模块**只含顶层函数/类/状态声明，不含顶层可执行代码**，因此可以先于
+`smart-canvas.js` 加载；最先加载的是 `canvas-node-types.js`（节点类型常量，因为 `canvas-core.js`
+也要读它），其次是 `canvas-core.js`，它承载无状态工具与跨模块共享的
+可变状态（`canvas`、`settings`、`params`、`selectedNode`）；`canvas-state.js` 的
+`window.canvasState` 是状态容器属性，不是词法绑定。
+按源码文本断言画布前端行为的测试，一律通过 `tests/canvas_frontend_sources.py::canvas_source()` 读取全部模块，
+不要只读 `smart-canvas.js`；新增模块时同步 `CANVAS_SCRIPTS`，`tests/test_canvas_frontend_sources.py` 会守住它与 HTML 顺序一致。
+
+| 模块 | 职责 | 最相关测试 |
+| --- | --- | --- |
+| `canvas-core.js` | 最早加载的核心层：无状态工具（`tr`/`escapeHtml`/`uid`/`nowMs` 等）与跨模块共享状态（`canvas`/`settings`/`params`） | `tests/test_canvas_core_layer.py` |
+| `canvas-node-types.js` | 节点类型常量（8 种 NODE_TYPE_*，与 app/constants.py 逐值对齐；最先加载，因为 `canvas-core.js` 也要读它） | `tests/test_node_type_constants.py` |
+| `canvas-state.js` | 跨模块可变状态容器（`window.canvasState`） | `tests/test_project_canvas_mutation_client.py` |
+| `project-canvas-mutations.js` | 项目画布 mutation 客户端封装 | `tests/test_project_canvas_mutation_client.py` |
+| `canvas-layout-utils.js` | 布局计算纯函数 | `tests/canvas_boundaries_browser.py` |
+| `canvas-connections.js` | 连线创建、兼容校验与渲染 | `tests/edge_compatibility_browser.py`、`tests/canvas_interactions_browser.py` |
+| `canvas-download.js` | 下载层：接收响应 blob、与 Content-Length 对账、落盘与按体积给撤销窗口（#223 不再静默产出 0 字节包；#225 回执回传） | `tests/canvas_module_units/test-canvas-download.mjs` |
+| `canvas-media-history.js` | 项目媒体与历史抽屉 | `tests/history_drawer_browser.py`、`tests/test_creative_history_experience.py` |
+| `canvas-undo.js` | 撤销/重做 | `tests/undo_redo_browser.py` |
+| `canvas-node-ops.js` | 节点增删、替换、分组等单节点操作 | `tests/node_replace_browser.py`、`tests/canvas_interactions_browser.py` |
+| `canvas-geometry.js` | 分数坐标（0..1 公共坐标）骨架：像素↔分数互转、矩形归一化、even-odd 点-多边形命中（自研；#255 票面所引 ComfyArt `utils.ts` 在参考仓库中不存在） | `tests/canvas_module_units/test-canvas-geometry.mjs` |
+| `canvas-placement.js` | #246 freeSpot 落点扫描纯函数：从锚点向右扫描首个无碰撞空位（碰撞 → x = 碰撞盒 maxX + GAP(40)，200 步上限）+ 批量行排 `rowSpots`（ComfyArt `src/jobs.ts:231-243/:115-119` 算法移植）；createNodeFromMenu/候选池/素材粘贴的落点接线 | `tests/canvas_module_units/test-canvas-placement.mjs` |
+| `canvas-vector-path.js` | ComfyArt `vectorPath.ts` MIT 移植：`scalePath`（归一化路径→像素）与 `nodesToPath`（贝塞尔节点→0..1 路径） | `tests/canvas_module_units/test-canvas-vector-path.mjs` |
+| `canvas-image-editor.js` | 图片编辑器：裁剪、旋转、预览导航与对比 | `tests/image_editor_browser.py`、`tests/image_editor_func_browser.py`、`tests/fly_fixes_browser.py` |
+| `canvas-layers.js` | 图像分层 + 图层面板：ComfyArt `layers.ts` 纯函数 MIT 移植（measure/overlap/crop/分区/掩膜合成）、图层 store、离屏 canvas 按层序合成导出 PNG | `tests/canvas_module_units/test-canvas-layers.mjs` |
+| `canvas-snap.js` | 拖拽对齐吸附纯函数（`computeSnap` center/edge 阈值吸附 + 参考线坐标）与参考线 overlay（`FireflySnapUI`，调用方传容器，随视口变换） | `tests/canvas_module_units/test-canvas-snap.mjs` |
+| `canvas-quick-edit.js` | 节点就地快速重命名（`openQuickEdit` 回调式 DOM 层）+ 右键操作卡可见性纯函数（`operationCardVisibility`/`quickEditRenameTarget`） | `tests/canvas_module_units/test-canvas-quick-edit.mjs` |
+| `canvas-generation-cascade.js` | 级联与循环生成调度（生成输出项、下游目标、并行上限与停止） | `tests/node_flow_browser.py`、`tests/generation_failure_browser.py`、`tests/video_failure_browser.py` |
+| `canvas-generation-tasks.js` | 生成任务提交、即梦轮询、待恢复任务续跑与失败重试 | `tests/generation_task_native_browser.py`、`tests/test_project_image_generation_ui.py`、`tests/test_project_video_generation_ui.py`（ADR-0017） |
+| `canvas-agent-tui.js` | Agent TUI 会话节点：WebSocket 事件、会话控制（模型/自主度/fork/分支）与卡片渲染 | `tests/agent_tui_polish_browser.py`、`tests/agent_node_settings_browser.py`、`tests/agent_fork_browser.py` |
+| `smart-canvas.js` | 主脚本：节点体渲染、提示词构建、`runGeneration` 编排与启动初始化 | 其余画布浏览器测试 |
+
 ## 注释规范
 
 生产代码注释只用于解释以下六类内容，其余意图由命名、测试名与 ADR 表达：

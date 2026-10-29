@@ -24,15 +24,39 @@ ANGLE_PROMPT_PRESETS = {
     "low": "低机位仰视角度",
 }
 
-CLI_PROTOCOLS = {"codex", "gemini-cli", "jimeng"}
-VIDEO_CLI_PROTOCOLS = {"jimeng"}
+CLI_PROTOCOLS = {"codex", "gemini-cli"}
+# #236 即梦整体剔除：CLI 视频链路随之清零（原唯一成员 jimeng），在线视频协议不受影响。
+VIDEO_CLI_PROTOCOLS = set()
 VIDEO_EXECUTION_PROTOCOLS = {"openai", "apimart", "volcengine", "runninghub"} | VIDEO_CLI_PROTOCOLS
-FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub"}
-GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "runninghub"}
+# 服务商文档（gpt-best.apifox.cn api-341817446 / api-420361512）：nano-banana 与
+# nano-banana-pro（gemini-3-pro-image-preview）的基础宽高比。
+# 21:9 与其镜像 9:21 一起支持（服务商档位 1280x544 / 544x1280 成对存在）。
+GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "9:21"]
+# 服务商文档（api-420646217 / api-481108294 / api-512112774 / api-512273870）：
+# Nano Banana 2 家族（gemini-3.1-flash-image-preview[-lite]、nano-banana-2*、
+# gemini-nano-banana-2.1*）额外支持极端比例 1:4 / 4:1 / 8:1 / 1:8，共 15 种。
+GEMINI_FLASH_IMAGE_ASPECT_RATIOS = [*GEMINI_ASPECT_RATIOS, "1:4", "4:1", "8:1", "1:8"]
+# gpt-image 家族（gpt-image-2 / -all / 2.5-flare / 2.5-sunburst / gpt-image-1.5 /
+# gpt-4o-image）不吃 aspect_ratio，只接受 size，且服务商硬约束长宽比 ≤3:1
+# （api-447258891 / api-515692647 / api-515693868）。所以极端比例 1:4 / 4:1 /
+# 8:1 / 1:8 对 gpt 家族不可用，可用集就是 11 种基础比例。
+GPT_IMAGE_ASPECT_RATIOS = list(GEMINI_ASPECT_RATIOS)
+# 每种比例的像素档位（前端 SIZE_MAP 必须与此逐一对应，见 docs/api-parameter-rules.md）。
+# 服务商在收到 aspect_ratio 时不写 size，档位只用于画布几何与能力校验。
 COMMON_IMAGE_SIZES = {
-    "1k": ["1024x1024", "1024x1536", "1536x1024", "1008x1344", "1344x1008", "720x1280", "1280x720", "1280x544", "544x1280"],
-    "2k": ["2048x2048", "1360x2048", "2048x1360", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "2048x880", "880x2048"],
-    "4k": ["4096x4096", "2352x3520", "3520x2352", "2448x3264", "3264x2448", "2160x3840", "3840x2160", "3840x1648", "1648x3840"],
+    "1k": [
+        "1024x1024", "1024x1536", "1536x1024", "1008x1344", "1344x1008", "720x1280", "1280x720", "1280x544", "544x1280",
+        "1152x1440", "1440x1152", "384x1536", "1536x384", "192x1536", "1536x192",
+    ],
+    "2k": [
+        "2048x2048", "1360x2048", "2048x1360", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "2048x880", "880x2048",
+        "1600x2000", "2000x1600", "512x2048", "2048x512", "256x2048", "2048x256",
+    ],
+    "4k": [
+        "4096x4096", "2352x3520", "3520x2352", "2448x3264", "3264x2448", "2160x3840", "3840x2160", "3840x1648", "1648x3840",
+        "3072x3840", "3840x3072", "960x3840", "3840x960", "480x3840", "3840x480",
+    ],
 }
 ROUTED_PARAMETER_NAMES = (
     "media_type",
@@ -250,6 +274,10 @@ def normalize_image_model_capabilities(value: Any, models: Sequence[str]) -> dic
         for key in ("arbitrary_size", "arbitrary_aspect_ratio", "arbitrary_resolution"):
             if key in raw:
                 normalized[key] = bool(raw.get(key))
+        # fal 队列协议（fal.ai 平台兼容）的端点参数表：与视频 adapter_schema 同理，
+        # 参数集来自服务商/fal 官方 schema，必须随能力一起存活，不能写死在代码里。
+        if isinstance(raw.get("fal_request"), Mapping):
+            normalized["fal_request"] = copy.deepcopy(dict(raw["fal_request"]))
         normalized.setdefault("media_types", ["image"])
         result[model] = normalized
     return result
@@ -329,10 +357,24 @@ def _inferred_video_model_capabilities(model: str) -> dict[str, Any]:
     return capability
 
 
+def _banana_aspect_ratios(identifier: str) -> list[str]:
+    """Aspect-ratio set for a banana/gemini image model, per provider docs.
+
+    Only the Nano Banana 2 family (3.1-Flash based) accepts the extreme ratios
+    1:4 / 4:1 / 8:1 / 1:8; nano-banana and nano-banana-pro stay on the base set.
+    Both sets include the 21:9 mirror 9:21 (paired provider size presets).
+    """
+    if re.fullmatch(r"(?:gemini-)?nano-banana-(?:2|2\.1)(?:-(?:1k|2k|4k))?", identifier):
+        return list(GEMINI_FLASH_IMAGE_ASPECT_RATIOS)
+    if "nano-banana" not in identifier and "3.1-flash" in identifier:
+        return list(GEMINI_FLASH_IMAGE_ASPECT_RATIOS)
+    return list(GEMINI_ASPECT_RATIOS)
+
+
 def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     identifier = str(model or "").strip().lower()
     capability: dict[str, Any] = {"media_types": ["image"]}
-    banana = re.fullmatch(r"nano-banana-(?:pro|2)(?:-(1k|2k|4k))?", identifier)
+    banana = re.fullmatch(r"(?:gemini-)?nano-banana-(?:pro|2\.1|2)(?:-(1k|2k|4k))?", identifier)
     if identifier == "nano-banana":
         capability.update({
             "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
@@ -357,23 +399,29 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
             banana_resolution = "1k"
     if banana_resolution:
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": _banana_aspect_ratios(identifier),
             "resolutions": [banana_resolution],
             "sizes": list(COMMON_IMAGE_SIZES[banana_resolution]),
             "max_reference_images": 20,
         })
     elif identifier.startswith("gemini-") and "image" in identifier:
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": _banana_aspect_ratios(identifier),
             "resolutions": ["1k", "2k", "4k"],
             "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
             "max_reference_images": 20,
         })
-    elif "gpt-image" in identifier or identifier.replace("_", "-").startswith("gptimage"):
+    elif "gpt-image" in identifier or identifier.replace("_", "-").startswith("gptimage") or ("gpt" in identifier and "image" in identifier):
+        # gpt 家族的参数形态与 banana 不同：banana 走 aspect_ratio + image_size，
+        # gpt-image 只接受 size，像素由 app/core.py:gpt_image_2_request_size 按
+        # 「比例 + 档位」换算（取整到 16 倍数、长边 ≤3840、总像素 ≤8294400、≤3:1）。
+        # 因此不能用 COMMON_IMAGE_SIZES（banana 档位白名单）去校验 gpt 的 size：
+        # 那会把 4:5 / 5:4 等合法选择误判成不兼容（#issue: 400 image_model 路由失败）。
+        # size 交给服务商自校验，本地只锁比例和档位。
         capability.update({
-            "aspect_ratios": list(GEMINI_ASPECT_RATIOS),
+            "aspect_ratios": list(GPT_IMAGE_ASPECT_RATIOS),
+            "arbitrary_size": True,
             "resolutions": ["auto", "1k", "2k", "4k"],
-            "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
             "max_reference_images": 20,
         })
     elif any(token in identifier for token in ("text-to-image", "text2image", "txt2img")):
@@ -390,6 +438,26 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
             "max_reference_images": 20,
         })
     return capability
+
+
+def _resolve_display_model_name(provider: Mapping[str, Any], model: str) -> str:
+    """Map a friendly display name (provider.model_names) back to the raw model id.
+
+    The canvas renders model options with provider display names (e.g. "Nano
+    Banana 2.1") while keeping the raw id as the value; generation requests may
+    still carry the friendly name (manual entry, agent instructions), so routing
+    resolves it against the provider's own name map before matching known models.
+    """
+    names = provider.get("model_names")
+    if not isinstance(names, Mapping):
+        return ""
+    target = str(model or "").strip().lower()
+    if not target:
+        return ""
+    for raw_id, label in names.items():
+        if str(label or "").strip().lower() == target:
+            return str(raw_id).strip()
+    return ""
 
 
 def route_image_generation(
@@ -419,16 +487,19 @@ def route_image_generation(
         resolution_tag = str(request_snapshot.get("resolution") or "").strip().lower()
         candidates_to_check: list[str] = []
         if pinned_model:
+            effective_model = pinned_model
+            if effective_model not in known_models:
+                effective_model = _resolve_display_model_name(provider, effective_model) or effective_model
             variant = ""
             if resolution_tag in {"2k", "4k"}:
-                if pinned_model == "nano-banana":
+                if effective_model == "nano-banana":
                     variant = "nano-banana-hd"
-                elif not re.search(r"-(?:1k|2k|4k)$", pinned_model):
-                    variant = f"{pinned_model}-{resolution_tag}"
+                elif not re.search(r"-(?:1k|2k|4k)$", effective_model):
+                    variant = f"{effective_model}-{resolution_tag}"
             if variant in known_models:
                 candidates_to_check.append(variant)
-            if pinned_model in known_models:
-                candidates_to_check.append(pinned_model)
+            if effective_model in known_models:
+                candidates_to_check.append(effective_model)
         else:
             candidates_to_check.extend(models)
         for current_model in candidates_to_check:
@@ -464,9 +535,32 @@ def route_image_generation(
     best = min(candidates, key=lambda item: len(item[3]))
     target = "手动固定的模型" if pinned_model else ("手动固定服务商中的模型" if pinned_provider else "在线图片模型")
     raise ModelRoutingError(
-        f"没有{target}完整支持本次请求",
+        f"没有{target}完整支持本次请求{_capability_hint(*best, request_snapshot)}",
         incompatible_parameters=best[3],
     )
+
+
+CAPABILITY_HINT_KEYS = {"aspect_ratio": "aspect_ratios", "resolution": "resolutions", "size": "sizes", "quality": "qualities"}
+
+
+def _capability_hint(provider: Mapping[str, Any], model: str, capability: Mapping[str, Any], mismatches: Sequence[str], request: Mapping[str, Any]) -> str:
+    """把「哪个参数超出该模型能力、该模型实际支持什么」写进路由错误文案。
+
+    预检失败时前端只显示 message，光一句「不支持本次请求」无法自查。
+    典型场景：节点上残留 banana 的 1:4，切到 gpt-image 家族（长宽比上限 3:1）后
+    aspect_ratio 不兼容——文案里直接给出该模型支持的比例清单和本次请求值。
+    """
+    parts = []
+    for parameter in mismatches:
+        key = CAPABILITY_HINT_KEYS.get(parameter)
+        if not key:
+            continue
+        allowed = capability.get(key) or []
+        if not isinstance(allowed, (list, tuple)) or not allowed or "*" in allowed:
+            continue
+        listed = "/".join(str(item) for item in allowed)
+        parts.append(f"{model} 的 {parameter} 支持 {listed}，本次请求是 {request.get(parameter)}")
+    return f"（{'；'.join(parts)}）" if parts else ""
 
 
 def route_video_generation(
@@ -540,7 +634,7 @@ def route_video_generation(
         best_provider, best_model = best[0], best[1]
         best_protocol = _effective_protocol(best_provider, best_model)
         if best_protocol in CLI_PROTOCOLS:
-            message = f"{target}不可执行：当前 CLI 协议没有在线视频适配器（仅保留即梦 CLI）"
+            message = f"{target}不可执行：当前 CLI 协议没有在线视频适配器"
         else:
             message = f"{target}不可执行：协议 {best_protocol or 'unknown'} 没有在线视频适配器"
         raise ModelRoutingError(

@@ -25,7 +25,13 @@ from PIL import Image, ImageDraw
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
-from tools.ui_integrity_evidence import EXPECTED_SCENES, EXPECTED_VIEWPORTS, REQUIRED_FLAGS
+from tools.ui_integrity_evidence import (
+    DETAIL_PAN_CONTRACT,
+    EXPECTED_NODE_ACTION_IDS,
+    EXPECTED_SCENES,
+    EXPECTED_VIEWPORTS,
+    REQUIRED_FLAGS,
+)
 
 VIEWPORTS = EXPECTED_VIEWPORTS
 FONT_FAMILIES = ("Inter", "JetBrains Mono", "Space Grotesk")
@@ -412,6 +418,19 @@ def settle(browser: NativeBrowser) -> dict:
           await Promise.all(visibleImages.map(image => image.complete ? Promise.resolve() : new Promise(resolve => {image.addEventListener('load',resolve,{once:true});image.addEventListener('error',resolve,{once:true});})));
           await Promise.all(visibleImages.map(image => typeof image.decode === 'function' ? image.decode().catch(() => {}) : Promise.resolve()));
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          // Chrome reuses the raster it already holds for a composited <img>, and
+          // whether an image layer was promoted (and how its sub-pixel object-fit
+          // offset was snapped) depends on the paint history of the session.  Two
+          // runs of byte-identical DOM then antialias the same thumbnail edges
+          // differently (Chrome 155.0.8059.40: 60-91 pixels over the Δ>16 gate in
+          // the composer thumbnail strip).  Hiding and restoring the document
+          // forces one clean full-viewport re-raster, which makes the capture
+          // reproducible: two consecutive five-viewport journeys then produce 40
+          // byte-identical screenshots.
+          document.documentElement.style.visibility='hidden';
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          document.documentElement.style.visibility='';
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           const toastEl=document.getElementById('toast');
           if(toastEl && toastEl.classList.contains('show')){
             await new Promise(resolve=>{
@@ -586,7 +605,7 @@ def inspect_scene(
               * Math.max(0,Math.min(selectionMenuRect.bottom,selectionNameRect.bottom)-Math.max(selectionMenuRect.top,selectionNameRect.top))
             : 0;
           const selectionMenuAvoidsName=!selectionName || !visible(selectionName) || selectionMenuNameOverlap<=1;
-          const expectedActionIds=['preview','detail','crop','outpaint','mask','local-edit','brush','grid','send-ps','download'];
+          const expectedActionIds={json.dumps(list(EXPECTED_NODE_ACTION_IDS))};
           const selectionButtons=[...(selectionMenu?.querySelectorAll('button[data-smart-node-action]')||[])];
           const selectionActions=selectionButtons.map(button=>{{
             const rect=button.getBoundingClientRect();
@@ -685,6 +704,7 @@ def run_viewport(
         def snap(scene: str) -> None:
             if scene != EXPECTED_SCENES[len(screenshots)]:
                 raise AssertionError(f"non-canonical screenshot order: {scene}")
+            browser.park_pointer()
             settle(browser)
             path = browser.capture_screenshot(screenshot_root / f"{scene}.png")
             screenshots.append({"scene": scene, "path": relative(path, artifacts_root)})
@@ -1046,7 +1066,7 @@ def run_viewport(
                 return {frame:itemRect?.height>0 ? itemRect.width/itemRect.height : 0,natural,width:itemRect?.width||0,height:itemRect?.height||0};
               });
               const previews=outputPreviews.map((preview,index)=>({
-                outputIndex:Number(preview.dataset.logOutputPreview),
+                outputIndex:Number(preview.dataset.historyOutputPreview),
                 outputId:String(preview.dataset.outputId||''),
                 assetId:String(preview.dataset.assetId||''),
                 ariaLabel:preview.getAttribute('aria-label')||'',
@@ -1132,7 +1152,7 @@ def run_viewport(
             "smartHistoryEntryById('integrity-success-one').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))"
         )
         canvas_identity_before = browser.evaluate(
-            "nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))"
+            "canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))"
         )
         output_asset_ids_before = [item["assetId"] for item in output_identity_before]
         output_ids_before = [item["outputId"] for item in output_identity_before]
@@ -1450,6 +1470,9 @@ def run_viewport(
         handled_requests: set[str] = set()
         download_url = ""
         while time.monotonic() < download_deadline and not downloaded:
+            # #191: cdp.events 只会在 CDP 命令的 recv 窗口内被追加；纯 sleep 轮询
+            # 看不到 native_click 返回后才到达的暂停下载请求。每轮先排空 socket。
+            browser.cdp.drain(0.05)
             for event in browser.cdp.events:
                 if event.get("method") != "Fetch.requestPaused":
                     continue
@@ -1553,8 +1576,13 @@ def run_viewport(
         browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)>1", timeout=10)
         zoom_after_wheel = float(browser.evaluate("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||1)"))
         browser.native_drag(".smart-log-detail-stage", dx=54, dy=28, steps=6, relative=(0.5, 0.5))
+        browser.wait_for(
+            "smartHistoryDetailView.pan.x===%d && smartHistoryDetailView.pan.y===%d"
+            % (DETAIL_PAN_CONTRACT["x"], DETAIL_PAN_CONTRACT["y"]),
+            timeout=10,
+        )
         pan_after_drag = browser.evaluate("({...smartHistoryDetailView.pan})")
-        if zoom_after_wheel <= 1 or abs(float(pan_after_drag.get("x", 0))) < 20 or abs(float(pan_after_drag.get("y", 0))) < 10:
+        if zoom_after_wheel <= 1 or pan_after_drag != DETAIL_PAN_CONTRACT:
             raise AssertionError(f"generation detail did not support native wheel zoom and drag pan: zoom={zoom_after_wheel}, pan={pan_after_drag}")
         browser.native_click('[data-smart-log-detail-zoom="reset"]')
         browser.wait_for("Number(document.querySelector('.smart-log-detail-frame')?.dataset.zoom||0)===1 && smartHistoryDetailView.pan.x===0 && smartHistoryDetailView.pan.y===0", timeout=10)
@@ -1571,7 +1599,7 @@ def run_viewport(
         expected_selected_output_id = output_ids_before[4]
         expected_selected_asset_id = output_asset_ids_before[4]
         browser.evaluate(
-            "selectedId='integrity-multi-output'; selectedImage={nodeId:'integrity-multi-output',index:3}; render(); true"
+            "canvasState.selectedId='integrity-multi-output'; canvasState.selectedImage={nodeId:'integrity-multi-output',index:3}; render(); true"
         )
         browser.wait_for(
             f"document.querySelector('[data-id=\"integrity-multi-output\"] [data-image-index=\"3\"]')?.dataset.outputId==={json.dumps(deleted_output_id)}",
@@ -1588,7 +1616,7 @@ def run_viewport(
         browser.native_click(".smart-log-detail-delete-original", accept_dialog=True)
         browser.wait_for(
             "smartHistoryEntryById('integrity-success-one')?.outputs?.length===7 "
-            "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===7 "
+            "&& canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===7 "
             "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===7 "
             "&& document.querySelectorAll('#smartHistoryLightbox.open .smart-log-detail-output').length===7",
             timeout=20,
@@ -1624,8 +1652,8 @@ def run_viewport(
                 actionAssetIds,
                 actionOutputIds:[document.querySelector('.smart-log-detail-image'),document.querySelector('.smart-log-detail-download'),document.querySelector('.smart-log-detail-copy-2k'),document.querySelector('.smart-log-detail-delete-original')].map(element=>String(element?.dataset.outputId||'')),
                 detailStayedOpen:Boolean(document.querySelector('#smartHistoryLightbox.open')),
-                canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
-                canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
+                canvasAssetIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
+                canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
                 canvasDomOutputIds:outputIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-output-id]')),
                 canvasSelectedOutputId:String(document.querySelector('[data-id="integrity-multi-output"] .image-selected')?.dataset.outputId||''),
@@ -1696,7 +1724,7 @@ def run_viewport(
         try:
             browser.wait_for(
                 "smartHistoryEntryById('integrity-success-one')?.outputs?.length===8 "
-                "&& nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===8 "
+                "&& canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.length===8 "
                 "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-success-one\"] [data-history-output-preview]').length===8",
                 timeout=20,
             )
@@ -1708,7 +1736,7 @@ def run_viewport(
                   syncInFlight:Boolean(canvasSyncInFlight),
                   contentDirty:Boolean(contentDirty),
                   historyOutputs:smartHistoryEntryById('integrity-success-one')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
-                  canvasImages:nodes.find(node=>node.id==='integrity-multi-output')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
+                  canvasImages:canvasState.nodes.find(node=>node.id==='integrity-multi-output')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
                   previewCount:document.querySelectorAll('[data-canvas-history-id="integrity-success-one"] [data-history-output-preview]').length,
                   toast:document.querySelector('#toast')?.textContent||'',
                 }))()"""
@@ -1746,8 +1774,8 @@ def run_viewport(
                 historyPreviewOutputIds:outputIds(historyCard.querySelectorAll('[data-history-output-preview]')),
                 historySelectedAssetId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.assetId||''),
                 historySelectedOutputId:String(historyCard.querySelector('[data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
-                canvasAssetIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
-                canvasOutputIds:nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
+                canvasAssetIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.asset_id||'')),
+                canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-multi-output').images.map(image=>String(image.output_id||'')),
                 canvasDomAssetIds:assetIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-asset-id]')),
                 canvasDomOutputIds:outputIds(document.querySelectorAll('[data-id="integrity-multi-output"] [data-output-id]')),
                 canvasSelectedOutputId:String(document.querySelector('[data-id="integrity-multi-output"] .image-selected')?.dataset.outputId||''),
@@ -1793,8 +1821,7 @@ def run_viewport(
         history_detail_zoom_and_escape = bool(
             detail_facts.get("sharedPreviewFrame")
             and float(detail_facts.get("wheelZoom", 0)) > 1
-            and abs(float(detail_facts.get("dragPan", {}).get("x", 0))) >= 20
-            and abs(float(detail_facts.get("dragPan", {}).get("y", 0))) >= 10
+            and detail_facts.get("dragPan", {}) == DETAIL_PAN_CONTRACT
             and detail_facts.get("escapeKeptHistory")
         )
         generation_detail_complete = bool(generation_detail_complete and history_detail_zoom_and_escape)
@@ -1930,7 +1957,7 @@ def run_viewport(
             duplicate_before = browser.evaluate(
                 """(() => ({
                   history:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')})),
-                  canvas:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')})),
+                  canvas:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')})),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""
             )
@@ -1955,7 +1982,7 @@ def run_viewport(
             try:
                 browser.wait_for(
                     "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===3 "
-                    "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===3 "
+                    "&& canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===3 "
                     "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===3",
                     timeout=20,
                 )
@@ -1968,7 +1995,7 @@ def run_viewport(
                       contentDirty:Boolean(contentDirty),
                       selected:smartHistorySelectedImage,
                       history:smartHistoryEntryById('integrity-duplicate-log')?.outputs?.map(output=>({assetId:String(output.asset_id||''),outputId:String(output.output_id||'')}))||[],
-                      canvasImages:nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
+                      canvasImages:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.map(image=>({assetId:String(image.asset_id||''),outputId:String(image.output_id||'')}))||[],
                       toast:document.querySelector('#toast')?.textContent||'',
                     }))()"""
                 )
@@ -1996,7 +2023,7 @@ def run_viewport(
             duplicate_after = browser.evaluate(
                 """(() => ({
                   historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
-                  canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
+                  canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
                   previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                   survivingDecoded:Boolean(document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.complete && document.querySelector(`[data-canvas-history-id="integrity-duplicate-log"] [data-output-id="${smartHistoryEntryById('integrity-duplicate-log').outputs[0].output_id}"] img`)?.naturalWidth>0),
@@ -2026,14 +2053,14 @@ def run_viewport(
             )
             browser.wait_for(
                 "smartHistoryEntryById('integrity-duplicate-log')?.outputs?.length===4 "
-                "&& nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "
+                "&& canvasState.nodes.find(node=>node.id==='integrity-duplicate-node')?.images?.length===4 "
                 "&& document.querySelectorAll('[data-canvas-history-id=\"integrity-duplicate-log\"] [data-history-output-preview]').length===4",
                 timeout=20,
             )
             duplicate_restore = browser.evaluate(
                 """(() => ({
                   historyOutputIds:smartHistoryEntryById('integrity-duplicate-log').outputs.map(output=>String(output.output_id||'')),
-                  canvasOutputIds:nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
+                  canvasOutputIds:canvasState.nodes.find(node=>node.id==='integrity-duplicate-node').images.map(image=>String(image.output_id||'')),
                   previewOutputIds:[...document.querySelectorAll('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview]')].map(item=>String(item.dataset.outputId||'')),
                   selectedOutputId:String(document.querySelector('[data-canvas-history-id="integrity-duplicate-log"] [data-history-output-preview][aria-current="true"]')?.dataset.outputId||''),
                 }))()"""
@@ -2252,4 +2279,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # manifest/摘要已落盘、退出码已定；Windows 上 Chrome 驱动的子进程 transport
+    # 常在解释器 finalize 阶段抛 "I/O operation on closed pipe"（asyncio GC 竞态），
+    # 会把 passed 的跑发伪报成 exit!=0。跳过 finalize，退出码语义不变。
+    import os as _os
+    _os._exit(_code)

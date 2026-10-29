@@ -1,6 +1,8 @@
 # conversation domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+from app.constants import NODE_TYPE_CONVERSATION
+from firefly_usage import normalize_usage, parse_codex_jsonl_usage, usage_has_data  # #258 用量采集
 
 def load_conversation(user_id, conversation_id):
     path = _svc._main('conversation_path')(user_id, conversation_id)
@@ -89,32 +91,6 @@ async def gemini_cli_chat_text(payload, history_messages=None):
                 os.remove(path)
             except Exception:
                 pass
-
-async def run_jimeng_cli(args, timeout=120, raw_text=False):
-    exe = _svc.jimeng_cli_executable()
-    if not exe:
-        raise HTTPException(status_code=400, detail='未找到 dreamina CLI。请先安装：curl -fsSL https://jimeng.jianying.com/cli | bash，并完成 dreamina login。')
-    clean_args = [str(arg) for arg in args if str(arg) != '']
-    command = _svc.jimeng_command(clean_args, exe)
-    try:
-        proc = await asyncio.create_subprocess_exec(*command, cwd=BASE_DIR, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail=f"即梦 CLI 执行超时：{' '.join(command[:3])}") from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=f'未找到即梦 CLI：{exe}') from exc
-    out_text, clean_err_text = _svc.jimeng_decode_cli_output(stdout, stderr)
-    if proc.returncode != 0:
-        message = clean_err_text or out_text or f'exit={proc.returncode}'
-        raise HTTPException(status_code=502, detail=f'即梦 CLI 调用失败：{message[:1000]}')
-    if raw_text:
-        return {'_stdout': out_text, '_stderr': clean_err_text}
-    raw = jimeng_extract_json(f'{out_text}\n{clean_err_text}'.strip())
-    if isinstance(raw, dict):
-        raw.setdefault('_stdout', out_text)
-        if clean_err_text:
-            raw.setdefault('_stderr', clean_err_text)
-    return raw
 
 def gemini_reference_part(ref):
     value = _svc._main('reference_to_data_url')(ref, max_size=1536)
@@ -278,7 +254,10 @@ def chat_text_from_raw(raw, fmt):
         return text_from_responses(raw)
     return text_from_chat_response(raw)
 
-async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output_last_message=True):
+async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output_last_message=True, capture_usage=False):
+    """跑 codex exec。capture_usage=True 时加 --json（JSONL），从最后一个
+    turn.completed 提取 usage（#258 用量采集）；文本兑底用 JSONL 里最后一个
+    agent_message（--output-last-message 文件缺失时），不兑 JSONL 原文。"""
     exe = _svc._main('codex_cli_executable')()
     if not exe:
         raise HTTPException(status_code=400, detail='未找到 OpenAI Codex CLI。请先运行 CLI/windows/openai/install_openai_codex_cli.bat，并完成 codex 登录。')
@@ -294,6 +273,8 @@ async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output
         fd, last_path = tempfile.mkstemp(prefix='codex_last_', suffix='.txt', dir=_svc._main('OUTPUT_OUTPUT_DIR'))
         os.close(fd)
         args.extend(['--output-last-message', last_path])
+    if capture_usage:
+        args.extend(['--json'])
     args.append('-')
     prompt_bytes = str(prompt or '').encode('utf-8')
     try:
@@ -304,6 +285,10 @@ async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f'未找到 OpenAI Codex CLI：{exe}') from exc
     out_text, err_text = codex_decode_output(stdout, stderr)
+    jsonl_usage = None
+    jsonl_message = ''
+    if capture_usage:
+        jsonl_usage, jsonl_message = parse_codex_jsonl_usage(out_text)
     last_text = ''
     if last_path and os.path.exists(last_path):
         try:
@@ -318,7 +303,7 @@ async def run_codex_cli(prompt, model='', image_paths=None, timeout=None, output
     if proc.returncode != 0:
         message = err_text or out_text or last_text or f'exit={proc.returncode}'
         raise HTTPException(status_code=502, detail=f'OpenAI Codex CLI 调用失败：{message[:1200]}')
-    return {'text': last_text or out_text, '_stdout': out_text, '_stderr': err_text}
+    return {'text': last_text or (jsonl_message if capture_usage else out_text), '_stdout': out_text, '_stderr': err_text, '_usage': jsonl_usage}
 
 async def codex_prepare_local_media(ref_url):
     text = str(ref_url or '').strip()
@@ -373,8 +358,12 @@ async def codex_chat_text(payload, history_messages=None):
         if hasattr(payload, 'reference_images'):
             image_values.extend([ref.dict() for ref in getattr(payload, 'reference_images', None) or [] if getattr(ref, 'url', '')])
         image_paths, temp_paths = await codex_reference_paths(image_values)
-        raw = await run_codex_cli(codex_chat_prompt(payload, history_messages), model=getattr(payload, 'model', '') or CODEX_DEFAULT_CHAT_MODELS[0], image_paths=image_paths, timeout=codex_timeout(), output_last_message=True)
+        model = getattr(payload, 'model', '') or CODEX_DEFAULT_CHAT_MODELS[0]
+        started = time.monotonic()
+        raw = await run_codex_cli(codex_chat_prompt(payload, history_messages), model=model, image_paths=image_paths, timeout=codex_timeout(), output_last_message=True, capture_usage=True)
         text = str(raw.get('text') or '').strip()
+        # #258：codex CLI 用量采集（best-effort，遥测失败不影响对话）
+        _record_codex_usage(payload, model, raw.get('_usage'), time.monotonic() - started)
         return (text or 'Codex CLI 返回了空回复。', raw)
     finally:
         for path in temp_paths:
@@ -382,6 +371,26 @@ async def codex_chat_text(payload, history_messages=None):
                 os.remove(path)
             except Exception:
                 pass
+
+def _record_codex_usage(payload, model, raw_usage, duration_seconds):
+    """#258：codex CLI turn 用量写 ops.db（best-effort：任何异常仅记日志，不上抛）。"""
+    try:
+        if not usage_has_data(normalize_usage(raw_usage)):
+            return
+        project_id = str(getattr(payload, 'project_id', '') or '').strip()
+        if not project_id:
+            return
+        _svc._main('project_store_call')(
+            'record_usage_turn',
+            project_id,
+            provider='codex',
+            model=str(model or ''),
+            node_id='',
+            usage=raw_usage,
+            duration_seconds=duration_seconds,
+        )
+    except Exception as exc:
+        print(f"[firefly-usage] codex CLI 用量记录失败（遥测 best-effort，不影响对话）: {exc}", file=sys.stderr)
 
 def pick_chat_image_provider(provider_id='', fallback_id=''):
     providers = [p for p in _svc._main('load_api_providers')() if p.get('enabled', True) and (p.get('image_models') or [])]
@@ -469,7 +478,7 @@ async def persist_project_conversation_pending(project_id: str, node_id: str, us
                         opened = _svc._main('project_store_call')('open_project', project_id)
                         current_canvas = opened['canvas']
                         conversation = conversation_node_by_id(current_canvas, node_id)
-                        if not isinstance(conversation, dict) or conversation.get('type') != 'smart-conversation':
+                        if not isinstance(conversation, dict) or conversation.get('type') != NODE_TYPE_CONVERSATION:
                             raise HTTPException(status_code=400, detail='目标节点不是对话节点')
                         existing = conversation_task_snapshot(current_canvas, node_id, request_id)
                         if existing:

@@ -84,12 +84,48 @@ POST /v1/images/generations
 }
 ```
 - 必填：`model`、`prompt`
-- **`aspect_ratio` 10 种**（尺寸不全的根因，补全这些）：
-  `4:3` `3:4` `16:9` `9:16` `2:3` `3:2` `1:1` `4:5` `5:4` `21:9`
+- **`aspect_ratio` 基础集 11 种**（服务商文档 api-341817446 / api-420361512，21:9 与其镜像 9:21 成对）：
+  `1:1` `2:3` `3:2` `3:4` `4:3` `4:5` `5:4` `9:16` `16:9` `21:9` `9:21`
+- **Banana 2 家族再多 4 种极端比例**（共 15 种，api-420646217 / api-481108294 / api-512112774 / api-512273870）：
+  `1:4` `4:1` `8:1` `1:8`
 - **`image_size` 3 种**（仅 nano-banana-2 支持）：`1K` `2K` `4K`
 - `response_format`：`url` 或 `b64_json`
 - `image`：参考图数组（url/b64），可空
 - 映射确认：友好名 "Nano Banana Pro" → `nano-banana-2`
+
+### 2a. nano-banana-2.1（2026-10 新增，服务商新模型）
+
+- 模型 ID：`gemini-nano-banana-2.1`、`gemini-nano-banana-2.1-2k`、`gemini-nano-banana-2.1-4k`（NEW）
+- 参数与 banana2 相同：`aspect_ratio`（15 种，见上）、`image_size`（1K/2K/4K）、`response_format`、`image`（参考图数组）
+- 后端路由：`app/core.py` `banana_model_family` 已识别 2.1 家族，按分辨率自动路由到 `-2k`/`-4k` 变体（无变体时回退基础模型 + `image_size` 参数）
+- 友好名（参考 Nano Banana 2 模式）：comfly 服务商 `model_names` 映射 `gemini-nano-banana-2.1` → "Nano Banana 2.1"（`-2k`/`-4k` 变体分别为 "Nano Banana 2.1 2K"/"4K"）；画布模型下拉展示友好名，且 `firefly_generation.route_image_generation` 支持直接用友好名作为路由模型名（经服务商 `model_names` 反解回原始 ID 后匹配）
+- 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，supports_vision/async_mode）
+
+### 2b. gpt-image-2 / gpt-image-2.5（size-only，不吃 aspect_ratio）
+
+- 模型 ID：`gpt-image-2`、`gpt-image-2-all`；2026-10 新增 `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`
+  （服务商另有 `-2k` / `-4k` 自定义档位命名，参数形态不变）
+- 文档：api-447258891 / api-447261009（gpt-image-2 Edits/Generations）、api-515692647 / api-515693438（2.5-flare）、api-515693868 / api-515694152（2.5-sunburst）
+- **逆向分组只接受 `model`、`prompt`、`size`、`image`、`quality`**（官转组透传 edits 全参）
+- `size` 硬约束：最大边 ≤3840px；两边均为 16 的倍数；长边:短边 ≤3:1；总像素 655360–8294400；`auto` 为默认
+- `quality`：`low` `medium` `high` `auto`
+- 画布只有「比例 + 档位」两个旋钮，所以 `app/core.py` `gpt_image_2_request_size` 先把
+  `aspect_ratio` + `resolution` 换算成合规像素（如 16:9+2K → `2048x1152`、21:9+4K → `3840x1648`、
+  1:1+4K → 受总像素上限压到 `2880x2880`），再把 `aspect_ratio`/`resolution` 从 body 里剔掉；
+  直接透传会让服务商回到 `size=auto`，比例和分辨率等于没传
+- 因为 3:1 的长宽比限制，gpt-image 家族可用比例是 11 种基础集，不含 `1:4` `4:1` `8:1` `1:8`
+- **能力表必须分家族**（`firefly_generation.py`）：gpt 家族声明 `arbitrary_size: true` +
+  `aspect_ratios = GPT_IMAGE_ASPECT_RATIOS`，不再复用 banana 的 `COMMON_IMAGE_SIZES` 像素白名单。
+  否则 4:5 / 5:4 这类档位（SIZE_MAP 里的 1152x1440 / 1600x2000 / 3072x3840 等）会被
+  `route_image_generation` 判为不兼容，`POST /image-generation-tasks` 直接 400；
+  banana 家族仍按 aspect_ratio + 像素档位校验
+- **比例 chip 严格按模型能力过滤**（`static/js/smart-canvas.js:apiImageRatioPresets`），
+  不再保留「当前选中但模型不支持」的选项；切换模型时 `alignRatioToModel` 会把残留比例
+  收敛到该模型支持的最接近比例（按对数距离，保留横竖方向，例如 banana 的 `1:4` → gpt 家族的 `9:21`）。
+  否则节点上残留的 `portrait14` 切到 gpt-image 家族后，请求会在路由预检被拒
+  （不兼容参数：aspect_ratio），弹窗只剩一句「不支持本次请求」
+- 规格已录入 `app/data/model_specs.json`（`api_type: images_generations`，参数为 size/quality/response_format/image）；
+  回归护栏：`tests/test_gpt_image2_5_ratio_resolution.py`、`tests/fixtures/provider_contracts/supported-image-request-families.json`
 
 ### 图生图/改图（Edits）
 ```

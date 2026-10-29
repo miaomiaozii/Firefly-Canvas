@@ -50,7 +50,7 @@ def test_is_vision_model():
     # Should be True for models the spec marks as vision-capable
     assert is_vision_model("gpt-4o") == True, "gpt-4o should support vision"
     assert is_vision_model("nano-banana-2") == True, "nano-banana-2 should support vision"
-    assert is_vision_model("seedance2.0") == True, "seedance2.0 should support vision"
+    assert is_vision_model("doubao-seedance-2-0-260128") == True, "seedance2.0 统一格式 ID should support vision"
     assert is_vision_model("gpt-image-2") == True, "gpt-image-2 supports image editing (JSON declares 'image' param)"
     print("OK: is_vision_model() for supported models")
     
@@ -70,9 +70,10 @@ def test_get_api_type():
 def test_get_aspect_ratios():
     """Test getting aspect ratios."""
     ratios = get_aspect_ratios("nano-banana-2")
-    assert len(ratios) == 14, f"nano-banana-2 should have 14 aspect ratios (full Gemini image set), got {len(ratios)}"
+    assert len(ratios) == 15, f"nano-banana-2 should have 15 aspect ratios (full Gemini image set incl. 9:21 mirror), got {len(ratios)}"
     assert "1:1" in ratios, "Should have 1:1 ratio"
     assert "4:3" in ratios, "Should have 4:3 ratio"
+    assert "9:21" in ratios, "Should have the 21:9 mirror ratio 9:21"
     print("OK: get_aspect_ratios('nano-banana-2')")
     
     # Test model without aspect ratios

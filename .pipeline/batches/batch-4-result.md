@@ -1,94 +1,51 @@
-# batch-4 结果：#140 节点级模型覆盖 + #141 自治级别
+# batch-4 结果报告（#162 P2e ES module）
 
-## 改动清单
+> 拆 4a/4b/4c 子批。本文件按子批追加。**当前完成：4a。**
 
-### 后端
+## 4a：状态容器 classic 脚本 + 13 变量引用改写
 
-1. **`app/services/agent_host.py`**：
-   - 新增 `AUTONOMY_SYSTEM_PROMPT_SUFFIXES` 字典（cautious/standard/autonomous 三档的系统提示词后缀）
-   - 新增 `SAFETY_FLOOR_TOOLS` 常量（空 frozenset，预留安全底线工具集合）
-   - `AgentSession` dataclass 新增 `autonomy` 字段（默认 "cautious"）
-   - `get_or_create_session` 新增 `autonomy` 参数
-   - `spawn_session` 新增 `autonomy` 参数，spawn 时拼接自治级别系统提示词后缀
-   - 新增 `set_model` 方法：发送 pi RPC `set_model` 命令切换运行中会话的模型
+**状态：完成**（twin 搬移后超时，主会话修复 81 处属性链损坏 + 2 处测试适配后全绿）
 
-2. **`app/routers/api_agent_nodes.py`**：
-   - 新增 `_find_node` 和 `_update_node_field` 辅助函数
-   - `create_agent_node` 端点：新增 `autonomy` Body 参数；若未提供则从节点属性读取 model/autonomy
-   - 新增 `POST /{node_id}/model` 端点：设置节点模型（持久化到节点属性 + 运行中会话 RPC 切换）
-   - 新增 `POST /{node_id}/autonomy` 端点：设置节点自治级别（持久化到节点属性 + 更新会话）
-   - `get_agent_status` 端点：返回 `autonomy` 字段
+### 改动文件
 
-3. **`app/routers/api_agent_tools.py`**：
-   - `request_confirmation` 端点：导入 `SAFETY_FLOOR_TOOLS`；autonomous 模式下对非安全底线工具自动批准（直接返回 `{"approved": true}`）
+| 文件 | 变化 |
+|---|---|
+| `static/js/canvas-state.js` | 新建（classic 脚本，`window.canvasState`，13 键，初始值与 13 个原顶层声明逐一一致） |
+| `static/js/smart-canvas.js` | 删 13 顶层声明；~500 处裸引用 → `canvasState.*` |
+| `static/js/canvas-connections.js` | 25 处裸引用 → `canvasState.*` |
+| `static/js/canvas-undo.js` | 52 处裸引用 → `canvasState.*`（L158 局部 `const nodes` 保留） |
+| `static/js/canvas-node-ops.js` | 52 处裸引用 → `canvasState.*` |
+| `static/js/canvas-media-history.js` | 77 处裸引用 → `canvasState.*` |
+| `static/js/project-canvas-mutations.js` | 少量裸引用 → `canvasState.*` |
+| `static/smart-canvas.html` | +1 行 `<script src="/static/js/canvas-state.js">`（L543，project-canvas-mutations.js 之前） |
+| `tests/test_creative_history_experience.py` | 1 处断言字符串加 `canvasState.` 前缀 |
+| `tests/test_project_image_generation_ui.py` | `node -e` stub 环境补 `const canvasState={...}` |
 
-### 前端
+### 13 个状态变量（去重后，非 14）
 
-4. **`static/js/smart-canvas.js`**：
-   - `agentTuiState` 新增 `autonomy` 字段（默认 "cautious"）
-   - 新增 `getChatModels` 函数：返回所有聊天模型列表
-   - `agentNodeBodyHtml`：header 区新增模型下拉（`data-agent-model`）和自治级别下拉（`data-agent-autonomy`）
-   - 新增 `setAgentModel` 和 `setAgentAutonomy` 函数：调用后端 API 设置模型/自治级别
-   - 新增模型/自治级别下拉的 change 事件绑定
+`nodes` / `selectedId` / `selectedIds` / `selectedImage` / `projectMediaLibrary` / `activeComposerSubject` / `lastComposerNodeId` / `connectionLayerRaf` / `createMenuGroupId` / `smartHistoryDrawerCollapsed` / `smartHistoryPointerState` / `smartHistorySelectedImage` / `smartHistoryTap`
 
-5. **`static/css/smart-canvas.css`**：
-   - 新增 `.agent-tui-settings`、`.agent-tui-model-select`、`.agent-tui-autonomy-select` 样式
+### 关键事故与修复（主会话）
 
-### 测试
+1. **twin 超时**：1200000ms 超时。超时前进度：canvas-state.js 已建正确、13 声明已删、6 文件已改，但**改写工具把 `canvasState.` 误插入属性链**——`X.nodes`（X 是对象）被改成 `X.canvasState.nodes`，共 **81 处**（70 属性链 + 11 可选链 `?.`）。
+2. **主会话修复**：`tmp/qa/fix_4a_corruption.py` 两条正则精准还原——`([A-Za-z0-9_$])\.canvasState\.` → `$1.`（70）、`\?\.canvasState\.` → `?.`（11）。依据：`canvasState` 在 HEAD 中 0 出现，故任何 `标识符.canvasState.` 必为损坏；合法裸引用 `canvasState.nodes`（前无标识符+点）不受影响。
+3. **测试适配**：2 个 UI 契约测试读 JS 源码/用 `node -e` 跑函数，stub 环境缺 `canvasState` → 补 stub + 更新断言字符串。
 
-6. **`tests/test_agent_node_settings.py`**（新增）：
-   - `TestAgentModelOverride`：模型覆盖测试（session 创建、spawn、set_model RPC、/model 端点、节点属性读取）
-   - `TestAgentAutonomyLevel`：自治级别测试（session 创建、/autonomy 端点、三档确认门行为、节点属性读取）
-   - `TestDefaultBehaviorRegression`：默认行为回归测试（无 model/autonomy 属性的节点行为不变）
-   - 共 19 个测试，全部通过
+### 验证结果（全过）
 
-7. **`tests/agent_node_settings_browser.py`**（新增）：浏览器测试入口
-8. **`tests/agent_node_settings_browser_client.js`**（新增）：浏览器测试客户端脚本
-   - 测试：TUI 渲染、模型/自治级别下拉、autonomous 模式无确认对话框
-   - 11 个断言，全部通过
+| 项 | 结果 |
+|---|---|
+| node --check 全部 7 文件 | PASS |
+| 属性链损坏残留（`X.canvasState`） | 0 |
+| 双插入（`canvasState.canvasState`） | 0 |
+| 13 裸标识符无遗漏独立引用 | PASS（仅剩合法：对象键/函数参数/L158 局部 const nodes） |
+| 13 顶层声明已从主脚本删除 | PASS |
+| canvas-state.js 13 键齐全 | PASS |
+| HTML 插入位置（project-canvas-mutations 之前） | PASS |
+| 浏览器冒烟（canvasState 13 键/原全局名消失/创建/选中/撤销/0 错误） | 8/8 PASS |
+| 全量 pytest | PASS：1040 passed / 351 subtests（与基线一致） |
 
-## 测试命令与结果
+### 遗留风险 / 流程发现
 
-### 单测
-```bash
-python -m pytest tests/test_agent_node_settings.py -q
-# 19 passed, 3 warnings in 2.50s
-```
-
-### Agent 相关全部单测
-```bash
-python -m pytest tests/test_agent_tui.py tests/test_agent_canvas_tools.py tests/test_agent_generate_tools.py tests/test_agent_media_tools.py tests/test_agent_viewport_tools.py tests/test_agent_node_settings.py -q
-# 100 passed, 4 warnings in 24.22s
-```
-
-### 浏览器测试
-```bash
-python tests/agent_node_settings_browser.py
-# (1424, 900) PASS: {'pass': True, 'assertions': [...11 passed...]}
-```
-
-## set_model RPC 确切参数
-
-从 pi RPC 文档（`C:\Users\Administrator\pi-stable-video\packages\coding-agent\docs\rpc.md`）确认：
-
-```json
-{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}
-```
-
-参数：
-- `type`: "set_model"（必填）
-- `provider`: 提供商名称（可选，如果 modelId 包含 provider 前缀）
-- `modelId`: 模型 ID（必填）
-
-实现：`agent_host.py` 的 `set_model` 方法根据 model 是否包含 "/" 来决定是否拆分 provider。
-
-## 系统提示词即时生效能力结论
-
-- **确认门范围**：即时生效。`request_confirmation` 端点每次调用都从 session 读取当前的 `autonomy` 属性，级别变更后下一轮工具调用即生效。
-- **系统提示词后缀**：下次 spawn 生效。系统提示词在 `spawn_session` 时拼接并作为 `--system-prompt` 参数传给 pi 进程，运行中无法动态更新（pi RPC 没有 `set_system_prompt` 命令）。级别变更后，确认门范围即时生效，但系统提示词中的行为指令（如"多步任务直接执行"）要等下次 spawn 才生效。
-
-## 遗留问题
-
-1. 模型下拉选项在浏览器测试环境中只有"默认"（因为没有配置 API providers），生产环境会显示所有可用的聊天模型。
-2. `SAFETY_FLOOR_TOOLS` 目前是空集合（canvas-tools 扩展没有项目级删除工具）。如果将来添加项目级删除工具，需要将其添加到 `SAFETY_FLOOR_TOOLS` 中。
-3. 前端模型下拉的选项加载依赖 `apiProviders` 全局变量，如果 providers 还没加载完就渲染 TUI，模型下拉可能只有"默认"选项。这是一个潜在的竞态条件，但不影响功能（用户可以稍后重新选择）。
+- **twin 的机械改写工具不可靠**：81 处属性链损坏说明 twin 的批量替换对"属性链 vs 裸引用"区分有误。4b/4c 的 import/export 改写风险更高（168+98 个标识符），建议主会话用 scope-aware 工具（acorn）做，或 twin 只做小步 + 主会话逐行 review。
+- 4a 是纯重构（classic 脚本），无 module 时序风险，行为不变已由冒烟 + pytest 确认。

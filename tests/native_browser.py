@@ -96,7 +96,15 @@ class AsgiBrowserServer:
             if self.thread is not None:
                 self.thread.join(timeout=10)
                 if self.thread.is_alive():
-                    raise RuntimeError("ASGI browser server failed to stop")
+                    # 把 uvicorn 自己的状态带进异常，否则下次只能看到「关不掉」而看不到为什么关不掉：
+                    # tasks=0 但 connections>0 是卡在连接收尾；两者都>0 是有 handler 还在跑
+                    # （典型是阻塞在 asyncio.to_thread 里，拖住 loop.shutdown_default_executor）。
+                    state = self.server.server_state
+                    raise RuntimeError(
+                        "ASGI browser server failed to stop: "
+                        f"connections={len(state.connections)} tasks={len(state.tasks)} "
+                        f"force_exit={self.server.force_exit} started={self.server.started}"
+                    )
         finally:
             if self.socket is not None:
                 self.socket.close()
@@ -133,6 +141,23 @@ class CdpConnection:
         self.timeout = timeout
         self.next_id = 1
         self.events: list[dict] = []
+
+    def drain(self, timeout: float) -> None:
+        """Collect CDP events that already arrived on the wire (issue #191).
+
+        ``events`` is only appended while a ``command`` recv loop is active,
+        so a sleep-only poller cannot see events that arrive between commands.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                message = json.loads(self.websocket.recv(timeout=remaining))
+            except TimeoutError:
+                return
+            self.events.append(message)
 
     def command(self, method: str, params: dict | None = None) -> dict:
         command_id = self.next_id
@@ -243,7 +268,11 @@ class NativeBrowser:
                 "--headless=new",
                 "--disable-background-networking",
                 "--disable-component-update",
-                "--disable-extensions",
+                "--disable-breakpad",
+                "--disable-client-side-phishing-detection",
+                "--disable-default-apps",
+                "--disable-domain-reliability",
+                "--disable-sync",
                 "--disable-gpu",
                 "--force-color-profile=srgb",
                 "--hide-scrollbars",
@@ -423,7 +452,11 @@ class NativeBrowser:
             },
         )
         if response.get("exceptionDetails"):
-            raise RuntimeError(f"browser evaluation failed: {response['exceptionDetails']}")
+            # 带上出错表达式：只报 exceptionDetails 时无法定位是哪一句 evaluate 挂了。
+            raise RuntimeError(
+                f"browser evaluation failed: expression={expression[:200]!r} "
+                f"details={response['exceptionDetails']}"
+            )
         return (response.get("result") or {}).get("value")
 
     def navigate(self, url: str, *, timeout: float = 30) -> None:
@@ -1181,6 +1214,23 @@ class NativeBrowser:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(response["data"]))
         return path
+
+    def park_pointer(self, *, x: float = -80.0, y: float = -80.0) -> None:
+        """Move the native pointer off the rendered page.
+
+        Chrome keeps ``:hover`` on whatever the last processed mouse event was
+        over, and which element that is depends on the whole interaction
+        history of the session: two runs of the same journey left the pointer on
+        ``.smart-log-detail-zoom-tools button`` in one run (hover background
+        painted, 722 pixels over the Δ>16 gate in ``generation-detail``
+        @800x600) and on a long-closed create-menu card in the next.  A visual
+        baseline must not encode where the pointer happens to rest, so park it
+        outside the viewport before every capture.
+        """
+        self.cdp.command(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0},
+        )
 
     def browser_version(self) -> dict:
         return self.cdp.command("Browser.getVersion")

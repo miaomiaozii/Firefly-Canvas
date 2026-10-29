@@ -20,11 +20,18 @@ from tools.quality_gate import (
     MODE_STEPS,
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
+    blocking_guard_events,
+    build_severity_findings,
+    classify_guard_events,
+    compute_unit_contract_shards,
     discover_unit_contract_modules,
     expected_native_focus,
+    expand_unit_contract_steps,
     failed_native_browser_evidence,
     stop_leaked_children,
-    unit_contract_shards,
+    trusted_node_executable,
+    unit_contract_modules_for_shards,
+    unit_contract_slot_for_shard,
     wait_for_process_exit,
 )
 from tools.ui_integrity_evidence import accept_baseline
@@ -34,21 +41,71 @@ ROOT = Path(__file__).resolve().parents[1]
 QUALITY_GATE = ROOT / "tools" / "quality_gate.py"
 
 
+
+def unattributable_noise_source(targets, kind):
+    """生成「归属不到任何进程」的出口噪声 fixture。
+
+    #230：出口代理只看得到目标域名，看不到发起者。真实宿主工具（Antigravity、
+    Gemini CLI 那类）不在门的进程树里，也不会被我们的进程内钩子看到，所以它们在
+    证据里的形态就是「只有 kind + target、没有 pid」。这里直接往守卫事件文件里写
+    这个形态，而不是让门的子进程去连代理——后者按 #230 的判据属于「可归属到门
+    进程树」，必须判红；用它模拟宿主噪声会把语义搞反（#227 的容忍会被误伤）。
+    """
+    lines = [
+        "import json",
+        "import os",
+        "import unittest",
+        "",
+        "class ControlPlaneNoiseContract(unittest.TestCase):",
+        "    def test_control_plane_noise_is_observed(self):",
+        "        sink = os.environ['FIREFLY_QUALITY_GATE_GUARD_EVENTS']",
+        "        targets = [" + ", ".join(repr(str(target)) for target in targets) + "]",
+        "        payload = " + repr(kind),
+        "        for target in targets:",
+        "            with open(sink, 'a', encoding='utf-8') as handle:",
+        "                handle.write(json.dumps({'kind': payload, 'target': target}) + chr(10))",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 class QualityGateTests(unittest.TestCase):
+
+    @staticmethod
+    def guard_events(events):
+        # #230：守卫事件现在带发起进程 pid（进程树归属证据），所以断言只比
+        # kind + target，不再假定事件字典只有这两个键。
+        return [
+            {"kind": event.get("kind"), "target": event.get("target")}
+            for event in events or []
+        ]
+
     def test_trial_covers_every_discoverable_unit_contract_module_once(self):
         modules = discover_unit_contract_modules(ROOT)
-        shards = unit_contract_shards(modules)
-        flattened = [module for name in UNIT_CONTRACT_STEP_NAMES for module in shards[name]]
+        shards = compute_unit_contract_shards(ROOT)
+        covered = list(unit_contract_modules_for_shards(shards))
+        targets = [target for shard_targets in shards.values() for target in shard_targets]
 
-        self.assertEqual(sorted(flattened), list(modules))
-        self.assertEqual(len(flattened), len(set(flattened)))
-        self.assertIn("tests.test_quality_gate", shards["unit-contract-quality-gate"])
+        # 每个被发现的模块恰好落入一片、绝不跨片重复：新模块拿到默认
+        # 估计自动进装箱，不靠人手维护列表。
+        self.assertEqual(sorted(covered), list(modules))
+        self.assertEqual(len(targets), len(set(targets)))
+        gate_targets = [
+            target
+            for name, shard_targets in shards.items()
+            if unit_contract_slot_for_shard(name) == "unit-contract-quality-gate"
+            for target in shard_targets
+        ]
+        self.assertTrue(gate_targets)
         self.assertIn(
             "tests.test_generation_log_reuse_ui",
             shards["unit-contract-browser"],
         )
+        # #204：三个 unit-contract 槽位不再直接进 STEP_DEFINITIONS——运行时由
+        # expand_unit_contract_steps 展开成具体分片（resolve_step_command 负责命令）。
+        # 这里钉死的是它们在 MODE_STEPS 里的存在与模式约束。
         for name in UNIT_CONTRACT_STEP_NAMES:
-            self.assertIn(name, STEP_DEFINITIONS)
+            self.assertNotIn(name, STEP_DEFINITIONS)
             self.assertNotIn(name, MODE_STEPS["fast"])
             self.assertNotIn(name, MODE_STEPS["domain"])
             self.assertIn(name, MODE_STEPS["trial"])
@@ -69,22 +126,24 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if "tests.test_dynamic_contract" in targets
+        )
 
         result = self.run_gate(mode="trial")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-remainder")
+        self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertEqual(report["first_failure"]["status"], "failed")
         self.assertIn(
             "tests.test_dynamic_contract",
             report["unit_contract_inventory"]["modules"],
         )
-        shard = next(
-            step
-            for step in report["steps"]
-            if step["name"] == "unit-contract-remainder"
-        )
+        shard = next(step for step in report["steps"] if step["name"] == shard_name)
         self.assertIn("tests.test_dynamic_contract", shard["command"])
         self.assertIn("intentional unit shard failure", shard["stderr_tail"])
 
@@ -92,21 +151,205 @@ class QualityGateTests(unittest.TestCase):
         (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
             "import time, unittest\n"
             "class SlowQualityGateContract(unittest.TestCase):\n"
-            "    def test_slow(self): time.sleep(5)\n",
+            "    def test_slow(self): time.sleep(20)\n",
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        # 预算从 1 秒提到 3 秒后，trial 会跑到最后的 browser-tracer；
+        # fixture 必须提供 conversation_browser.py 桩，否则它会以“文件不存在”的 exit 2 先把门弄红。
+        (self.fixture_root / "tests" / "conversation_browser.py").write_text(
+            "import socket\n"
+            "server = socket.socket()\n"
+            "server.bind(('127.0.0.1', 0))\n"
+            "server.listen(1)\n"
+            "client = socket.create_connection(('127.0.0.1', server.getsockname()[1]))\n"
+            "connection, _ = server.accept()\n"
+            "client.close()\n"
+            "connection.close()\n"
+            "server.close()\n",
+            encoding="utf-8",
+        )
+
+        # #167 后 javascript-syntax 是一个真的 unittest 步骤，预算必须给到
+        # 能跑完它。3 秒在空机器上够，但这个自测会在门里跑（外面同时有浏览器证据
+        # 在并行），嵌套门的 javascript-syntax 会被挤到 3 秒以上，墙钟先落在它身上，
+        # first_failure 就成了 'javascript-syntax' 而不是分片（20261022-110819 门红）。
+        # 8 秒：远高于满载时的单个普通步骤，又远小于慢分片里 test_slow 的 20 秒。
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if any("test_slow" in target for target in targets)
+        )
 
         result = self.run_gate(
             mode="trial",
             FIREFLY_TEST_MODE="1",
-            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="1",
+            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="8",
         )
 
         self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
+        self.assertEqual(report["first_failure"]["name"], shard_name)
         self.assertEqual(report["first_failure"]["status"], "timed-out")
+
+    def test_a_non_probe_proxy_hop_from_a_guarded_process_is_still_a_violation(self):
+        # #232 的反向钉：豁免只跟着探针目标走。同样走代理、但不是探针
+        # 目标的话，hop 仍必须判红——原生 socket 自己发 CONNECT 时那条 hop
+        # 是唯一带进程身份的记录（见 test_native_socket_connect_to_allowlisted_target_is_blocking）。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import unittest\n"
+            "import urllib.request\n"
+            "from urllib.error import URLError\n\n"
+            "class NonProbeEgressContract(unittest.TestCase):\n"
+            "    def test_request_through_the_gate_proxy(self):\n"
+            "        try:\n"
+            "            urllib.request.urlopen('http://not-the-probe.invalid/x', timeout=3)\n"
+            "        except (URLError, OSError):\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, "非探针目标的外连却没判红，信封不隔离")
+        blocking = (self.report().get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(event.get("kind") == "proxy-egress" for event in blocking),
+            f"非探针 pid 的 hop 被一起免掉了：{blocking}",
+        )
+
+    def test_attribution_probe_attempt_is_evidence_not_a_violation(self):
+        # #232：真实门跑里必须出现一类能按进程树归属的产品外连，否则 #230 的
+        # 进程树判据只在 fixture 里成立。探针尝试的那次外连不能计 S0——但
+        # 豁免不能变成“允许出网”：代理仍拒 CONNECT，字节出不去；豁免只把
+        # 这一次尝试降级为归属证据，且只对写死的保留域名生效。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import socket\n"
+            "import unittest\n\n"
+            "class ProbeAttemptContract(unittest.TestCase):\n"
+            "    def test_probe_target_is_denied_but_recorded(self):\n"
+            "        try:\n"
+            "            socket.create_connection(('egress-attribution-probe.invalid', 443), timeout=3)\n"
+            "        except OSError:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        report = self.report()
+        probe_events = [
+            event
+            for event in report["guard_events"]
+            if "egress-attribution-probe.invalid" in str(event.get("target", ""))
+        ]
+        self.assertTrue(probe_events, "探针尝试没进证据")
+        self.assertTrue(
+            all(event.get("pid") for event in probe_events),
+            f"探针记录没带进程身份：{probe_events}",
+        )
+        attribution = report.get("guard_attribution") or {}
+        self.assertGreaterEqual(
+            (attribution.get("by_method") or {}).get("process-tree", 0),
+            1,
+            f"真实跑里进程树归属仍为 0：{attribution.get('by_method')}",
+        )
+        self.assertFalse(attribution.get("domain_fallback_only"), "有进程树归属却标成全靠域名兜底")
+        self.assertEqual(attribution.get("blocking") or [], [])
+        self.assertEqual(
+            [reason for reason in report["verdict_reasons"] if "S0 boundary violation" in reason],
+            [],
+            "探针尝试仍被判 S0",
+        )
+
+    def test_egress_attribution_probe_runs_in_every_mode(self):
+        # #232：真实门跑里 by_method 全是 domain-fallback——#230 的进程树归属
+        # 那一半从没在真实环境生效过（产品出口走浏览器/node，没钩子）。
+        # 这一步跑产品自己的取远端素材函数（装在带钩子的进程里），让每次
+        # 真门跑都必然留下一条带 pid 的产品外连证据。四个模式都要：
+        # 只靠 fixture 证明机制存在不算，换机器跑也要能对上账。
+        step = "egress-attribution"
+        self.assertIn(step, STEP_DEFINITIONS)
+        joined = " ".join(STEP_DEFINITIONS[step](sys.executable))
+        self.assertIn("tests.test_product_egress_attribution", joined)
+        for mode in ("fast", "domain", "trial", "release"):
+            self.assertIn(step, MODE_STEPS[mode])
+
+    def test_javascript_syntax_step_covers_every_canvas_module(self):
+        # #167：javascript-syntax 以前只 `node --check static/js/smart-canvas.js`，
+        # 拆出去的 canvas-*.js 语法错误在 fast/domain 完全漏网。
+        command = STEP_DEFINITIONS["javascript-syntax"](sys.executable)
+        joined = " ".join(command)
+        self.assertIn("tests.test_canvas_frontend_sources", joined)
+        self.assertNotIn("static/js/smart-canvas.js", joined)
+        for mode in ("fast", "domain", "trial", "release"):
+            self.assertIn("javascript-syntax", MODE_STEPS[mode])
+
+    def test_canvas_boundaries_evidence_runs_only_in_trial_and_release(self):
+        # #167：runner 长期游离在门禁之外，只能手动跑。
+        step = "canvas-boundaries-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "tests/canvas_boundaries_browser.py"],
+        )
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
+    def test_video_failure_evidence_runs_only_in_trial_and_release(self):
+        step = "video-failure-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "tests/video_failure_browser.py"],
+        )
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
+    def test_all_browser_runners_resolve_their_repo_root(self):
+        # 门在临时 workspace 里执行步骤（create_execution_workspace），runner 里硬编码的
+        # 仓库根会读到工作区外的源码：证据看起来绿，测的却是另一份代码。
+        # 这个坑在 #172 里实测到：在 git worktree 里跑 canvas_interactions_browser.py
+        # 仍然加载主仓 static/，导致「修复前」对照无效。
+        offenders = []
+        for runner in sorted((Path(__file__).resolve().parents[1] / "tests").glob("*browser*.py")):
+            text = runner.read_text(encoding="utf-8")
+            if "Firefly-Canvas" in text:
+                offenders.append(runner.name)
+        self.assertEqual([], offenders)
+
+    def test_wired_canvas_browser_runners_resolve_their_repo_root(self):
+        # 门在临时 workspace 里执行步骤；runner 里硬编码的仓库根会读到工作区外的源码，
+        # 在非本机（例如 CI）上直接带不动。
+        repo_root = Path(__file__).resolve().parents[1]
+        for name in (
+            "canvas-boundaries-evidence",
+            "video-failure-evidence",
+            "node-flow-cascade-evidence",
+            "fly-fixes-evidence",
+        ):
+            command = STEP_DEFINITIONS[name](sys.executable)
+            runner = repo_root / command[1]
+            self.assertTrue(runner.is_file(), f"missing {command[1]}")
+            self.assertNotIn("Firefly-Canvas", runner.read_text(encoding="utf-8"))
+            self.assertIn("Path(__file__).resolve().parents[1]", runner.read_text(encoding="utf-8"))
+
+    def test_canvas_interactions_evidence_stays_out_of_the_gate(self):
+        # #172：canvas_interactions_browser.py 长期红（两条布局断言），
+        # 接入只会让门常红并掩盖真实回归；那张票判定完再接。
+        for name in ("canvas-interactions-evidence", "canvas-interactions"):
+            self.assertNotIn(name, STEP_DEFINITIONS)
+            self.assertNotIn(name, BROWSER_EVIDENCE_STEP_NAMES)
+            for mode in MODE_STEPS.values():
+                self.assertNotIn(name, mode)
 
     def test_ui_integrity_runs_only_in_trial_and_release(self):
         step = "ui-integrity-evidence"
@@ -197,6 +440,61 @@ class QualityGateTests(unittest.TestCase):
             "const qualityGateFixture = true;\n",
             encoding="utf-8",
         )
+        # #167：javascript-syntax 步骤现在跑 tests/test_canvas_frontend_sources.py，
+        # 所以 fixture 里的桩必须真的对 static/js/*.js 跑 node --check：
+        # 下面两个 S2 测试靠写坏 smart-canvas.js 来验证语法门会红。
+        # node 路径用受信路径写进桩里，不能拿 PATH 上的 node（伪造 node 测试会误报）。
+        (self.fixture_root / "tests" / "test_canvas_frontend_sources.py").write_text(
+            "import subprocess\n"
+            "import unittest\n"
+            "from pathlib import Path\n\n"
+            f"NODE = {trusted_node_executable()!r}\n"
+            "ROOT = Path(__file__).resolve().parents[1]\n\n"
+            "class CanvasFrontendSourceListTests(unittest.TestCase):\n"
+            "    def test_every_canvas_module_passes_node_syntax_check(self):\n"
+            "        for script in sorted((ROOT / 'static' / 'js').glob('*.js')):\n"
+            "            result = subprocess.run(\n"
+            "                [NODE, '--check', str(script)], capture_output=True, text=True,\n"
+            "            )\n"
+            "            self.assertEqual(result.returncode, 0, script.name + ': ' + result.stderr.strip())\n",
+            encoding="utf-8",
+        )
+        # #232：egress-attribution 步骤跑的是产品自己的取远端素材路径（app.core）。
+        # 这里合成的是最小仓库骨架，没有 app/，所以给一个不碰网络的桩：这个
+        # 套件验的是「门真的把这一步排进了每种模式」，探针行为由真门跑验。
+        (self.fixture_root / "tests" / "test_product_egress_attribution.py").write_text(
+            "import unittest\n\n"
+            "class EgressAttributionProbeStub(unittest.TestCase):\n"
+            "    def test_stub(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        # #261：doc-link-check（fast advisory）跑 tools/doc_link_check.py。fixture 是
+        # 最小仓库骨架没有 docs/，给一个桩（门只验接线，报告行为由真门跑/单测验）。
+        (self.fixture_root / "tools").mkdir(exist_ok=True)
+        (self.fixture_root / "tools" / "doc_link_check.py").write_text(
+            "import sys\n"
+            "print('doc-link-check fixture stub')\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
+        # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
+        # #185：node_flow 级联与 fly_fixes 两个 runner 同一套路接入。
+        # #269：图层面板浏览器 runner 同一套路接入（门只验接线，不验产品行为）。
+        for runner_name in (
+            "canvas_boundaries_browser.py",
+            "video_failure_browser.py",
+            "node_flow_browser.py",
+            "fly_fixes_browser.py",
+            "layers_panel_browser.py",
+        ):
+            (self.fixture_root / "tests" / runner_name).write_text(
+                "import sys\n"
+                f"print('{runner_name} fixture ok')\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
         (self.fixture_root / "tests" / "__init__.py").write_text("", encoding="utf-8")
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
             "import unittest\n\n"
@@ -512,7 +810,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -1096,18 +1394,226 @@ class QualityGateTests(unittest.TestCase):
 
     def test_blocked_browser_control_plane_noise_is_reported_without_failing_product_gate(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('clients2.google.com',), 'browser-background-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "clients2.google.com"},
+            self.guard_events(self.report()["guard_events"]),
+        )
+
+    def test_microsoft_and_bing_control_plane_noise_is_a_background_observation(self):
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(
+                ('edge.microsoft.com', 'cn.bing.com', 'www.bing.com'), 'browser-background-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        guard_events = self.report()["guard_events"]
+        attribution = self.report().get("guard_attribution") or {}
+        # 背景噪声计数与判据计数必须自洽：归属不到的背景噪声就是 domain-fallback
+        # 那批，不能出现「同一条事件既算进程树又算无法归属」。
+        self.assertEqual(
+            attribution.get("unattributable_background"),
+            (attribution.get("by_method") or {}).get("domain-fallback"),
+            "背景噪声计数与 by_method 不自洽：" + json.dumps(attribution, ensure_ascii=False)[:800],
+        )
+        for target in ("edge.microsoft.com", "cn.bing.com", "www.bing.com"):
+            self.assertIn(
+                {"kind": "browser-background-network", "target": target, "attributed_by": "domain-fallback"},
+                guard_events,
+            )
+
+    def test_chrome_update_control_plane_noise_is_a_background_observation(self):
+        # Chrome 自身的更新/组件检查（update.googleapis.com）属于浏览器控制面，
+        # 不是产品发起的网络调用；必须记为 S3 观察，不能当作 S0 隔离守卫违规。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('update.googleapis.com',), 'browser-background-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "update.googleapis.com"},
+            self.guard_events(self.report()["guard_events"]),
+        )
+
+    def test_google_account_oauth_endpoint_is_browser_background_noise(self):
+        # 实测（trial 门 20261027-020846）：登录了 Google 账号的 Edge 会自己
+        # 拨 oauth2.googleapis.com，代理把它归成 S0 kind=network 且归不到 step，
+        # 于是整道门判红。它和清单里已有的 accounts.google.com 同一个
+        # 登录控制面族，属于浏览器配置文件自己的后台流量。
+        # 产品侧不能躲到这个条目后面：产品进程走出口代理时会在 set_tunnel
+        # 上留下带 pid 的 proxy-request，目标对得上就被 blocking_guard_events
+        # 拉回判红。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('oauth2.googleapis.com',), 'browser-background-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "oauth2.googleapis.com"},
+            self.guard_events(self.report()["guard_events"]),
+        )
+
+    def test_host_ai_tool_control_plane_noise_is_a_background_observation(self):
+        # #227：宿主侧 Google Antigravity / Cloud Code 的遥测（不是产品外联）走的是
+        # 同一个进程级 deny proxy，以前记成 kind=network（S0）且归因不到任何 step，
+        # 把整道门判红。要求是**分类**宿主噪声，不是放宽证据：这些目标仍必须被
+        # 记录（可审计），但归到自己的 kind，不算产品隔离违规。
+        # 目标清单来自实测门日志（同一机器上反复出现）：
+        #   daily-cloudcode-pa.googleapis.com / antigravity-unleash.goog /
+        #   play.googleapis.com / www.googleapis.com /
+        #   antigravity-cli-auto-updater-974169037036.us-central1.run.app
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('antigravity-unleash.goog', 'daily-cloudcode-pa.googleapis.com', 'antigravity-cli-auto-updater-974169037036.us-central1.run.app'), 'host-tool-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        guard_events = self.report()["guard_events"]
+        for target in (
+            "antigravity-unleash.goog",
+            "daily-cloudcode-pa.googleapis.com",
+            "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+        ):
+            self.assertIn(
+                {"kind": "host-tool-network", "target": target, "attributed_by": "domain-fallback"},
+                guard_events,
+            )
+        # 不能归到任何 step（它本来就不是 step 干的），也不能进 verdict 理由。
+        reasons = self.report()["verdict_reasons"]
+        self.assertNotIn(
+            "antigravity-unleash.goog",
+            json.dumps(reasons, ensure_ascii=False),
+        )
+
+    def test_host_noise_counts_are_reported_for_cross_machine_comparison(self):
+        # #227 期望 3：evidence 里要直接给出按 kind 的计数，换机器时能一眼对比
+        # 「这台机器的宿主噪声有多少」，而不是要人去 guard-events.jsonl 里手工数。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('antigravity-unleash.goog', 'play.googleapis.com', 'www.googleapis.com'), 'host-tool-network'),
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        counts = self.report()["guard_event_counts"]
+        self.assertEqual(
+            counts.get("host-tool-network"),
+            3,
+            "宿主噪声计数缺失 = 换机器无法对比（#227 期望 3）",
+        )
+        self.assertFalse(
+            counts.get("network"),
+            "没有真违规却出现 network 计数 = 分类把真违规洗掉了",
+        )
+
+    def test_guard_events_carry_originating_process_identity(self):
+        # #230 期望 1：事件要能回答「谁发的」——pid 之外还要带父进程和可执行
+        # 路径，否则换机器时 pid 对不上就无从对账。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import socket\n"
+            "import unittest\n\n"
+            "class ProcessIdentityContract(unittest.TestCase):\n"
+            "    def test_denied_connect(self):\n"
+            "        try:\n"
+            "            socket.create_connection(('203.0.113.1', 443), timeout=0.01)\n"
+            "        except Exception:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [
+            event
+            for event in self.report()["guard_events"]
+            if event.get("kind") == "network" and str(event.get("target")) == "203.0.113.1"
+        ]
+        self.assertTrue(events, f'没有 network 违规事件：{self.report()["guard_events"]}')
+        for event in events:
+            self.assertIsInstance(event.get("pid"), int, f'缺 pid：{event}')
+            self.assertIsInstance(event.get("ppid"), int, f'缺父进程 pid（#230 要求带父链）：{event}')
+            self.assertTrue(str(event.get("exe") or "").strip(), f'缺可执行路径：{event}')
+
+    def test_guard_attribution_counts_each_attribution_method(self):
+        # #230 期望 2：除了按 kind 计数，还要按「用了哪种归属判据」计数，
+        # 换机器跑门时才能看出这条证据是进程树定出来的还是域名兜底猜的。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            unattributable_noise_source(('clients2.google.com',), 'browser-background-network')
+            + "\n    def test_denied_connect(self):\n"
+            "        import socket\n"
+            "        try:\n"
+            "            socket.create_connection(('203.0.113.1', 443), timeout=0.01)\n"
+            "        except Exception:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = self.report()
+        by_method = (report.get("guard_attribution") or {}).get("by_method") or {}
+        # 口径也要在证据里：by_method 是全量合并流，blocking 是逐 step，两者
+        # 不相等时得能看出是口径差异而不是归类错。
+        self.assertTrue(
+            str((report.get("guard_attribution") or {}).get("by_method_scope") or "").strip(),
+            "by_method 没标明统计口径",
+        )
+        self.assertGreaterEqual(
+            by_method.get("process-tree", 0), 1,
+            f'门进程树自己发起的事件没按进程树归类：{by_method}',
+        )
+        self.assertGreaterEqual(
+            by_method.get("domain-fallback", 0), 1,
+            f'归属不到的噪声没标明是域名兜底：{by_method}',
+        )
+        labelled = [
+            event
+            for event in report["guard_events"]
+            if str(event.get("kind")) in {"network", "browser-background-network"}
+        ]
+        self.assertTrue(
+            all(event.get("attributed_by") for event in labelled),
+            f'证据里看不出这条事件用的判据：{labelled}',
+        )
+
+    def test_native_socket_connect_to_allowlisted_target_is_blocking(self):
+        # 不是抬杠：原生 socket 自己发 CONNECT时不会过 set_tunnel，代理那边
+        # 只留下一条带目标域名的噪声。如果归属只看 set_tunnel，产品拿这种
+        # 连接去连清单里的目标（www.googleapis.com）就被洗成宿主遥测了。
+        # 能兜住它的是 proxy-egress：门进程连上出口代理这一跳本身就带 pid。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
             "import os\n"
             "import socket\n"
             "import unittest\n"
             "from urllib.parse import urlsplit\n\n"
-            "class BrowserControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_chrome_probe(self):\n"
+            "class NativeSocketToAllowlist(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
             "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
             "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
             "        try:\n"
             "            connection.sendall(\n"
-            "                b'CONNECT clients2.google.com:443 HTTP/1.1\\r\\n'\n"
-            "                b'Host: clients2.google.com:443\\r\\n\\r\\n'\n"
+            "                b'CONNECT www.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: www.googleapis.com:443\\r\\n\\r\\n'\n"
             "            )\n"
             "            connection.recv(1024)\n"
             "        finally:\n"
@@ -1117,43 +1623,266 @@ class QualityGateTests(unittest.TestCase):
 
         result = self.run_gate()
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(
-            {"kind": "browser-background-network", "target": "clients2.google.com"},
-            self.report()["guard_events"],
+        report = self.report()
+        self.assertEqual(
+            result.returncode, 1,
+            '原生连接连到域名清单里的目标被判成宿主噪声了（#230）：' + result.stdout[-2000:],
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "proxy-egress"
+                and event.get("attributed_by") == "process-tree"
+                for event in blocking
+            ),
+            f'出口代理 hop 没被按进程树归为违规：{blocking}',
         )
 
-    def test_microsoft_and_bing_control_plane_noise_is_a_background_observation(self):
+    def test_loopback_traffic_to_a_non_proxy_port_is_not_a_violation(self):
+        # #230 的反向钉：proxy-egress 只在「连的就是出口代理那个端口」时才记
+        # （_deny_non_loopback 里 port == _browser_proxy_port）。产品跑本地服务
+        # （127.0.0.1 上其他端口）不能被当成走了出口代理，否则每个用到本地
+        # 服务的 step 都会静默变红。
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
-            "import os\n"
+            "import http.server\n"
             "import socket\n"
-            "import unittest\n"
-            "from urllib.parse import urlsplit\n\n"
-            "class EdgeControlPlaneContract(unittest.TestCase):\n"
-            "    def test_blocked_edge_probes(self):\n"
-            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
-            "        for target in ('edge.microsoft.com', 'cn.bing.com', 'www.bing.com'):\n"
-            "            connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "import threading\n"
+            "import unittest\n\n"
+            "class LoopbackToLocalServer(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
+            "        class Handler(http.server.BaseHTTPRequestHandler):\n"
+            "            def do_GET(self):\n"
+            "                self.send_response(200)\n"
+            "                self.send_header('Content-Length', '0')\n"
+            "                self.end_headers()\n"
+            "            def log_message(self, *args):\n"
+            "                pass\n\n"
+            "        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)\n"
+            "        worker = threading.Thread(target=server.serve_forever, daemon=True)\n"
+            "        worker.start()\n"
+            "        try:\n"
+            "            connection = socket.create_connection(server.server_address)\n"
             "            try:\n"
-            "                connection.sendall(\n"
-            "                    f'CONNECT {target}:443 HTTP/1.1\\r\\n'\n"
-            "                    f'Host: {target}:443\\r\\n\\r\\n'.encode()\n"
-            "                )\n"
+            "                connection.sendall(b'GET / HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\n\\r\\n')\n"
             "                connection.recv(1024)\n"
             "            finally:\n"
-            "                connection.close()\n",
+            "                connection.close()\n"
+            "        finally:\n"
+            "            server.shutdown()\n"
+            "            server.server_close()\n",
             encoding="utf-8",
         )
 
         result = self.run_gate()
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        guard_events = self.report()["guard_events"]
-        for target in ("edge.microsoft.com", "cn.bing.com", "www.bing.com"):
-            self.assertIn(
-                {"kind": "browser-background-network", "target": target},
-                guard_events,
-            )
+        self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        self.assertFalse(
+            [event for event in self.report()["guard_events"] if event.get("kind") == "proxy-egress"],
+            "连本地非代理端口被记成了出口代理 hop",
+        )
+
+    def test_gate_tree_process_reaching_a_host_tool_target_is_still_blocking(self):
+        # #230：域名白名单回答的是「目标像不像宿主遥测」，不是「连接是谁发的」。
+        # 产品自己的进程（在门进程树里）去连 play.googleapis.com 这种白名单目标，
+        # 必须还是 S0——否则白名单就把真违规洗掉了（#227 期望 1 的反向版）。
+        # 注意：必须覆写 fast 步骤实际会跑的那个文件，否则 fixture 根本不被执行，
+        # 门当然绿——这是一个真实踩过的 vacuous 陷阱。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import http.client\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class ProductTreeReachesHostTarget(unittest.TestCase):\n"
+            "    def test_connect(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        # 用真实 HTTP 客户端（requests/httpx 也是这么 CONNECT 的），\n"
+            "        # 目标主机走 set_tunnel，守卫才能记下产品请求的目标。\n"
+            "        connection = http.client.HTTPConnection(proxy.hostname, proxy.port)\n"
+            "        connection.set_tunnel('play.googleapis.com', 443)\n"
+            "        try:\n"
+            "            connection.request('GET', '/')\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        report = self.report()
+        counts = report.get("guard_event_counts", {})
+        self.assertEqual(
+            result.returncode, 1,
+            '门进程树自己的连接被判成宿主噪声放过了（#230）：' + result.stdout[-2000:],
+        )
+        self.assertGreaterEqual(
+            counts.get("proxy-request", 0), 1,
+            '证据里没有「这个进程请求了这个目标」的归属记录 = 无法按进程树归属（#230 期望 1）',
+        )
+        attributed = [
+            event
+            for step in report.get("steps", [])
+            for event in (step.get("guard_events") or [])
+            if event.get("kind") == "proxy-request"
+        ]
+        self.assertTrue(
+            attributed and all(isinstance(event.get("pid"), int) and event["pid"] > 0 for event in attributed),
+            f'归属记录没带发起进程 pid：{attributed}',
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "proxy-request"
+                and str(event.get("target", "")).lower() == "play.googleapis.com"
+                and event.get("attributed_by") == "process-tree"
+                and isinstance(event.get("pid"), int)
+                for event in blocking
+            ),
+            f'产品自己的 CONNECT 记录（带 pid）没按进程树判红：{blocking}',
+        )
+        # 宿主噪声不能被改名成产品违规。判红靠的是带 pid 的那条 proxy-request，
+        # 不需要给代理日志里那条噪声换归属；一换就会同现「产品连接数」虚高，
+        # 而且 step 视图与全量视图会给出两个不同的归属。
+        noise = [
+            event
+            for event in report["guard_events"]
+            if event.get("kind") == "host-tool-network"
+            and str(event.get("target", "")).lower() == "play.googleapis.com"
+        ]
+        self.assertTrue(noise, "代理日志里没有那条宿主噪声事件，fixture 没跑到")
+        self.assertEqual(
+            {event.get("attributed_by") for event in noise},
+            {"domain-fallback"},
+            f'宿主噪声被升级成产品归属：{noise}',
+        )
+        # 同一条事件在 step 视图和全量视图里必须同一个判据。
+        step_view = {
+            (event.get("kind"), str(event.get("target")), event.get("pid")): event.get("attributed_by")
+            for step in report.get("steps", [])
+            for event in (step.get("guard_events") or [])
+        }
+        merged_view = {
+            (event.get("kind"), str(event.get("target")), event.get("pid")): event.get("attributed_by")
+            for event in report["guard_events"]
+        }
+        shared = set(step_view) & set(merged_view)
+        self.assertTrue(shared, "step 视图与全量视图没有共同事件，无法对账")
+        self.assertEqual(
+            {key: step_view[key] for key in shared},
+            {key: merged_view[key] for key in shared},
+            "同一条事件在两个视图里判据不同（#230 证据自相矛盾）",
+        )
+        attribution = report.get("guard_attribution") or {}
+        self.assertEqual(
+            attribution.get("unattributable_background"),
+            (attribution.get("by_method") or {}).get("domain-fallback"),
+            "背景噪声计数与 by_method 不自洽：" + json.dumps(attribution, ensure_ascii=False)[:800],
+        )
+    def test_google_account_oauth_connect_is_classified_as_browser_noise(self):
+        # 这个走真的 CONNECT，不是为了测而测：trial 门（20261027-020846）真实
+        # 看到登录了 Google 账号的 Edge 拨 oauth2.googleapis.com，代理把它
+        # 归成 S0 network、归不到任何 step，整道门判红。它和清单里已有的
+        # accounts.google.com 是同一个登录控制面族。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class GoogleAccountOauthContract(unittest.TestCase):\n"
+            "    def test_oauth_connect_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT oauth2.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: oauth2.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        #  fixture 是门进程树里的已守卫进程，它自己连代理这一跳（proxy-egress）
+        # 就是违规，所以门必须红；但目标本身的分类仍然是浏览器噪声（domain-
+        # fallback），不能被当成 S0 的理由——真浏览器（没有钩子）拨这个域时
+        # 不会留下 hop 事件，那边走的是上面那条噪声路径。
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        self.assertIn(
+            {"kind": "browser-background-network", "target": "oauth2.googleapis.com"},
+            self.guard_events(report["guard_events"]),
+        )
+        blocking = (report.get("guard_attribution") or {}).get("blocking") or []
+        self.assertTrue(
+            any(
+                event.get("kind") == "proxy-egress" and event.get("attributed_by") == "process-tree"
+                for event in blocking
+            ),
+            f'代理 hop 没按进程树归为违规：{blocking}',
+        )
+
+    def test_host_ai_tool_look_alike_host_is_still_a_blocking_network_target(self):
+        # 分类不能变成放宽：长得像宿主工具控制面的域名必须仍旧判红。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class HostToolLookAlikeContract(unittest.TestCase):\n"
+            "    def test_blocked_look_alike_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT antigravity-unleash.goog.evil.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: antigravity-unleash.goog.evil.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "network", "target": "antigravity-unleash.goog.evil.com"},
+            self.guard_events(self.report()["guard_events"]),
+        )
+
+    def test_google_update_look_alike_host_is_still_a_blocking_network_target(self):
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import os\n"
+            "import socket\n"
+            "import unittest\n"
+            "from urllib.parse import urlsplit\n\n"
+            "class GoogleUpdateLookAlikeContract(unittest.TestCase):\n"
+            "    def test_blocked_look_alike_probe(self):\n"
+            "        proxy = urlsplit(os.environ['FIREFLY_QUALITY_GATE_BROWSER_PROXY'])\n"
+            "        connection = socket.create_connection((proxy.hostname, proxy.port))\n"
+            "        try:\n"
+            "            connection.sendall(\n"
+            "                b'CONNECT evil-update.googleapis.com:443 HTTP/1.1\\r\\n'\n"
+            "                b'Host: evil-update.googleapis.com:443\\r\\n\\r\\n'\n"
+            "            )\n"
+            "            connection.recv(1024)\n"
+            "        finally:\n"
+            "            connection.close()\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            {"kind": "network", "target": "evil-update.googleapis.com"},
+            self.guard_events(self.report()["guard_events"]),
+        )
 
     def test_microsoft_look_alike_host_is_still_a_blocking_network_target(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
@@ -1181,7 +1910,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(
             {"kind": "network", "target": "evil-microsoft.com"},
-            self.report()["guard_events"],
+            self.guard_events(self.report()["guard_events"]),
         )
 
     def test_python_child_cannot_remove_guard_with_a_custom_environment(self):
@@ -1209,6 +1938,52 @@ class QualityGateTests(unittest.TestCase):
         result = self.run_gate()
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_node_boundary_event_carries_process_identity(self):
+        # #232：node 钩子的 record() 只写 kind/target，不带 pid——所以 node 触发的
+        # 边界事件在证据里永远归属不到发起进程（node 是画布语法测试、Playwright
+        # 驱动的宿主）。Python 钩子早就带 pid/ppid/exe，两边必须对称；不带
+        # 目标地址也不行：只知道「node 试过 net.connect」对不了账。
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import subprocess\n"
+            "import unittest\n\n"
+            "class NodeBoundaryIdentityContract(unittest.TestCase):\n"
+            "    def test_denied_socket_reports_process(self):\n"
+            "        result = subprocess.run(\n"
+            "            ['node', '-e',\n"
+            "             \"require('node:net').connect({host: 'api.example.com', port: 443})\"],\n"
+            "            capture_output=True,\n"
+            "            text=True,\n"
+            "            check=False,\n"
+            "        )\n"
+            "        self.assertNotEqual(result.returncode, 0)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr[-2000:])
+        report = self.report()
+        node_events = [
+            event
+            for event in report["guard_events"]
+            if str(event.get("target", "")).startswith("node:")
+        ]
+        self.assertTrue(node_events, "fixture 没产生 node 边界事件，这条钉是空的")
+        for event in node_events:
+            self.assertTrue(event.get("pid"), f"node 边界事件没带 pid：{event}")
+            self.assertTrue(event.get("ppid"), f"node 边界事件没带 ppid：{event}")
+            self.assertTrue(event.get("exe"), f"node 边界事件没带可执行路径：{event}")
+        self.assertTrue(
+            any("api.example.com" in str(event.get("target", "")) for event in node_events),
+            f"node 边界事件没记下请求的目标：{node_events}",
+        )
+        by_method = (report.get("guard_attribution") or {}).get("by_method") or {}
+        self.assertGreaterEqual(
+            by_method.get("process-tree", 0),
+            1,
+            f"node 边界事件没按进程树归属：{by_method}",
+        )
 
     def test_node_options_cannot_preload_code_before_the_syntax_step(self):
         preload = Path(self.temp_dir.name) / "node-preload.js"
@@ -1296,16 +2071,118 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        shard_name = next(
+            name
+            for name, targets in shards.items()
+            if any("test_unrelated_python_is_denied" in target for target in targets)
+        )
 
         result = self.run_gate(mode="trial")
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         report = self.report()
-        self.assertEqual(report["first_failure"]["name"], "unit-contract-quality-gate")
-        self.assertIn(
-            {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()},
-            report["guard_events"],
+        self.assertEqual(report["first_failure"]["name"], shard_name)
+        subprocess_events = [
+            event
+            for event in report["guard_events"]
+            if event.get("kind") == "subprocess-executable"
+            and event.get("target") == Path(sys.executable).name.lower()
+        ]
+        self.assertTrue(subprocess_events, report["guard_events"])
+        # #230：证据要能回答「这条是谁发的」，所以守卫事件现在都带发起进程 pid。
+        self.assertTrue(
+            all(isinstance(event.get("pid"), int) and event["pid"] > 0 for event in subprocess_events),
+            f'守卫事件没带 pid：{subprocess_events}',
         )
+
+    # issue #174：并行组里一个步骤产生的 S0 边界事件，绝不能把同组其它步骤改红。
+    def write_parallel_boundary_fixture(self) -> dict:
+        """fixture：只有 unit-contract-quality-gate 那一步会越界（SELF_TEST=1 才触发），
+        越界后它自己仍然 exit 0，所以只有归因正确的步骤应该被改红。"""
+        violation = {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()}
+        (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
+            "import os\n"
+            "import subprocess\n"
+            "import sys\n"
+            "import unittest\n\n"
+            "class ParallelBoundaryContract(unittest.TestCase):\n"
+            "    def test_denied_subprocess_is_attributed_to_its_own_step(self):\n"
+            "        if os.environ.get('FIREFLY_QUALITY_GATE_SELF_TEST') != '1':\n"
+            "            return\n"
+            "        try:\n"
+            "            subprocess.run([sys.executable, '-c', 'print(1)'], check=False)\n"
+            "        except PermissionError:\n"
+            "            pass\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+        return violation
+
+    def test_parallel_group_boundary_event_does_not_redden_sibling_steps(self):
+        violation = self.write_parallel_boundary_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        offender_name = next(
+            name
+            for name, targets in shards.items()
+            if any(
+                "test_denied_subprocess_is_attributed_to_its_own_step" in target
+                for target in targets
+            )
+        )
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        steps = {step["name"]: step for step in report["steps"]}
+        offender = steps[offender_name]
+        self.assertEqual(offender["status"], "failed", offender.get("stderr_tail") or "")
+        self.assertEqual(offender["exit_code"], 1)
+        self.assertIn(
+            (violation["kind"], violation["target"]),
+            {(event["kind"], event["target"]) for event in offender["guard_events"]},
+        )
+        for name in (
+            *(shard_name for shard_name in shards if shard_name != offender_name),
+            "excel-import-evidence",
+            "canvas-boundaries-evidence",
+        ):
+            step = steps[name]
+            self.assertEqual(
+                step["status"],
+                "passed",
+                f"{name} 被同组其它步骤的越界事件改红：{step.get('stderr_tail') or ''}",
+            )
+            self.assertEqual(step["exit_code"], 0, name)
+            self.assertNotIn(
+                (violation["kind"], violation["target"]),
+                {(event["kind"], event["target"]) for event in step["guard_events"]},
+                f"{name} 的 guard_events 里出现了不属于它的边界事件",
+            )
+        # 执法不能放松：越界事件仍完整进入全局证据，整个门仍然是红的。
+        self.assertIn(violation, self.guard_events(report["guard_events"]))
+
+    def test_blocking_guard_event_attribution_is_visible_in_verdict_reasons(self):
+        violation = self.write_parallel_boundary_fixture()
+        shards = compute_unit_contract_shards(self.fixture_root)
+        offender_name = next(
+            name
+            for name, targets in shards.items()
+            if any(
+                "test_denied_subprocess_is_attributed_to_its_own_step" in target
+                for target in targets
+            )
+        )
+
+        result = self.run_gate(mode="trial")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        reasons = "\n".join(report["verdict_reasons"])
+        self.assertIn(violation["kind"], reasons)
+        self.assertIn(violation["target"], reasons)
+        self.assertIn(offender_name, reasons)
 
     def test_javascript_syntax_uses_trusted_node_instead_of_path(self):
         fake_bin = Path(self.temp_dir.name) / "fake-bin"
@@ -1472,6 +2349,30 @@ class QualityGateTests(unittest.TestCase):
         )
         self.assertFalse(guard_events.exists())
 
+    def test_node_children_get_the_same_long_shutdown_grace(self):
+        # #226：node.exe 的退出尾巴（V8 卸载、stdout 冲刷）在并行负载下会超过 1s。
+        # 1s 窗口内没退完就被判 S0 subprocess-leak，守卫还会 taskkill 一个正在
+        # 正常退出的测试子进程，而红会落到当时正在跑的无关 shard 上。
+        guard_events = self.evidence_dir / "guard-events.jsonl"
+        guard_events.parent.mkdir(parents=True, exist_ok=True)
+        with mock.patch("tools.quality_gate.wait_for_process_exit", return_value=True) as wait:
+            stop_leaked_children(
+                [
+                    {"pid": 43220, "target": "node.exe"},
+                    {"pid": 43221, "target": "node"},
+                    {"pid": 43222, "target": "cmd.exe"},
+                ],
+                guard_events,
+            )
+        wait.assert_has_calls(
+            [
+                mock.call(43220, timeout=8.0),
+                mock.call(43221, timeout=8.0),
+                mock.call(43222, timeout=1.0),
+            ]
+        )
+        self.assertFalse(guard_events.exists())
+
     def test_wait_for_process_exit_is_bounded_and_observes_natural_exit(self):
         with (
             mock.patch(
@@ -1530,7 +2431,7 @@ class QualityGateTests(unittest.TestCase):
         )
         report = self.report()
         self.assertIn(
-            {"kind": "subprocess-leak", "target": Path(sys.executable).name.lower()},
+            {"kind": "subprocess-leak", "target": Path(sys.executable).name.lower(), "attributed_by": "unattributed"},
             report["guard_events"],
         )
         self.assertEqual(report["first_failure"]["name"], "surface-contract")
@@ -1635,7 +2536,11 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["effective_budget_seconds"], 1)
         self.assertEqual(report["first_failure"]["status"], "timed-out")
-        self.assertLess(report["duration_seconds"], 3)
+        # 判据是「门在 1 秒预算处杀掉子进程」而不是「放它跑完 5 秒 sleep」。
+        # 原先写死 <3 秒：trial/release 把步骤跑成有界并行组（tools/quality_gate.py:493、
+        # :3275），fixture 子门要跟同组其他步骤抢 CPU，实测一次 3.015 秒就红了。
+        # 所以阈值绑到夹具自身的 5 秒 sleep：跑完必然 >=5 秒，提前杀掉则远小于它。
+        self.assertLess(report["duration_seconds"], 5)
 
     def test_all_modes_are_cumulative_and_keep_their_declared_budgets(self):
         (self.fixture_root / "tests" / "test_project_store.py").write_text(
@@ -1665,13 +2570,16 @@ class QualityGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_native_browser_fixture()
+        # #204：三个 unit-contract 槽位在运行时展开成具体分片步骤。这里钉死的是
+        # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
+        # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ["javascript-syntax", "excel-api-smoke", "surface-contract"]),
-            "domain": (180, ["javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence"]),
-            "trial": (300, ["javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "unit-contract-browser", "browser-tracer"]),
+            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
+            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
-                [
+                (
                     "javascript-syntax",
                     "unit-contract-quality-gate",
                     "unit-contract-remainder",
@@ -1684,21 +2592,32 @@ class QualityGateTests(unittest.TestCase):
                     "ui-integrity-evidence",
                     "excel-import-evidence",
                     "edge-compatibility",
+                    "canvas-boundaries-evidence",
+                    "layers-panel-evidence",
+                    "video-failure-evidence",
+                    "node-flow-cascade-evidence",
+                    "fly-fixes-evidence",
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
-                ],
+                    "egress-attribution",
+                ),
             ),
         }
+        shards = compute_unit_contract_shards(self.fixture_root)
 
-        for mode, (budget, names) in expected.items():
+        for mode, (budget, slots) in expected.items():
             with self.subTest(mode=mode):
+                self.assertEqual(MODE_STEPS[mode], slots)
                 self.evidence_dir = Path(self.temp_dir.name) / f"evidence-{mode}"
                 result = self.run_gate(mode)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 report = self.report()
                 self.assertEqual(report["budget_seconds"], budget)
-                self.assertEqual([step["name"] for step in report["steps"]], names)
+                self.assertEqual(
+                    [step["name"] for step in report["steps"]],
+                    list(expand_unit_contract_steps(slots, shards)),
+                )
 
     def test_edge_compatibility_step_is_release_only(self):
         step = "edge-compatibility"
@@ -1766,14 +2685,16 @@ class QualityGateTests(unittest.TestCase):
             step for step in report["steps"] if step["name"] == "native-browser-evidence"
         )
         self.assertIs(native_step["parallel_group"], True)
-        for name in UNIT_CONTRACT_STEP_NAMES:
+        shards = report["unit_contract_inventory"]["shards"]
+        self.assertTrue(shards)
+        for name in sorted(shards):
             contract_step = next(step for step in report["steps"] if step["name"] == name)
             self.assertIs(contract_step["parallel_group"], True)
         self.assertTrue(report["unit_contract_inventory"]["covered_in_mode"])
         covered_modules = [
             module
-            for name in UNIT_CONTRACT_STEP_NAMES
-            for module in report["unit_contract_inventory"]["shards"][name]
+            for shard_modules in shards.values()
+            for module in shard_modules
         ]
         self.assertEqual(
             sorted(covered_modules),
@@ -1844,6 +2765,8 @@ class QualityGateTests(unittest.TestCase):
             if finding["severity"] == "S0"
         )
         self.assertEqual(s0["source"], "guard")
+        # #230：证据要看得出这条 S0 是按哪种判据定出来的（进程树 vs 域名兜底）。
+        self.assertIn("attributed to the gate process tree", s0["message"])
         s1 = next(
             finding
             for finding in report["severity_frequency_findings"]
@@ -1851,6 +2774,63 @@ class QualityGateTests(unittest.TestCase):
         )
         self.assertEqual(s1["source"], "step")
         self.assertEqual(s1["step"], "provider-contract")
+
+
+class GuardAttributionConsistencyTests(unittest.TestCase):
+    """#230：判据不能取决于「事件怎么分批读」。
+
+    同一条事件在 step 视图与全量视图里只能有一个 attributed_by；宿主噪声不能
+    因为「另一个 step 里产品请求过同名目标」就被改名成产品归属。
+    """
+
+    PRODUCT_REQUEST = {"kind": "proxy-request", "target": "play.googleapis.com", "pid": 7}
+    HOST_NOISE = {"kind": "host-tool-network", "target": "play.googleapis.com"}
+
+    def test_host_noise_stays_domain_fallback_even_if_the_tree_requested_the_target(self):
+        merged = classify_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])
+        labels = {event["kind"]: event["attributed_by"] for event in merged}
+        self.assertEqual(
+            labels.get("host-tool-network"),
+            "domain-fallback",
+            f'宿主噪声被升级成产品归属：{merged}',
+        )
+        self.assertEqual(labels.get("proxy-request"), "process-tree")
+        blocking = [event["kind"] for event in blocking_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])]
+        self.assertEqual(
+            blocking,
+            ["proxy-request"],
+            "判红应该只靠带 pid 的那条，不该靠给噪声改名",
+        )
+
+    def test_classification_is_identical_per_step_or_merged(self):
+        per_step = classify_guard_events([dict(self.PRODUCT_REQUEST)]) + classify_guard_events([dict(self.HOST_NOISE)])
+        merged = classify_guard_events([dict(self.PRODUCT_REQUEST), dict(self.HOST_NOISE)])
+        self.assertEqual(
+            [event["attributed_by"] for event in per_step],
+            [event["attributed_by"] for event in merged],
+            "同一条事件因为分批不同而得到不同判据",
+        )
+
+    def test_findings_keep_the_step_that_actually_violated(self):
+        steps = [
+            {
+                "name": "surface-contract",
+                "status": "passed",
+                "guard_events": [{"kind": "network", "target": "203.0.113.1", "pid": 11}],
+            },
+            {
+                "name": "project-contract",
+                "status": "passed",
+                "guard_events": [{"kind": "network", "target": "203.0.113.1", "pid": 22}],
+            },
+        ]
+        merged = [dict(event) for step in steps for event in step["guard_events"]]
+        findings = [finding for finding in build_severity_findings(steps, merged, []) if finding["severity"] == "S0"]
+        self.assertEqual(
+            sorted(finding.get("step") for finding in findings),
+            ["project-contract", "surface-contract"],
+            f'两条同名目标的违规没能各自归到自己的 step：{findings}',
+        )
 
 
 if __name__ == "__main__":

@@ -148,7 +148,6 @@ class GlobalSettingsApiTests(unittest.TestCase):
         with (
             patch.object(main, "codex_status", AsyncMock(return_value={"installed": True, "logged_in": None})),
             patch.object(main, "gemini_cli_status", AsyncMock(return_value={"installed": False, "logged_in": False})),
-            patch.object(main, "jimeng_status", AsyncMock(return_value={"installed": True, "logged_in": True})),
         ):
             response = self.client.get("/api/global-settings")
 
@@ -160,7 +159,10 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertTrue(provider["has_key"])
         self.assertTrue(provider["key_preview"].endswith("alue"))
         self.assertEqual(provider["image_models"], ["image-one"])
-        self.assertEqual(payload["cli"]["jimeng"]["logged_in"], True)
+        # #236：即梦已全量退役，CLI 状态只剩 codex/gemini。
+        self.assertNotIn("jimeng", payload["cli"])
+        self.assertIn("codex", payload["cli"])
+        self.assertIn("gemini", payload["cli"])
         self.assertEqual(payload["project_library"]["path"], str(self.store.root))
         self.assertEqual(payload["photoshop"]["connected"], False)
 
@@ -215,7 +217,6 @@ class GlobalSettingsApiTests(unittest.TestCase):
         with (
             patch.object(main, "codex_status", AsyncMock(side_effect=RuntimeError("codex probe failed"))),
             patch.object(main, "gemini_cli_status", AsyncMock(side_effect=RuntimeError("gemini probe failed"))),
-            patch.object(main, "jimeng_status", AsyncMock(side_effect=RuntimeError("jimeng probe failed"))),
         ):
             response = self.client.get("/api/global-settings")
         self.assertEqual(response.status_code, 200, response.text)
@@ -280,7 +281,6 @@ class GlobalSettingsApiTests(unittest.TestCase):
         with (
             patch.object(main, "codex_status", AsyncMock(return_value={})),
             patch.object(main, "gemini_cli_status", AsyncMock(return_value={})),
-            patch.object(main, "jimeng_status", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
         self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "en"})

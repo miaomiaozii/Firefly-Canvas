@@ -11,7 +11,7 @@ import hashlib
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
+from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, NODE_TYPE_IMAGE, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
 _from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -196,7 +196,7 @@ def expand_canvas_generated_media_paths(canvas: Dict[str, Any], paths: List[str]
         images = list(node.get('images') or [])
         if node_type == 'output':
             owned_items = images
-        elif node_type == 'smart-image':
+        elif node_type == NODE_TYPE_IMAGE:
             owned_items = smart_owned_result_items(images, paths)
         else:
             owned_items = []
@@ -223,9 +223,9 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
             if len(kept_outputs) != len(outputs):
                 node['generatedOutputs'] = kept_outputs
                 changed = True
-        if node_type in {'smart-image', 'output'} and isinstance(node.get('images'), list):
+        if node_type in {NODE_TYPE_IMAGE, 'output'} and isinstance(node.get('images'), list):
             images = list(node.get('images') or [])
-            if node_type == 'smart-image':
+            if node_type == NODE_TYPE_IMAGE:
                 owned_items = smart_owned_result_items(images, paths)
             else:
                 owned_items = images
@@ -237,11 +237,11 @@ def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]
                 if node_type == 'output':
                     node['_pending'] = []
                     node['imageComparisons'] = {}
-                if node_type == 'smart-image':
+                if node_type == NODE_TYPE_IMAGE:
                     node['pending'] = 0
                     node['running'] = False
                     node['queued'] = False
-                    for key in ('jimengPending', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
+                    for key in ('pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', 'outputKind', 'w', 'h'):
                         node.pop(key, None)
         elif node_type == 'image' and any((json_references_media_path(node.get('url'), path) for path in paths)):
             node['url'] = ''

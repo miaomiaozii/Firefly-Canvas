@@ -5,8 +5,9 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
+from app.core import ensure_agent_same_origin
 from app.services.agent_host import agent_host_manager
 from app.routers.api_agent_tools import _find_node, _apply_mutations
 
@@ -15,15 +16,16 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 
-router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"])
+# #240：agent-nodes 全部端点（含 WebSocket stream）接入同源/Host 守卫。
+router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
 
 
-def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
+async def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
     """Update a single field on a node and persist (reuses retry-on-conflict helper)."""
     node = _find_node(project_id, node_id)
     node[field] = value
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
     return node
 
 
@@ -125,7 +127,7 @@ async def set_agent_model(
     """
     model = body.get("model", "")
     # Persist to node attributes
-    node = _update_node_field(project_id, node_id, "model", model)
+    node = await _update_node_field(project_id, node_id, "model", model)
 
     # If session is running, switch model via RPC
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -162,7 +164,7 @@ async def set_agent_autonomy(
         raise HTTPException(status_code=400, detail=f"Invalid autonomy level: {autonomy}")
 
     # Persist to node attributes
-    node = _update_node_field(project_id, node_id, "autonomy", autonomy)
+    node = await _update_node_field(project_id, node_id, "autonomy", autonomy)
 
     # Update session autonomy (affects confirm gate scope immediately)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -241,6 +243,40 @@ async def send_agent_abort(
     return {"success": True, "node_id": node_id}
 
 
+@router.post("/{node_id}/confirm")
+async def post_agent_node_confirm(
+    project_id: str,
+    node_id: str,
+    request: Request,
+    x_agent_project: str = Header(default=""),
+):
+    """HTTP fallback for the TUI confirm gate (#241).
+
+    Mirrors the WS "confirm" command handled in ``agent_event_stream`` below:
+    when the TUI's WebSocket stream is not connected, the confirm buttons
+    fall back to this route. The pre-refactor route at this URL was dropped,
+    leaving the TUI fallback to 404 silently — both paths now share the same
+    ``confirm_handlers`` state machine.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    confirm_id = str(body.get("confirm_id", ""))
+    approved = bool(body.get("approved", False))
+
+    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    # Same state machine as the WS path: dispatch to every confirm handler
+    # (each handler checks its own confirm_id and no-ops on mismatch).
+    for handler in session.confirm_handlers:
+        try:
+            await handler(confirm_id, approved)
+        except Exception:
+            pass
+
+    return {"ok": True, "confirm_id": confirm_id, "approved": approved}
+
+
 @router.get("/{node_id}/fork-messages")
 async def get_fork_messages(
     project_id: str,
@@ -309,7 +345,7 @@ async def fork_session(
     node["branches"] = branches
     node["current_branch"] = branch_id
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
 
     return {
         "success": True,
@@ -351,7 +387,7 @@ async def switch_branch(
     # Update current_branch in node attributes
     node["current_branch"] = branch_id
     node["updated_at"] = _app_main.now_ms()
-    _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
 
     return {
         "success": True,

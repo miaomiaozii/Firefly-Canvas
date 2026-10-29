@@ -19,10 +19,12 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-@router.post('/api/image-task-query')
-async def query_image_task(payload: ImageTaskQueryRequest):
-    provider = _app_main.get_api_provider(payload.provider_id)
-    task_id = str(payload.task_id or '').strip()
+async def query_upstream_image_task(provider, task_id, *, record_history: bool = True):
+    """查询上游生图任务的成品（全局库 /api/image-task-query 与项目任务 GET 主动取回共用）。
+
+    record_history=False 时不写在线历史/广播（项目任务取回由项目侧自己落画布，
+    避免同一成品被记两次账）。
+    """
     if is_runninghub_provider(provider):
         api_key = runninghub_api_key(provider)
         url = runninghub_endpoint_url(provider, '/task/openapi/outputs')
@@ -44,9 +46,10 @@ async def query_image_task(payload: ImageTaskQueryRequest):
                             local_urls.append(local_url)
                             local_items.append(image_output_meta(local_url))
                     result = {'status': 'succeeded', 'prompt': '', 'images': local_urls, 'image_items': local_items, 'timestamp': time.time(), 'type': 'online', 'model': '', 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'task_id': task_id, 'request_id': '', 'params': {'provider_id': provider['id']}, 'raw': raw}
-                    save_to_history(result)
-                    if GLOBAL_LOOP:
-                        asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
+                    if record_history:
+                        save_to_history(result)
+                        if GLOBAL_LOOP:
+                            asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
                     return result
                 if code in (805, '805'):
                     return {'status': 'failed', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'error': runninghub_fail_reason(raw), 'raw': raw}
@@ -82,10 +85,16 @@ async def query_image_task(payload: ImageTaskQueryRequest):
                 local_urls.append(local_url)
                 local_items.append(image_output_meta(local_url, item))
         result = {'status': 'succeeded', 'prompt': '', 'images': local_urls, 'image_items': local_items, 'timestamp': time.time(), 'type': 'online', 'model': '', 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'task_id': task_id, 'request_id': raw.get('id') if isinstance(raw, dict) else '', 'params': {'provider_id': provider['id']}, 'raw': raw}
-        save_to_history(result)
-        if GLOBAL_LOOP:
-            asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
+        if record_history:
+            save_to_history(result)
+            if GLOBAL_LOOP:
+                asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
         return result
     if status in IMAGE_TASK_FAILED_STATUSES:
         return {'status': 'failed', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'error': image_task_fail_reason(raw), 'raw': raw}
     return {'status': 'running', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'message': '任务仍在生成中', 'raw': raw}
+
+@router.post('/api/image-task-query')
+async def query_image_task(payload: ImageTaskQueryRequest):
+    provider = _app_main.get_api_provider(payload.provider_id)
+    return await query_upstream_image_task(provider, str(payload.task_id or '').strip())

@@ -274,7 +274,7 @@ def run_viewport(
         browser.wait_for("document.querySelector('#composer.open') && document.querySelector('[data-long-content-open=\"input-prompt\"]')", timeout=20)
         browser.wait_for("composerUpdateTimer === 0", timeout=20)
         readonly_snapshot = project_content_snapshot(store, project_id)
-        connection_text = browser.evaluate("inputPromptTextFor(nodes.find(node => node.id === 'reader-image')).trim()")
+        connection_text = browser.evaluate("inputPromptTextFor(canvasState.nodes.find(node => node.id === 'reader-image')).trim()")
         browser.native_click('[data-long-content-open="input-prompt"]')
         browser.wait_for("longContentSession.mode === 'readonly' && document.querySelector('#longContentReader.open')", timeout=10)
         connection_reader = browser.evaluate(

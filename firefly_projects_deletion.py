@@ -1419,16 +1419,27 @@ class ProjectDeletionMixin:
             return removed
 
     def list_deleted_media(self, project_id: str) -> List[Dict[str, Any]]:
+        """#210：回收区列表按删除时间倒序（最新删除在顶部）。
+
+        各写入源按删除先后 append 并以删除时刻写 ``deleted_at``，存储序即
+        插入序；这里统一按 ``deleted_at`` 降序排序（稳定排序，同刻条目
+        保持原相对顺序）。
+        """
         project_id = _store._clean_project_id(project_id)
         with self._lock:
             self.open_project(project_id)
             self._cleanup_expired_deleted_media_locked(project_id)
-            return copy.deepcopy(self._load_media_trash_index(project_id).get("items", []))
+            items = self._load_media_trash_index(project_id).get("items", [])
+            items = sorted(items, key=lambda item: item.get("deleted_at", 0) or 0, reverse=True)
+            return copy.deepcopy(items)
 
-    def trash_media_preview_path(self, project_id: str, asset_id: str) -> Dict[str, Any]:
-        """#86：回收区条目的预览文件（第一张预览图，无预览回退原文件）。
+    def trash_media_preview_path(self, project_id: str, asset_id: str, *, view: str = "preview") -> Dict[str, Any]:
+        """#86/#208：回收区条目的预览文件。
 
-        返回 {path, media_type, is_original}；条目不存在/文件缺失抛 ProjectNotFound。
+        view=preview（默认）：第一张预览图，无预览回退原文件（列表缩略图/旧行为）；
+        view=original：返回生成原件，原件缺失时回退第一张预览图。
+        返回 {path, media_type, is_original, filename}（filename 为回收区记录里的原文件名，
+        供 /api/download-output 生成下载文件名）；条目不存在/文件缺失抛 ProjectNotFound。
         """
         project_id = _store._clean_project_id(project_id)
         asset_id = self._validate_deletable_asset_id(asset_id)
@@ -1447,25 +1458,36 @@ class ProjectDeletionMixin:
             if item is None:
                 raise _store.ProjectNotFound("回收区条目不存在或已清理")
             project_dir = self._project_directory(project_id)
+            candidates = []
             preview_names = item.get("preview_filenames")
             if not isinstance(preview_names, list):
                 preview_names = []
             preview_name = next((name for name in preview_names if isinstance(name, str) and name.strip()), None)
             if preview_name:
-                relative = (Path("trash") / "previews" / preview_name).as_posix()
-                media_type = _store.mimetypes.guess_type(preview_name)[0] or "image/webp"
-                is_original = False
-            else:
-                media_filename = str(item.get("media_filename") or "").strip()
-                if not media_filename:
-                    raise _store.ProjectNotFound("回收区条目缺少预览文件")
-                relative = (Path("trash") / "media" / media_filename).as_posix()
-                media_type = str(item.get("mime_type") or "") or "application/octet-stream"
-                is_original = True
-            path = self._safe_project_path(project_dir, relative)
-            if not path.is_file():
-                raise _store.ProjectNotFound("回收区预览文件不存在")
-            return {"path": str(path), "media_type": media_type, "is_original": is_original}
+                candidates.append((
+                    (Path("trash") / "previews" / preview_name).as_posix(),
+                    _store.mimetypes.guess_type(preview_name)[0] or "image/webp",
+                    False,
+                ))
+            media_filename = str(item.get("media_filename") or "").strip()
+            if media_filename:
+                candidates.append((
+                    (Path("trash") / "media" / media_filename).as_posix(),
+                    str(item.get("mime_type") or "") or "application/octet-stream",
+                    True,
+                ))
+            if str(view or "preview").strip() == "original":
+                candidates.reverse()
+            for relative, media_type, is_original in candidates:
+                path = self._safe_project_path(project_dir, relative)
+                if path.is_file():
+                    return {
+                        "path": str(path),
+                        "media_type": media_type,
+                        "is_original": is_original,
+                        "filename": str(item.get("name") or item.get("media_filename") or ""),
+                    }
+            raise _store.ProjectNotFound("回收区预览文件不存在")
 
     def _cleanup_expired_deleted_media_locked(self, project_id: str, now: int | None = None) -> int:
         try:

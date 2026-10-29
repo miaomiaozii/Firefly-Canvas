@@ -29,7 +29,14 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
-from tests.fake_agent_host import FakeAgentProcess, make_streaming_response_script, make_tool_call_script
+from tests.fake_agent_host import (
+    FakeAgentProcess,
+    install_fake_spawn,
+    install_stub_pi_cli,
+    make_streaming_response_script,
+    make_tool_call_script,
+    restore_stub_pi_cli,
+)
 
 
 def run_async(coro):
@@ -39,6 +46,16 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def setUpModule():
+    """#179: never let this module resolve the real pi CLI ("pi" -> pi.cmd)."""
+    global _PREVIOUS_PI_CLI
+    _PREVIOUS_PI_CLI = install_stub_pi_cli()
+
+
+def tearDownModule():
+    restore_stub_pi_cli(_PREVIOUS_PI_CLI)
 
 
 class TestAgentHostManager(unittest.TestCase):
@@ -249,6 +266,9 @@ class TestAgentCrashRecovery(unittest.TestCase):
         self.project_id = "test-project"
         self.node_id = "agent-crash"
         self.manager = AgentHostManager()
+        # The reader task auto-respawns crashed sessions, which would otherwise
+        # reach the real spawn_session -> subprocess.Popen path (#179).
+        self.spawn_patcher, self.spawn_calls = install_fake_spawn(self.manager)
         self.session = asyncio.get_event_loop().run_until_complete(
             self.manager.get_or_create_session(self.project_id, self.node_id)
         )
@@ -258,6 +278,9 @@ class TestAgentCrashRecovery(unittest.TestCase):
         ])
         self.session.process = self.process
         self.session.status = "running"
+
+    def tearDown(self):
+        self.spawn_patcher.stop()
 
     def test_process_exit_sets_crashed_status(self):
         """Test that when the process exits with non-zero code, status is crashed."""
@@ -637,8 +660,8 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session_a.process = FakeAgentProcess(script=script_a)
         session_b.process = FakeAgentProcess(script=script_b)
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
-            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
                 # Dispatch on each session's portal loop: the WS ASGI tasks (and
                 # their send channels) live there, not on run_async's temp loop.
                 for event in script_a:
@@ -681,8 +704,8 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session_a.process = FakeAgentProcess(script=script_a)
         session_b.process = FakeAgentProcess(script=script_b)
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
-            with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-a/stream") as ws_a:
+            with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/node-b/stream") as ws_b:
                 for event in script_a:
                     ws_a.portal.call(agent_host_manager._dispatch_event, session_a, event)
                 for event in script_b:
@@ -716,7 +739,7 @@ class TestMultiNodeIsolation(unittest.TestCase):
         session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
         session.process = FakeAgentProcess(script=[])
 
-        with self.client.websocket_connect(f"/api/projects/{project_id}/agent-nodes/{node_id}/stream") as ws:
+        with self.client.websocket_connect(f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/{node_id}/stream") as ws:
             first = self._receive_with_timeout(ws)
             self.assertEqual(
                 first.get("type"), "session",
@@ -940,6 +963,60 @@ class TestAgentConfirmation(unittest.TestCase):
         # Since we didn't actually approve, it should time out
         self.assertEqual(data["approved"], False)
         self.assertEqual(data["reason"], "timeout")
+
+    def test_confirm_http_fallback_route_exists_and_2xx(self):
+        """#241: TUI 确认门 HTTP fallback 目标路由存在且 2xx（不再必 404）。
+
+        sendAgentConfirm (static/js/canvas-agent-tui.js) 在 WS 断开时 POST
+        /api/projects/{pid}/agent-nodes/{nid}/confirm。该路由曾随重构丢失，
+        fallback 必 404 且被 .catch 静默吞（WS 断线时确认按钮实际失效）。
+        回归断言：
+        1) 路由存在且同源回环请求返回 2xx（TestClient 用绝对回环 URL +
+           匹配 Origin，过 ensure_agent_same_origin）；
+        2) 与 WS 同一状态机：confirm 响应派发到 session.confirm_handlers。
+        """
+        from app.services.agent_host import agent_host_manager
+
+        project = self.store.create_project("Confirm Fallback Test")
+        project_id = project["id"]
+        node_id = "agent-confirm-6"
+
+        session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+
+        # Make the session appear running so the endpoint reuses it
+        # (get_or_create_session replaces non-running sessions).
+        fake = FakeAgentProcess(script=[])
+        session.process = fake
+        session.status = "running"
+
+        dispatched = []
+
+        async def handler(confirm_id, approved):
+            dispatched.append((confirm_id, approved))
+
+        agent_host_manager.on_confirm(session, handler)
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/agent-nodes/{node_id}/confirm",
+            json={"confirm_id": "confirm-241", "approved": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(dispatched, [("confirm-241", True)])
+
+    def test_confirm_http_fallback_missing_session_still_2xx(self):
+        """#241: 无活跃会话时 fallback 路由仍 2xx（空 handlers 为 no-op，同 WS 语义）。"""
+        project = self.store.create_project("Confirm Fallback NoSession")
+        project_id = project["id"]
+
+        response = self.client.post(
+            f"/api/projects/{project_id}/agent-nodes/agent-confirm-7/confirm",
+            json={"confirm_id": "confirm-241b", "approved": False},
+        )
+
+        self.assertEqual(response.status_code, 200)
 
 
 class TestCleanupProject(unittest.TestCase):

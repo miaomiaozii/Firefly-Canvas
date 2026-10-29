@@ -3,6 +3,11 @@
   const result={viewport:{width:innerWidth,height:innerHeight},assertions:[],errors:[],pass:false};
   const ok=(name,value,actual)=>result.assertions.push({name,pass:!!value,actual});
   const wait=async(fn,ms=12000)=>{const end=Date.now()+ms;while(Date.now()<end){try{if(fn())return true}catch(_){}await new Promise(r=>setTimeout(r,80));}return false;};
+  // #213：2d3381b（#162 P2e 4a）起 nodes 不再是裸全局，挂在 window.canvasState.nodes
+  // （static/js/canvas-state.js:8）；兼容访问器同 tests/fly_fixes_browser_client.js:48。
+  // 修复前 `typeof nodes!=='undefined'` 恒为 false：role 清理分支整体被跳过（记红断言），
+  // 各选区 wait 全部空转到 12s，累计超出 harness 60s → client_events=[] 超时。
+  const nodes=()=>{const s=window.canvasState;return(s&&Array.isArray(s.nodes))?s.nodes:(0,eval)('nodes');};
   const ptr=(el,type,clientX,clientY,extra)=>el.dispatchEvent(Object.assign(new PointerEvent(type,{bubbles:true,cancelable:true,button:0,pointerId:extra&&extra.id||3,clientX,clientY,buttons:type==='pointermove'?1:0}),(extra&&extra.raw)||{}));
   async function run(){
     ok('real local-edit canvas loaded',await wait(()=>document.querySelector('#smartTitle')),document.title);
@@ -13,7 +18,7 @@
     ok('node shell has themed panel background',!!node&&getComputedStyle(node).backgroundColor!=='rgba(0, 0, 0, 0)',getComputedStyle(node||document.body).backgroundColor);
     ok('card has themed heading and mode switch',!!node&&!!node.querySelector('.local-edit-heading')&&node.querySelectorAll('[data-local-edit-mode]').length===2,node?.querySelector('.local-edit-heading')?.textContent||'');
     ok('three explicit role controls render',!!node&&node.querySelectorAll('[data-local-edit-connect-role]').length===3,node?.textContent?.slice(0,120)||'');
-    const roleNode=typeof nodes!=='undefined' ? nodes.find(item=>item.id==='local-1') : null;
+    const roleNode=typeof nodes!=='undefined' ? nodes().find(item=>item.id==='local-1') : null;
     const promptEdgeIndex=typeof canvas!=='undefined'&&Array.isArray(canvas?.connections) ? canvas.connections.findIndex(edge=>edge.to==='local-1'&&edge.role==='prompt') : -1;
     ok('connected prompt textarea is read-only',!!node&&!!node.querySelector('[data-local-edit-role="prompt"]')?.readOnly,!!node?.querySelector('[data-local-edit-role="prompt"]'));
     if(roleNode&&promptEdgeIndex>=0&&typeof disconnectConnections==='function'){
@@ -65,18 +70,18 @@
       ptr(modifyCanvas,'pointermove',x+bounds.width*.30,y+bounds.height*.30,{id:3});
       ptr(modifyCanvas,'pointerup',x+bounds.width*.30,y+bounds.height*.30,{id:3});
     }
-    const liveRect=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection;return Array.isArray(sel)&&sel.length===4&&JSON.stringify(sel)!==rectBefore&&sel[2]>sel[0]&&sel[3]>sel[1];});
-    const selNow=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];
+    const liveRect=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection;return Array.isArray(sel)&&sel.length===4&&JSON.stringify(sel)!==rectBefore&&sel[2]>sel[0]&&sel[3]>sel[1];});
+    const selNow=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];
     ok('fixed-ratio rectangle drawing updates source rect',liveRect,{before:rectBefore,after:selNow});
-    const ratioValue=String((typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).aspect_ratio||'1:1').split(':').map(Number);
+    const ratioValue=String((typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).aspect_ratio||'1:1').split(':').map(Number);
     const rectRatio=selNow.length===4?(selNow[2]-selNow[0])/(selNow[3]-selNow[1]):0;
     ok('drawn rect snaps to the fixed aspect ratio',Math.abs(rectRatio-ratioValue[0]/ratioValue[1])<=0.02,{rect:selNow,ratio:rectRatio});
     // 重置选区 → 全图按比例的居中矩形
     const resetBtn=node?.querySelector('[data-local-edit-reset-selection]');
     ok('reset selection control renders',!!resetBtn,node?.textContent?.slice(0,60)||'');
     resetBtn?.click();
-    const resetDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];return sel.length===4&&sel[0]===0||sel.length===4&&sel[2]-sel[0]>=sel[3]-sel[1];});
-    ok('reset selection produces full-image ratio rect',resetDone,(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection);
+    const resetDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return sel.length===4&&sel[0]===0||sel.length===4&&sel[2]-sel[0]>=sel[3]-sel[1];});
+    ok('reset selection produces full-image ratio rect',resetDone,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // 创建菜单入口
     const menu=document.querySelector('#shell'); menu?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:innerWidth/2,clientY:innerHeight/2}));
     ok('create menu exposes local-edit entry',await wait(()=>document.querySelector('#createMenu.open [data-create-type="local-edit"]')),document.querySelector('#createMenu')?.className||'');
@@ -98,8 +103,8 @@
       ptr(freehandCanvas,'pointermove',x+bounds.width*.30,y+bounds.height*.25,{id:7});
       ptr(freehandCanvas,'pointerup',x+bounds.width*.35,y+bounds.height*.35,{id:7});
     }
-    const freehandDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=2&&Array.isArray(sel[0]);});
-    ok('freehand drag updates source selection',freehandDone,(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection);
+    const freehandDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=2&&Array.isArray(sel[0]);});
+    ok('freehand drag updates source selection',freehandDone,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // retain：polygon 点击布点 + 双击闭合
     shape.value='polygon';shape.dispatchEvent(new Event('change',{bubbles:true}));
     node=getLive();
@@ -111,8 +116,8 @@
       ptr(polyCanvas,'pointerdown',x+b.width*.12,y+b.height*.22,{id:11}); ptr(polyCanvas,'pointerup',x+b.width*.12,y+b.height*.22,{id:11});
       polyCanvas.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:x+b.width*.12,clientY:y+b.height*.22}));
     }
-    const polyDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=3&&Array.isArray(sel[0]);});
-    ok('polygon clicks + double-click commit a closed selection',polyDone,(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection);
+    const polyDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=3&&Array.isArray(sel[0]);});
+    ok('polygon clicks + double-click commit a closed selection',polyDone,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // retain：curve 点击布点 + 双击完成
     shape.value='curve';shape.dispatchEvent(new Event('change',{bubbles:true}));
     node=getLive();
@@ -123,13 +128,13 @@
       ptr(curveCanvas,'pointerdown',x+b.width*.15,y+b.height*.15,{id:13}); ptr(curveCanvas,'pointerup',x+b.width*.15,y+b.height*.15,{id:13});
       curveCanvas.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:x+b.width*.15,clientY:y+b.height*.15}));
     }
-    const curveDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=2&&Array.isArray(sel[0]);});
-    ok('curve clicks + double-click commit curve points',curveDone,(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection);
+    const curveDone=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length>=2&&Array.isArray(sel[0]);});
+    ok('curve clicks + double-click commit curve points',curveDone,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // 切回 modify（点列选区自动重置为全图矩形），随后提交
     node=getLive();
     node.querySelector('[data-local-edit-mode="modify"]')?.click();
-    const backToRect=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length===4&&sel[2]>sel[0];});
-    ok('switching back to modify resets selection to a rect',backToRect,(typeof nodes!=='undefined'&&(nodes.find(n=>n.id==='local-1')||{})).selection);
+    const backToRect=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length===4&&sel[2]>sel[0];});
+    ok('switching back to modify resets selection to a rect',backToRect,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // 工具排「局部编辑」入口
     node=getLive();
     const srcNodeEl=document.querySelector('.image-node[data-id="source-node"]');
@@ -137,8 +142,8 @@
     ok('image node toolbar exposes local-edit entry',toolbarBefore===1,toolbarBefore);
     if(toolbarBefore===1){
       document.querySelector('.image-node[data-id="source-node"] [data-smart-node-action="local-edit"]').click();
-      const created=await wait(()=>{const n=(typeof nodes!=='undefined'?nodes:[]).find(n=>n.type==='local-edit'&&n.id!=='local-1');return n&&(canvas?.connections||[]).some(c=>c.from==='source-node'&&c.to===n.id&&c.role==='original');});
-      ok('toolbar creates local-edit node with original edge',created,(typeof nodes!=='undefined'?nodes:[]).map(n=>n.type).join(','));
+      const created=await wait(()=>{const n=nodes().find(n=>n.type==='local-edit'&&n.id!=='local-1');return n&&(canvas?.connections||[]).some(c=>c.from==='source-node'&&c.to===n.id&&c.role==='original');});
+      ok('toolbar creates local-edit node with original edge',created,nodes().map(n=>n.type).join(','));
     }
     // 提交（offline adapter）
     node=getLive();

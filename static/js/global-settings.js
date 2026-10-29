@@ -30,7 +30,7 @@
     const recommendation = String(recommended || '').trim();
     if(recommendation && available.includes(recommendation)) return recommendation;
     const hints = {
-      image: ['nano-banana-pro', 'nano-banana-2', 'nano-banana', 'gpt-image'],
+      image: ['nano-banana-pro', 'nano-banana-2.1', 'gemini-nano-banana-2.1', 'nano-banana-2', 'nano-banana', 'gpt-image'],
       chat: ['gpt-5.4', 'chatgpt-5.4', 'gpt-5.'],
       video: [],
     }[kind] || [];
@@ -162,7 +162,7 @@
       <div class="provider-fields">
         <label>${tr('globalSettings.providerName')}<input data-field="name" maxlength="80"></label>
         <label>${tr('globalSettings.endpoint')}<input data-field="base_url" autocomplete="off"></label>
-        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option><option value="jimeng">Dreamina CLI</option></select></label>
+        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option></select></label>
         <label class="wide">${tr('globalSettings.apiKey')}<input data-field="api_key" type="password" autocomplete="new-password"></label>
       </div>
       <div class="model-grid">
@@ -319,7 +319,7 @@
   function fetchProviderModels(card){ return runProviderAction(card, 'fetch', '/api/providers/fetch-models'); }
 
   function renderCli(cli){
-    const labels = {codex:'OpenAI Codex', gemini:'Antigravity', jimeng:'即梦'};
+    const labels = {codex:'OpenAI Codex', gemini:'Antigravity'};
     cliGrid.replaceChildren(...Object.entries(labels).map(([key, label]) => {
       const status = cli?.[key] || {};
       const card = document.createElement('article');

@@ -97,7 +97,7 @@
                 } catch (e) { result.diagnostics.push('toast patch: ' + e.message); }
             }
 
-            try { eval('selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch (_) {}
+            try { eval('canvasState.selectedId = ' + JSON.stringify(smartImage?.id || null)); } catch (_) {}
             await sleep(200);
             const canRun = evalFn('canRunSmartCascade');
             if (canRun && smartImage) {
@@ -131,6 +131,21 @@
             const target = evalCanvas()?.nodes?.find(n => n.id === smartImage.id);
             const hasVideo = (target?.images || []).some(img => (img.mime_type || '').includes('video'));
             assertion('landed item is video', hasVideo, JSON.stringify((target?.images || []).map(i => i.mime_type)));
+
+            // #238: rendered preview must carry tier poster + preload=none, and
+            // hover (pointerover/out on the shell-delegated listener) drives playback.
+            await sleep(400);
+            const videoEl = document.querySelector('.media-video-card video[data-video-preview="1"]');
+            assertion('video preview rendered with preload=none', videoEl && videoEl.getAttribute('preload') === 'none', videoEl ? videoEl.outerHTML.slice(0, 220) : 'no video[data-video-preview]');
+            assertion('video preview has tier poster', videoEl && /([?&])w=(256|512|1024)/.test(videoEl.getAttribute('poster') || ''), (videoEl && videoEl.getAttribute('poster')) || 'no poster');
+            if (videoEl) {
+                videoEl.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+                await sleep(150);
+                assertion('hover starts playback (flag set)', videoEl.dataset.hoverPlaying === '1');
+                videoEl.dispatchEvent(new PointerEvent('pointerout', { bubbles: true }));
+                await sleep(150);
+                assertion('pointerout stops hover playback', videoEl.dataset.hoverPlaying !== '1');
+            }
             post();
         } catch (err) {
             result.errors.push('exception: ' + (err && err.message) + ' @ ' + String((err && err.stack) || '').split('\n')[1]);

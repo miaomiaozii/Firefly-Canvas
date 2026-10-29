@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 
 
+from tests.canvas_frontend_sources import canvas_source
+
 ROOT = Path(__file__).resolve().parents[1]
 CANVAS_HTML = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
-SCRIPT = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+SCRIPT = canvas_source()
 I18N = (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8")
 CANVAS_CSS = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
 SETTINGS_HTML = (ROOT / "static" / "global-settings.html").read_text(encoding="utf-8")
@@ -34,7 +36,7 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         # Selection is now an IIFE that keys on both historyId and outputId so a
         # specific output within a multi-output log can be addressed.
         self.assertIn("const selectedIndex = (() => {", SCRIPT)
-        self.assertIn("smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId", SCRIPT)
+        self.assertIn("canvasState.smartHistorySelectedImage?.historyId === historyId && canvasState.smartHistorySelectedImage?.outputId", SCRIPT)
         runner = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")
         self.assertIn("multiOutputIndependentDeleteRestore", runner)
         self.assertIn("rootScrollStable", runner)

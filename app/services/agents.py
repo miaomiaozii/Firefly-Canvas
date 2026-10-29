@@ -2,19 +2,20 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _AGENT_TASK_INPUT_KEYS, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_history_output, _agent_int_param, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_candidates, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout  # noqa: E402,F401
+from app.constants import NODE_TYPE_IMAGE, NODE_TYPE_PROMPT, NODE_TYPE_TASK
 import logging
 logger = logging.getLogger(__name__)
 
 def _agent_task_node(task: Mapping[str, Any], *, agent_id: str, execution_id: str, status: str='queued', x: Optional[float]=None, y: Optional[float]=None, w: int=300, h: int=236) -> Dict[str, Any]:
     task_id = str(task.get('task_id') or '')
-    return {'id': task_id, 'type': 'agent-task', 'title': f"Agent 任务 {int(task.get('index') or 0) + 1}", 'agent_id': agent_id, 'task_id': task_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id, 'kind': str(task.get('kind') or 'image'), 'model_type': str(task.get('model_type') or ''), 'count': int(task.get('count') or 1), 'prompt': str(task.get('prompt') or ''), 'params': copy.deepcopy(task.get('params') or {}), 'reference_asset_ids': copy.deepcopy(task.get('reference_asset_ids') or []), 'status': status, 'created_at': int(task.get('created_at') or _svc._main('now_ms')()), 'updated_at': _svc._main('now_ms')(), 'result_node_id': str(task.get('result_node_id') or f'{task_id}-result'), 'idempotency_key': str(task.get('idempotency_key') or task_id), 'dispatch_state': str(task.get('dispatch_state') or 'queued'), 'x': float(x if x is not None else task.get('x') or 0), 'y': float(y if y is not None else task.get('y') or 0), 'w': int(w or task.get('w') or 300), 'h': int(h or task.get('h') or 236)}
+    return {'id': task_id, 'type': NODE_TYPE_TASK, 'title': f"Agent 任务 {int(task.get('index') or 0) + 1}", 'agent_id': agent_id, 'task_id': task_id, 'plan_id': str(task.get('plan_id') or ''), 'execution_id': execution_id, 'kind': str(task.get('kind') or 'image'), 'model_type': str(task.get('model_type') or ''), 'count': int(task.get('count') or 1), 'prompt': str(task.get('prompt') or ''), 'params': copy.deepcopy(task.get('params') or {}), 'reference_asset_ids': copy.deepcopy(task.get('reference_asset_ids') or []), 'status': status, 'created_at': int(task.get('created_at') or _svc._main('now_ms')()), 'updated_at': _svc._main('now_ms')(), 'result_node_id': str(task.get('result_node_id') or f'{task_id}-result'), 'idempotency_key': str(task.get('idempotency_key') or task_id), 'dispatch_state': str(task.get('dispatch_state') or 'queued'), 'x': float(x if x is not None else task.get('x') or 0), 'y': float(y if y is not None else task.get('y') or 0), 'w': int(w or task.get('w') or 300), 'h': int(h or task.get('h') or 236)}
 
 def _agent_result_node(task: Mapping[str, Any], *, agent_id: str, execution_id: str, x: Optional[float]=None, y: Optional[float]=None, w: int=300, h: int=236) -> Dict[str, Any]:
     kind = str(task.get('kind') or 'image')
     result_node_id = str(task.get('result_node_id') or f"{task.get('task_id')}-result")
     if kind == 'prompt':
-        return {'id': result_node_id, 'type': 'smart-prompt', 'title': 'Agent 提示词结果', 'x': 0, 'y': 0, 'text': '', 'source_agent_task_id': str(task.get('task_id') or ''), 'outputKind': 'prompt', 'generationState': 'queued', 'agent_id': agent_id, 'agent_task_id': str(task.get('task_id') or ''), 'execution_id': execution_id, 'created_at': _svc._main('now_ms')(), 'x': float(x if x is not None else task.get('result_x') or 0), 'y': float(y if y is not None else task.get('result_y') or 0), 'w': int(w or task.get('result_w') or 300), 'h': int(h or task.get('result_h') or 236)}
-    return {'id': result_node_id, 'type': 'smart-image', 'title': 'Agent 图片结果' if kind == 'image' else 'Agent 视频结果', 'x': 0, 'y': 0, 'images': [], 'outputKind': kind, 'pending': int(task.get('count') or 1), 'running': False, 'agent_id': agent_id, 'agent_task_id': str(task.get('task_id') or ''), 'execution_id': execution_id, 'created_at': _svc._main('now_ms')(), 'x': float(x if x is not None else task.get('result_x') or 0), 'y': float(y if y is not None else task.get('result_y') or 0), 'w': int(w or task.get('result_w') or 300), 'h': int(h or task.get('result_h') or 236)}
+        return {'id': result_node_id, 'type': NODE_TYPE_PROMPT, 'title': 'Agent 提示词结果', 'x': 0, 'y': 0, 'text': '', 'source_agent_task_id': str(task.get('task_id') or ''), 'outputKind': 'prompt', 'generationState': 'queued', 'agent_id': agent_id, 'agent_task_id': str(task.get('task_id') or ''), 'execution_id': execution_id, 'created_at': _svc._main('now_ms')(), 'x': float(x if x is not None else task.get('result_x') or 0), 'y': float(y if y is not None else task.get('result_y') or 0), 'w': int(w or task.get('result_w') or 300), 'h': int(h or task.get('result_h') or 236)}
+    return {'id': result_node_id, 'type': NODE_TYPE_IMAGE, 'title': 'Agent 图片结果' if kind == 'image' else 'Agent 视频结果', 'x': 0, 'y': 0, 'images': [], 'outputKind': kind, 'pending': int(task.get('count') or 1), 'running': False, 'agent_id': agent_id, 'agent_task_id': str(task.get('task_id') or ''), 'execution_id': execution_id, 'created_at': _svc._main('now_ms')(), 'x': float(x if x is not None else task.get('result_x') or 0), 'y': float(y if y is not None else task.get('result_y') or 0), 'w': int(w or task.get('result_w') or 300), 'h': int(h or task.get('result_h') or 236)}
 
 async def _agent_call_adapter(task_request: Dict[str, Any], kind: str) -> Any:
     adapter = _svc._main('agent_image_adapter') if kind == 'image' else _svc._main('agent_video_adapter')
@@ -286,13 +287,13 @@ def project_agent_connected_inputs(project_id: str, canvas: Mapping[str, Any], n
         if not isinstance(source, dict):
             continue
         source_type = str(source.get('type') or '')
-        if source_type == 'smart-prompt':
+        if source_type == NODE_TYPE_PROMPT:
             text = str(source.get('text') or source.get('prompt') or '').strip()
             if text:
                 prompts.append(text[:ONLINE_IMAGE_PROMPT_MAX_LENGTH])
                 prompt_node_ids.append(source_id)
             continue
-        if source_type not in {'', 'image', 'smart-image'}:
+        if source_type not in {'', 'image', NODE_TYPE_IMAGE}:
             continue
         for item in source.get('images') or []:
             if not isinstance(item, dict):
@@ -450,7 +451,7 @@ async def run_project_agent_task(task_id: str, project_id: str, agent_id: str, t
             for _attempt in range(8):
                 opened = _svc._main('project_store_call')('open_project', project_id)
                 result_node = next((node for node in opened['canvas'].get('nodes') or [] if isinstance(node, dict) and str(node.get('id') or '') == result_node_id), None)
-                if not result_node or str(result_node.get('type') or '') != 'smart-prompt':
+                if not result_node or str(result_node.get('type') or '') != NODE_TYPE_PROMPT:
                     raise ProjectStoreError('Agent 提示词结果节点不存在')
                 replacement_result = copy.deepcopy(result_node)
                 replacement_result.update({'text': str(task.get('prompt') or ''), 'outputKind': 'prompt', 'generationState': 'succeeded', 'updated_at': completed_at})
@@ -575,7 +576,7 @@ def _agent_active_counts(project_id: str, agent_id: str='') -> Tuple[int, int, i
         except Exception:
             continue
         for node in opened['canvas'].get('nodes') or []:
-            if not isinstance(node, dict) or str(node.get('type') or '') != 'agent-task':
+            if not isinstance(node, dict) or str(node.get('type') or '') != NODE_TYPE_TASK:
                 continue
             if str(node.get('status') or '') not in {'queued', 'running'}:
                 continue
@@ -810,7 +811,7 @@ def project_conversation_connected_references(project_id: str, canvas: Dict[str,
         if not isinstance(source, dict):
             continue
         source_type = str(source.get('type') or '')
-        if source_type not in {'', 'image', 'smart-image'}:
+        if source_type not in {'', 'image', NODE_TYPE_IMAGE}:
             continue
         for item in source.get('images') or []:
             if not isinstance(item, dict) or not str(item.get('asset_id') or '').strip():

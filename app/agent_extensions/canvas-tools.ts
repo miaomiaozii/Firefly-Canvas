@@ -60,18 +60,8 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    pi.registerTool({
-        name: "canvas.get_selection",
-        description: "Get the currently selected nodes on the canvas",
-        parameters: Type.Object({}),
-        async execute() {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/selection`, "GET");
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
+    // #243: canvas.get_selection 已摘除——它是恒空的假工具（选择状态是纯客户端
+    // 状态，服务端没有数据来源），ADR 0022 已知缺口「摘除或实装」选摘除。
 
     // Structure tools
     pi.registerTool({
@@ -251,10 +241,12 @@ export default function (pi: ExtensionAPI) {
             timeout_seconds: Type.Optional(Type.Number({ description: "Timeout in seconds (default 120)" })),
         }),
         async execute(toolCallId, params) {
+            // #243: timeout 走 Query 参数（服务端 wait_for_task 是 Query 参数
+            // timeout:1..600 default 120）；此前发在 GET body 被服务端忽略。
+            const timeout = Math.max(1, Math.min(600, Math.round(params.timeout_seconds ?? 120)));
             const data = await callApi(
-                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait`,
-                "GET",
-                { timeout: params.timeout_seconds || 120 }
+                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait?timeout=${timeout}`,
+                "GET"
             );
             return {
                 content: [{ type: "text", text: JSON.stringify(data, null, 2) }],

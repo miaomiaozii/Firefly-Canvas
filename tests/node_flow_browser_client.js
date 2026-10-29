@@ -56,7 +56,7 @@
         const c = evalCanvas();
         if(c){
             result.diagnostics.push(`canvas nodes: ${c.nodes.map(n => `${n.id}:${n.type}`).join(',')}`);
-            const moduleNodes = eval('nodes');
+            const moduleNodes = eval('canvasState.nodes');
             const mn = moduleNodes?.map(n => n.id);
             result.diagnostics.push(`module nodes (${moduleNodes?.length}): ${mn ? mn.join(',') : 'N/A'}`);
             c.nodes.forEach((node, i) => {
@@ -92,6 +92,13 @@
                 apiKind:'image',
                 provider_id:'comfly',
                 model:'nano-banana-pro',
+                // #185: 请求像素尺寸由 ratio+resolution 推导（sizeForRun，smart-canvas.js:13088
+                // → apiImageSize/SIZE_MAP），runSettings.size 不是生效字段；全局默认
+                // resolution 是 4k（canvas-core.js:16），不显式写节点级 resolution 请求会是
+                // 4096x4096，超出 mock 服务商 sizes 导致 route_image_generation 400。
+                // 与 fly_fixes_browser.py 已验证的节点设置（ratio square + resolution 1k）一致。
+                ratio:'square',
+                resolution:'1k',
                 size:'1024x1024',
                 n:1
             };
@@ -101,7 +108,29 @@
             const effective = smartSettingsForNode ? smartSettingsForNode(smartImage) : nodeSettings;
             assertion('node settings override global', effective?.model === 'nano-banana-pro' && effective?.provider_id === 'comfly', `model=${effective?.model} provider=${effective?.provider_id}`);
         }
-        // run cascade: source = smart-prompt, target = smart-image
+        // #185: 级联请求节点是 source（seed-image），不是 target。
+        // (1) runCascadeStepIntoNode（canvas-generation-cascade.js:680）只从 requestNode 取
+        //     prompt（buildPromptRequestForNode），空 prompt 被 smartRunNeedsPrompt 门抛
+        //     smart.chainNodeMissingPrompt，级联把异常吞成 toast：请求根本不发。
+        // (2) 请求尺寸由 ratio+resolution 推导：节点不设 resolution 就沿用全局默认 4k，
+        //     请求 4096x4096 会被 mock 服务商能力校验 400（no_compatible_image_model）。
+        //     所以级联源节点必须自带 prompt 草稿 + 显式 ratio/resolution（同 fly_fixes 配方）。
+        const seedImageNode = c?.nodes?.find(n => n.id === 'seed-image');
+        if(seedImageNode){
+            seedImageNode.promptDraftText = 'node flow seed image prompt';
+            seedImageNode.runSettings = {
+                engine:'api',
+                apiKind:'image',
+                routingMode:'manual',
+                provider_id:'comfly',
+                model:'nano-banana-pro',
+                ratio:'square',
+                resolution:'1k',
+                size:'1024x1024',
+                n:1
+            };
+        }
+        // run cascade: source = seed-image, target = smart-image
         const selectNode = evalFn('selectNode');
         if(selectNode && smartImage) selectNode(smartImage.id);
         await sleep(200);

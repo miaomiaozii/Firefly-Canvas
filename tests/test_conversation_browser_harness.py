@@ -1,5 +1,7 @@
 import json
 import io
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -59,6 +61,39 @@ class LifecycleFixtureApp(FixtureApp):
                 await send({"type": "lifespan.shutdown.complete"})
             return
         await super().__call__(scope, receive, send)
+
+
+def run_viewport_isolation_assertions(temp_root: Path) -> None:
+    """原 test_each_viewport_loads... 的断言体；在子进程 runner 内执行。
+
+    load_production_app 会弹掉/重建 sys.modules 里的 app.*/main——绝不能
+    在共享的 pytest 进程里跑（#243 全量回归 12 个 MCP 假失败的根因）。
+    """
+    first_store = ProjectStore(temp_root / "viewport-first", snapshot_delay=0)
+    second_store = ProjectStore(temp_root / "viewport-second", snapshot_delay=0)
+    try:
+        first_app = load_production_app(temp_root / "runtime-first", first_store)
+        second_app = load_production_app(temp_root / "runtime-second", second_store)
+    finally:
+        first_store.close()
+        second_store.close()
+
+    assert first_app is not second_app
+    assert first_app.state.issue13_module is not second_app.state.issue13_module
+    assert first_app.state.issue13_module.FIREFLY_PROJECT_STORE is first_store
+    assert second_app.state.issue13_module.FIREFLY_PROJECT_STORE is second_store
+    assert (
+        first_app.state.issue13_module.PROJECT_CONVERSATION_TASKS
+        is not second_app.state.issue13_module.PROJECT_CONVERSATION_TASKS
+    )
+    assert (
+        first_app.state.issue13_module.PROJECT_CONVERSATION_READY_RESULTS
+        is not second_app.state.issue13_module.PROJECT_CONVERSATION_READY_RESULTS
+    )
+    assert (
+        first_app.state.issue13_module.RUNTIME_ROOT
+        != second_app.state.issue13_module.RUNTIME_ROOT
+    )
 
 
 class ConversationBrowserHarnessTests(unittest.TestCase):
@@ -204,31 +239,21 @@ class ConversationBrowserHarnessTests(unittest.TestCase):
         self.assertTrue(app.stopped)
 
     def test_each_viewport_loads_an_isolated_production_module_and_project_root(self):
-        first_store = ProjectStore(Path(self.temp_dir.name) / "viewport-first", snapshot_delay=0)
-        second_store = ProjectStore(Path(self.temp_dir.name) / "viewport-second", snapshot_delay=0)
-        try:
-            first_app = load_production_app(Path(self.temp_dir.name) / "runtime-first", first_store)
-            second_app = load_production_app(Path(self.temp_dir.name) / "runtime-second", second_store)
-        finally:
-            first_store.close()
-            second_store.close()
-
-        self.assertIsNot(first_app, second_app)
-        self.assertIsNot(first_app.state.issue13_module, second_app.state.issue13_module)
-        self.assertIs(first_app.state.issue13_module.FIREFLY_PROJECT_STORE, first_store)
-        self.assertIs(second_app.state.issue13_module.FIREFLY_PROJECT_STORE, second_store)
-        self.assertIsNot(
-            first_app.state.issue13_module.PROJECT_CONVERSATION_TASKS,
-            second_app.state.issue13_module.PROJECT_CONVERSATION_TASKS,
+        # 本测试的 load_production_app 会从 sys.modules 弹掉并重新导入全部
+        # app.*/main 模块——这是对测试进程的永久污染（后续同进程测试拿到陈旧
+        # 模块绑定与已删除的 store root）。#243：改在子进程里跑，主进程模块表
+        # 不受影响；断言逻辑在 _ViewportIsolationSubprocessRunner 中保持不变。
+        runner = ROOT / "tests" / "_conversation_viewport_isolation_runner.py"
+        completed = subprocess.run(
+            [sys.executable, str(runner)],
+            capture_output=True,
+            timeout=300,
         )
-        self.assertIsNot(
-            first_app.state.issue13_module.PROJECT_CONVERSATION_READY_RESULTS,
-            second_app.state.issue13_module.PROJECT_CONVERSATION_READY_RESULTS,
-        )
-        self.assertNotEqual(
-            first_app.state.issue13_module.RUNTIME_ROOT,
-            second_app.state.issue13_module.RUNTIME_ROOT,
-        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or b"").decode(
+                "utf-8", errors="replace"
+            )[-4000:]
+            self.fail(f"viewport isolation subprocess failed:\n{detail}")
 
 
 if __name__ == "__main__":

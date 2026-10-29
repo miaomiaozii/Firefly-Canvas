@@ -1,9 +1,15 @@
 (function(root, factory){
-    const api = factory();
+    const api = factory(root ? root.FireflyNodeTypes : undefined);
     if(typeof module === 'object' && module.exports) module.exports = api;
     if(root) root.FireflyProjectCanvasMutations = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function(){
+})(typeof globalThis !== 'undefined' ? globalThis : this, function(nodeTypes){
     'use strict';
+
+    // #184: this module runs as a classic script (canvas-node-types.js loads first in
+    // static/smart-canvas.html and puts the shared constants on globalThis) AND under
+    // Node's require() from tests, where those globals do not exist. Bare NODE_TYPE_*
+    // identifiers throw ReferenceError in the Node context, so resolve them once here.
+    const types = nodeTypes || require('./canvas-node-types.js');
 
     function clone(value){
         if(value === undefined) return undefined;
@@ -75,20 +81,20 @@
         if(!isObject(local) || !isObject(remote)) return result;
         const remoteType = String(remote.type || '');
         const localType = String(local.type || '');
-        const remoteStatus = remoteType === 'smart-agent'
+        const remoteStatus = remoteType === types.NODE_TYPE_AGENT
             ? String(remote.agent_plan?.status || '')
-            : remoteType === 'smart-image' && remote.generationState ? String(remote.generationState) : String(remote.status || '');
-        const localStatus = localType === 'smart-agent'
+            : remoteType === types.NODE_TYPE_IMAGE && remote.generationState ? String(remote.generationState) : String(remote.status || '');
+        const localStatus = localType === types.NODE_TYPE_AGENT
             ? String(local.agent_plan?.status || '')
-            : localType === 'smart-image' && local.generationState ? String(local.generationState) : String(local.status || '');
+            : localType === types.NODE_TYPE_IMAGE && local.generationState ? String(local.generationState) : String(local.status || '');
         if(!isAgentTerminalStatus(remoteStatus) || !isAgentTransientStatus(localStatus)) return result;
-        if(remoteType === 'smart-agent' && remote.agent_plan) result.agent_plan = clone(remote.agent_plan);
-        if(remoteType === 'agent-task' || localType === 'agent-task'){
+        if(remoteType === types.NODE_TYPE_AGENT && remote.agent_plan) result.agent_plan = clone(remote.agent_plan);
+        if(remoteType === types.NODE_TYPE_TASK || localType === types.NODE_TYPE_TASK){
             ['status', 'error', 'result', 'completed_at', 'uncertain', 'dispatch_state'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(remote, key)) result[key] = clone(remote[key]);
             });
         }
-        if(remoteType === 'smart-image' && remote.generationState){
+        if(remoteType === types.NODE_TYPE_IMAGE && remote.generationState){
             ['images', 'pending', 'running', 'generationState', 'error', 'updated_at'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(remote, key)) result[key] = clone(remote[key]);
             });
@@ -156,7 +162,7 @@
     // the normal save payload still retains them when a real content edit is
     // being persisted.
     const TRANSIENT_NODE_KEYS = [
-        'running', 'pending', 'queued', 'pendingTasks', 'jimengPending',
+        'running', 'pending', 'queued', 'pendingTasks',
         'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden',
         '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'
     ];

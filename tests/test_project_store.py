@@ -1,6 +1,7 @@
 import json
 import io
 import hashlib
+import os
 import sys
 import tempfile
 import threading
@@ -977,7 +978,6 @@ class ProjectStoreContractTests(unittest.TestCase):
             "running": True,
             "queued": True,
             "pendingTasks": [{"taskId": "task-source", "kind": "image"}],
-            "jimengPending": {"taskId": "jimeng-source"},
             "runStartedAt": 123,
             "runFinishedAt": 456,
             "runElapsedMs": 333,
@@ -2151,13 +2151,14 @@ class ProjectStoreContractTests(unittest.TestCase):
             immediate = json.loads(primary.read_text(encoding="utf-8"))
             self.assertEqual(immediate["nodes"], [])
 
-            deadline = time.monotonic() + 2.0
-            persisted = immediate
-            while time.monotonic() < deadline:
-                time.sleep(0.03)
-                persisted = json.loads(primary.read_text(encoding="utf-8"))
-                if persisted["nodes"]:
-                    break
+            # #231：等事件，不等墙钟。原来的 2.0s 轮询在门里会报假红：
+            # project-contract 与其他步骤并行，flush 要抢的全局锁可能被占，
+            # Timer 线程也可能排不到 CPU——落盘一定会发，但时间上没保证。
+            self.assertTrue(
+                delayed.wait_for_snapshot(project["id"], timeout=30.0),
+                "等不到后台快照完成",
+            )
+            persisted = json.loads(primary.read_text(encoding="utf-8"))
             self.assertEqual(persisted["nodes"], [{"id": "released", "x": 9, "y": 10}])
             self.assertTrue(delayed.save_status(project["id"])["saved"])
             self.assertTrue(primary.with_name("canvas.json.bak").exists())
@@ -2223,6 +2224,50 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual(self.store.purge_deleted_media(project["id"], trash_media["asset_id"]), 1)
         remaining = self.store.list_deleted_media(project["id"])
         self.assertFalse(any(item["asset_id"] == trash_media["asset_id"] for item in remaining))
+
+
+    def test_safe_project_path_survives_concurrent_parent_creation_prefix_race(self):
+        """#194: 父目录在两次 C 级查询之间被并发创建时，候选路径仍须通过包含检查。
+
+        ``Path.resolve(strict=False)``（``ntpath.realpath``）对不存在的路径先做严格
+        查询记录 ``initial_winerror``，最后用去前缀路径再查询一次，仅当两次 winerror
+        一致才剥离 ``\\\\?\\`` 扩展前缀。质量门里 worker 线程并发创建
+        ``.conversation-tasks`` 目录时，父目录缺席→存在使 winerror 由 3 变为 2
+        （本机实测），前缀残留，``os.path.commonpath`` 把 ``\\\\?\\c:`` 当作与
+        ``c:`` 不同的盘而抛出 ``ValueError: Paths don't have the same drive``。
+        本测试用与实测一致的 winerror 序列（先 3 后 2）确定性地重建该竞态。
+        """
+        import ntpath
+        if not hasattr(ntpath, "_getfinalpathname"):
+            self.skipTest("ntpath._getfinalpathname 不可用")
+        real_getfinalpathname = ntpath._getfinalpathname
+        project = self.store.create_project("前缀竞态回归")
+        project_dir = self.store._project_directory(project["id"])
+        relative = ".conversation-tasks/" + "a" * 64 + ".json"
+        target = os.path.normcase(str(project_dir / relative))
+        state = {"parent_created": False}
+
+        def racing_getfinalpathname(path):
+            key = str(path)
+            if key.startswith("\\\\?\\"):
+                key = key[4:]
+            if os.path.normcase(key) == target:
+                winerror = 2 if state["parent_created"] else 3
+                state["parent_created"] = True
+                exc = OSError(winerror, "模拟并发父目录状态")
+                exc.winerror = winerror
+                raise exc
+            return real_getfinalpathname(path)
+
+        def strip_extended_prefix(path_text):
+            normalized = os.path.normcase(str(path_text))
+            return normalized[4:] if normalized.startswith("\\\\?\\") else normalized
+
+        expected = strip_extended_prefix(project_dir / relative)
+        with patch("ntpath._getfinalpathname", side_effect=racing_getfinalpathname):
+            result = self.store._safe_project_path(project_dir, relative)
+        self.assertEqual(strip_extended_prefix(result), expected)
+        self.assertTrue(state["parent_created"], "竞态模拟未被触发")
 
 
 class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
@@ -2441,6 +2486,28 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         tombstones = node.get("deletedOutputTombstones") or []
         self.assertTrue(any(str(t.get("deleted_asset_id") or "") == original["asset_id"] for t in tombstones))
 
+    def test_list_deleted_media_sorted_newest_first(self):
+        """#210: 回收区列表按删除时间倒序（最新删除在顶部）。
+
+        按 a→b→c 先后删除三条，列表须返回 c→b→a，且 deleted_at 非增。
+        用递增假时钟保证三条戳值不同（稳定排序下同刻保持插入序）。
+        """
+        ticks = iter(range(1_700_000_000_000, 1_700_000_100_000, 1_000))
+        with patch.object(firefly_projects, "_now_ms", side_effect=lambda: next(ticks)):
+            project = self.store.create_project("回收区排序")
+            media_a = self.store.import_media(project["id"], b"trash-a", "a.png", "image/png")
+            media_b = self.store.import_media(project["id"], b"trash-b", "b.png", "image/png")
+            media_c = self.store.import_media(project["id"], b"trash-c", "c.png", "image/png")
+            # 级联归档路径（ADR 0016 D1，前端单图 × / 节点 × 经此入回收区）
+            self.store.archive_unreferenced_media(project["id"], media_a["asset_id"])
+            self.store.archive_unreferenced_media(project["id"], media_b["asset_id"])
+            self.store.archive_unreferenced_media(project["id"], media_c["asset_id"])
+            items = self.store.list_deleted_media(project["id"])
+        self.assertEqual([item["asset_id"] for item in items],
+                         [media_c["asset_id"], media_b["asset_id"], media_a["asset_id"]])
+        deleted_ats = [item["deleted_at"] for item in items]
+        self.assertEqual(deleted_ats, sorted(deleted_ats, reverse=True))
+
     def test_orphan_generation_media_goes_to_trash_and_can_restore(self):
         """#79: 无引用的生成孤儿移入回收区（7 天可恢复），不再静默硬删。"""
         project = self.store.create_project("孤儿回收")
@@ -2524,6 +2591,84 @@ class GenerationHistoryMergeAndDeletionOwnershipTests(unittest.TestCase):
         result = self.store.archive_unreferenced_media(project["id"], asset["asset_id"], reason="node-delete")
         self.assertTrue(result["file_missing"])
         self.assertFalse(any(item["asset_id"] == asset["asset_id"] for item in self.store.list_media(project["id"])))
+
+
+class BackgroundSnapshotLockContentionTests(unittest.TestCase):
+    """issue #231：后台快照的落盘时间目钱上受全局锁争用约束，不是固定窗口。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_background_snapshot_waits_for_the_lock_held_by_another_operation(self):
+        # 不是测试写法问题：flush 在全局 _lock 里做磁盘写，任何持锁的操作
+        # （另一个项目的写盘、刷库、删除）都能把后台快照顶出固定时间窗口。
+        # 这里先排好快照，再用另一个线程拿锁来确定性复现门里的争用，
+        # 不用真压力机。（注意不能先拿锁再 apply_mutations——那会把 mutation
+        # 本身卡住，测不到快照。）
+        store = ProjectStore(self.root, snapshot_delay=0.4)
+        try:
+            project = store.create_project("锁争用")
+            primary = self.root / project["id"] / "canvas.json"
+            store.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": "released", "x": 9, "y": 10}},
+            ], base_revision=0)
+
+            hold_release = threading.Event()
+            acquired = threading.Event()
+
+            def hold_the_lock():
+                with store._lock:
+                    acquired.set()
+                    hold_release.wait(3.0)
+
+            holder = threading.Thread(target=hold_the_lock, daemon=True)
+            holder.start()
+            self.assertTrue(acquired.wait(1.0), "持锁线程没能抢到锁，场景是空的")
+
+            time.sleep(1.1)
+            self.assertEqual(
+                json.loads(primary.read_text(encoding="utf-8"))["nodes"],
+                [],
+                "后台快照没等锁：这个钉的根因假设不成立",
+            )
+            hold_release.set()
+            holder.join(5.0)
+
+            # 不丢数据：锁释放后快照必须自己落盘（而不是靠 close 补）。
+            deadline = time.monotonic() + 3.0
+            nodes = []
+            while time.monotonic() < deadline:
+                time.sleep(0.02)
+                nodes = json.loads(primary.read_text(encoding="utf-8"))["nodes"]
+                if nodes:
+                    break
+            self.assertEqual(nodes, [{"id": "released", "x": 9, "y": 10}])
+        finally:
+            store.close()
+
+    def test_wait_for_snapshot_is_a_deterministic_sync_point(self):
+        # 时序断言应该等「后台写完成了」这个事件，而不是墙钟窗口：门里并行
+        # 步骤抢 CPU、同一把锁被占，都能把落盘顶出固定秒数，但事件本身会到。
+        store = ProjectStore(self.root, snapshot_delay=0.2)
+        try:
+            project = store.create_project("同步点")
+            store.apply_mutations(project["id"], [
+                {"op": "upsert_node", "node": {"id": "released", "x": 1, "y": 2}},
+            ], base_revision=0)
+            self.assertTrue(
+                store.wait_for_snapshot(project["id"], timeout=30.0),
+                "等不到后台快照完成",
+            )
+            canvas = json.loads((self.root / project["id"] / "canvas.json").read_text(encoding="utf-8"))
+            self.assertEqual(canvas["nodes"], [{"id": "released", "x": 1, "y": 2}])
+            # 没排程时不用等：直接返回。
+            self.assertTrue(store.wait_for_snapshot(project["id"], timeout=0.0))
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

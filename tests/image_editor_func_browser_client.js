@@ -32,9 +32,41 @@
     function evalFn(fn){
         return Function('"use strict";return (' + fn + ')')();
     }
-    function nodes(){ return (0, eval)('nodes'); }
+    function nodes(){ return (0, eval)('canvasState.nodes'); }
     function findNode(id){ return nodes().find(n => n && n.id === id); }
     function nodeName(nodeId){ const n = findNode(nodeId); return n && n.images && n.images[0] ? n.images[0].name : null; }
+    // #205：星标（marked）按具体图片资源（asset）记录（#89 规格）。「替换图片」操作
+    // （裁剪/笔刷/扩图/调整尺寸）把当前图换成一张全新的上传图——新图不得继承星标，
+    // 原图的星标必须保留（canvas.markedAssetIds 仍含原 asset）。
+    function starMarks(){
+        try {
+            const c = (0, eval)('canvas');
+            return Array.isArray(c && c.markedAssetIds) ? c.markedAssetIds.map(String) : null;
+        } catch(_){ return null; }
+    }
+    function editNodeImages(){
+        try {
+            const n = (0, eval)('canvasState.nodes').find(x => x && x.id === 'edit-node');
+            return n && n.images ? n.images.map(i => ({asset_id: String(i && i.asset_id || ''), marked: !!(i && i.marked), name: i && i.name})) : null;
+        } catch(_){ return null; }
+    }
+    function markEditNodeFirstImage(){
+        try {
+            const n = (0, eval)('canvasState.nodes').find(x => x && x.id === 'edit-node');
+            if(!n || !n.images || !n.images[0]) return 'no-image';
+            const a = String(n.images[0].asset_id || '');
+            if(!a) return 'no-asset-id';
+            (0, eval)('setMarkedImage')(a, true);
+            return a;
+        } catch(e){ return 'ERR:' + e.message; }
+    }
+    function assertStarNotMoved(label, originalAssetId){
+        const imgs = editNodeImages();
+        const cur = imgs && imgs[0] ? imgs[0] : null;
+        const marks = starMarks();
+        assertion(label + ': replaced image has no star', !!(cur && cur.marked === false && cur.asset_id !== String(originalAssetId)), JSON.stringify(cur));
+        assertion(label + ': original image star retained', !!(marks && marks.includes(String(originalAssetId))), JSON.stringify(marks));
+    }
     function editMode(){ return (0, eval)('imageEditMode'); }
     function modalOpen(){ return document.getElementById('imageEditModal')?.classList.contains('open') === true; }
     function cropImageLoaded(){ const img = document.getElementById('cropImage'); return !!(img && img.naturalWidth > 0); }
@@ -121,6 +153,14 @@
             assertion('image toolbar is interactive without covering node content', imageGeometry.toolbarPointerEvents === 'auto' && imageGeometry.toolbarRect.bottom < imageGeometry.mediaRect.top, {pointerEvents:imageGeometry.toolbarPointerEvents, toolbarBottom:imageGeometry.toolbarRect.bottom, imageTop:imageGeometry.mediaRect.top});
         }
 
+        // #205：星标基线——先给 edit-node 当前图打星标，随后每个「替换图片」操作
+        // （裁剪/笔刷/扩图/调整尺寸）后依次断言星标没有搬到新图上。
+        const markedOriginalAssetId = markEditNodeFirstImage();
+        const markedBaselineOk = typeof markedOriginalAssetId === 'string' && markedOriginalAssetId && !markedOriginalAssetId.startsWith('no-') && !markedOriginalAssetId.startsWith('ERR')
+            && !!(starMarks() && starMarks().includes(markedOriginalAssetId))
+            && !!(editNodeImages() && editNodeImages()[0] && editNodeImages()[0].marked);
+        assertion('star baseline: edit-node first image marked', markedBaselineOk, 'asset=' + markedOriginalAssetId + ' | marks=' + JSON.stringify(starMarks()) + ' | imgs=' + JSON.stringify(editNodeImages()));
+
         trace('crop-step');
         // --- crop ---
         assertion('editor opens with image loaded', await openEditor() && await waitFor(cropImageLoaded, 12000), 'modal+image');
@@ -143,6 +183,7 @@
                     assertion('crop width', Math.abs(pix.w - expectW) <= 2, pix.w + ' vs ' + expectW);
                     assertion('crop height preserved', Math.abs(pix.h - expectH) <= 2, pix.h + ' vs ' + expectH);
                 } catch(e){ result.errors.push('crop fetch: ' + e.message); }
+                assertStarNotMoved('after crop', markedOriginalAssetId);
             }
         }
 
@@ -171,6 +212,7 @@
                         }
                         assertion('brush pixels visible in result', dark >= 5, 'dark px=' + dark);
                     } catch(e){ result.errors.push('brush fetch: ' + e.message); }
+                    assertStarNotMoved('after brush', markedOriginalAssetId);
                 }
             }
         }
@@ -196,11 +238,16 @@
                 if(applied){
                     const imgs = findNode('edit-node').images;
                     assertion('mask image role', imgs[1] && imgs[1].role === 'mask', imgs[1] && imgs[1].role);
-                    const selIdx = evalFn('() => { const s = eval("selectedImage"); return s && s.index; }')();
+                    const selIdx = evalFn('() => { const s = eval("canvasState.selectedImage"); return s && s.index; }')();
                     assertion('selectedImage index after mask', selIdx === 1, String(selIdx));
                 }
             }
         }
+
+        // #187：跨作用域共享——spy 在扩图块里装（必须在生成之前），
+        // 断言放在整个 run 的最后，所以两个变量提到这一层。
+        const userResolution = '2k';   // 合法档位值见 app/core.py:294 IMAGE_PARAM_RESOLUTIONS
+        let spyState = 'spy-not-installed';
 
         trace('outpaint-step');
         // --- outpaint ---
@@ -213,6 +260,23 @@
                 const grown = evalFn('() => { const c = eval("cropState"); c.w = Math.round(c.w * 1.5); c.h = Math.round(c.h * 1.5); return c.w; }')();
                 assertion('outpaint region expanded', grown > 0, 'w=' + grown);
                 const before = nodeName('edit-node');
+                // #187：断言扩图发出的载荷带用户选的分辨率档位。
+                // 不能事后读 node.generationSubmissions —— 成功后会被
+                // clearSmartGenerationSubmission 清掉（static/js/canvas-generation-tasks.js:104-108）。
+                // 所以在载荷构造出来的那一刻捕获：upsertSmartGenerationSubmission 是顶层函数
+                // 声明（classic script → 全局绑定），调用方用裸标识符（:191），替换 window 上同名属性即生效。
+                spyState = evalFn(`() => {
+                    const n = (window.canvasState?.nodes || []).find(x => x && x.id === 'edit-node');
+                    window.__fix187Payloads = [];
+                    const orig = window.upsertSmartGenerationSubmission;
+                    if(typeof orig !== 'function') return 'NO-GLOBAL-FN';
+                    window.upsertSmartGenerationSubmission = (node, submission) => {
+                        const p = submission && submission.requestPayload;
+                        if(p) window.__fix187Payloads.push({ nodeId: node && node.id, resolution: p.resolution, size: p.size, width: p.width, height: p.height, aspect_ratio: p.aspect_ratio });
+                        return orig(node, submission);
+                    };
+                    return 'armed node=' + (n ? 'found' : 'MISSING');
+                }`)();
                 evalFn('() => { eval("applyImageEdit()"); return true; }')();
                 const applied = await waitApplied(before);
                 assertion('outpaint applied and modal closed', applied);
@@ -227,6 +291,7 @@
                         assertion('outpaintSize matches', os.width === pix.w, JSON.stringify(os) + ' vs ' + pix.w);
                         assertion('outpaint prompt draft set', (node.promptDraftText || '').includes('Remove red area and fill the scene'), String(node.promptDraftText));
                     } catch(e){ result.errors.push('outpaint fetch: ' + e.message); }
+                    assertStarNotMoved('after outpaint', markedOriginalAssetId);
                 }
             }
         }
@@ -272,6 +337,7 @@
                     const img = findNode('edit-node').images[0];
                     assertion('resize image name', (img.name || '').includes('_resize_50pct'), img.name);
                     assertion('resize natural size', img.natural_w === 32 && img.natural_h === 32, img.natural_w + 'x' + img.natural_h);
+                    assertStarNotMoved('after resize', markedOriginalAssetId);
                 }
             }
         }
@@ -280,15 +346,73 @@
         // --- persist ---
         const canvasId = (0, eval)('canvasId');
         trace('persist-wait');
+        let persistText = null;
+        let persistNodeDump = null;
         const persisted = await waitFor(async () => {
             try {
                 const res = await fetch('/api/canvases/' + encodeURIComponent(canvasId));
                 if(!res.ok) return false;
                 const text = JSON.stringify(await res.json());
-                return text.includes('_resize_50pct') && text.includes('"Grid"');
+                if(!text.includes('_resize_50pct') || !text.includes('"Grid"')) return false;
+                persistText = text;
+                try {
+                    const doc = JSON.parse(text);
+                    const cdoc = doc.canvas || doc;
+                    const pn = (cdoc.nodes || []).find(n => n && n.id === 'edit-node');
+                    persistNodeDump = JSON.stringify(pn && pn.images ? pn.images.map(i => ({asset_id:i.asset_id,name:i.name,marked:!!i.marked,url:i.url||null})) : null);
+                } catch(_){}
+                return true;
             } catch(_) { return false; }
         }, 20000);
         assertion('server canvas persisted all ops', persisted, 'final=' + persisted);
+        // #205：刷新后（从磁盘 JSON 重建）星标不得落到「替换出的新图」上——
+        // 持久化 JSON 里任何节点图片都不得带 marked:true。
+        assertion('persisted canvas keeps no star on replaced images', !!(persistText && !persistText.includes('"marked":true')), 'noMarked=' + (persistText ? String(!persistText.includes('"marked":true')) : 'timeout') + ' | edit-node=' + (persistNodeDump || 'n/a'));
+
+        // #187：放在整个 run 的最后。探针会从扩图后的节点出一次图，改变节点当前图
+        // 的尺寸基准；放在中间会污染后面的 resize（实测 resize natural size 32x32→48x48）。
+        // 扩图本身是本地画布扩展（输出像素宽恰好等于 outpaintSize.width），真正的生成
+        // 发生在之后从该节点出图时——那才会进 static/js/canvas-generation-tasks.js:159 的
+        // validOutpaintSize(resultNode) 分支，也就是修复所在处。
+        // 设置用产品自己的 withOutpaintDisplaySettings（static/js/canvas-image-editor.js:92）组，
+        // 不自己拼，否则测的不是真实组合。
+        trace('fix187-probe');
+            // #187：扩图本身是本地画布扩展（输出像素宽恰好等于 outpaintSize.width），
+            // 真正的生成发生在之后从该节点出图时——那才会进
+            // static/js/canvas-generation-tasks.js:159 的 validOutpaintSize(resultNode) 分支，
+            // 也就是修复所在处。设置用产品自己的 withOutpaintDisplaySettings
+            // （static/js/canvas-image-editor.js:92）组，不自己拼，否则测的不是真实组合。
+            const genState = await evalFn(`async () => {
+                const n = (window.canvasState?.nodes || []).find(x => x && x.id === 'edit-node');
+                if(!n) return 'node-missing';
+                if(!validOutpaintSize(n)) return 'no-valid-outpaint-size';
+                // 不写回节点：上一版把 resolution 写进了 n.runSettings，
+                // 污染了后面的 resize 步骤（resize natural size 从 32x32 变成 48x48）。
+                const merged = Object.assign({}, settings, n.runSettings || {}, { resolution: '2k' });
+                const s = withOutpaintDisplaySettings(n, merged);
+                // 探针必须自清：post 抛异常时 clearSmartGenerationSubmission 不会跑，
+                // submission 会留在节点上、node.pending 被 :100 抬起来，
+                // 导致后面的 resize 步骤拿到不同的基准图（32x32 变 48x48）。
+                const snap = { subs: n.generationSubmissions, pending: n.pending };
+                // 还要还原全局 settings：normalizeApiSizeSettings（smart-canvas.js:2795）
+                // 直接写全局 settings（settings[resKey]='auto'），不看它的参数。
+                const gSnap = JSON.parse(JSON.stringify(settings));
+                try { await runApiGeneration('fix187 resolution probe', [], s, n, {}); }
+                catch(err){ return 'posted-then-threw: ' + err.message; }
+                finally {
+                    if(snap.subs === undefined) delete n.generationSubmissions; else n.generationSubmissions = snap.subs;
+                    if(snap.pending === undefined) delete n.pending; else n.pending = snap.pending;
+                    for(const k of Object.keys(settings)) delete settings[k];
+                    Object.assign(settings, gSnap);
+                }
+                return 'called engine=' + String(s.engine || '') + ' res=' + String(s.resolution || '');
+            }`)();
+            const payloads = (window.__fix187Payloads || []).filter(p => p.nodeId === 'edit-node');
+            const sent = payloads[payloads.length - 1] || null;
+            // 修复前 `!outpaintSize` 门把 resolution 发成空串，服务商按默认档位出图（1K）。
+            assertion('outpaint payload carries user resolution', !!sent && sent.resolution === userResolution, (genState + ' | ' + spyState + ' | ') + (sent ? JSON.stringify(sent) : 'no payload captured'));
+            // 扩图仍不应发显式 size/width/height：几何由 aspect_ratio + 分辨率档位表达。
+            assertion('outpaint payload omits explicit size', !!sent && !sent.size && !sent.width && !sent.height, sent ? JSON.stringify({size: sent.size, width: sent.width, height: sent.height}) : 'no payload');
     }
     run().catch(error => result.errors.push(error?.stack || String(error))).finally(postResult);
 })();

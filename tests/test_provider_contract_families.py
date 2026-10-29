@@ -246,9 +246,17 @@ class ProviderFamilyContractTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 400, response.text)
                         detail = response.json()["detail"]
                         self.assertEqual(detail["code"], "no_compatible_image_model")
-                        self.assertEqual(
-                            detail["message"],
-                            "没有手动固定的模型完整支持本次请求（不兼容参数：size, width, height, aspect_ratio, resolution）",
+                        # 契约钉的是结构化字段和参数清单，不是整条文案。
+                        # 6656f70 往 message 里加了「该模型支持什么、本次请求是什么」
+                        # 的能力提示，整串相等断言当场过期（16 个 family 全红）。
+                        message = detail["message"]
+                        self.assertTrue(
+                            message.startswith("没有手动固定的模型完整支持本次请求"),
+                            message,
+                        )
+                        self.assertIn(
+                            "（不兼容参数：size, width, height, aspect_ratio, resolution）",
+                            message,
                         )
                         self.assertEqual(
                             detail["incompatible_parameters"],
@@ -553,39 +561,6 @@ class ProviderFamilyContractTests(unittest.TestCase):
             [normalize_captured_request(request) for request in capture.requests],
             FINAL_REQUEST_GOLDENS["runninghub-mode:ai-app"],
         )
-
-    def test_jimeng_cli_preserves_ordered_duplicate_reference_arguments(self):
-        fixture = provider("jimeng", model="jimeng-4.5")
-        observed = []
-
-        class Process:
-            returncode = 0
-
-            async def communicate(self):
-                return (b'{"outputs":["http://127.0.0.1/fake.png"]}', b"")
-
-        async def prepare(url, _kind):
-            return ({REFERENCES[0]["url"]: "A.png", REFERENCES[1]["url"]: "B.png"}[url], [])
-
-        async def create_process(*args, **kwargs):
-            observed.append({"args": list(args), "kwargs": kwargs})
-            return Process()
-
-        with (
-            patch.object(APP, "get_api_provider_exact", return_value=fixture),
-            patch.object(APP, "jimeng_prepare_local_media", side_effect=prepare),
-            patch.object(APP, "jimeng_store_outputs", new=AsyncMock(return_value=["http://127.0.0.1/fake.png"])),
-            patch.object(SERVICES, "jimeng_cli_executable", return_value="dreamina-contract"),
-            patch.object(SERVICES, "jimeng_use_wsl", return_value=False),
-            patch.object(CONVERSATION.asyncio, "create_subprocess_exec", side_effect=create_process),
-        ):
-            asyncio.run(APP.generate_ai_image(
-                PROMPT, SIZE, "high", "jimeng-4.5", REFERENCES,
-                fixture["id"], preserve_model=True, image_parameters=PARAMETERS,
-            ))
-        self.assertEqual(len(observed), 1)
-        golden = FINAL_REQUEST_GOLDENS["protocol:jimeng"]
-        self.assertEqual(observed[0]["args"], golden["argv"])
 
     def test_codex_skill_preserves_ordered_duplicate_ref_image_arguments(self):
         fixture = provider("codex", model="gpt-image-2")

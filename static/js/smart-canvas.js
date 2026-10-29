@@ -1,10 +1,12 @@
-const params = new URLSearchParams(location.search);
+console.log("smart-canvas.js loading...");
+// #252 IME 守卫：中文输入法组词期间的回车（isComposing / keyCode 229）是“确认候选词”，
+// 不是提交/确认键。所有文本输入框的 Enter 分支必须套此守卫（抄 ComfyArt keys.ts isEnter）。
+function imeComposing(event){ return Boolean(event && (event.isComposing || event.keyCode === 229)); }
 const canvasId = params.get('id') || '';
 const sourceProjectId = params.get('project') || '';
 window.canvasId = canvasId;
 const shell = document.getElementById('shell');
 const world = document.getElementById('world');
-const composer = document.getElementById('composer');
 const createMenu = document.getElementById('createMenu');
 const canvasEmptyState = document.getElementById('canvasEmptyState');
 const canvasEmptyCreate = document.getElementById('canvasEmptyCreate');
@@ -15,13 +17,11 @@ const mentionPicker = document.getElementById('mentionPicker');
 const mentionPreview = document.getElementById('mentionPreview');
 const engineSelect = document.getElementById('engineSelect');
 const dynamicParams = document.getElementById('dynamicParams');
-const runBtn = document.getElementById('runBtn');
 const fileInput = document.getElementById('fileInput');
 const apiKindToggle = document.getElementById('apiKindToggle');
 const inputThumbsRow = document.getElementById('inputThumbsRow');
 const promptFlowContext = document.getElementById('promptFlowContext');
 const SMART_UPLOAD_MAX = 20;
-const SMART_REFERENCE_IMAGE_MAX = 20;
 const SMART_ONLINE_ENGINES = new Set(['api','volcengine']);
 function normalizeSmartOnlineEngine(value){ return SMART_ONLINE_ENGINES.has(value) ? value : 'api'; }
 const inputPromptPreview = document.getElementById('inputPromptPreview');
@@ -73,7 +73,7 @@ function openSmartTitleEdit(){
         }
     };
     input.addEventListener('keydown', event => {
-        if(event.key === 'Enter'){ event.preventDefault(); finish(true); }
+        if(event.key === 'Enter' && !imeComposing(event)){ event.preventDefault(); finish(true); }
         else if(event.key === 'Escape'){ event.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
@@ -89,30 +89,6 @@ function setupSmartTitleEdit(){
     smartTitle?.addEventListener('click', event => { if(!event.target.closest?.('#smartTitleEdit')) openSmartTitleEdit(); });
     smartTitle?.addEventListener('dblclick', event => { event.preventDefault(); openSmartTitleEdit(); });
 }
-const imageEditModal = document.getElementById('imageEditModal');
-const smartHistoryModal = document.getElementById('smartHistoryModal');
-const smartHistoryList = document.getElementById('smartHistoryList');
-const smartHistoryCollapse = document.getElementById('smartHistoryCollapse');
-const smartHistoryPurgeTrash = document.getElementById('smartHistoryPurgeTrash');
-let smartHistoryDrawerCollapsed = false;
-let smartHistoryPointerState = null;
-let smartHistoryTap = null;
-let smartHistorySelectedImage = null;
-const SMART_HISTORY_DOM_LIMIT = 140;
-const SMART_HISTORY_OVERSCAN = 48;
-const SMART_HISTORY_RENDER_BUFFER = 24;
-const smartHistoryVirtualState = {
-    start:0,
-    end:0,
-    count:0,
-    stride:0,
-    gap:0,
-    signature:'',
-    frame:0,
-    force:false,
-    focusCard:null,
-    focusElement:null
-};
 let smartProjectMediaTrashRefreshVersion = 0;
 const smartShortcutModal = document.getElementById('smartShortcutModal');
 const smartSettingsLink = document.getElementById('smartSettingsLink');
@@ -120,6 +96,7 @@ const smartSettingsModal = document.getElementById('smartSettingsModal');
 const smartSettingsFrame = document.getElementById('smartSettingsFrame');
 const smartSettingsClose = document.getElementById('smartSettingsClose');
 let smartSettingsLastFocus = null;
+let releaseSmartSettingsEscape = () => {}; // #249：Escape 栈登记释放（openSmartSettings push，closeSmartSettings release）
 const selectionBox = document.getElementById('selectionBox');
 const assetToggle = document.getElementById('assetToggle');
 const assetPanel = document.getElementById('assetPanel');
@@ -161,15 +138,9 @@ const longContentReaderTitle = document.getElementById('longContentReaderTitle')
 const longContentReaderBody = document.getElementById('longContentReaderBody');
 const longContentReaderClose = document.getElementById('longContentReaderClose');
 let minimapViewport = document.getElementById('minimapViewport');
-let canvas = null;
 let canvasUsesConnections = true;
-let nodes = [];
-let selectedId = '';
-let selectedIds = [];
-let selectedImage = {nodeId:'', index:-1};
 let dragState = null;
 let composerDragSettleTimer = 0;
-let loopInsertPreview = null;
 let selectionState = null;
 let isRKeyDown = false;
 let selectionJustFinished = false;
@@ -214,11 +185,9 @@ let mentionInsertMode = 'token';
 let panState = null;
 let didPan = false;
 let portDragState = null;
-let connectionEraseState = null;
 const DEBOUNCED_SAVE_MS = 3000;
 let debouncedSaveTimer = null;
 let contentDirty = false;
-let persistedCoreSnapshot = null;
 let persistedDurableSnapshot = null;
 // Empty-canvas guard (H39 incident): true only after loadCanvas has successfully
 // populated the canvas from the server. Until then an empty local node set is
@@ -234,12 +203,10 @@ const projectMediaImportCache = new Map();
 const conversationTaskPolls = new Map();
 let activeProjectMediaImports = 0;
 const projectMediaImportWaiters = [];
-let apiProviders = [];
 // model_specs.json is the authoritative registry of adapted models + their
 // parameter options. Loaded via /api/model-specs; drives model lists & params.
 let modelSpecs = {chat_models:{}, image_models:{}, video_models:{}, chat_model_ids:[], image_model_ids:[], video_model_ids:[], schema_version:null, last_updated:null};
 let assetLibrary = {categories:[]};
-let projectMediaLibrary = {items:[]};
 let assetLibraryOpen = false;
 let activeAssetCategoryId = '';
 let activeAssetLibraryId = '';
@@ -268,12 +235,9 @@ let promptTemplateSelectedId = '';
 let promptTemplateEditing = false;
 let promptTemplateGroupEditMode = false;
 let promptPresetDeleteArmed = false;
-let createMenuPoint = {x:0, y:0};
-let createMenuGroupId = '';
 let nodeClipboard = null;
 let imageClickTimer = null;
 let suppressImageClickUntil = 0;
-let lastMouseWorld = null;
 let lastConfigRefreshAt = 0;
 let smartMinimapState = null;
 let smartEdgeRevealTimer = 0;
@@ -282,17 +246,9 @@ let smartEdgeRevealHiding = false;
 let smartMinimapDrag = false;
 let zoomPreviewState = null;
 let runTimerInterval = null;
-let smartCascadeSilentSelection = false;
 const smartCascadeRuns = new Map();
 let smartLoopContext = null;
-let transientSmartCloudLinks = [];
 let runBtnCooldownToken = 0;
-let smartRunStateToken = 0;
-const activeSmartTaskPolls = new Map();
-const smartGenerationNodeRevisions = new Map();
-const activeSmartSubmissionRecoveries = new Set();
-const smartNodeRunTokens = new Map();
-const smartGenerationRegistrationQueues = new Map();
 let smartRhRandomValues = {};
 let lastImagePasteAt = 0;
 let lastNodePasteAt = 0;
@@ -301,278 +257,15 @@ let textSelectionGuard = null;
 let conversationSelection = null;
 let conversationSelectionCandidate = null;
 let conversationExtractionReturnFocus = null;
-const UNDO_LIMIT = 40;
-const undoStack = [];
-const redoStack = [];
 // #146: 删除节点后媒体归档延迟到撤销窗口结束（用户不太可能再撤销时）才执行；
 // 若用户在窗口内撤销，则取消待归档，避免撤销恢复的节点引用已归档资产 → 404。
-const ARCHIVE_DELAY_MS = 2500; // 延迟 2.5s（> 450ms 保存防抖 + 网络往返）
-let pendingMediaArchives = []; // [{ images: [...], timer: number }]
-function scheduleMediaArchive(images){
-    if(!images.length) return;
-    const timer = setTimeout(() => {
-        pendingMediaArchives = pendingMediaArchives.filter(entry => entry.timer !== timer);
-        void cascadeArchiveDeletedMedia(images);
-    }, ARCHIVE_DELAY_MS);
-    pendingMediaArchives.push({ images, timer });
-}
-function cancelPendingMediaArchives(){
-    pendingMediaArchives.forEach(entry => clearTimeout(entry.timer));
-    pendingMediaArchives = [];
-}
-let undoSuppressed = false;
-let pendingUndoSnapshot = null;
-let redoPushing = false;
-const smartUndoButton = document.getElementById('smartUndoButton');
-const smartRedoButton = document.getElementById('smartRedoButton');
-function syncUndoRedoButtons(){
-    if(smartUndoButton) smartUndoButton.disabled = !undoStack.length;
-    if(smartRedoButton) smartRedoButton.disabled = !redoStack.length;
-}
 function activeSmartCascadeCount(){ return smartCascadeRuns.size; }
 function smartCascadeRunForLoop(loopId){ return loopId ? smartCascadeRuns.get(loopId) || null : null; }
 function smartCascadeIsLoopRunning(loopId){ return Boolean(smartCascadeRunForLoop(loopId)); }
 function smartCascadeAnyRunning(){ return activeSmartCascadeCount() > 0; }
-function smartCascadeEdgeState(edgeKey){
-    for(const run of smartCascadeRuns.values()){
-        const state = run?.runPath?.states?.[edgeKey];
-        if(state) return state;
-    }
-    return '';
-}
-function smartCascadePathForCtx(ctx=null){
-    return ctx?.runState?.runPath || ctx?.runPath || null;
-}
-function capturePendingUndo(){ pendingUndoSnapshot = snapshotForUndo(); }
-function commitPendingUndo(){
-    if(pendingUndoSnapshot){
-        undoStack.push(pendingUndoSnapshot);
-        if(undoStack.length > UNDO_LIMIT) undoStack.shift();
-        pendingUndoSnapshot = null;
-    }
-}
-function discardPendingUndo(){ pendingUndoSnapshot = null; }
-function snapshotForUndo(){
-    return {
-        nodes: JSON.parse(JSON.stringify(nodes)),
-        connections: JSON.parse(JSON.stringify(canvas?.connections || [])),
-        selectedId,
-        selectedIds: selectedIds.slice(),
-        selectedImage: {...selectedImage}
-    };
-}
-function pushUndo(extra=null){
-    if(undoSuppressed) return;
-    if(!canvas) return;
-    const snapshot = snapshotForUndo();
-    if(extra && typeof extra === 'object') Object.assign(snapshot, extra);
-    undoStack.push(snapshot);
-    if(undoStack.length > UNDO_LIMIT) undoStack.shift();
-    if(!redoPushing && redoStack.length) redoStack.length = 0;
-    syncUndoRedoButtons();
-}
-async function performUndo(){
-    // #146: 撤销时取消所有待归档，避免撤销恢复的节点引用已归档资产 → 404。
-    cancelPendingMediaArchives();
-    while(undoStack.length){
-        const snap = undoStack.pop();
-        if(snap.projectOriginalDelete){
-            try {
-                await restoreSmartProjectOriginalUndo(snap);
-                toast(tr('smart.toastUndone'));
-                return;
-            } catch(err){
-                if(err?.permanentUndoFailure) continue;
-                undoStack.push(snap);
-                toast(err?.message || tr('smart.toastSaveFail'));
-                return;
-            }
-        }
-        redoStack.push(snapshotForUndo());
-        if(redoStack.length > UNDO_LIMIT) redoStack.shift();
-        undoSuppressed = true;
-        // #62 B-5(L2): 兜底过滤——快照里引用的媒体若已被硬删（悬空 asset_id），
-        // 服务端 upsert 校验会 400「项目媒体不存在」，画布会进入持续保存失败死锁。
-        let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
-        if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
-            // 内存库可能陈旧（本会话新生产的媒体尚未登记）→ 重新拉取后再验，避免误删存活图片
-            restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
-        }
-        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
-        if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
-        if(canvas) canvas.connections = snap.connections;
-        selectedId = snap.selectedId;
-        selectedIds = snap.selectedIds;
-        selectedImage = snap.selectedImage;
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
-        render();
-        scheduleSave();
-        undoSuppressed = false;
-        toast(tr('smart.toastUndone'));
-        syncUndoRedoButtons();
-        return;
-    }
-    toast(tr('smart.toastNoUndo'));
-    syncUndoRedoButtons();
-}
-async function performRedo(){
-    // #146: 重做时同样取消待归档（重做删除会让节点再次消失，归档应重新调度）。
-    cancelPendingMediaArchives();
-    while(redoStack.length){
-        const snap = redoStack.pop();
-        if(snap.projectOriginalDelete) continue;
-        redoPushing = true;
-        pushUndo();
-        redoPushing = false;
-        undoSuppressed = true;
-        // #62 B-5(L2): 同 performUndo——过滤已硬删媒体的悬空引用，避免保存死锁。
-        let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
-        if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
-            restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
-        }
-        // #146: 计算重做后丢失的图片（当前有、恢复后无），重新调度归档。
-        const currentImages = [];
-        nodes.forEach(n => currentImages.push(...(n.images || [])));
-        const restoredImageIds = new Set();
-        restoredNodes.nodes.forEach(n => (n.images || []).forEach(img => {
-            const id = img?.asset_id || '';
-            if(id) restoredImageIds.add(id);
-        }));
-        const lostImages = currentImages.filter(img => {
-            const id = img?.asset_id || '';
-            return id && !restoredImageIds.has(id);
-        });
-        nodes = restoredNodes.nodes; if(canvas) canvas.nodes = nodes;
-        if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
-        if(canvas) canvas.connections = snap.connections;
-        selectedId = snap.selectedId;
-        selectedIds = snap.selectedIds;
-        selectedImage = snap.selectedImage;
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
-        render();
-        scheduleSave();
-        // #146: 重做删除后，对丢失的图片重新调度归档。
-        if(lostImages.length) scheduleMediaArchive(lostImages);
-        undoSuppressed = false;
-        toast(tr('smart.toastRedone'));
-        syncUndoRedoButtons();
-        return;
-    }
-    toast(tr('smart.toastNoRedo'));
-    syncUndoRedoButtons();
-}
-
-// #62 B-5(L2): 应用 undo/redo 快照前，剔除项目媒体已不存在（已硬删）的 image 引用。
-// 资源库未加载（空）时无法判定，跳过过滤——由保存 400 自愈（C-4）兑底。
-function filterDanglingProjectMediaImages(snapshotNodes){
-    const libraryItems = projectMediaLibrary?.items || [];
-    if(!Array.isArray(snapshotNodes) || !libraryItems.length) return {nodes: snapshotNodes, dropped: 0};
-    const liveAssets = new Set(libraryItems.map(item => String(item?.asset_id || '')).filter(Boolean));
-    let dropped = 0;
-    const nodes = snapshotNodes.map(node => {
-        if(!node || !Array.isArray(node.images)) return node;
-        const images = node.images.filter(image => {
-            const assetId = String(image?.asset_id || '');
-            return !assetId || liveAssets.has(assetId);
-        });
-        if(images.length === node.images.length) return node;
-        dropped += node.images.length - images.length;
-        return {...node, images};
-    });
-    return {nodes, dropped};
-}
-
-// 内存媒体库刷新（仅项目媒体列表）：页面加载后新生产的媒体未登记进
-// projectMediaLibrary，悬空过滤会把存活媒体误判为悬空而剥离（复制→撤回丢光图片事故）。
-async function refreshProjectMediaLibraryItems(){
-    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
-    if(!projectId) return false;
-    try {
-        const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media`);
-        if(!res.ok) return false;
-        const data = await res.json();
-        if(data && Array.isArray(data.items)) projectMediaLibrary = {items: data.items};
-        return true;
-    } catch { return false; }
-}
-
-// #62 B-5(L1): 媒体硬删成功后，移除仍引用它的 undo/redo 快照（返回移除数量）。
-// 快照里的悬空引用会让下一次保存 400「项目媒体不存在」，画布进入持续保存失败死锁。
-function stripDeletedMediaFromUndoStacks(assetId){
-    if(!assetId) return 0;
-    let removed = 0;
-    const stripFrom = stack => {
-        for(let index = stack.length - 1; index >= 0; index--){
-            const snap = stack[index];
-            if(!snap || !Array.isArray(snap.nodes)) continue;
-            const hit = snap.nodes.some(node => Array.isArray(node?.images) && node.images.some(image => String(image?.asset_id || '') === assetId));
-            if(hit){ stack.splice(index, 1); removed += 1; }
-        }
-    };
-    stripFrom(undoStack);
-    stripFrom(redoStack);
-    if(removed) syncUndoRedoButtons();
-    return removed;
-}
-
-// #73: 清理与删除身份匹配的 projectOriginalDelete undo 令牌（彻底删除后恢复目标已不存在）。
-function removeProjectOriginalUndoTokens(assetId, deletionId, projectId){
-    if(!assetId) return;
-    const match = token => token && token.assetId === assetId
-        && (!deletionId || token.deletionId === deletionId)
-        && (token.projectId || projectId) === projectId;
-    for(let index = undoStack.length - 1; index >= 0; index--){
-        if(match(undoStack[index]?.projectOriginalDelete)) undoStack.splice(index, 1);
-    }
-    for(let index = redoStack.length - 1; index >= 0; index--){
-        if(match(redoStack[index]?.projectOriginalDelete)) redoStack.splice(index, 1);
-    }
-    syncUndoRedoButtons();
-}
-let cropState = null;
-let cropDrag = null;
-let cropAspectPreset = 'free';
-let cropAspectRatio = null;
-let outpaintAspectPreset = 'free';
-let imageEditMode = 'crop';
-let imageEditModeTouched = false;
-let imageResizeScale = 0.5;
-let editDrawState = null;
-let editTextItems = [];
-let editTextSelectedId = '';
-let editTextDrag = null;
-let editTextDirty = false;
-let editTextInlineEditor = null;
-let editDrawUndoStack = [];
-let editDrawRedoStack = [];
-const EDIT_DRAW_HISTORY_MAX = 40;
-let brushTool = 'free';
-let brushLabelCounter = 1;
-let gridCustomMode = false;
-let gridCustomLines = [];
-let gridCustomOrientation = 'h';
-let gridCustomHistory = [];
-let gridCustomDrag = null;
-let gridOperationMode = 'split';
-let gridJoinLayout = null;
-let gridJoinDrag = null;
-let gridJoinImageCache = new Map();
-let gridJoinUserMoved = false;
-let gridJoinOutputSize = 2048;
-// 非空时表示当前宫格拼接的数据源是整个分组（聚合组内所有图片成员），而不是单个节点。
-let gridJoinGroupId = '';
-let imageEditZoom = 1.0;
-let imageEditBaseW = 0;
-let imageEditBaseH = 0;
 let previewZoom = 1.0;
 let previewPan = {x:0, y:0};
-let previewPanDrag = null;
-let previewCompareDrag = false;
 let previewComparePos = 50;
-let imageEditPanDrag = null;
-let previewNavState = {nodeId:'', index:0, count:0};
 let viewport = {x:0, y:0, scale:1};
 const PROJECT_VIEWPORT_STORAGE_PREFIX = 'firefly_canvas_viewport_v1:';
 function isProjectCanvasData(source=canvas){
@@ -606,60 +299,6 @@ function persistProjectViewport(){
     if(!key) return;
     try { localStorage.setItem(key, JSON.stringify(normalizeProjectViewport(viewport))); } catch(error) {}
 }
-let settings = {
-    engine:'api',
-    apiKind:'image',
-    routingMode:'auto',
-    anglePreset:'none',
-    provider_id:'',
-    model:'',
-    ratio:'square',
-    resolution:'4k',
-    customRatio:'',
-    customRatioWidth:'',
-    customRatioHeight:'',
-    customSize:'',
-    customWidth:'',
-    customHeight:'',
-    quality:'auto',
-    count:1,
-    videoRoutingMode:'auto',
-    videoProvider:'',
-    videoModel:'',
-    videoDuration:5,
-    videoAspect:'16:9',
-    videoResolution:'',
-    videoEnhancePrompt:false,
-    videoEnableUpsample:false,
-    videoWatermark:false,
-    videoCameraFixed:false,
-    videoReturnLastFrame:false,
-    videoGenerateAudio:false,
-    videoMultimodal:true,
-    _videoMultimodalUserSet:false,
-    videoUseFrameRoles:false,
-    videoTrustedAsset:false,
-    videoTrustedSource:'library',
-    videoTempShLinks:[],
-    msgenModel:'custom',
-    msCustomModel:'',
-    msRatio:'square',
-    msResolution:'1k',
-    msCustomRatio:'',
-    msCustomRatioWidth:'',
-    msCustomRatioHeight:'',
-    msCustomSize:'',
-    msCustomWidth:'',
-    msCustomHeight:'',
-    rhConfigKey:'',
-    rhPayment:'free',
-    rhInstanceType:'',
-    rhParams:{},
-    rhRandomActive:{},
-    width:1024,
-    height:1024,
-    promptH:84
-};
 const MS_GEN_MODELS = {
     custom: { label:tr('smart.custom'), modelId:'', acceptsImage:true }
 };
@@ -672,11 +311,35 @@ const SIZE_MAP = {
     story: {'1k':'720x1280','2k':'1152x2048','4k':'2160x3840'},
     wide: {'1k':'1280x720','2k':'2048x1152','4k':'3840x2160'},
     ultrawide: {'1k':'1280x544','2k':'2048x880','4k':'3840x1648'},
-    ultratall: {'1k':'544x1280','2k':'880x2048','4k':'1648x3840'}
+    ultratall: {'1k':'544x1280','2k':'880x2048','4k':'1648x3840'},
+    portrait45: {'1k':'1152x1440','2k':'1600x2000','4k':'3072x3840'},
+    landscape45: {'1k':'1440x1152','2k':'2000x1600','4k':'3840x3072'},
+    portrait14: {'1k':'384x1536','2k':'512x2048','4k':'960x3840'},
+    landscape14: {'1k':'1536x384','2k':'2048x512','4k':'3840x960'},
+    landscape18: {'1k':'1536x192','2k':'2048x256','4k':'3840x480'},
+    portrait18: {'1k':'192x1536','2k':'256x2048','4k':'480x3840'}
 };
+// 图片比例预设：[settings 键, 比例, i18n 标签键]。SIZE_MAP 必须覆盖每个键；
+// 可用比例由服务商能力表 / model_specs.json 过滤（见 apiImageAllowedAspectRatios）。
+const IMAGE_RATIO_PRESETS = [
+    ['square','1:1','smart.sizeRatioSquare'],
+    ['portrait','2:3','smart.sizeRatioPortrait'],
+    ['landscape','3:2','smart.sizeRatioLandscape'],
+    ['portrait43','3:4','smart.sizeRatioPortrait'],
+    ['landscape43','4:3','smart.sizeRatioLandscape'],
+    ['portrait45','4:5','smart.sizeRatioPortrait45'],
+    ['landscape45','5:4','smart.sizeRatioLandscape45'],
+    ['story','9:16','smart.sizeRatioStory'],
+    ['wide','16:9','smart.sizeRatioWide'],
+    ['ultrawide','21:9','smart.sizeRatioUltrawide'],
+    ['ultratall','9:21','smart.sizeRatioUltratall'],
+    ['portrait14','1:4','smart.sizeRatioPortrait14'],
+    ['landscape14','4:1','smart.sizeRatioLandscape14'],
+    ['portrait18','1:8','smart.sizeRatioPortrait18'],
+    ['landscape18','8:1','smart.sizeRatioLandscape18'],
+];
 const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
 const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
-function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
 function trf(key, values={}){
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
 }
@@ -754,71 +417,10 @@ function refreshIcons(root=document){
     if(window.lucide) lucide.createIcons();
     syncIconButtonAccessibility(root);
 }
-function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
-function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
-const escapeAttr = escapeHtml;
 
 // Lightweight XSS-safe markdown renderer for agent TUI messages
 // Escapes HTML first, then renders markdown syntax.
 // Supports: code blocks, inline code, bold, italic, links, unordered lists.
-function renderMarkdown(text){
-    if(text == null) return '';
-    let html = escapeHtml(String(text));
-    // Code blocks (```) - must be done before inline code
-    html = html.replace(/```([\s\S]*?)```/g, '<pre class="agent-md-code-block"><code>$1</code></pre>');
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code class="agent-md-inline-code">$1</code>');
-    // Bold (**text**)
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic (*text*) - must be after bold
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    // Links [text](url) - only allow safe protocols (block javascript: etc.)
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-        const safeUrl = /^(https?:|mailto:|\/|#|\.\/|\.\.\/)/i.test(url) ? url : '#';
-        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-    });
-    // Unordered lists (- item)
-    html = html.replace(/(^|\n)- (.+)/g, '$1<li>$2</li>');
-    html = html.replace(/(<li>.*?<\/li>)(\s*(?:<li>.*?<\/li>))+/g, '<ul class="agent-md-list">$1</ul>');
-    // Paragraphs (double newline)
-    html = html.replace(/\n\n/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    html = '<p>' + html + '</p>';
-    // Clean up empty paragraphs
-    html = html.replace(/<p><\/p>/g, '');
-    return html;
-}
-function smartOriginalMediaUrl(itemOrUrl){
-    const raw = typeof itemOrUrl === 'string' ? itemOrUrl : (itemOrUrl?.url || '');
-    const text = String(raw || '');
-    if(!text) return '';
-    try {
-        const parsed = new URL(text, window.location.origin);
-        if(parsed.pathname === '/api/media-preview'){
-            const original = parsed.searchParams.get('url') || '';
-            return original || text;
-        }
-    } catch(e) {}
-    return text;
-}
-function smartMediaPreviewUrl(itemOrUrl, size=512){
-    const width = Math.max(64, Math.min(2048, Math.round(Number(size) || 512)));
-    if(typeof itemOrUrl === 'object' && itemOrUrl?.preview_url){
-        const preview = String(itemOrUrl.preview_url || '');
-        if(preview) return `${preview}${preview.includes('?') ? '&' : '?'}w=${width}`;
-    }
-    const raw = smartOriginalMediaUrl(itemOrUrl);
-    try {
-        const parsed = new URL(raw, window.location.origin);
-        if(/^\/api\/project-library\/[^/]+\/media\/[^/]+$/.test(parsed.pathname)) return `${parsed.pathname}/preview?w=${width}`;
-    } catch(e) {}
-    const displayItem = typeof itemOrUrl === 'object' && itemOrUrl ? {...itemOrUrl, url:raw} : raw;
-    const displayUrl = displayMediaUrl(displayItem);
-    if(!raw || raw.startsWith('data:') || raw.startsWith('blob:')) return displayUrl;
-    if(!raw.startsWith('/output/') && !raw.startsWith('/assets/')) return displayUrl;
-    if(!/\.(png|jpe?g|webp|gif|bmp|avif|tiff?|mp4|webm|mov|m4v|avi|mkv)(\?|#|$)/i.test(raw)) return displayUrl;
-    return `/api/media-preview?w=${width}&url=${encodeURIComponent(raw)}`;
-}
 function smartPreviewImgHtml(itemOrUrl, size=512, attrs=''){
     const original = smartOriginalMediaUrl(itemOrUrl);
     const preview = smartMediaPreviewUrl(itemOrUrl, size);
@@ -833,15 +435,6 @@ function loadSmartOriginalImageDimensions(url){
         img.onerror = () => resolve(null);
         img.src = src;
     });
-}
-function smartVideoPreviewHtml(itemOrUrl, size=512, attrs=''){
-    const original = smartOriginalMediaUrl(itemOrUrl);
-    return smartVideoFallbackHtml(original, attrs);
-}
-function smartVideoFallbackHtml(url, attrs=''){
-    const original = smartOriginalMediaUrl(url);
-    const src = displayMediaUrl({url:original});
-    return `<video src="${escapeHtml(src)}" data-url="${escapeAttr(original)}" muted preload="metadata" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"${attrs ? ` ${attrs}` : ''}></video>`;
 }
 function smartVideoPlayerHtml(url, attrs=''){
     const original = smartOriginalMediaUrl(url);
@@ -865,7 +458,7 @@ function smartActivateVideoPreview(target){
     if(!original) return false;
     const itemEl = target?.closest?.('[data-image-index]') || root?.closest?.('[data-image-index]') || root;
     const nodeEl = target?.closest?.('.image-node') || root?.closest?.('.image-node');
-    const node = nodes.find(n => n.id === nodeEl?.dataset.id);
+    const node = canvasState.nodes.find(n => n.id === nodeEl?.dataset.id);
     const imageIndex = Number(itemEl?.dataset?.imageIndex ?? 0);
     const image = node?.images?.[imageIndex];
     if(image) image._inlineVideoActive = true;
@@ -910,9 +503,6 @@ let smartSelectedHighResSeq = 0;
 let smartSelectedHighResNodeIds = new Set();
 const smartSelectedHighResLoaded = new Set();
 const smartSelectedHighResLoading = new Map();
-function smartImageEditorIsOpen(){
-    return Boolean(imageEditModal?.classList?.contains('open'));
-}
 function preloadSmartSelectedHighRes(src){
     if(!src || smartSelectedHighResLoaded.has(src)) return Promise.resolve(true);
     if(smartSelectedHighResLoading.has(src)) return smartSelectedHighResLoading.get(src);
@@ -988,13 +578,6 @@ function syncSmartSelectedImageResolution(root=null){
         });
     }, SMART_SELECTED_HIGH_RES_DELAY);
 }
-function cloneSmartSettings(source=settings){
-    try {
-        return JSON.parse(JSON.stringify(source || {}));
-    } catch(e) {
-        return {...(source || {})};
-    }
-}
 function settingsForStorage(source=settings){
     const clean = cloneSmartSettings(source);
     clean.engine = normalizeSmartOnlineEngine(clean.engine);
@@ -1012,16 +595,6 @@ function normalizeSmartVideoModeSettings(target, preferMultimodal=false){
 function isApiLikeEngine(engine){
     return ['api', 'volcengine'].includes(String(engine || '').toLowerCase());
 }
-function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
-    const next = {...(runSettings || {})};
-    const imageCountEngine = isApiLikeEngine(next.engine)
-        ? next.apiKind !== 'video'
-        : next.engine === 'modelscope';
-    if(ctx?.nodeId && imageCountEngine){
-        next.count = 1;
-    }
-    return next;
-}
 function isGptImageAutoSizeModel(model){
     const raw = String(model || '').trim().toLowerCase();
     const normalized = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -1036,52 +609,6 @@ function isGptImageAutoSizeModel(model){
 }
 function defaultSmartApiResolution(model){
     return isGptImageAutoSizeModel(model) ? '4k' : '1k';
-}
-function mediaItemForStorage(item){
-    if(!item || typeof item !== 'object') return item;
-    const clean = {...item};
-    delete clean.cloudUrl;
-    delete clean.uploadedUrl;
-    delete clean.originalRemoteUrl;
-    delete clean.original_url;
-    delete clean.tempCloudUrl;
-    delete clean._inlineVideoActive;
-    delete clean._naturalSizeLoading;
-    delete clean.layout_w;
-    delete clean.layout_h;
-    if(clean.asset_id){
-        ['url','src','path','output','output_url','outputUrl','uri','href','file','local_path','localPath','remote_url','remoteUrl','preview_url','previewUrl'].forEach(key => delete clean[key]);
-    }
-    return clean;
-}
-function mediaReferencesForStorage(value){
-    if(Array.isArray(value)) return value.map(mediaReferencesForStorage);
-    if(!value || typeof value !== 'object') return value;
-    if(value.asset_id) return mediaItemForStorage(value);
-    const clean = {};
-    Object.entries(value).forEach(([key, child]) => {
-        clean[key] = mediaReferencesForStorage(child);
-    });
-    return clean;
-}
-function projectMediaUrl(assetId){
-    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || '';
-    return `/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}`;
-}
-function projectMediaPreviewUrl(assetId){
-    return `${projectMediaUrl(assetId)}/preview`;
-}
-function hydrateProjectMediaReferences(value){
-    if(Array.isArray(value)) return value.map(hydrateProjectMediaReferences);
-    if(!value || typeof value !== 'object') return value;
-    const hydrated = {...value};
-    Object.keys(hydrated).forEach(key => { hydrated[key] = hydrateProjectMediaReferences(hydrated[key]); });
-    if(hydrated.asset_id && !hydrated.url){
-        hydrated.url = projectMediaUrl(hydrated.asset_id);
-        hydrated.preview_url = '';
-        if(mediaKindForItem(hydrated) === 'image') hydrated.preview_url = projectMediaPreviewUrl(hydrated.asset_id);
-    }
-    return hydrated;
 }
 async function withProjectMediaImportSlot(operation){
     if(activeProjectMediaImports >= 3){
@@ -1159,9 +686,9 @@ async function importProjectMediaReference(item){
         original_url:projectMediaUrl(media.asset_id),
         preview_url:(media.kind || mediaKindForItem(media)) === 'image' ? projectMediaPreviewUrl(media.asset_id) : ''
     };
-    const existingIndex = (projectMediaLibrary.items || []).findIndex(entry => entry.asset_id === media.asset_id);
-    if(existingIndex >= 0) projectMediaLibrary.items[existingIndex] = catalogItem;
-    else projectMediaLibrary.items = [catalogItem, ...(projectMediaLibrary.items || [])];
+    const existingIndex = (canvasState.projectMediaLibrary.items || []).findIndex(entry => entry.asset_id === media.asset_id);
+    if(existingIndex >= 0) canvasState.projectMediaLibrary.items[existingIndex] = catalogItem;
+    else canvasState.projectMediaLibrary.items = [catalogItem, ...(canvasState.projectMediaLibrary.items || [])];
     if(assetLibraryOpen && assetLibraryIsProject()) renderAssetLibrary();
     const clean = {...item, asset_id:media.asset_id, name:item.name || media.name, mime_type:item.mime_type || item.mime || media.mime_type};
     locatorKeys.concat(['href','file','local_path','localPath','remote_url','remoteUrl','preview_url','previewUrl']).forEach(key => delete clean[key]);
@@ -1181,62 +708,6 @@ async function materializeProjectMediaReferences(value, mediaContext=false){
     for(const [key, child] of Object.entries(value)) clean[key] = await materializeProjectMediaReferences(child, mediaKeys.has(String(key).toLowerCase()));
     return clean;
 }
-function mediaReferenceSource(value){
-    if(typeof value === 'string') return value;
-    if(!value || typeof value !== 'object') return '';
-    return ['url','src','output','output_url','outputUrl','path','uri']
-        .map(key => value[key])
-        .find(item => typeof item === 'string' && item.trim()) || '';
-}
-function reconcileMaterializedMediaReferences(current, before, materialized){
-    if(Array.isArray(materialized)){
-        return materialized.map((item, index) => reconcileMaterializedMediaReferences(current?.[index], before?.[index], item));
-    }
-    if(!materialized || typeof materialized !== 'object') return current;
-    if(materialized.asset_id){
-        const beforeAssetId = String(before?.asset_id || '');
-        const currentAssetId = String(current?.asset_id || '');
-        const unchanged = beforeAssetId
-            ? currentAssetId === beforeAssetId
-            : typeof before === 'string'
-                ? current === before
-                : Boolean(mediaReferenceSource(before)) && mediaReferenceSource(current) === mediaReferenceSource(before);
-        if(unchanged){
-            const hydrated = hydrateProjectMediaReferences(materialized);
-            return current && typeof current === 'object' && !Array.isArray(current)
-                ? {...current, ...hydrated}
-                : hydrated;
-        }
-        return current;
-    }
-    const result = current && typeof current === 'object' && !Array.isArray(current) ? {...current} : {};
-    Object.entries(materialized).forEach(([key, value]) => {
-        result[key] = reconcileMaterializedMediaReferences(current?.[key], before?.[key], value);
-    });
-    return result;
-}
-function syncLiveProjectMediaReferences(storageCanvas, materializedCanvas){
-    if(!canvas || !materializedCanvas) return;
-    const beforeNodes = new Map((storageCanvas?.nodes || []).map(node => [String(node?.id || ''), node]));
-    const savedNodes = new Map((materializedCanvas?.nodes || []).map(node => [String(node?.id || ''), node]));
-    nodes.forEach(node => {
-        const id = String(node?.id || '');
-        const savedNode = savedNodes.get(id);
-        if(!savedNode) return;
-        const merged = reconcileMaterializedMediaReferences(node, beforeNodes.get(id), savedNode);
-        Object.assign(node, merged);
-    });
-    canvas.nodes = nodes;
-    const beforeLogs = new Map((storageCanvas?.history || []).map(log => [String(log?.id || ''), log]));
-    const savedLogs = new Map((materializedCanvas?.history || []).map(log => [String(log?.id || ''), log]));
-    canvas.history = (canvas.history || []).map(log => {
-        const id = String(log?.id || '');
-        const savedLog = savedLogs.get(id);
-        return savedLog
-            ? reconcileMaterializedMediaReferences(log, beforeLogs.get(id), savedLog)
-            : log;
-    });
-}
 function canvasForStorage(){
     const clean = JSON.parse(JSON.stringify(canvas || {}));
     if(isProjectCanvasData(clean)){
@@ -1250,14 +721,14 @@ function canvasForStorage(){
         clean.settings = settingsForStorage(canvasDefaultSmartSettings || initialSmartSettings);
         clean.viewport = {...viewport};
     }
-    // 日志预览的临时节点（编辑器打开期间临时塞进 nodes）绝不能被持久化，否则刷新后会留下幽灵节点。
+    // 日志预览的临时节点（编辑器打开期间临时塞进 canvasState.nodes）绝不能被持久化，否则刷新后会留下幽灵节点。
     if(Array.isArray(clean.nodes)) clean.nodes = clean.nodes.filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID);
     (clean.nodes || []).forEach(node => {
         delete node._pendingHistoryId;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
-        if(node.type === 'smart-conversation') delete node.conversationSending;
-        if(node.type === 'local-edit') delete node._leBusy;
+        if(node.type === NODE_TYPE_CONVERSATION) delete node.conversationSending;
+        if(node.type === NODE_TYPE_LOCAL_EDIT) delete node._leBusy;
     });
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
     clean.history = mediaReferencesForStorage((clean.history || []).filter(log => log?.status !== 'pending'));
@@ -1302,7 +773,6 @@ function clearSmartNodeTransientRunState(node, options={}){
     node.running = false;
     node.pending = 0;
     node.queued = false;
-    delete node.jimengPending;
     delete node.pendingTasks;
     delete node._runMetaTargetId;
     if(options.clearRunHistory){
@@ -1379,26 +849,11 @@ function clearVolcengineSelectionOutsideVolcengine(target=settings){
     if(target.videoProvider === 'volcengine') target.videoProvider = '';
     return target;
 }
-function isSmartImageNode(node){
-    return Boolean(node && (node.type === 'smart-image' || !node.type));
-}
 function isSmartConversationNode(node){
-    return Boolean(node && node.type === 'smart-conversation');
-}
-function isSmartAgentNode(node){
-    return Boolean(node && node.type === 'smart-agent');
-}
-function isSmartAgentTaskNode(node){
-    return Boolean(node && node.type === 'agent-task');
-}
-function isSmartGroupNode(node){
-    return Boolean(node && node.type === 'smart-group');
+    return Boolean(node && node.type === NODE_TYPE_CONVERSATION);
 }
 function isSmartRunnableNode(node){
     return Boolean(isSmartImageNode(node) || isSmartGroupNode(node));
-}
-function isHistoryGroupNode(node){
-    return Boolean(isSmartImageNode(node) && (node.isHistoryGroup || node.historyFor));
 }
 function smartImageMode(node){
     return 'self';
@@ -1421,7 +876,7 @@ function normalizeLegacySmartNode(node){
             : (fallbackImage ? [fallbackImage] : []);
         const normalized = {
             ...node,
-            type:'smart-image',
+            type:NODE_TYPE_IMAGE,
             title:images.length > 1 ? 'Group' : (images.length ? 'Image' : tr('smart.createImportNode')),
             images
         };
@@ -1431,17 +886,10 @@ function normalizeLegacySmartNode(node){
         delete normalized.resultGrouping;
         return normalized;
     }
-    if(!node.type) node.type = 'smart-image';
-    if(node.type === 'smart-image') delete node.imageMode;
-    if(node.type === 'smart-image' && node.historyFor) node.isHistoryGroup = true;
+    if(!node.type) node.type = NODE_TYPE_IMAGE;
+    if(node.type === NODE_TYPE_IMAGE) delete node.imageMode;
+    if(node.type === NODE_TYPE_IMAGE && node.historyFor) node.isHistoryGroup = true;
     return node;
-}
-function validOutpaintSize(node){
-    const w = Math.round(Number(node?.outpaintSize?.width || 0));
-    const h = Math.round(Number(node?.outpaintSize?.height || 0));
-    if(w <= 0 || h <= 0) return null;
-    const selected = String(node?.outpaintSize?.aspectRatio || '').trim();
-    return {width:w, height:h, aspectRatio:/^\d+\s*:\s*\d+$/.test(selected) ? selected.replace(/\s/g, '') : reducedAspectRatio(w, h)};
 }
 function parseSizePair(value){
     const match = String(value || '').match(/(\d+)\s*x\s*(\d+)/i);
@@ -1467,56 +915,6 @@ function nearestFourKSizeFor(width, height){
     });
     return best;
 }
-function exceedsFourKStandard(width, height){
-    const standard = nearestFourKSizeFor(width, height);
-    if(!standard) return false;
-    return Number(width) > standard.width || Number(height) > standard.height;
-}
-function withOutpaintDisplaySettings(node, baseSettings){
-    const size = validOutpaintSize(node);
-    if(!size) return baseSettings;
-    const engine = normalizeSmartOnlineEngine(baseSettings?.engine);
-    // 扩图时不设置 resolution:'custom'，保留用户选择的分辨率预设（4K/2K/1K）
-    // 只传递比例（如 4:3），让 API 根据比例 + 分辨率自动计算尺寸
-    const next = {
-        ...baseSettings,
-        ratio:'custom',
-        customRatio:size.aspectRatio,
-        outpaintResolutionLocked:true
-    };
-    if(isApiLikeEngine(engine)) next.apiKind = 'image';
-    if(engine === 'modelscope'){
-        next.msRatio = 'custom';
-        next.msCustomRatio = size.aspectRatio;
-    }
-    return next;
-}
-function stripOutpaintDisplaySettings(settingsObj, node=null){
-    const clean = cloneSmartSettings(settingsObj);
-    const size = validOutpaintSize(node);
-    const matchesOutpaintSize = size && clean.resolution === 'custom' && String(clean.customSize || '') === `${size.width}x${size.height}`;
-    if(matchesOutpaintSize){
-        clean.resolution = '1k';
-        clean.ratio = clean.ratio || 'square';
-        clean.customWidth = '';
-        clean.customHeight = '';
-        clean.customSize = '';
-    }
-    const matchesMsOutpaintSize = size && clean.msResolution === 'custom' && String(clean.msCustomSize || '') === `${size.width}x${size.height}`;
-    if(matchesMsOutpaintSize){
-        clean.msResolution = '1k';
-        clean.msRatio = clean.msRatio || 'square';
-        clean.msCustomWidth = '';
-        clean.msCustomHeight = '';
-        clean.msCustomSize = '';
-    }
-    if(size && Number(clean.width) === size.width && Number(clean.height) === size.height){
-        clean.width = 1024;
-        clean.height = 1024;
-    }
-    delete clean.outpaintResolutionLocked;
-    return clean;
-}
 function smartSettingsForNode(node){
     const nodeSettings = stripOutpaintDisplaySettings(node?.runSettings || {}, node);
     const recentSettings = Object.keys(nodeSettings).length ? {} : recentSmartSettingsForMode();
@@ -1529,15 +927,15 @@ function smartSettingsForNode(node){
     return withOutpaintDisplaySettings(node, base);
 }
 function activeSettingsSubject(){
-    const active = activeComposerSubject?.id
-        ? (nodes.find(n => n.id === activeComposerSubject.id) || activeComposerSubject)
+    const active = canvasState.activeComposerSubject?.id
+        ? (canvasState.nodes.find(n => n.id === canvasState.activeComposerSubject.id) || canvasState.activeComposerSubject)
         : selectedNode();
     return isSmartRunnableNode(active) ? active : null;
 }
 function activeComposerNode(){
-    if(!lastComposerNodeId) return null;
-    const id = String(lastComposerNodeId).split(':')[0] || '';
-    const node = nodes.find(n => n.id === id);
+    if(!canvasState.lastComposerNodeId) return null;
+    const id = String(canvasState.lastComposerNodeId).split(':')[0] || '';
+    const node = canvasState.nodes.find(n => n.id === id);
     return isSmartRunnableNode(node) ? node : null;
 }
 function persistActiveSmartSettings(){
@@ -1582,9 +980,9 @@ function clearPromptInput(options={}){
     }
     promptInput.textContent = '';
     closeMentionPicker();
-    if(activeComposerSubject){
-        activeComposerSubject.promptDraftHtml = '';
-        activeComposerSubject.promptDraftText = '';
+    if(canvasState.activeComposerSubject){
+        canvasState.activeComposerSubject.promptDraftHtml = '';
+        canvasState.activeComposerSubject.promptDraftText = '';
     }
 }
 function applyTheme(theme){
@@ -1594,52 +992,14 @@ function applyTheme(theme){
     document.body?.classList.toggle('theme-dark', dark);
     document.body?.classList.toggle('studio-theme-dark', dark);
 }
-function toast(text){
-    const el = document.getElementById('toast');
-    el.textContent = text;
-    el.classList.add('show');
-    clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => el.classList.remove('show'), 1800);
-}
 let generationCompleteSoundAt = 0;
-function playGenerationCompleteSound(){
-    const now = Date.now();
-    if(now - generationCompleteSoundAt < 1200) return;
-    generationCompleteSoundAt = now;
-    try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if(!AudioCtx) return;
-        const ctx = playGenerationCompleteSound._ctx || (playGenerationCompleteSound._ctx = new AudioCtx());
-        const play = () => {
-            const start = ctx.currentTime + 0.015;
-            [
-                {freq:660, at:0, duration:0.12},
-                {freq:880, at:0.12, duration:0.16}
-            ].forEach(tone => {
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(tone.freq, start + tone.at);
-                gain.gain.setValueAtTime(0.0001, start + tone.at);
-                gain.gain.exponentialRampToValueAtTime(0.075, start + tone.at + 0.018);
-                gain.gain.exponentialRampToValueAtTime(0.0001, start + tone.at + tone.duration);
-                osc.connect(gain).connect(ctx.destination);
-                osc.start(start + tone.at);
-                osc.stop(start + tone.at + tone.duration + 0.02);
-            });
-        };
-        if(ctx.state === 'suspended') ctx.resume().then(play).catch(() => {});
-        else play();
-    } catch(e) {}
-}
-function selectedNode(){ return nodes.find(n => n.id === selectedId) || null; }
-// 任务等待期间，服务端 WebSocket 可能用最新画布替换 nodes 数组；不要继续读旧的节点对象。
-function liveNode(node){ return node?.id ? (nodes.find(item => item.id === node.id) || node) : node; }
+// 任务等待期间，服务端 WebSocket 可能用最新画布替换 canvasState.nodes 数组；不要继续读旧的节点对象。
+function liveNode(node){ return node?.id ? (canvasState.nodes.find(item => item.id === node.id) || node) : node; }
 function clearSelection(){
     savePromptDraftForCurrent();
-    selectedId = '';
-    selectedIds = [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = '';
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
 }
 function clearImageClickTimer(){
     if(imageClickTimer){
@@ -1654,29 +1014,30 @@ function syncSelectionUi(){
     const nextIds = new Set(ids);
     const touchedIds = new Set([...smartSelectionUiNodeIds, ...nextIds]);
     if(smartSelectionUiImage.nodeId) touchedIds.add(smartSelectionUiImage.nodeId);
-    if(selectedImage.nodeId) touchedIds.add(selectedImage.nodeId);
+    if(canvasState.selectedImage.nodeId) touchedIds.add(canvasState.selectedImage.nodeId);
     world.classList.toggle('smart-multi-selected', ids.length > 1);
     if(smartArrangeBtn) smartArrangeBtn.disabled = ids.length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = ids.length < 2;
     smartNodeElementsByIds(touchedIds).forEach(el => {
         const id = el.dataset.id || '';
         el.classList.toggle('selected', isNodeSelected(id));
         el.querySelectorAll('.thumb-item,.image-wrap').forEach(item => {
             const targetNodeId = item.dataset.refNodeId || id;
             const index = Number(item.dataset.refImageIndex ?? item.dataset.imageIndex ?? 0);
-            item.classList.toggle('image-selected', selectedImage.nodeId === targetNodeId && selectedImage.index === index);
+            item.classList.toggle('image-selected', canvasState.selectedImage.nodeId === targetNodeId && canvasState.selectedImage.index === index);
         });
     });
     smartSelectionUiNodeIds = nextIds;
-    smartSelectionUiImage = {nodeId:selectedImage.nodeId || '', index:Number(selectedImage.index ?? -1)};
+    smartSelectionUiImage = {nodeId:canvasState.selectedImage.nodeId || '', index:Number(canvasState.selectedImage.index ?? -1)};
     syncSmartSelectedImageResolution(world);
     syncRunButtonState();
     scheduleConnectionLayerRefresh();
 }
 function isNodeSelected(id){
-    return selectedId === id || selectedIds.includes(id);
+    return canvasState.selectedId === id || canvasState.selectedIds.includes(id);
 }
 function selectedNodeIds(){
-    return selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
+    return canvasState.selectedIds.length ? canvasState.selectedIds.slice() : (canvasState.selectedId ? [canvasState.selectedId] : []);
 }
 function isEditableTarget(target){
     const el = target || document.activeElement;
@@ -1686,20 +1047,12 @@ function safeScale(value){
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : 1;
 }
-function nodeScale(node){
-    const v = Number(node?.scale);
-    if((node?.images || []).length > 1 && v === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE) return MEDIA_GROUP_DEFAULT_SCALE;
-    return Number.isFinite(v) && v > 0 ? v : 1;
-}
 const MEDIA_NODE_DEFAULT_SCALE = 2;
-const MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE = 1.6;
-const MEDIA_GROUP_DEFAULT_SCALE = 0.8;
 const ZOOM_PREVIEW_NODE_DEFAULT_SCALE = 1;
 const ZOOM_PREVIEW_NODE_MAX_SCALE = 1.15;
 const MEDIA_GROUP_THUMB_BASE = 224;
 const MEDIA_GROUP_MAX_VISIBLE_ROWS = 3;
 // 智能分组卡片内的图片网格：超过这么多排就出现纵向滚动（区别于多图节点的 3 排）。
-const SMART_GROUP_MAX_VISIBLE_ROWS = 4;
 
 // ========== 批量生图缩略图规范（单一数据源） ==========
 // 参考生图历史面板：136px 宽、4:3 比例的卡片
@@ -1747,29 +1100,25 @@ function mediaNodeDefaultScale(node){
     if((node?.images || []).length > 1 && !Number.isFinite(Number(node?.scale))) return MEDIA_GROUP_DEFAULT_SCALE;
     return Number.isFinite(Number(node?.scale)) && Number(node.scale) > 0 ? Number(node.scale) : MEDIA_NODE_DEFAULT_SCALE;
 }
-function createImageNodeAt(point, images=[], options={}){
-    const layout = imageLayout(images || [], mediaNodeDefaultScale({type:'smart-image', images:images || []}), {type:'smart-image', images:images || []});
-    return createNode((point?.x || 0) - Math.round(layout.width / 2), (point?.y || 0) - Math.round(layout.height / 2), images, options);
-}
 function smartGroupMembers(node){
     if(!isSmartGroupNode(node)) return [];
     const ids = Array.isArray(node.items) ? node.items : [];
     const seen = new Set([node.id]);
-    return ids.map(id => nodes.find(n => n.id === id)).filter(member => {
+    return ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(member => {
         if(!member || seen.has(member.id) || isSmartGroupNode(member)) return false;
         seen.add(member.id);
         return true;
     });
 }
 function smartGroupCompactMembers(node){
-    return smartGroupMembers(node).filter(member => member?.type === 'smart-prompt' || member?.type === 'smart-loop');
+    return smartGroupMembers(node).filter(member => member?.type === NODE_TYPE_PROMPT || member?.type === NODE_TYPE_LOOP);
 }
 function isSmartGroupCompactMember(node){
-    return Boolean(node && (node.type === 'smart-prompt' || node.type === 'smart-loop') && smartGroupContainingNode(node.id));
+    return Boolean(node && (node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP) && smartGroupContainingNode(node.id));
 }
 // 可作为分组"画布成员节点"的类型（图片走网格吸收，prompt/loop 走成员节点，分组走合并）。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
 function isSmartGroupableNode(node){
-    return Boolean(node && (isSmartImageNode(node) || node.type === 'smart-prompt' || node.type === 'smart-loop' || isSmartGroupNode(node)));
+    return Boolean(node && (isSmartImageNode(node) || node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP || isSmartGroupNode(node)));
 }
 // 分组当前缩放比例（1=原始）。分组就像“画布中的画布”：缩放分组时组内所有成员（含提示词）整体等比缩放+
 // 重排。缩放过程用每次手势开始时的快照实时计算（见 resize 处理），不存持久基准，避免移动成员后再缩放位置回退。
@@ -1791,8 +1140,8 @@ function absorbImageNodeIntoSmartGroup(group, child){
     // 清掉显式尺寸，让缩略图网格按图片数自动整理排列（“放入图片自动整理”）。
     delete group.w; delete group.h;
     rerouteSmartConnections(child.id, group.id);
-    nodes = nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = nodes;
-    nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
+    canvasState.nodes = canvasState.nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = canvasState.nodes;
+    canvasState.nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
     return true;
 }
 function addNodeToSmartGroup(group, child){
@@ -1809,18 +1158,18 @@ function addNodeToSmartGroup(group, child){
             .filter(id => id !== group.id && !items.includes(id));
         group.items = [...items, ...childMemberIds];
         childMemberIds.forEach(id => {
-            const m = nodes.find(n => n.id === id);
+            const m = canvasState.nodes.find(n => n.id === id);
             if(m) scaleSmartGroupMemberToZoom(group, m, zoom);
         });
         rerouteSmartConnections(child.id, group.id);
-        nodes = nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = nodes;
-        nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
+        canvasState.nodes = canvasState.nodes.filter(n => n.id !== child.id); if(canvas) canvas.nodes = canvasState.nodes;
+        canvasState.nodes.forEach(g => { if(isSmartGroupNode(g) && Array.isArray(g.items)) g.items = g.items.filter(id => id !== child.id); });
         return true;
     }
     // 图片节点：收进卡片内的缩略图网格（不再作为画布上的独立节点）。
     if(isSmartImageNode(child)) return absorbImageNodeIntoSmartGroup(group, child);
     // 提示词 / 循环：仍作为画布上的成员节点。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
-    if(child.type !== 'smart-prompt' && child.type !== 'smart-loop') return false;
+    if(child.type !== NODE_TYPE_PROMPT && child.type !== NODE_TYPE_LOOP) return false;
     if(items.includes(child.id)) return false;
     group.items = [...items, child.id];
     scaleSmartGroupMemberToZoom(group, child, zoom);
@@ -1829,16 +1178,10 @@ function addNodeToSmartGroup(group, child){
 // 找到把某个节点作为成员的智能分组（用于双击组内图片时按整组左右切换）。
 function smartGroupContainingNode(nodeId){
     if(!nodeId) return null;
-    return nodes.find(n => isSmartGroupNode(n) && Array.isArray(n.items) && n.items.includes(nodeId)) || null;
+    return canvasState.nodes.find(n => isSmartGroupNode(n) && Array.isArray(n.items) && n.items.includes(nodeId)) || null;
 }
 // 节点所属的“分组作用域”ID：成员返回其分组，分组本体返回自身，否则空。
 // 用于连线合并/隐藏：同一作用域内部的连线属于分组内部关系，无需画出。
-function smartGroupScopeId(nodeId){
-    const group = smartGroupContainingNode(nodeId);
-    if(group) return group.id;
-    const node = nodes.find(n => n.id === nodeId);
-    return isSmartGroupNode(node) ? node.id : '';
-}
 // 汇总分组内所有图片成员的图片，按阅读顺序（先行后列：成员当前 y 再 x）排成一维序列。
 // 返回 [{nodeId, index, source, item}]——source 是成员节点里真实的图片对象（写回自然尺寸用），
 // item 是 imageForDisplay 后的展示对象。预览左右切换、批量下载、宫格拼接都以它为数据源。
@@ -1910,11 +1253,13 @@ function smartGroupThumbLayout(node){
         };
     }
     
-    // 批量：固定 4:3 缩略图网格（与生图历史一致）
+    // 批量：固定 136px 宽的缩略图网格（与生图历史一致），但行高按每张图的实际显示比例
+    // 计算（#172：fe9adb9 把组卡片改成固定 4:3 盒，横图卡片比例从 1.5 被拉成 1.3333）。
     const grid = getBatchThumbGridSize(count);
     const maxVisibleRows = compactMembers.length ? count : SMART_GROUP_MAX_VISIBLE_ROWS;
     const visibleRows = Math.min(maxVisibleRows, grid.rows);
-    
+    const gridHeight = mediaGroupGridHeight(refs.map(ref => ref.item), grid.cols, visibleRows, BATCH_THUMB.WIDTH);
+
     return {
         refs,
         compactMembers,
@@ -1923,9 +1268,9 @@ function smartGroupThumbLayout(node){
         visibleRows,
         thumb:BATCH_THUMB.WIDTH,
         thumbH:BATCH_THUMB.HEIGHT,
-        gridHeight:grid.gridH,
+        gridHeight,
         width:grid.boxW,
-        height:grid.boxH + pendingExtra
+        height:grid.boxH - grid.gridH + gridHeight + pendingExtra
     };
 }
 const SMART_GROUP_ARRANGE_PADDING = 18;
@@ -2090,49 +1435,6 @@ function singleImageLayout(image, node, scale){
     }
     return {cols:1, rows:1, width:Math.round(260*scale), height:Math.round(180*scale), thumb:Math.round(96*scale), single:true};
 }
-function groupImageGridLayout(count, explicitW, explicitH, maxThumb, pad=32, gap=8, maxVisibleRows=MEDIA_GROUP_MAX_VISIBLE_ROWS){
-    let best = null;
-    for(let cols = 1; cols <= count; cols++){
-        const rows = Math.ceil(count / cols);
-        const visibleRows = Math.min(Math.max(1, maxVisibleRows), rows);
-        const availableW = explicitW - pad - (cols - 1) * gap;
-        const availableH = explicitH - pad - (visibleRows - 1) * gap;
-        if(availableW <= 0 || availableH <= 0) continue;
-        const rawThumb = Math.floor(Math.min(availableW / cols, availableH / visibleRows));
-        const fittedThumb = Math.max(28, Math.min(maxThumb, rawThumb));
-        const fits = rawThumb >= 28;
-        const usedW = cols * fittedThumb + (cols - 1) * gap + pad;
-        const usedH = visibleRows * fittedThumb + (visibleRows - 1) * gap + pad;
-        const spareW = Math.max(0, explicitW - usedW);
-        const spareH = Math.max(0, explicitH - usedH);
-        const atMax = fittedThumb >= maxThumb;
-        // 完美网格优先：整除且行数不超可见上限（8→4×2 / 2×4、6→3×2、9→3×3），
-        // 避免 3×2+2 这类缺角布局。
-        const perfect = (count % cols === 0) && (rows <= maxVisibleRows) ? 1 : 0;
-        const score = [
-            perfect,
-            fits ? 1 : 0,
-            fittedThumb,
-            atMax ? cols : 0,
-            -(spareW + spareH * 0.35),
-            -rows
-        ];
-        let better = !best;
-        if(best){
-            for(let i = 0; i < score.length; i++){
-                if(score[i] === best.score[i]) continue;
-                better = score[i] > best.score[i];
-                break;
-            }
-        }
-        if(better){
-            best = {cols, rows, visibleRows, thumb:fittedThumb, score};
-        }
-    }
-    const fallbackCols = Math.min(count, 2);
-    const fallbackRows = Math.ceil(count / fallbackCols);
-    return best || {cols:fallbackCols, rows:fallbackRows, visibleRows:Math.min(MEDIA_GROUP_MAX_VISIBLE_ROWS, fallbackRows), thumb:28};
-}
 function smartNodeInputThumbRows(count){
     return count ? Math.ceil(Math.min(10, count) / 5) : 0;
 }
@@ -2211,12 +1513,12 @@ function promptNodeMinHeight(node){
 }
 function promptTextItemsForNode(node, ctx=smartLoopContext){
     if(!node) return [];
-    if(node.type === 'smart-prompt') return promptNodePromptItems(node);
-    if(node.type === 'smart-loop'){
+    if(node.type === NODE_TYPE_PROMPT) return promptNodePromptItems(node);
+    if(node.type === NODE_TYPE_LOOP){
         const text = smartLoopPrompt(node, ctx);
         return text ? [text] : [];
     }
-    if(node.type === 'smart-group') return smartGroupMembers(node).flatMap(member => promptTextItemsForNode(member, ctx));
+    if(node.type === NODE_TYPE_GROUP) return smartGroupMembers(node).flatMap(member => promptTextItemsForNode(member, ctx));
     return [];
 }
 function promptNodeUpstreamPromptItems(node, ctx=smartLoopContext){
@@ -2229,11 +1531,6 @@ function promptNodeUpstreamPromptItems(node, ctx=smartLoopContext){
 }
 function promptNodeUpstreamPromptText(node, ctx=smartLoopContext){
     return promptNodeUpstreamPromptItems(node, ctx).join('\n\n');
-}
-function promptNodeLLMInputText(node, ctx=smartLoopContext){
-    const upstream = promptNodeUpstreamPromptText(node, ctx).trim();
-    const instruction = String(node?.llmInstruction || '').trim() || promptNodePromptItems(node).join('\n\n').trim();
-    return [upstream, instruction].filter(Boolean).join('\n\n');
 }
 function promptNodeExpandedHeight(node){
     // 指令文本框（发送给 LLM 的内容）可拖动加高，超出默认高度的部分要叠加进节点高度。
@@ -2284,7 +1581,7 @@ function parseSizeAspect(sizeText){
 // - 批量完成分支：按 _batchTotal / _generationAspect 锁网格几何（防几何漂移，有意锁定）
 // 这类节点的 resize 手柄拖拽会被 imageLayout 静默拉回 → 不渲染手柄，避免用户误以为 bug
 function isLockedBatchGenNode(node){
-    if(!node || node.type !== 'smart-image' || node.smartGroupMember) return false;
+    if(!node || node.type !== NODE_TYPE_IMAGE || node.smartGroupMember) return false;
     if(node.id && smartGroupContainingNode(node.id)) return false;
     const count = Array.isArray(node?.images) ? node.images.length : 0;
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
@@ -2296,14 +1593,14 @@ function isLockedBatchGenNode(node){
     return batchTotal > 1 || (Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0);
 }
 function imageLayout(images, scale=1, node=null){
-    if(node?.type === 'smart-group'){
+    if(node?.type === NODE_TYPE_GROUP){
         const groupThumbLayout = smartGroupThumbLayout(node);
         if(groupThumbLayout) return groupThumbLayout;
         return {cols:1, rows:1, ...smartGroupLayoutSize(node), thumb:96, single:true};
     }
     if(isSmartConversationNode(node)) return {cols:1, rows:1, ...conversationNodeLayoutSize(node), thumb:96, single:true};
-    if(node?.type === 'smart-prompt') return {cols:1, rows:1, ...promptNodeLayoutSize(node), thumb:96, single:true};
-    if(node?.type === 'agent-task'){
+    if(node?.type === NODE_TYPE_PROMPT) return {cols:1, rows:1, ...promptNodeLayoutSize(node), thumb:96, single:true};
+    if(node?.type === NODE_TYPE_TASK){
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
         return {
@@ -2315,7 +1612,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'smart-agent'){
+    if(node?.type === NODE_TYPE_AGENT){
         // Agent 节点是 TUI 型节点：尺寸由节点自身 w/h 决定（可拖拽拉伸），
         // 不走媒体节点的图片网格占位布局，否则 resize 设置的 w/h 不生效
         // （用户反馈"agent 节点没法拉伸"——渲染尺寸恒为占位图大小，与 w/h 无关）。
@@ -2330,7 +1627,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'local-edit'){
+    if(node?.type === NODE_TYPE_LOCAL_EDIT){
         // 局部编辑是表单型节点：尺寸由节点自身 w/h 决定（可拖拽调大小），
         // 不走媒体节点的单图/批量布局，否则卡片会溢出外框。
         const explicitW = Number(node.w);
@@ -2344,7 +1641,7 @@ function imageLayout(images, scale=1, node=null){
             single:true,
         };
     }
-    if(node?.type === 'smart-loop'){
+    if(node?.type === NODE_TYPE_LOOP){
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
         if(isSmartGroupCompactMember(node) && Number.isFinite(explicitW) && explicitW > 24 && Number.isFinite(explicitH) && explicitH > 24){
@@ -2353,7 +1650,7 @@ function imageLayout(images, scale=1, node=null){
         return {cols:1, rows:1, width:Math.round(Number(node.w) || smartLoopWidth(node)), height:Math.round(Math.max(Number(node.h) || 0, smartLoopHeight(node))), thumb:96, single:true};
     }
     const count = (images || []).length;
-    const s = node?.type === 'smart-image' || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
+    const s = node?.type === NODE_TYPE_IMAGE || !node?.type ? mediaNodeDefaultScale(node) : (Number.isFinite(scale) && scale > 0 ? scale : 1);
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
     if(count === 0 || pending){
         // 生成中（含逐张写回期间）：使用统一布局计算，占位图与完成图尺寸一致。
@@ -2488,7 +1785,7 @@ function smartLoopHeight(node){
     return h;
 }
 function fitSmartLoopNode(node){
-    if(!node || node.type !== 'smart-loop') return;
+    if(!node || node.type !== NODE_TYPE_LOOP) return;
     node.w = smartLoopWidth(node);
     node.h = smartLoopHeight(node);
 }
@@ -2497,11 +1794,11 @@ function nodeRect(node){
     return {x:node.x || 0, y:node.y || 0, width:layout.width, height:layout.height};
 }
 function smartArrangeAtomicIds(ids){
-    const out = new Set((ids || []).filter(id => nodes.some(n => n.id === id)));
+    const out = new Set((ids || []).filter(id => canvasState.nodes.some(n => n.id === id)));
     let changed = true;
     while(changed){
         changed = false;
-        nodes.filter(isSmartGroupNode).forEach(group => {
+        canvasState.nodes.filter(isSmartGroupNode).forEach(group => {
             (group.items || []).forEach(itemId => {
                 if(!out.has(itemId)) return;
                 out.delete(itemId);
@@ -2521,14 +1818,9 @@ function translateSmartNodeWithMembers(node, dx, dy, seen=new Set()){
         smartGroupMembers(node).forEach(member => translateSmartNodeWithMembers(member, dx, dy, seen));
     }
 }
-function moveSmartNodeAtom(node, x, y){
-    const dx = Math.round(x - (Number(node.x) || 0));
-    const dy = Math.round(y - (Number(node.y) || 0));
-    translateSmartNodeWithMembers(node, dx, dy);
-}
 function arrangeSelectedSmartNodes(){
     if(!canvas) return;
-    const explicit = selectedNodeIds().filter(id => nodes.some(n => n.id === id));
+    const explicit = selectedNodeIds().filter(id => canvasState.nodes.some(n => n.id === id));
     if(!explicit.length) return;
     const ids = smartArrangeAtomicIds(explicit.length > 1 ? explicit : connectedSmartClusterIds(explicit[0]));
     if(ids.length < 2) return;
@@ -2646,8 +1938,56 @@ function scheduleSmartNodeFloatingMenuPosition(){
     if(smartNodeMenuPositionFrame) return;
     smartNodeMenuPositionFrame = requestAnimationFrame(positionSmartNodeFloatingMenus);
 }
+// #238 Perf(W1): on zoom settle, re-tier rendered canvas previews (img src /
+// video poster) without re-rendering nodes.
+let previewLodTimer = null;
+function schedulePreviewLodRefresh(){
+    if(previewLodTimer) clearTimeout(previewLodTimer);
+    previewLodTimer = setTimeout(refreshCanvasPreviewLodWidths, 200);
+}
+function refreshCanvasPreviewLodWidths(){
+    previewLodTimer = null;
+    const dpr = window.devicePixelRatio || 1;
+    world.querySelectorAll('img[data-preview-src], video[data-video-preview="1"][poster]').forEach(el => {
+        const cssW = parseFloat(el.style.width) || el.offsetWidth || 0;
+        const cssH = parseFloat(el.style.height) || el.offsetHeight || 0;
+        const tier = mediaPreviewTierFor(Math.max(cssW, cssH), viewport.scale, dpr);
+        if(el.tagName === 'IMG'){
+            const current = el.getAttribute('data-preview-src') || el.getAttribute('src') || '';
+            const next = setPreviewUrlWidth(current, tier);
+            if(next && next !== current){
+                el.setAttribute('data-preview-src', next);
+                el.src = next;
+            }
+        } else {
+            const poster = el.getAttribute('poster') || '';
+            const next = setPreviewUrlWidth(poster, tier);
+            if(next && next !== poster) el.setAttribute('poster', next);
+        }
+    });
+}
+// #238: hover-to-play for canvas video previews (muted, looping); the click
+// play button keeps the existing controls-activation path untouched.
+shell.addEventListener('pointerover', event => {
+    const video = event.target?.closest?.('video[data-video-preview="1"]');
+    if(!video || video.dataset.hoverPlaying === '1') return;
+    video.dataset.hoverPlaying = '1';
+    video.muted = true;
+    video.loop = true;
+    const playing = video.play();
+    if(playing?.catch) playing.catch(() => {});
+});
+shell.addEventListener('pointerout', event => {
+    const video = event.target?.closest?.('video[data-video-preview="1"]');
+    if(!video || video.dataset.hoverPlaying !== '1') return;
+    if(event.relatedTarget && video.contains(event.relatedTarget)) return;
+    video.dataset.hoverPlaying = '';
+    video.pause();
+    try { video.currentTime = 0; } catch(error) {}
+});
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
+    schedulePreviewLodRefresh();
     if(isProjectCanvasData()) persistProjectViewport();
     // world 被 transform:scale 缩放后，其内部带 backdrop-filter 的卡片（参数设置/合成卡等）
     // 会被部分浏览器（Chrome/Edge 等 Blink 内核）当作独立合成层先按 1x 栅格化、再整体缩放，
@@ -2681,8 +2021,8 @@ function viewportCenter(){
 }
 function frameSmartCanvasContentIfNeeded(){
     const compactViewport = Number(shell?.clientWidth || window.innerWidth || 0) < 720;
-    if(!shell || !nodes.length || (!compactViewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.scale !== 1))) return false;
-    const content = nodes
+    if(!shell || !canvasState.nodes.length || (!compactViewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.scale !== 1))) return false;
+    const content = canvasState.nodes
         .filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID)
         .map(nodeRect)
         .filter(rect => rect.width > 0 && rect.height > 0);
@@ -2733,13 +2073,14 @@ function frameSmartCanvasContentIfNeeded(){
 function renderMinimap(){
     if(!minimapContent || !minimapViewport) return;
     if(smartArrangeBtn) smartArrangeBtn.disabled = selectedNodeIds().length < 2;
+    if(smartBatchRenameBtn) smartBatchRenameBtn.disabled = selectedNodeIds().length < 2;
     const width = minimapContent.clientWidth || 170;
     const height = minimapContent.clientHeight || 108;
     const viewW = shell.clientWidth / viewport.scale;
     const viewH = shell.clientHeight / viewport.scale;
     const viewX = -viewport.x / viewport.scale;
     const viewY = -viewport.y / viewport.scale;
-    const rects = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID).map(nodeRect);
+    const rects = canvasState.nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID).map(nodeRect);
     rects.push({x:viewX, y:viewY, width:viewW, height:viewH});
     const minX = Math.min(...rects.map(r => r.x), -200);
     const minY = Math.min(...rects.map(r => r.y), -200);
@@ -2807,7 +2148,7 @@ function smartEdgeRevealPlacement(node){
 function requestSmartEdgeReveal(node){
     if(!node?.id || !smartEdgeReveal) return;
     const live = liveSmartNode(node);
-    if(!live || !nodes.some(n => n.id === live.id)) return;
+    if(!live || !canvasState.nodes.some(n => n.id === live.id)) return;
     animateSmartGenerationResult(live);
     const placement = smartEdgeRevealPlacement(live);
     if(!placement) return;
@@ -2846,11 +2187,11 @@ function jumpToSmartEdgeRevealNode(){
     const id = smartEdgeRevealNodeId;
     hideSmartEdgeReveal();
     if(!id) return;
-    const node = nodes.find(n => String(n.id) === String(id));
+    const node = canvasState.nodes.find(n => String(n.id) === String(id));
     if(!node) return;
-    selectedId = node.id;
-    selectedIds = [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = node.id;
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
     centerViewportOnWorldPoint({x:Number(node.x || 0) + 120, y:Number(node.y || 0) + 100});
     render();
 }
@@ -2872,14 +2213,14 @@ function fitBoundsViewport(bounds){
     applyViewport();
 }
 function fitAllNodesViewport(){
-    if(!nodes.length){
+    if(!canvasState.nodes.length){
         viewport.scale = 0.45;
         viewport.x = shell.clientWidth / 2;
         viewport.y = shell.clientHeight / 2;
         applyViewport();
         return;
     }
-    const rects = nodes.map(nodeRect);
+    const rects = canvasState.nodes.map(nodeRect);
     const minX = Math.min(...rects.map(r => r.x));
     const minY = Math.min(...rects.map(r => r.y));
     const maxX = Math.max(...rects.map(r => r.x + r.width));
@@ -2920,7 +2261,7 @@ function exitZoomPreview(point=null){
 }
 function exitZoomPreviewToNode(nodeId){
     if(!zoomPreviewState) return false;
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return exitZoomPreview();
     const prev = zoomPreviewState;
     const rect = nodeRect(node);
@@ -3083,17 +2424,6 @@ function resolveChatProviderId(providerId=''){
     if(providers.some(p => p.id === providerId)) return providerId;
     return providers[0]?.id || 'comfly';
 }
-function getChatModels(){
-    // Return a list of chat model IDs across all providers
-    const models = [];
-    for (const provider of chatApiProviders()) {
-        const providerModels = providerChatModels(provider.id);
-        for (const model of providerModels) {
-            models.push({ id: model, name: model });
-        }
-    }
-    return models;
-}
 
 function providerChatModels(providerId){
     const provider = chatApiProviders().find(p => p.id === providerId);
@@ -3104,7 +2434,7 @@ function resolveChatModel(model='', providerId=''){
     return models.includes(model) ? model : (models[0] || model || 'gpt-5.4');
 }
 function chatProviderOptions(selectedId=''){
-    const selected = resolveChatProviderId(selectedId);
+    const selected = resolveChatProviderId(canvasState.selectedId);
     return chatApiProviders().map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === selected ? 'selected' : ''}>${escapeHtml(provider.name || provider.id)}</option>`).join('');
 }
 function chatModelOptions(selectedModel='', providerId=''){
@@ -3118,81 +2448,9 @@ function apiProviderById(providerId){
     return (apiProviders || []).find(p => p.id === providerId) || imageProviders()[0] || null;
 }
 // 认证素材 asset:// 是平台绑定的：返回某 provider 所属的认证平台键（与后端一致）
-function videoProviderPlatform(providerId){
-    const p = (apiProviders || []).find(x => x.id === providerId);
-    const proto = String(p?.protocol || '').toLowerCase();
-    const base = String(p?.base_url || '').toLowerCase();
-    if(proto === 'apimart' || base.includes('apimart.ai')) return 'apimart';
-    if(proto === 'volcengine' || providerId === 'volcengine') return 'volcengine';
-    return '';
-}
 function providerImageModels(providerId){
     const provider = providerId === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === providerId);
     return mergeSpecModels('image', orderedProviderModels(provider, 'image_models', 'image'), provider);
-}
-// 即梦图生图（挂了参考图）不支持 3.0/3.1，此时从模型下拉里隐藏它们。
-const JIMENG_IMAGE2IMAGE_UNSUPPORTED = ['3.0', '3.1'];
-function jimengImageEditMode(){
-    if(settings.provider_id !== 'jimeng') return false;
-    const node = activeComposerNode() || selectedNode();
-    const refs = node ? visibleReferenceImagesFor(node) : [];
-    return refs.length > 0;
-}
-function filterJimengImageModels(models){
-    if(settings.provider_id !== 'jimeng' || !jimengImageEditMode()) return models;
-    return (models || []).filter(m => !JIMENG_IMAGE2IMAGE_UNSUPPORTED.includes(String(m)));
-}
-let _jimengLastEditMode = null;
-let _jimengModelRefreshing = false;
-// 参考图增删导致即梦文生图/图生图切换时，重新渲染参数面板以更新模型下拉。
-function syncJimengModelPillForRefs(){
-    if(_jimengModelRefreshing) return;
-    if(settings.provider_id !== 'jimeng' || settings.engine !== 'api' || settings.apiKind === 'video'){
-        _jimengLastEditMode = null;
-        return;
-    }
-    const mode = jimengImageEditMode();
-    if(mode === _jimengLastEditMode) return;
-    _jimengLastEditMode = mode;
-    _jimengModelRefreshing = true;
-    try { scheduleDynamicParamsRefresh(80); } finally { _jimengModelRefreshing = false; }
-}
-// 即梦各视频指令支持的模型集合不同，按当前参考素材推断指令并过滤模型下拉。
-const JIMENG_SEEDANCE_VIDEO_MODELS = ['seedance2.0_vip', 'seedance2.0fast_vip', 'seedance2.0', 'seedance2.0fast'];
-const JIMENG_VIDEO_MODELS_BY_COMMAND = {
-    text2video: JIMENG_SEEDANCE_VIDEO_MODELS,
-    multimodal2video: JIMENG_SEEDANCE_VIDEO_MODELS,
-    image2video: ['3.0', '3.0fast', '3.0pro', '3.5pro', ...JIMENG_SEEDANCE_VIDEO_MODELS],
-    frames2video: ['3.0', '3.5pro', ...JIMENG_SEEDANCE_VIDEO_MODELS],
-};
-function jimengVideoCommand(){
-    const node = activeComposerNode() || selectedNode();
-    const refs = node ? visibleReferenceImagesFor(node) : [];
-    const imageRefs = imageRefsOnly(refs);
-    const hasVideoRef = videoRefsOnly(refs).length > 0 || Boolean(manualSmartVideoLink(settings));
-    if(settings.videoMultimodal || hasVideoRef) return 'multimodal2video';
-    if(imageRefs.length >= 2) return settings.videoUseFrameRoles ? 'frames2video' : 'multiframe2video';
-    if(imageRefs.length >= 1) return 'image2video';
-    return 'text2video';
-}
-function filterJimengVideoModels(models){
-    if(settings.videoProvider !== 'jimeng') return models;
-    const allowed = JIMENG_VIDEO_MODELS_BY_COMMAND[jimengVideoCommand()];
-    if(!allowed) return models; // multiframe2video 等：官方规格未知，不过滤
-    return (models || []).filter(m => allowed.includes(String(m)));
-}
-let _jimengLastVideoCommand = null;
-function syncJimengVideoModelPillForRefs(){
-    if(_jimengModelRefreshing) return;
-    if(settings.videoProvider !== 'jimeng' || settings.engine !== 'api' || settings.apiKind !== 'video'){
-        _jimengLastVideoCommand = null;
-        return;
-    }
-    const command = jimengVideoCommand();
-    if(command === _jimengLastVideoCommand) return;
-    _jimengLastVideoCommand = command;
-    _jimengModelRefreshing = true;
-    try { scheduleDynamicParamsRefresh(80); } finally { _jimengModelRefreshing = false; }
 }
 function sanitizeSmartApiSelection(target=settings){
     if(!target || typeof target !== 'object') return target;
@@ -3230,7 +2488,7 @@ function modelscopeProvider(){
 function modelscopeImageModels(){
     return modelscopeProvider()?.image_models || [];
 }
-const DEFAULT_VIDEO_MODELS = ['veo3-fast','veo3','sora','runway','kling','pika','minimax-video','wan-v2','seedance-1.0-pro','jimeng-vide-3.0','jimeng-video-3.0-pro'];
+const DEFAULT_VIDEO_MODELS = ['veo3-fast','veo3','sora','runway','kling','pika','minimax-video','wan-v2','seedance-1.0-pro'];
 function videoApiProviders(){
     const fromConfig = (apiProviders || []).filter(p => p.enabled !== false && p.id !== 'volcengine' && (p.video_models || []).length);
     if(fromConfig.length) return fromConfig;
@@ -3405,6 +2663,66 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
     const ratioKey = ratioValue && SIZE_MAP[ratioValue] ? ratioValue : 'square';
     return SIZE_MAP[ratioKey]?.[resolutionKey] || SIZE_MAP.square[resolutionKey] || SIZE_MAP.square['1k'];
 }
+// 当前模型实际支持的宽高比：服务商能力表优先，其次 model_specs.json，都缺失时返回 null（不过滤）。
+function apiImageAllowedAspectRatios(sourceSettings=settings){
+    const model = String(sourceSettings?.model || '').trim();
+    if(!model) return null;
+    const providerId = String(sourceSettings?.provider_id || '').trim();
+    const provider = apiProviderById(providerId) || {};
+    const fromProvider = (provider?.image_model_capabilities || {})[model]?.aspect_ratios;
+    if(Array.isArray(fromProvider) && fromProvider.length) return fromProvider.map(item => String(item || '').trim()).filter(Boolean);
+    const fromSpec = (modelSpecs?.image_models || {})[model]?.parameters?.aspect_ratio?.options;
+    if(Array.isArray(fromSpec) && fromSpec.length) return fromSpec.map(item => String(item || '').trim()).filter(Boolean);
+    return null;
+}
+function apiImageRatioPresets(sourceSettings=settings){
+    const allowed = apiImageAllowedAspectRatios(sourceSettings);
+    if(!allowed) return IMAGE_RATIO_PRESETS.slice();
+    // 不再保留「当前选中但模型并不支持」的 chip。之前这个 escape hatch 让节点上
+    // 残留的 1:4 在切到 gpt-image 家族后仍然可选，请求到路由预检阶段才被拒
+    // （不兼容参数：aspect_ratio），弹窗只剩一句「不支持本次请求」。
+    return IMAGE_RATIO_PRESETS.filter(([, ratio]) => allowed.includes(ratio));
+}
+const IMAGE_RATIO_PRESET_KEYS_BY_RATIO = Object.fromEntries(IMAGE_RATIO_PRESETS.map(([value, ratio]) => [ratio, value]));
+function ratioLog(value){
+    const parsed = parseRatioValue(value);
+    return parsed > 0 ? Math.log(parsed) : null;
+}
+// 模型 / 服务商切换后，节点上残留的比例可能超出新模型能力（banana 的 1:4 切到 gpt-image
+// 家族就是这种）。当场收敛到该模型支持的最接近比例（按对数距离，保留横竖方向）：
+// 用户看到的是「比例被调整」，而不是一次必然失败的生图。能力表缺失时不动用户选择。
+function alignRatioToModel(sourceSettings=settings){
+    const allowed = apiImageAllowedAspectRatios(sourceSettings);
+    if(!allowed) return '';
+    const current = (IMAGE_RATIO_PRESETS.find(([value]) => value === sourceSettings?.ratio) || [])[1];
+    const currentLog = ratioLog(current);
+    if(currentLog === null || allowed.includes(current)) return '';
+    // 只在「预设表 ∩ 该模型能力」里取最近：反查 key 必然命中。之前先按能力清单取最近，
+    // 再查 IMAGE_RATIO_PRESET_KEYS_BY_RATIO，遇到 3:5 这种表外比例就 `|| 'square'`，
+    // 把竖图静默换成 1:1，正好违背本函数声称的「保留横竖方向」。
+    const candidates = IMAGE_RATIO_PRESETS
+        .map(([value, ratio]) => ({ value, ratio, log: ratioLog(ratio) }))
+        .filter(item => item.log !== null && allowed.includes(item.ratio));
+    if(!candidates.length) return '';
+    // 打分：对数距离 + 跨方向惩罚。纯「同方向优先」在 15 档预设表下几乎永不生效
+    // （同方向通常本来就是最近的），但一旦生效反而有害：4:5 在模型只支持 5:4 和 1:8 时
+    // 会被跳到极端的 1:8，而镜像的 5:4 明显更贴原图。ln2 ≈ 0.693 表示「宁可翻转一档，
+    // 也不跳到差一倍以上的比例」。
+    const PENALTY = Math.LN2;
+    const nearest = candidates.reduce((best, item) => {
+        // 1:1 的 log 是 0，不构成方向翻转，不加惩罚。
+        const penalty = value => (value === 0 || Math.sign(value) === Math.sign(currentLog)) ? 0 : PENALTY;
+        const score = Math.abs(item.log - currentLog) + penalty(item.log);
+        const bestScore = Math.abs(best.log - currentLog) + penalty(best.log);
+        return score < bestScore ? item : best;
+    }, candidates[0]);
+    sourceSettings.ratio = nearest.value;
+    const change = `${current}→${nearest.ratio}`;
+    // 比例被当场改掉必须留下痕迹：用户只看到比例跳了一格时， Console 能回答「为什么改我选的」。
+    // 记在函数内而不是各调用点，四个入口（面板渲染、切模型、两条发图路径）行为一致。
+    console.info(`[ratio] ${change}`);
+    return change;
+}
 function apiImageUsesExplicitResolution(sourceSettings=settings){
     if(String(sourceSettings?.engine || '') !== 'api') return true;
     const providerId = String(sourceSettings?.provider_id || '').trim();
@@ -3535,7 +2853,7 @@ function renderDynamicParams(){
 function renderApiParams(){
     const providers = imageProviders();
     if(!settings.provider_id || !providers.some(p => p.id === settings.provider_id)) settings.provider_id = providers[0]?.id || '';
-    const models = filterJimengImageModels(providerImageModels(settings.provider_id));
+    const models = providerImageModels(settings.provider_id);
     if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
     // 切换平台/模型时保留用户已选的分辨率（记忆），normalizeApiSizeSettings 只会修正非法的 auto。
     normalizeApiSizeSettings('');
@@ -3553,7 +2871,7 @@ function renderApiParams(){
 function renderApiVideoParams(){
     const providers = videoApiProviders();
     if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || 'comfly';
-    const models = filterJimengVideoModels(providerVideoModels(settings.videoProvider));
+    const models = providerVideoModels(settings.videoProvider);
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
     dynamicParams.innerHTML = `
         ${renderVideoRoutingControl()}
@@ -3570,7 +2888,7 @@ function renderApiVideoParams(){
         ${renderVideoToggleControl('videoWatermark', tr('smart.videoWatermark'))}
         ${renderVideoToggleControl('videoMultimodal', tr('smart.videoMultimodal'))}
         ${renderVideoToggleControl('videoUseFrameRoles', tr('smart.videoUseFrameRoles'))}
-        ${settings.videoProvider === 'jimeng' ? '' : renderVideoTrustedAssetControl()}
+        ${renderVideoTrustedAssetControl()}
     `;
 }
 function renderVolcengineParams(){
@@ -3714,7 +3032,9 @@ function ratioLabel(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const customKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
     const sourceLabel = sourceImageRatioLabel(prefix) || tr('smart.imageRatio');
-    const map = {square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4', landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21', source:sourceLabel, custom:settings[customKey] || tr('smart.custom')};
+    const map = Object.fromEntries(IMAGE_RATIO_PRESETS.map(([value, ratio]) => [value, ratio]));
+    map.source = sourceLabel;
+    map.custom = settings[customKey] || tr('smart.custom');
     return map[settings[ratioKey] || 'square'] || '1:1';
 }
 function gcdInt(a, b){
@@ -3731,8 +3051,8 @@ function imageSizeForRatio(img){
 function sourceRatioImageForNode(node){
     const images = (node?.images || []).filter(img => img?.url && !isAudioMediaItem(img));
     if(!images.length) return null;
-    if(selectedImage.nodeId === node?.id && selectedImage.index >= 0 && imagesForNode(node)[selectedImage.index]){
-        const selected = imagesForNode(node)[selectedImage.index];
+    if(canvasState.selectedImage.nodeId === node?.id && canvasState.selectedImage.index >= 0 && imagesForNode(node)[canvasState.selectedImage.index]){
+        const selected = imagesForNode(node)[canvasState.selectedImage.index];
         if(imageSizeForRatio(selected)) return selected;
     }
     return images.find(img => imageSizeForRatio(img)) || images[0];
@@ -3882,6 +3202,9 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
     const customRatioKey = prefix ? `${prefix}CustomRatio` : 'customRatio';
     if(settings[ratioKey] === 'source') applySourceRatioToSettings(prefix);
+    // 从 canvas.json 读回的节点可能存着旧模型的比例（例如 gpt-image-2.5-flare + portrait14），
+    // 渲染时先收敛一次，避免面板显示一个该模型不支持的比例。
+    if(!prefix) alignRatioToModel(settings);
     const scope = sizePickerScope(prefix);
     const options = (!prefix && settings.engine === 'api') ? ['auto','1k','2k','4k'] : ['1k','2k','4k'];
     const currentRes = settings[resKey] || ((!prefix && settings.engine === 'api') ? defaultSmartApiResolution(settings.model) : '1k');
@@ -3889,8 +3212,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const currentCustomRatio = settings[customRatioKey] || (currentRatio === 'source' ? sourceImageRatioLabel(prefix) : '');
     const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
     const ratios = [
-        ['square','1:1',tr('smart.sizeRatioSquare')], ['portrait','2:3',tr('smart.sizeRatioPortrait')], ['landscape','3:2',tr('smart.sizeRatioLandscape')], ['portrait43','3:4',tr('smart.sizeRatioPortrait')], ['landscape43','4:3',tr('smart.sizeRatioLandscape')],
-        ['story','9:16',tr('smart.sizeRatioStory')], ['wide','16:9',tr('smart.sizeRatioWide')], ['ultrawide','21:9',tr('smart.sizeRatioUltrawide')], ['ultratall','9:21',tr('smart.sizeRatioUltratall')],
+        ...apiImageRatioPresets(prefix ? null : settings).map(([value, ratio, labelKey]) => [value, ratio, tr(labelKey)]),
         ...(includeSource ? [['source', sourceImageRatioLabel(prefix) || tr('smart.sizeRatioSource'), tr('smart.sizeRatioSourceAdaptive')]] : [])
     ];
     if(!prefix && !apiImageUsesExplicitResolution(settings)){
@@ -4095,16 +3417,6 @@ function rhFieldIndexes(fields){
     });
     return map;
 }
-function rhMediaForRun(prompt, refs){
-    const cleanRefs = (refs || []).filter(ref => ref?.url);
-    return {
-        refs:cleanRefs,
-        image:imageRefsOnly(cleanRefs),
-        video:videoRefsOnly(cleanRefs),
-        audio:audioRefsOnly(cleanRefs),
-        prompt:String(prompt || '').trim()
-    };
-}
 function tempShUploadedUrlFor(url, sourceSettings=settings){
     const source = String(url || '');
     const manualLinks = ((sourceSettings || settings).videoTempShLinks || []).filter(item => item?.manual === true);
@@ -4117,19 +3429,8 @@ function tempShUploadedUrlFor(url, sourceSettings=settings){
 function mediaRefSourceUrl(ref){
     return localDisplayUrlForMediaItem(ref) || ref?.sourceUrl || ref?.originalLocalUrl || ref?.url || '';
 }
-function applyUploadedUrlsToSmartRefs(refs, sourceSettings=settings){
-    return (refs || []).map(ref => {
-        if(!ref?.url) return ref;
-        const sourceUrl = mediaRefSourceUrl(ref);
-        const url = tempShUploadedUrlFor(sourceUrl, sourceSettings);
-        return url && url !== ref.url ? {...ref, url, originalLocalUrl:ref.originalLocalUrl || ref.url} : ref;
-    });
-}
 function manualSmartVideoLink(sourceSettings=settings){
     return ((sourceSettings || settings).videoTempShLinks || []).find(item => item?.manual === true && item?.url) || null;
-}
-function manualSmartMediaLinks(sourceSettings=settings){
-    return ((sourceSettings || settings).videoTempShLinks || []).filter(item => item?.manual === true && item?.url);
 }
 function renderedInputMediaRefs(){
     if(!inputThumbsRow) return [];
@@ -4370,6 +3671,8 @@ function setDynamicSetting(key, value){
     // 模型选择器在自动路由下也可见；用户明确点选模型时，将这次生成切到固定模型，
     // 这样 UI 选择和实际请求不会出现“看起来选了但 payload 仍是 auto”的错觉。
     if(key === 'model' && settings.routingMode !== 'manual') settings.routingMode = 'manual';
+    // 换模型后当前比例可能不被支持，立刻收敛到支持的最近比例（见 alignRatioToModel）。
+    if(key === 'model') alignRatioToModel(settings);
     if(key === 'videoModel' && settings.videoRoutingMode !== 'manual') settings.videoRoutingMode = 'manual';
     if(key === 'videoMultimodal') settings._videoMultimodalUserSet = true;
     if(key === 'videoMultimodal' && settings.videoMultimodal) settings.videoUseFrameRoles = false;
@@ -4640,13 +3943,13 @@ function specModelIds(kind){
     return Array.isArray(arr) ? arr : [];
 }
 // 取某模型在 spec 中的定义（参数选项/能力）。未适配返回 null。
-// 判断是否为通用 OpenAI 兼容 provider（非 codex/jimeng/runninghub/volcengine/gemini-cli 专属）。
+// 判断是否为通用 OpenAI 兼容 provider（非 codex/runninghub/volcengine/gemini-cli 专属）。
 // spec 模型是针对这类网关的；provider 专属入口沿用各自的模型来源。
 function isGenericOpenAIProvider(provider){
     if(!provider) return false;
     const proto = String(provider.protocol || 'openai').toLowerCase();
     const id = String(provider.id || '').toLowerCase();
-    const specific = ['codex','jimeng','runninghub','volcengine','gemini-cli'];
+    const specific = ['codex','runninghub','volcengine','gemini-cli'];
     return !specific.includes(proto) && !specific.includes(id);
 }
 // 将 spec 的适配模型合并进 provider 模型列表（additive：保留原序，补入缺失的 spec 模型）。
@@ -4834,7 +4137,7 @@ function defaultPromptPresetName(text){
     return (String(text || '').trim().split(/\r?\n/)[0] || tr('smart.promptPresetDefault')).slice(0, 28);
 }
 function promptPresetPanelNode(){
-    return nodes.find(n => n.id === promptPresetPanel?.dataset.nodeId) || null;
+    return canvasState.nodes.find(n => n.id === promptPresetPanel?.dataset.nodeId) || null;
 }
 function setPromptPresetStatus(text='', tone=''){
     if(!promptPresetStatus) return;
@@ -4871,9 +4174,9 @@ function renderPromptPresetPanel(selectedId='', message=''){
     if(!promptPresetSelect) return;
     resetPromptPresetDeleteState();
     promptPresetSelect.innerHTML = promptPresets.length
-        ? promptPresets.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === selectedId ? 'selected' : ''}>${escapeHtml(p.name || tr('smart.promptPresetUnnamed'))}</option>`).join('')
+        ? promptPresets.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === canvasState.selectedId ? 'selected' : ''}>${escapeHtml(p.name || tr('smart.promptPresetUnnamed'))}</option>`).join('')
         : `<option value="">${escapeHtml(tr('smart.promptPresetNone'))}</option>`;
-    const preset = currentPromptPreset(selectedId) || promptPresets[0] || null;
+    const preset = currentPromptPreset(canvasState.selectedId) || promptPresets[0] || null;
     if(preset && promptPresetSelect.value !== preset.id) promptPresetSelect.value = preset.id;
     promptPresetName.value = preset?.name || '';
     promptPresetText.value = preset?.text || '';
@@ -4888,7 +4191,7 @@ function renderPromptPresetPanel(selectedId='', message=''){
 function openPromptPresetPanel(nodeId='', presetId='', options={}){
     if(!promptPresetPanel) return;
     promptPresetPanel.dataset.nodeId = nodeId || '';
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     const preferred = presetId || node?.promptPresetId || promptPresets[0]?.id || '';
     renderPromptPresetPanel(preferred, options.status || '');
     if(options.tone) setPromptPresetStatus(options.status || '', options.tone);
@@ -4992,7 +4295,7 @@ function renderPromptTemplatePanel(options={}){
         ? {id:selected.id, name:selected.name || '', text:selected.positive || '', category:selected.category || 'storyboard', builtin:Boolean(selected.builtin)}
         : (selected ? currentPromptPreset(selected.sourceId) : null);
     const target = promptTemplatePanel.dataset.target || 'node';
-    const node = nodes.find(n => n.id === promptTemplatePanel.dataset.nodeId);
+    const node = canvasState.nodes.find(n => n.id === promptTemplatePanel.dataset.nodeId);
     const activeLibrary = activePromptLibrary();
     // 系统库 readonly=false，其条目也可编辑/删除（经后端持久化），因此只看 readonly。
     const canEditCurrentLibrary = !activeLibrary.readonly;
@@ -5093,9 +4396,9 @@ async function openPromptTemplatePanel(nodeId='', templateId='', options={}){
     }
     renderPromptTemplatePanel();
     if(target === 'node' && nodeId){
-        selectedId = nodeId;
-        selectedIds = [];
-        selectedImage = {nodeId:'', index:-1};
+        canvasState.selectedId = nodeId;
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId:'', index:-1};
     }
     render();
     syncComposerTemplateButton();
@@ -5119,7 +4422,7 @@ function applyPromptTemplateToNode(mode='positive'){
         scheduleSave();
         return;
     }
-    const node = nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId);
+    const node = canvasState.nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId);
     if(!node) return;
     node.text = promptTemplateText(template, mode);
     node.promptPresetId = template.builtin ? '' : template.sourceId || '';
@@ -5133,7 +4436,7 @@ async function saveCurrentPromptAsTemplate(){
     if(library.readonly){ toast(tr('smart.selectEditableLibrary')); return; }
     const text = promptTemplatePanel?.dataset.target === 'composer'
         ? promptPlainText()
-        : String(nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId)?.text || '').trim();
+        : String(canvasState.nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId)?.text || '').trim();
     if(!text){ toast(tr('smart.promptPresetEmpty')); return; }
     try {
         const data = await fetch('/api/prompt-libraries/items', {
@@ -5216,7 +4519,7 @@ async function savePromptTemplateEdit(){
         const idx = promptPresets.findIndex(p => p.id === preset.id);
         if(idx >= 0) promptPresets[idx] = {...promptPresets[idx], name, text, category, updatedAt:Date.now()};
         savePromptPresets();
-        nodes.forEach(node => { if(node.promptPresetId === preset.id) node.text = text; });
+        canvasState.nodes.forEach(node => { if(node.promptPresetId === preset.id) node.text = text; });
     }
     promptTemplateEditing = false;
     renderPromptTemplatePanel();
@@ -5242,7 +4545,7 @@ async function deletePromptTemplate(){
         savePromptTemplateOverrides();
     } else {
         promptPresets = promptPresets.filter(p => p.id !== item.sourceId);
-        nodes.forEach(node => { if(node.promptPresetId === item.sourceId) node.promptPresetId = ''; });
+        canvasState.nodes.forEach(node => { if(node.promptPresetId === item.sourceId) node.promptPresetId = ''; });
         savePromptPresets();
     }
     promptTemplateSelectedId = '';
@@ -5382,7 +4685,7 @@ function assetLibraries(){
     return Array.isArray(assetLibrary.libraries) && assetLibrary.libraries.length ? assetLibrary.libraries : [{id:'default', name:tr('smart.defaultAssetLibrary'), categories:assetLibrary.categories || []}];
 }
 function projectMediaSourceLibrary(){
-    const items = (projectMediaLibrary.items || []).map(item => ({
+    const items = (canvasState.projectMediaLibrary.items || []).map(item => ({
         ...item,
         id:item.asset_id,
         url:item.original_url,
@@ -5453,7 +4756,7 @@ async function loadAssetLibrary(){
             projectId ? fetch(`/api/project-library/${encodeURIComponent(projectId)}/media`).then(r => r.ok ? r.json() : {items:[]}).catch(() => ({items:[]})) : Promise.resolve({items:[]})
         ]);
         localAssetLibrary = {items:Array.isArray(localData.items) ? localData.items : [], tree:localData.tree || null};
-        projectMediaLibrary = {items:Array.isArray(projectData.items) ? projectData.items : []};
+        canvasState.projectMediaLibrary = {items:Array.isArray(projectData.items) ? projectData.items : []};
         setAssetLibraryFromResponse(data, {render:false});
         if(!assetLibrarySelectionTouched) activeAssetLibraryId = PROJECT_ASSET_LIBRARY_ID;
         renderAssetLibrary();
@@ -5480,7 +4783,6 @@ let canvasSyncInFlight = false;
 let pendingRemoteUpdatedAt = 0;
 let canvasSyncTimer = null;
 let canvasMetaPollTimer = null;
-let connectionLayerRaf = 0;
 function mergeSmartImageLists(localImgs, remoteImgs){
     const merged = new Map();
     const keyFor = (image, fallbackIndex) => {
@@ -5504,17 +4806,12 @@ function mergeSmartImageLists(localImgs, remoteImgs){
     }
     return images;
 }
-function smartGenerationSubmissions(node){
-    return Array.isArray(node?.generationSubmissions)
-        ? node.generationSubmissions.filter(item => item && item.idempotencyKey)
-        : [];
-}
 function smartNodeInFlight(node){
     if(smartNodeHasCompletedResult(node)) return false;
     // #145: agent-task 节点用 node.status（'queued'/'running'/'succeeded'/'failed'/'uncertain'/'planned'），
     // 不映射到 running/pending 字段，需单独判定。'planned' 未派发不算 in-flight。
     if(isSmartAgentTaskNode(node)) return node.status === 'queued' || node.status === 'running';
-    return Boolean(node && (node.running || node.pending || node.queued || node.jimengPending || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
+    return Boolean(node && (node.running || node.pending || node.queued || smartPendingTasks(node).length || smartGenerationSubmissions(node).length));
 }
 function smartNodeHasDisplayResult(node){
     return Boolean((node?.images || []).some(img => img?.url && !img.loopInputPreview));
@@ -5522,11 +4819,11 @@ function smartNodeHasDisplayResult(node){
 function smartNodeHasCompletedResult(node){
     if(!smartNodeHasDisplayResult(node)) return false;
     if(node?.runFinishedAt) return true;
-    return !node?.jimengPending && !smartPendingTasks(node).length && !smartGenerationSubmissions(node).length && !Number(node?.pending || 0) && !node?.queued;
+    return !smartPendingTasks(node).length && !smartGenerationSubmissions(node).length && !Number(node?.pending || 0) && !node?.queued;
 }
 function liveSmartNode(node){
     if(!node?.id) return node;
-    return nodes.find(n => n.id === node.id) || node;
+    return canvasState.nodes.find(n => n.id === node.id) || node;
 }
 function clearSmartNodeBusyState(node){
     if(!node) return node;
@@ -5534,7 +4831,6 @@ function clearSmartNodeBusyState(node){
     node.running = false;
     node.pending = 0;
     node.queued = false;
-    delete node.jimengPending;
     delete node.pendingTasks;
     return node;
 }
@@ -5561,7 +4857,7 @@ function completedDownstreamOutputForNode(sourceNode){
 }
 function clearSourceBusyStateIfDownstreamDone(sourceNode, options={}){
     if(!sourceNode || !smartNodeInFlight(sourceNode)) return false;
-    if(sourceNode.jimengPending || smartPendingTasks(sourceNode).length) return false;
+    if(smartPendingTasks(sourceNode).length) return false;
     if(!completedDownstreamOutputForNode(sourceNode)) return false;
     clearSmartNodeBusyState(sourceNode);
     if(!sourceNode.runFinishedAt){
@@ -5574,16 +4870,16 @@ function clearSourceBusyStateIfDownstreamDone(sourceNode, options={}){
 }
 function clearCompletedSourceBusyStates(){
     let changed = false;
-    (nodes || []).forEach(node => {
+    (canvasState.nodes || []).forEach(node => {
         if(clearSourceBusyStateIfDownstreamDone(node)) changed = true;
     });
     return changed;
 }
 function hideCompletedRunTimers(){
     let changed = false;
-    (nodes || []).forEach(node => {
-        if(!node || node.type === 'smart-prompt') return;
-        if(node.pending || node.running || node.jimengPending || !node.runFinishedAt || node.runTimerHidden) return;
+    (canvasState.nodes || []).forEach(node => {
+        if(!node || node.type === NODE_TYPE_PROMPT) return;
+        if(node.pending || node.running || !node.runFinishedAt || node.runTimerHidden) return;
         node.runTimerHidden = true;
         changed = true;
     });
@@ -5591,60 +4887,12 @@ function hideCompletedRunTimers(){
 }
 function clearCompletedNodeBusyStates(){
     let changed = false;
-    (nodes || []).forEach(node => {
+    (canvasState.nodes || []).forEach(node => {
         if(!node || !smartNodeHasCompletedResult(node) || !smartNodeInFlight(node)) return;
         markSmartNodeComplete(node);
         changed = true;
     });
     if(clearCompletedSourceBusyStates()) changed = true;
-    return changed;
-}
-function usedCanvasOutputUrls(){
-    const used = new Set();
-    (nodes || []).forEach(node => (node.images || []).forEach(img => {
-        if(img?.url && !img.loopInputPreview) used.add(img.url);
-    }));
-    return used;
-}
-function successfulRecentGenerationLogOutputs(sourceNodeId='', withinMs=30 * 60 * 1000){
-    const cutoff = Date.now() - withinMs;
-    const logs = (canvas?.history || [])
-        .filter(log => log && log.status === 'success' && Number(log.createdAt || 0) >= cutoff)
-        .filter(log => Array.isArray(log.outputs) && log.outputs.length)
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
-    const scoped = sourceNodeId ? logs.filter(log => log.nodeId === sourceNodeId) : logs;
-    const usable = scoped.length ? scoped : logs.filter(log => !log.nodeId);
-    return usable.flatMap(log => (log.outputs || []).map(output => ({
-        url:typeof output === 'string' ? output : (output?.url || output?.src || output?.path || ''),
-        createdAt:log.createdAt,
-        nodeId:log.nodeId
-    }))).filter(item => item.url);
-}
-function recoverStuckLoopOutputsFromHistory(){
-    const used = usedCanvasOutputUrls();
-    let changed = false;
-    const slots = (nodes || [])
-        .filter(node => node && isSmartImageNode(node) && !isHistoryGroupNode(node))
-        .filter(node => (node.loopSourceId || node.loopRootId || Number.isFinite(Number(node.loopSlotIndex))) && !smartNodeHasDisplayResult(node))
-        .filter(node => (node.pending || node.running || node.queued) && !smartPendingTasks(node).length)
-        .sort((a, b) => (Number(a.loopSlotIndex || 0) - Number(b.loopSlotIndex || 0)) || (Number(a.y || 0) - Number(b.y || 0)));
-    slots.forEach(slot => {
-        const sourceId = slot.loopRootId || slot.sourceNodeId || '';
-        const output = successfulRecentGenerationLogOutputs(sourceId).find(item => !used.has(item.url));
-        if(!output) return;
-        const kind = mediaKindForUrls([output.url], 'image');
-        const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-        slot.images = [stripImageGenerationMeta({url:output.url, name:`recovered-${Number(slot.loopSlotIndex || 0) + 1}.${ext}`, kind, generatedResult:true})];
-        markSmartNodeComplete(slot);
-        if(kind) slot.outputKind = kind;
-        slot.title = slot.title || 'Image';
-        slot.scale = mediaNodeDefaultScale(slot);
-        delete slot.w;
-        delete slot.h;
-        used.add(output.url);
-        changed = true;
-        clearSourceBusyStateIfDownstreamDone(nodes.find(n => n.id === sourceId));
-    });
     return changed;
 }
 function completeSmartNodeWithImages(node, images){
@@ -5682,33 +4930,6 @@ function terminalSmartGenerationTaskIds(...logLists){
     });
     return terminal;
 }
-function smartHistoryTaskId(log){
-    return String(log?.task_id || log?.request?.task_id || log?.request?.taskId || '').trim();
-}
-function mergeSmartHistoryRecordLists(localLogs, remoteLogs){
-    const merged = new Map();
-    [...(localLogs || []), ...(remoteLogs || [])].forEach(log => {
-        if(!log || typeof log !== 'object') return;
-        const taskId = smartHistoryTaskId(log);
-        const recordId = String(log.id || '');
-        const key = taskId ? `task:${taskId}` : `id:${recordId}`;
-        if(!taskId && !recordId) return;
-        const current = merged.get(key);
-        if(!current){
-            merged.set(key, hydrateProjectMediaReferences(log));
-            return;
-        }
-        const currentTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(current.status || ''));
-        const nextTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(log.status || ''));
-        if(currentTerminal && !nextTerminal) return;
-        if(nextTerminal || !currentTerminal){
-            const hydrated = hydrateProjectMediaReferences(log);
-            if(nextTerminal && !hydrated?.progress && current?.progress) hydrated.progress = {...current.progress};
-            merged.set(key, hydrated);
-        }
-    });
-    return sortSmartHistoryLogs([...merged.values()]).slice(0, 5000);
-}
 function mergeSmartPendingTaskLists(local, remote, terminalTaskIds=new Set()){
     const merged = new Map();
     [...smartPendingTasks(local), ...smartPendingTasks(remote)].forEach(task => {
@@ -5733,16 +4954,43 @@ function smartNodeUsesGenerationMerge(node){
         || Array.isArray(node.generationSubmissions)
         || Object.prototype.hasOwnProperty.call(node, 'pending')
         || Object.prototype.hasOwnProperty.call(node, 'running')
-        || Object.prototype.hasOwnProperty.call(node, 'queued')
-        || Object.prototype.hasOwnProperty.call(node, 'jimengPending');
+        || Object.prototype.hasOwnProperty.call(node, 'queued');
+}
+function markNodePositionsLocallyUpdated(group){
+    // #165: once a drag is released the new position only exists locally until
+    // the debounced automatic save lands. Stamp the dragged nodes so
+    // mergeSmartNode can tell a stale remote snapshot from a fresh one.
+    (group || []).forEach(item => {
+        const node = canvasState.nodes.find(n => n.id === item?.id);
+        if(node) node.positionUpdatedAt = nowMs();
+    });
+}
+function applyLocalNodePosition(merged, local, remote){
+    // #165: position is adjudicated on its own with last-write-wins. A local
+    // position stamped by a drag that has not been saved yet must survive a
+    // stale remote snapshot, and the stamp travels with the merge result so
+    // repeated merges before the save lands cannot bounce the node back again.
+    const localPositionAt = Number(local?.positionUpdatedAt || 0);
+    if(!localPositionAt) return merged;
+    const remotePositionAt = Number(remote?.positionUpdatedAt || 0);
+    if(localPositionAt <= (remotePositionAt || Number(remote?.updated_at || 0))) return merged;
+    const x = Number(local.x);
+    const y = Number(local.y);
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return merged;
+    merged.x = x;
+    merged.y = y;
+    merged.positionUpdatedAt = localPositionAt;
+    return merged;
 }
 function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     // Remote task broadcasts pass every canvas node through this merge.  Nodes
     // that do not own media/task state must keep their exact persisted shape;
     // otherwise a read-only poll invents images:[] and busy flags that the next
-    // authoritative save writes back as unrelated user changes.
+    // authoritative save writes back as unrelated user changes.  The one
+    // exception is an unsaved local drag: only its x/y is restored (#165), the
+    // persisted media/busy shape still comes from the remote copy verbatim.
     if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote)){
-        return {...remote};
+        return applyLocalNodePosition({...remote}, local, remote);
     }
     const images = mergeSmartImageLists(local.images, remote.images);
     const localDone = smartNodeHasCompletedResult(local);
@@ -5755,7 +5003,7 @@ function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     }else if(!remoteDone && smartNodeInFlight(local)){
         base = local;
     }
-    const merged = {...base, images};
+    const merged = applyLocalNodePosition({...base, images}, local, remote);
     const pendingTasks = mergeSmartPendingTaskLists(local, remote, terminalTaskIds);
     const submissions = mergeSmartSubmissionLists(local, remote, terminalTaskIds);
     if(pendingTasks.length){
@@ -5808,19 +5056,24 @@ function applyMergedServerCanvas(serverCanvas){
     }
     canvas.history = mergeSmartHistoryRecordLists(canvas.history || [], serverCanvas.history || []);
     const terminalTaskIds = terminalSmartGenerationTaskIds(canvas.history || []);
-    const mergedNodes = mergeSmartNodeLists(nodes, remoteNodes, terminalTaskIds);
+    const mergedNodes = mergeSmartNodeLists(canvasState.nodes, remoteNodes, terminalTaskIds);
     const nodeIds = new Set(mergedNodes.map(n => n.id));
-    nodes = mergedNodes;
-    canvas.nodes = nodes;
+    canvasState.nodes = mergedNodes;
+    canvas.nodes = canvasState.nodes;
     canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
     let createdRemoteTaskCards = false;
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         if(smartPendingTasks(node).length){
             createdRemoteTaskCards = ensureSmartPendingHistoryLogs(node, smartPendingTasks(node)) || createdRemoteTaskCards;
         }
     });
     const cleanedState = clearCompletedNodeBusyStates();
     const recoveredLoopOutputs = recoverStuckLoopOutputsFromHistory();
+    // #192: 在覆盖 canvas.updated_at 之前采样——本次合并是否带来了比本地更新的状态。
+    // 自身变更的广播可能在响应到达前先到（服务端先广播后返回响应），客户端先按旧状态
+    // 调度了延迟拉取；拉取回来的画布与本地一致时就是 no-op 合并，若仍强制历史 rail
+    // 重建，会把用户正要点击的元素换掉（原生点击守卫会报 owner 被替换）。
+    const remoteStateNewer = Number(serverCanvas.updated_at || 0) > Number(canvas.updated_at || 0);
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
     const serverRev = Number(serverCanvas.revision || 0);
     if(serverRev > 0) canvas.revision = Math.max(serverRev, Number(canvas.revision || 0));
@@ -5831,9 +5084,9 @@ function applyMergedServerCanvas(serverCanvas){
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
     if(recoveredLoopOutputs || createdRemoteTaskCards) scheduleSave();
-    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
+    // #192: 只有合并真正带来了更新的状态才强制历史 rail 重建；no-op 合并不替换 rail 的 DOM。
+    if(remoteStateNewer && smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
-    resumeJimengPendingNodes();
     return true;
 }
 async function mergeReloadCanvasNow(){
@@ -5856,9 +5109,16 @@ window.refreshSmartCanvas = () => mergeReloadCanvasNow();
 window.waitForCanvasRefresh = () => mergeReloadCanvasNow();
 window.fitBoundsViewport = fitBoundsViewport;
 
-function scheduleCanvasMergeReload(delay=200){
+function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
     clearTimeout(canvasSyncTimer);
-    canvasSyncTimer = setTimeout(() => { mergeReloadCanvasNow(); }, delay);
+    canvasSyncTimer = setTimeout(() => {
+        // #192: 自身变更的广播可能在响应到达前先到——那一刻本地状态还是旧的，于是调度了
+        // 拉取合并；等定时器的 fire 时刻，响应可能已被 adopt、本地已追上。fire 时复核：
+        // 本地不再旧于触发本次合并的更新就不必再拉——no-op 合并除了多一次 fetch，还会
+        // 触发整体重绘与强制历史 rail 重建，替换用户正要点击的元素。
+        if(minUpdatedAt && Number(canvas?.updated_at || 0) >= minUpdatedAt) return;
+        mergeReloadCanvasNow();
+    }, delay);
 }
 function handleCanvasUpdatedMessage(data={}){
     if(!data || data.type !== 'canvas_updated') return;
@@ -5871,7 +5131,7 @@ function handleCanvasUpdatedMessage(data={}){
         return;
     }
     if(remoteUpdatedAt && remoteUpdatedAt <= Number(canvas?.updated_at || 0)) return;
-    scheduleCanvasMergeReload(200);
+    scheduleCanvasMergeReload(200, remoteUpdatedAt);
 }
 function startCanvasMetaPoll(){
     // WS / iframe 转发不可靠时的兜底：定期看服务器 updated_at 是否变新，变新就合并拉取
@@ -6026,11 +5286,16 @@ function renderAssetLibrary(){
     if(assetDetectUnusedBtn) assetDetectUnusedBtn.hidden = !projectMode || Boolean(smartClass);
     if(!projectMode) setAssetBatchMode(false);
     updateAssetBatchBar();
-    assetGrid.innerHTML = items.length ? items.map(item => `
+    // 名字去歧义按整列算：供应商占位名（generated-1.jpg）在同一批里全一样，
+    // 只靠单个名字分不出哪张是哪张。逻辑和已标记面板共用 markedDisplayNames。
+    const assetLabels = markedDisplayNames(items.map(item => ({
+        name: item.name || 'asset', url: item.url, asset_id: item.id,
+    })));
+    assetGrid.innerHTML = items.length ? items.map((item, i) => `
         <div class="asset-item" draggable="true" data-asset-id="${escapeHtml(item.id)}" data-url="${escapeHtml(item.url)}" data-name="${escapeHtml(item.name || 'asset')}" data-kind="${escapeHtml(assetMediaKind(item))}">
             ${assetThumbHtml(item)}
             <div class="asset-meta">
-                <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(item.name || '')}">${escapeHtml(item.name || 'asset')}</span>
+                <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(assetLabels[i])}">${escapeHtml(assetLabels[i])}</span>
                 ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="${escapeHtml(tr('smart.select'))}">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
                     : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
                        <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
@@ -6068,8 +5333,8 @@ function openAssetNameDialog({title='', value='', placeholder='', cancelValue=''
         assetDialogOk.onclick = () => cleanup(assetDialogInput.value.trim());
         assetDialogCancel.onclick = () => cleanup(cancelValue);
         assetDialogInput.onkeydown = event => {
-            if(event.key === 'Enter' && !multiline) cleanup(assetDialogInput.value.trim());
-            if(event.key === 'Enter' && multiline && (event.ctrlKey || event.metaKey)) cleanup(assetDialogInput.value.trim());
+            if(event.key === 'Enter' && !imeComposing(event) && !multiline) cleanup(assetDialogInput.value.trim());
+            if(event.key === 'Enter' && !imeComposing(event) && multiline && (event.ctrlKey || event.metaKey)) cleanup(assetDialogInput.value.trim());
             if(event.key === 'Escape') cleanup(cancelValue);
         };
         assetDialogBackdrop.onmousedown = event => {
@@ -6179,7 +5444,7 @@ function beginAssetInlineRename(assetId){
                 activeAssetCategoryId = data.item?.folder || activeAssetCategoryId;
                 if(data.old_path && data.item?.url){
                     const oldUrl = `/assets/uploads/${String(data.old_path).split('/').map(encodeURIComponent).join('/')}`;
-                    nodes.forEach(node => (node.images || []).forEach(img => {
+                    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
                         if(img?.url !== oldUrl) return;
                         img.url = data.item.url;
                         img.name = data.item.name || img.name;
@@ -6201,7 +5466,7 @@ function beginAssetInlineRename(assetId){
     };
     input.addEventListener('keydown', event => {
         event.stopPropagation();
-        if(event.key === 'Enter'){
+        if(event.key === 'Enter' && !imeComposing(event)){
             event.preventDefault();
             finish(true);
         } else if(event.key === 'Escape'){
@@ -6402,8 +5667,8 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
         ? mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs)
         : (canvas.history || []);
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-    nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.nodes = nodes;
+    canvasState.nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+    canvas.nodes = canvasState.nodes;
     rebuildMarkedAssetIdsFromNodes();
     updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
     canvas.updated_at = Number(canvas.updated_at || Date.now());
@@ -6553,25 +5818,43 @@ async function smartAssetBatchDelete(){
 }
 if(assetBatchDeleteBtn) assetBatchDeleteBtn.onclick = () => void smartAssetBatchDelete();
 
-// ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
-const smartTrashBackdrop = document.getElementById('smartTrashBackdrop');
-const smartTrashList = document.getElementById('smartTrashList');
-const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
-const smartTrashPurgeBtn = document.getElementById('smartTrashPurgeBtn');
-const smartTrashCloseBtn = document.getElementById('smartTrashCloseBtn');
+// #260 批量重命名：入口（工具栏按钮 / F2）+ 弹窗控件绑定。逻辑本体在 canvas-node-ops.js。
+const smartBatchRenameBtn = document.getElementById('smartBatchRenameBtn');
+const smartBatchRenameBackdrop = document.getElementById('smartBatchRenameBackdrop');
+const smartBatchRenameCancelBtn = document.getElementById('smartBatchRenameCancel');
+const smartBatchRenameApplyBtn = document.getElementById('smartBatchRenameApply');
+if(smartBatchRenameBtn){
+    smartBatchRenameBtn.addEventListener('mousedown', e => e.stopPropagation());
+    smartBatchRenameBtn.onclick = e => { e.preventDefault(); openBatchRenameDialog(); };
+}
+['smartBatchRenamePrefix', 'smartBatchRenamePad', 'smartBatchRenameStart'].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input', () => renderBatchRenamePreview());
+    el.addEventListener('change', () => renderBatchRenamePreview());
+    el.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if(e.key === 'Enter'){ e.preventDefault(); applyBatchRename(); }
+    });
+});
+if(smartBatchRenameBackdrop) smartBatchRenameBackdrop.addEventListener('mousedown', e => { if(e.target === smartBatchRenameBackdrop) closeBatchRenameDialog(); });
+if(smartBatchRenameCancelBtn) smartBatchRenameCancelBtn.onclick = e => { e.preventDefault(); closeBatchRenameDialog(); };
+if(smartBatchRenameApplyBtn) smartBatchRenameApplyBtn.onclick = e => { e.preventDefault(); applyBatchRename(); };
 
-function formatTrashTime(ms){
-    const value = Number(ms || 0);
-    if(!value) return '';
-    const d = new Date(value);
-    const pad = n => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function trashDaysLeft(expiresAt){
-    const left = Number(expiresAt || 0) - Date.now();
-    if(left <= 0) return 0;
-    return Math.ceil(left / 86400000);
-}
+// ── 片①：回收区面板（列表 / 单个恢复 / 单个彻底删除）─────────────────
+const smartTrashOpenBtn = document.getElementById('smartTrashOpenBtn');
+const smartTrashCloseBtn = document.getElementById('smartTrashCloseBtn');
+if(smartTrashCloseBtn) smartTrashCloseBtn.onclick = closeSmartTrashPanel;
+if(smartTrashBackdrop) smartTrashBackdrop.addEventListener('mousedown', e => { if(e.target === smartTrashBackdrop) closeSmartTrashPanel(); });
+if(smartTrashPurgeBtn) smartTrashPurgeBtn.onclick = () => {
+    // #73: 不再 400ms 盲等重开（面板会显示旧列表）——purgeSmartProjectMediaTrash
+    // 成功后自行 await 重开。
+    void purgeSmartProjectMediaTrash();
+};
+
+// #209: 缓存已加载的回收区列表——恢复无 deletion_id 条目时用它构造新节点的
+// name/kind 等字段，避免为拿缩略图信息多打一次请求。
+let smartTrashItems = [];
 async function openSmartTrashPanel(){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
     const projectId = smartProjectId();
@@ -6583,181 +5866,15 @@ async function openSmartTrashPanel(){
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media`);
         if(!response.ok) throw new Error('trash status unavailable');
         const data = await response.json().catch(() => ({}));
+        smartTrashItems = data.items || [];
         renderSmartTrashItems(data.items || []);
     } catch(_){
+        smartTrashItems = [];
         renderSmartTrashItems([]);
         toast(tr('smart.trashLoadFailed'));
     }
 }
-function renderSmartTrashItems(items){
-    if(!smartTrashList) return;
-    if(!Array.isArray(items) || !items.length){
-        smartTrashList.innerHTML = `<div class="smart-trash-empty">${escapeHtml(tr('smart.trashEmpty'))}</div>`;
-        if(smartTrashPurgeBtn) smartTrashPurgeBtn.disabled = true;
-        return;
-    }
-    if(smartTrashPurgeBtn) smartTrashPurgeBtn.disabled = false;
-    const projectId = smartProjectId() || '';
-    smartTrashList.innerHTML = items.map(item => {
-        const assetId = String(item?.asset_id || '');
-        const deletionId = String(item?.deletion_id || '');
-        const name = String(item?.name || item?.filename || assetId);
-        const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
-        const days = trashDaysLeft(item?.expires_at);
-        // #86：回收区条目带缩略图（第一张预览图，无预览回退原文件），点缩略图可放大预览。
-        const thumbUrl = projectId && assetId ? `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview` : '';
-        return `<div class="smart-trash-item" data-trash-asset="${escapeHtml(assetId)}" data-trash-deletion="${escapeHtml(deletionId)}">
-            <div class="smart-trash-thumb-wrap" data-trash-preview="${escapeHtml(assetId)}" title="${escapeHtml(tr('smart.trashPreview'))}">
-                ${thumbUrl ? `<img class="smart-trash-thumb" loading="lazy" src="${escapeAttr(thumbUrl)}" alt="${escapeHtml(name)}">` : ''}
-                <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
-            </div>
-            <div class="smart-trash-meta">
-                <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
-                <div class="smart-trash-sub">${escapeHtml(formatTrashTime(item?.deleted_at))}${days > 0 ? ` · ${escapeHtml(tr('smart.trashExpiresIn').replace('{n}', String(days)))}` : ''}</div>
-            </div>
-            <button class="asset-mini-btn" type="button" data-trash-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i></button>
-            <button class="asset-mini-btn danger" type="button" data-trash-forever title="${escapeHtml(tr('smart.trashDeleteForever'))}"><i data-lucide="trash-2"></i></button>
-        </div>`;
-    }).join('');
-    refreshIcons();
-    smartTrashList.querySelectorAll('[data-trash-restore]').forEach(btn => {
-        btn.onclick = () => void smartTrashRestoreItem(
-            btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '',
-            btn.closest('[data-trash-asset]')?.dataset?.trashDeletion || ''
-        );
-    });
-    smartTrashList.querySelectorAll('[data-trash-forever]').forEach(btn => {
-        btn.onclick = () => void smartTrashPurgeItem(btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '');
-    });
-    // #86：缩略图加载失败回退到图标；点缩略图打开大图预览（滚轮缩放 + 拖拽 + 恢复）。
-    const byAsset = new Map(items.map(item => [String(item?.asset_id || ''), item]));
-    smartTrashList.querySelectorAll('.smart-trash-thumb').forEach(img => {
-        img.addEventListener('error', () => img.closest('.smart-trash-thumb-wrap')?.classList.add('no-thumb'), {once:true});
-    });
-    smartTrashList.querySelectorAll('[data-trash-preview]').forEach(el => {
-        el.onclick = () => openTrashMediaPreview(byAsset.get(el.dataset.trashPreview) || {});
-    });
-}
-// 通用图片大图查看器（滚轮缩放 + 拖拽平移 + 双击复位）：#86 回收站预览使用，
-// 后续其他预览入口可复用（#87 统一详情面板）。
-function setupSimpleImageStage(stage){
-    if(!stage) return null;
-    const frame = stage.querySelector('.preview-frame');
-    const label = stage.querySelector('[data-simple-zoom-label]');
-    const view = {scale:1, panX:0, panY:0, drag:null};
-    const apply = () => {
-        if(!frame) return;
-        frame.style.transform = `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`;
-        if(label) label.textContent = `${Math.round(view.scale * 100)}%`;
-    };
-    const zoomAt = (factor, clientX, clientY) => {
-        const rect = stage.getBoundingClientRect();
-        const cx = clientX - rect.left - rect.width / 2;
-        const cy = clientY - rect.top - rect.height / 2;
-        const next = Math.min(8, Math.max(0.2, view.scale * factor));
-        const k = next / view.scale;
-        view.panX = cx - (cx - view.panX) * k;
-        view.panY = cy - (cy - view.panY) * k;
-        view.scale = next;
-        apply();
-    };
-    stage.addEventListener('wheel', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
-    }, {passive:false});
-    stage.addEventListener('pointerdown', event => {
-        if(event.button !== 0) return;
-        event.stopPropagation();
-        stage.setPointerCapture?.(event.pointerId);
-        view.drag = {pointerId:event.pointerId, clientX:event.clientX, clientY:event.clientY, startX:view.panX, startY:view.panY};
-    });
-    stage.addEventListener('pointermove', event => {
-        const drag = view.drag;
-        if(!drag || drag.pointerId !== event.pointerId) return;
-        event.preventDefault();
-        event.stopPropagation();
-        view.panX = drag.startX + event.clientX - drag.clientX;
-        view.panY = drag.startY + event.clientY - drag.clientY;
-        apply();
-    });
-    const finish = event => { if(view.drag && view.drag.pointerId === event.pointerId) view.drag = null; };
-    stage.addEventListener('pointerup', finish);
-    stage.addEventListener('pointercancel', finish);
-    stage.addEventListener('dblclick', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        view.scale = 1; view.panX = 0; view.panY = 0;
-        apply();
-    });
-    return {apply, reset(){ view.scale = 1; view.panX = 0; view.panY = 0; apply(); }};
-}
 // #86：回收区大图预览（缩略图点击），带「恢复」快捷按钮。
-function openTrashMediaPreview(item){
-    const projectId = smartProjectId();
-    const assetId = String(item?.asset_id || '');
-    if(!projectId || !assetId) return;
-    let box = document.getElementById('smartTrashPreview');
-    if(!box){
-        box = document.createElement('div');
-        box.id = 'smartTrashPreview';
-        box.className = 'smart-trash-preview-backdrop';
-        box.setAttribute('aria-hidden', 'true');
-        box.hidden = true;
-        box.innerHTML = `<div class="smart-trash-preview" role="dialog" aria-modal="true" aria-label="${escapeAttr(tr('smart.trashPreview'))}">
-            <div class="preview-stage smart-trash-preview-stage" style="cursor:grab">
-                <div class="preview-frame"><img alt="" draggable="false"></div>
-                <div class="smart-trash-preview-zoom"><output data-simple-zoom-label aria-live="polite">100%</output></div>
-            </div>
-            <div class="smart-trash-preview-bar">
-                <span class="smart-trash-preview-name"></span>
-                <button class="asset-mini-btn" type="button" data-trash-preview-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span></button>
-                <button class="asset-mini-btn" type="button" data-trash-preview-close title="${escapeHtml(tr('common.close'))}"><i data-lucide="x"></i><span>${escapeHtml(tr('common.close'))}</span></button>
-            </div>
-        </div>`;
-        document.body.appendChild(box);
-        box.addEventListener('click', event => {
-            if(event.target === box || event.target.closest('[data-trash-preview-close]')) closeTrashMediaPreview();
-        });
-        document.addEventListener('keydown', event => {
-            if(event.key === 'Escape' && !box.hidden) closeTrashMediaPreview();
-        });
-        setupSimpleImageStage(box.querySelector('.smart-trash-preview-stage'));
-    }
-    const img = box.querySelector('img');
-    img.src = `/api/project-library/${encodeURIComponent(projectId)}/trash/media/${encodeURIComponent(assetId)}/preview`;
-    box.querySelector('.smart-trash-preview-name').textContent = String(item?.name || item?.filename || assetId);
-    const restoreBtn = box.querySelector('[data-trash-preview-restore]');
-    restoreBtn.onclick = () => {
-        void smartTrashRestoreItem(assetId, String(item?.deletion_id || ''));
-        closeTrashMediaPreview();
-    };
-    box.hidden = false;
-    box.setAttribute('aria-hidden', 'false');
-    refreshIcons();
-}
-function closeTrashMediaPreview(){
-    const box = document.getElementById('smartTrashPreview');
-    if(!box) return;
-    box.hidden = true;
-    box.setAttribute('aria-hidden', 'true');
-    const img = box.querySelector('img');
-    if(img) img.removeAttribute('src');
-}
-function closeSmartTrashPanel(){
-    if(!smartTrashBackdrop) return;
-    smartTrashBackdrop.classList.remove('open');
-    smartTrashBackdrop.hidden = true;
-}
-if(smartTrashCloseBtn) smartTrashCloseBtn.onclick = closeSmartTrashPanel;
-if(smartTrashBackdrop) smartTrashBackdrop.addEventListener('mousedown', e => { if(e.target === smartTrashBackdrop) closeSmartTrashPanel(); });
-if(smartTrashPurgeBtn) smartTrashPurgeBtn.onclick = () => {
-    // #73: 不再 400ms 盲等重开（面板会显示旧列表）——purgeSmartProjectMediaTrash
-    // 成功后自行 await 重开。
-    void purgeSmartProjectMediaTrash();
-};
-// 单个恢复：有 deletion_id 走服务端 /original/restore（生成输出 occurrence 恢复，还原画布引用）；
-// 无 deletion_id（如生成孤儿回收，#79）走 /trash/media/restore（通用恢复，只移回资源库）。
 async function smartTrashRestoreItem(assetId, deletionId){
     const projectId = smartProjectId();
     if(!assetId || !projectId || smartTrashRestoring) return;
@@ -6788,7 +5905,28 @@ async function smartTrashRestoreItem(assetId, deletionId){
             return;
         }
         if(res.data?.canvas) await adoptServerCanvas(res.data.canvas);
-        // #151: 明确恢复去向——有 deletion_id 还原到画布+历史，无则只回资源库
+        // #209: 无 deletion_id 条目恢复后直接落到画布上（新图片节点），而不是只回资源库：
+        // 复用 pasteAssetsFromInbox 链路——外层 pushUndo 一次 + 节点 {skipUndo:true}，
+        // 让「恢复 + 放画布」成为一次可撤销动作；节点 image URL 由 asset_id 本地构造
+        //（projectMediaUrl），不发额外请求。
+        if(!deletionId){
+            const cached = (smartTrashItems || []).find(it => String(it?.asset_id || '') === String(assetId)) || {};
+            const kind = cached.kind || 'image';
+            const item = {
+                ...cached,
+                asset_id: assetId,
+                name:cached.name || cached.filename || assetId,
+                kind,
+                url:projectMediaUrl(assetId),
+                preview_url:(kind === 'image' || kind === 'video') ? projectMediaPreviewUrl(assetId) : ''
+            };
+            const center = lastMouseWorld || viewportCenter();
+            pushUndo();
+            createImageNodeAt(center, [assetNodeImageFromItem(item)], {skipUndo:true, select:true});
+            render();
+            scheduleSave();
+        }
+        // #151/#209: 明确恢复去向——有 deletion_id 还原到画布+历史，无则回资源库并在画布新建节点
         toast(deletionId ? tr('canvas.originalRestored') : tr('smart.trashRestoredToLibrary'));
         renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
@@ -6824,12 +5962,14 @@ async function smartTrashPurgeItem(assetId){
 }
 
 // ── 片③：未使用媒体检测与一键清理 ─────────────────────────
-const smartUnusedBackdrop = document.getElementById('smartUnusedBackdrop');
 const smartUnusedList = document.getElementById('smartUnusedList');
 const smartUnusedCleanBtn = document.getElementById('smartUnusedCleanBtn');
 const smartUnusedCloseBtn = document.getElementById('smartUnusedCloseBtn');
 const assetDetectUnusedBtn = document.getElementById('assetDetectUnusedBtn');
 let smartUnusedBusy = false;
+if(smartUnusedCloseBtn) smartUnusedCloseBtn.onclick = closeSmartUnusedPanel;
+if(smartUnusedBackdrop) smartUnusedBackdrop.addEventListener('mousedown', e => { if(e.target === smartUnusedBackdrop) closeSmartUnusedPanel(); });
+if(assetDetectUnusedBtn) assetDetectUnusedBtn.onclick = () => void openSmartUnusedPanel();
 
 function formatAssetSize(size){
     const value = Number(size || 0);
@@ -6877,16 +6017,6 @@ async function openSmartUnusedPanel(){
     }
     smartUnusedBusy = false;
 }
-function closeSmartUnusedPanel(){
-    if(!smartUnusedBackdrop) return;
-    smartUnusedBackdrop.classList.remove('open');
-    smartUnusedBackdrop.hidden = true;
-}
-if(smartUnusedCloseBtn) smartUnusedCloseBtn.onclick = closeSmartUnusedPanel;
-if(smartUnusedBackdrop) smartUnusedBackdrop.addEventListener('mousedown', e => { if(e.target === smartUnusedBackdrop) closeSmartUnusedPanel(); });
-if(assetDetectUnusedBtn) assetDetectUnusedBtn.onclick = () => void openSmartUnusedPanel();
-
-// 一键清理：逐个走 ADR 0015 删除流（用户主动删除 = 硬删，不进回收区）
 async function smartUnusedCleanAll(){
     if(smartUnusedBusy) return;
     const projectId = smartProjectId();
@@ -6928,7 +6058,6 @@ async function smartUnusedCleanAll(){
     await openSmartUnusedPanel();
 }
 if(smartUnusedCleanBtn) smartUnusedCleanBtn.onclick = () => void smartUnusedCleanAll();
-
 
 function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
     return new Promise(resolve => {
@@ -7005,7 +6134,7 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
 
 function removeProjectMediaFromCache(assetId){
     if(!assetId) return;
-    projectMediaLibrary.items = (projectMediaLibrary.items || []).filter(item => item.asset_id !== assetId);
+    canvasState.projectMediaLibrary.items = (canvasState.projectMediaLibrary.items || []).filter(item => item.asset_id !== assetId);
 }
 
 // #74 (D1): 级联归档——节点/单图删除后，无其他引用的媒体移入回收区（7 天可恢复），
@@ -7021,41 +6150,14 @@ async function archiveProjectMediaAsset(assetId, reason){
     if(!res.ok) return {ok:false, status:res.status};
     return {ok:true};
 }
-async function cascadeArchiveDeletedMedia(images){
-    const assetIds = new Set();
-    (images || []).forEach(img => { const id = img?.asset_id || ''; if(id) assetIds.add(id); });
-    if(!assetIds.size) return;
-    const stillReferenced = new Set();
-    nodes.forEach(node => (node.images || []).forEach(img => { const id = img?.asset_id || ''; if(id) stillReferenced.add(id); }));
-    // #88：生成历史（canvas.history）引用的原图不在节点集合里——仅删画布图时也要豁免，
-    // 否则会把历史里还挂着的原图归档进回收区，历史缩略图 404。
-    (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
-        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
-            const id = String(output?.asset_id || '');
-            if(id) stillReferenced.add(id);
-        });
-    });
-    const toArchive = [...assetIds].filter(id => !stillReferenced.has(id));
-    if(!toArchive.length) return;
-    await Promise.all(toArchive.map(async assetId => {
-        try {
-            const result = await archiveProjectMediaAsset(assetId, 'node-delete');
-            if(result.ok){
-                removeProjectMediaFromCache(assetId);
-                if(assetLibraryIsProject()) renderAssetLibrary();
-            }
-        } catch(err) { /* 服务端判定仍被引用（409）或其他失败：保留在库，不阻断删除 */ }
-    }));
-    refreshSmartProjectMediaTrashButton();
-}
 function focusAndSelectNode(nodeId){
     // 滚动到节点并选中
     const node = (canvas?.nodes || []).find(n => n.id === nodeId);
     if(!node) return;
     // 设置选中状态（清掉多选残留，保持单节点选中语义）
-    selectedIds = [];
-    selectedId = nodeId;
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedIds = [];
+    canvasState.selectedId = nodeId;
+    canvasState.selectedImage = {nodeId:'', index:-1};
     // 渲染并滚动到节点
     render();
     const nodeEl = document.querySelector(`[data-node-id="${nodeId}"]`);
@@ -7201,13 +6303,13 @@ async function deleteProjectOriginalWide(assetId, btn){
 // 让它们显示为卡片内的缩略图网格（新模型）。一次性、幂等。
 function migrateSmartGroupImageMembers(){
     let changed = false;
-    nodes.filter(isSmartGroupNode).forEach(group => {
+    canvasState.nodes.filter(isSmartGroupNode).forEach(group => {
         const imageMemberIds = (Array.isArray(group.items) ? group.items : [])
-            .map(id => nodes.find(n => n.id === id))
+            .map(id => canvasState.nodes.find(n => n.id === id))
             .filter(m => m && isSmartImageNode(m) && (m.images || []).some(img => img?.url))
             .map(m => m.id);
         imageMemberIds.forEach(id => {
-            const member = nodes.find(n => n.id === id);
+            const member = canvasState.nodes.find(n => n.id === id);
             if(member && absorbImageNodeIntoSmartGroup(group, member)) changed = true;
         });
     });
@@ -7347,11 +6449,11 @@ async function loadCanvas(){
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
         document.title = canvas.title || tr('canvas.smartCanvas');
         setSmartTitleText(canvas.title || tr('canvas.smartCanvas'));
-        nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+        canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
         canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
         migrateSmartGroupImageMembers();
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-        nodes.forEach(n => {
+        canvasState.nodes.forEach(n => {
             const pendingTasks = smartPendingTasks(n);
             if(pendingTasks.length){
                 n.pending = Math.max(pendingTasks.length, Number(n.pending || 0) || pendingTasks.length);
@@ -7367,7 +6469,7 @@ async function loadCanvas(){
         const recoveredLoopOutputs = recoverStuckLoopOutputsFromHistory();
         const hiddenCompletedTimers = hideCompletedRunTimers();
         const cleanedDetachedInputs = cleanupDetachedRunInputRefs();
-        canvas.nodes = nodes;
+        canvas.nodes = canvasState.nodes;
         rebuildMarkedAssetIdsFromNodes();
         updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
         if(isProjectCanvasData(canvas)){
@@ -7381,7 +6483,7 @@ async function loadCanvas(){
             if(canvas.settings) settings = {...settings, ...canvas.settings};
         }
         normalizeSmartVideoModeSettings(settings, true);
-        nodes.forEach(node => {
+        canvasState.nodes.forEach(node => {
             if(node.runSettings){
                 node.runSettings.engine = normalizeSmartOnlineEngine(node.runSettings.engine);
                 normalizeSmartVideoModeSettings(node.runSettings, true);
@@ -7404,12 +6506,19 @@ async function loadCanvas(){
         if(cleanedDetachedInputs || recoveredLoopOutputs) scheduleSave();
         resumeConversationTasks();
         resumeSmartPendingTasks();
-        resumeJimengPendingNodes();
+        // #197: replay gate requests whose persisted "not-yet-sent" mark survived the
+        // reload (clear-on-send: the mark is removed from disk only after the fetch
+        // fires; an absent mark means already sent — the gate's own recovery path picks
+        // it up, so no duplicate request is ever re-sent).
+        void resumeSmartPendingActionResumes(canvasState.nodes);
         startCanvasMetaPoll();
         // Mark the canvas as authoritatively loaded. From this point on an empty
         // local node set is treated as a deliberate user action and autosave may
         // commit it (with force_empty) instead of being treated as a load failure.
         canvasLoadReady = true;
+        // #251：画布加载完成后恢复跨刷新的 undo/redo 栈（ops.db undo_snapshots 租户；
+        // 逻辑全在 canvas-undo.js，这里只接线；fire-and-forget，不阻塞渲染）。
+        void restorePersistedUndoStack();
         return true;
     } catch(e) {
         toast(tr('smart.toastCanvasFail'));
@@ -7463,7 +6572,124 @@ function markAutosaveSaved(){
     debouncedSaveTimer = null;
     if(canvas?.format === 'firefly-canvas-v1' && !persistedDurableSnapshot) refreshPersistedDurableSnapshot(canvasForStorage());
     setProjectSaveState('saved', tr('smart.projectSaved'));
+    // #189: a settled canvas save is the moment a pending generation request may be replayed.
+    // Only requests whose pre-generation flush failed (keys in smartPendingPersistenceKeys)
+    // are replayed; the normal path self-registers, so this is a no-op there. The
+    // server-side idempotency key keeps any race with the normal path single-task.
+    if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
+    // #189 follow-up: the four remaining save gates (video / local-edit / photoshop /
+    // conversation) replay here too. #197: their marks are persisted on the node and
+    // removed from disk at the moment the fetch fires (clear-on-send — see
+    // registerSmartPendingActionPersister below), so a mark that survives a reload is
+    // provably never sent and is replayed exactly once; an already-sent request leaves
+    // no mark and is picked up by the gate's own recovery path (docs/issue197_recovery_audit.md).
+    // In-session entries are single-shot (removed before their fetch fires).
+    if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
+    // #217: 孤儿媒体归档的唯一触发点——删除已随保存持久落盘，服务端 canvas 不再
+    // 引用被删资产，此刻归档不会 409（旧实现是独立的 2.5s 计时器，早于 3s 保存
+    // 防抖触发 → 409 被吞 → 回收区无条目）。
+    flushPendingMediaArchives();
 }
+// #197: pending-action persistence wiring. canvas-generation-tasks.js owns the
+// in-memory queue and the clear-on-send protocol; it calls back into these registered
+// hooks (no smart-canvas.js symbol is referenced from the tasks module — layer guard).
+// Persister: commits "this entry is no longer pending" to disk BEFORE the corresponding
+// fetch fires (node field cleared + settled non-automated save). Returns true only when
+// the cleared state has landed; on failure the in-memory removal is rolled back so a
+// later autosave can never flush a clear we cannot prove landed, and the caller keeps
+// the entry (retry on the next save settle) — a request is never sent without its mark
+// being cleared first. The dispatcher runs from markAutosaveSaved, which fires while the
+// triggering save still holds canvasSyncInFlight=true; saveCanvas() in that window dies
+// at the in-flight guard before reaching the server, so we wait for the flag to clear
+// (the triggering save's finally clears it right after the hook returns).
+registerSmartPendingActionPersister(async (entry) => {
+    const node = (canvasState.nodes || []).find(n => n && n.id === entry.nodeId);
+    if(!node) return false;
+    const list = Array.isArray(node.pendingActionResumes) ? node.pendingActionResumes : [];
+    const record = list.find(rec => rec?.actionId === entry.actionId);
+    if(!record){
+        // An earlier attempt already removed the mark in memory (its save died or is
+        // still pending). Re-add it so no later autosave can flush an unproven clear;
+        // the next dispatch pass retries the whole clear.
+        node.pendingActionResumes = [...list, {actionId:entry.actionId, kind:entry.kind, payload:entry.payload, enqueuedAt:entry.createdAt}];
+        return false;
+    }
+    node.pendingActionResumes = list.filter(rec => rec?.actionId !== entry.actionId);
+    let waitedMs = 0;
+    while(canvasSyncInFlight && waitedMs < 5000){
+        await new Promise(resolve => setTimeout(resolve, 50));
+        waitedMs += 50;
+    }
+    if(canvasSyncInFlight){
+        // A different save is still in flight — restore the mark and retry later.
+        if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)) node.pendingActionResumes.push(record);
+        scheduleSave();
+        return false;
+    }
+    let saved = false;
+    try { saved = (await saveCanvas({automatic:false})) === true; } catch(error) { saved = false; }
+    if(!saved){
+        // The removal never landed: roll it back in memory (the server snapshot still
+        // holds the mark, so the re-added record produces no duplicate mutation) and
+        // keep the entry pending for the next save settle.
+        if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)) node.pendingActionResumes.push(record);
+        scheduleSave();
+        return false;
+    }
+    return true;
+});
+// Rebuilders: after a reload the queued closure is gone; rebuild each gate's replay from
+// the serializable payload persisted on the node. Conversation carries text+requestId
+// (the server dedupes by request_id); photoshop carries projectId+assetId; local-edit
+// carries nothing (all state is node fields, read from the live node); video carries
+// prompt/refs/runSettings.
+registerSmartPendingActionRebuilder('conversation', (entry, live) => async (target) => {
+    try {
+        await sendConversationMessageRequest(target, (entry.payload || {}).text, (entry.payload || {}).requestId);
+    } catch(replayError){
+        const fresh = canvasState.nodes.find(n => n.id === target.id) || target;
+        fresh.conversationSending = false;
+        const failInput = document.querySelector(`.image-node[data-id="${target.id}"] [data-conversation-input]`);
+        if(failInput && entry.payload) failInput.value = entry.payload.text || '';
+        render();
+        throw replayError;
+    }
+});
+registerSmartPendingActionRebuilder('photoshop', (entry, live) => (target) => psSendRoundTrip(target, (entry.payload || {}).assetId, (entry.payload || {}).projectId));
+registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target));
+// #197: shared video-result apply, used by BOTH pending-action replay paths:
+// - in-session closure (canvas-generation-tasks.js, runApiVideoGeneration's gate branch)
+// - this reload-time rebuilder right below.
+// Mirrors the main video success path in the run handler below (the taskIds branch after
+// runApiVideoGeneration): a video request is only "landed" once its taskIds are on the
+// node, which is what lets resumeSmartPendingNode re-attach to the running task. The
+// in-session path called a bare `applyApiVideoGenerationResult` that was never defined
+// anywhere, so after a reload the video rebuilder (and the in-session closure) threw
+// "applyApiVideoGenerationResult is not defined" and the pending mark was never drained
+// (#197 video/refresh + video/refresh-sent red).
+function applyApiVideoGenerationResult(node, videoResult, prompt, pendingHistoryId=''){
+    const taskIds = (Array.isArray(videoResult?.taskIds) ? videoResult.taskIds : []).filter(Boolean);
+    if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
+    const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
+    node.pendingTasks = [...smartPendingTasks(node).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
+    ensureSmartPendingHistoryLogs(node, newTasks, {prompt, kind:'video'});
+    node.pending = Math.max(node.pendingTasks.length, node.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
+    node.runTimerHidden = false;
+    node.running = false;
+    render();
+    return taskIds;
+}
+registerSmartPendingActionRebuilder('video', (entry, live) => async (target) => {
+    const payload = entry.payload || {};
+    const freshNode = canvasState.nodes.find(n => n.id === target.id) || target;
+    const videoResult = await runApiVideoGeneration(payload.prompt, payload.refs, payload.runSettings, freshNode);
+    const taskIds = applyApiVideoGenerationResult(freshNode, videoResult, payload.prompt);
+    if(!await acceptProjectGenerationRegistration(videoResult)){
+        scheduleSave();
+        await saveCanvas();
+    }
+    if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+});
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
     contentDirty = true;
@@ -7531,8 +6757,12 @@ async function saveProjectCanvasUntilSettled({maxAttempts=4}={}){
         debouncedSaveTimer = null;
         while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
         const saved = await saveCanvas({automatic:false});
-        if(saved !== true) return false;
-        if(!hasDurableCanvasChanges()) return true;
+        // #190：这里原先写 `if(saved !== true) return false;`，第一次失败就退出，
+        // maxAttempts 完全无效。saveCanvas 返回 false/undefined 的原因大多是可重试的
+        // （冲突、并发保存 in-flight、后台保存超时），内层 mutation 层的重试预算耗尽后
+        // 外层应该重新发一批，而不是直接告诉调用方「保存失败」。
+        // 终态（未加载 / 无 canvasId）重试几次后仍返回 false，只是慢一点，不会误报成功。
+        if(saved === true && !hasDurableCanvasChanges()) return true;
     }
     return false;
 }
@@ -7576,7 +6806,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             // canvas was authoritatively loaded and the user has (deliberately)
             // emptied it. A failed load leaves canvasLoadReady=false, so a bogus
             // empty state is rejected server-side instead of wiping the canvas.
-            const localEmpty = (Array.isArray(nodes) ? nodes : []).length === 0;
+            const localEmpty = (Array.isArray(canvasState.nodes) ? canvasState.nodes : []).length === 0;
             const forceEmpty = canvasLoadReady && localEmpty;
             const response = await fetch(`/api/project-library/${encodeURIComponent(canvas.project_id || canvas.project || canvasId)}/canvas`, {
                 method:'PATCH',
@@ -7615,8 +6845,8 @@ async function saveCoreCanvasIncrementally(storageCanvas){
                     const restoredNodes = filterDanglingProjectMediaImages(
                         (serverCanvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean)
                     );
-                    nodes = restoredNodes.nodes;
-                    canvas.nodes = nodes;
+                    canvasState.nodes = restoredNodes.nodes;
+                    canvas.nodes = canvasState.nodes;
                     canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(serverCanvas.history || []));
                     canvas.connections = Array.isArray(serverCanvas.connections) ? serverCanvas.connections : [];
                     persistedCoreSnapshot = projectCanvasSnapshot(serverCanvas);
@@ -7641,7 +6871,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             const lateChangeSet = buildCoreMutations(canvasForStorage(), changeSet.next);
             const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
             canvas = localView.canvas;
-            nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+            canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
             canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
             canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
             persistedCoreSnapshot = projectCanvasSnapshot(flushResult.serverCanvas);
@@ -7667,7 +6897,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         hasLateChanges = lateChangeSet.mutations.length > 0;
         const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
         canvas = localView.canvas;
-        nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+        canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
         canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
         canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
         applyViewport();
@@ -7694,12 +6924,12 @@ async function saveCanvas({automatic=false}={}){
         debouncedSaveTimer = null;
     }
     savePromptDraftForCurrent();
-    canvas.nodes = nodes;
+    canvas.nodes = canvasState.nodes;
     // Empty-canvas guard, layer 1 (H39 incident): if the canvas has not been
     // authoritatively loaded yet and the local node set is empty, this is a
     // dangerous empty state (a failed load looks like "everything deleted").
     // Do not submit it; the server-side guard remains as the final backstop.
-    if(canvas.format === 'firefly-canvas-v1' && !canvasLoadReady && (Array.isArray(nodes) ? nodes : []).length === 0){
+    if(canvas.format === 'firefly-canvas-v1' && !canvasLoadReady && (Array.isArray(canvasState.nodes) ? canvasState.nodes : []).length === 0){
         setProjectSaveState('error', tr('smart.projectLoadNotReady'));
         return false;
     }
@@ -7760,7 +6990,7 @@ async function saveCanvas({automatic=false}={}){
             const serverCanvas = data.detail?.canvas;
             if(serverCanvas){
                 applyMergedServerCanvas(serverCanvas);
-                canvas.nodes = nodes;
+                canvas.nodes = canvasState.nodes;
             } else if(data.detail?.updated_at) {
                 canvas.updated_at = data.detail.updated_at;
             }
@@ -7801,158 +7031,29 @@ function inheritNodeMetaFromImage(node){
     if(!node) return;
     node.images = (node.images || []).map(img => stripImageGenerationMeta(img));
 }
-function createNode(x, y, images=[], options={}){
-    if(!options.skipUndo) pushUndo();
-    const nodeImages = (images || []).map(img => ({...img}));
-    const node = {id:uid('smart'), type:'smart-image', x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
-    node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : mediaNodeDefaultScale(node);
-    if(options.title) node.title = String(options.title);
-    if(options.runMeta) attachRunMeta(node, options.runMeta);
-    if(options.historyId) node.historyId = String(options.historyId);
-    if(options.needsRegeneration != null) node.needsRegeneration = Boolean(options.needsRegeneration);
-    if(options.generationState) node.generationState = String(options.generationState);
-    inheritNodeMetaFromImage(node);
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-function createPromptNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const providerId = resolveChatProviderId();
-    const node = {
-        id:uid('prompt'),
-        type:'smart-prompt',
-        x,
-        y,
-        w:316,
-        h:240,
-        title:'Prompt',
-        text:String(options.text || ''),
-        promptSeparator:';',
-        promptSplitEnabled:false,
-        llmEnabled:false,
-        llmProvider:providerId,
-        llmModel:resolveChatModel('', providerId),
-        llmSystemEnabled:false,
-        llmSystemPrompt:'You are a helpful prompt assistant.',
-        llmInstruction:'',
-        created_at:Date.now()
-    };
-    if(options.sourceNodeId) node.source_node_id = String(options.sourceNodeId);
-    if(options.sourceMessageId) node.source_message_id = String(options.sourceMessageId);
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-function createConversationNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const node = {
-        id:uid('conversation'),
-        type:'smart-conversation',
-        x,
-        y,
-        w:390,
-        h:430,
-        title:'Conversation',
-        messages:[],
-        created_at:Date.now()
-    };
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-function createAgentNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const node = {
-        id:uid('agent'),
-        type:'smart-agent',
-        x,
-        y,
-        w:382,
-        h:360,
-        title:'Agent',
-        agentGoal:'',
-        created_at:Date.now()
-    };
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-function createLocalEditNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const node = {id:uid('local-edit'), type:'local-edit', x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
-        original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-// 工具排「局部编辑」：在图片节点旁创建 local-edit 节点并自动连好原图角色，
-// 用户只需要画选区+写提示词，不需要先学端口连线。
-function createLocalEditNodeFromImage(nodeId, imageIndex=null){
-    const node = nodes.find(n => n.id === nodeId);
-    if(!node) return;
-    const source = imageIndex == null ? (node.images || [])[0] : (node.images || [])[imageIndex];
-    if(!source){ toast(tr('smart.noExportableMedia')); return; }
-    const rect = nodeRect(node);
-    const point = {x:rect.x + rect.width + 140, y:Math.max(40, rect.y + Math.max(0, rect.height / 2 - LOCAL_EDIT_NODE_H / 2))};
-    const created = createLocalEditNode(point.x, point.y, {select:true});
-    created.localEditActiveRole = 'original';
-    const connected = connectInputNode(nodeId, created.id);
-    render();
-    scheduleSave();
-    toast(connected ? tr('smart.localEditCreated') : tr('smart.localEditConnectHint'));
-}
-function createLoopNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const node = {id:uid('loop'), type:'smart-loop', x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
-function createSmartGroupNode(x, y, options={}){
-    if(!options.skipUndo) pushUndo();
-    const node = {id:uid('group'), type:'smart-group', x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
-    nodes.push(node);
-    if(options.select !== false) selectedId = node.id;
-    render();
-    scheduleSave();
-    return node;
-}
 function cloneSmartNode(node, dx=0, dy=0){
     const copy = JSON.parse(JSON.stringify(node));
     copy.id = uid(
-        node.type === 'smart-prompt'
+        node.type === NODE_TYPE_PROMPT
             ? 'prompt'
-            : node.type === 'smart-loop'
+            : node.type === NODE_TYPE_LOOP
             ? 'loop'
-            : node.type === 'smart-agent'
+            : node.type === NODE_TYPE_AGENT
             ? 'agent'
-            : node.type === 'smart-group'
+            : node.type === NODE_TYPE_GROUP
             ? 'group'
             : 'smart'
     );
     copy.x = (Number(node.x) || 0) + dx;
     copy.y = (Number(node.y) || 0) + dy;
     clearSmartNodeTransientRunState(copy, {clearRunHistory:true});
-    if(copy.type === 'smart-group') copy.title = copy.title || '智能分组';
+    if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
 function copySelectedNodes(){
     if(!canvas || isEditableTarget(document.activeElement)) return;
     const ids = selectedNodeIds();
-    const copiedNodes = ids.map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    const copiedNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(!copiedNodes.length) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     // 复制所有与选中节点相关的连线（包括与外部节点的连线），粘贴时保持连线不断
@@ -7995,10 +7096,10 @@ function pasteNodes(){
         to:idMap.get(conn.to) || conn.to
     })).filter(conn => conn.from && conn.to && conn.from !== conn.to);
     canvas.connections = [...(canvas.connections || []), ...newConnections];
-    nodes.push(...copies);
-    selectedId = copies.length === 1 ? copies[0].id : '';
-    selectedIds = copies.length > 1 ? copies.map(n => n.id) : [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.nodes.push(...copies);
+    canvasState.selectedId = copies.length === 1 ? copies[0].id : '';
+    canvasState.selectedIds = copies.length > 1 ? copies.map(n => n.id) : [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
 }
@@ -8018,22 +7119,26 @@ function pasteAssetsFromInbox(){
     const items = readAssetInbox();
     if(!items) return false;
     const center = lastMouseWorld || viewportCenter();
-    const cell = 260; // 网格间距（世界坐标）
-    const cols = Math.max(1, Math.min(items.length, Math.ceil(Math.sqrt(items.length))));
-    const rows = Math.ceil(items.length / cols);
-    const startX = center.x - (cols - 1) * cell / 2;
-    const startY = center.y - (rows - 1) * cell / 2;
+    // #246 freeSpot 批量行排（canvas-placement.js rowSpots）：从锚点单行横向排布，
+    // 每件避让静态碰撞盒（既有节点），游标 = 上一落点右缘 + GAP(40)；替代旧网格。
+    const imagesPerItem = items.map(it => [assetNodeImageFromItem(it)]);
+    const sizes = imagesPerItem.map(imgs => {
+        const layout = canvasCore.imageLayout(imgs, canvasCore.mediaNodeDefaultScale({type:NODE_TYPE_IMAGE, images:imgs}), {type:NODE_TYPE_IMAGE, images:imgs});
+        return { w: layout.width, h: layout.height };
+    });
+    const boxes = canvasState.nodes.map(n => canvasCore.nodeRect(n)).filter(Boolean);
+    const spots = CanvasPlacement.rowSpots({ x: center.x, y: center.y }, sizes, boxes);
     pushUndo();
     const created = [];
     items.forEach((it, i) => {
-        const r = Math.floor(i / cols), c = i % cols;
-        const p = {x: startX + c * cell, y: startY + r * cell};
-        const node = createImageNodeAt(p, [assetNodeImageFromItem(it)], {skipUndo:true, select:false});
+        // spot 是左边缘 → createImageNodeAt 取中心对齐同一落点。
+        const p = { x: spots[i].x + Math.round(sizes[i].w / 2), y: spots[i].y + Math.round(sizes[i].h / 2) };
+        const node = createImageNodeAt(p, imagesPerItem[i], {skipUndo:true, select:false});
         if(node) created.push(node.id);
     });
-    selectedId = created.length === 1 ? created[0] : '';
-    selectedIds = created.length > 1 ? created : [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = created.length === 1 ? created[0] : '';
+    canvasState.selectedIds = created.length > 1 ? created : [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
     lastNodePasteAt = Date.now();
     try { localStorage.removeItem(SMART_CANVAS_ASSET_INBOX_KEY); } catch(e){}
     render();
@@ -8043,7 +7148,7 @@ function pasteAssetsFromInbox(){
 }
 function duplicateForAltDrag(node, preserveConnections=false){
     const ids = (isNodeSelected(node.id) ? selectedNodeIds() : [node.id]);
-    const sourceNodes = ids.map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    const sourceNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(!sourceNodes.length) return node;
     pushUndo();
     const idMap = new Map();
@@ -8071,122 +7176,25 @@ function duplicateForAltDrag(node, preserveConnections=false){
             const kind = conn.kind || 'flow';
             if(nextConnections.some(c => c.from === conn.from && c.to === conn.to && (c.kind || 'flow') === kind)) return;
             nextConnections.push(conn);
-            const toNode = nodes.find(n => n.id === conn.to) || copies.find(n => n.id === conn.to);
+            const toNode = canvasState.nodes.find(n => n.id === conn.to) || copies.find(n => n.id === conn.to);
             if(toNode && (conn.kind || 'flow') === 'input'){
                 toNode.inputNodeIds = Array.from(new Set([...(toNode.inputNodeIds || []), conn.from]));
             }
         });
         canvas.connections = nextConnections;
     }
-    nodes.push(...copies);
-    selectedId = '';
-    selectedIds = [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.nodes.push(...copies);
+    canvasState.selectedId = '';
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
     const dragCopy = copies.find(c => c.id === idMap.get(node.id)) || copies[0];
     render();
     scheduleSave();
     return dragCopy;
 }
-function shellPoint(event){
-    const rect = shell.getBoundingClientRect();
-    return {x:event.clientX - rect.left, y:event.clientY - rect.top};
-}
 let interactionLayerRaf = 0;
 // 拖动/缩放节点时，每个 mousemove 都全量重建连线 SVG + 小地图会掉帧；
 // 用 requestAnimationFrame 把它们合并成每帧最多刷新一次（节点本身的位移仍是即时的）。
-function scheduleInteractionLayerRefresh(){
-    if(interactionLayerRaf) return;
-    interactionLayerRaf = requestAnimationFrame(() => {
-        interactionLayerRaf = 0;
-        refreshConnectionLayer();
-        renderMinimap();
-    });
-}
-function moveNodeElementsDuringDrag(){
-    if(!dragState) return;
-    const groupItems = dragState.group || [{id:dragState.id}];
-    groupItems.map(item => item.id).forEach(id => {
-        const n = nodes.find(x => x.id === id);
-        const el = world.querySelector(`.image-node[data-id="${CSS.escape(id)}"]`);
-        if(n && el){
-            el.style.left = `${n.x || 0}px`;
-            el.style.top = `${n.y || 0}px`;
-        }
-    });
-    const active = selectedNode();
-    if(active && (dragState.group || [{id:dragState.id}]).some(item => item.id === active.id)){
-        positionComposerForNode(active);
-    }
-    scheduleInteractionLayerRefresh();
-}
-function updateNodeElementDuringResize(node){
-    if(!node) return;
-    const el = world.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
-    if(!el){
-        render();
-        return;
-    }
-    const imgs = isSmartGroupNode(node) ? smartGroupImageRefs(node).map(ref => ref.item) : (node.images || []);
-    const layout = imageLayout(imgs, nodeScale(node), node);
-    el.style.width = `${layout.width}px`;
-    el.style.height = `${layout.height}px`;
-    const body = el.querySelector('.node-body');
-    if(body){
-        const loadingSingle = body.querySelector('.loading-cell.single');
-        if(loadingSingle){
-            // 单图占位与批量分支同规范：铺满 node-body（width/height:100%），
-            // 节点 16px padding 即外边距；此前用 layout.width/height（=节点外框尺寸）
-            // 会让占位框贴住/越出外框、与 pending 呼吸边框错位。
-            loadingSingle.style.width = '100%';
-            loadingSingle.style.height = '100%';
-        }
-        const loadingGrid = body.querySelector('.loading-skeleton');
-        if(loadingGrid){
-            // 批量占位格必须与 generationPlaceholderHtml/imageLayout 保持同一套规范：
-            // 容器铺满 node-body（节点 16px padding 提供外边距），格子固定 136×102，
-            // 列/行由 _batchTotal 经 getBatchThumbGridSize 决定（此前用 sqrt+1fr 会在
-            // 图片写回触发本函数时把占位网格拉变形，导致格子越界/图片浮出框外）。
-            const count = Math.max(2, Math.min(8, Number(node._batchTotal) || Number(node.pending) || 2));
-            const batch = getBatchThumbGridSize(count);
-            loadingGrid.style.width = '100%';
-            loadingGrid.style.height = '100%';
-            loadingGrid.style.gridTemplateColumns = `repeat(${batch.cols}, ${BATCH_THUMB.WIDTH}px)`;
-            loadingGrid.style.gridTemplateRows = `repeat(${batch.rows}, ${BATCH_THUMB.HEIGHT}px)`;
-        }
-        const maxVisibleRows = isSmartGroupNode(node)
-            ? (smartGroupCompactMembers(node).length ? Number(layout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS)
-            : MEDIA_GROUP_MAX_VISIBLE_ROWS;
-        const grid = body.querySelector('.thumb-grid');
-        if(grid){
-            grid.style.setProperty('--thumb-cols', layout.cols);
-            grid.style.setProperty('--thumb-size', `${layout.thumb}px`);
-            const visibleRows = Math.max(1, Math.min(maxVisibleRows, Number(layout.visibleRows || layout.rows || 1)));
-            const maxHeight = Number(layout.gridHeight) || mediaGroupGridHeight(imgs, layout.cols, visibleRows, layout.thumb);
-            grid.style.setProperty('--thumb-max-height', `${maxHeight}px`);
-            grid.querySelectorAll('.thumb-item').forEach((itemEl, index) => {
-                applyThumbDisplaySizeToElement(itemEl, imgs[index], layout.thumb);
-            });
-        }
-        const wrap = body.querySelector('.image-wrap');
-        if(wrap){
-            // 分组单图卡片含 16px 内边距（PAD=32），图片按内边距内的尺寸显示，避免溢出边框。
-            const wrapW = isSmartGroupNode(node) ? Math.max(24, Number(layout.innerW || 0) || (Number(layout.width) - 32)) : layout.width;
-            const wrapH = isSmartGroupNode(node) ? Math.max(24, Number(layout.innerH || 0) || (Number(layout.height) - 60)) : layout.height;
-            wrap.style.setProperty('--node-img-w', `${wrapW}px`);
-            wrap.style.setProperty('--node-img-h', `${wrapH}px`);
-        }
-        const media = body.querySelector('.node-img');
-        if(media){
-            const mediaW = isSmartGroupNode(node) ? Math.max(24, Number(layout.innerW || 0) || (Number(layout.width) - 32)) : layout.width;
-            const mediaH = isSmartGroupNode(node) ? Math.max(24, Number(layout.innerH || 0) || (Number(layout.height) - 60)) : layout.height;
-            media.style.width = `${mediaW}px`;
-            media.style.height = `${mediaH}px`;
-        }
-    }
-    const active = selectedNode();
-    if(active?.id === node.id) positionComposerForNode(active);
-    scheduleInteractionLayerRefresh();
-}
 function syncSmartGroupMemberElements(group){
     if(!isSmartGroupNode(group)) return;
     smartGroupCompactMembers(group).forEach(member => {
@@ -8260,48 +7268,6 @@ function imageForDisplay(img){
         url:localUrl,
         originalLocalUrl:img.originalLocalUrl || localUrl
     };
-}
-function resultMediaUrls(result){
-    const urls = [];
-    const add = value => {
-        if(!value) return;
-        if(typeof value === 'string'){
-            urls.push(value);
-            return;
-        }
-        if(Array.isArray(value)){
-            value.forEach(add);
-            return;
-        }
-        if(typeof value === 'object'){
-            if(value.url || value.path || value.src || value.uri){
-                const url = value.url || value.path || value.src || value.uri;
-                if(url){
-                    const item = {url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''};
-                    if(value.mime_type) item.mime_type = value.mime_type;
-                    if(value.asset_id) item.asset_id = value.asset_id;
-                    ['natural_w','natural_h','width','height','w','h','layout_w','layout_h'].forEach(key => {
-                        const n = Number(value[key]);
-                        if(Number.isFinite(n) && n > 0) item[key] = n;
-                    });
-                    urls.push(item);
-                }
-            }
-            ['image_items','media_items','items','outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
-            ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
-        }
-    };
-    add(result);
-    ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
-    const seen = new Set();
-    return urls.map(item => {
-        const url = typeof item === 'string' ? item : item?.url || item?.path || '';
-        if(!url) return null;
-        return typeof item === 'object' ? {...item, url} : url;
-    }).filter(item => {
-        const url = typeof item === 'string' ? item : item?.url || '';
-        return url && !seen.has(url) && seen.add(url);
-    });
 }
 function mediaKindForUrls(urls, fallback='image'){
     const items = (urls || []).map(item => typeof item === 'string' ? {url:item} : (item || {}));
@@ -8430,8 +7396,12 @@ function updateImageResolutionBadgeElement(itemEl, img){
 function singleMediaHtml(img, w, h){
     if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i></div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
     if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="file-audio"></i></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
-    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 768, 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
-    return smartPreviewImgHtml(img, 768, `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
+    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, smartNodePreviewTier(w, h), 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
+    return smartPreviewImgHtml(img, smartNodePreviewTier(w, h), `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
+}
+// #238: tier for a canvas node of CSS size w×h under current zoom/dpr.
+function smartNodePreviewTier(w, h){
+    return mediaPreviewTierFor(Math.max(Math.abs(Number(w) || 0), Math.abs(Number(h) || 0)), viewport.scale, window.devicePixelRatio || 1);
 }
 function smartNodeHasLiveMedia(node){
     return Boolean(!node?.pending && (node?.images || []).some(img => img?.url));
@@ -8512,17 +7482,6 @@ function restoreMediaPlaybackStates(states){
         restoreMediaPlaybackState(media, states.get(`${tag}:${url}`));
     });
 }
-function smartRunTaskLabel(run){
-    const s = run?.settings || {};
-    if(run?.kind === 'video') return s.videoModel || 'Video';
-    if(s.engine === 'modelscope'){
-        return s.msgenModel === 'custom' ? (s.msCustomModel || 'Modelscope') : (MS_GEN_MODELS[s.msgenModel]?.label || s.msgenModel || 'Modelscope');
-    }
-    return s.model || 'API Image';
-}
-function outputUrlLooksVideo(url){
-    return /\.(mp4|webm|mov|m4v|avi|mkv)(\?|$)/.test(smartOriginalMediaUrl(url).toLowerCase());
-}
 function proxiedMediaUrl(itemOrUrl, name=''){
     const url = smartOriginalMediaUrl(itemOrUrl);
     if(!url || String(url).startsWith('/assets/') || String(url).startsWith('/output/') || String(url).startsWith('/api/project-library/') || String(url).startsWith('data:') || String(url).startsWith('blob:')) return url;
@@ -8576,7 +7535,7 @@ function downloadNameForMediaItem(item, fallbackPrefix='canvas-output'){
     return name;
 }
 function downloadPreviewImage(){
-    const node = nodes.find(n => n.id === previewNavState.nodeId);
+    const node = canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     const image = node?.images?.[previewNavState.index];
     if(!image?.url) return;
     const name = downloadNameForMediaItem(image, 'image');
@@ -8600,10 +7559,10 @@ function downloadPreviewFile(item){
 function previewDownloadGroupItems(){
     // 分组预览：整组所有成员图片按阅读顺序打包。
     if(previewNavState.groupId){
-        const group = nodes.find(n => n.id === previewNavState.groupId && isSmartGroupNode(n));
+        const group = canvasState.nodes.find(n => n.id === previewNavState.groupId && isSmartGroupNode(n));
         if(group) return smartGroupImageRefs(group).map((r, index) => ({...r.item, __index:index}));
     }
-    const node = nodes.find(n => n.id === previewNavState.nodeId);
+    const node = canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     return (node?.images || [])
         .filter(item => item?.url)
         .map((item, index) => ({...item, __index:index}))
@@ -8617,234 +7576,52 @@ function previewDownloadGroupItems(){
         });
 }
 // #89 已标记图片：canvas.markedAssetIds 随画布 JSON 持久化（canvasForStorage 原样保留顶层字段）。
-function getMarkedAssetIds(){
-    if(!canvas) return [];
-    if(!Array.isArray(canvas.markedAssetIds)) canvas.markedAssetIds = [];
-    return canvas.markedAssetIds;
-}
-function updateSmartMarkedBadge(){
-    const badge = document.getElementById('smartMarkedCount');
-    if(!badge) return;
-    const count = getMarkedAssetIds().length;
-    badge.hidden = count === 0;
-    badge.textContent = String(count);
-}
 function imageMarkButtonHtml(item, index){
     const assetId = String(item?.asset_id || '');
     if(!assetId) return '';
     const marked = getMarkedAssetIds().includes(assetId);
     return `<button class="mini-x image-mark${marked ? ' image-marked' : ''}" type="button" data-image-index="${index}" title="${escapeHtml(tr(marked ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`;
 }
-function setMarkedImage(assetId, marked){
-    if(!assetId) return;
-    const ids = getMarkedAssetIds();
-    const at = ids.indexOf(assetId);
-    if(marked && at < 0) ids.push(assetId);
-    if(!marked && at >= 0) ids.splice(at, 1);
-    // #89 第四轮：节点级 flagged 才是持久载体——项目增量快照只抓 nodes/edges/title/icon/logs，
-    // canvas.markedAssetIds 顶层字段永不被保存；只有 upsert_node 携带的 images[].marked 能落盘。
-    nodes.forEach(node => (node.images || []).forEach(img => {
-        if(img && String(img.asset_id || '') === assetId){
-            if(marked) img.marked = true;
-            else delete img.marked;
-        }
-    }));
-    syncCuratedFromMarks(); // #53/#58：星标即“保留”信号，同步节点 curated 供收集/导出 API 读取
-    render();
-    scheduleSave();
-    renderSmartMarkedPanel();
-    syncMarkedImageButtons();
-}
-// #89 第四轮：画布加载/远端 rebase 后，从节点 images[].marked 重建星标索引。
-function rebuildMarkedAssetIdsFromNodes(){
-    if(!canvas) return;
-    const found = new Set();
-    nodes.forEach(node => (node.images || []).forEach(img => {
-        if(img && img.marked && img.asset_id) found.add(String(img.asset_id));
-    }));
-    canvas.markedAssetIds = [...found];
-    syncCuratedFromMarks(); // #53/#58：加载/rebase 后保证 curated 与星标一致（历史画布可能缺 curated 字段）
-}
-// #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-nodes
-// 与 pi 收集工具据此筛选）；全部取消星标 ⇒ curated=false。只改有星标图的节点。
-function syncCuratedFromMarks(){
-    nodes.forEach(node => {
-        const imgs = node.images || [];
-        if(!imgs.some(img => img && img.marked) && !node.curated) return;
-        const curated = imgs.some(img => img && img.marked);
-        if(Boolean(node.curated) !== curated) node.curated = curated;
-    });
-}
 // #89 第四轮：同步所有带 data-marked-asset 的星位按钮（画布缩略图/生图历史/生成详情/预览大图）。
-function syncMarkedImageButtons(){
-    const ids = getMarkedAssetIds();
-    document.querySelectorAll('[data-marked-asset]').forEach(el => {
-        const marked = ids.includes(String(el.dataset.markedAsset || ''));
-        el.classList.toggle('image-marked', marked);
-        if(el.dataset.markedTitle) el.title = marked ? tr('smart.unmarkImage') : tr('smart.markImage');
-    });
-    if(window.lucide) lucide.createIcons();
-}
-// #89 第四轮：生成详情/生图历史的 output 项 → 画布节点 {nodeId,index}（优先 asset_id 匹配，回退 url）。
-function smartHistoryDetailNodeImageRef(item){
-    const assetId = String(item?.asset_id || '');
-    const url = String(item?.url || '');
-    let ref = null;
-    let urlRef = null;
-    for(const node of nodes){
-        (node.images || []).forEach((img, index) => {
-            if(!img) return;
-            if(assetId && String(img.asset_id || '') === assetId) ref = {nodeId:node.id, index};
-            else if(urlRef === null && url && String(img.url || '') === url) urlRef = {nodeId:node.id, index};
-        });
-    }
-    return ref || urlRef;
-}
-// #89 第四轮：预览大图里的星标（对当前预览的节点图）。
 function toggleImagePreviewMark(){
-    const ref = selectedImage || {};
-    const node = nodes.find(n => n.id === ref.nodeId);
+    const ref = canvasState.selectedImage || {};
+    const node = canvasState.nodes.find(n => n.id === ref.nodeId);
     const raw = node?.images?.[Number(ref.index || 0)];
     const item = imageForDisplay(raw) || raw;
     const assetId = String(raw?.asset_id || item?.asset_id || '');
     if(!assetId){ toast(tr('smart.markUnavailable')); return; }
     setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
 }
-function updateImagePreviewMarkButton(){
-    const btn = document.getElementById('imagePreviewMarkBtn');
-    if(!btn) return;
-    const ref = selectedImage || {};
-    const node = nodes.find(n => n.id === ref.nodeId);
-    const raw = node?.images?.[Number(ref.index || 0)];
-    const item = imageForDisplay(raw) || raw;
-    const assetId = String(raw?.asset_id || item?.asset_id || '');
-    btn.dataset.markedAsset = assetId;
-    btn.hidden = !assetId || mediaKindForItem(item) !== 'image' || imageEditMode !== 'preview';
-    syncMarkedImageButtons();
-}
-function toggleMarkedImage(node, imageIndex){
-    const raw = node?.images?.[imageIndex];
-    const item = imageForDisplay(raw) || raw;
-    const assetId = String(raw?.asset_id || item?.asset_id || '');
-    if(!assetId){ toast(tr('smart.markUnavailable')); return; }
-    setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
-}
-// asset_id → 可用文件（含 url）：先查生成历史输出，再查节点图片；文件已删的自动跳过。
-function markedImageItems(){
-    const found = new Map();
-    (Array.isArray(canvas?.history) ? canvas.history : []).forEach(log => {
-        (Array.isArray(log?.outputs) ? log.outputs : []).forEach(output => {
-            const id = String(output?.asset_id || '');
-            if(id && output?.url && !found.has(id)) found.set(id, output);
-        });
-    });
-    nodes.forEach(node => (node.images || []).forEach(img => {
-        const id = String(img?.asset_id || '');
-        if(id && img?.url && !found.has(id)) found.set(id, img);
-    }));
-    return getMarkedAssetIds().map(id => found.get(id)).filter(item => item?.url);
-}
-// #89 星标列表显示名：优先 name/alias，其次 url 里的文件名（generated-1.png 这类），最后才退回 asset_id。
-// 裸 asset_id（32 位十六进制）当文件名展示既丑又无信息量。
-function markedItemDisplayName(item){
-    const name = String(item?.name || item?.alias || '').trim();
-    if(name) return name;
-    try{
-        const path = String(item?.url || '').split('?')[0];
-        const file = path.slice(path.lastIndexOf('/') + 1);
-        if(file && !/^[0-9a-f]{24,}$/i.test(file)) return decodeURIComponent(file);
-    }catch(e){}
-    return String(item?.asset_id || '');
-}
-function renderSmartMarkedPanel(){
-    const count = getMarkedAssetIds().length;
-    const badge = document.getElementById('smartMarkedCount');
-    if(badge){ badge.hidden = count === 0; badge.textContent = String(count); }
-    const list = document.getElementById('smartMarkedList');
-    if(!list) return;
-    const items = markedImageItems();
-    if(!items.length){
-        list.innerHTML = `<div class="smart-marked-empty">${tr('smart.markedEmpty')}</div>`;
-        if(window.lucide) lucide.createIcons();
-        return;
-    }
-    // 列表内的图必然都是已标记状态：星标按钮直接渲染填充态（image-marked）。
-    list.innerHTML = items.map((item, i) => `
-        <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
-            <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
-            <span class="smart-marked-name" title="${escapeAttr(markedItemDisplayName(item))}">${escapeHtml(markedItemDisplayName(item))}</span>
-            <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><i data-lucide="download"></i></button>
-            <button class="mini-x smart-marked-unmark image-marked" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
-        </div>`).join('');
-    list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
-        e.preventDefault(); e.stopPropagation();
-        downloadPreviewFile(items[Number(btn.dataset.i)]);
-    }));
-    list.querySelectorAll('.smart-marked-unmark').forEach(btn => btn.addEventListener('click', e => {
-        e.preventDefault(); e.stopPropagation();
-        setMarkedImage(btn.dataset.assetId, false);
-    }));
-    if(window.lucide) lucide.createIcons();
-}
-function toggleSmartMarkedPanel(open){
-    const panel = document.getElementById('smartMarkedPanel');
-    if(!panel) return;
-    const next = open ?? panel.hidden;
-    panel.hidden = !next;
-    if(next) renderSmartMarkedPanel();
-}
-// 把一组图片打包成 zip 下载（预览“下载全部”和分组小菜单“批量下载”共用）。
 async function zipDownloadImageItems(title, items){
     const list = (items || []).filter(item => item?.url);
     if(!list.length) return;
+    const filename = safeExportFileName(`${title || 'image-group'}.zip`, 'image-group.zip');
     try {
-        const filename = safeExportFileName(`${title || 'image-group'}.zip`, 'image-group.zip');
-        const response = await fetch('/api/canvas-assets/download', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                filename,
-                urls:list.map(item => item.url).filter(Boolean),
-                items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
-            })
+        // #223：接收/落盘全部交给下载模块。旧实现固定 1200ms 撤销 blob URL、不校验体积，
+        // 单张 9–10MB / 共 48MB 时会落一个 0 字节 zip 还提示成功。
+        const result = await downloadCanvasArchive({
+            filename,
+            urls:list.map(item => item.url).filter(Boolean),
+            items:list.map((item, index) => ({url:item.url, name:downloadNameForMediaItem(item, `image-${String(index + 1).padStart(2, '0')}`)}))
         });
-        if(!response.ok) throw new Error((await response.text()) || tr('smart.batchDownloadFailed'));
-        const blob = await response.blob();
-        const href = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = href;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 1200);
+        // #225：部分失败要说清楚打包了几个、哪几张被跳过及原因，不能只说「成功」。
+        const note = canvasDownloadSkipSummary(result?.report);
+        if(note) toast(note);
     } catch(e) {
         toast((e.message || tr('smart.batchDownloadFailed')).slice(0, 160));
     }
 }
 async function downloadPreviewGroup(){
-    const group = previewNavState.groupId ? nodes.find(n => n.id === previewNavState.groupId) : null;
-    const owner = group || nodes.find(n => n.id === previewNavState.nodeId);
+    const group = previewNavState.groupId ? canvasState.nodes.find(n => n.id === previewNavState.groupId) : null;
+    const owner = group || canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     return zipDownloadImageItems(owner?.title, previewDownloadGroupItems());
-}
-function smartRunPlatformLabel(run){
-    const s = run?.settings || {};
-    if(s.engine === 'modelscope') return 'Modelscope';
-    if(run?.kind === 'video') return videoProviderById(s.videoProvider || '')?.name || s.videoProvider || 'Video';
-    return apiProviderById(s.provider_id || '')?.name || s.provider_id || 'API';
-}
-function smartRunRequestMeta(run){
-    const s = run?.settings || {};
-    if(s.engine === 'modelscope') return {backend:'Modelscope', model:s.msgenModel || '', custom_model:s.msCustomModel || ''};
-    if(run?.kind === 'video') return {provider_id:s.videoProvider || '', model:s.videoModel || '', duration:s.videoDuration || '', aspect_ratio:s.videoAspect || '', resolution:s.videoResolution || ''};
-    return {provider_id:s.provider_id || '', model:s.model || '', size:run?.size || '', quality:s.quality || '', n:s.count || 1};
 }
 function smartRunSnapshot(node, prompt, refs=[], kind='image'){
     const settingsSnapshot = cloneSmartSettings(settings);
     if(kind === 'image' && !apiImageUsesExplicitResolution(settingsSnapshot)) settingsSnapshot.resolution = '';
     return {
         nodeId:node?.id || '',
-        nodeType:node?.type || 'smart-image',
+        nodeType:node?.type || NODE_TYPE_IMAGE,
         kind,
         settings:settingsSnapshot,
         runSettings:cloneSmartSettings(settingsSnapshot),
@@ -8853,87 +7630,6 @@ function smartRunSnapshot(node, prompt, refs=[], kind='image'){
         refs:(refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || 'image', kind:ref.kind || ''})).filter(ref => ref.url),
         size: kind === 'image' && isApiLikeEngine(settingsSnapshot.engine) ? sizeForRun(settingsSnapshot) : ''
     };
-}
-function smartHistoryRunMeta(log){
-    const request = log?.request && typeof log.request === 'object' ? log.request : {};
-    const params = log?.params && typeof log.params === 'object' ? log.params : {};
-    const snapshot = cloneSmartSettings(log?.runSettings || log?.settings || {});
-    if(!snapshot.provider_id && (request.provider_id || params.provider_id)) snapshot.provider_id = request.provider_id || params.provider_id;
-    if(!snapshot.model && (request.model || params.model)) snapshot.model = request.model || params.model;
-    if(!snapshot.quality && (request.quality || params.quality)) snapshot.quality = request.quality || params.quality;
-    if(!snapshot.count && (request.n || params.n || params.count)) snapshot.count = request.n || params.n || params.count;
-    if(!snapshot.size && (request.size || params.size)) snapshot.size = request.size || params.size;
-    if(!snapshot.resolution && (request.resolution || params.resolution)) snapshot.resolution = request.resolution || params.resolution;
-    if(!snapshot.videoAspect && (request.aspect_ratio || params.aspect_ratio)) snapshot.videoAspect = request.aspect_ratio || params.aspect_ratio;
-    if(!snapshot.videoDuration && (request.duration || params.duration)) snapshot.videoDuration = request.duration || params.duration;
-    if(!snapshot.routingMode) snapshot.routingMode = snapshot.provider_id || snapshot.model ? 'manual' : 'auto';
-    const refs = (log?.promptRefs || log?.runPromptRefs || log?.refs || []).map(ref => ({
-        asset_id:ref?.asset_id || '',
-        url:ref?.url || '',
-        name:ref?.name || 'image',
-        nodeId:ref?.nodeId || '',
-        imageIndex:ref?.imageIndex ?? '',
-        kind:ref?.kind || 'image'
-    })).filter(ref => ref.url);
-    const prompt = String(log?.prompt || '');
-    const displayPrompt = String(log?.displayPrompt || log?.promptText || prompt);
-    return {
-        prompt,
-        displayPrompt,
-        promptHtml:log?.promptHtml || '',
-        promptText:displayPrompt,
-        promptRefs:refs,
-        inputRefs:(log?.inputRefs || refs).map(ref => ({...ref})),
-        sourceNodeId:log?.sourceNodeId || log?.nodeId || '',
-        settings:snapshot,
-        createdAt:Number(log?.createdAt || Date.now())
-    };
-}
-function smartHistoryLogTimestamp(log){
-    const value = Number(log?.createdAt ?? log?.created_at ?? 0);
-    if(!Number.isFinite(value) || value <= 0) return 0;
-    return value < 1000000000000 ? value * 1000 : value;
-}
-function smartHistoryRunMs(log){
-    const value = Number(log?.runMs ?? 0);
-    if(Number.isFinite(value) && value > 0) return value;
-    const start = smartHistoryLogTimestamp(log);
-    const end = Number(log?.completedAt ?? log?.completed_at ?? 0);
-    const endMs = Number.isFinite(end) && end > 0 ? (end < 1000000000000 ? end * 1000 : end) : 0;
-    return start && endMs > start ? endMs - start : 0;
-}
-function historyLogModelMeta(log){
-    const raw = String(log?.actual_model || log?.model || log?.request?.model || log?.params?.model || '').trim();
-    if(!raw) return {raw:'', label:''};
-    const providerKey = String(
-        log?.actual_provider_id
-        || log?.request?.provider_id
-        || log?.request?.providerId
-        || log?.params?.provider_id
-        || log?.actual_provider_name
-        || log?.platform
-        || ''
-    ).trim();
-    let provider = (apiProviders || []).find(item =>
-        String(item?.id || '') === providerKey || String(item?.name || '') === providerKey
-    );
-    if(!provider){
-        provider = (apiProviders || []).find(item =>
-            item?.model_names && Object.prototype.hasOwnProperty.call(item.model_names, raw)
-        );
-    }
-    return {raw, label:modelDisplayName(provider, raw)};
-}
-function sortSmartHistoryLogs(logs){
-    const list = Array.isArray(logs) ? logs : [];
-    return list.slice().sort((a, b) => smartHistoryLogTimestamp(b) - smartHistoryLogTimestamp(a) || 0);
-}
-function smartPendingHistoryId(taskId){
-    return `pending-generation-${String(taskId || '').trim()}`;
-}
-function smartPendingHistoryTaskId(log){
-    const request = log?.request || {};
-    return String(request.task_id || request.taskId || '').trim();
 }
 const GENERATION_PROGRESS_PHASES = [
     ['queued', tr('smart.phaseQueued')],
@@ -8970,605 +7666,14 @@ function generationStageProgressHtml(progress={}){
     const segments = GENERATION_PROGRESS_PHASES.map(([key, title], index) => `<span class="generation-stage-segment${index < phaseIndex ? ' done' : index === phaseIndex ? ' active' : ''}" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" data-stage="${escapeAttr(key)}"></span>`).join('');
     return `<div class="generation-stage-progress${failed ? ' is-failed' : ''}" data-phase="${escapeAttr(phase)}" data-phase-index="${phaseIndex}" role="status" aria-label="${escapeAttr(`${label} · ${elapsed}`)}"><div class="generation-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detailText)}</span></div><div class="generation-stage-track" aria-hidden="true">${segments}</div><div class="generation-stage-labels" aria-hidden="true">${GENERATION_PROGRESS_PHASES.map(([, title]) => `<span>${escapeHtml(title)}</span>`).join('')}</div></div>`;
 }
-function applySmartTaskProgress(taskId, progress){
-    const normalizedTaskId = String(taskId || '').trim();
-    if(!normalizedTaskId || !progress || typeof progress !== 'object') return false;
-    let changed = false;
-    nodes.forEach(node => {
-        const tasks = Array.isArray(node?.pendingTasks) ? node.pendingTasks : [];
-        tasks.forEach(task => {
-            if(String(task?.taskId || task?.task_id || '') !== normalizedTaskId) return;
-            const next = JSON.stringify(progress);
-            if(JSON.stringify(task.progress || {}) === next) return;
-            task.progress = {...progress};
-            changed = true;
-        });
-    });
-    const taskLog = (canvas?.history || []).find(log => smartHistoryTaskId(log) === normalizedTaskId);
-    if(taskLog){
-        const nextProgress = {...progress, failed:taskLog.status === 'failed' || Boolean(progress.failed)};
-        if(JSON.stringify(taskLog.progress || {}) !== JSON.stringify(nextProgress)){
-            taskLog.progress = nextProgress;
-            changed = true;
-        }
-    }
-    if(changed){
-        render();
-        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    }
-    return changed;
-}
-function beginSmartPendingHistoryLog(node, defaults={}){
-    if(!canvas || !node) return '';
-    canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
-    if(!defaults.forceNew){
-        const currentId = String(node._pendingHistoryId || '');
-        const current = canvas.history.find(log => String(log?.id || '') === currentId && log?.status === 'pending');
-        if(current) return currentId;
-        const matching = canvas.history.find(log =>
-            log?.status === 'pending'
-            && String(log?.nodeId || '') === String(node.id || '')
-            && !smartPendingHistoryTaskId(log)
-        );
-        if(matching){
-            node._pendingHistoryId = matching.id;
-            return matching.id;
-        }
-    }
-    const runSettings = defaults.runSettings || smartSettingsForNode(node);
-    const providerId = String(defaults.providerId || runSettings.providerId || runSettings.provider_id || '');
-    const model = String(defaults.model || runSettings.model || '');
-    const prompt = String(defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
-    const id = `pending-local-${uid('generation')}`;
-    canvas.history.push({
-        id,
-        createdAt:Number(defaults.createdAt || node.runStartedAt || Date.now()),
-        status:'pending',
-        kind:String(defaults.kind || runSettings.apiKind || 'image'),
-        platform:String(defaults.providerName || providerId || ''),
-        nodeId:node.id || '',
-        nodeType:node.type || 'smart-image',
-        model,
-        actual_provider_id:providerId,
-        request:{provider_id:providerId, model},
-        prompt,
-        displayPrompt:prompt,
-        runSettings:cloneSmartSettings(runSettings),
-        outputs:[]
-    });
-    node._pendingHistoryId = id;
-    canvas.history = sortSmartHistoryLogs(canvas.history);
-    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    return id;
-}
-function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defaults={}){
-    if(!canvas || !node) return false;
-    canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
-    let changed = false;
-    const runSettings = smartSettingsForNode(node);
-    (Array.isArray(tasks) ? tasks : []).forEach(task => {
-        const taskId = String(task?.taskId || task?.task_id || '').trim();
-        if(!taskId) return;
-        const id = smartPendingHistoryId(taskId);
-        if(canvas.history.some(log => String(log?.id || '') === id || smartHistoryTaskId(log) === taskId)) return;
-        const createdAt = Number(task?.createdAt || task?.created_at || defaults.createdAt || node.runStartedAt || Date.now());
-        const kind = String(task?.kind || defaults.kind || runSettings.apiKind || 'image');
-        const providerId = String(task?.providerId || task?.provider_id || defaults.providerId || runSettings.providerId || '');
-        const model = String(task?.model || defaults.model || runSettings.model || '');
-        const prompt = String(task?.prompt || defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
-        const localId = String(task?.pendingHistoryId || node._pendingHistoryId || '');
-        const localEntry = canvas.history.find(log =>
-            log?.status === 'pending'
-            && !smartPendingHistoryTaskId(log)
-            && (String(log?.id || '') === localId || String(log?.nodeId || '') === String(node.id || ''))
-        );
-        if(localEntry){
-            localEntry.id = id;
-            localEntry.createdAt = createdAt;
-            localEntry.kind = kind;
-            localEntry.platform = String(task?.providerName || task?.provider_name || defaults.providerName || providerId || '');
-            localEntry.model = model;
-            localEntry.actual_provider_id = providerId;
-            localEntry.request = {...(localEntry.request || {}), task_id:taskId, provider_id:providerId, model};
-            localEntry.prompt = prompt || localEntry.prompt || '';
-            localEntry.displayPrompt = localEntry.prompt;
-            localEntry.runSettings = cloneSmartSettings(runSettings);
-            if(task?.progress) localEntry.progress = {...task.progress};
-            if(String(node._pendingHistoryId || '') === localId) node._pendingHistoryId = id;
-            changed = true;
-            return;
-        }
-        canvas.history.push({
-            id,
-            createdAt,
-            status:'pending',
-            kind,
-            platform:String(task?.providerName || task?.provider_name || defaults.providerName || providerId || ''),
-            nodeId:node.id || '',
-            nodeType:node.type || 'smart-image',
-            model,
-            actual_provider_id:providerId,
-            request:{task_id:taskId, provider_id:providerId, model},
-            prompt,
-            displayPrompt:prompt,
-            runSettings:cloneSmartSettings(runSettings),
-            progress:task?.progress ? {...task.progress} : undefined,
-            outputs:[]
-        });
-        changed = true;
-    });
-    if(changed){
-        canvas.history = sortSmartHistoryLogs(canvas.history);
-        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    }
-    return changed;
-}
-function failSmartPendingHistoryLog(taskId, error=''){
-    const id = smartPendingHistoryId(taskId);
-    const entry = (canvas?.history || []).find(log => String(log?.id || '') === id || (log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId || '')));
-    if(!entry) return false;
-    entry.status = 'failed';
-    entry.error = String(error || tr('smart.errRunFailed'));
-    entry.completed_at = Date.now();
-    entry.runMs = Math.max(0, entry.completed_at - smartHistoryLogTimestamp(entry));
-    entry.id = uid('log');
-    canvas.history = sortSmartHistoryLogs(canvas.history || []);
-    if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    return true;
-}
-function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
-    if(!canvas) return;
-    canvas.history = canvas.history || [];
-    const runNodeId = String(run?.nodeId || '');
-    const runNode = nodes.find(node => String(node?.id || '') === runNodeId);
-    const pendingId = String(run?.pendingHistoryId || runNode?._pendingHistoryId || '');
-    const pendingEntry = canvas.history.find(log =>
-        log?.status === 'pending'
-        && (String(log?.id || '') === pendingId || (runNodeId && String(log?.nodeId || '') === runNodeId))
-    );
-    if(pendingEntry){
-        canvas.history = canvas.history.filter(log => log !== pendingEntry);
-        if(runNode && String(runNode._pendingHistoryId || '') === pendingId) delete runNode._pendingHistoryId;
-    }
-    const outputItems = resultMediaUrls(outputs).map(item => {
-        if(typeof item === 'string') return {url:item};
-        if(!item || typeof item !== 'object') return null;
-        const url = item.url || item.path || item.src || item.uri || '';
-        if(!url) return null;
-        return copyMediaSizeFields(item, {
-            url,
-            kind:item.kind || item.type || item.mediaKind || '',
-            name:item.name || item.filename || ''
-        });
-    }).filter(item => item?.url);
-    if(!error && outputItems.length) playGenerationCompleteSound();
-    const entry = {
-        id:uid('log'),
-        createdAt:Number(pendingEntry?.createdAt || Date.now()),
-        status:error ? 'failed' : 'success',
-        kind:run?.kind || 'image',
-        platform:smartRunPlatformLabel(run),
-        nodeId:run?.nodeId || '',
-        nodeType:run?.nodeType || 'smart-image',
-        model:smartRunTaskLabel(run),
-        request:smartRunRequestMeta(run),
-        prompt:run?.prompt || '',
-        displayPrompt:run?.displayPrompt || run?.prompt || '',
-        runSettings:cloneSmartSettings(run?.runSettings || run?.settings || {}),
-        promptRefs:(run?.refs || []).map(ref => ({...ref})),
-        outputs:outputItems,
-        refs:run?.refs || [],
-        runMs:Number(runMs || 0),
-        error:error ? String(error) : ''
-    };
-    canvas.history = [entry, ...canvas.history].slice(0, 500);
-    if(!error && recoverStuckLoopOutputsFromHistory()) render();
-    scheduleSave();
-}
-const SMART_LOG_PREVIEW_NODE_ID = '__smart_log_preview__';
-let smartHistoryPreviewRestore = null;
-function smartHistoryOutputItem(output){
-    if(typeof output === 'string') return {url:output};
-    if(!output || typeof output !== 'object') return null;
-    const url = output.url || output.path || output.src || output.uri || '';
-    if(!url) return null;
-    return copyMediaSizeFields(output, {
-        ...output,
-        url,
-        kind:output.kind || output.type || output.mediaKind || '',
-        name:output.name || output.filename || ''
-    });
-}
-function smartHistoryEntryById(historyId){
-    return (canvas?.history || []).find(log => String(log?.id || '') === String(historyId || '')) || null;
-}
-function smartHistoryImageOutputs(log){
-    return (log?.outputs || []).map((output, outputIndex) => {
-        const item = smartHistoryOutputItem(output);
-        const kind = item?.kind || (outputUrlLooksVideo(item?.url || '') ? 'video' : 'image');
-        return item?.url && kind === 'image' ? {
-            ...item,
-            outputIndex,
-            outputId:String(item.output_id || ''),
-            kind:'image',
-            name:item.name || smartImageNameFromUrl(item.url)
-        } : null;
-    }).filter(Boolean);
-}
-function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=null){
-    const log = smartHistoryEntryById(historyId);
-    let outputs = smartHistoryImageOutputs(log);
-    if(Number.isInteger(outputIndex)) outputs = outputs.filter(output => output.outputIndex === outputIndex);
-    if(log?.kind === 'video' && !outputs.length) return;
-    const rect = shell.getBoundingClientRect();
-    const point = dropPoint || screenToWorld({clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2});
-    const failed = log?.status === 'failed' || !outputs.length;
-    const runMeta = smartHistoryRunMeta(log);
-    pushUndo();
-    const node = createImageNodeAt(point, outputs.map(output => {
-        const clean = {...output};
-        delete clean.outputIndex;
-        return clean;
-    }), {
-        skipUndo:true,
-        title:outputs.length > 1 ? 'Group' : 'Image',
-        runMeta,
-        historyId:log?.id || '',
-        needsRegeneration:failed,
-        generationState:failed ? 'ready' : 'complete'
-    });
-    node.runStatus = failed ? 'failed' : 'succeeded';
-    scheduleSave();
-    closeSmartCanvasLog();
-    toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
-    return node;
-}
-function setSmartHistoryDragState(active, card=null){
-    smartHistoryModal?.classList.toggle('log-drag-active', active);
-    smartHistoryModal?.querySelectorAll('.log-media-card.is-dragging,.log-history-image.is-dragging').forEach(el => el.classList.remove('is-dragging'));
-    if(active){
-        card?.classList.add('is-dragging');
-        card?.querySelector?.('.log-history-image')?.classList.add('is-dragging');
-    }
-}
-function clearSmartHistoryTap(){
-    if(smartHistoryTap?.timer) clearTimeout(smartHistoryTap.timer);
-    smartHistoryTap = null;
-}
-function selectSmartHistoryImage(card){
-    if(!card) return;
-    const logItem = card.closest('[data-canvas-history-id]');
-    smartHistorySelectedImage = {
-        historyId:logItem?.dataset.canvasHistoryId || '',
-        outputIndex:Number(card.dataset.historyOutputIndex || 0),
-        outputId:String(card.dataset.outputId || '')
-    };
-    smartHistoryModal?.querySelectorAll('.log-media-card.is-selected').forEach(item => {
-        item.classList.remove('is-selected');
-        item.removeAttribute('data-history-selected');
-        item.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'false');
-    });
-    smartHistoryModal?.querySelectorAll('.log-output-preview.is-selected').forEach(item => {
-        item.classList.remove('is-selected');
-        item.setAttribute('aria-current', 'false');
-    });
-    card.classList.add('is-selected');
-    card.dataset.historySelected = 'true';
-    card.querySelector('.log-history-image')?.setAttribute('aria-pressed', 'true');
-    const preview = logItem?.querySelector(`.log-output-preview[data-history-output-preview="${smartHistorySelectedImage.outputIndex}"]`);
-    preview?.classList.add('is-selected');
-    preview?.setAttribute('aria-current', 'true');
-}
-function smartHistoryDrawerContainsPoint(clientX, clientY){
-    const rect = smartHistoryModal?.getBoundingClientRect?.();
-    return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
-}
-function smartHistoryCanvasDropPoint(clientX, clientY){
-    const target = document.elementFromPoint(clientX, clientY);
-    if(!target?.closest?.('#world')) return null;
-    return screenToWorld({clientX, clientY});
-}
-function handleSmartHistoryTap(image, historyId, outputIndex, clientX, clientY){
-    const now = performance.now();
-    const previous = smartHistoryTap;
-    const sameImage = previous
-        && previous.historyId === historyId
-        && previous.outputIndex === outputIndex
-        && now - previous.time <= 320
-        && Math.hypot(clientX - previous.clientX, clientY - previous.clientY) <= 20;
-    if(sameImage){
-        clearSmartHistoryTap();
-        openSmartHistoryDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', historyId, outputIndex});
-        return;
-    }
-    if(previous?.timer) clearTimeout(previous.timer);
-    const card = image?.closest('.log-media-card');
-    const tap = {historyId, outputIndex, clientX, clientY, time:now, timer:null};
-    tap.timer = setTimeout(() => {
-        selectSmartHistoryImage(card);
-        if(smartHistoryTap === tap) smartHistoryTap = null;
-    }, 320);
-    smartHistoryTap = tap;
-}
-function clearSmartHistoryPointerState(){
-    const state = smartHistoryPointerState;
-    if(!state) return;
-    state.image?.classList.remove('is-dragging');
-    try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) {}
-    setSmartHistoryDragState(false);
-    smartHistoryPointerState = null;
-    scheduleSmartHistoryWindowRender();
-}
-function setSmartHistoryDragPayload(event, item){
-    const transfer = event.dataTransfer;
-    if(!transfer) return;
-    const payload = {
-        asset_id:item?.asset_id || '',
-        url:item?.url || '',
-        preview_url:item?.preview_url || '',
-        name:item?.name || 'image',
-        kind:'image',
-        mime_type:item?.mime_type || 'image/png'
-    };
-    transfer.effectAllowed = 'copy';
-    transfer.setData('application/x-smart-asset', JSON.stringify(payload));
-    if(payload.url) transfer.setData('text/plain', payload.url);
-}
-function bindSmartHistoryImage(image, item, historyId, outputIndex){
-    image.draggable = true;
-    image.onpointerdown = event => {
-        if(event.button !== 0) return;
-        event.stopPropagation();
-        const pointerId = event.pointerId ?? 1;
-        try { image.setPointerCapture?.(pointerId); } catch(_) {}
-        smartHistoryPointerState = {
-            image,
-            card:image.closest('.log-media-card'),
-            historyId,
-            outputIndex,
-            pointerId,
-            startX:event.clientX,
-            startY:event.clientY,
-            moved:false,
-            nativeDrag:false
-        };
-    };
-    image.onpointermove = event => {
-        const state = smartHistoryPointerState;
-        if(!state || state.image !== image || state.pointerId !== (event.pointerId ?? 1)) return;
-        const distance = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
-        if(!state.moved && distance >= 8){
-            state.moved = true;
-            clearSmartHistoryTap();
-            setSmartHistoryDragState(true, state.card);
-        }
-        if(state.moved) event.preventDefault();
-        event.stopPropagation();
-    };
-    image.onpointerup = event => {
-        const state = smartHistoryPointerState;
-        if(!state || state.image !== image) return;
-        event.stopPropagation();
-        if(state.moved){
-            event.preventDefault();
-            const dropPoint = !state.nativeDrag && !smartHistoryDrawerContainsPoint(event.clientX, event.clientY)
-                ? smartHistoryCanvasDropPoint(event.clientX, event.clientY)
-                : null;
-            if(dropPoint){
-                sendSmartHistoryOutputsToCanvas(historyId, outputIndex, dropPoint);
-            }
-            clearSmartHistoryPointerState();
-            return;
-        }
-        clearSmartHistoryPointerState();
-        handleSmartHistoryTap(image, historyId, outputIndex, event.clientX, event.clientY);
-    };
-    image.onpointercancel = event => {
-        event.stopPropagation();
-        clearSmartHistoryPointerState();
-    };
-    image.ondragstart = event => {
-        const state = smartHistoryPointerState || {
-            image,
-            card:image.closest('.log-media-card'),
-            historyId,
-            outputIndex,
-            pointerId:event.pointerId ?? 1,
-            startX:event.clientX,
-            startY:event.clientY,
-            moved:true,
-            nativeDrag:true
-        };
-        state.moved = true;
-        state.nativeDrag = true;
-        smartHistoryPointerState = state;
-        clearSmartHistoryTap();
-        setSmartHistoryDragPayload(event, item);
-        setSmartHistoryDragState(true, state.card);
-        event.stopPropagation();
-    };
-    image.ondragend = event => {
-        event.stopPropagation();
-        clearSmartHistoryPointerState();
-    };
-    image.onclick = event => {
-        event.preventDefault();
-        event.stopPropagation();
-    };
-    image.ondblclick = event => {
-        event.preventDefault();
-        event.stopPropagation();
-    };
-    image.onkeydown = event => {
-        if(event.key === 'Enter'){
-            event.preventDefault();
-            event.stopPropagation();
-            selectSmartHistoryImage(image.closest('.log-media-card'));
-        } else if(event.key === ' ' || event.key === 'Spacebar'){
-            event.preventDefault();
-            event.stopPropagation();
-            openSmartHistoryDetail({url:image?.dataset?.originalSrc || image?.dataset?.url || '', kind:'image', historyId, outputIndex});
-        }
-    };
-}
-function normalizedSizeLabel(value){
-    const parsed = parseSizeValue(value);
-    const w = Number(parsed?.width || 0);
-    const h = Number(parsed?.height || 0);
-    return w > 0 && h > 0 ? `${Math.round(w)} x ${Math.round(h)}` : '';
-}
-function normalizedResolutionTier(value){
-    const match = String(value || '').trim().toLowerCase().match(/^([124])\s*k$/);
-    return match ? `${match[1]}K` : '';
-}
-function smartHistoryResolutionTier(log, outputs=[]){
-    if(log?.kind === 'video' || log?.outputKind === 'video' || outputs.some(item => item?.kind === 'video' || outputUrlLooksVideo(item?.url || ''))) return '';
-    const sources = [log?.params, log?.request, log?.runSettings].filter(Boolean);
-    for(const source of sources){
-        const tier = normalizedResolutionTier(source.resolution || source.image_size || source.imageSize || '');
-        if(tier) return tier;
-    }
-    for(const source of sources){
-        const parsed = parseSizeValue(source.size || '');
-        const longest = Math.max(Number(parsed?.width || 0), Number(parsed?.height || 0));
-        if(longest >= 3072) return '4K';
-        if(longest >= 1536) return '2K';
-        if(longest >= 768) return '1K';
-    }
-    const longest = outputs.reduce((maxValue, item) => Math.max(maxValue, Number(item?.natural_w || item?.width || 0), Number(item?.natural_h || item?.height || 0)), 0);
-    if(longest >= 3072) return '4K';
-    if(longest >= 1536) return '2K';
-    if(longest >= 768) return '1K';
-    return '';
-}
-function smartHistorySizeSummary(log, outputs=[]){
-    const req = log?.request || {};
-    const requestLabel = normalizedSizeLabel(req.size || req.resolution || '');
-    const actualLabels = [...new Set(outputs.map(imageResolutionLabel).filter(Boolean))];
-    if(!actualLabels.length) return '';
-    const actualText = actualLabels.slice(0, 3).join(', ');
-    const more = actualLabels.length > 3 ? ` +${actualLabels.length - 3}` : '';
-    const actualLabel = `${actualText}${more}`;
-    if(requestLabel && actualLabels.some(label => label !== requestLabel)){
-        return trf('smart.requestActual', {r: requestLabel, a: actualLabel});
-    }
-    return trf('smart.actualOnly', {a: actualLabel});
-}
-// 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
-function cleanupSmartHistoryPreviewNode(){
-    if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)){ nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID); if(canvas) canvas.nodes = nodes; }
-    if(smartHistoryPreviewRestore){
-        selectedId = smartHistoryPreviewRestore.selectedId;
-        selectedImage = smartHistoryPreviewRestore.selectedImage;
-        smartHistoryPreviewRestore = null;
-    }
-}
-let smartHistoryDetailLastFocus = null;
-let smartHistoryDetailSession = {historyId:'', outputs:[], outputIndex:0, outputId:''};
-let smartHistoryDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
-function applySmartHistoryDetailTransform(){
-    const box = document.getElementById('smartHistoryLightbox');
-    const stage = box?.querySelector('.smart-log-detail-stage');
-    const frame = box?.querySelector('.smart-log-detail-frame');
-    if(frame){
-        frame.style.transform = `translate(${smartHistoryDetailView.pan.x}px, ${smartHistoryDetailView.pan.y}px) scale(${smartHistoryDetailView.zoom})`;
-        frame.dataset.zoom = String(smartHistoryDetailView.zoom);
-    }
-    stage?.classList.toggle('panning', Boolean(smartHistoryDetailView.drag));
-    const label = box?.querySelector('.smart-log-detail-zoom-label');
-    if(label) label.textContent = `${Math.round(smartHistoryDetailView.zoom * 100)}%`;
-}
-function resetSmartHistoryDetailView(){
-    smartHistoryDetailView = {zoom:1, pan:{x:0, y:0}, drag:null};
-    applySmartHistoryDetailTransform();
-}
-function zoomSmartHistoryDetail(factor, clientX=null, clientY=null){
-    const frame = document.querySelector('#smartHistoryLightbox.open .smart-log-detail-frame');
-    const rect = frame?.getBoundingClientRect();
-    if(!rect) return;
-    const next = zoomPanAroundPoint(
-        smartHistoryDetailView.zoom,
-        smartHistoryDetailView.pan,
-        factor,
-        rect,
-        clientX ?? rect.left + rect.width / 2,
-        clientY ?? rect.top + rect.height / 2,
-        {min:0.1, max:8}
-    );
-    smartHistoryDetailView.zoom = next.zoom;
-    smartHistoryDetailView.pan = next.pan;
-    applySmartHistoryDetailTransform();
-}
-function finishSmartHistoryDetailPan(stage, pointerId){
-    if(!smartHistoryDetailView.drag) return;
-    try { stage?.releasePointerCapture?.(pointerId ?? smartHistoryDetailView.drag.pointerId); } catch (_) {}
-    smartHistoryDetailView.drag = null;
-    applySmartHistoryDetailTransform();
-}
-function setupSmartHistoryDetailInteractions(box){
-    const stage = box.querySelector('.smart-log-detail-stage');
-    stage.addEventListener('wheel', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        zoomSmartHistoryDetail(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
-    }, {passive:false});
-    stage.addEventListener('pointerdown', event => {
-        if(event.button !== 0 || event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
-        event.stopPropagation();
-        stage.setPointerCapture?.(event.pointerId);
-        smartHistoryDetailView.drag = {
-            pointerId:event.pointerId,
-            clientX:event.clientX,
-            clientY:event.clientY,
-            startX:smartHistoryDetailView.pan.x,
-            startY:smartHistoryDetailView.pan.y
-        };
-        applySmartHistoryDetailTransform();
-    });
-    stage.addEventListener('pointermove', event => {
-        const drag = smartHistoryDetailView.drag;
-        if(!drag || drag.pointerId !== event.pointerId) return;
-        event.preventDefault();
-        event.stopPropagation();
-        smartHistoryDetailView.pan = {
-            x:drag.startX + event.clientX - drag.clientX,
-            y:drag.startY + event.clientY - drag.clientY
-        };
-        applySmartHistoryDetailTransform();
-    });
-    stage.addEventListener('pointerup', event => finishSmartHistoryDetailPan(stage, event.pointerId));
-    stage.addEventListener('pointercancel', event => finishSmartHistoryDetailPan(stage, event.pointerId));
-    stage.addEventListener('dblclick', event => {
-        if(event.target.closest('.smart-log-detail-zoom-tools,.smart-log-detail-output-nav')) return;
-        event.preventDefault();
-        event.stopPropagation();
-        resetSmartHistoryDetailView();
-    });
-    box.querySelectorAll('[data-smart-log-detail-zoom]').forEach(button => {
-        button.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const action = button.dataset.smartHistoryDetailZoom;
-            if(action === 'reset') resetSmartHistoryDetailView();
-            else zoomSmartHistoryDetail(action === 'in' ? 1.12 : 1 / 1.12);
-        });
-    });
-}
-function closeSmartHistoryLightbox(){
-    const box = document.getElementById('smartHistoryLightbox');
-    if(!box) return;
-    box.classList.remove('open');
-    box.setAttribute('aria-hidden', 'true');
-    const img = box.querySelector('.smart-log-detail-image');
-    if(img){ img.onerror = null; img.removeAttribute('src'); }
-    smartHistoryDetailSession = {historyId:'', outputs:[], outputIndex:0, outputId:''};
-    box.querySelector('.smart-log-detail-output-strip')?.replaceChildren();
-    resetSmartHistoryDetailView();
-    const restore = smartHistoryDetailLastFocus;
-    smartHistoryDetailLastFocus = null;
-    if(restore?.isConnected) requestAnimationFrame(() => restore.focus({preventScroll:true}));
-}
+// #260 Upscale 菜单的重采样通道：长边贴齐 maxEdge（允许 >1 的插值放大）。
+// 注意：“增强放大”（走服务商真放大，ADR 0004）不在这条路径上，见 issue #260。
+// SMART_UPSCALE_MAX_PIXELS（浏览器 canvas 像素预算）在 canvas-media-history.js 里声明（先于本文件加载）。
 async function smartHistoryImage2kPngBlob(item){
+    return smartHistoryImageUpscaledPngBlob(item, 2048);
+}
+async function smartHistoryImageUpscaledPngBlob(item, maxEdge=2048){
+    const targetEdge = Math.max(1, Number(maxEdge) || 2048);
     const sourceUrl = displayMediaUrl(item);
     if(!sourceUrl) throw new Error(tr('smart.imageUrlUnavailable'));
     const response = await fetch(sourceUrl, {credentials:'same-origin'});
@@ -9577,10 +7682,13 @@ async function smartHistoryImage2kPngBlob(item){
     const bitmap = await createImageBitmap(sourceBlob);
     try {
         const longest = Math.max(bitmap.width, bitmap.height, 1);
-        const scale = Math.min(1, 2048 / longest);
+        const scale = targetEdge / longest;
         const canvas2k = document.createElement('canvas');
         canvas2k.width = Math.max(1, Math.round(bitmap.width * scale));
         canvas2k.height = Math.max(1, Math.round(bitmap.height * scale));
+        if(canvas2k.width * canvas2k.height > SMART_UPSCALE_MAX_PIXELS){
+            throw new Error(trf('smart.upscaleTooLarge', {size:`${canvas2k.width}×${canvas2k.height}`}));
+        }
         const context = canvas2k.getContext('2d', {alpha:false});
         if(!context) throw new Error(tr('smart.cannotCreatePair'));
         context.fillStyle = '#ffffff';
@@ -9595,269 +7703,19 @@ async function smartHistoryImage2kPngBlob(item){
     }
 }
 async function copySmartHistoryImage2k(item){
+    return copySmartHistoryImageUpscaled(item, 2048);
+}
+async function copySmartHistoryImageUpscaled(item, maxEdge=2048){
     if(!item?.url) throw new Error(tr('smart.imageUrlUnavailable'));
     if(typeof ClipboardItem !== 'function' || !navigator.clipboard?.write){
         throw new Error(tr('smart.copyImageUnsupported'));
     }
-    const blob = await smartHistoryImage2kPngBlob(item);
+    const blob = await smartHistoryImageUpscaledPngBlob(item, maxEdge);
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
-    return {width:'≤2048', mime:'image/png'};
+    return {width:`≤${Math.max(1, Number(maxEdge) || 2048)}`, mime:'image/png'};
 }
-function ensureSmartHistoryDetail(){
-    let box = document.getElementById('smartHistoryLightbox');
-    if(box) return box;
-    box = document.createElement('div');
-    box.id = 'smartHistoryLightbox';
-    box.className = 'smart-log-lightbox';
-    box.setAttribute('aria-hidden', 'true');
-    box.innerHTML = `<article class="smart-log-detail" role="dialog" aria-modal="true" aria-labelledby="smartHistoryDetailTitle">
-        <div class="smart-log-detail-stage preview-stage" aria-label="${escapeAttr(tr('smart.generationDetailPreview'))}">
-            <div class="smart-log-detail-frame preview-frame"><img class="smart-log-detail-image" alt="${escapeAttr(tr('canvas.originalImage'))}" draggable="false"></div>
-            <button class="smart-log-detail-output-nav is-previous" type="button" data-smart-log-detail-output-nav="previous" title="${escapeAttr(tr('smart.generationPreviousOutput'))}" aria-label="${escapeAttr(tr('smart.generationPreviousOutput'))}"><i data-lucide="chevron-left"></i></button>
-            <button class="smart-log-detail-output-nav is-next" type="button" data-smart-log-detail-output-nav="next" title="${escapeAttr(tr('smart.generationNextOutput'))}" aria-label="${escapeAttr(tr('smart.generationNextOutput'))}"><i data-lucide="chevron-right"></i></button>
-            <div class="smart-log-detail-zoom-tools" aria-label="${escapeAttr(tr('smart.previewZoomControls'))}">
-                <button type="button" data-smart-log-detail-zoom="out" title="${escapeAttr(tr('smart.previewZoomOut'))}" aria-label="${escapeAttr(tr('smart.previewZoomOut'))}"><i data-lucide="minus"></i></button>
-                <output class="smart-log-detail-zoom-label" aria-live="polite">100%</output>
-                <button type="button" data-smart-log-detail-zoom="in" title="${escapeAttr(tr('smart.previewZoomIn'))}" aria-label="${escapeAttr(tr('smart.previewZoomIn'))}"><i data-lucide="plus"></i></button>
-                <button type="button" data-smart-log-detail-zoom="reset" title="${escapeAttr(tr('smart.previewZoomReset'))}" aria-label="${escapeAttr(tr('smart.previewZoomReset'))}"><i data-lucide="rotate-ccw"></i></button>
-            </div>
-            <span class="smart-log-detail-preview-hint">${escapeHtml(tr('smart.generationDetailPreviewHint'))}</span>
-        </div>
-        <aside class="smart-log-detail-info">
-            <header class="smart-log-detail-head"><h2 id="smartHistoryDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button></header>
-            <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
-            <section class="smart-log-detail-outputs" aria-labelledby="smartHistoryDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartHistoryDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
-            <section class="smart-log-detail-modes" aria-label="${escapeAttr(tr('canvas.editImage'))}">
-                <button type="button" data-smart-log-detail-mode="preview"><i data-lucide="eye"></i><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="crop"><i data-lucide="crop"></i><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="outpaint"><i data-lucide="expand"></i><span>${escapeHtml(tr('canvas.modeOutpaint'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="mask"><i data-lucide="brush"></i><span>${escapeHtml(tr('canvas.modeMask'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="brush"><i data-lucide="paintbrush"></i><span>${escapeHtml(tr('canvas.modeBrush'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="resize"><i data-lucide="minimize-2"></i><span>${escapeHtml(tr('canvas.modeResize'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="grid"><i data-lucide="grid-3x3"></i><span>${escapeHtml(tr('canvas.modeGrid'))}</span></button>
-            </section>
-            <button type="button" class="smart-log-detail-mark image-mark" data-smart-log-detail-mark data-marked-asset="" data-marked-title="1" title="${escapeAttr(tr('smart.markImage'))}"><i data-lucide="star"></i></button>
-            <section class="smart-log-detail-prompt-wrap"><h3>${escapeHtml(tr('smart.generationPromptDetail'))}</h3><div class="smart-log-detail-prompt" tabindex="0"></div></section>
-            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
-        </aside>
-    </article>`;
-    document.body.appendChild(box);
-    box.addEventListener('click', event => {
-        if(event.target === box || event.target.closest('.smart-log-lightbox-close')) closeSmartHistoryLightbox();
-    });
-    setupSmartHistoryDetailInteractions(box);
-    box.querySelectorAll('[data-smart-log-detail-output-nav]').forEach(button => {
-        button.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            switchSmartHistoryDetailOutput(button.dataset.smartHistoryDetailOutputNav === 'previous' ? -1 : 1);
-        });
-    });
-    // #89 第四轮：详情面板工具排——与预览大图同一套编辑器（openImageEditor + setImageEditMode）。
-    box.querySelectorAll('[data-smart-log-detail-mode]').forEach(button => {
-        button.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const outputs = smartHistoryDetailSession.outputs || [];
-            const item = outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex) || null;
-            if(!item?.url) return;
-            const ref = smartHistoryDetailNodeImageRef(item);
-            if(!ref){ toast(tr('smart.markNotOnCanvas')); return; }
-            openImageEditor(ref.nodeId, ref.index);
-            if(button.dataset.smartHistoryDetailMode !== 'preview') setImageEditMode(button.dataset.smartHistoryDetailMode, true);
-        });
-    });
-    box.querySelector('[data-smart-log-detail-mark]')?.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        const outputs = smartHistoryDetailSession.outputs || [];
-        const item = outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex) || null;
-        const assetId = String(item?.asset_id || '');
-        if(!assetId){ toast(tr('smart.markUnavailable')); return; }
-        setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
-    });
-    return box;
-}
-function smartHistoryDetailPositionLabel(current, total){
-    return tr('smart.generationOutputPosition')
-        .replace('{current}', String(current))
-        .replace('{total}', String(total));
-}
-function selectSmartHistoryDetailOutput(outputIndex, {focus=false}={}){
-    const box = document.querySelector('#smartHistoryLightbox.open') || document.getElementById('smartHistoryLightbox');
-    const outputs = smartHistoryDetailSession.outputs;
-    const requested = Number(outputIndex);
-    const sessionIndex = outputs.findIndex(output => output.outputIndex === requested);
-    if(!box || !outputs.length || sessionIndex < 0) return false;
-    const item = outputs[sessionIndex];
-    smartHistoryDetailSession.outputIndex = item.outputIndex;
-    smartHistoryDetailSession.outputId = String(item.output_id || '');
-    resetSmartHistoryDetailView();
-    const total = outputs.length;
-    const position = smartHistoryDetailPositionLabel(sessionIndex + 1, total);
-    const positionOutput = box.querySelector('.smart-log-detail-output-position');
-    if(positionOutput) positionOutput.textContent = position;
-    box.querySelectorAll('.smart-log-detail-output').forEach(button => {
-        const selected = String(button.dataset.outputId || '') === String(item.output_id || '');
-        button.classList.toggle('is-selected', selected);
-        button.setAttribute('aria-current', selected ? 'true' : 'false');
-        if(selected && focus) requestAnimationFrame(() => button.focus({preventScroll:true}));
-    });
-    box.querySelectorAll('.smart-log-detail-output-nav').forEach(button => {
-        button.hidden = total < 2;
-    });
-    const download = box.querySelector('.smart-log-detail-download');
-    download.dataset.outputIndex = String(item.outputIndex);
-    download.dataset.outputId = String(item.output_id || '');
-    download.dataset.assetId = String(item.asset_id || '');
-    download.title = `${tr('smart.downloadOriginal')} · ${position}`;
-    download.setAttribute('aria-label', download.title);
-    download.onclick = event => {
-        event.preventDefault();
-        downloadPreviewFile(item);
-    };
-    const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
-    deleteOriginal.dataset.outputIndex = String(item.outputIndex);
-    deleteOriginal.dataset.outputId = String(item.output_id || '');
-    deleteOriginal.dataset.assetId = String(item.asset_id || '');
-    deleteOriginal.title = `${tr('canvas.deleteSelectedOriginal')} · ${position}`;
-    deleteOriginal.setAttribute('aria-label', deleteOriginal.title);
-    // #87：「删除当前原图」需要 log 墓碑上下文，无 log（简化形态）时隐藏。
-    deleteOriginal.hidden = !item.asset_id || !smartHistoryEntryById(smartHistoryDetailSession?.historyId) || canvas?.format !== 'firefly-canvas-v1';
-    deleteOriginal.onclick = event => {
-        event.preventDefault();
-        void deleteSmartProjectOriginal(smartHistoryDetailSession.historyId, item.outputIndex);
-    };
-    // #89 第四轮：工具排对视频隐藏；当前 output 不在画布节点上时禁用（提示后再点）。
-    const modesSection = box.querySelector('.smart-log-detail-modes');
-    if(modesSection){
-        const isVideo = String(item.kind || '').includes('video') || outputUrlLooksVideo(String(item.url || ''));
-        modesSection.style.display = isVideo ? 'none' : '';
-        const nodeRef = smartHistoryDetailNodeImageRef(item);
-        modesSection.querySelectorAll('[data-smart-log-detail-mode]').forEach(btn => {
-            btn.disabled = !nodeRef;
-        });
-    }
-    const markBtn = box.querySelector('[data-smart-log-detail-mark]');
-    if(markBtn){
-        markBtn.dataset.markedAsset = String(item.asset_id || '');
-        markBtn.disabled = !item.asset_id;
-        markBtn.hidden = String(item.kind || '').includes('video') || outputUrlLooksVideo(String(item.url || ''));
-        syncMarkedImageButtons();
-    }
-    const copy2k = box.querySelector('.smart-log-detail-copy-2k');
-    copy2k.dataset.outputIndex = String(item.outputIndex);
-    copy2k.dataset.outputId = String(item.output_id || '');
-    copy2k.dataset.assetId = String(item.asset_id || '');
-    copy2k.title = `${tr('smart.copy2k')} · ${position}`;
-    copy2k.setAttribute('aria-label', copy2k.title);
-    copy2k.disabled = false;
-    copy2k.removeAttribute('aria-busy');
-    copy2k.onclick = async event => {
-        event.preventDefault();
-        copy2k.disabled = true;
-        copy2k.setAttribute('aria-busy', 'true');
-        try {
-            await copySmartHistoryImage2k(item);
-            toast(tr('smart.copy2kDone'));
-        } catch(error){
-            toast(error?.message || tr('smart.pairCopyFailed'));
-        } finally {
-            copy2k.disabled = false;
-            copy2k.removeAttribute('aria-busy');
-        }
-    };
-    const img = box.querySelector('.smart-log-detail-image');
-    let triedFallback = false;
-    img.onerror = () => {
-        if(triedFallback) return;
-        triedFallback = true;
-        const fallback = smartMediaPreviewUrl(item, 2048);
-        if(fallback && fallback !== img.getAttribute('src')) img.src = fallback;
-    };
-    img.dataset.outputIndex = String(item.outputIndex);
-    img.dataset.outputId = String(item.output_id || '');
-    img.dataset.assetId = String(item.asset_id || '');
-    img.alt = `${tr('canvas.originalImage')} · ${position}`;
-    img.src = displayMediaUrl(item);
-    return true;
-}
-function switchSmartHistoryDetailOutput(delta){
-    const outputs = smartHistoryDetailSession.outputs;
-    if(outputs.length < 2) return false;
-    const current = outputs.findIndex(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
-    const next = (Math.max(0, current) + Number(delta) + outputs.length) % outputs.length;
-    return selectSmartHistoryDetailOutput(outputs[next].outputIndex, {focus:true});
-}
-function renderSmartHistoryDetailOutputs(box){
-    const outputs = smartHistoryDetailSession.outputs;
-    const strip = box.querySelector('.smart-log-detail-output-strip');
-    strip.style.cssText = `--smart-log-output-count:${Math.min(outputs.length, 8)};--smart-log-output-columns:${Math.min(outputs.length, 4)}`;
-    strip.innerHTML = outputs.map((item, index) => {
-        const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
-        const preview = smartPreviewImgHtml(item, 256, `alt="${escapeAttr(position)}" draggable="false"`);
-        return `<button class="smart-log-detail-output" type="button" data-output-index="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="false" aria-label="${escapeAttr(position)}" title="${escapeAttr(position)}">${preview}<span>${index + 1}</span></button>`;
-    }).join('');
-    bindSmartPreviewImageFallbacks(strip);
-    strip.querySelectorAll('.smart-log-detail-output').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            selectSmartHistoryDetailOutput(Number(button.dataset.outputIndex), {focus:true});
-        };
-    });
-}
-function openSmartHistoryDetail({url, kind='image', historyId='', outputIndex=0}={}){
-    if(!url) return;
-    if(kind === 'video' || outputUrlLooksVideo(url)){ window.open(displayMediaUrl({url}), '_blank'); return; }
-    const log = smartHistoryEntryById(historyId);
-    const fallback = smartHistoryOutputItem({url, kind, name:smartImageNameFromUrl(url)});
-    const outputs = smartHistoryImageOutputs(log);
-    const requestedIndex = Number(outputIndex);
-    if(!outputs.some(output => output.outputIndex === requestedIndex) && fallback?.url){
-        outputs.push({...fallback, outputIndex:requestedIndex, kind:'image'});
-    }
-    if(!outputs.length) return;
-    const modelMeta = historyLogModelMeta(log);
-    const timestamp = smartHistoryLogTimestamp(log);
-    const box = ensureSmartHistoryDetail();
-    smartHistoryDetailLastFocus = document.activeElement;
-    const requestedOutput = outputs.find(output => output.outputIndex === requestedIndex) || outputs[0];
-    smartHistoryDetailSession = {
-        historyId:String(historyId || ''),
-        outputs,
-        outputIndex:requestedOutput.outputIndex,
-        outputId:String(requestedOutput.output_id || ''),
-    };
-    box.querySelector('.smart-log-detail-model').textContent = modelMeta.label || modelMeta.raw || tr('canvas.historyUnrecorded');
-    box.querySelector('.smart-log-detail-time').textContent = timestamp
-        ? new Date(timestamp).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN')
-        : tr('canvas.historyUnrecorded');
-    box.querySelector('.smart-log-detail-prompt').textContent = String(log?.prompt || tr('canvas.historyNoPrompt'));
-    // #87：无 log（手动导入图等）→ 同一面板的简化形态：隐藏模型/时间/提示词行，
-    // 不是另一套 UI；「删除当前原图」需要 log 墓碑上下文，无 log 时隐藏。
-    const hasLogContext = Boolean(log);
-    box.querySelector('.smart-log-detail-meta').style.display = hasLogContext ? '' : 'none';
-    box.querySelector('.smart-log-detail-prompt-wrap').style.display = hasLogContext ? '' : 'none';
-    if(!hasLogContext){
-        const deleteOriginal = box.querySelector('.smart-log-detail-delete-original');
-        if(deleteOriginal) deleteOriginal.hidden = true;
-    }
-    renderSmartHistoryDetailOutputs(box);
-    box.classList.add('open');
-    box.setAttribute('aria-hidden', 'false');
-    selectSmartHistoryDetailOutput(requestedIndex);
-    refreshIcons(box);
-    requestAnimationFrame(() => box.querySelector('.smart-log-lightbox-close')?.focus({preventScroll:true}));
-}
-function smartHistoryPreviewNode(url, kind='image', context={}){
-    openSmartHistoryDetail({url, kind, ...context});
-}
-// #87：画布图片「详情」入口——统一打开「生成详情」面板（与生图历史抽屉同一组件，
-// 以后改详情 UI 只改一处）；能匹配到生成历史时展示完整元数据，
-// 匹配不到（手动导入等）则同一组件的简化形态（隐藏模型/时间/提示词行）。
 function openSmartImageDetail(nodeId, imageIndex=0){
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     const source = node?.images?.[imageIndex];
     const item = imageForDisplay(source) || source;
     if(!item?.url) return;
@@ -9875,41 +7733,6 @@ function openSmartImageDetail(nodeId, imageIndex=0){
     });
 }
 // 查找图片对应的生成历史条目（asset_id 优先，url 兜底），返回 {historyId, outputIndex} 或 null。
-function smartHistoryContextForImage(node, imageIndex){
-    const source = node?.images?.[imageIndex];
-    const item = imageForDisplay(source) || source;
-    const assetId = String(source?.asset_id || item?.asset_id || '');
-    const url = String(item?.url || source?.url || '');
-    if(!assetId && !url) return null;
-    const logs = Array.isArray(canvas?.history) ? canvas.history : [];
-    for(const log of logs){
-        if(!log || typeof log !== 'object' || !String(log?.id || '')) continue;
-        const outputs = smartHistoryImageOutputs(log);
-        const outputIndex = outputs.findIndex(output => {
-            if(assetId && String(output?.asset_id || '') === assetId) return true;
-            if(!assetId && url && String(output?.url || '') === url) return true;
-            return false;
-        });
-        if(outputIndex >= 0) return {historyId:String(log.id || ''), outputIndex};
-    }
-    return null;
-}
-function smartActiveHistoryTaskLogs(logs, excludedHistoryId=''){
-    return (logs || []).filter(item =>
-        item?.status === 'pending'
-        && smartPendingHistoryTaskId(item)
-        && String(item.id || '') !== String(excludedHistoryId || '')
-    );
-}
-function mergeSmartActiveHistoryTaskLogs(serverLogs, activeTaskLogs){
-    const hydratedServerLogs = hydrateProjectMediaReferences(serverLogs || []);
-    const serverHistoryIds = new Set(hydratedServerLogs.map(item => String(item?.id || '')));
-    return sortSmartHistoryLogs([
-        ...hydratedServerLogs,
-        ...(activeTaskLogs || []).filter(item => !serverHistoryIds.has(String(item?.id || ''))),
-    ]);
-}
-let smartHistoryDeletingBusy = false;
 async function deleteCanvasLogEntry(historyId, deleteMedia=false){
     if(!canvas || !canvasId || !historyId) return;
     if(smartHistoryDeletingBusy) return;
@@ -9963,7 +7786,7 @@ async function deleteCanvasLogEntry(historyId, deleteMedia=false){
             if(data.canvas?.nodes){
                 canvas.nodes = data.canvas.nodes;
                 canvas.connections = data.canvas.connections || [];
-                nodes = canvas.nodes;
+                canvasState.nodes = canvas.nodes;
                 render();
             }
             canvas.updated_at = Number(data.canvas?.updated_at || canvas.updated_at || Date.now());
@@ -9980,105 +7803,6 @@ async function deleteCanvasLogEntry(historyId, deleteMedia=false){
         toast(err?.message || tr('canvas.historyDeleteFailed'));
     } finally {
         smartHistoryDeletingBusy = false;
-    }
-}
-function captureSmartOriginalDeletionUiState(historyId, outputId, outputIndex=-1){
-    const normalizedOutputId = String(outputId || '');
-    const logOutputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
-    const deletionPosition = logOutputs.findIndex(output => String(output.output_id || '') === normalizedOutputId);
-    const historySelectedOutputId = String(smartHistorySelectedImage?.outputId || '');
-    const historyOutput = smartHistorySelectedImage?.historyId === String(historyId || '')
-        ? historySelectedOutputId
-            ? logOutputs.find(output => String(output.output_id || '') === historySelectedOutputId)
-            : logOutputs.find(output => output.outputIndex === Number(smartHistorySelectedImage.outputIndex))
-        : null;
-    const detailOpen = Boolean(document.querySelector('#smartHistoryLightbox.open'));
-    const detailSelectedOutputId = String(smartHistoryDetailSession.outputId || '');
-    const detailOutput = detailSelectedOutputId
-        ? smartHistoryDetailSession.outputs.find(output => String(output.output_id || '') === detailSelectedOutputId)
-        : smartHistoryDetailSession.outputs.find(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
-    const detailPosition = detailSelectedOutputId
-        ? smartHistoryDetailSession.outputs.findIndex(output => String(output.output_id || '') === detailSelectedOutputId)
-        : smartHistoryDetailSession.outputs.findIndex(output => output.outputIndex === smartHistoryDetailSession.outputIndex);
-    const selectedNode = nodes.find(node => String(node?.id || '') === String(selectedImage.nodeId || ''));
-    const selectedCanvasImages = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
-    const canvasSelectedOutputId = String(selectedImage.outputId || '');
-    const canvasPosition = canvasSelectedOutputId
-        ? selectedCanvasImages.findIndex(image => String(image?.output_id || '') === canvasSelectedOutputId)
-        : Number(selectedImage.index);
-    const selectedCanvasItem = selectedCanvasImages[canvasPosition];
-    return {
-        deletionPosition:deletionPosition >= 0 ? deletionPosition : Number(outputIndex),
-        historySelectedOutputId:String(historyOutput?.output_id || ''),
-        detailOpen,
-        detailHistoryId:String(smartHistoryDetailSession.historyId || ''),
-        detailPosition,
-        detailSelectedOutputId:String(detailOutput?.output_id || ''),
-        canvasNodeId:String(selectedNode?.id || ''),
-        canvasPosition:canvasPosition >= 0 ? canvasPosition : Number(selectedImage.index),
-        canvasSelectedOutputId:String(selectedCanvasItem?.output_id || ''),
-    };
-}
-function smartOutputAtPreservedPosition(outputs, preservedOutputId, fallbackPosition){
-    const preserved = outputs.find(output => String(output.output_id || '') === String(preservedOutputId || ''));
-    if(preserved) return preserved;
-    if(!outputs.length) return null;
-    return outputs[Math.max(0, Math.min(outputs.length - 1, Number(fallbackPosition) || 0))];
-}
-function reconcileSmartOriginalDeletionUi(historyId, deletedOutputId, state){
-    const outputs = smartHistoryImageOutputs(smartHistoryEntryById(historyId));
-    if(smartHistorySelectedImage?.historyId === String(historyId || '') || state.historySelectedOutputId){
-        const nextHistory = smartOutputAtPreservedPosition(
-            outputs,
-            state.historySelectedOutputId === String(deletedOutputId || '') ? '' : state.historySelectedOutputId,
-            state.deletionPosition,
-        );
-        smartHistorySelectedImage = nextHistory
-            ? {
-                historyId:String(historyId || ''),
-                outputIndex:nextHistory.outputIndex,
-                outputId:String(nextHistory.output_id || ''),
-            }
-            : null;
-    }
-    if(state.canvasNodeId){
-        const selectedNode = nodes.find(node => String(node?.id || '') === state.canvasNodeId);
-        const images = Array.isArray(selectedNode?.images) ? selectedNode.images : [];
-        const preservedIndex = images.findIndex(image =>
-            String(image?.output_id || '') === state.canvasSelectedOutputId
-            && state.canvasSelectedOutputId !== String(deletedOutputId || '')
-        );
-        const nextIndex = preservedIndex >= 0
-            ? preservedIndex
-            : Math.max(0, Math.min(images.length - 1, state.canvasPosition));
-        selectedImage = images.length
-            ? {
-                nodeId:state.canvasNodeId,
-                index:nextIndex,
-                outputId:String(images[nextIndex]?.output_id || ''),
-            }
-            : {nodeId:'', index:-1, outputId:''};
-    }
-    if(state.detailOpen && state.detailHistoryId === String(historyId || '')){
-        const box = document.querySelector('#smartHistoryLightbox.open');
-        if(!box || !outputs.length){
-            closeSmartHistoryLightbox();
-        } else {
-            const nextDetail = smartOutputAtPreservedPosition(
-                outputs,
-                state.detailSelectedOutputId === String(deletedOutputId || '') ? '' : state.detailSelectedOutputId,
-                state.detailPosition,
-            );
-            smartHistoryDetailSession = {
-                historyId:String(historyId || ''),
-                outputs,
-                outputIndex:nextDetail.outputIndex,
-                outputId:String(nextDetail.output_id || ''),
-            };
-            renderSmartHistoryDetailOutputs(box);
-            selectSmartHistoryDetailOutput(nextDetail.outputIndex);
-            refreshIcons(box);
-        }
     }
 }
 async function settleProjectCanvasBeforeOriginalMutation(){
@@ -10140,16 +7864,6 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
     }
 }
-function smartHistoryIdForDeletedOutput(assetId, deletionId=''){
-    const normalizedAssetId = String(assetId || '');
-    const normalizedDeletionId = String(deletionId || '');
-    const log = (canvas?.history || []).find(item => (item?.deletedOutputTombstones || []).some(tombstone =>
-        normalizedDeletionId
-            ? String(tombstone?.deletion_id || '') === normalizedDeletionId
-            : String(tombstone?.deleted_asset_id || tombstone?.asset_id || '') === normalizedAssetId
-    ));
-    return String(log?.id || '');
-}
 async function restoreSmartProjectOriginalUndo(snapshot){
     if(!canvas || canvas.format !== 'firefly-canvas-v1' || !snapshot?.projectOriginalDelete?.assetId){
         throw new Error(tr('canvas.originalDeleteFailed'));
@@ -10165,7 +7879,7 @@ async function restoreSmartProjectOriginalUndo(snapshot){
         ? captureSmartOriginalDeletionUiState(restoreHistoryId, '')
         : null;
     const projectId = snapshot.projectOriginalDelete.projectId || canvas.project_id || canvas.project || canvasId;
-    canvas.nodes = nodes;
+    canvas.nodes = canvasState.nodes;
     const localCanvasBeforeRestore = canvasForStorage();
     const localBaseline = persistedCoreSnapshot || projectCanvasSnapshot(localCanvasBeforeRestore);
     const localChanges = buildCoreMutations(localCanvasBeforeRestore, localBaseline);
@@ -10198,8 +7912,8 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     canvas = hydrateProjectMediaReferences(canvas);
     canvas.history = mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs);
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-    nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.nodes = nodes;
+    canvasState.nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+    canvas.nodes = canvasState.nodes;
     rebuildMarkedAssetIdsFromNodes();
     updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
     canvas.updated_at = Number(canvas.updated_at || Date.now());
@@ -10303,239 +8017,6 @@ async function purgeSmartProjectMediaTrash(){
         smartHistoryPurgeTrash.setAttribute('aria-busy', 'false');
     }
 }
-function smartHistoryLogCardHtml(log, historyIndex){
-        const outputs = (log.outputs || []).map((output, outputIndex) => {
-            const item = smartHistoryOutputItem(output);
-            return item?.url ? {...item, outputIndex} : null;
-        }).filter(Boolean);
-        const first = outputs[0] || null;
-        const date = new Date(smartHistoryLogTimestamp(log) || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
-        const req = log.request || {};
-        const prompt = String(log.prompt || '').trim();
-        const taskId = log.task_id || log.taskId || req.task_id || req.taskId || req.prompt_id || req.promptId || '';
-        const backend = req.provider_id || req.providerId || req.backend || '';
-        const projectTask = String(taskId || '').startsWith('project_img_') || String(taskId || '').startsWith('project_vid_');
-        const sizeSummary = smartHistorySizeSummary(log, outputs);
-        const resolutionTier = smartHistoryResolutionTier(log, outputs);
-        const imageOutputCount = smartHistoryImageOutputs(log).length;
-        const modelMeta = historyLogModelMeta(log);
-        const subParts = [
-            date,
-            tr('canvas.historyOutputsCount').replace('{n}', String(outputs.length)),
-            sizeSummary,
-            taskId ? `ID ${taskId}` : '',
-            backend
-        ].filter(Boolean);
-        const originalDeleted = log.originalDeleted || log.status === 'original_deleted';
-        const deletedOriginalTombstone = (log.deletedOutputTombstones || [])
-            .find(item => item?.deleted_asset_id || item?.asset_id) || null;
-        const deletedOriginalAssetId = deletedOriginalTombstone?.deleted_asset_id
-            || deletedOriginalTombstone?.asset_id
-            || '';
-        const upstreamDeleted = Array.isArray(log.deletedReferenceTombstones) && log.deletedReferenceTombstones.length > 0;
-        const failed = log.status === 'failed';
-        const cancelled = log.status === 'cancelled';
-        const pending = log.status === 'pending';
-        let thumbHtml = '';
-        if(originalDeleted){
-            thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><i data-lucide="image-off"></i><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
-        } else if(first){
-            const outputCards = outputs.map(item => {
-                const outputIndex = item.outputIndex;
-                const safe = escapeAttr(item.url);
-                const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
-                const label = imageResolutionLabel(item);
-                const name = item.name || smartImageNameFromUrl(item.url);
-                const selected = smartHistorySelectedImage?.historyId === String(log.id || '')
-                    && smartHistorySelectedImage.outputIndex === outputIndex;
-                const imageAriaLabel = [tr('canvas.originalImage'), outputIndex + 1, label, tr('canvas.dragImageHint')].filter(Boolean).join(' · ');
-                const attrs = kind === 'image'
-                    ? `class="log-history-image" role="button" tabindex="0" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeAttr(imageAriaLabel)}" title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="${escapeAttr(imageAriaLabel)}" draggable="true" loading="lazy" decoding="async"`
-                    : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
-                const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
-                const actionsHtml = item.asset_id && canvas?.format === 'firefly-canvas-v1'
-                    ? `<button type="button" class="log-media-download-original" data-history-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-history-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`
-                    : '';
-                return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-history-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-history-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
-            }).join('');
-            const outputPreviews = outputs.length > 1 ? outputs.map((item, index) => {
-                const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
-                const preview = smartPreviewImgHtml(item, 192, `alt="${escapeAttr(position)}" draggable="false"`);
-                const previewSelected = smartHistorySelectedImage?.historyId === String(log.id || '')
-                    && smartHistorySelectedImage.outputIndex === item.outputIndex;
-                const previewHint = `${position} · ${tr('smart.generationOutputPreviewHint')}`;
-                return `<button class="log-output-preview${previewSelected ? ' is-selected' : ''}" type="button" data-history-output-preview="${item.outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-asset-id="${escapeAttr(item.asset_id || '')}" aria-current="${previewSelected ? 'true' : 'false'}" aria-label="${escapeAttr(previewHint)}" title="${escapeAttr(previewHint)}">${preview}</button>`;
-            }).join('') : '';
-            const previewCount = Math.min(outputs.length, 8);
-            const previewColumns = previewCount;
-            const previewRows = 1;
-            const previewTrackHeight = 25;
-            const previewLayout = `--log-output-count:${previewCount};--log-output-columns:${previewColumns};--log-output-rows:${previewRows};--log-output-track-height:${previewTrackHeight}px`;
-            thumbHtml = `<div class="log-thumb-square" style="${previewLayout}"><div class="log-output-gallery" role="group" aria-label="${escapeAttr(tr('canvas.originalImage'))}">${outputCards}</div>
-                ${outputPreviews ? `<div class="log-output-preview-list" role="group" aria-label="${escapeAttr(tr('smart.generationOutputs'))}">${outputPreviews}</div>` : ''}
-                ${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}
-            </div>`;
-        } else if(pending){
-            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-placeholder" role="status" aria-label="${escapeAttr(tr('canvas.generating'))}"><span class="log-history-placeholder-spinner" aria-hidden="true"></span>${generationStageProgressHtml(log.progress || {})}</div></div>`;
-        } else if(failed || cancelled){
-            const salvageableOutputs = failed && !cancelled && outputs.length ? outputs.slice(0, 1) : [];
-            if(salvageableOutputs.length){
-                const salvageItem = salvageableOutputs[0];
-                const salvageLabel = imageResolutionLabel(salvageItem);
-                const salvagePreview = smartPreviewImgHtml(salvageItem, 512, `alt="${escapeAttr(salvageLabel || tr('canvas.originalImage'))}" draggable="false"`);
-                thumbHtml = `<div class="log-thumb-square log-thumb-partial-failed"><div class="log-output-gallery" role="group" aria-label="${escapeAttr(tr('canvas.originalImage'))}">${salvagePreview}</div>${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}<div class="log-failed-flag"><i data-lucide="triangle-alert"></i><span>${escapeHtml(tr('canvas.failed'))}</span></div></div>`;
-            } else {
-            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-failed-placeholder"><i data-lucide="${cancelled ? 'circle-x' : 'image-off'}"></i>${log.progress ? generationStageProgressHtml({...log.progress, failed}) : ''}</div></div>`;
-            }
-        }
-        const promptPreview = prompt
-            ? `<button class="log-prompt-preview long-content-trigger" type="button" data-long-content-open="history-prompt" aria-haspopup="dialog" title="${escapeAttr(tr('smart.historyPromptFull'))}" aria-label="${escapeAttr(tr('smart.historyPromptFull'))}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span><i data-lucide="book-open-text"></i></button>`
-            : `<div class="log-prompt-preview is-empty">${escapeHtml(tr('canvas.noPromptMeta'))}</div>`;
-        // 只要记录上仍存活原图就保留「彻底删除记录和原图」按钮：单张原图删除（occurrence 删除）
-        // 会给记录写入 deletedOutputTombstones 并出现「恢复原图」按钮，此时不能连带隐藏彻底删除
-        // （否则剩余原图无法从该卡片删除）；仅当全部原图已删（outputs 为空）时才隐藏。
-        const destructiveRecordDelete = !(log.deletedOutputTombstones || []).length || outputs.length > 0;
-        const deleteOriginalLabel = outputs.length > 1
-            ? tr('canvas.deleteSelectedOriginal')
-            : tr('canvas.deleteOriginal');
-        return `<div class="log-item ${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-history-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
-            ${thumbHtml}
-            <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
-            <div class="log-main">
-                <div class="log-meta">
-                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? tr('canvas.historyCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
-                    <span class="log-chip">${escapeHtml(log.platform || log.actual_provider_name || '-')}</span>
-                    ${modelMeta.label ? `<span class="log-chip model-chip" title="${escapeAttr(modelMeta.raw)}">${escapeHtml(modelMeta.label)}</span>` : ''}
-                    ${resolutionTier ? `<span class="log-chip resolution-chip">${escapeHtml(resolutionTier)}</span>` : ''}
-                 </div>
-                 <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
-                 ${promptPreview}
-                 ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
-                 ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><i data-lucide="book-open-text"></i></button>` : ''}
-             </div>
-             <div class="log-buttons">
-                  ${pending && projectTask ? `<button type="button" data-history-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('canvas.historyCancelTask'))}</span></button>` : ''}
-                  ${failed && projectTask ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><i data-lucide="rotate-cw"></i><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
-                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
-                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-history-delete-original="${String(first.output_id || '').trim()}" data-history-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
-                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-history-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
-                  ${!pending ? `<button type="button" data-history-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
-                  <button type="button" data-history-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
-                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-history-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
-                  <span class="log-duration">${escapeHtml(formatRunDuration(smartHistoryRunMs(log)))}</span>` : ''}
-              </div>
-         </div>`;
-}
-function smartHistoryFocusedCard(logs){
-    const activeCard = document.activeElement?.closest?.('.log-item[data-canvas-history-id]');
-    const card = smartHistoryList?.contains(activeCard)
-        ? activeCard
-        : (smartHistoryVirtualState.focusCard?.isConnected ? smartHistoryVirtualState.focusCard : null);
-    if(!card || !smartHistoryList?.contains(card)) return {card:null, index:-1, historyId:''};
-    const historyId = card.dataset.canvasHistoryId || '';
-    return {card, index:logs.findIndex(log => String(log?.id || '') === historyId), historyId};
-}
-function protectSmartHistoryFocus(){
-    const active = document.activeElement;
-    const card = active?.closest?.('.log-item[data-canvas-history-id]');
-    if(card && smartHistoryList?.contains(card)){
-        smartHistoryVirtualState.focusCard = card;
-        smartHistoryVirtualState.focusElement = active;
-    } else {
-        smartHistoryVirtualState.focusCard = null;
-        smartHistoryVirtualState.focusElement = null;
-    }
-}
-function smartHistoryVisibleRange(count){
-    const stride = smartHistoryVirtualState.stride;
-    if(!stride) return {start:0, end:Math.min(count, 1)};
-    const left = Math.max(0, Number(smartHistoryList?.scrollLeft || 0));
-    const width = Math.max(1, Number(smartHistoryList?.clientWidth || stride));
-    const start = Math.max(0, Math.min(count - 1, Math.floor(left / stride)));
-    const end = Math.max(start + 1, Math.min(count, Math.ceil((left + width) / stride)));
-    return {start, end};
-}
-function smartHistoryWindowBounds(count, targetCount){
-    const target = Math.max(1, Math.min(count, targetCount));
-    const visible = smartHistoryVisibleRange(count);
-    const currentSize = smartHistoryVirtualState.end - smartHistoryVirtualState.start;
-    if(smartHistoryVirtualState.count === count && currentSize === target){
-        const leftBuffered = smartHistoryVirtualState.start === 0
-            || visible.start - smartHistoryVirtualState.start >= SMART_HISTORY_RENDER_BUFFER;
-        const rightBuffered = smartHistoryVirtualState.end === count
-            || smartHistoryVirtualState.end - visible.end >= SMART_HISTORY_RENDER_BUFFER;
-        if(leftBuffered && rightBuffered) return {start:smartHistoryVirtualState.start, end:smartHistoryVirtualState.end};
-    }
-    let start = Math.max(0, visible.start - SMART_HISTORY_OVERSCAN);
-    start = Math.min(start, Math.max(0, count - target));
-    if(visible.end > start + target) start = Math.min(count - target, visible.end - target);
-    return {start, end:start + target};
-}
-function smartHistorySpacerHtml(position, omitted){
-    return `<div data-history-spacer="${position}" data-history-omitted="${omitted}" aria-hidden="true"></div>`;
-}
-function smartHistoryRailHtml(logs, indexes){
-    let html = smartHistorySpacerHtml('before', indexes[0]);
-    let previous = -1;
-    indexes.forEach(index => {
-        if(previous >= 0 && index > previous + 1){
-            html += smartHistorySpacerHtml('gap', index - previous - 1);
-        }
-        html += smartHistoryLogCardHtml(logs[index], index);
-        previous = index;
-    });
-    html += smartHistorySpacerHtml('after', logs.length - previous - 1);
-    return html;
-}
-function replaceSmartHistoryRail(html, focused, preserveFocusedCard=true){
-    const savedScrollLeft = smartHistoryList.scrollLeft;
-    if(!preserveFocusedCard || !focused.card || focused.index < 0){
-        smartHistoryList.innerHTML = html;
-        return savedScrollLeft;
-    }
-    const template = document.createElement('template');
-    template.innerHTML = html;
-    const desiredNodes = [...template.content.children];
-    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasHistoryId === focused.historyId);
-    if(focusPosition < 0){
-        smartHistoryList.replaceChildren(template.content);
-        return savedScrollLeft;
-    }
-    const generatedFocusedCard = desiredNodes[focusPosition];
-    focused.card.dataset.historyIndex = generatedFocusedCard.dataset.historyIndex || String(focused.index);
-    [...smartHistoryList.childNodes].forEach(node => {
-        if(node !== focused.card) node.remove();
-    });
-    const before = document.createDocumentFragment();
-    desiredNodes.slice(0, focusPosition).forEach(node => before.appendChild(node));
-    smartHistoryList.insertBefore(before, focused.card);
-    desiredNodes.slice(focusPosition + 1).forEach(node => smartHistoryList.appendChild(node));
-    return savedScrollLeft;
-}
-function updateSmartHistorySpacerWidths(){
-    const card = smartHistoryList.querySelector('.log-item');
-    if(card){
-        const cardWidth = Number(card.getBoundingClientRect().width || card.offsetWidth || 0);
-        const listStyle = getComputedStyle(smartHistoryList);
-        const gap = Number.parseFloat(listStyle.columnGap || listStyle.gap || '0') || 0;
-        if(cardWidth > 0){
-            smartHistoryVirtualState.gap = gap;
-            smartHistoryVirtualState.stride = cardWidth + gap;
-        }
-    }
-    const stride = smartHistoryVirtualState.stride;
-    const gap = smartHistoryVirtualState.gap;
-    smartHistoryList.querySelectorAll('[data-history-spacer]').forEach(spacer => {
-        const omitted = Math.max(0, Number(spacer.dataset.historyOmitted || 0));
-        spacer.hidden = omitted === 0;
-        const width = omitted && stride ? Math.max(0, omitted * stride - gap) : 0;
-        spacer.style.flex = `0 0 ${width}px`;
-        spacer.style.width = `${width}px`;
-        spacer.style.minWidth = `${width}px`;
-        spacer.style.height = '1px';
-        spacer.style.pointerEvents = 'none';
-    });
-}
 async function controlProjectImageTask(historyId, taskId, action, button=null){
     if(!taskId || !['cancel', 'retry'].includes(action)) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
@@ -10569,7 +8050,7 @@ async function controlProjectImageTask(historyId, taskId, action, button=null){
         };
         await acceptProjectGenerationRegistration(taskResult);
         const nodeId = data.registered_node?.id || sourceLog?.result_node_id || sourceLog?.nodeId || '';
-        const resultNode = nodes.find(node => String(node?.id || '') === String(nodeId));
+        const resultNode = canvasState.nodes.find(node => String(node?.id || '') === String(nodeId));
         if(!resultNode) throw new Error(tr('smart.retryMissingResultNode'));
         const retryTask = smartPendingTasks(resultNode).find(item => item.taskId === retryTaskId);
         if(retryTask){
@@ -10597,402 +8078,6 @@ async function controlProjectImageTask(historyId, taskId, action, button=null){
         }
     }
 }
-function bindLongContentHistoryTriggers(){
-    smartHistoryList?.querySelectorAll?.('[data-long-content-open="history-prompt"], [data-long-content-open="history-error"]').forEach(button => {
-        const activate = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const log = smartHistoryEntryById(historyId);
-            const kind = button.dataset.longContentOpen;
-            const isError = kind === 'history-error';
-            const text = String(isError ? log?.error || '' : log?.prompt || '');
-            if(!text) return;
-            openLongContentReader({
-                title:tr(isError ? 'smart.generationErrorFull' : 'smart.historyPromptFull'),
-                text,
-                trigger:button,
-                triggerIdentity:{kind, historyId}
-            });
-        };
-        button.onclick = activate;
-        button.onkeydown = event => {
-            if(event.key === 'Enter' || event.key === ' ') activate(event);
-        };
-    });
-}
-function bindSmartHistoryWindow(){
-    bindSmartPreviewImageFallbacks(smartHistoryList);
-    bindLongContentHistoryTriggers();
-    smartHistoryList.querySelectorAll('[data-history-preview]').forEach(el => {
-        el.onclick = e => {
-            e.stopPropagation();
-            const card = el.closest('.log-media-card');
-            const url = el.dataset.url || card?.dataset.url || '';
-            const kind = el.dataset.kind || card?.dataset.kind || 'image';
-            const historyId = el.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const outputIndex = Number(el.dataset.historyOutputIndex ?? card?.dataset.historyOutputIndex ?? 0);
-            if(url) smartHistoryPreviewNode(url, kind, {historyId, outputIndex});
-        };
-    });
-    const bindLogCopy = (selector, key) => {
-        smartHistoryList.querySelectorAll(selector).forEach(el => {
-            el.onclick = async e => {
-                e.stopPropagation();
-                const text = el.dataset[key] || '';
-                const copied = await copyTextToClipboard(text);
-                const oldText = el.textContent;
-                el.textContent = copied ? tr('canvas.copied') : tr('canvas.copyFailed');
-                if(copied) el.classList.add('copied');
-                setTimeout(() => {
-                    el.textContent = oldText;
-                    el.classList.remove('copied');
-                }, 900);
-            };
-        });
-    };
-    bindLogCopy('[data-prompt]', 'prompt');
-    bindLogCopy('[data-error]', 'error');
-    smartHistoryList.querySelectorAll('[data-history-copy-prompt]').forEach(button => {
-        button.onclick = async e => {
-            e.stopPropagation();
-            const text = button.closest('[data-canvas-history-id]')?.querySelector('[data-prompt]')?.dataset.prompt || '';
-            const copied = await copyTextToClipboard(text);
-            const label = button.querySelector('span');
-            const oldText = label?.textContent || tr('canvas.copyPrompt');
-            if(label) label.textContent = copied ? tr('canvas.copied') : tr('canvas.copyFailed');
-            button.classList.toggle('copied', copied);
-            setTimeout(() => {
-                if(label) label.textContent = oldText;
-                button.classList.remove('copied');
-            }, 1200);
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-send-output]').forEach(button => {
-        button.onclick = e => {
-            e.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            sendSmartHistoryOutputsToCanvas(historyId, Number(button.dataset.historySendOutput));
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-send-all]').forEach(button => {
-        button.onclick = e => {
-            e.stopPropagation();
-            sendSmartHistoryOutputsToCanvas(button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '');
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-output-preview]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const card = button.closest('[data-canvas-history-id]');
-            const historyId = card?.dataset.canvasHistoryId || '';
-            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
-            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
-            const gallery = card?.querySelector('.log-output-gallery');
-            const outputCard = card?.querySelector(`[data-history-output-index="${outputIndex}"]`);
-            if(gallery && outputCard) gallery.scrollTo({left:outputCard.offsetLeft, behavior:'instant'});
-            selectSmartHistoryImage(outputCard);
-        };
-        button.ondblclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
-            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
-            if(item?.url) openSmartHistoryDetail({url:item.url, kind:'image', historyId, outputIndex});
-        };
-        button.onkeydown = event => {
-            if(event.key !== ' ' && event.key !== 'Spacebar') return;
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const outputIndex = Number(button.dataset.historyOutputPreview || 0);
-            const item = smartHistoryImageOutputs(smartHistoryEntryById(historyId)).find(output => output.outputIndex === outputIndex);
-            if(item?.url) openSmartHistoryDetail({url:item.url, kind:'image', historyId, outputIndex});
-        };
-    });
-    smartHistoryList.querySelectorAll('.log-output-gallery').forEach(gallery => {
-        gallery.addEventListener('wheel', event => {
-            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-            if(!delta) return;
-            const before = gallery.scrollLeft;
-            gallery.scrollLeft += delta;
-            if(Math.abs(gallery.scrollLeft - before) > 0.5){
-                event.preventDefault();
-                event.stopPropagation();
-            }
-        }, {passive:false});
-    });
-    smartHistoryList.querySelectorAll('.log-output-preview-list').forEach(track => {
-        track.addEventListener('wheel', event => {
-            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-            if(!delta) return;
-            const before = track.scrollLeft;
-            track.scrollLeft += delta;
-            if(Math.abs(track.scrollLeft - before) > 0.5){
-                event.preventDefault();
-                event.stopPropagation();
-            }
-        }, {passive:false});
-    });
-    smartHistoryList.querySelectorAll('.log-history-image').forEach(image => {
-        const card = image.closest('.log-media-card');
-        const historyId = card?.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-        bindSmartHistoryImage(image, smartHistoryOutputItem({
-            ...((smartHistoryEntryById(historyId)?.outputs || [])[Number(card?.dataset.historyOutputIndex)] || {}),
-            url:card?.dataset.url || ''
-        }), historyId, Number(card?.dataset.historyOutputIndex));
-    });
-    smartHistoryList.querySelectorAll('[data-history-cancel-task]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            void controlProjectImageTask(historyId, button.dataset.historyCancelTask || '', 'cancel', button);
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-retry-task]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const retryTaskId = button.dataset.historyRetryTask || '';
-            if(String(retryTaskId).startsWith('project_vid_')){
-                // 视频暂无服务端重试路由：走节点级重新生成（重建提交）。
-                const nodeId = smartHistoryEntryById(historyId)?.result_node_id || '';
-                void retryFailedGeneration(nodeId);
-                return;
-            }
-            void controlProjectImageTask(historyId, retryTaskId, 'retry', button);
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-download-original]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            const output = (smartHistoryEntryById(historyId)?.outputs || [])[Number(button.dataset.historyDownloadOriginal)];
-            const item = smartHistoryOutputItem(output);
-            if(item?.url) downloadPreviewFile(item);
-        };
-    });
-    // #89 第四轮：生图历史卡片上的星标。
-    smartHistoryList.querySelectorAll('[data-history-mark]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const assetId = String(button.dataset.historyMark || '');
-            if(!assetId) return;
-            setMarkedImage(assetId, !getMarkedAssetIds().includes(assetId));
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-delete-original]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const card = button.closest('[data-canvas-history-id]');
-            const historyId = card?.dataset.canvasHistoryId || '';
-            const log = smartHistoryEntryById(historyId);
-            const images = smartHistoryImageOutputs(log);
-            // Bug fix: 删除当前选中的图片（通过 output_id 匹配），否则删除第一张
-            const selectedIndex = (() => {
-                if(smartHistorySelectedImage?.historyId === historyId && smartHistorySelectedImage?.outputId){
-                    const matched = images.find(img => String(img.output_id || '') === smartHistorySelectedImage.outputId);
-                    if(matched) return matched.outputIndex;
-                }
-                return images[0]?.outputIndex ?? 0;
-            })();
-            deleteSmartProjectOriginal(historyId, selectedIndex);
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-restore-original]').forEach(button => {
-        button.onclick = event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            restoreSmartProjectOriginal(
-                button.dataset.historyRestoreOriginal || '',
-                button.dataset.deletionId || '',
-                button.dataset.outputId || '',
-                historyId,
-            );
-        };
-    });
-    smartHistoryList.querySelectorAll('[data-history-delete]').forEach(button => {
-        button.onclick = e => {
-            e.stopPropagation();
-            const historyId = button.closest('[data-canvas-history-id]')?.dataset.canvasHistoryId || '';
-            if(!historyId) return;
-            button.disabled = true;
-            button.setAttribute('aria-busy','true');
-            deleteCanvasLogEntry(historyId, button.dataset.historyDelete === 'media').finally(() => {
-                button.disabled = false;
-                button.removeAttribute('aria-busy');
-            });
-        };
-    });
-    smartHistoryList.querySelectorAll('button').forEach(button => {
-        button.onmousedown = event => {
-            if(event.button !== 0) return;
-            const state = {
-                image:null,
-                card:button.closest('.log-item'),
-                pointerId:1,
-                actionButton:button,
-            };
-            smartHistoryPointerState = state;
-            window.addEventListener('mouseup', () => {
-                setTimeout(() => {
-                    if(smartHistoryPointerState === state) clearSmartHistoryPointerState();
-                }, 0);
-            }, {once:true});
-        };
-    });
-    refreshIcons();
-}
-function renderSmartHistoryWindow(force=false){
-    if(!smartHistoryList) return;
-    if(smartHistoryPointerState){
-        smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
-        return;
-    }
-    const logs = canvas?.history || [];
-    if(!logs.length){
-        smartHistoryList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
-        smartHistoryVirtualState.start = 0;
-        smartHistoryVirtualState.end = 0;
-        smartHistoryVirtualState.count = 0;
-        smartHistoryVirtualState.signature = 'empty';
-        smartHistoryVirtualState.focusCard = null;
-        smartHistoryVirtualState.focusElement = null;
-        refreshIcons();
-        return;
-    }
-    if(smartHistorySelectedImage && !logs.some(log => String(log?.id || '') === smartHistorySelectedImage.historyId)){
-        smartHistorySelectedImage = null;
-    }
-    const focused = smartHistoryFocusedCard(logs);
-    let bounds = smartHistoryWindowBounds(logs.length, SMART_HISTORY_DOM_LIMIT);
-    const focusOutside = focused.index >= 0 && (focused.index < bounds.start || focused.index >= bounds.end);
-    if(focusOutside && logs.length > 1){
-        bounds = smartHistoryWindowBounds(logs.length, SMART_HISTORY_DOM_LIMIT - 1);
-    }
-    const indexes = [];
-    for(let index = bounds.start; index < bounds.end; index++) indexes.push(index);
-    if(focused.index >= 0 && !indexes.includes(focused.index)) indexes.push(focused.index);
-    indexes.sort((a, b) => a - b);
-    const pinnedIndex = focused.index >= 0 && (focused.index < bounds.start || focused.index >= bounds.end)
-        ? focused.index
-        : -1;
-    const signature = `${logs.length}:${bounds.start}:${bounds.end}:${pinnedIndex}`;
-    if(!force && signature === smartHistoryVirtualState.signature){
-        smartHistoryVirtualState.focusCard = null;
-        smartHistoryVirtualState.focusElement = null;
-        return;
-    }
-    const protectedFocusElement = focused.card?.contains(document.activeElement)
-        ? document.activeElement
-        : smartHistoryVirtualState.focusElement;
-    const savedScrollLeft = replaceSmartHistoryRail(smartHistoryRailHtml(logs, indexes), focused, !force);
-    smartHistoryVirtualState.start = bounds.start;
-    smartHistoryVirtualState.end = bounds.end;
-    smartHistoryVirtualState.count = logs.length;
-    smartHistoryVirtualState.signature = signature;
-    updateSmartHistorySpacerWidths();
-    smartHistoryList.scrollLeft = Math.min(savedScrollLeft, Math.max(0, smartHistoryList.scrollWidth - smartHistoryList.clientWidth));
-    bindSmartHistoryWindow();
-    if(protectedFocusElement?.isConnected && document.activeElement !== protectedFocusElement){
-        protectedFocusElement.focus({preventScroll:true});
-    }
-    smartHistoryVirtualState.focusCard = null;
-    smartHistoryVirtualState.focusElement = null;
-}
-function renderSmartCanvasHistory(){
-    renderSmartHistoryWindow(true);
-}
-function scheduleSmartHistoryWindowRender(force=false){
-    smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
-    if(smartHistoryVirtualState.frame) return;
-    smartHistoryVirtualState.frame = requestAnimationFrame(() => {
-        smartHistoryVirtualState.frame = 0;
-        const shouldForce = smartHistoryVirtualState.force;
-        smartHistoryVirtualState.force = false;
-        renderSmartHistoryWindow(shouldForce);
-    });
-}
-function updateSmartHistoryDrawerCollapseUi(){
-    smartHistoryModal?.classList.toggle('collapsed', smartHistoryDrawerCollapsed);
-    smartHistoryModal?.setAttribute('aria-expanded', String(!smartHistoryDrawerCollapsed && smartHistoryModal.classList.contains('open')));
-    if(smartHistoryCollapse){
-        smartHistoryCollapse.title = smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
-        smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
-        smartHistoryCollapse.innerHTML = `<i data-lucide="${smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
-        refreshIcons();
-    }
-}
-function toggleSmartHistoryDrawerCollapsed(){
-    if(!smartHistoryModal?.classList.contains('open')) openSmartCanvasLog();
-    smartHistoryDrawerCollapsed = !smartHistoryDrawerCollapsed;
-    updateSmartHistoryDrawerCollapseUi();
-    if(!smartHistoryDrawerCollapsed) scheduleSmartHistoryWindowRender(true);
-}
-function scrollSmartHistoryRailTo(value, immediate=false){
-    if(!smartHistoryList) return false;
-    const before = smartHistoryList.scrollLeft;
-    const max = Math.max(0, smartHistoryList.scrollWidth - smartHistoryList.clientWidth);
-    const next = Math.max(0, Math.min(max, Number(value) || 0));
-    if(Math.abs(next - before) < 0.5) return false;
-    protectSmartHistoryFocus();
-    smartHistoryList.scrollLeft = next;
-    if(immediate) renderSmartHistoryWindow();
-    else scheduleSmartHistoryWindowRender();
-    return Math.abs(smartHistoryList.scrollLeft - before) >= 0.5;
-}
-function handleSmartHistoryWheel(event){
-    event.stopPropagation();
-    const unit = event.deltaMode === 1
-        ? 40
-        : event.deltaMode === 2
-            ? Math.max(1, smartHistoryList.clientWidth)
-            : 1;
-    const delta = (Number(event.deltaX || 0) + Number(event.deltaY || 0)) * unit;
-    if(delta && scrollSmartHistoryRailTo(smartHistoryList.scrollLeft + delta)) event.preventDefault();
-}
-function handleSmartHistoryKeydown(event){
-    if(event.altKey || event.ctrlKey || event.metaKey) return;
-    const stride = smartHistoryVirtualState.stride || Math.max(1, smartHistoryList.clientWidth / 2);
-    let next = smartHistoryList.scrollLeft;
-    if(event.key === 'ArrowLeft') next -= stride;
-    else if(event.key === 'ArrowRight') next += stride;
-    else if(event.key === 'Home') next = 0;
-    else if(event.key === 'End') next = smartHistoryList.scrollWidth - smartHistoryList.clientWidth;
-    else return;
-    event.stopPropagation();
-    if(scrollSmartHistoryRailTo(next, event.key === 'Home' || event.key === 'End')) event.preventDefault();
-}
-function setupSmartHistoryDrawer(){
-    if(!smartHistoryModal) return;
-    smartHistoryModal.addEventListener('pointerdown', event => event.stopPropagation());
-    smartHistoryModal.addEventListener('mousedown', event => event.stopPropagation());
-    smartHistoryModal.addEventListener('click', event => event.stopPropagation());
-    smartHistoryModal.addEventListener('wheel', event => event.stopPropagation(), {passive:true});
-    if(smartHistoryList){
-        smartHistoryList.tabIndex = 0;
-        smartHistoryList.addEventListener('scroll', () => scheduleSmartHistoryWindowRender(), {passive:true});
-        smartHistoryList.addEventListener('wheel', handleSmartHistoryWheel, {passive:false});
-        smartHistoryList.addEventListener('keydown', handleSmartHistoryKeydown);
-    }
-    updateSmartHistoryDrawerCollapseUi();
-}
-function openSmartCanvasLog(){
-    if(!canvas) return;
-    if(assetLibraryOpen) toggleAssetLibrary(false);
-    renderSmartCanvasHistory();
-    smartHistoryModal.classList.add('open');
-    updateSmartHistoryDrawerCollapseUi();
-    refreshSmartProjectMediaTrashButton();
-}
 function closeSmartCanvasLog(){
     smartHistoryModal?.classList.remove('open');
     updateSmartHistoryDrawerCollapseUi();
@@ -11004,6 +8089,8 @@ function openSmartSettings(){
         smartSettingsFrame.setAttribute('src', '/static/global-settings.html?embedded=1');
     }
     smartSettingsModal.classList.add('open');
+    // #249：Escape 栈——设置弹窗打开期间 Escape 只关它，不再连带关 popover/穿透画布。
+    releaseSmartSettingsEscape = window.FireflyEscapeStack?.push(() => closeSmartSettings(), 'settings') || (() => {});
     smartSettingsModal.setAttribute('aria-hidden', 'false');
     smartSettingsLink?.setAttribute('aria-expanded', 'true');
     closeCreateMenu();
@@ -11011,6 +8098,8 @@ function openSmartSettings(){
 }
 function closeSmartSettings(){
     if(!smartSettingsModal) return;
+    releaseSmartSettingsEscape();
+    releaseSmartSettingsEscape = () => {};
     smartSettingsModal.classList.remove('open');
     smartSettingsModal.setAttribute('aria-hidden', 'true');
     smartSettingsLink?.setAttribute('aria-expanded', 'false');
@@ -11078,7 +8167,7 @@ function closeSmartCanvasShortcuts(){
 }
 function conversationConnectedReferences(node){
     if(!node || !canvas) return [];
-    const nodesById = new Map(nodes.map(item => [String(item.id), item]));
+    const nodesById = new Map(canvasState.nodes.map(item => [String(item.id), item]));
     const seen = new Set();
     const references = [];
     (canvas.connections || []).forEach(connection => {
@@ -11086,7 +8175,7 @@ function conversationConnectedReferences(node){
         const sourceId = connection?.from ?? connection?.source ?? connection?.fromNode ?? connection?.sourceNodeId;
         if(String(target || '') !== String(node.id) || !sourceId || !['input', 'flow'].includes(connection?.kind || 'flow')) return;
         const source = nodesById.get(String(sourceId));
-        if(!source || !['', 'image', 'smart-image'].includes(String(source.type || ''))) return;
+        if(!source || !['', 'image', NODE_TYPE_IMAGE].includes(String(source.type || ''))) return;
         (source?.images || []).forEach(item => {
             const assetId = String(item?.asset_id || '').trim();
             const kind = mediaKindForItem(item);
@@ -11140,614 +8229,7 @@ function conversationNodeBodyHtml(node){
         </div>
     </div>`;
 }
-// Agent TUI state management
-const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model, autonomy }
 
-function getAgentTuiState(nodeId) {
-    if (!agentTuiState.has(nodeId)) {
-        agentTuiState.set(nodeId, {
-            socket: null,
-            messages: [],
-            status: 'idle',
-            model: '',
-            autonomy: 'cautious',
-            toolActivities: new Map(),
-            thinkingVisible: false,
-        });
-    }
-    return agentTuiState.get(nodeId);
-}
-
-function connectAgentWebSocket(nodeId, projectId) {
-    const state = getAgentTuiState(nodeId);
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-        return state.socket;
-    }
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/stream`;
-
-    try {
-        state.socket = new WebSocket(wsUrl);
-    } catch (e) {
-        console.error('Failed to connect agent WebSocket:', e);
-        return null;
-    }
-
-    state.socket.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            handleAgentEvent(nodeId, data);
-        } catch (e) {
-            console.error('Failed to parse agent event:', e);
-        }
-    };
-
-    state.socket.onclose = () => {
-        state.status = 'disconnected';
-        state.socket = null;
-        // Re-render to show disconnected state
-        renderAgentNode(nodeId);
-    };
-
-    state.socket.onerror = () => {
-        state.status = 'error';
-    };
-
-    state.status = 'connecting';
-    return state.socket;
-}
-
-function handleAgentEvent(nodeId, event) {
-    const state = getAgentTuiState(nodeId);
-    const eventType = event.type;
-
-    switch (eventType) {
-        case 'session':
-            state.status = 'idle';
-            break;
-        case 'agent_start':
-            state.status = 'busy';
-            break;
-        case 'agent_end':
-            state.status = 'idle';
-            break;
-        case 'turn_start':
-            state.status = 'busy';
-            break;
-        case 'turn_end': {
-            state.status = 'idle';
-            const msg = event.message || {};
-            const content = msg.content || [];
-            const text = content
-                .filter(c => c && c.type === 'text')
-                .map(c => c.text || '')
-                .join('');
-            if (text) {
-                state.messages.push({ role: 'assistant', text });
-            }
-            break;
-        }
-        case 'message_update': {
-            const ame = event.assistantMessageEvent || {};
-            if (ame.type === 'text_delta') {
-                const delta = ame.delta || '';
-                // Append to last assistant message or create new
-                const last = state.messages[state.messages.length - 1];
-                if (last && last.role === 'assistant' && last.streaming) {
-                    last.text += delta;
-                } else {
-                    state.messages.push({ role: 'assistant', text: delta, streaming: true });
-                }
-            } else if (ame.type === 'thinking_delta') {
-                // Store thinking separately (hidden by default)
-                if (!state.thinking) state.thinking = [];
-                const delta = ame.delta || '';
-                const last = state.thinking[state.thinking.length - 1];
-                if (last && last.streaming) {
-                    last.text += delta;
-                } else {
-                    state.thinking.push({ text: delta, streaming: true });
-                }
-            }
-            break;
-        }
-        case 'tool_execution_start': {
-            const toolName = event.toolName || '';
-            const toolCallId = event.toolCallId || '';
-            state.toolActivities.set(toolCallId, {
-                name: toolName,
-                status: 'running',
-                args: event.args,
-                result: null,
-                isError: false,
-            });
-            state.status = 'busy';
-            break;
-        }
-        case 'tool_execution_update': {
-            const toolCallId = event.toolCallId || '';
-            const activity = state.toolActivities.get(toolCallId);
-            if (activity) {
-                activity.update = event.update;
-            }
-            break;
-        }
-        case 'tool_execution_end': {
-            const toolCallId = event.toolCallId || '';
-            const activity = state.toolActivities.get(toolCallId);
-            if (activity) {
-                activity.status = event.isError ? 'error' : 'done';
-                activity.result = event.result;
-                activity.isError = event.isError;
-            }
-            break;
-        }
-        case 'auto_retry_start':
-            state.status = 'retrying';
-            break;
-        case 'auto_retry_end':
-            if (event.success) {
-                state.status = 'busy';
-            } else {
-                state.status = 'error';
-                state.messages.push({ role: 'system', text: 'Agent 自动重试失败' });
-            }
-            break;
-        case 'process_exited':
-            state.status = 'crashed';
-            break;
-        case 'confirm': {
-            // Confirmation request from agent for destructive operation
-            state.confirm = event;
-            state.status = 'waiting_confirm';
-            break;
-        }
-        case 'response':
-            // Command response, ignore for now
-            break;
-        default:
-            break;
-    }
-
-    // Re-render the agent node
-    renderAgentNode(nodeId);
-}
-
-function sendAgentPrompt(nodeId, projectId, message, images = []) {
-    const state = getAgentTuiState(nodeId);
-    
-    // Add user message to state
-    state.messages.push({ role: 'user', text: message });
-    state.status = 'busy';
-
-    // Send via WebSocket if connected
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-        state.socket.send(JSON.stringify({
-            type: 'prompt',
-            message: message,
-            images: images,
-        }));
-    } else {
-        // WebSocket not connected, use HTTP API
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, images }),
-        }).catch(e => console.error('Failed to send agent prompt:', e));
-    }
-
-    renderAgentNode(nodeId);
-}
-
-function sendAgentCommand(nodeId, projectId, command, options = {}) {
-    const state = getAgentTuiState(nodeId);
-    const { body, wsPayload, onSuccess } = options;
-    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${command}`;
-    // WebSocket not connected, use HTTP API
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-        const fetchOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
-        if (body !== undefined) fetchOpts.body = JSON.stringify(body);
-        fetch(url, fetchOpts).catch(e => console.error(`Failed to send agent ${command}:`, e));
-        return;
-    }
-    state.socket.send(JSON.stringify(wsPayload));
-    if (onSuccess) onSuccess(state);
-    renderAgentNode(nodeId);
-}
-
-function sendAgentSteer(nodeId, projectId, message) {
-    sendAgentCommand(nodeId, projectId, 'steer', {
-        body: { message },
-        wsPayload: { type: 'steer', message },
-        onSuccess: (state) => state.messages.push({ role: 'system', text: `↪ steer: ${message}` }),
-    });
-}
-
-function sendAgentFollowUp(nodeId, projectId, message) {
-    sendAgentCommand(nodeId, projectId, 'follow_up', {
-        body: { message },
-        wsPayload: { type: 'follow_up', message },
-        onSuccess: (state) => state.messages.push({ role: 'system', text: `⏳ follow_up queued: ${message}` }),
-    });
-}
-
-function sendAgentAbort(nodeId, projectId) {
-    sendAgentCommand(nodeId, projectId, 'abort', {
-        wsPayload: { type: 'abort' },
-        onSuccess: (state) => {
-            state.status = 'idle';
-            state.messages.push({ role: 'system', text: '⏹ aborted' });
-        },
-    });
-}
-
-function setAgentModel(nodeId, projectId, model) {
-    const state = getAgentTuiState(nodeId);
-    state.model = model;
-    // Optimistically update the local node (source of truth for rendering)
-    const node = nodes.find(n => n.id === nodeId);
-    if (node) node.model = model;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: model }),
-    }).catch(e => console.error('Failed to set agent model:', e));
-    renderAgentNode(nodeId);
-}
-
-function setAgentAutonomy(nodeId, projectId, autonomy) {
-    const state = getAgentTuiState(nodeId);
-    state.autonomy = autonomy;
-    // Optimistically update the local node (source of truth for rendering)
-    const node = nodes.find(n => n.id === nodeId);
-    if (node) node.autonomy = autonomy;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/autonomy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autonomy: autonomy }),
-    }).catch(e => console.error('Failed to set agent autonomy:', e));
-    renderAgentNode(nodeId);
-}
-
-async function forkAgentSession(nodeId, projectId, entryId, name) {
-    const state = getAgentTuiState(nodeId);
-    const node = nodes.find(n => n.id === nodeId);
-    try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ entry_id: entryId, name: name }),
-        });
-        if (!response.ok) throw new Error('Fork failed');
-        const data = await response.json();
-        // Update local node with new branches
-        if (node) {
-            node.branches = data.branches;
-            node.current_branch = data.current_branch;
-        }
-        // Clear messages (new branch starts fresh from fork point)
-        state.messages = [];
-        state.toolActivities.clear();
-        renderAgentNode(nodeId);
-    } catch (e) {
-        console.error('Failed to fork agent session:', e);
-    }
-}
-
-async function switchAgentBranch(nodeId, projectId, branchId) {
-    const state = getAgentTuiState(nodeId);
-    const node = nodes.find(n => n.id === nodeId);
-    try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/switch-branch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ branch_id: branchId }),
-        });
-        if (!response.ok) throw new Error('Switch branch failed');
-        const data = await response.json();
-        // Update local node
-        if (node) {
-            node.current_branch = data.current_branch;
-        }
-        // Clear messages (switching to a different branch)
-        state.messages = [];
-        state.toolActivities.clear();
-        renderAgentNode(nodeId);
-    } catch (e) {
-        console.error('Failed to switch agent branch:', e);
-    }
-}
-
-async function showForkPicker(nodeId, projectId) {
-    const state = getAgentTuiState(nodeId);
-    try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork-messages`);
-        if (!response.ok) throw new Error('Failed to get fork messages');
-        const data = await response.json();
-        const messages = data.messages || [];
-        if (messages.length === 0) {
-            // No forkable messages
-            return;
-        }
-        // Show a simple prompt to select which message to fork from
-        // (In a full implementation, this would be a UI picker)
-        const messageTexts = messages.map((m, i) => `${i + 1}. ${m.text}`).join('\n');
-        const choice = prompt(`从哪轮分叉？\n${messageTexts}\n\n输入序号：`);
-        if (!choice) return;
-        const index = parseInt(choice, 10) - 1;
-        if (index < 0 || index >= messages.length) return;
-        const message = messages[index];
-        const branchName = prompt('分支名称：', message.text.slice(0, 30));
-        await forkAgentSession(nodeId, projectId, message.entryId, branchName || '');
-    } catch (e) {
-        console.error('Failed to show fork picker:', e);
-    }
-}
-
-function sendAgentConfirm(nodeId, projectId, approved) {
-    const state = getAgentTuiState(nodeId);
-    if (!state.confirm) return;
-    const confirmId = state.confirm.confirm_id;
-    state.confirm = null;
-    state.status = 'busy';
-
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-        state.socket.send(JSON.stringify({
-            type: 'confirm',
-            confirm_id: confirmId,
-            approved: approved,
-        }));
-    } else {
-        // WS not connected, send via HTTP (fire-and-forget)
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
-        }).catch(e => console.error('Failed to send agent confirm:', e));
-    }
-
-    const text = approved ? '✅ 已批准' : '❌ 已取消';
-    state.messages.push({ role: 'system', text });
-    renderAgentNode(nodeId);
-}
-
-// Get status light + last line preview HTML for agent node card
-function agentCardStatusHtml(nodeId) {
-    const state = agentTuiState.get(nodeId);
-    if (!state) {
-        return '<span class="agent-card-status agent-tui-status-idle">空闲</span>';
-    }
-    
-    // Determine status class and text
-    let statusClass = 'agent-tui-status-idle';
-    let statusText = '空闲';
-    if (state.status === 'busy') {
-        statusClass = 'agent-tui-status-busy';
-        statusText = '运行中';
-    } else if (state.status === 'connecting') {
-        statusClass = 'agent-tui-status-connecting';
-        statusText = '连接中';
-    } else if (state.status === 'error') {
-        statusClass = 'agent-tui-status-error';
-        statusText = '错误';
-    } else if (state.status === 'disconnected') {
-        statusClass = 'agent-tui-status-disconnected';
-        statusText = '已断开';
-    }
-    
-    // Waiting for confirmation overrides other statuses
-    if (state.confirm) {
-        statusClass = 'agent-tui-status-busy';
-        statusText = '等待确认';
-    }
-    
-    // Get last message/activity for preview
-    let lastLine = '';
-    if (state.messages && state.messages.length > 0) {
-        const lastMsg = state.messages[state.messages.length - 1];
-        lastLine = lastMsg.text ? lastMsg.text.slice(0, 40) : '';
-        if (lastMsg.text && lastMsg.text.length > 40) lastLine += '…';
-    } else if (state.toolActivities && state.toolActivities.size > 0) {
-        const lastActivity = [...state.toolActivities.values()].pop();
-        if (lastActivity) {
-            lastLine = `${lastActivity.name}(${lastActivity.status})`;
-        }
-    }
-    
-    const previewHtml = lastLine ? `<span class="agent-card-preview">${escapeHtml(lastLine)}</span>` : '';
-    return `<span class="agent-card-status ${statusClass}">${statusText}</span>${previewHtml}`;
-}
-
-function agentNodeBodyHtml(node) {
-    const nodeId = node.id;
-    const state = getAgentTuiState(nodeId);
-    const projectId = canvasId || '';
-
-    // Determine status indicator
-    let statusClass = 'agent-tui-status-idle';
-    let statusText = '空闲';
-    switch (state.status) {
-        case 'busy':
-            statusClass = 'agent-tui-status-busy';
-            statusText = '运行中';
-            break;
-        case 'connecting':
-            statusClass = 'agent-tui-status-connecting';
-            statusText = '连接中';
-            break;
-        case 'retrying':
-            statusClass = 'agent-tui-status-busy';
-            statusText = '重试中';
-            break;
-        case 'error':
-            statusClass = 'agent-tui-status-error';
-            statusText = '错误';
-            break;
-        case 'crashed':
-            statusClass = 'agent-tui-status-error';
-            statusText = '已崩溃';
-            break;
-        case 'disconnected':
-            statusClass = 'agent-tui-status-disconnected';
-            statusText = '已断开';
-            break;
-    }
-
-    // Render thinking (hidden by default, toggleable via 💭 button)
-    let thinkingHtml = '';
-    if (state.thinkingVisible && state.thinking && state.thinking.length > 0) {
-        const thinkingText = state.thinking.map(t => t.text || '').join('');
-        if (thinkingText) {
-            thinkingHtml = `<div class="agent-tui-thinking"><span class="agent-tui-thinking-label">💭 thinking</span><div class="agent-tui-thinking-text">${escapeHtml(thinkingText)}</div></div>`;
-        }
-    }
-
-    // Render messages
-    let messagesHtml = '';
-    for (const msg of state.messages) {
-        if (msg.role === 'user') {
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
-        } else if (msg.role === 'assistant') {
-            const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderMarkdown(msg.text)}</span></div>`;
-        } else if (msg.role === 'system') {
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
-        }
-    }
-
-    // Render tool activities (collapsible)
-    let toolsHtml = '';
-    for (const [toolCallId, activity] of state.toolActivities) {
-        let icon = '⚙';
-        if (activity.status === 'done') icon = '✅';
-        else if (activity.status === 'error') icon = '❌';
-        else if (activity.status === 'running') icon = '⏳';
-
-        const argsPreview = activity.args ? JSON.stringify(activity.args).slice(0, 80) : '';
-        const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
-        const resultPreview = activity.result ? String(activity.result).slice(0, 120) : '';
-        const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
-        toolsHtml += `<div class="agent-tui-tool${expandedClass}" data-tool-call-id="${escapeAttr(toolCallId)}">
-            <div class="agent-tui-tool-header">
-                <span class="agent-tui-tool-toggle">${activity.expanded ? '▾' : '▸'}</span>
-                <span class="agent-tui-tool-icon">${icon}</span>
-                <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
-            </div>
-            <div class="agent-tui-tool-details">
-                ${argsFull ? `<div class="agent-tui-tool-args"><pre>${escapeHtml(argsFull)}</pre></div>` : ''}
-                ${resultPreview ? `<div class="agent-tui-tool-result"><pre>${escapeHtml(resultPreview)}</pre></div>` : ''}
-            </div>
-        </div>`;
-    }
-
-    // Render confirmation card if waiting for user decision
-    let confirmHtml = '';
-    if (state.confirm) {
-        const c = state.confirm;
-        confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
-            <div class="agent-tui-confirm-message">⚠️ ${escapeHtml(c.message || '请确认操作')}</div>
-            <div class="agent-tui-confirm-buttons">
-                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
-                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}">取消</button>
-            </div>
-        </div>`;
-    }
-
-    // Model select options — node is the source of truth for the persisted value
-    const currentModel = node.model || '';
-    let modelOptionsHtml = `<option value="" ${!currentModel ? 'selected' : ''}>默认</option>`;
-    const chatModels = getChatModels();
-    for (const model of chatModels) {
-        const modelValue = model.id || model;
-        const modelLabel = model.name || model.id || model;
-        const selected = currentModel === modelValue ? 'selected' : '';
-        modelOptionsHtml += `<option value="${escapeAttr(modelValue)}" ${selected}>${escapeHtml(modelLabel)}</option>`;
-    }
-    const modelSelectHtml = `<select class="agent-tui-model-select" data-agent-model="${escapeAttr(nodeId)}" title="模型">${modelOptionsHtml}</select>`;
-
-    // Autonomy select options — node is the source of truth
-    const currentAutonomy = node.autonomy || 'cautious';
-    const autonomySelectHtml = `<select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治级别">
-        <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>谨慎</option>
-        <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>标准</option>
-        <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>自主</option>
-    </select>`;
-
-    // Branch select (if node has branches)
-    const branches = node.branches || [];
-    const currentBranchId = node.current_branch || '';
-    let branchSelectHtml = '';
-    if (branches.length > 0) {
-        let branchOptionsHtml = '';
-        for (const branch of branches) {
-            const selected = branch.id === currentBranchId ? 'selected' : '';
-            branchOptionsHtml += `<option value="${escapeAttr(branch.id)}" ${selected}>${escapeHtml(branch.name)}</option>`;
-        }
-        branchSelectHtml = `<select class="agent-tui-branch-select" data-agent-branch="${escapeAttr(nodeId)}" title="切换分支">${branchOptionsHtml}</select>`;
-    }
-
-    // Fork button
-    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉">🌿</button>`;
-
-    return `<div class="agent-tui-card">
-        <div class="agent-tui-header">
-            <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
-            <span class="agent-tui-status ${statusClass}">${statusText}</span>
-            <span class="agent-tui-settings">
-                ${modelSelectHtml}
-                ${autonomySelectHtml}
-                ${branchSelectHtml}
-                ${forkButtonHtml}
-            </span>
-        </div>
-        <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
-            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
-                ${thinkingHtml}
-                ${messagesHtml || '<div class="agent-tui-empty">输入自然语言描述你的创作目标...</div>'}
-                ${toolsHtml}
-                ${confirmHtml}
-            </div>
-        </div>
-        <div class="agent-tui-input-row">
-            <span class="agent-tui-prompt">&gt;</span>
-            <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行，运行中 Enter 排队)" rows="1"></textarea>
-            <div class="agent-tui-action-buttons">
-                <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="Abort (中止当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
-            </div>
-        </div>
-    </div>`;
-}
-function agentTaskStatusText(status){
-    return status === 'queued' ? tr('smart.stQueued') : status === 'running' ? tr('smart.stRunning') : status === 'succeeded' ? tr('smart.stSucceeded') : status === 'failed' ? tr('smart.failed') : status === 'uncertain' ? tr('smart.stUncertain') : status || tr('smart.agentStatusPlanning');
-}
-function agentTaskNodeBodyHtml(node){
-    const taskId = String(node?.task_id || node?.id || '');
-    const status = String(node?.status || 'planned');
-    const kind = node?.kind === 'video' ? tr('smart.agentKindVideo') : node?.kind === 'prompt' ? tr('smart.agentKindPrompt') : tr('smart.agentKindImage');
-    const params = node?.params && typeof node.params === 'object' ? node.params : {};
-    const paramsText = JSON.stringify(params, null, 0);
-    const error = String(node?.error || '').trim();
-    const resultNodeId = String(node?.result_node_id || '');
-    const resultLink = resultNodeId
-        ? `<a class="agent-task-result-link" data-agent-result-link="${escapeAttr(resultNodeId)}" href="#${escapeAttr(resultNodeId)}">${escapeHtml(tr('smart.viewResultNode'))}</a>`
-        : '<span class="agent-task-result-link muted">' + escapeHtml(tr('smart.waitingResultNode')) + '</span>';
-    return `<div class="agent-task-card agent-task-card-readonly" data-agent-task-card="${escapeAttr(taskId)}">
-        <div class="agent-task-heading">
-            <div><div class="agent-task-title">${escapeHtml(trf('smart.agentTaskTitle', {kind: kind}))}</div><div class="agent-task-id">${escapeHtml(taskId)}</div></div>
-            <span class="agent-task-status" data-agent-task-status="${escapeAttr(taskId)}" data-status="${escapeAttr(status)}" role="status">${escapeHtml(agentTaskStatusText(status))}</span>
-        </div>
-        <div class="agent-task-meta"><span>${escapeHtml(trf('smart.agentTaskModelCount', {m: node?.model_type || 'online', c: Math.max(1, Number(node?.count || 1))}))}</span></div>
-        <div class="agent-task-prompt">${escapeHtml(node?.prompt || '')}</div>
-        <div class="agent-task-params" title="${escapeHtml(tr('smart.taskParams'))}">${escapeHtml(trf('smart.agentTaskParams', {p: paramsText}))}</div>
-        ${error ? `<div class="agent-task-error" data-agent-task-error role="alert">${escapeHtml(error)}</div>` : ''}
-        <div class="agent-task-result">${resultLink}</div>
-    </div>`;
-}
 function promptNodeBodyHtml(node){
     node.llmProvider = resolveChatProviderId(node.llmProvider || '');
     node.llmModel = resolveChatModel(node.llmModel || '', node.llmProvider);
@@ -11941,8 +8423,8 @@ function smartGroupBodyHtml(node){
     const refThumbs = groupThumbLayout?.refs || [];
     const members = smartGroupMembers(node);
     const counts = members.reduce((acc, member) => {
-        if(member.type === 'smart-prompt') acc.prompt += 1;
-        else if(member.type === 'smart-loop') acc.loop += 1;
+        if(member.type === NODE_TYPE_PROMPT) acc.prompt += 1;
+        else if(member.type === NODE_TYPE_LOOP) acc.loop += 1;
         return acc;
     }, {prompt:0, media:refThumbs.length, loop:0});
     const summary = [
@@ -11959,19 +8441,18 @@ function smartGroupBodyHtml(node){
             const canDelete = ref.nodeId === node.id;
             return `<div class="smart-group-card has-thumbs">
                 <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-                <div class="image-wrap smart-group-single-thumb ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>
+                <div class="image-wrap smart-group-single-thumb ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>
             </div>`;
         }
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
         const visibleRows = Math.max(1, Math.min(groupMaxVisibleRows, Number(groupThumbLayout.visibleRows || groupThumbLayout.rows || 1)));
         const thumbW = BATCH_THUMB.WIDTH;
-        const thumbH = BATCH_THUMB.HEIGHT;
         const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight));
         return `<div class="smart-group-card has-thumbs">
             <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
             <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${thumbW}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${selectedImage.nodeId === ref.nodeId && Number(selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--thumb-w:${thumbW}px;--thumb-h:${thumbH}px">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
+                return `<div class="thumb-item ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, thumbW)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
             }).join('')}</div>
         </div>`;
     }
@@ -11982,10 +8463,8 @@ function smartGroupBodyHtml(node){
 }
 // #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
 // 360x330 会溢出外框；卡片内部可滚动，用户仍可拖右下角调整。
-const LOCAL_EDIT_NODE_W = 400;
-const LOCAL_EDIT_NODE_H = 520;
 function syncLocalEditInputRoles(node){
-    if(!node || node.type !== 'local-edit') return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
+    if(!node || node.type !== NODE_TYPE_LOCAL_EDIT) return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     const map = {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     const edges = canvas.connections.filter(edge => edge?.to === node.id && edge?.kind === 'input' && ['original','references','prompt'].includes(edge?.role));
@@ -11998,11 +8477,11 @@ function syncLocalEditInputRoles(node){
     node.localEditInputRoles = map;
     node.inputNodeIds = Array.from(new Set(edges.map(edge => edge.from).filter(Boolean)));
     if(map.originalNode){
-        const originalNode = nodes.find(item => item.id === map.originalNode);
+        const originalNode = canvasState.nodes.find(item => item.id === map.originalNode);
         node.original_asset_id = (originalNode?.images || []).map(image => image?.asset_id).find(Boolean) || '';
     } else node.original_asset_id = '';
     node.reference_asset_ids = map.referenceNodes.flatMap(id => {
-        const referenceNode = nodes.find(item => item.id === id);
+        const referenceNode = canvasState.nodes.find(item => item.id === id);
         return (referenceNode?.images || []).map(image => image?.asset_id).filter(Boolean);
     }).filter((assetId, index, all) => all.indexOf(assetId) === index);
     return map;
@@ -12019,11 +8498,11 @@ function localEditFullImageRect(imageW, imageH, ratio){
 function localEditBodyHtml(node){
     const roleMap = syncLocalEditInputRoles(node);
     const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
-    const originalNode = nodes.find(item => item.id === roleMap.originalNode);
+    const originalNode = canvasState.nodes.find(item => item.id === roleMap.originalNode);
     const originalItem = (originalNode?.images || []).find(item => item?.asset_id || item?.url);
     const originalPreviewUrl = originalItem?.url || (originalItem?.asset_id ? projectMediaUrl(originalItem.asset_id) : '');
     const promptConnected = promptNodeIds.length > 0;
-    const connectedPrompt = promptNodeIds.map(id => nodes.find(item => item.id === id))
+    const connectedPrompt = promptNodeIds.map(id => canvasState.nodes.find(item => item.id === id))
         .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean).join('\n\n');
     const promptValue = promptConnected ? connectedPrompt : (node.prompt || '');
     const selectionOk = node.mode === 'modify'
@@ -12121,7 +8600,7 @@ function smartProjectTaskInfo(node){
     return null;
 }
 async function cancelNodeGenerationTask(nodeId, button=null){
-    const node = nodes.find(item => String(item?.id || '') === String(nodeId || ''));
+    const node = canvasState.nodes.find(item => String(item?.id || '') === String(nodeId || ''));
     const info = node ? smartProjectTaskInfo(node) : null;
     if(!info?.taskId) return;
     if(!window.confirm(tr('smart.nodeCancelConfirm'))) return;
@@ -12137,7 +8616,7 @@ async function cancelNodeGenerationTask(nodeId, button=null){
 //（任务 ID / 阶段 / 进度 / 已用时），支持取消指定任务。
 // 数据从 node.pendingTasks + canvas.history 现读，每秒重渲（状态签名变化时），
 // 任务完成/失败后行内状态实时变化；关闭时清理定时器与事件。
-let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, onKey}
+let batchTaskDetailState = null; // {nodeId, cellIndex, timer, backdrop, releaseEscape}
 function smartBatchTaskRows(node){
     const tasks = smartPendingTasks(node);
     const batchProgress = (tasks.find(task => task?.progress) || {}).progress || {};
@@ -12164,7 +8643,7 @@ function smartBatchTaskRows(node){
 function renderBatchTaskDetail(){
     const state = batchTaskDetailState;
     if(!state) return;
-    const node = nodes.find(item => String(item?.id || '') === state.nodeId);
+    const node = canvasState.nodes.find(item => String(item?.id || '') === state.nodeId);
     const rows = node ? smartBatchTaskRows(node) : [];
     const backdrop = state.backdrop;
     const listEl = backdrop.querySelector('[data-batch-task-detail-list]');
@@ -12220,7 +8699,7 @@ function renderBatchTaskDetail(){
     refreshIcons(listEl);
 }
 function openBatchTaskDetail(nodeId, cellIndex=0){
-    const node = nodes.find(item => String(item?.id || '') === String(nodeId || ''));
+    const node = canvasState.nodes.find(item => String(item?.id || '') === String(nodeId || ''));
     if(!node) return;
     closeBatchTaskDetail();
     const backdrop = document.createElement('div');
@@ -12234,9 +8713,9 @@ function openBatchTaskDetail(nodeId, cellIndex=0){
         <p class="batch-task-detail-sub" data-batch-task-detail-sub></p>
         <div class="batch-task-detail-list" data-batch-task-detail-list></div>
     </div>`;
-    const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); closeBatchTaskDetail(); } };
-    batchTaskDetailState = {nodeId: String(node.id), cellIndex, timer:null, backdrop, onKey};
-    document.addEventListener('keydown', onKey, true);
+    // #249：Escape 栈——不再单独挂 document 捕获监听，统一由栈结算最顶层。
+    const releaseEscape = window.FireflyEscapeStack?.push(() => closeBatchTaskDetail(), 'batch-task-detail') || (() => {});
+    batchTaskDetailState = {nodeId: String(node.id), cellIndex, timer:null, backdrop, releaseEscape};
     backdrop.addEventListener('click', e => { if(e.target === backdrop) closeBatchTaskDetail(); });
     backdrop.querySelector('[data-batch-task-detail-close]').addEventListener('click', e => { e.stopPropagation(); closeBatchTaskDetail(); });
     document.body.appendChild(backdrop);
@@ -12249,7 +8728,7 @@ function closeBatchTaskDetail(){
     if(!state) return;
     batchTaskDetailState = null;
     if(state.timer) clearInterval(state.timer);
-    document.removeEventListener('keydown', state.onKey, true);
+    state.releaseEscape?.();
     state.backdrop.remove();
 }
 setInterval(() => {
@@ -12326,16 +8805,13 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
 }
 function nodeBodyHtml(node, layout){
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
-    if(node.type === 'smart-group') return smartGroupBodyHtml(node);
+    if(node.type === NODE_TYPE_GROUP) return smartGroupBodyHtml(node);
     if(isSmartConversationNode(node)) return conversationNodeBodyHtml(node);
     if(isSmartAgentNode(node)) return agentNodeBodyHtml(node);
-    if(node.type === 'smart-prompt') return promptNodeBodyHtml(node);
-    if(node.type === 'smart-loop') return smartLoopBodyHtml(node);
-    if(node.type === 'local-edit') return localEditBodyHtml(node);
+    if(node.type === NODE_TYPE_PROMPT) return promptNodeBodyHtml(node);
+    if(node.type === NODE_TYPE_LOOP) return smartLoopBodyHtml(node);
+    if(node.type === NODE_TYPE_LOCAL_EDIT) return localEditBodyHtml(node);
     const imgs = (node.images || []).map(imageForDisplay);
-    if(node.jimengPending && node.jimengPending.submitId && imgs.length === 0){
-        return jimengPendingBodyHtml(node, layout);
-    }
     const recoverTask = smartRecoverableImageTask(node);
     if(recoverTask && imgs.length === 0){
         return imageTaskRecoverBodyHtml(node, recoverTask, layout);
@@ -12376,26 +8852,13 @@ function nodeBodyHtml(node, layout){
         const batchSlots = !node.pending && Number(node?._batchTotal) > 1 ? Math.min(8, Number(node._batchTotal)) : 0;
         const missingSlots = isBatchSpec && fixedCellH > 0 ? Math.max(0, batchSlots - imgs.length) : 0;
         const emptySlotHtml = Array.from({length: missingSlots}).map(() => `<div class="thumb-empty-slot" style="--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px" aria-hidden="true"></div>`).join('');
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="${gridColStyle}--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="${gridColStyle}--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
     }
-    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${selectedImage.nodeId === node.id && selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
+    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
     return `<div class="node-drop" data-upload-action="files">
         <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
         <span class="upload-node-sub">${escapeHtml(tr('smart.uploadNodeHint'))}</span>
-    </div>`;
-}
-function jimengPendingBodyHtml(node, layout){
-    const jp = node.jimengPending || {};
-    const querying = Boolean(jp.querying);
-    const queueText = jimengQueueText(jp.queueInfo);
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
-        <div class="jimeng-pending-overlay">
-            <div class="jimeng-pending-spinner"><i data-lucide="loader-2"></i></div>
-            <div class="jimeng-pending-text">${escapeHtml(queueText)}</div>
-            <div class="jimeng-pending-sub">${escapeHtml(tr('smart.taskNotLost'))}</div>
-            <button class="jimeng-pending-query" type="button" data-jimeng-query="${escapeAttr(node.id)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
-        </div>
     </div>`;
 }
 function smartRecoverableImageTask(node){
@@ -12426,25 +8889,25 @@ function imageTaskRecoverBodyHtml(node, task, layout){
         + (Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks.filter(item => item.failed && item.recoverTaskId).length : 0);
     const title = querying ? tr('smart.querying') : tr('smart.taskNotLost');
     const sub = failedCount > 1 ? trf('smart.moreTasksToQuery', {n: failedCount}) : trf('smart.taskIdLabel', {id: task.recoverTaskId || ''});
-    return `<div class="jimeng-pending-cell loading-cell single" style="width:100%;height:100%">
-        <div class="jimeng-pending-overlay">
-            <div class="jimeng-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
-            <div class="jimeng-pending-text">${escapeHtml(title)}</div>
-            <div class="jimeng-pending-sub">${escapeHtml(sub)}</div>
-            <button class="jimeng-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
+    return `<div class="task-pending-cell loading-cell single" style="width:100%;height:100%">
+        <div class="task-pending-overlay">
+            <div class="task-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
+            <div class="task-pending-text">${escapeHtml(title)}</div>
+            <div class="task-pending-sub">${escapeHtml(sub)}</div>
+            <button class="task-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
         </div>
     </div>`;
 }
 function smartNodeToolbarImageIndex(node){
     const images = node?.images || [];
-    if(selectedImage.nodeId === node?.id){
-        const index = Number(selectedImage.index);
+    if(canvasState.selectedImage.nodeId === node?.id){
+        const index = Number(canvasState.selectedImage.index);
         if(Number.isFinite(index) && index >= 0 && index < images.length) return index;
     }
     return 0;
 }
 function smartNodeToolbarHtml(node){
-    const isImageNode = node?.type === 'smart-image' || !node?.type;
+    const isImageNode = node?.type === NODE_TYPE_IMAGE || !node?.type;
     const images = node?.images || [];
     if(!isImageNode || !images.some(img => img?.url || img?.asset_id)) return '';
     const source = images[smartNodeToolbarImageIndex(node)] || images.find(img => img?.url || img?.asset_id);
@@ -12484,11 +8947,23 @@ function duplicateSmartNodeMediaToCanvas(node, imageIndex){
     const point = {x:rect.x + rect.width + 220, y:rect.y + rect.height / 2};
     const copy = {...item};
     const newNode = createImageNodeAt(point, [copy], {select:true, skipUndo:true});
-    selectedIds = [];
-    selectedImage = {nodeId:newNode.id, index:0};
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:newNode.id, index:0};
     render();
     scheduleSave();
     toast(tr('smart.addedToCanvas'));
+}
+// #197: Photoshop round-trip send, module scope (was a local `psSend` closure in
+// sendSmartNodeImageToPhotoshop) so the reload rebuilder can resend it from the
+// persisted payload {assetId, projectId} — the in-session closure is lost on reload.
+async function psSendRoundTrip(live, assetId, projectId){
+    const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({source_node_id:live.id, source_media_id:assetId, ttl_seconds:300})
+    });
+    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
+    const binding = await response.json();
+    toast(trf('smart.sentToPs', {id: binding.request_id}));
 }
 async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     const item = node?.images?.[imageIndex];
@@ -12497,27 +8972,29 @@ async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     if(!projectId || !node?.id || !assetId){ toast(tr('smart.noProjectMediaOriginal')); return; }
     try{
         if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
-            throw new Error(tr('smart.canvasNotSavedPs'));
+            // #189 gate (m03364/m03420): do not cancel the request. Queue a single-shot
+            // replay (the round-trip endpoint has no server-side dedup); the canvas is
+            // still dirty, so the queued save settles and markAutosaveSaved replays it.
+            // #197: the entry's mark is persisted on the node and cleared from disk at
+            // the moment this fetch fires (clear-on-send); the payload carries everything
+            // the reload rebuilder needs.
+            queueSmartPendingActionResume('photoshop', node.id, live => psSendRoundTrip(live, assetId, projectId), {assetId, projectId});
+            toast(tr('smart.canvasPsPendingAfterSave'));
+            return;
         }
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/photoshop/round-trips`, {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({source_node_id:node.id, source_media_id:assetId, ttl_seconds:300})
-        });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.sendPsFailed')));
-        const binding = await response.json();
-        toast(trf('smart.sentToPs', {id: binding.request_id}));
+        await psSendRoundTrip(node, assetId, projectId);
     }catch(error){ toast(error.message || tr('smart.sendPsFailed')); }
 }
 function runSmartNodeToolbarAction(nodeId, action){
-    const node = nodes.find(n => n.id === nodeId);
+    const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return;
     const index = smartNodeToolbarImageIndex(node);
     const source = node.images?.[index];
     const item = imageForDisplay(source) || source;
     const kind = mediaKindForItem(item);
-    selectedId = nodeId;
-    selectedIds = [];
-    selectedImage = {nodeId, index};
+    canvasState.selectedId = nodeId;
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId, index};
     if(action === 'download'){
         downloadPreviewFile(node.images?.[index] || item);
         return;
@@ -12574,11 +9051,11 @@ function smartGroupToolbarHtml(node){
         </button>`).join('')}</div>`;
 }
 function runSmartGroupToolbarAction(nodeId, action){
-    const group = nodes.find(n => n.id === nodeId);
+    const group = canvasState.nodes.find(n => n.id === nodeId);
     if(!isSmartGroupNode(group)) return;
-    selectedId = nodeId;
-    selectedIds = [];
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = nodeId;
+    canvasState.selectedIds = [];
+    canvasState.selectedImage = {nodeId:'', index:-1};
     if(action === 'arrange'){
         if(arrangeSmartGroupMembers(group)){ render(); toast(tr('smart.groupArranged')); }
         else toast(tr('smart.groupNothingToArrange'));
@@ -12605,7 +9082,6 @@ function runSmartGroupToolbarAction(nodeId, action){
         return;
     }
 }
-function nowMs(){ return Date.now(); }
 function formatRunDuration(ms){
     const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
     const min = Math.floor(total / 60);
@@ -12619,8 +9095,8 @@ function nodeRunElapsedMs(node){
     return 0;
 }
 function runTimePillHtml(node){
-    if(!node || node.runTimerHidden || node.type === 'smart-prompt') return '';
-    const running = Boolean(node.pending || node.running || node.jimengPending);
+    if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) return '';
+    const running = Boolean(node.pending || node.running);
     if(!running && !node.runFinishedAt) return '';
     const elapsed = nodeRunElapsedMs(node);
     // Bug fix: 已完成但耗时为 0 的节点（如重试/重新生成时 runStartedAt 与 runFinishedAt 相同）不显示计时器
@@ -12629,35 +9105,35 @@ function runTimePillHtml(node){
     return `<span class="run-time-pill${cls}" data-run-timer="${escapeHtml(node.id)}">${formatRunDuration(elapsed)}</span>`;
 }
 function hideRunTimerForNode(node){
-    if(!node || node.runTimerHidden || node.pending || node.running || node.jimengPending || !node.runFinishedAt) return false;
+    if(!node || node.runTimerHidden || node.pending || node.running || !node.runFinishedAt) return false;
     node.runTimerHidden = true;
     scheduleStateSave();
     return true;
 }
 function refreshRunTimerPills(){
-    const active = nodes.some(n => n.type !== 'smart-prompt' && !n.runTimerHidden && (n.pending || n.running || n.jimengPending || n.runFinishedAt));
+    const active = canvasState.nodes.some(n => n.type !== NODE_TYPE_PROMPT && !n.runTimerHidden && (n.pending || n.running || n.runFinishedAt));
     document.querySelectorAll('[data-run-timer]').forEach(el => {
-        const node = nodes.find(n => n.id === el.dataset.runTimer);
-        if(!node || node.runTimerHidden || node.type === 'smart-prompt') {
+        const node = canvasState.nodes.find(n => n.id === el.dataset.runTimer);
+        if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) {
             el.remove();
             return;
         }
         el.textContent = formatRunDuration(nodeRunElapsedMs(node));
-        el.classList.toggle('done', Boolean(!node.pending && !node.running && !node.jimengPending && node.runFinishedAt));
+        el.classList.toggle('done', Boolean(!node.pending && !node.running && node.runFinishedAt));
     });
     if(active && !runTimerInterval) runTimerInterval = setInterval(refreshRunTimerPills, 1000);
     if(!active && runTimerInterval){ clearInterval(runTimerInterval); runTimerInterval = null; }
 }
 function syncCanvasEmptyState(){
     if(!canvasEmptyState) return;
-    const hasCanvasNodes = nodes.some(node => node && node.id !== SMART_LOG_PREVIEW_NODE_ID);
+    const hasCanvasNodes = canvasState.nodes.some(node => node && node.id !== SMART_LOG_PREVIEW_NODE_ID);
     canvasEmptyState.hidden = hasCanvasNodes;
 }
 function rememberInlineVideoActivations(){
     world.querySelectorAll('.image-node [data-image-index] video[data-inline-video-active="1"]').forEach(video => {
         const nodeEl = video.closest('.image-node');
         const itemEl = video.closest('[data-image-index]');
-        const node = nodes.find(n => n.id === nodeEl?.dataset.id);
+        const node = canvasState.nodes.find(n => n.id === nodeEl?.dataset.id);
         const index = Number(itemEl?.dataset.imageIndex ?? 0);
         const image = node?.images?.[index];
         if(image && mediaKindForItem(image) === 'video') image._inlineVideoActive = true;
@@ -12674,10 +9150,10 @@ function render(){
     const promptHadFocus = document.activeElement === promptInput;
     const reusableNodes = new Map();
     world.querySelectorAll('.image-node').forEach(el => {
-        const node = nodes.find(n => n.id === el.dataset.id);
+        const node = canvasState.nodes.find(n => n.id === el.dataset.id);
         if(smartNodeHasLiveMedia(node)) reusableNodes.set(node.id, el);
     });
-    const nodeHtmlEntries = nodes
+    const nodeHtmlEntries = canvasState.nodes
         .filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID)
         // 分组节点先渲染（DOM 靠前→层级在下），作为成员的背板；成员渲染在后、盖在分组之上，
         // 否则缩小分组把成员挪进卡片区域时会被分组卡片背景遮住而“消失”。
@@ -12688,26 +9164,25 @@ function render(){
         // Keep persisted titles raw until the final text interpolation.  The
         // Agent/group/conversation titles can be user-controlled; escaping
         // here and again in the template would render entities literally.
-        const title = node.type === 'local-edit' ? (node.title || tr('smart.localEditTitle')) : node.type === 'smart-group' ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === 'smart-conversation' ? (node.title || 'Conversation') : node.type === 'smart-agent' ? (node.title || 'Agent') : node.type === 'agent-task' ? 'Agent Task' : node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
+        const title = node.type === NODE_TYPE_LOCAL_EDIT ? (node.title || tr('smart.localEditTitle')) : node.type === NODE_TYPE_GROUP ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === NODE_TYPE_CONVERSATION ? (node.title || 'Conversation') : node.type === NODE_TYPE_AGENT ? (node.title || 'Agent') : node.type === NODE_TYPE_TASK ? 'Agent Task' : node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
-        const isPrompt = node.type === 'smart-prompt';
-        const isLoop = node.type === 'smart-loop';
+        const isPrompt = node.type === NODE_TYPE_PROMPT;
+        const isLoop = node.type === NODE_TYPE_LOOP;
         const isConversation = isSmartConversationNode(node);
         const isAgent = isSmartAgentNode(node);
         const isAgentTask = isSmartAgentTaskNode(node);
-        const isLocalEdit = node.type === 'local-edit';
+        const isLocalEdit = node.type === NODE_TYPE_LOCAL_EDIT;
         const sourceNodeId = isPrompt ? String(node.source_node_id || node.sourceNodeId || '') : '';
         const sourceMessageId = isPrompt ? String(node.source_message_id || node.sourceMessageId || '') : '';
-        const isSmartGroup = node.type === 'smart-group';
+        const isSmartGroup = node.type === NODE_TYPE_GROUP;
         const isCompactMember = isSmartGroupCompactMember(node);
-        const isImageNode = node.type === 'smart-image' || !node.type;
-        const isJimengPending = Boolean(node.jimengPending && node.jimengPending.submitId && imgs.length === 0);
-        const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending && !isJimengPending);
-        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued && !isJimengPending;
+        const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
+        const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
+        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued;
         const isHistory = isHistoryGroupNode(node);
         const isGroup = isImageNode && imgs.length > 1;
-        const isPending = Boolean(node.pending || isQueued || isJimengPending);
+        const isPending = Boolean(node.pending || isQueued);
         const body = nodeBodyHtml(node, layout);
         // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
         const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
@@ -12726,7 +9201,7 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
             <div class="node-port port-out" data-port="out" title="output"></div>
         </div>`;
@@ -12778,14 +9253,14 @@ function render(){
     world.innerHTML = '';
     if(composerEl) world.appendChild(composerEl);
     world.insertAdjacentHTML('beforeend', renderConnections());
-    const nodesHtml = nodes.map(node => {
+    const nodesHtml = canvasState.nodes.map(node => {
         const imgs = node.images || [];
-        const title = node.type === 'smart-prompt' ? 'Prompt' : node.type === 'smart-loop' ? 'Loop' : (imgs.length > 1 ? 'Group' : 'Image');
+        const title = node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : 'Image');
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
-        const isPrompt = node.type === 'smart-prompt';
-        const isLoop = node.type === 'smart-loop';
-        const isImageNode = node.type === 'smart-image' || !node.type;
+        const isPrompt = node.type === NODE_TYPE_PROMPT;
+        const isLoop = node.type === NODE_TYPE_LOOP;
+        const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
         const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued;
         const isGroup = isImageNode && imgs.length > 1;
@@ -12799,7 +9274,7 @@ function render(){
             ${runTimePillHtml(node)}
             <div class="node-body">${body}</div>
             <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
-            ${(node.type === 'smart-image' || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="${escapeHtml(tr('smart.portIn'))}"></div>
             <div class="node-port port-out" data-port="out" title="${escapeHtml(tr('smart.portOut'))}"></div>
         </div>`;
@@ -12819,10 +9294,10 @@ function measureSmartNodeImages(){
     world.querySelectorAll('.image-node img,.image-node video').forEach(imgEl => {
         const nodeEl = imgEl.closest('.image-node');
         const itemEl = imgEl.closest('[data-image-index]');
-        const containerNode = nodes.find(n => n.id === nodeEl?.dataset.id);
+        const containerNode = canvasState.nodes.find(n => n.id === nodeEl?.dataset.id);
         const targetNodeId = itemEl?.dataset.refNodeId || nodeEl?.dataset.id;
         const index = Number(itemEl?.dataset.refImageIndex ?? itemEl?.dataset.imageIndex ?? 0);
-        const node = nodes.find(n => n.id === targetNodeId);
+        const node = canvasState.nodes.find(n => n.id === targetNodeId);
         const image = node?.images?.[index];
         if(imgEl.tagName?.toLowerCase() === 'img' && image?.url) bindImageProxyFallback(imgEl, image);
         if(!node || !image || image.natural_w || image.natural_h) return;
@@ -13273,7 +9748,7 @@ function bindScrollableText(el){
 }
 function updatePortDragVisual(){
     if(!portDragState) return;
-    const fromNode = nodes.find(n => n.id === portDragState.fromId);
+    const fromNode = canvasState.nodes.find(n => n.id === portDragState.fromId);
     if(!fromNode) return;
     const fr = nodeRect(fromNode);
     const isOut = portDragState.fromPort === 'out';
@@ -13322,13 +9797,13 @@ function handlePortDrop(drag, e){
         } else {
             // #149 C6: 连线被拒时 toast 提示原因（不再静默）。
             // C8 的 agent-task / prompt→conversation 已在 connectInputNode 内 toast，此处跳过避免重复。
-            const toNode = nodes.find(n => n.id === toId);
-            const fromNode = nodes.find(n => n.id === fromId);
-            const c8Handled = Boolean(toNode) && (toNode.type === 'agent-task' || (fromNode?.type === 'smart-prompt' && toNode.type === 'smart-conversation'));
+            const toNode = canvasState.nodes.find(n => n.id === toId);
+            const fromNode = canvasState.nodes.find(n => n.id === fromId);
+            const c8Handled = Boolean(toNode) && (toNode.type === NODE_TYPE_TASK || (fromNode?.type === NODE_TYPE_PROMPT && toNode.type === NODE_TYPE_CONVERSATION));
             if(toNode && !c8Handled){
-                if(toNode.type === 'local-edit' && !toNode.localEditActiveRole){
+                if(toNode.type === NODE_TYPE_LOCAL_EDIT && !toNode.localEditActiveRole){
                     toast(tr('smart.connectLocalEditNoRole'));
-                } else if(toNode.type === 'smart-loop' && !toNode.imageInput && !toNode.showPrompt){
+                } else if(toNode.type === NODE_TYPE_LOOP && !toNode.imageInput && !toNode.showPrompt){
                     toast(tr('smart.connectLoopNoInput'));
                 } else {
                     toast(tr('smart.connectRejected'));
@@ -13381,6 +9856,8 @@ function conversationTaskUrl(projectId, nodeId, requestId){
     return `/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(nodeId)}/messages/${encodeURIComponent(requestId)}`;
 }
 function conversationSleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+// #249 审计：自设上限（1s/次×30=30s）——请求 404 时给初始 POST 提交留有限宽限，
+// 超时放弃等待避免占位长期 pending；工程选择，非上游约束。
 const CONVERSATION_MAX_NOT_FOUND_POLLS = 30;
 function conversationMessageForRequest(node, requestId){
     return (node?.messages || []).find(item => String(item?.request_id || '') === String(requestId) && item.role === 'user') || null;
@@ -13398,7 +9875,7 @@ function ensureLocalPendingConversationMessage(node, text, requestId){
     }].slice(-500);
 }
 function abandonUnregisteredConversationTask(node, requestId){
-    const liveNode = nodes.find(item => item.id === node?.id) || node;
+    const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
     if(!liveNode) return;
     const before = (liveNode.messages || []).length;
     liveNode.messages = (liveNode.messages || []).filter(item => !(
@@ -13462,7 +9939,7 @@ function startConversationTaskPolling(node, requestId){
     })();
 }
 function resumeConversationTasks(){
-    nodes.filter(isSmartConversationNode).forEach(node => {
+    canvasState.nodes.filter(isSmartConversationNode).forEach(node => {
         (node.messages || []).filter(item => item?.role === 'user' && item.status === 'pending' && item.request_id)
             .forEach(item => startConversationTaskPolling(node, item.request_id));
     });
@@ -13551,7 +10028,7 @@ function closeConversationExtractionMenu(){
 function extractConversationSelection(){
     const selection = conversationSelection;
     if(!selection?.text || !selection.sourceNodeId || !selection.sourceMessageId) return;
-    const source = nodes.find(node => node.id === selection.sourceNodeId);
+    const source = canvasState.nodes.find(node => node.id === selection.sourceNodeId);
     const sourceRect = source ? nodeRect(source) : null;
     const point = sourceRect
         ? {x:sourceRect.x + sourceRect.width + 80, y:sourceRect.y}
@@ -13591,7 +10068,7 @@ function applyConversationCanvasResponse(nextCanvas){
         Number.isFinite(responseRevision) ? responseRevision : 0,
     );
     canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
-    nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
+    canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
     if(canvas.format === 'firefly-canvas-v1'){
@@ -13602,55 +10079,101 @@ function applyConversationCanvasResponse(nextCanvas){
     return true;
 }
 if(params.get('browserTest') === '1') window.__issue13ApplyConversationCanvasResponse = applyConversationCanvasResponse;
+// #197: module-scope conversation request send (was a nested `sendConversationRequest`
+// const inside sendConversationMessage — invisible to the module-scope reload
+// rebuilder registered near markAutosaveSaved). Owns its per-call AbortController and
+// 15s timeout; an AbortError still means the fetch fired and the server keeps
+// processing under the same request_id, so the caller switches to task polling.
+async function sendConversationMessageRequest(live, text, requestId){
+    const projectId = conversationProjectId();
+    if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+        response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text, request_id:requestId}),
+            signal:controller.signal,
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
+    const data = await response.json();
+    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+    if(data.canvas) applyConversationCanvasResponse(data.canvas);
+    else if(data.message) fresh.messages = [...(fresh.messages || []).filter(m => String(m?.request_id || '') !== requestId), data.message].slice(-500);
+    const currentInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
+    if(currentInput) currentInput.value = '';
+    fresh.conversationSending = false;
+    if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
+    render();
+}
 async function sendConversationMessage(node, input, button){
     const text = String(input?.value || '').trim();
-    const liveNode = nodes.find(item => item.id === node?.id) || node;
+    const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
     const hasPendingMessage = (liveNode?.messages || []).some(message => message?.role === 'user' && message?.status === 'pending');
     if(!liveNode || !text || liveNode.conversationSending || hasPendingMessage) return;
     node = liveNode;
     node.conversationSending = true;
     if(button) button.disabled = true;
     const requestId = conversationRequestId();
-    let controller = null;
     let timeoutId = null;
+    let requestSent = false;
+    let queued = false;
+    const sendConversationRequest = async (live) => {
+        requestSent = true;
+        await sendConversationMessageRequest(live, text, requestId);
+    };
     try {
-        const projectId = conversationProjectId();
-        if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
         const mutationClient = projectCanvasMutationClient();
-        const response = await mutationClient.requestAfterProjectCanvasFlush({
+        await mutationClient.requestAfterProjectCanvasFlush({
             flush:flushProjectCanvasBeforeGeneration,
             failureMessage:tr('smart.canvasUnsavedMessageNotSent'),
-            request:async () => {
-                controller = new AbortController();
-                timeoutId = setTimeout(() => controller.abort(), 15000);
-                return fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(node.id)}/messages`, {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({text, request_id:requestId}),
-                    signal:controller.signal,
-                });
-            },
+            request:() => sendConversationRequest(node),
         });
-        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
-        const data = await response.json();
-        if(data.canvas) applyConversationCanvasResponse(data.canvas);
-        else if(data.message) node.messages = [...(node.messages || []), data.message].slice(-500);
-        input.value = '';
-        if(data.status === 'pending') startConversationTaskPolling(node, requestId);
-        render();
     } catch(error) {
         if(error?.name === 'AbortError'){
             ensureLocalPendingConversationMessage(node, text, requestId);
             startConversationTaskPolling(node, requestId);
             toast(tr('smart.conversationTimeoutStillRunning'));
             render();
+        } else if(!requestSent){
+            // #189 gate (m03364/m03420): the flush before the request failed, so the message
+            // was never sent — do not drop it. Keep a visible local pending bubble (which
+            // also blocks a double send), queue a single-shot replay with the SAME request_id
+            // (the server dedupes by request_id, so even a pathological double send cannot
+            // duplicate the task), and let the queued save settle so markAutosaveSaved replays
+            // it (canvas-generation-tasks.js: resumeSmartPendingActionResumes).
+            queued = true;
+            ensureLocalPendingConversationMessage(node, text, requestId);
+            // #197: payload carries text+requestId for the reload rebuilder (the same
+            // request_id also keeps the server-side dedup as a backstop).
+            queueSmartPendingActionResume('conversation', node.id, async live => {
+                try {
+                    await sendConversationRequest(live);
+                } catch(replayError){
+                    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+                    fresh.conversationSending = false;
+                    const failInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
+                    if(failInput) failInput.value = text;
+                    render();
+                    throw replayError;
+                }
+            }, {text, requestId});
+            toast(tr('smart.canvasMessagePendingAfterSave'));
+            render();
         } else {
             toast(error?.message || tr('smart.conversationSendFailed'));
         }
     } finally {
         if(timeoutId !== null) clearTimeout(timeoutId);
-        node.conversationSending = false;
-        if(button) button.disabled = false;
+        if(!queued){
+            node.conversationSending = false;
+            if(button) button.disabled = false;
+        }
     }
 }
 function bindConversationNodeControls(el, node){
@@ -13675,7 +10198,7 @@ function bindConversationNodeControls(el, node){
         sendConversationMessage(node, input, send);
     });
     input?.addEventListener('keydown', event => {
-        if(event.key === 'Enter' && (event.ctrlKey || event.metaKey)){
+        if(event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !imeComposing(event)){
             event.preventDefault();
             sendConversationMessage(node, input, send);
         }
@@ -13685,7 +10208,7 @@ function bindConversationNodeControls(el, node){
             event.preventDefault();
             event.stopPropagation();
             const messageId = retryEl.getAttribute('data-conversation-retry');
-            const liveNode = nodes.find(item => item.id === node?.id) || node;
+            const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
             const failedMessage = (liveNode?.messages || []).find(item => String(item.id || '') === String(messageId));
             const retryText = String(failedMessage?.text || failedMessage?.content || '').trim();
             if(!retryText) return;
@@ -13702,10 +10225,10 @@ function bindConversationNodeControls(el, node){
         messageEl.addEventListener('mousedown', event => event.stopPropagation());
         messageEl.addEventListener('click', event => {
             event.stopPropagation();
-            if(selectedId !== node.id){
-                selectedId = node.id;
-                selectedIds = [];
-                selectedImage = {nodeId:'', index:-1};
+            if(canvasState.selectedId !== node.id){
+                canvasState.selectedId = node.id;
+                canvasState.selectedIds = [];
+                canvasState.selectedImage = {nodeId:'', index:-1};
                 render();
             }
         });
@@ -13737,228 +10260,43 @@ function bindConversationNodeControls(el, node){
         });
     });
 }
-function agentProjectId(){ return canvas?.project_id || canvas?.project || sourceProjectId || ''; }
-function bindAgentNodeControls(el, node){
-    // TUI-style agent node: bind terminal input
-    const nodeId = node.id;
-    const projectId = canvasId || '';
 
-    // Connect WebSocket when node is rendered
-    connectAgentWebSocket(nodeId, projectId);
-
-    // Bind tool activity row toggle (collapsible)
-    const toolRows = el.querySelectorAll('[data-tool-call-id]');
-    toolRows.forEach(row => {
-        row.addEventListener('click', event => {
-            event.stopPropagation();
-            const toolCallId = row.getAttribute('data-tool-call-id');
-            const state = getAgentTuiState(nodeId);
-            const activity = state.toolActivities.get(toolCallId);
-            if (activity) {
-                activity.expanded = !activity.expanded;
-                renderAgentNode(nodeId);
-            }
-        });
-    });
-
-    // Bind input
-    const inputEl = el.querySelector('[data-agent-tui-input]');
-    if (inputEl) {
-        inputEl.addEventListener('mousedown', event => event.stopPropagation());
-        inputEl.addEventListener('keydown', event => {
-            event.stopPropagation();
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                const message = inputEl.value.trim();
-                if (message) {
-                    const inputState = getAgentTuiState(nodeId);
-                    if (inputState && inputState.status === 'busy') {
-                        sendAgentFollowUp(nodeId, projectId, message);
-                    } else {
-                        sendAgentPrompt(nodeId, projectId, message);
-                    }
-                    inputEl.value = '';
-                }
-            }
-        });
+// #197: module-scope local-edit submit so the reload rebuilder
+// (registerSmartPendingActionRebuilder('local-edit')) can call the very same function
+// after a page reload. It used to be a closure local inside the submit click handler
+// below, so the rebuilder's bare reference threw "submitLocalEditRequest is not defined"
+// after a reload and the pending mark was never re-sent (#197 local-edit/refresh red).
+// The request is fully described by node fields (original_asset_id/prompt/mode/
+// selection/feather/...), so the persisted payload is empty and the rebuilder just calls
+// submitLocalEditRequest(live) against the reloaded node. projectId is re-derived from
+// the live canvas state at call time — the same expression the click handler used to
+// capture.
+async function submitLocalEditRequest(live){
+    const projectId = canvas?.project_id || canvas?.project || canvasId;
+    try {
+        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+            original_asset_id:live.original_asset_id, reference_asset_ids:live.reference_asset_ids || [], prompt:live.prompt,
+            mode:live.mode, aspect_ratio:live.aspect_ratio || '', size:live.generation_size || '1024x1024', resolution:live.generation_resolution || '1k', selection:live.mode === 'modify' ? live.selection : {type:live.selectionType || 'freehand', points:live.selection}, feather_radius:live.feather_radius, result_node_id:live.id, base_revision:Number(canvas?.revision || 0)
+        })});
+        if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
+        const data = await response.json();
+        live.output_asset_id = data.assets?.output?.asset_id || '';
+        live.model_result_asset_id = data.assets?.model_result?.asset_id || '';
+        live.images = live.output_asset_id ? [{asset_id:live.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(live.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
+        // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
+        // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
+        live._leBusy = false;
+        if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
+        const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
+        fresh._leBusy = false;
+        if(!fresh.output_asset_id){ fresh.output_asset_id = live.output_asset_id; fresh.model_result_asset_id = live.model_result_asset_id; fresh.images = live.images; }
+        toast(tr('smart.localEditDone'));
+        render();
+    } catch(error){
+        live._leBusy = false;
+        toast(error.message || tr('smart.localEditFailed'));
+        render();
     }
-
-    // Bind thinking toggle
-    const thinkingBtn = el.querySelector('[data-agent-thinking]');
-    if (thinkingBtn) {
-        thinkingBtn.addEventListener('mousedown', event => event.stopPropagation());
-        thinkingBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            const tState = getAgentTuiState(nodeId);
-            if (tState) {
-                tState.thinkingVisible = !tState.thinkingVisible;
-                renderAgentNode(nodeId);
-            }
-        });
-    }
-
-    // Bind steer button
-    const steerBtn = el.querySelector('[data-agent-steer]');
-    if (steerBtn) {
-        steerBtn.addEventListener('mousedown', event => event.stopPropagation());
-        steerBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            const inputEl = el.querySelector('[data-agent-tui-input]');
-            const message = inputEl ? inputEl.value.trim() : '';
-            if (message) {
-                sendAgentSteer(nodeId, projectId, message);
-                inputEl.value = '';
-            }
-        });
-    }
-
-    // Bind follow-up button
-    const followupBtn = el.querySelector('[data-agent-followup]');
-    if (followupBtn) {
-        followupBtn.addEventListener('mousedown', event => event.stopPropagation());
-        followupBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            const inputEl = el.querySelector('[data-agent-tui-input]');
-            const message = inputEl ? inputEl.value.trim() : '';
-            if (message) {
-                sendAgentFollowUp(nodeId, projectId, message);
-                inputEl.value = '';
-            }
-        });
-    }
-
-    // Bind abort button
-    const abortBtn = el.querySelector('[data-agent-abort]');
-    if (abortBtn) {
-        abortBtn.addEventListener('mousedown', event => event.stopPropagation());
-        abortBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            sendAgentAbort(nodeId, projectId);
-        });
-    }
-
-    // Bind confirm approve button
-    const approveBtn = el.querySelector('[data-agent-confirm-approve]');
-    if (approveBtn) {
-        approveBtn.addEventListener('mousedown', event => event.stopPropagation());
-        approveBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            sendAgentConfirm(nodeId, projectId, true);
-        });
-    }
-
-    // Bind confirm reject button
-    const rejectBtn = el.querySelector('[data-agent-confirm-reject]');
-    if (rejectBtn) {
-        rejectBtn.addEventListener('mousedown', event => event.stopPropagation());
-        rejectBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            sendAgentConfirm(nodeId, projectId, false);
-        });
-    }
-
-    // Bind model select
-    const modelSelect = el.querySelector('[data-agent-model]');
-    if (modelSelect) {
-        modelSelect.addEventListener('mousedown', event => event.stopPropagation());
-        modelSelect.addEventListener('change', event => {
-            event.stopPropagation();
-            const model = modelSelect.value;
-            setAgentModel(nodeId, projectId, model);
-        });
-    }
-
-    // Bind autonomy select
-    const autonomySelect = el.querySelector('[data-agent-autonomy]');
-    if (autonomySelect) {
-        autonomySelect.addEventListener('mousedown', event => event.stopPropagation());
-        autonomySelect.addEventListener('change', event => {
-            event.stopPropagation();
-            const autonomy = autonomySelect.value;
-            setAgentAutonomy(nodeId, projectId, autonomy);
-        });
-    }
-
-    // Bind fork button
-    const forkBtn = el.querySelector('[data-agent-fork]');
-    if (forkBtn) {
-        forkBtn.addEventListener('mousedown', event => event.stopPropagation());
-        forkBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            showForkPicker(nodeId, projectId);
-        });
-    }
-
-    // Bind branch select
-    const branchSelect = el.querySelector('[data-agent-branch]');
-    if (branchSelect) {
-        branchSelect.addEventListener('mousedown', event => event.stopPropagation());
-        branchSelect.addEventListener('change', event => {
-            event.stopPropagation();
-            const branchId = branchSelect.value;
-            if (branchId) switchAgentBranch(nodeId, projectId, branchId);
-        });
-    }
-
-    // Bind body scroll to bottom on new messages
-    const bodyEl = el.querySelector('[data-agent-tui-body]');
-    if (bodyEl) {
-        bodyEl.addEventListener('mousedown', event => event.stopPropagation());
-    }
-}
-
-function renderAgentNode(nodeId) {
-    // Find the rendered element for this node and re-render its body
-    const el = document.querySelector(`[data-id="${nodeId}"]`);
-    if (!el) return;
-
-    // Find the node data
-    const node = nodes.find(n => n.id === nodeId);
-    if (!node) return;
-
-    // Get the layout
-    const imgs = node.images || [];
-    const scale = nodeScale(node);
-    const layout = imageLayout(imgs, scale, node);
-    if (!layout) return;
-
-    // Re-render just the body
-    const body = nodeBodyHtml(node, layout);
-    const bodyContainer = el.querySelector('.node-body');
-    if (bodyContainer) {
-        bodyContainer.innerHTML = body;
-        // Re-bind controls
-        bindAgentNodeControls(bodyContainer, node);
-        // Scroll to bottom
-        const messagesEl = bodyContainer.querySelector('[data-agent-tui-messages]');
-        if (messagesEl) {
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-    }
-
-    // Update node card status light + last line preview
-    const headMeta = el.querySelector('.node-head-meta');
-    if (headMeta) {
-        headMeta.innerHTML = agentCardStatusHtml(nodeId);
-    }
-}
-
-function bindAgentTaskNodeControls(el, node){
-    el.querySelectorAll('[data-agent-result-link]').forEach(link => {
-        link.addEventListener('mousedown', event => event.stopPropagation());
-        link.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const resultId = String(link.dataset.agentResultLink || '');
-            const result = nodes.find(item => String(item.id || '') === resultId);
-            if(!result) return;
-            selectedId = result.id;
-            selectedIds = [];
-            selectedImage = {nodeId:'', index:-1};
-            centerViewportOnWorldPoint({x:Number(result.x || 0) + 120, y:Number(result.y || 0) + 100});
-            render();
-        });
-    });
 }
 function bindLocalEditNodeControls(el, node){
     syncLocalEditInputRoles(node);
@@ -13997,7 +10335,7 @@ function bindLocalEditNodeControls(el, node){
     let selectionDrag = null;
     let lastOriginalAsset = node.original_asset_id || '';
     const sourceImageSize = () => {
-        const sourceNode = nodes.find(item => item.id === (node.localEditInputRoles?.originalNode || ''));
+        const sourceNode = canvasState.nodes.find(item => item.id === (node.localEditInputRoles?.originalNode || ''));
         const sourceItem = (sourceNode?.images || []).find(item => item?.asset_id || item?.url) || {};
         return {
             width: Math.max(1, Number(selectionPreview?.naturalWidth || sourceItem.natural_w || sourceItem.width || 1)),
@@ -14244,14 +10582,14 @@ function bindLocalEditNodeControls(el, node){
     const sync = () => {
         syncLocalEditInputRoles(node);
         const roleMap = node.localEditInputRoles || {};
-        const originalNode = nodes.find(item => item.id === roleMap.originalNode);
+        const originalNode = canvasState.nodes.find(item => item.id === roleMap.originalNode);
         node.original_asset_id = ((originalNode?.images || []).find(img => img?.asset_id) || {})?.asset_id || '';
         node.reference_asset_ids = (roleMap.referenceNodes || []).flatMap(id => {
-            const item = nodes.find(candidate => candidate.id === id);
+            const item = canvasState.nodes.find(candidate => candidate.id === id);
             return (item?.images || []).map(img => img?.asset_id).filter(Boolean);
         }).filter((v, i, arr) => arr.indexOf(v) === i);
         const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
-        const promptTexts = promptNodeIds.map(id => nodes.find(item => item.id === id))
+        const promptTexts = promptNodeIds.map(id => canvasState.nodes.find(item => item.id === id))
             .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean);
         node.prompt = promptTexts.length ? promptTexts.join('\n\n') : String(prompt?.value || '');
         node.feather_radius = Math.max(0, Number(feather?.value || 0));
@@ -14294,38 +10632,29 @@ function bindLocalEditNodeControls(el, node){
         const roleMap = node.localEditInputRoles || {};
         if(!roleMap.originalNode || !node.original_asset_id){ toast(tr('smart.localEditNeedOriginal')); return; }
         if(!String(node.prompt || '').trim()){ toast(tr('smart.localEditNeedPrompt')); return; }
-        const projectId = canvas?.project_id || canvas?.project || canvasId;
         const button = e.currentTarget;
         node._leBusy = true;
         button.disabled = true;
         const statusEl = el.querySelector('[data-local-edit-status]');
         if(statusEl) statusEl.textContent = tr('smart.localEditGenerating');
         try {
-            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedLocalEdit'));
-            const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-                original_asset_id:node.original_asset_id, reference_asset_ids:node.reference_asset_ids || [], prompt:node.prompt,
-                mode:node.mode, aspect_ratio:node.aspect_ratio || '', size:node.generation_size || '1024x1024', resolution:node.generation_resolution || '1k', selection:node.mode === 'modify' ? node.selection : {type:node.selectionType || 'freehand', points:node.selection}, feather_radius:node.feather_radius, result_node_id:node.id, base_revision:Number(canvas?.revision || 0)
-            })});
-            if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.localEditFailed')));
-            const data = await response.json();
-            node.output_asset_id = data.assets?.output?.asset_id || '';
-            node.model_result_asset_id = data.assets?.model_result?.asset_id || '';
-            node.images = node.output_asset_id ? [{asset_id:node.output_asset_id, url:`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(node.output_asset_id)}`, kind:'image', name:'local-edit-output.png'}] : [];
-            // 先清 busy 再 rebase：applyConversationCanvasResponse 会把本地快照（canvasForStorage）
-            // 合入服务端响应，busy 是瞬态 UI 标志，绝不能泄漏进合并后的节点状态。
-            node._leBusy = false;
-            if(data.canvas?.canvas) applyConversationCanvasResponse(data.canvas.canvas);
-            const live = nodes.find(n => n.id === node.id) || node;
-            live._leBusy = false;
-            if(!live.output_asset_id){ live.output_asset_id = node.output_asset_id; live.model_result_asset_id = node.model_result_asset_id; live.images = node.images; }
-            toast(tr('smart.localEditDone')); render();
-        } catch(error){
-            const live = nodes.find(n => n.id === node.id) || node;
-            live._leBusy = false;
-            toast(error.message || tr('smart.localEditFailed'));
-            render();
-        }
-        finally { button.disabled = false; }
+            if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
+                // #189 gate (m03364/m03420): do not cancel the request. Keep the node in its
+                // visible busy state and queue a single-shot replay (the local-edit endpoint
+                // has no server-side dedup); the canvas is still dirty, so the queued save
+                // settles and markAutosaveSaved replays it.
+                // #197: the request is fully described by node fields (prompt/mode/
+                // selection/feather/...), so the payload is empty — the reload rebuilder
+                // just calls submitLocalEditRequest(live) against the reloaded node.
+                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live), {});
+                toast(tr('smart.canvasLocalEditPendingAfterSave'));
+                render();
+                const freshButton = document.querySelector(`.local-edit-node[data-id="${node.id}"] [data-local-edit-submit]`);
+                if(freshButton) freshButton.disabled = true;
+                return;
+            }
+            await submitLocalEditRequest(node);
+        } finally { button.disabled = false; }
     });
     sync();
 }
@@ -14333,32 +10662,32 @@ function bindNodeEvents(){
     world.querySelectorAll('.image-node').forEach(el => {
         const id = el.dataset.id;
         if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.element === el) return;
-        const nodeForControls = nodes.find(n => n.id === id);
+        const nodeForControls = canvasState.nodes.find(n => n.id === id);
         if(isSmartConversationNode(nodeForControls)) bindConversationNodeControls(el, nodeForControls);
         if(isSmartAgentNode(nodeForControls)) bindAgentNodeControls(el, nodeForControls);
         if(isSmartAgentTaskNode(nodeForControls)) bindAgentTaskNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'local-edit') bindLocalEditNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-prompt') bindPromptNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-loop') bindLoopNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === 'smart-group') {
+        if(nodeForControls?.type === NODE_TYPE_LOCAL_EDIT) bindLocalEditNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_PROMPT) bindPromptNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_LOOP) bindLoopNodeControls(el, nodeForControls);
+        if(nodeForControls?.type === NODE_TYPE_GROUP) {
             el.ondblclick = e => {
                 e.preventDefault();
                 e.stopPropagation();
-                selectedId = id;
-                selectedIds = [];
-                selectedImage = {nodeId:'', index:-1};
+                canvasState.selectedId = id;
+                canvasState.selectedIds = [];
+                canvasState.selectedImage = {nodeId:'', index:-1};
                 openCreateMenu(e, {groupId:id});
             };
         }
         el.onclick = e => {
             e.stopPropagation();
             if(Date.now() < suppressNodeClickUntil) return;
-            const node = nodes.find(n => n.id === id);
+            const node = canvasState.nodes.find(n => n.id === id);
             hideRunTimerForNode(node);
-            const alreadySelected = selectedId === id && selectedIds.length === 0 && selectedImage.nodeId === '';
-            selectedId = id;
-            selectedIds = [];
-            selectedImage = {nodeId:'', index:-1};
+            const alreadySelected = canvasState.selectedId === id && canvasState.selectedIds.length === 0 && canvasState.selectedImage.nodeId === '';
+            canvasState.selectedId = id;
+            canvasState.selectedIds = [];
+            canvasState.selectedImage = {nodeId:'', index:-1};
             if(smartCascadeAnyRunning()) smartCascadeSilentSelection = false;
             if(alreadySelected){
                 syncSelectionUi();
@@ -14367,7 +10696,7 @@ function bindNodeEvents(){
             }
             render();
         };
-        if(nodeForControls?.type !== 'smart-group') el.ondblclick = e => e.stopPropagation();
+        if(nodeForControls?.type !== NODE_TYPE_GROUP) el.ondblclick = e => e.stopPropagation();
         const nodeDrop = el.querySelector('.node-drop');
         nodeDrop?.addEventListener('mousedown', e => {
             if(e.button !== 0) return;
@@ -14376,10 +10705,10 @@ function bindNodeEvents(){
         }, true);
         nodeDrop?.addEventListener('dblclick', e => {
             e.preventDefault(); e.stopPropagation();
-            hideRunTimerForNode(nodes.find(n => n.id === id));
-            selectedId = id;
-            selectedIds = [];
-            selectedImage = {nodeId:'', index:-1};
+            hideRunTimerForNode(canvasState.nodes.find(n => n.id === id));
+            canvasState.selectedId = id;
+            canvasState.selectedIds = [];
+            canvasState.selectedImage = {nodeId:'', index:-1};
             pendingGroupUploadPoint = null;
             uploadTargetId = id;
             syncSelectionUi();
@@ -14411,13 +10740,6 @@ function bindNodeEvents(){
                 runSmartGroupToolbarAction(btn.dataset.nodeId || id, btn.dataset.smartGroupAction);
             });
         });
-        el.querySelectorAll('[data-jimeng-query]').forEach(btn => {
-            btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
-            btn.addEventListener('click', e => {
-                e.preventDefault(); e.stopPropagation();
-                queryJimengNow(btn.dataset.jimengQuery);
-            });
-        });
         el.querySelectorAll('[data-image-task-query]').forEach(btn => {
             btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
             btn.addEventListener('click', e => {
@@ -14437,7 +10759,7 @@ function bindNodeEvents(){
             btn.addEventListener('click', async e => {
                 e.preventDefault(); e.stopPropagation();
                 const nodeId = btn.dataset.imageTaskUrl;
-                const node = nodes.find(n => String(n.id || '') === String(nodeId));
+                const node = canvasState.nodes.find(n => String(n.id || '') === String(nodeId));
                 if(!node) return;
                 const url = prompt(tr('smart.imageUrlPrompt'));
                 if(!url) return;
@@ -14479,7 +10801,7 @@ function bindNodeEvents(){
                 const item = btn.closest('[data-image-index]');
                 const targetNodeId = item?.dataset.refNodeId || id;
                 const imageIndex = Number(item?.dataset.refImageIndex ?? item?.dataset.imageIndex ?? 0);
-                toggleMarkedImage(nodes.find(n => n.id === targetNodeId), imageIndex);
+                toggleMarkedImage(canvasState.nodes.find(n => n.id === targetNodeId), imageIndex);
             });
         });
         el.querySelectorAll('[data-node-cancel-task]').forEach(btn => {
@@ -14541,7 +10863,7 @@ function bindNodeEvents(){
                 const item = btn.closest('[data-image-index]');
                 const targetNodeId = item?.dataset.refNodeId || id;
                 const imageIndex = Number(item?.dataset.refImageIndex ?? item?.dataset.imageIndex ?? 0);
-                const owner = nodes.find(n => n.id === targetNodeId);
+                const owner = canvasState.nodes.find(n => n.id === targetNodeId);
                 if(mediaKindForItem(owner?.images?.[imageIndex] || {}) !== 'video') return;
                 clearImageClickTimer();
                 suppressImageClickUntil = Date.now() + 260;
@@ -14553,7 +10875,7 @@ function bindNodeEvents(){
             const thumbTarget = () => {
                 const targetNodeId = item.dataset.refNodeId || id;
                 const imageIndex = Number(item.dataset.refImageIndex ?? item.dataset.imageIndex ?? 0);
-                const owner = nodes.find(n => n.id === targetNodeId);
+                const owner = canvasState.nodes.find(n => n.id === targetNodeId);
                 return {targetNodeId, imageIndex, owner, image:owner?.images?.[imageIndex]};
             };
             item.setAttribute('draggable', 'false');
@@ -14574,9 +10896,9 @@ function bindNodeEvents(){
                     smartActivateVideoPreview(item);
                     return;
                 }
-                selectedId = id;
-                selectedIds = [];
-                selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+                canvasState.selectedId = id;
+                canvasState.selectedIds = [];
+                canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
                 /* #87：双击/快拍打开「生成详情」（无 log 为简化形态）；「预览图片」编辑器入口保留在节点工具栏 */
                 openSmartImageDetail(target.targetNodeId, target.imageIndex);
             }, true);
@@ -14588,7 +10910,7 @@ function bindNodeEvents(){
                 e.stopImmediatePropagation();
                 if(Date.now() < suppressImageClickUntil) return;
                 const target = thumbTarget();
-                const owner = nodes.find(n => n.id === id);
+                const owner = canvasState.nodes.find(n => n.id === id);
                 if(mediaKindForItem(target.image || {}) === 'video'){
                     clearImageClickTimer();
                     suppressImageClickUntil = Date.now() + 260;
@@ -14599,9 +10921,9 @@ function bindNodeEvents(){
                 if(e.detail >= 2){
                     clearImageClickTimer();
                     suppressImageClickUntil = Date.now() + 260;
-                    selectedId = id;
-                    selectedIds = [];
-                    selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+                    canvasState.selectedId = id;
+                    canvasState.selectedIds = [];
+                    canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
                     openSmartImageDetail(target.targetNodeId, target.imageIndex);
                     return;
                 }
@@ -14609,10 +10931,10 @@ function bindNodeEvents(){
                 imageClickTimer = setTimeout(() => {
                     imageClickTimer = null;
                 hideRunTimerForNode(owner);
-                selectedId = id;
-                selectedIds = [];
+                canvasState.selectedId = id;
+                canvasState.selectedIds = [];
                 // Composer 绑定节点本身；这里记录图层焦点，用于交叠时置顶和工具栏目标。
-                selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+                canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
                     if(smartCascadeAnyRunning()) smartCascadeSilentSelection = false;
                     syncSelectionUi();
                     scheduleComposerUpdate(180);
@@ -14631,9 +10953,9 @@ function bindNodeEvents(){
                 smartActivateVideoPreview(item);
                 return;
             }
-            selectedId = id;
-            selectedIds = [];
-            selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+            canvasState.selectedId = id;
+            canvasState.selectedIds = [];
+            canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
             openSmartImageDetail(target.targetNodeId, target.imageIndex);
         }, true);
         });
@@ -14642,7 +10964,7 @@ function bindNodeEvents(){
                 if(e.target.closest('video,audio')) return;
                 if(e.button !== 0 || e.target.closest('.mini-x')) return;
                 if(e.detail >= 2) return;
-                const node = nodes.find(n => n.id === id);
+                const node = canvasState.nodes.find(n => n.id === id);
                 const refNodeId = item.dataset.refNodeId || '';
                 if(refNodeId && refNodeId !== id) return;
                 if(!node) return;
@@ -14658,7 +10980,7 @@ function bindNodeEvents(){
         el.querySelector('.node-resize-handle')?.addEventListener('mousedown', e => {
             if(e.button !== 0) return;
             e.preventDefault(); e.stopPropagation();
-            const node = nodes.find(n => n.id === id);
+            const node = canvasState.nodes.find(n => n.id === id);
             if(!node) return;
             const rect = nodeRect(node);
             resizeState = {id, startX:e.clientX, startY:e.clientY, startW:rect.width, startH:rect.height};
@@ -14688,20 +11010,20 @@ function bindNodeEvents(){
             e.preventDefault(); e.stopPropagation();
             window.getSelection?.()?.removeAllRanges?.();
             if(document.activeElement?.blur) document.activeElement.blur();
-            let node = nodes.find(n => n.id === id);
+            let node = canvasState.nodes.find(n => n.id === id);
             if(!node) return;
             let altDuplicated = false;
             if(e.altKey){
                 const copied = duplicateForAltDrag(node, e.shiftKey);
                 if(copied && copied.id !== node.id){ node = copied; altDuplicated = true; }
             }
-            let dragIds = selectedIds.includes(node.id) ? selectedIds.slice() : [node.id];
+            let dragIds = canvasState.selectedIds.includes(node.id) ? canvasState.selectedIds.slice() : [node.id];
             if(isSmartGroupNode(node)){
                 const memberIds = smartGroupMembers(node).map(member => member.id);
                 dragIds = Array.from(new Set([...dragIds, ...memberIds]));
             }
             const group = dragIds.map(dragId => {
-                const n = nodes.find(x => x.id === dragId);
+                const n = canvasState.nodes.find(x => x.id === dragId);
                 return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
             }).filter(Boolean);
             dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey)};
@@ -14752,7 +11074,7 @@ function bindNodeEvents(){
 function rectOverlapNode(draggedId, x, y, w, h, excludeIds=[]){
     const cx = x + w/2, cy = y + h/2;
     const excluded = new Set([draggedId, ...(excludeIds || [])]);
-    for(const n of nodes){
+    for(const n of canvasState.nodes){
         if(excluded.has(n.id)) continue;
         const r = nodeRect(n);
         if(cx >= r.x && cx <= r.x + r.width && cy >= r.y && cy <= r.y + r.height) return n;
@@ -14762,7 +11084,7 @@ function rectOverlapNode(draggedId, x, y, w, h, excludeIds=[]){
 function restoreDraggedNodePosition(){
     if(!dragState) return;
     (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
-        const n = nodes.find(x => x.id === item.id);
+        const n = canvasState.nodes.find(x => x.id === item.id);
         if(n){
             n.x = item.ox;
             n.y = item.oy;
@@ -14774,7 +11096,7 @@ function pruneSmartGroupMembershipsForNode(node){
     // 节点拖出分组：从所有分组移除自己（保持当前尺寸，不自动放大）。
     // 分组合并已改为“释放被拖分组、只并入其成员”，所以这里只需处理单个节点的退组。
     let changed = false;
-    nodes.forEach(group => {
+    canvasState.nodes.forEach(group => {
         if(!isSmartGroupNode(group) || !Array.isArray(group.items) || !group.items.includes(node.id)) return;
         group.items = group.items.filter(id => id !== node.id);
         changed = true;
@@ -14790,93 +11112,13 @@ function setDropHighlight(targetId){
     const el = world.querySelector(`.image-node[data-id="${targetId}"]`);
     if(el) el.classList.add('drop-target');
 }
-function cleanupAgentTuiState(nodeId) {
-    const state = agentTuiState.get(nodeId);
-    if (state) {
-        if (state.socket) {
-            try { state.socket.close(); } catch (e) {}
-        }
-        agentTuiState.delete(nodeId);
-    }
-}
 
-function deleteNode(id){
-    // #147: 删除智能分组 = 解散分组（图片拆回画布、成员保留、只删容器），与"解散分组"入口行为一致，无数据丢失。
-    // ungroupNode 内部已 pushUndo，这里不再重复。
-    const groupNode = nodes.find(n => n.id === id);
-    if(groupNode && isSmartGroupNode(groupNode)){
-        ungroupNode(id);
-        return;
-    }
-    pushUndo();
-    const deleteIds = new Set([id]);
-    nodes.forEach(node => {
-        if(isHistoryGroupNode(node) && node.historyFor === id) deleteIds.add(node.id);
-    });
-    const removedNodes = nodes.filter(node => deleteIds.has(node.id));
-    // Clean up agent TUI state for deleted agent nodes
-    removedNodes.forEach(node => {
-        if (isSmartAgentNode(node)) {
-            cleanupAgentTuiState(node.id);
-        }
-    });
-    nodes = nodes.filter(node => !deleteIds.has(node.id)); if(canvas) canvas.nodes = nodes;
-    if(canvas) canvas.connections = (canvas.connections || []).filter(c => !deleteIds.has(c.from) && !deleteIds.has(c.to));
-    nodes.forEach(node => {
-        if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(inputId => !deleteIds.has(inputId));
-        if(isSmartGroupNode(node) && Array.isArray(node.items)) node.items = node.items.filter(itemId => !deleteIds.has(itemId));
-    });
-    if(selectedId === id) selectedId = '';
-    selectedIds = selectedIds.filter(selected => !deleteIds.has(selected));
-    if(deleteIds.has(selectedImage.nodeId)) selectedImage = {nodeId:'', index:-1};
-    render();
-    scheduleSave();
-    // #74 (D1) + #146: 级联归档——被删节点中无其他引用的媒体移入回收区（可恢复），不再堆在资源库成孤儿。
-    // #146: 延迟到撤销窗口结束才归档，撤销时取消，避免撤销恢复的节点引用已归档资产 → 404。
-    scheduleMediaArchive(removedNodes.flatMap(node => node.images || []));
-}
-function clearNodeMediaBeforeDelete(id){
-    const node = nodes.find(n => n.id === id);
-    if(!node || (node.type && node.type !== 'smart-image')) return false;
-    const hadMedia = Boolean((node.images || []).length || node.pending);
-    if(!hadMedia) return false;
-    const clearedImages = (node.images || []).slice();
-    pushUndo();
-    node.images = [];
-    node.pending = 0;
-    node.running = false;
-    node.title = tr('smart.createImportNode');
-    delete node.w;
-    delete node.h;
-    const history = historyGroupForNode(node);
-    if(history){
-        nodes = nodes.filter(n => n.id !== history.id); if(canvas) canvas.nodes = nodes;
-        if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== history.id && c.to !== history.id);
-    }
-    if(selectedImage.nodeId === id) selectedImage = {nodeId:'', index:-1};
-    selectedId = id;
-    selectedIds = [];
-    render();
-    scheduleSave();
-    // #74 (D1) + #146: 清空的图片若已无其他引用 → 移入回收区（7 天可恢复）。
-    // #146: 延迟归档，撤销时取消，避免撤销后图片 404。
-    scheduleMediaArchive(clearedImages);
-    return true;
-}
-function deleteNodeFromButton(id){
-    // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
-    const buttonNode = nodes.find(n => n.id === id);
-    if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
-    // #149 B5: 统一为一步直接删节点（与 Delete 键行为一致），不再对有图节点两步清图
-    deleteNode(id);
-}
-// 断开一条或多条连线（合并到分组的连线会一次性断开其下所有成员连线）。spec 可为索引数组或逗号分隔字符串。
 function insertLoopNodeIntoConnection(loopNode, hit){
-    if(!loopNode || loopNode.type !== 'smart-loop' || !hit?.conn) return false;
+    if(!loopNode || loopNode.type !== NODE_TYPE_LOOP || !hit?.conn) return false;
     const conn = hit.conn;
     const kind = conn.kind || 'flow';
     canvas.connections = (canvas.connections || []).filter((c, index) => index !== hit.index);
-    nodes.forEach(n => {
+    canvasState.nodes.forEach(n => {
         if(Array.isArray(n.inputNodeIds)) n.inputNodeIds = n.inputNodeIds.filter(id => !(n.id === conn.to && id === conn.from));
     });
     addConnection(conn.from, loopNode.id, kind === 'flow' ? 'flow' : 'input');
@@ -14884,8 +11126,8 @@ function insertLoopNodeIntoConnection(loopNode, hit){
     return true;
 }
 function updateLoopInsertPreview(){
-    const node = dragState ? nodes.find(n => n.id === dragState.id) : null;
-    const next = node?.type === 'smart-loop' && dragState.ctrlGroup && (dragState.group || []).length <= 1
+    const node = dragState ? canvasState.nodes.find(n => n.id === dragState.id) : null;
+    const next = node?.type === NODE_TYPE_LOOP && dragState.ctrlGroup && (dragState.group || []).length <= 1
         ? insertionConnectionForNode(node)
         : null;
     const nextPreview = next ? {index:next.index} : null;
@@ -14902,12 +11144,13 @@ function confirmCanvasImageDeleteScope(){
         const backdrop = document.createElement('div');
         backdrop.id = 'smartImageDeleteScopeBackdrop';
         backdrop.className = 'asset-delete-warning-backdrop';
+        let releaseEscape = () => {}; // #249：Escape 栈
         const finish = choice => {
             backdrop.remove();
-            document.removeEventListener('keydown', onKey, true);
+            releaseEscape();
+            releaseEscape = () => {};
             resolve(choice);
         };
-        const onKey = e => { if(e.key === 'Escape'){ e.stopPropagation(); finish('cancel'); } };
         backdrop.innerHTML = `
             <div class="asset-delete-warning-dialog" role="dialog" aria-modal="true">
                 <h3>${tr('smart.imageDeleteScopeTitle')}</h3>
@@ -14918,7 +11161,7 @@ function confirmCanvasImageDeleteScope(){
                     <button class="asset-delete-warning-confirm" data-scope="both">${tr('smart.imageDeleteScopeBoth')}</button>
                 </div>
             </div>`;
-        document.addEventListener('keydown', onKey, true);
+        releaseEscape = window.FireflyEscapeStack?.push(() => finish('cancel'), 'delete-scope') || (() => {});
         backdrop.addEventListener('click', e => {
             if(e.target === backdrop){ finish('cancel'); return; }
             const scope = e.target.closest('[data-scope]')?.dataset.scope;
@@ -14928,7 +11171,7 @@ function confirmCanvasImageDeleteScope(){
     });
 }
 async function deleteImage(id, imageIndex){
-    const node = nodes.find(n => n.id === id);
+    const node = canvasState.nodes.find(n => n.id === id);
     if(!node || imageIndex < 0) return;
     // #65: 生成中的节点禁止删单图（写回仍在飞，删图会破坏批次几何/引用）。
     if(smartNodeInFlight(node)){ toast(tr('smart.nodeDeleteBusy')); return; }
@@ -14957,8 +11200,8 @@ async function deleteImage(id, imageIndex){
         }
     }
     if(node.images.length <= 1) node.title = tr('smart.nodeTitleImage');
-    if(selectedImage.nodeId === id) selectedImage = {nodeId:id, index:Math.min(selectedImage.index, node.images.length - 1)};
-    if(selectedImage.index < 0) selectedImage = {nodeId:'', index:-1};
+    if(canvasState.selectedImage.nodeId === id) canvasState.selectedImage = {nodeId:id, index:Math.min(canvasState.selectedImage.index, node.images.length - 1)};
+    if(canvasState.selectedImage.index < 0) canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
     if(alsoDeleteOriginal){
@@ -14969,440 +11212,11 @@ async function deleteImage(id, imageIndex){
         scheduleMediaArchive([removedImage]);
     }
 }
-async function renameSmartNodeImage(nodeId, imageIndex){
-    const node = nodes.find(n => n.id === nodeId);
-    const index = Math.max(0, Number(imageIndex) || 0);
-    const image = node?.images?.[index];
-    if(!node || !image) return;
-    const current = imageNameLabel(image);
-    const name = await openAssetNameDialog({title:tr('smart.renameImage'), value:current, placeholder:tr('smart.imageName'), cancelValue:null});
-    if(name === null) return;
-    const next = String(name || '').trim();
-    if(!next || next === current) return;
-    pushUndo();
-    image.name = next;
-    selectedId = node.id;
-    selectedIds = [];
-    selectedImage = {nodeId:node.id, index};
-    render();
-    scheduleSave();
-}
 function currentEditImage(){
-    const node = nodes.find(n => n.id === cropState?.nodeId);
+    const node = canvasState.nodes.find(n => n.id === cropState?.nodeId);
     const index = Number(cropState?.imageIndex || 0);
     return {node, index, image:imageForDisplay(node?.images?.[index])};
 }
-function cropImageDisplaySize(){
-    const img = document.getElementById('cropImage');
-    const clientW = Number(img?.clientWidth || 0);
-    const clientH = Number(img?.clientHeight || 0);
-    if(clientW > 2 && clientH > 2) return {w:clientW, h:clientH};
-    ensureImageEditBaseSize();
-    const fallbackW = Math.round((imageEditBaseW || Number(img?.naturalWidth || 0) || 1) * imageEditZoom);
-    const fallbackH = Math.round((imageEditBaseH || Number(img?.naturalHeight || 0) || 1) * imageEditZoom);
-    return {w:Math.max(1, fallbackW), h:Math.max(1, fallbackH)};
-}
-function cropBounds(){
-    return cropImageDisplaySize();
-}
-function editDrawCanvas(){ return document.getElementById('editDrawCanvas'); }
-function editTextCanvas(){ return document.getElementById('editTextCanvas'); }
-function editTextContext(){ return editTextCanvas()?.getContext('2d') || null; }
-function selectedEditTextItem(){ return editTextItems.find(item => item.id === editTextSelectedId) || null; }
-function defaultEditTextText(){ return window.StudioI18n?.lang?.() === 'en' ? 'Double-click to edit' : '双击编辑'; }
-function editTextSizeFromBrush(){ return Math.max(14, Math.min(120, Math.round(editBrushSize() * 2))); }
-function createEditTextItem(text, point, preset={}){
-    const size = Math.max(10, Math.min(120, Number(preset.size) || editTextSizeFromBrush()));
-    return {id:uid('txt'), text:String(text || defaultEditTextText()).trim(), x:Number(point?.x || 0), y:Number(point?.y || 0), color:preset.color || brushColor(), size};
-}
-function textItemFont(item){
-    const size = Math.max(10, Math.min(120, Number(item?.size) || 28));
-    return `900 ${size}px Arial, sans-serif`;
-}
-function measureEditTextItem(item, ctx=editTextContext()){
-    if(!item || !ctx) return {x:0, y:0, w:0, h:0};
-    const size = Math.max(10, Math.min(120, Number(item.size) || 28));
-    ctx.save();
-    ctx.font = textItemFont(item);
-    const metrics = ctx.measureText(String(item.text || ''));
-    ctx.restore();
-    const width = Math.max(1, metrics.width || 1);
-    const ascent = Number.isFinite(metrics.actualBoundingBoxAscent) ? metrics.actualBoundingBoxAscent : size * 0.8;
-    const descent = Number.isFinite(metrics.actualBoundingBoxDescent) ? metrics.actualBoundingBoxDescent : size * 0.25;
-    const pad = Math.max(4, Math.round(size * 0.18));
-    return {x:item.x - width / 2 - pad, y:item.y - (ascent + descent) / 2 - pad, w:width + pad * 2, h:ascent + descent + pad * 2, textW:width, textH:ascent + descent, pad};
-}
-function hitEditTextItem(point){
-    const ctx = editTextContext();
-    if(!ctx) return null;
-    for(let i = editTextItems.length - 1; i >= 0; i--){
-        const item = editTextItems[i];
-        const box = measureEditTextItem(item, ctx);
-        if(point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) return item;
-    }
-    return null;
-}
-function renderEditTextCanvas(){
-    const canvasEl = editTextCanvas();
-    const ctx = editTextContext();
-    if(!canvasEl || !ctx) return;
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    editTextItems.forEach(item => {
-        if(!item?.text) return;
-        const selected = item.id === editTextSelectedId;
-        const box = measureEditTextItem(item, ctx);
-        ctx.save();
-        ctx.font = textItemFont(item);
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = item.color || brushColor();
-        ctx.strokeStyle = 'rgba(255,255,255,.92)';
-        ctx.lineWidth = Math.max(2, (Number(item.size) || 28) / 8);
-        ctx.strokeText(String(item.text || ''), item.x, item.y);
-        ctx.fillText(String(item.text || ''), item.x, item.y);
-        if(selected){
-            ctx.setLineDash([7, 5]);
-            ctx.lineWidth = 1.5;
-            ctx.strokeStyle = 'rgba(15,23,42,.72)';
-            ctx.strokeRect(box.x, box.y, box.w, box.h);
-            ctx.setLineDash([]);
-            ctx.fillStyle = 'rgba(15,23,42,.92)';
-            ctx.beginPath();
-            ctx.arc(item.x + box.w / 2 - box.pad, item.y - box.h / 2 + box.pad, 3.5, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        ctx.restore();
-    });
-    positionEditTextInlineEditor();
-}
-function syncTextToolState(force=false){
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    cropCanvasEl?.classList.toggle('text-mode', imageEditMode === 'brush' && brushTool === 'text');
-}
-function syncSelectedEditTextStyleFromBrush(){
-    if(imageEditMode !== 'brush' || brushTool !== 'text' || editTextInlineEditor) return;
-    const item = selectedEditTextItem();
-    if(!item) return;
-    const nextSize = editTextSizeFromBrush();
-    const nextColor = brushColor();
-    if(item.size === nextSize && item.color === nextColor) return;
-    beginTextEditChange();
-    item.size = nextSize;
-    item.color = nextColor;
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function beginTextEditChange(){
-    if(editTextDirty) return;
-    pushEditDrawHistory();
-    editTextDirty = true;
-}
-function setSelectedEditTextItem(id){
-    editTextSelectedId = id || '';
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function confirmSelectedEditTextItem(){
-    const selected = selectedEditTextItem();
-    if(!selected) return false;
-    if(!String(selected.text || '').trim()) editTextItems = editTextItems.filter(item => item.id !== selected.id);
-    editTextSelectedId = '';
-    editTextDrag = null;
-    editTextDirty = false;
-    renderEditTextCanvas();
-    syncTextToolState(true);
-    return true;
-}
-function editTextCanvasScale(){
-    const canvasEl = editTextCanvas();
-    const rect = canvasEl?.getBoundingClientRect?.();
-    return {x:(rect?.width || canvasEl?.width || 1) / Math.max(1, canvasEl?.width || 1), y:(rect?.height || canvasEl?.height || 1) / Math.max(1, canvasEl?.height || 1), rect};
-}
-function selectInlineEditorText(el){
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-}
-function inlineEditorText(){
-    return String(editTextInlineEditor?.el?.innerText || editTextInlineEditor?.el?.textContent || '').replace(/\u00a0/g, ' ');
-}
-function autosizeEditTextInlineEditor(){
-    const editor = editTextInlineEditor;
-    if(!editor?.el) return;
-    const el = editor.el;
-    el.style.width = 'auto';
-    el.style.height = 'auto';
-    el.style.width = `${Math.max(Number(editor.minW || 48), el.scrollWidth + 10)}px`;
-    el.style.height = `${Math.max(Number(editor.minH || 28), el.scrollHeight + 4)}px`;
-}
-function positionEditTextInlineEditor(){
-    const editor = editTextInlineEditor;
-    if(!editor?.el) return;
-    const item = editTextItems.find(x => x.id === editor.itemId);
-    const canvasEl = editTextCanvas();
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    if(!item || !canvasEl || !cropCanvasEl) return;
-    const box = measureEditTextItem(item, editTextContext());
-    const scale = editTextCanvasScale();
-    const hostRect = cropCanvasEl.getBoundingClientRect();
-    const canvasRect = scale.rect || canvasEl.getBoundingClientRect();
-    const left = canvasRect.left - hostRect.left + box.x * scale.x;
-    const top = canvasRect.top - hostRect.top + box.y * scale.y;
-    const w = Math.max(48, box.w * scale.x);
-    const h = Math.max(28, box.h * scale.y);
-    editor.minW = w;
-    editor.minH = h;
-    editor.el.style.left = `${left}px`;
-    editor.el.style.top = `${top}px`;
-    editor.el.style.minWidth = `${w}px`;
-    editor.el.style.minHeight = `${h}px`;
-    editor.el.style.font = `900 ${Math.max(10, (Number(item.size) || 28) * scale.y)}px Arial, sans-serif`;
-    editor.el.style.color = item.color || brushColor();
-    autosizeEditTextInlineEditor();
-}
-function removeEditTextInlineEditor(commit=true){
-    const editor = editTextInlineEditor;
-    if(!editor) return;
-    const item = editTextItems.find(x => x.id === editor.itemId);
-    const next = inlineEditorText().trim();
-    editTextInlineEditor = null;
-    editor.el.remove();
-    if(!item) return;
-    if(commit){
-        if(next !== String(editor.before || '')){
-            beginTextEditChange();
-            if(next) item.text = next;
-            else {
-                editTextItems = editTextItems.filter(x => x.id !== item.id);
-                editTextSelectedId = '';
-            }
-        }
-    } else {
-        item.text = editor.before || item.text || defaultEditTextText();
-    }
-    editTextDirty = false;
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function beginEditTextInline(item){
-    if(!item) return;
-    removeEditTextInlineEditor(true);
-    editTextSelectedId = item.id;
-    const host = document.getElementById('cropCanvas');
-    if(!host) return;
-    const el = document.createElement('div');
-    el.className = 'edit-text-inline';
-    el.contentEditable = 'true';
-    el.spellcheck = false;
-    el.textContent = item.text || defaultEditTextText();
-    host.appendChild(el);
-    editTextInlineEditor = {el, itemId:item.id, before:item.text || ''};
-    positionEditTextInlineEditor();
-    el.addEventListener('input', autosizeEditTextInlineEditor);
-    el.addEventListener('keydown', event => {
-        if(event.key === 'Enter' && !event.shiftKey){ event.preventDefault(); removeEditTextInlineEditor(true); }
-        else if(event.key === 'Escape'){ event.preventDefault(); removeEditTextInlineEditor(false); }
-    });
-    el.addEventListener('blur', () => removeEditTextInlineEditor(true));
-    requestAnimationFrame(() => { el.focus(); selectInlineEditorText(el); });
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function editTextPoint(event){ return editDrawPoint(event); }
-function beginEditText(event){
-    if(imageEditMode !== 'brush' || brushTool !== 'text') return;
-    event.preventDefault(); event.stopPropagation();
-    removeEditTextInlineEditor(true);
-    const canvasEl = editTextCanvas();
-    const point = editTextPoint(event);
-    const hit = hitEditTextItem(point);
-    if(hit){
-        editTextSelectedId = hit.id;
-        editTextDrag = {id:hit.id, pointerId:event.pointerId, startX:hit.x, startY:hit.y, sx:event.clientX, sy:event.clientY, moved:false, hasHistory:false};
-        canvasEl.setPointerCapture?.(event.pointerId);
-        canvasEl.style.cursor = 'grabbing';
-        syncTextToolState(true);
-        renderEditTextCanvas();
-        return;
-    }
-    if(selectedEditTextItem()){
-        confirmSelectedEditTextItem();
-        return;
-    }
-    beginTextEditChange();
-    const item = createEditTextItem(defaultEditTextText(), point, {color:brushColor(), size:editTextSizeFromBrush()});
-    editTextItems.push(item);
-    editTextSelectedId = item.id;
-    canvasEl.style.cursor = 'text';
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function updateEditTextCursor(event){
-    const canvasEl = editTextCanvas();
-    if(!canvasEl || imageEditMode !== 'brush' || brushTool !== 'text') return;
-    const hit = hitEditTextItem(editTextPoint(event));
-    canvasEl.style.cursor = hit ? 'move' : 'text';
-}
-function moveEditText(event){
-    if(!editTextDrag){
-        updateEditTextCursor(event);
-        return;
-    }
-    event.preventDefault(); event.stopPropagation();
-    const item = editTextItems.find(x => x.id === editTextDrag.id);
-    if(!item) return;
-    const dx = event.clientX - editTextDrag.sx;
-    const dy = event.clientY - editTextDrag.sy;
-    if(!editTextDrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
-    editTextDrag.moved = true;
-    if(!editTextDrag.hasHistory){
-        beginTextEditChange();
-        editTextDrag.hasHistory = true;
-    }
-    const canvasEl = editTextCanvas();
-    const rect = canvasEl?.getBoundingClientRect?.();
-    const scaleX = canvasEl ? canvasEl.width / Math.max(1, rect?.width || canvasEl.width) : 1;
-    const scaleY = canvasEl ? canvasEl.height / Math.max(1, rect?.height || canvasEl.height) : 1;
-    item.x = editTextDrag.startX + dx * scaleX;
-    item.y = editTextDrag.startY + dy * scaleY;
-    renderEditTextCanvas();
-}
-function endEditText(event){
-    if(editTextDrag && event?.pointerId != null) editTextCanvas()?.releasePointerCapture?.(event.pointerId);
-    editTextDrag = null;
-    editTextDirty = false;
-    renderEditTextCanvas();
-    syncTextToolState(true);
-    if(event) updateEditTextCursor(event);
-}
-function editTextHasContent(){ return editTextItems.some(item => String(item?.text || '').trim().length > 0); }
-function resizeEditTextCanvas(){
-    const img = document.getElementById('cropImage');
-    const canvasEl = editTextCanvas();
-    if(!img || !canvasEl) return;
-    const display = cropImageDisplaySize();
-    const w = Math.max(1, img.naturalWidth || img.clientWidth || 1);
-    const h = Math.max(1, img.naturalHeight || img.clientHeight || 1);
-    if(canvasEl.width !== w) canvasEl.width = w;
-    if(canvasEl.height !== h) canvasEl.height = h;
-    canvasEl.style.width = `${display.w}px`;
-    canvasEl.style.height = `${display.h}px`;
-    renderEditTextCanvas();
-}
-function resizeEditDrawCanvas(){
-    const img = document.getElementById('cropImage');
-    const canvasEl = editDrawCanvas();
-    const display = cropImageDisplaySize();
-    const w = Math.max(1, img.naturalWidth || img.clientWidth || 1);
-    const h = Math.max(1, img.naturalHeight || img.clientHeight || 1);
-    if(canvasEl.width !== w || canvasEl.height !== h){ canvasEl.width = w; canvasEl.height = h; }
-    canvasEl.style.width = `${display.w}px`;
-    canvasEl.style.height = `${display.h}px`;
-    resizeEditTextCanvas();
-    if(imageEditMode === 'grid') refreshGridSplitPreview();
-}
-function setImageEditMode(mode, userTouched=false){
-    const editKind = mediaKindForItem(currentEditImage().image || {});
-    const isVideoPreview = editKind === 'video';
-    if(isVideoPreview && mode !== 'preview') mode = 'preview';
-    if(userTouched) imageEditModeTouched = true;
-    const prev = imageEditMode;
-    if(mode !== 'brush') removeEditTextInlineEditor(true);
-    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid'].includes(mode) ? mode : 'preview';
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    const previewStageEl = document.getElementById('previewStage');
-    const editStageEl = document.getElementById('imageEditStage');
-    const editPanelEl = document.querySelector('.image-edit-panel');
-    const previewDownloadBtn = document.getElementById('previewDownloadBtn');
-    const previewDownloadAllBtn = document.getElementById('previewDownloadAllBtn');
-    const modeBar = document.querySelector('.image-edit-mode');
-    const videoFrameTools = document.getElementById('videoFrameTools');
-    const zoomLabel = document.getElementById('imageEditZoomLabel');
-    const cancelBtn = document.getElementById('imageEditCancelBtn');
-    const isPreview = imageEditMode === 'preview';
-    cropCanvasEl.style.display = isPreview ? 'none' : '';
-    previewStageEl.style.display = isPreview ? 'inline-flex' : 'none';
-    editStageEl?.classList.toggle('preview-mode', isPreview);
-    editPanelEl?.classList.toggle('video-preview-mode', isVideoPreview);
-    if(previewDownloadBtn) previewDownloadBtn.style.display = isPreview ? 'inline-flex' : 'none';
-    if(previewDownloadAllBtn) previewDownloadAllBtn.style.display = isPreview && !isVideoPreview && previewDownloadGroupItems().length > 1 ? 'inline-flex' : 'none';
-    if(modeBar) modeBar.style.display = isVideoPreview ? 'none' : '';
-    if(videoFrameTools) videoFrameTools.style.display = isVideoPreview && isPreview ? 'flex' : 'none';
-    if(zoomLabel) zoomLabel.style.display = isVideoPreview ? 'none' : '';
-    if(cancelBtn){
-        cancelBtn.style.display = '';
-        cancelBtn.textContent = isVideoPreview ? tr('common.close') : tr('common.cancel');
-    }
-    cropCanvasEl.classList.toggle('mask-mode', imageEditMode === 'mask');
-    cropCanvasEl.classList.toggle('brush-mode', imageEditMode === 'brush');
-    cropCanvasEl.classList.toggle('resize-mode', imageEditMode === 'resize');
-    cropCanvasEl.classList.toggle('grid-mode', imageEditMode === 'grid');
-    cropCanvasEl.classList.toggle('outpaint-mode', imageEditMode === 'outpaint');
-    syncGridCustomCursor();
-    document.querySelectorAll('[data-image-edit-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.imageEditMode === imageEditMode));
-    document.getElementById('imagePreviewTools').classList.toggle('active', isPreview && !isVideoPreview);
-    document.getElementById('imageCropTools')?.classList.toggle('active', imageEditMode === 'crop');
-    document.getElementById('imageOutpaintTools')?.classList.toggle('active', imageEditMode === 'outpaint');
-    document.getElementById('imageMaskTools').classList.toggle('active', imageEditMode === 'mask');
-    document.getElementById('imageBrushTools').classList.toggle('active', imageEditMode === 'brush');
-    document.getElementById('imageResizeTools')?.classList.toggle('active', imageEditMode === 'resize');
-    document.getElementById('imageGridTools').classList.toggle('active', imageEditMode === 'grid');
-    if(imageEditMode === 'grid' && gridOperationMode === 'join' && !canGridJoinCurrentNode()) gridOperationMode = 'split';
-    syncGridOperationControls();
-    updateImagePreviewMarkButton();
-    syncGridGapValue();
-    syncImageResizeControls();
-    const applyBtn = document.getElementById('imageEditApplyBtn');
-    document.getElementById('compareToggleBtn').style.display = isPreview && !isVideoPreview ? 'inline-flex' : 'none';
-    document.getElementById('compareThumbs').style.display = 'none';
-    if(isPreview){
-        document.getElementById('imageEditTitle').textContent = isVideoPreview ? tr('smart.previewVideo') : tr('smart.previewImage');
-        document.getElementById('imageEditSub').textContent = isVideoPreview ? '' : tr('smart.previewHint');
-        applyBtn.style.display = 'none';
-        refreshComparePanel();
-    } else {
-        ensureImageEditBaseSize(true);
-        applyImageEditZoom();
-        applyBtn.style.display = '';
-        if(imageEditMode === 'resize'){
-            document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
-            document.getElementById('imageEditSub').textContent = tr('smart.zoomImageSub');
-            applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
-        } else {
-            const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'brush' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
-            const labelKey = imageEditMode === 'crop' ? 'canvas.applyCrop' : imageEditMode === 'outpaint' ? 'canvas.applyOutpaint' : imageEditMode === 'mask' ? 'canvas.applyMask' : imageEditMode === 'brush' ? 'canvas.applyBrush' : 'canvas.applyGrid';
-            const titleKey = imageEditMode === 'crop' ? 'canvas.cropImage' : imageEditMode === 'outpaint' ? 'canvas.outpaintImage' : imageEditMode === 'mask' ? 'canvas.maskEdit' : imageEditMode === 'brush' ? 'canvas.brushEdit' : 'canvas.modeGrid';
-            const subKey = imageEditMode === 'crop' ? 'canvas.cropHint' : imageEditMode === 'outpaint' ? 'canvas.outpaintHint' : imageEditMode === 'mask' ? 'canvas.maskHint2' : imageEditMode === 'brush' ? 'canvas.brushHint' : 'canvas.gridHint';
-            document.getElementById('imageEditTitle').textContent = tr(titleKey);
-            document.getElementById('imageEditSub').textContent = tr(subKey);
-            const applyLabel = imageEditMode === 'grid' && gridOperationMode === 'join' ? tr('smart.outputGridJoin') : tr(labelKey);
-            applyBtn.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i><span>${applyLabel}</span>`;
-        }
-        if(imageEditMode === 'crop'){
-            requestAnimationFrame(() => {
-                resetCropBox();
-                syncImageEditOverflow();
-            });
-        } else if(imageEditMode === 'outpaint'){
-            requestAnimationFrame(() => {
-                resetOutpaintBox();
-                syncImageEditOverflow();
-            });
-        }
-    }
-    resizeEditDrawCanvas();
-    if(imageEditMode === 'grid') refreshGridSplitPreview();
-    else if(imageEditMode === 'crop' || imageEditMode === 'resize' || imageEditMode === 'outpaint' || prev === 'grid') clearEditDrawing(true);
-    syncEditDrawingHistoryButtons();
-    syncBrushToolButtons();
-    syncTextToolState(true);
-    updatePreviewNavButtons();
-    refreshIcons();
-}
-let previewCompareOn = false;
-let previewCompareIndex = -1;
 let previewMetaExtraText = '';
 function zoomPanAroundPoint(zoom, pan, factor, rect, clientX, clientY, {min=0.05, max=8}={}){
     const nextZoom = Math.max(min, Math.min(max, zoom * factor));
@@ -15424,13 +11238,6 @@ function applyPreviewTransform(){
         frame.style.transform = `translate(${previewPan.x}px, ${previewPan.y}px) scale(${previewZoom})`;
     }
     updateZoomLabel();
-}
-function resetPreviewTransform(){
-    previewZoom = 1.0;
-    previewPan = {x:0, y:0};
-    previewComparePos = 50;
-    document.getElementById('previewStage')?.style.setProperty('--compare-pos', `${previewComparePos}%`);
-    applyPreviewTransform();
 }
 function setPreviewComparePos(clientX){
     const frame = document.getElementById('previewFrame');
@@ -15505,7 +11312,7 @@ function previewCompareSources(){
     if(dedup.length) return dedup;
     const sourceId = node.sourceNodeId;
     if(sourceId){
-        const src = nodes.find(n => n.id === sourceId);
+        const src = canvasState.nodes.find(n => n.id === sourceId);
         if(src && (src.images || []).length){
             for(const img of src.images){
                 if(!img?.url || seen.has(img.url) || mediaKindForItem(img) !== 'image') continue;
@@ -15748,8 +11555,8 @@ async function exportVideoFrame(which='current'){
             : viewportCenter();
         pushUndo();
         const newNode = createImageNodeAt(point, [frame], {select:true, skipUndo:true});
-        selectedIds = [];
-        selectedImage = {nodeId:newNode.id, index:0};
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId:newNode.id, index:0};
         render();
         scheduleSave();
         toast(tr('smart.exportedToCanvas'));
@@ -15758,958 +11565,11 @@ async function exportVideoFrame(which='current'){
         toast((e.message || tr('smart.frameExportFailed')).slice(0, 120));
     }
 }
-function editDrawSnapshot(){
-    const canvasEl = editDrawCanvas();
-    return {
-        imageData:canvasEl.getContext('2d').getImageData(0, 0, canvasEl.width, canvasEl.height),
-        labelCounter:brushLabelCounter,
-        textItems:editTextItems.map(item => ({...item})),
-        textSelectedId:editTextSelectedId || ''
-    };
-}
-function restoreEditDrawSnapshot(snapshot){
-    if(!snapshot) return;
-    removeEditTextInlineEditor(false);
-    editDrawCanvas().getContext('2d').putImageData(snapshot.imageData || snapshot, 0, 0);
-    if(snapshot.labelCounter) brushLabelCounter = snapshot.labelCounter;
-    editTextItems = (snapshot.textItems || []).map(item => ({...item}));
-    editTextSelectedId = snapshot.textSelectedId || '';
-    renderEditTextCanvas();
-    syncTextToolState(true);
-}
-function pushEditDrawHistory(){
-    editDrawUndoStack.push(editDrawSnapshot());
-    if(editDrawUndoStack.length > EDIT_DRAW_HISTORY_MAX) editDrawUndoStack.shift();
-    editDrawRedoStack = [];
-    syncEditDrawingHistoryButtons();
-}
-function syncEditDrawingHistoryButtons(){
-    ['maskUndoBtn','brushUndoBtn'].forEach(id => { const btn = document.getElementById(id); if(btn){ btn.disabled = !editDrawUndoStack.length; btn.style.opacity = editDrawUndoStack.length ? '1' : '.42'; } });
-    ['maskRedoBtn','brushRedoBtn'].forEach(id => { const btn = document.getElementById(id); if(btn){ btn.disabled = !editDrawRedoStack.length; btn.style.opacity = editDrawRedoStack.length ? '1' : '.42'; } });
-}
-function undoEditDrawing(){
-    if(!editDrawUndoStack.length) return;
-    editDrawRedoStack.push(editDrawSnapshot());
-    restoreEditDrawSnapshot(editDrawUndoStack.pop());
-    syncEditDrawingHistoryButtons();
-}
-function redoEditDrawing(){
-    if(!editDrawRedoStack.length) return;
-    editDrawUndoStack.push(editDrawSnapshot());
-    restoreEditDrawSnapshot(editDrawRedoStack.pop());
-    syncEditDrawingHistoryButtons();
-}
-function editCanvasHasPixels(){
-    if(editTextHasContent()) return true;
-    const canvasEl = editDrawCanvas();
-    const data = canvasEl.getContext('2d').getImageData(0, 0, canvasEl.width, canvasEl.height).data;
-    for(let i = 3; i < data.length; i += 4) if(data[i] > 0) return true;
-    return false;
-}
-function clearEditDrawing(silent=false){
-    removeEditTextInlineEditor(false);
-    const canvasEl = editDrawCanvas();
-    if(!silent && editCanvasHasPixels()) pushEditDrawHistory();
-    canvasEl.getContext('2d').clearRect(0, 0, canvasEl.width, canvasEl.height);
-    const textCanvasEl = editTextCanvas();
-    textCanvasEl?.getContext('2d')?.clearRect(0, 0, textCanvasEl.width, textCanvasEl.height);
-    editTextItems = [];
-    editTextSelectedId = '';
-    editTextDrag = null;
-    editTextDirty = false;
-    brushLabelCounter = 1;
-    syncTextToolState(true);
-    syncEditDrawingHistoryButtons();
-}
-function resetEditDrawingHistory(){
-    removeEditTextInlineEditor(false);
-    editDrawUndoStack = [];
-    editDrawRedoStack = [];
-    brushLabelCounter = 1;
-    editTextItems = [];
-    editTextSelectedId = '';
-    editTextDrag = null;
-    editTextDirty = false;
-    renderEditTextCanvas();
-    syncTextToolState(true);
-    syncEditDrawingHistoryButtons();
-}
-function setBrushTool(tool){
-    if(tool !== 'text') removeEditTextInlineEditor(true);
-    brushTool = ['free','rect','ellipse','label','text'].includes(tool) ? tool : 'free';
-    syncBrushToolButtons();
-    syncTextToolState(true);
-}
-function syncBrushToolButtons(){
-    document.querySelectorAll('[data-brush-tool]').forEach(btn => {
-        const active = btn.dataset.brushTool === brushTool;
-        btn.classList.toggle('primary', active);
-        btn.classList.toggle('secondary', !active);
-    });
-    document.getElementById('cropCanvas')?.classList.toggle('text-mode', imageEditMode === 'brush' && brushTool === 'text');
-}
-function editDrawPoint(event){
-    const canvasEl = editDrawCanvas();
-    const rect = canvasEl.getBoundingClientRect();
-    return {x:(event.clientX - rect.left) * canvasEl.width / Math.max(1, rect.width), y:(event.clientY - rect.top) * canvasEl.height / Math.max(1, rect.height)};
-}
-function gridCustomLineHit(point){
-    const canvasEl = editDrawCanvas();
-    const threshold = Math.max(8, Math.min(canvasEl.width, canvasEl.height) / 80);
-    let best = -1, bestDist = Infinity;
-    gridCustomLines.forEach((line, index) => {
-        const dist = line.type === 'h' ? Math.abs(point.y - line.pos * canvasEl.height) : Math.abs(point.x - line.pos * canvasEl.width);
-        if(dist < bestDist && dist <= threshold){ best = index; bestDist = dist; }
-    });
-    return best;
-}
-function setGridCustomLinePos(index, point){
-    const canvasEl = editDrawCanvas();
-    const line = gridCustomLines[index];
-    if(!line) return;
-    line.pos = line.type === 'h'
-        ? Math.max(0.001, Math.min(0.999, point.y / Math.max(1, canvasEl.height)))
-        : Math.max(0.001, Math.min(0.999, point.x / Math.max(1, canvasEl.width)));
-}
-const MASK_BRUSH_ALPHA = 115;
-const MASK_BRUSH_COLOR = `rgba(255,255,255,${MASK_BRUSH_ALPHA / 255})`;
-function editBrushSize(){ return Number(document.getElementById(imageEditMode === 'mask' ? 'maskBrushSize' : 'paintBrushSize')?.value || 20); }
-function brushColor(){ return document.getElementById('paintBrushColor')?.value || '#ff2d55'; }
-function setupDrawStyle(ctx){
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = editBrushSize();
-    ctx.strokeStyle = imageEditMode === 'mask' ? MASK_BRUSH_COLOR : brushColor();
-    ctx.fillStyle = imageEditMode === 'mask' ? MASK_BRUSH_COLOR : brushColor();
-    ctx.globalCompositeOperation = 'source-over';
-}
-function normalizeMaskPreviewCanvas(canvasEl=editDrawCanvas()){
-    if(imageEditMode !== 'mask' || !canvasEl?.width || !canvasEl?.height) return;
-    const ctx = canvasEl.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
-    const data = imageData.data;
-    let changed = false;
-    for(let i = 0; i < data.length; i += 4){
-        if(data[i + 3] <= 0) continue;
-        data[i] = 255;
-        data[i + 1] = 255;
-        data[i + 2] = 255;
-        if(data[i + 3] > MASK_BRUSH_ALPHA) data[i + 3] = MASK_BRUSH_ALPHA;
-        changed = true;
-    }
-    if(changed) ctx.putImageData(imageData, 0, 0);
-}
-function strokeFreeDrawPoint(point){
-    if(!editDrawState) return;
-    const ctx = editDrawCanvas().getContext('2d');
-    setupDrawStyle(ctx);
-    const dx = point.x - editDrawState.x;
-    const dy = point.y - editDrawState.y;
-    const dist = Math.hypot(dx, dy);
-    const radius = Math.max(1, editBrushSize() / 2);
-    if(dist > radius){
-        const steps = Math.ceil(dist / Math.max(1, radius * 0.35));
-        for(let i = 1; i <= steps; i++){
-            const t = i / steps;
-            const x = editDrawState.x + dx * t;
-            const y = editDrawState.y + dy * t;
-            ctx.beginPath();
-            ctx.arc(x, y, radius, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-    ctx.beginPath();
-    ctx.moveTo(editDrawState.x, editDrawState.y);
-    ctx.lineTo(point.x, point.y);
-    ctx.stroke();
-    editDrawState.x = point.x;
-    editDrawState.y = point.y;
-}
 function circledNumber(n){ return n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) : String(n); }
-function drawBrushShape(ctx, start, end){
-    setupDrawStyle(ctx);
-    const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y), w = Math.abs(end.x - start.x), h = Math.abs(end.y - start.y);
-    if(brushTool === 'rect') ctx.strokeRect(x, y, w, h);
-    else if(brushTool === 'ellipse'){ ctx.beginPath(); ctx.ellipse(x + w / 2, y + h / 2, Math.max(1, w / 2), Math.max(1, h / 2), 0, 0, Math.PI * 2); ctx.stroke(); }
-}
-function drawNumberLabel(point){
-    const ctx = editDrawCanvas().getContext('2d');
-    const size = Math.max(18, editBrushSize() * 2.2);
-    const text = circledNumber(brushLabelCounter++);
-    setupDrawStyle(ctx);
-    ctx.save(); ctx.font = `900 ${size}px Arial, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = Math.max(3, size / 8);
-    ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.strokeText(text, point.x, point.y); ctx.fillStyle = brushColor(); ctx.fillText(text, point.x, point.y); ctx.restore();
-}
-function beginEditDraw(event){
-    if(imageEditMode === 'crop') return;
-    event.preventDefault(); event.stopPropagation();
-    const canvasEl = editDrawCanvas();
-    canvasEl.setPointerCapture?.(event.pointerId);
-    const p = editDrawPoint(event);
-    if(imageEditMode === 'grid'){
-        if(gridOperationMode === 'join') return;
-        if(!gridCustomMode) return;
-        const hit = gridCustomLineHit(p);
-        gridCustomHistory.push([...gridCustomLines.map(line => ({...line}))]);
-        if(hit >= 0){ gridCustomDrag = {index:hit, pointerId:event.pointerId}; setGridCustomLinePos(hit, p); }
-        else { gridCustomLines.push({type:gridCustomOrientation, pos:gridCustomOrientation === 'h' ? p.y / canvasEl.height : p.x / canvasEl.width}); gridCustomDrag = {index:gridCustomLines.length - 1, pointerId:event.pointerId}; }
-        syncGridCustomUndoBtn(); refreshGridSplitPreview(); return;
-    }
-    const ctx = canvasEl.getContext('2d');
-    pushEditDrawHistory();
-    if(imageEditMode === 'brush' && brushTool === 'label'){ drawNumberLabel(p); editDrawState = null; canvasEl.releasePointerCapture?.(event.pointerId); return; }
-    editDrawState = {x:p.x, y:p.y, sx:p.x, sy:p.y, pointerId:event.pointerId, snapshot:(imageEditMode === 'brush' && brushTool !== 'free') ? editDrawSnapshot() : null};
-    setupDrawStyle(ctx);
-    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + .01, p.y + .01);
-    if(imageEditMode === 'mask' || brushTool === 'free') ctx.stroke();
-    normalizeMaskPreviewCanvas(canvasEl);
-}
-function moveEditDraw(event){
-    if(imageEditMode === 'grid' && gridOperationMode === 'join') return;
-    if(imageEditMode === 'grid' && gridCustomMode && gridCustomDrag){ event.preventDefault(); event.stopPropagation(); setGridCustomLinePos(gridCustomDrag.index, editDrawPoint(event)); refreshGridSplitPreview(); return; }
-    if(!editDrawState || imageEditMode === 'crop' || imageEditMode === 'grid') return;
-    event.preventDefault(); event.stopPropagation();
-    const ctx = editDrawCanvas().getContext('2d');
-    const p = editDrawPoint(event);
-    if(imageEditMode === 'brush' && brushTool !== 'free'){ restoreEditDrawSnapshot(editDrawState.snapshot); drawBrushShape(ctx, {x:editDrawState.sx, y:editDrawState.sy}, p); return; }
-    const events = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
-    if(events.length){
-        events.forEach(ev => strokeFreeDrawPoint(editDrawPoint(ev)));
-    } else {
-        strokeFreeDrawPoint(p);
-    }
-    normalizeMaskPreviewCanvas();
-}
-function endEditDraw(event){
-    if(editDrawState && event?.pointerId != null) editDrawCanvas().releasePointerCapture?.(event.pointerId);
-    if(gridCustomDrag && event?.pointerId != null) editDrawCanvas().releasePointerCapture?.(event.pointerId);
-    editDrawState = null; gridCustomDrag = null; syncEditDrawingHistoryButtons();
-}
-function beginGridJoinDrag(event){
-    if(imageEditMode !== 'grid' || gridOperationMode !== 'join') return;
-    const itemEl = event.target?.closest?.('.grid-join-item');
-    if(!itemEl) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const index = Number(itemEl.dataset.gridJoinIndex);
-    const item = gridJoinLayout?.items?.find(entry => Number(entry.index) === index);
-    const host = document.getElementById('gridJoinCanvas');
-    if(!item || !host) return;
-    itemEl.setPointerCapture?.(event.pointerId);
-    gridJoinDrag = {index, pointerId:event.pointerId, sx:event.clientX, sy:event.clientY, x:item.x, y:item.y};
-    itemEl.classList.add('dragging');
-}
-function moveGridJoinDrag(event){
-    if(!gridJoinDrag || imageEditMode !== 'grid' || gridOperationMode !== 'join') return;
-    event.preventDefault();
-    event.stopPropagation();
-    const item = gridJoinLayout?.items?.find(entry => Number(entry.index) === Number(gridJoinDrag.index));
-    if(!item) return;
-    const host = document.getElementById('gridJoinCanvas');
-    const rect = host?.getBoundingClientRect();
-    const logical = gridJoinCanvasSize();
-    const scale = rect ? Math.max(0.001, rect.width / Math.max(1, logical.w)) : Math.max(0.001, imageEditZoom || 1);
-    const dx = (event.clientX - gridJoinDrag.sx) / scale;
-    const dy = (event.clientY - gridJoinDrag.sy) / scale;
-    gridJoinDrag.dx = dx;
-    gridJoinDrag.dy = dy;
-    const el = host?.querySelector(`[data-grid-join-index="${CSS.escape(String(gridJoinDrag.index))}"]`);
-    if(el){
-        el.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px)`;
-    }
-}
-function gridJoinDragTarget(){
-    if(!gridJoinDrag || !gridJoinLayout) return null;
-    const dragged = gridJoinLayout.items.find(entry => Number(entry.index) === Number(gridJoinDrag.index));
-    if(!dragged) return null;
-    const dx = gridJoinDrag.dx || 0;
-    const dy = gridJoinDrag.dy || 0;
-    const cx = dragged.x + dx + dragged.w / 2;
-    const cy = dragged.y + dy + dragged.h / 2;
-    return (gridJoinLayout.items || [])
-        .filter(entry => Number(entry.index) !== Number(gridJoinDrag.index))
-        .map(entry => {
-            const inside = cx >= entry.x && cx <= entry.x + entry.w && cy >= entry.y && cy <= entry.y + entry.h;
-            const score = Math.hypot(cx - (entry.x + entry.w / 2), cy - (entry.y + entry.h / 2));
-            return {entry, inside, score};
-        })
-        .filter(item => item.inside || item.score < Math.max(dragged.w, dragged.h, item.entry.w, item.entry.h) * 0.55)
-        .sort((a, b) => (b.inside - a.inside) || a.score - b.score)[0]?.entry || null;
-}
-function endGridJoinDrag(event){
-    if(!gridJoinDrag) return;
-    const host = document.getElementById('gridJoinCanvas');
-    const draggedEl = host?.querySelector(`[data-grid-join-index="${CSS.escape(String(gridJoinDrag.index))}"]`);
-    draggedEl?.classList.remove('dragging');
-    if(draggedEl) draggedEl.style.transform = '';
-    const dragged = gridJoinLayout?.items?.find(entry => Number(entry.index) === Number(gridJoinDrag.index));
-    const target = gridJoinDragTarget();
-    if(dragged && target){
-        const order = gridJoinVisualOrder();
-        const a = order.indexOf(Number(dragged.index));
-        const b = order.indexOf(Number(target.index));
-        if(a >= 0 && b >= 0) [order[a], order[b]] = [order[b], order[a]];
-        setGridJoinLayoutOrder(order, gridJoinLayout.rows, gridJoinLayout.cols, gridJoinLayout.gap);
-        gridJoinUserMoved = true;
-        renderGridJoinPreview();
-    }
-    if(event?.pointerId != null) event.target?.releasePointerCapture?.(event.pointerId);
-    gridJoinDrag = null;
-}
-function syncGridGapValue(){
-    const input = document.getElementById('gridGapSize');
-    const value = Math.max(0, Math.min(240, Number(input?.value || 0)));
-    if(input) input.value = value;
-    const label = document.getElementById('gridGapValue');
-    if(label) label.textContent = String(value);
-    if(gridJoinLayout && gridOperationMode === 'join'){
-        const rows = gridJoinLayout.rows;
-        const cols = gridJoinLayout.cols;
-        const order = gridJoinVisualOrder();
-        setGridJoinLayoutOrder(order, rows, cols, value);
-    }
-    return value;
-}
-function gridGapInputValue(){
-    return Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));
-}
-function gridSplitSettings(){
-    const hLines = Math.max(0, Math.min(20, Number(document.getElementById('gridHorizontalLines')?.value || 0)));
-    const vLines = Math.max(0, Math.min(20, Number(document.getElementById('gridVerticalLines')?.value || 0)));
-    return {rows:hLines + 1, cols:vLines + 1, gap:syncGridGapValue()};
-}
-function currentGridJoinItems(){
-    // 分组拼接：聚合组内所有图片成员的图片，按阅读顺序给出连续索引（source 指向真实图片对象以写回自然尺寸）。
-    if(gridJoinGroupId){
-        const group = nodes.find(n => n.id === gridJoinGroupId && isSmartGroupNode(n));
-        if(group){
-            return smartGroupImageRefs(group)
-                .filter(r => mediaKindForItem(r.item) === 'image' && r.item?.url)
-                .map((r, index) => ({item:r.item, source:r.source, index}));
-        }
-    }
-    const node = currentEditImage().node;
-    return (node?.images || [])
-        .map((item, index) => ({item:imageForDisplay(item), source:item, index}))
-        .filter(entry => mediaKindForItem(entry.item) === 'image' && entry.item?.url);
-}
-// 从分组小菜单打开“宫格拼接”：锚定在分组第一张图片（保证编辑器有真实底图，不出现破图/尺寸异常），
-// 但把拼接数据源切换到整个分组（gridJoinGroupId）。
-function canGridJoinCurrentNode(){
-    return currentGridJoinItems().length > 1;
-}
-function gridJoinAutoDims(count){
-    const cols = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, count))));
-    return {rows:Math.max(1, Math.ceil(count / cols)), cols};
-}
-function gridJoinNaturalSize(entry){
-    const item = entry?.item || {};
-    const cached = gridJoinImageCache.get(entry?.index);
-    const w = Number(item.natural_w || item.width || cached?.naturalWidth || 0);
-    const h = Number(item.natural_h || item.height || cached?.naturalHeight || 0);
-    return {w:Math.max(1, w || 512), h:Math.max(1, h || 512)};
-}
-function gridJoinBaseCellSize(items){
-    const sizes = items.map(gridJoinNaturalSize);
-    const maxW = Math.max(1, ...sizes.map(size => size.w));
-    const maxH = Math.max(1, ...sizes.map(size => size.h));
-    const scale = Math.min(1, 420 / Math.max(maxW, maxH));
-    return {w:Math.max(1, Math.round(maxW * scale)), h:Math.max(1, Math.round(maxH * scale)), scale};
-}
-function gridJoinItemDisplaySize(entry, cell){
-    return {
-        w:Math.max(1, Math.round(cell.w)),
-        h:Math.max(1, Math.round(cell.h))
-    };
-}
-function ensureGridJoinLayout(rows=null, cols=null){
-    const items = currentGridJoinItems();
-    if(!items.length){ gridJoinLayout = null; return null; }
-    const auto = gridJoinAutoDims(items.length);
-    const nextRows = Math.max(1, Number(rows || gridJoinLayout?.rows || auto.rows) || auto.rows);
-    const nextCols = Math.max(1, Number(cols || gridJoinLayout?.cols || auto.cols) || auto.cols);
-    const byIndex = new Map(items.map(entry => [entry.index, entry]));
-    const previousOrder = gridJoinVisualOrder()
-        .map(index => byIndex.get(Number(index)))
-        .filter(Boolean);
-    const ordered = [
-        ...previousOrder,
-        ...items.filter(entry => !previousOrder.some(prev => Number(prev.index) === Number(entry.index)))
-    ];
-    const cell = gridJoinBaseCellSize(ordered);
-    const gap = gridGapInputValue();
-    const layoutItems = ordered.map((entry, order) => {
-        const row = Math.floor(order / nextCols);
-        const col = order % nextCols;
-        const {w, h} = gridJoinItemDisplaySize(entry, cell);
-        return {
-            index:entry.index,
-            x:col * (cell.w + gap),
-            y:row * (cell.h + gap),
-            w,
-            h
-        };
-    });
-    gridJoinLayout = {rows:nextRows, cols:nextCols, cellW:cell.w, cellH:cell.h, gap, items:layoutItems};
-    return gridJoinLayout;
-}
-function gridJoinVisualOrder(layout=gridJoinLayout){
-    return (layout?.items || [])
-        .slice()
-        .sort((a, b) => (Number(a.y || 0) - Number(b.y || 0)) || (Number(a.x || 0) - Number(b.x || 0)))
-        .map(item => Number(item.index));
-}
-function setGridJoinLayoutOrder(order, rows=null, cols=null, gapOverride=null){
-    const entries = currentGridJoinItems();
-    if(!entries.length){ gridJoinLayout = null; return null; }
-    const byIndex = new Map(entries.map(entry => [entry.index, entry]));
-    const ordered = [
-        ...order.map(index => byIndex.get(Number(index))).filter(Boolean),
-        ...entries.filter(entry => !order.includes(entry.index))
-    ];
-    const auto = gridJoinAutoDims(ordered.length);
-    const nextRows = Math.max(1, Number(rows || gridJoinLayout?.rows || auto.rows) || auto.rows);
-    const nextCols = Math.max(1, Number(cols || gridJoinLayout?.cols || auto.cols) || auto.cols);
-    const cell = gridJoinBaseCellSize(ordered);
-    const gap = Math.max(0, Math.min(240, Number(gapOverride ?? document.getElementById('gridGapSize')?.value ?? 0)));
-    const layoutItems = ordered.map((entry, orderIndex) => {
-        const row = Math.floor(orderIndex / nextCols);
-        const col = orderIndex % nextCols;
-        const {w, h} = gridJoinItemDisplaySize(entry, cell);
-        return {
-            index:entry.index,
-            x:col * (cell.w + gap),
-            y:row * (cell.h + gap),
-            w,
-            h
-        };
-    });
-    gridJoinLayout = {rows:nextRows, cols:nextCols, cellW:cell.w, cellH:cell.h, gap, items:layoutItems};
-    return gridJoinLayout;
-}
-function resetGridJoinLayout(){
-    gridJoinUserMoved = false;
-    gridJoinLayout = null;
-    ensureGridJoinLayout();
-    renderGridJoinPreview();
-}
-function applyGridJoinPreset(rows, cols){
-    gridJoinUserMoved = false;
-    const order = gridJoinVisualOrder();
-    if(order.length) setGridJoinLayoutOrder(order, rows, cols);
-    else {
-        gridJoinLayout = null;
-        ensureGridJoinLayout(rows, cols);
-    }
-    renderGridJoinPreview();
-}
-function setGridJoinOutputSize(size){
-    gridJoinOutputSize = Math.max(256, Math.min(8192, Number(size) || 2048));
-    syncGridJoinSizeControls();
-    refreshGridSplitPreview();
-}
-function syncGridJoinSizeControls(){
-    document.querySelectorAll('[data-grid-join-size]').forEach(btn => {
-        const active = Number(btn.dataset.gridJoinSize || 0) === Number(gridJoinOutputSize);
-        btn.classList.toggle('active', active);
-    });
-}
-function setGridOperationMode(mode){
-    gridOperationMode = mode === 'join' && canGridJoinCurrentNode() ? 'join' : 'split';
-    if(mode === 'join' && gridOperationMode !== 'join') toast(tr('smart.gridJoinNeedsGroup'));
-    syncGridOperationControls();
-    refreshGridSplitPreview();
-}
-function syncGridOperationControls(){
-    const join = gridOperationMode === 'join';
-    document.getElementById('gridSplitModeBtn')?.classList.toggle('primary', !join);
-    document.getElementById('gridSplitModeBtn')?.classList.toggle('secondary', join);
-    const joinBtn = document.getElementById('gridJoinModeBtn');
-    if(joinBtn){
-        joinBtn.disabled = !canGridJoinCurrentNode();
-        joinBtn.classList.toggle('primary', join);
-        joinBtn.classList.toggle('secondary', !join);
-    }
-    document.querySelectorAll('.grid-split-control').forEach(el => { el.style.display = join ? 'none' : (el.id === 'gridRegularControls' ? 'contents' : ''); });
-    document.querySelectorAll('.grid-join-control').forEach(el => { el.style.display = join ? 'flex' : 'none'; });
-    syncGridJoinSizeControls();
-    if(!join) syncGridCustomControls();
-    document.getElementById('cropCanvas')?.classList.toggle('grid-join-mode', join);
-    document.getElementById('cropImage')?.classList.toggle('grid-join-hidden', join);
-    if(join) ensureGridJoinLayout();
-    else gridJoinDrag = null;
-}
-function gridSplitRects(width, height){
-    if(gridCustomMode) return gridSplitRectsCustom(width, height);
-    const {rows, cols, gap} = gridSplitSettings();
-    const halfGap = gap / 2, rects = [];
-    for(let row = 0; row < rows; row++){
-        const topLine = row * height / rows, bottomLine = (row + 1) * height / rows;
-        const y1 = Math.round(row === 0 ? 0 : topLine + halfGap), y2 = Math.round(row === rows - 1 ? height : bottomLine - halfGap);
-        for(let col = 0; col < cols; col++){
-            const leftLine = col * width / cols, rightLine = (col + 1) * width / cols;
-            const x1 = Math.round(col === 0 ? 0 : leftLine + halfGap), x2 = Math.round(col === cols - 1 ? width : rightLine - halfGap);
-            if(x2 > x1 && y2 > y1) rects.push({row, col, x:x1, y:y1, w:x2 - x1, h:y2 - y1});
-        }
-    }
-    return rects;
-}
-function gridSplitRectsCustom(width, height){
-    const gap = Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));
-    const halfGap = gap / 2;
-    const rawH = [...new Set(gridCustomLines.filter(l => l.type === 'h').map(l => l.pos * height))].sort((a, b) => a - b);
-    const rawV = [...new Set(gridCustomLines.filter(l => l.type === 'v').map(l => l.pos * width))].sort((a, b) => a - b);
-    const hCuts = [0, ...rawH, height], vCuts = [0, ...rawV, width], rects = [];
-    for(let row = 0; row < hCuts.length - 1; row++) for(let col = 0; col < vCuts.length - 1; col++){
-        const y1 = Math.round(row === 0 ? hCuts[row] : hCuts[row] + halfGap), y2 = Math.round(row === hCuts.length - 2 ? hCuts[row + 1] : hCuts[row + 1] - halfGap);
-        const x1 = Math.round(col === 0 ? vCuts[col] : vCuts[col] + halfGap), x2 = Math.round(col === vCuts.length - 2 ? vCuts[col + 1] : vCuts[col + 1] - halfGap);
-        if(x2 > x1 && y2 > y1) rects.push({row, col, x:x1, y:y1, w:x2 - x1, h:y2 - y1});
-    }
-    return rects;
-}
-function gridLayoutFromRects(rects){
-    return {type:'grid-split', groupId:uid('grid'), rows:Math.max(1, ...rects.map(r => Number(r.row || 0) + 1)), cols:Math.max(1, ...rects.map(r => Number(r.col || 0) + 1))};
-}
-function applyGridPreset(rows, cols){
-    gridCustomMode = false; gridCustomLines = []; gridCustomHistory = []; gridCustomDrag = null;
-    const h = document.getElementById('gridHorizontalLines'), v = document.getElementById('gridVerticalLines');
-    if(h){ h.disabled = false; h.value = String(Math.max(0, Number(rows || 1) - 1)); }
-    if(v){ v.disabled = false; v.value = String(Math.max(0, Number(cols || 1) - 1)); }
-    document.getElementById('gridCustomToggle')?.classList.remove('primary');
-    document.getElementById('gridCustomToggle')?.classList.add('secondary');
-    syncGridCustomControls();
-    syncGridCustomCursor(); syncGridCustomUndoBtn(); refreshGridSplitPreview();
-}
-function syncGridCustomControls(){
-    const join = gridOperationMode === 'join';
-    const custom = document.getElementById('gridCustomControls');
-    if(custom) custom.style.display = !join && gridCustomMode ? 'flex' : 'none';
-    document.querySelectorAll('.grid-split-control.grid-preset-row').forEach(row => {
-        row.style.display = !join && !gridCustomMode ? 'flex' : 'none';
-    });
-    const regular = document.getElementById('gridRegularControls');
-    if(regular) regular.style.display = !join && !gridCustomMode ? 'contents' : 'none';
-}
-function toggleGridCustomMode(){
-    gridCustomMode = !gridCustomMode;
-    if(gridCustomMode){ gridCustomLines = []; gridCustomHistory = []; }
-    gridCustomDrag = null;
-    const toggle = document.getElementById('gridCustomToggle');
-    toggle.classList.toggle('primary', gridCustomMode); toggle.classList.toggle('secondary', !gridCustomMode);
-    ['gridHorizontalLines','gridVerticalLines'].forEach(id => { const el = document.getElementById(id); if(el) el.disabled = gridCustomMode; });
-    syncGridCustomControls();
-    syncGridCustomCursor(); syncGridCustomUndoBtn(); refreshGridSplitPreview();
-}
-function setGridCustomOrientation(orient){
-    gridCustomOrientation = orient;
-    document.getElementById('gridOrientH').classList.toggle('primary', orient === 'h');
-    document.getElementById('gridOrientH').classList.toggle('secondary', orient !== 'h');
-    document.getElementById('gridOrientV').classList.toggle('primary', orient === 'v');
-    document.getElementById('gridOrientV').classList.toggle('secondary', orient !== 'v');
-    syncGridCustomCursor();
-}
-function clearGridCustomLines(){ gridCustomHistory = []; gridCustomLines = []; gridCustomDrag = null; syncGridCustomUndoBtn(); refreshGridSplitPreview(); }
-function undoGridCustomLine(){ if(!gridCustomHistory.length) return; gridCustomLines = gridCustomHistory.pop(); gridCustomDrag = null; syncGridCustomUndoBtn(); refreshGridSplitPreview(); }
-function syncGridCustomUndoBtn(){
-    const btn = document.getElementById('gridUndoBtn');
-    if(!btn) return;
-    btn.disabled = gridCustomHistory.length === 0;
-    btn.style.opacity = gridCustomHistory.length === 0 ? '0.4' : '1';
-}
-function clampImageResizeScale(value){
-    const num = Number(value);
-    if(!Number.isFinite(num)) return 0.5;
-    return Math.max(0.05, Math.min(1, Math.round(num * 100) / 100));
-}
-function imageResizeDimensions(){
-    const img = document.getElementById('cropImage');
-    const sourceW = Math.max(1, Math.round(Number(img?.naturalWidth || 0)));
-    const sourceH = Math.max(1, Math.round(Number(img?.naturalHeight || 0)));
-    const scale = clampImageResizeScale(imageResizeScale);
-    return {
-        sourceW,
-        sourceH,
-        scale,
-        targetW:Math.max(1, Math.round(sourceW * scale)),
-        targetH:Math.max(1, Math.round(sourceH * scale))
-    };
-}
-function syncImageResizeControls(){
-    imageResizeScale = clampImageResizeScale(imageResizeScale);
-    const range = document.getElementById('imageResizeScaleRange');
-    const input = document.getElementById('imageResizeScaleInput');
-    const label = document.getElementById('imageResizeResolution');
-    const overlay = document.getElementById('resizeResolutionOverlay');
-    const dims = imageResizeDimensions();
-    const text = `${dims.targetW}×${dims.targetH}`;
-    if(range && Number(range.value) !== dims.scale) range.value = String(dims.scale);
-    if(input && Number(input.value) !== dims.scale) input.value = String(dims.scale);
-    if(label) label.textContent = text;
-    if(overlay) overlay.textContent = text;
-}
-function setImageResizeScale(value){
-    imageResizeScale = clampImageResizeScale(value);
-    syncImageResizeControls();
-}
-async function resizedImageBlobFromEditor(){
-    const img = document.getElementById('cropImage');
-    if(!img?.naturalWidth || !img?.naturalHeight) return null;
-    const dims = imageResizeDimensions();
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = dims.targetW;
-    canvasEl.height = dims.targetH;
-    const ctx = canvasEl.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, dims.targetW, dims.targetH);
-    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-    return blob ? {blob, ...dims} : null;
-}
-function applyImageEditZoom(scaleOverride=null){
-    ensureImageEditBaseSize();
-    if(!imageEditBaseW) return;
-    const img = document.getElementById('cropImage');
-    const oldW = cropImageDisplaySize().w;
-    img.style.maxWidth = 'none'; img.style.maxHeight = 'none';
-    img.style.width = Math.round(imageEditBaseW * imageEditZoom) + 'px';
-    img.style.height = Math.round(imageEditBaseH * imageEditZoom) + 'px';
-    resizeEditDrawCanvas();
-    if(cropState){
-        const scale = Number(scaleOverride) || (oldW > 0 ? cropImageDisplaySize().w / oldW : 1);
-        cropState.x = Math.round(cropState.x * scale); cropState.y = Math.round(cropState.y * scale);
-        cropState.w = Math.round(cropState.w * scale); cropState.h = Math.round(cropState.h * scale);
-        clampCrop(); renderCropBox();
-    }
-    if(imageEditMode === 'grid') refreshGridSplitPreview();
-    syncImageResizeControls();
-    syncImageEditOverflow(); updateZoomLabel();
-}
-function ensureImageEditBaseSize(force=false){
-    if(imageEditBaseW && imageEditBaseH && !force) return;
-    const img = document.getElementById('cropImage');
-    const naturalW = img.naturalWidth || img.clientWidth || 0;
-    const naturalH = img.naturalHeight || img.clientHeight || 0;
-    if(!naturalW || !naturalH) return;
-    const maxW = Math.max(1, Math.min(1300, window.innerWidth - 100));
-    const maxH = Math.max(1, Math.min(840, window.innerHeight - 200));
-    const fit = Math.min(1, maxW / naturalW, maxH / naturalH);
-    imageEditBaseW = Math.max(1, Math.round(naturalW * fit));
-    imageEditBaseH = Math.max(1, Math.round(naturalH * fit));
-}
-function syncImageEditOverflow(){
-    const stage = document.getElementById('imageEditStage');
-    const crop = document.getElementById('cropCanvas');
-    if(!stage || !crop) return;
-    const rect = crop.getBoundingClientRect(), pad = 36;
-    stage.classList.toggle('overflow-x', rect.width + pad > stage.clientWidth);
-    stage.classList.toggle('overflow-y', rect.height + pad > stage.clientHeight);
-}
-function resetImageEditZoom(){
-    if(imageEditMode === 'preview'){
-        resetPreviewTransform();
-        return;
-    }
-    const stage = document.getElementById('imageEditStage');
-    imageEditZoom = 1.0; applyImageEditZoom();
-    if(stage){ stage.scrollLeft = 0; stage.scrollTop = 0; }
-}
 function updateZoomLabel(){
     const el = document.getElementById('imageEditZoomLabel');
     if(!el) return;
     el.textContent = Math.round((imageEditMode === 'preview' ? previewZoom : imageEditZoom) * 100) + '%';
-}
-function syncGridCustomCursor(){
-    const el = document.getElementById('cropCanvas');
-    el.classList.toggle('grid-custom-h', imageEditMode === 'grid' && gridOperationMode !== 'join' && gridCustomMode && gridCustomOrientation === 'h');
-    el.classList.toggle('grid-custom-v', imageEditMode === 'grid' && gridOperationMode !== 'join' && gridCustomMode && gridCustomOrientation === 'v');
-}
-function gridJoinCanvasSize(layout=gridJoinLayout){
-    if(!layout) return {w:1, h:1};
-    const gap = Math.max(0, Number(layout.gap || 0));
-    const byGrid = {
-        w:Math.max(1, Number(layout.cols || 1) * Number(layout.cellW || 1) + Math.max(0, Number(layout.cols || 1) - 1) * gap),
-        h:Math.max(1, Number(layout.rows || 1) * Number(layout.cellH || 1) + Math.max(0, Number(layout.rows || 1) - 1) * gap)
-    };
-    const byItems = (layout.items || []).reduce((acc, item) => ({
-        w:Math.max(acc.w, Number(item.x || 0) + Number(item.w || 0)),
-        h:Math.max(acc.h, Number(item.y || 0) + Number(item.h || 0))
-    }), byGrid);
-    return {w:Math.ceil(byItems.w), h:Math.ceil(byItems.h)};
-}
-function renderGridJoinPreview(){
-    const host = document.getElementById('gridJoinCanvas');
-    const countEl = document.getElementById('gridSplitCount');
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    if(!host) return;
-    host.innerHTML = '';
-    if(imageEditMode !== 'grid' || gridOperationMode !== 'join'){
-        host.style.display = 'none';
-        if(cropCanvasEl){ cropCanvasEl.style.width = ''; cropCanvasEl.style.height = ''; }
-        return;
-    }
-    const items = currentGridJoinItems();
-    if(items.length <= 1){
-        host.style.display = 'none';
-        if(cropCanvasEl){ cropCanvasEl.style.width = ''; cropCanvasEl.style.height = ''; }
-        if(countEl) countEl.textContent = tr('smart.gridJoinMinImages');
-        return;
-    }
-    const layout = ensureGridJoinLayout();
-    const size = gridJoinCanvasSize(layout);
-    const zoom = Math.max(0.05, Number(imageEditZoom || 1));
-    const displayW = Math.max(1, Math.round(size.w * zoom));
-    const displayH = Math.max(1, Math.round(size.h * zoom));
-    host.style.display = 'block';
-    host.style.width = `${Math.max(1, Math.round(size.w))}px`;
-    host.style.height = `${Math.max(1, Math.round(size.h))}px`;
-    host.style.transform = `scale(${zoom})`;
-    host.style.transformOrigin = '0 0';
-    if(cropCanvasEl){
-        cropCanvasEl.style.width = `${displayW}px`;
-        cropCanvasEl.style.height = `${displayH}px`;
-    }
-    const byIndex = new Map(items.map(entry => [entry.index, entry]));
-    (layout.items || []).forEach(item => {
-        const entry = byIndex.get(item.index);
-        if(!entry) return;
-        const img = document.createElement('img');
-        img.className = 'grid-join-item';
-        img.draggable = false;
-        img.dataset.gridJoinIndex = String(item.index);
-        img.style.left = `${Math.round(item.x)}px`;
-        img.style.top = `${Math.round(item.y)}px`;
-        img.style.width = `${Math.round(item.w)}px`;
-        img.style.height = `${Math.round(item.h)}px`;
-        img.alt = entry.item.name || `image-${item.index + 1}`;
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-            const hadNaturalSize = Boolean(entry.source.natural_w && entry.source.natural_h);
-            gridJoinImageCache.set(item.index, img);
-            if(!entry.source.natural_w && img.naturalWidth) entry.source.natural_w = img.naturalWidth;
-            if(!entry.source.natural_h && img.naturalHeight) entry.source.natural_h = img.naturalHeight;
-            if(!hadNaturalSize && img.naturalWidth && img.naturalHeight && imageEditMode === 'grid' && gridOperationMode === 'join'){
-                ensureGridJoinLayout();
-                renderGridJoinPreview();
-            }
-        };
-        img.onerror = () => {
-            if(img.dataset.proxyFallbackTried === '1') return;
-            const fallback = proxiedMediaUrl(entry.item);
-            if(!fallback || fallback === img.getAttribute('src')) return;
-            img.dataset.proxyFallbackTried = '1';
-            img.src = fallback;
-        };
-        img.src = displayMediaUrl(entry.item);
-        host.appendChild(img);
-    });
-    if(countEl) countEl.textContent = trf('smart.gridJoinPreview', {n: items.length, k: Math.round(gridJoinOutputSize / 1024)});
-}
-function refreshGridSplitPreview(){
-    const canvasEl = editDrawCanvas();
-    const ctx = canvasEl.getContext('2d');
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    renderGridJoinPreview();
-    if(imageEditMode !== 'grid') return;
-    if(gridOperationMode === 'join') return;
-    const countEl = document.getElementById('gridSplitCount');
-    const lineWidth = Math.max(2, Math.round(Math.min(canvasEl.width, canvasEl.height) / 320));
-    const drawLine = (x1, y1, x2, y2) => {
-        ctx.save(); ctx.lineWidth = lineWidth + 2; ctx.strokeStyle = 'rgba(2,6,23,0.72)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.lineWidth = lineWidth; ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore();
-    };
-    if(gridCustomMode){
-        const gap = Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));
-        const hLines = gridCustomLines.filter(l => l.type === 'h'), vLines = gridCustomLines.filter(l => l.type === 'v');
-        if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', (hLines.length + 1) * (vLines.length + 1));
-        hLines.forEach(l => { const y = l.pos * canvasEl.height; gap > 0 ? (drawLine(0, y - gap / 2, canvasEl.width, y - gap / 2), drawLine(0, y + gap / 2, canvasEl.width, y + gap / 2)) : drawLine(0, y, canvasEl.width, y); });
-        vLines.forEach(l => { const x = l.pos * canvasEl.width; gap > 0 ? (drawLine(x - gap / 2, 0, x - gap / 2, canvasEl.height), drawLine(x + gap / 2, 0, x + gap / 2, canvasEl.height)) : drawLine(x, 0, x, canvasEl.height); });
-        return;
-    }
-    const {rows, cols, gap} = gridSplitSettings();
-    if(countEl) countEl.textContent = tr('canvas.gridWillOutput').replace('{n}', rows * cols);
-    for(let i = 1; i < cols; i++){ const x = i * canvasEl.width / cols; gap > 0 ? (drawLine(x - gap / 2, 0, x - gap / 2, canvasEl.height), drawLine(x + gap / 2, 0, x + gap / 2, canvasEl.height)) : drawLine(x, 0, x, canvasEl.height); }
-    for(let i = 1; i < rows; i++){ const y = i * canvasEl.height / rows; gap > 0 ? (drawLine(0, y - gap / 2, canvasEl.width, y - gap / 2), drawLine(0, y + gap / 2, canvasEl.width, y + gap / 2)) : drawLine(0, y, canvasEl.width, y); }
-}
-function renderCropBox(){
-    if(!cropState) return;
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    const img = document.getElementById('cropImage');
-    const draw = editDrawCanvas();
-    const textCanvas = editTextCanvas();
-    let boxX = cropState.x;
-    let boxY = cropState.y;
-    if(imageEditMode === 'outpaint' && cropCanvasEl && img){
-        cropCanvasEl.style.width = `${Math.round(cropState.w)}px`;
-        cropCanvasEl.style.height = `${Math.round(cropState.h)}px`;
-        img.style.position = 'absolute';
-        img.style.left = `${Math.round(cropState.x)}px`;
-        img.style.top = `${Math.round(cropState.y)}px`;
-        boxX = 0;
-        boxY = 0;
-        if(draw){
-            draw.style.left = img.style.left;
-            draw.style.top = img.style.top;
-        }
-        if(textCanvas){
-            textCanvas.style.left = img.style.left;
-            textCanvas.style.top = img.style.top;
-        }
-        updateOutpaintResolutionLabel();
-    } else if(cropCanvasEl && img){
-        cropCanvasEl.style.width = '';
-        cropCanvasEl.style.height = '';
-        img.style.position = '';
-        img.style.left = '';
-        img.style.top = '';
-        if(draw){
-            draw.style.left = '';
-            draw.style.top = '';
-        }
-        if(textCanvas){
-            textCanvas.style.left = '';
-            textCanvas.style.top = '';
-        }
-    }
-    const box = document.getElementById('cropBox');
-    if(box){
-        box.style.left = `${boxX}px`; box.style.top = `${boxY}px`; box.style.width = `${cropState.w}px`; box.style.height = `${cropState.h}px`;
-    }
-    const outpaintFrame = document.getElementById('outpaintFrame');
-    if(outpaintFrame){
-        outpaintFrame.style.left = imageEditMode === 'outpaint' ? '0px' : `${boxX}px`;
-        outpaintFrame.style.top = imageEditMode === 'outpaint' ? '0px' : `${boxY}px`;
-        outpaintFrame.style.width = `${cropState.w}px`;
-        outpaintFrame.style.height = `${cropState.h}px`;
-    }
-}
-function outpaintNaturalSize(){
-    const img = document.getElementById('cropImage');
-    if(!img || !cropState) return {w:1, h:1};
-    const display = cropImageDisplaySize();
-    const scaleX = Math.max(1, Number(img.naturalWidth || 1)) / Math.max(1, Number(display.w || img.clientWidth || 1));
-    const scaleY = Math.max(1, Number(img.naturalHeight || 1)) / Math.max(1, Number(display.h || img.clientHeight || 1));
-    return {
-        w:Math.max(1, Math.round((cropState.w || 1) * scaleX)),
-        h:Math.max(1, Math.round((cropState.h || 1) * scaleY))
-    };
-}
-function updateOutpaintResolutionLabel(){
-    const label = document.getElementById('outpaintResolution');
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    if(!label || !cropState) return;
-    const size = outpaintNaturalSize();
-    const warning = exceedsFourKStandard(size.w, size.h);
-    cropCanvasEl?.classList.toggle('outpaint-warning', warning);
-    label.textContent = `${Math.round(size.w)} x ${Math.round(size.h)}`;
-}
-function clampOutpaint(){
-    if(!cropState) return;
-    const {w, h} = cropBounds();
-    cropState.w = Math.max(w, cropState.w);
-    cropState.h = Math.max(h, cropState.h);
-    cropState.x = Math.min(cropState.w - w, Math.max(0, cropState.x));
-    cropState.y = Math.min(cropState.h - h, Math.max(0, cropState.y));
-}
-function resetOutpaintBox(){
-    if(!cropState) return;
-    ensureImageEditBaseSize(true);
-    applyImageEditZoom();
-    const {w, h} = cropBounds();
-    cropState.w = w;
-    cropState.h = h;
-    cropState.x = 0;
-    cropState.y = 0;
-    clampOutpaint();
-    renderCropBox();
-}
-function syncOutpaintRatioButtons(){
-    document.querySelectorAll('[data-outpaint-ratio]').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.outpaintRatio === outpaintAspectPreset);
-    });
-}
-function setOutpaintAspectPreset(preset='free'){
-    outpaintAspectPreset = preset || 'free';
-    syncOutpaintRatioButtons();
-    if(!cropState || imageEditMode !== 'outpaint' || outpaintAspectPreset === 'free') return;
-    if(outpaintAspectPreset === 'source') return resetOutpaintBox();
-    const img = document.getElementById('cropImage');
-    const fit = window.OutpaintRatios?.fitContaining(img?.naturalWidth, img?.naturalHeight, outpaintAspectPreset);
-    if(!img || !fit) return;
-    const display = cropImageDisplaySize();
-    const scaleX = Math.max(1, Number(img.naturalWidth || 1)) / Math.max(1, Number(display.w || img.clientWidth || 1));
-    const scaleY = Math.max(1, Number(img.naturalHeight || 1)) / Math.max(1, Number(display.h || img.clientHeight || 1));
-    cropState.w = fit.width / scaleX;
-    cropState.h = fit.height / scaleY;
-    cropState.x = fit.offsetX / scaleX;
-    cropState.y = fit.offsetY / scaleY;
-    clampOutpaint();
-    renderCropBox();
-}
-function cropRatioFromPreset(preset){
-    if(!preset || preset === 'free') return null;
-    if(preset === 'source'){
-        const {w, h} = cropBounds();
-        return w > 0 && h > 0 ? w / h : null;
-    }
-    const parts = String(preset).split(':').map(v => Math.max(0, Number(v)));
-    return parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : null;
-}
-function syncCropRatioButtons(){
-    document.querySelectorAll('[data-crop-ratio]').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.cropRatio === cropAspectPreset);
-    });
-}
-function fitCropRectToAspect(ratio, sourceRect=null){
-    const {w:boundsW, h:boundsH} = cropBounds();
-    const rect = sourceRect || cropState || {x:0, y:0, w:boundsW, h:boundsH};
-    const minSize = 24;
-    let nextW = Math.max(minSize, Number(rect.w || boundsW));
-    let nextH = Math.max(minSize, Number(rect.h || boundsH));
-    if(ratio){
-        if(nextW / nextH > ratio) nextW = nextH * ratio;
-        else nextH = nextW / ratio;
-        if(nextW > boundsW){ nextW = boundsW; nextH = nextW / ratio; }
-        if(nextH > boundsH){ nextH = boundsH; nextW = nextH * ratio; }
-    } else {
-        nextW = Math.min(nextW, boundsW);
-        nextH = Math.min(nextH, boundsH);
-    }
-    const cx = Number(rect.x || 0) + Number(rect.w || nextW) / 2;
-    const cy = Number(rect.y || 0) + Number(rect.h || nextH) / 2;
-    cropState.w = Math.round(nextW);
-    cropState.h = Math.round(nextH);
-    cropState.x = Math.round(cx - cropState.w / 2);
-    cropState.y = Math.round(cy - cropState.h / 2);
-    clampCrop();
-}
-function setCropAspectPreset(preset='free'){
-    cropAspectPreset = preset || 'free';
-    cropAspectRatio = cropRatioFromPreset(cropAspectPreset);
-    syncCropRatioButtons();
-    if(cropState && imageEditMode === 'crop' && cropAspectRatio){
-        fitCropRectToAspect(cropAspectRatio);
-        renderCropBox();
-    }
-}
-function resetCropBox(){
-    if(!cropState) return;
-    if(imageEditMode === 'outpaint') return resetOutpaintBox();
-    const {w, h} = cropBounds();
-    const rect = {x:Math.round(w * 0.08), y:Math.round(h * 0.08), w:Math.round(w * 0.84), h:Math.round(h * 0.84)};
-    cropState.x = rect.x; cropState.y = rect.y; cropState.w = rect.w; cropState.h = rect.h;
-    if(cropAspectRatio) fitCropRectToAspect(cropAspectRatio, rect);
-    renderCropBox();
-}
-function updatePreviewNavButtons(){
-    let count;
-    if(previewNavState.groupId && Array.isArray(previewNavState.seq)){
-        count = previewNavState.seq.length;
-    } else {
-        const node = nodes.find(n => n.id === previewNavState.nodeId);
-        count = Math.max(0, (node?.images || []).filter(img => img?.url).length);
-    }
-    previewNavState.count = count;
-    const show = imageEditModal.classList.contains('open') && imageEditMode === 'preview' && count > 1;
-    document.getElementById('previewPrevBtn')?.classList.toggle('visible', show);
-    document.getElementById('previewNextBtn')?.classList.toggle('visible', show);
 }
 function navigatePreviewImage(delta){
     if(!imageEditModal.classList.contains('open') || imageEditMode !== 'preview') return;
@@ -16729,7 +11589,7 @@ function navigatePreviewImage(delta){
         }
         return;
     }
-    const node = nodes.find(n => n.id === previewNavState.nodeId);
+    const node = canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     const images = (node?.images || []).filter(img => img?.url);
     if(!node || images.length <= 1) return;
     const count = images.length;
@@ -16740,565 +11600,12 @@ function openImagePreview(nodeId, imageIndex=0){
     openImageEditor(nodeId, imageIndex);
     setImageEditMode('preview');
 }
-// 双击组内图片时按整组预览；非分组成员退回单节点预览。
-// 打开整组图片预览：以被双击图片为起点，左右切换遍历分组内所有图片。
-function openImageEditor(nodeId, imageIndex=0){
-    const node = nodes.find(n => n.id === nodeId);
-    const image = imageForDisplay(node?.images?.[imageIndex]);
-    if(!image?.url) return;
-    const kind = mediaKindForItem(image);
-    if(kind !== 'image' && kind !== 'video'){
-        downloadPreviewFile(image);
-        return;
-    }
-    selectedId = nodeId;
-    selectedImage = {nodeId, index:imageIndex};
-    previewNavState = {nodeId, index:imageIndex, count:(node.images || []).filter(img => img?.url).length};
-    cropState = {nodeId, imageIndex, x:0, y:0, w:0, h:0};
-    gridCustomMode = false; gridCustomLines = []; gridCustomHistory = []; gridCustomDrag = null; gridCustomOrientation = 'h';
-    gridOperationMode = 'split'; gridJoinLayout = null; gridJoinDrag = null; gridJoinImageCache = new Map(); gridJoinUserMoved = false; gridJoinGroupId = '';
-    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5; imageEditModeTouched = false;
-    cropAspectPreset = 'free'; cropAspectRatio = null; syncCropRatioButtons();
-    outpaintAspectPreset = 'free'; syncOutpaintRatioButtons();
-    editTextItems = []; editTextSelectedId = ''; editTextDrag = null; editTextDirty = false;
-    const toggle = document.getElementById('gridCustomToggle');
-    if(toggle){ toggle.classList.add('secondary'); toggle.classList.remove('primary'); }
-    syncGridCustomControls();
-    syncGridOperationControls();
-    ['gridHorizontalLines','gridVerticalLines'].forEach(id => { const el = document.getElementById(id); if(el) el.disabled = false; });
-    const orientH = document.getElementById('gridOrientH'), orientV = document.getElementById('gridOrientV');
-    if(orientH){ orientH.classList.add('primary'); orientH.classList.remove('secondary'); }
-    if(orientV){ orientV.classList.add('secondary'); orientV.classList.remove('primary'); }
-    syncGridCustomUndoBtn(); updateZoomLabel();
-    const img = document.getElementById('cropImage');
-    img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
-    imageEditModal.classList.add('open');
-    previewCompareOn = false;
-    previewCompareIndex = -1;
-    resetPreviewTransform();
-    if(kind === 'video'){
-        img.onload = null;
-        img.onerror = null;
-        img.removeAttribute('src');
-        delete img.dataset.proxyFallbackTried;
-        setImageEditMode('preview');
-        updatePreviewNavButtons();
-        refreshIcons();
-        return;
-    }
-    // 原图加载失败时的兜底链：依次尝试 download-output 代理、缩略图同款的 media-preview 代理（PIL 渲染，
-    // 对截断/半下载的文件比浏览器宽容，所以缩略图能显示而原图破损时它仍能出图）。兜底时去掉 crossOrigin——
-    // 预览不需要导出画布，带 crossOrigin 反而会因跨域/CORS 直接加载失败。
-    const primaryEditorSrc = displayMediaUrl(image);
-    const editorFallbackUrls = [proxiedMediaUrl(image), smartMediaPreviewUrl(image, 2048)]
-        .filter(Boolean)
-        .filter((u, i, arr) => u !== primaryEditorSrc && arr.indexOf(u) === i);
-    let editorFallbackIndex = 0;
-    const editorSrcToken = `${nodeId}:${imageIndex}:${Date.now()}`;
-    img.dataset.editorSrcToken = editorSrcToken;
-    img.dataset.editorQuick = '';
-    img.onload = () => {
-        const targetImage = node.images?.[imageIndex];
-        // 兜底用的是代理/缩放图，naturalWidth 不是原图真实尺寸，别污染节点的 natural_w/h。
-        const loadedPrimary = img.dataset.editorQuick !== '1' && img.getAttribute('src') === primaryEditorSrc;
-        if(loadedPrimary && editorFallbackIndex === 0 && targetImage && img.naturalWidth && img.naturalHeight && (!targetImage.natural_w || !targetImage.natural_h)){
-            targetImage.natural_w = img.naturalWidth;
-            targetImage.natural_h = img.naturalHeight;
-            scheduleStateSave();
-        }
-        imageEditBaseW = img.clientWidth; imageEditBaseH = img.clientHeight;
-        updateZoomLabel(); syncImageResizeControls(); resizeEditDrawCanvas(); resetEditDrawingHistory(); clearEditDrawing(true); resetCropBox();
-        if(!imageEditModeTouched) setImageEditMode('preview');
-        else refreshComparePanel();
-        updatePreviewMetaHint();
-        syncImageEditOverflow(); refreshIcons();
-    };
-    img.onerror = () => {
-        if(editorFallbackIndex >= editorFallbackUrls.length) return;
-        img.src = editorFallbackUrls[editorFallbackIndex++];
-    };
-    // 不设 crossOrigin：displayMediaUrl 已把所有地址收敛为同源（http 走本地代理），同源图片不会污染画布，
-    // 裁剪/涂抹等导出操作照常可用。而带 crossOrigin 会让浏览器对“缩略图已无 CORS 缓存的同源图”重新发起
-    // CORS 请求并失败——表现就是预览先闪一下（命中缓存）随即变成破损图。
-    img.removeAttribute('crossorigin');
-    const quickEditorSrc = smartMediaPreviewUrl(image, 2048);
-    const loadFullEditorImage = () => {
-        if(!cropState || cropState.nodeId !== nodeId || cropState.imageIndex !== imageIndex) return;
-        if(!imageEditModal.classList.contains('open') || img.dataset.editorSrcToken !== editorSrcToken) return;
-        img.dataset.editorQuick = '';
-        if(img.getAttribute('src') !== primaryEditorSrc) img.src = primaryEditorSrc;
-    };
-    if(quickEditorSrc && quickEditorSrc !== primaryEditorSrc){
-        img.dataset.editorQuick = '1';
-        img.src = quickEditorSrc;
-        requestAnimationFrame(() => setTimeout(loadFullEditorImage, 120));
-    } else {
-        img.src = primaryEditorSrc;
-    }
-    setImageEditMode('preview');
-    updatePreviewNavButtons();
-    refreshIcons();
-}
-function closeImageEditor(){
-    cleanupSmartHistoryPreviewNode();
-    imageEditModal.classList.remove('open');
-    document.querySelector('.image-edit-panel')?.classList.remove('video-preview-mode');
-    const img = document.getElementById('cropImage');
-    const previewVideo = document.getElementById('previewCurrentVideo');
-    img.onload = null; img.onerror = null; img.removeAttribute('src'); delete img.dataset.proxyFallbackTried; delete img.dataset.editorSrcToken; delete img.dataset.editorQuick; img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
-    img.style.position = ''; img.style.left = ''; img.style.top = '';
-    if(previewVideo){
-        previewVideo.pause?.();
-        previewVideo.onloadedmetadata = null;
-        previewVideo.onloadeddata = null;
-        previewVideo.removeAttribute('src');
-        previewVideo.load?.();
-        previewVideo.style.display = 'none';
-    }
-    clearEditDrawing(true);
-    cropState = null; cropDrag = null; editDrawState = null; resetEditDrawingHistory(); gridCustomDrag = null; gridJoinDrag = null; gridJoinLayout = null; gridJoinImageCache = new Map(); gridJoinUserMoved = false; gridOperationMode = 'split'; gridJoinGroupId = '';
-    previewNavState = {nodeId:'', index:0, count:0};
-    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5; imageEditModeTouched = false;
-    cropAspectPreset = 'free'; cropAspectRatio = null; syncCropRatioButtons();
-    outpaintAspectPreset = 'free'; syncOutpaintRatioButtons();
-    previewPanDrag = null; previewCompareDrag = false; imageEditPanDrag = null; resetPreviewTransform();
-    document.getElementById('imageEditStage')?.classList.remove('overflow-x', 'overflow-y', 'preview-mode');
-    const cropCanvasEl = document.getElementById('cropCanvas');
-    cropCanvasEl?.classList.remove('grid-custom-h', 'grid-custom-v', 'outpaint-mode', 'outpaint-warning', 'dragging-image', 'text-mode', 'resize-mode');
-    cropCanvasEl?.classList.remove('grid-join-mode');
-    document.getElementById('cropImage')?.classList.remove('grid-join-hidden');
-    const joinCanvas = document.getElementById('gridJoinCanvas');
-    if(joinCanvas){ joinCanvas.innerHTML = ''; joinCanvas.style.display = 'none'; joinCanvas.style.width = ''; joinCanvas.style.height = ''; }
-    if(cropCanvasEl){ cropCanvasEl.style.width = ''; cropCanvasEl.style.height = ''; }
-    const textCanvas = editTextCanvas();
-    if(textCanvas){ textCanvas.style.left = ''; textCanvas.style.top = ''; }
-    updatePreviewNavButtons();
-}
-function clampCrop(){
-    if(!cropState) return;
-    if(imageEditMode === 'outpaint') return clampOutpaint();
-    const {w, h} = cropBounds();
-    cropState.w = Math.max(24, Math.min(cropState.w, w)); cropState.h = Math.max(24, Math.min(cropState.h, h));
-    cropState.x = Math.max(0, Math.min(cropState.x, w - cropState.w)); cropState.y = Math.max(0, Math.min(cropState.y, h - cropState.h));
-}
-function beginCropDrag(event, mode){
-    if(!cropState) return;
-    event.preventDefault(); event.stopPropagation();
-    if(imageEditMode === 'outpaint' && mode === 'move') return;
-    cropDrag = {mode, sx:event.clientX, sy:event.clientY, start:{...cropState}};
-}
-function resizeOutpaintFromDrag(dx, dy){
-    const start = cropDrag?.start;
-    if(!start) return;
-    let growX = 0, growY = 0;
-    if(cropDrag.mode === 'outpaint-left') growX = -dx;
-    else if(cropDrag.mode === 'outpaint-right') growX = dx;
-    else if(cropDrag.mode === 'outpaint-top') growY = -dy;
-    else if(cropDrag.mode === 'outpaint-bottom') growY = dy;
-    else if(cropDrag.mode === 'outpaint-corner'){ growX = dx; growY = dy; }
-    const {w, h} = cropBounds();
-    let nextW = Math.max(w, start.w + growX * 2);
-    let nextH = Math.max(h, start.h + growY * 2);
-    
-    // 如果选择了预设比例，保持该比例
-    if(outpaintAspectPreset && outpaintAspectPreset !== 'free' && outpaintAspectPreset !== 'source'){
-        const parsed = window.OutpaintRatios?.parsePreset(outpaintAspectPreset);
-        if(parsed){
-            // 保持中心点，按预设比例调整
-            const centerX = start.x + start.w / 2;
-            const centerY = start.y + start.h / 2;
-            // 以较大的增长方向为准，按预设比例计算另一个方向
-            if(nextW / nextH > parsed.width / parsed.height){
-                // 宽度增长更多，按预设比例调整高度
-                nextH = nextW * parsed.height / parsed.width;
-            } else {
-                // 高度增长更多，按预设比例调整宽度
-                nextW = nextH * parsed.width / parsed.height;
-            }
-            // 确保不小于原图尺寸
-            nextW = Math.max(w, nextW);
-            nextH = Math.max(h, nextH);
-            // 重新计算位置，保持中心
-            cropState.x = centerX - nextW / 2;
-            cropState.y = centerY - nextH / 2;
-        }
-    } else {
-        cropState.x = start.x + Math.round((nextW - start.w) / 2);
-        cropState.y = start.y + Math.round((nextH - start.h) / 2);
-    }
-    
-    cropState.w = nextW;
-    cropState.h = nextH;
-    clampOutpaint();
-}
-function clampAspectCropToBounds(anchorX, anchorY, movingX, movingY, ratio, handle){
-    const {w:boundsW, h:boundsH} = cropBounds();
-    const minSize = 24;
-    let width = Math.max(minSize, Math.abs(movingX - anchorX));
-    let height = Math.max(minSize, Math.abs(movingY - anchorY));
-    if(width / height > ratio) width = height * ratio;
-    else height = width / ratio;
-    const dirX = handle.includes('w') ? -1 : 1;
-    const dirY = handle.includes('n') ? -1 : 1;
-    width = Math.min(width, dirX < 0 ? anchorX : boundsW - anchorX);
-    height = Math.min(height, dirY < 0 ? anchorY : boundsH - anchorY);
-    if(width / height > ratio) width = height * ratio;
-    else height = width / ratio;
-    return {
-        x:dirX < 0 ? anchorX - width : anchorX,
-        y:dirY < 0 ? anchorY - height : anchorY,
-        w:width,
-        h:height
-    };
-}
-function resizeCropFromDrag(dx, dy){
-    const start = cropDrag?.start;
-    if(!start) return;
-    const handle = String(cropDrag.mode || 'resize').replace(/^crop-/, '') || 'se';
-    if(!cropAspectRatio){
-        let left = start.x;
-        let top = start.y;
-        let right = start.x + start.w;
-        let bottom = start.y + start.h;
-        if(handle.includes('w')) left += dx;
-        if(handle.includes('e') || handle === 'resize') right += dx;
-        if(handle.includes('n')) top += dy;
-        if(handle.includes('s') || handle === 'resize') bottom += dy;
-        cropState.x = Math.min(left, right - 24);
-        cropState.y = Math.min(top, bottom - 24);
-        cropState.w = Math.max(24, right - cropState.x);
-        cropState.h = Math.max(24, bottom - cropState.y);
-        return;
-    }
-    const normalized = handle === 'resize' ? 'se' : handle;
-    const centerX = start.x + start.w / 2;
-    const centerY = start.y + start.h / 2;
-    if(normalized === 'e' || normalized === 'w'){
-        const {w:boundsW, h:boundsH} = cropBounds();
-        let width = Math.max(24, normalized === 'e' ? start.w + dx : start.w - dx);
-        const maxW = normalized === 'e' ? boundsW - start.x : start.x + start.w;
-        const maxH = Math.max(24, 2 * Math.min(centerY, boundsH - centerY));
-        width = Math.min(width, maxW, maxH * cropAspectRatio);
-        const height = width / cropAspectRatio;
-        cropState.x = Math.round(normalized === 'e' ? start.x : start.x + start.w - width);
-        cropState.y = Math.round(centerY - height / 2);
-        cropState.w = Math.round(width);
-        cropState.h = Math.round(height);
-        return;
-    }
-    if(normalized === 'n' || normalized === 's'){
-        const {w:boundsW, h:boundsH} = cropBounds();
-        let height = Math.max(24, normalized === 's' ? start.h + dy : start.h - dy);
-        const maxH = normalized === 's' ? boundsH - start.y : start.y + start.h;
-        const maxW = Math.max(24, 2 * Math.min(centerX, boundsW - centerX));
-        height = Math.min(height, maxH, maxW / cropAspectRatio);
-        const width = height * cropAspectRatio;
-        cropState.x = Math.round(centerX - width / 2);
-        cropState.y = Math.round(normalized === 's' ? start.y : start.y + start.h - height);
-        cropState.w = Math.round(width);
-        cropState.h = Math.round(height);
-        return;
-    }
-    const anchorX = normalized.includes('w') ? start.x + start.w : start.x;
-    const anchorY = normalized.includes('n') ? start.y + start.h : start.y;
-    const movingX = normalized.includes('w') ? start.x + dx : start.x + start.w + dx;
-    const movingY = normalized.includes('n') ? start.y + dy : start.y + start.h + dy;
-    const next = clampAspectCropToBounds(anchorX, anchorY, movingX, movingY, cropAspectRatio, normalized);
-    cropState.x = Math.round(next.x);
-    cropState.y = Math.round(next.y);
-    cropState.w = Math.round(next.w);
-    cropState.h = Math.round(next.h);
-}
-async function uploadCroppedBlob(blob, name){
-    const form = new FormData();
-    form.append('files', blob, name);
-    const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
-    return data.files?.[0];
-}
 async function uploadImageBlobs(blobs){
     const form = new FormData();
     blobs.forEach(item => form.append('files', item.blob, item.name));
     const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
     return data.files || [];
 }
-function replaceEditedImage(file, extra={}){
-    const {node, index} = currentEditImage();
-    if(!node || !file) return false;
-    const assetId = file.asset_id || extra.asset_id || (node.images[index] || {}).asset_id || '';
-    node.images[index] = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
-    if((node.images || []).length === 1){ delete node.w; delete node.h; }
-    selectedId = node.id; selectedImage = {nodeId:node.id, index};
-    return true;
-}
-function applyOutpaintSizeToSmartParams(width, height){
-    const w = Math.max(1, Math.round(Number(width) || 0));
-    const h = Math.max(1, Math.round(Number(height) || 0));
-    if(!w || !h) return;
-    const subject = currentEditImage().node;
-    if(!subject || !isSmartImageNode(subject)) return;
-    const outpaintAspectRatio = /^\d+\s*:\s*\d+$/.test(outpaintAspectPreset)
-        ? outpaintAspectPreset.replace(/\s/g, '')
-        : reducedAspectRatio(w, h);
-    subject.outpaintSize = {width:w, height:h, aspectRatio:outpaintAspectRatio};
-    subject.runSettings = withOutpaintDisplaySettings(subject, cloneSmartSettings(subject.runSettings || settings));
-    if(activeSettingsSubject()?.id === subject.id){
-        settings = smartSettingsForNode(subject);
-        renderDynamicParams();
-    }
-}
-async function applyImageCrop(){
-    if(!cropState) return;
-    const {node, image} = currentEditImage();
-    const img = document.getElementById('cropImage');
-    if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
-    const scaleX = img.naturalWidth / (img.clientWidth || 1), scaleY = img.naturalHeight / (img.clientHeight || 1);
-    const sx = Math.max(0, Math.round(cropState.x * scaleX)), sy = Math.max(0, Math.round(cropState.y * scaleY));
-    const sw = Math.max(1, Math.round(cropState.w * scaleX)), sh = Math.max(1, Math.round(cropState.h * scaleY));
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = sw; canvasEl.height = sh;
-    canvasEl.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-    const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_crop.png`) : null;
-    if(file && replaceEditedImage(file)){ closeImageEditor(); render(); scheduleSave(); }
-}
-async function applyImageOutpaint(){
-    if(!cropState) return;
-    const {node, image} = currentEditImage();
-    const img = document.getElementById('cropImage');
-    if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
-    clampOutpaint();
-    const scaleX = img.naturalWidth / (img.clientWidth || 1), scaleY = img.naturalHeight / (img.clientHeight || 1);
-    const outW = Math.max(img.naturalWidth, Math.round(cropState.w * scaleX));
-    const outH = Math.max(img.naturalHeight, Math.round(cropState.h * scaleY));
-    const dx = Math.round(cropState.x * scaleX);
-    const dy = Math.round(cropState.y * scaleY);
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = outW; canvasEl.height = outH;
-    const ctx = canvasEl.getContext('2d');
-    // 使用高饱和红色填充扩图区域：相比白色，红色在真实场景中极少出现，
-    // 提示词 "remove the red background/area" 更稳定地被模型识别并移除。
-    ctx.fillStyle = '#ff0044';
-    ctx.fillRect(0, 0, outW, outH);
-    ctx.drawImage(img, dx, dy, img.naturalWidth, img.naturalHeight);
-    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-    const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    // 添加时间戳确保每次上传都有唯一文件名，避免浏览器缓存旧版本（无红底）的图片
-    const timestamp = Date.now();
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_outpaint_${timestamp}.png`) : null;
-    if(!file) return;
-    // 把扩图底图（红底+原图合成图）归档为项目媒体，拿到 asset_id。
-    // 保存时节点媒体若只有原始 URL 而没有 asset_id，后端会报"项目节点只能引用项目媒体资源ID"。
-    // 保留 file.url 用于即时显示，asset_id 用于持久化（存储时 mediaItemForStorage 会去掉 url）。
-    const owned = await importProjectMediaReference(file).catch(() => null);
-    const assetId = owned?.asset_id || '';
-    // 传递合成图的自然尺寸，让预览能正确显示扩图后的比例
-    const extra = {natural_w:outW, natural_h:outH};
-    if(assetId) extra.asset_id = assetId;
-    if(replaceEditedImage(file, extra)){
-        // 生图时 buildPromptRequest 会把 node.images[0]（合成图）作为参考图发给模型。
-        applyOutpaintSizeToSmartParams(outW, outH);
-        setPromptDraftForNode(node, 'Remove red area and fill the scene');
-        promptInput.dataset.preserveDraftOnce = '1';
-        closeImageEditor();
-        render();
-        scheduleSave();
-    }
-}
-async function applyImageMask(){
-    if(!cropState || !editCanvasHasPixels()) return;
-    const {node, image} = currentEditImage();
-    if(!node || !image) return;
-    const mask = maskCanvasFromDrawCanvas(editDrawCanvas());
-    const blob = await new Promise(resolve => mask.toBlob(resolve, 'image/png'));
-    const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_mask.png`) : null;
-    if(file){
-        node.images.push({url:file.url, name:file.name, role:'mask'});
-        selectedId = node.id; selectedImage = {nodeId:node.id, index:node.images.length - 1};
-        closeImageEditor(); render(); scheduleSave();
-    }
-}
-function maskCanvasFromDrawCanvas(src){
-    const mask = document.createElement('canvas');
-    mask.width = src.width;
-    mask.height = src.height;
-    const srcCtx = src.getContext('2d');
-    const srcData = srcCtx.getImageData(0, 0, src.width, src.height);
-    const ctx = mask.getContext('2d');
-    const out = ctx.createImageData(mask.width, mask.height);
-    for(let i = 0; i < srcData.data.length; i += 4){
-        const painted = srcData.data[i + 3] > 8;
-        const v = painted ? 255 : 0;
-        out.data[i] = v;
-        out.data[i + 1] = v;
-        out.data[i + 2] = v;
-        out.data[i + 3] = 255;
-    }
-    ctx.putImageData(out, 0, 0);
-    return mask;
-}
-async function applyImageBrush(){
-    if(!cropState) return;
-    removeEditTextInlineEditor(true);
-    if(!editCanvasHasPixels()) return;
-    const {node, image} = currentEditImage();
-    const img = document.getElementById('cropImage');
-    if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = img.naturalWidth; canvasEl.height = img.naturalHeight;
-    const ctx = canvasEl.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height); ctx.drawImage(editDrawCanvas(), 0, 0); ctx.drawImage(editTextCanvas(), 0, 0);
-    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-    const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_paint.png`) : null;
-    if(file && replaceEditedImage(file)){ closeImageEditor(); render(); scheduleSave(); }
-}
-async function applyImageGridSplit(){
-    if(!cropState) return;
-    if(gridOperationMode === 'join') return applyImageGridJoin();
-    const {node, image} = currentEditImage();
-    const img = document.getElementById('cropImage');
-    if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
-    const rects = gridSplitRects(img.naturalWidth, img.naturalHeight).sort((a, b) => (Number(a.row || 0) - Number(b.row || 0)) || (Number(a.col || 0) - Number(b.col || 0)));
-    if(!rects.length) return;
-    const base = safeExportFileName((downloadNameForMediaItem(image, 'image') || 'image').replace(/\.[^.]+$/, ''), 'image');
-    const digits = String(rects.length).length;
-    const blobs = [];
-    for(let i = 0; i < rects.length; i++){
-        const rect = rects[i];
-        const canvasEl = document.createElement('canvas');
-        canvasEl.width = rect.w; canvasEl.height = rect.h;
-        canvasEl.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-        const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-        const order = String(i + 1).padStart(digits, '0');
-        if(blob) blobs.push({blob, name:`${base}_${order}_r${rect.row + 1}_c${rect.col + 1}.png`});
-    }
-    const files = await uploadImageBlobs(blobs);
-    if(files.length){
-        const layout = gridLayoutFromRects(rects);
-        const outputNode = createNode((node.x || 0) + imageLayout(node.images || [], nodeScale(node), node).width + 40, node.y || 0, files.map((file, i) => ({
-            url:file.url,
-            name:file.name,
-            grid:{...layout, row:rects[i]?.row || 0, col:rects[i]?.col || 0, w:rects[i]?.w || 1, h:rects[i]?.h || 1}
-        })));
-        outputNode.title = 'Grid';
-        closeImageEditor(); render(); scheduleSave();
-    }
-}
-function loadGridJoinImage(entry){
-    const cached = gridJoinImageCache.get(entry.index);
-    if(cached?.complete && cached.naturalWidth) return Promise.resolve(cached);
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-            gridJoinImageCache.set(entry.index, img);
-            resolve(img);
-        };
-        img.onerror = () => {
-            if(img.dataset.proxyFallbackTried === '1'){
-                reject(new Error(tr('smart.imageLoadFailed')));
-                return;
-            }
-            const fallback = proxiedMediaUrl(entry.item);
-            if(!fallback || fallback === img.src){
-                reject(new Error(tr('smart.imageLoadFailed')));
-                return;
-            }
-            img.dataset.proxyFallbackTried = '1';
-            img.src = fallback;
-        };
-        img.src = displayMediaUrl(entry.item);
-    });
-}
-function drawImageCover(ctx, img, dx, dy, dw, dh){
-    const sw = Math.max(1, Number(img?.naturalWidth || img?.videoWidth || img?.width || 1));
-    const sh = Math.max(1, Number(img?.naturalHeight || img?.videoHeight || img?.height || 1));
-    const targetW = Math.max(1, Number(dw || 1));
-    const targetH = Math.max(1, Number(dh || 1));
-    const scale = Math.max(targetW / sw, targetH / sh);
-    const cropW = Math.max(1, targetW / scale);
-    const cropH = Math.max(1, targetH / scale);
-    const sx = Math.max(0, (sw - cropW) / 2);
-    const sy = Math.max(0, (sh - cropH) / 2);
-    ctx.drawImage(img, sx, sy, cropW, cropH, dx, dy, targetW, targetH);
-}
-async function applyImageGridJoin(){
-    const {node, image} = currentEditImage();
-    const items = currentGridJoinItems();
-    if(!node || items.length <= 1){ toast(tr('smart.gridJoinNeedsGroup')); return; }
-    const layout = ensureGridJoinLayout();
-    if(!layout?.items?.length) return;
-    const size = gridJoinCanvasSize(layout);
-    const targetLong = Math.max(256, Number(gridJoinOutputSize) || 2048);
-    const outputScale = Math.max(1, targetLong / Math.max(1, Math.max(size.w, size.h)));
-    const canvasEl = document.createElement('canvas');
-    canvasEl.width = Math.max(1, Math.round(size.w * outputScale));
-    canvasEl.height = Math.max(1, Math.round(size.h * outputScale));
-    const ctx = canvasEl.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-    const byIndex = new Map(items.map(entry => [entry.index, entry]));
-    for(const item of layout.items || []){
-        const entry = byIndex.get(item.index);
-        if(!entry) continue;
-        const img = await loadGridJoinImage(entry);
-        drawImageCover(ctx, img, Math.round(item.x * outputScale), Math.round(item.y * outputScale), Math.round(item.w * outputScale), Math.round(item.h * outputScale));
-    }
-    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
-    const base = safeExportFileName((downloadNameForMediaItem(image || items[0]?.item, 'image') || 'image').replace(/\.[^.]+$/, ''), 'image');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_join.png`) : null;
-    if(file){
-        const rect = nodeRect(node);
-        const outputNode = createImageNodeAt({x:rect.x + rect.width + 240, y:rect.y + rect.height / 2}, [{
-            url:file.url,
-            name:file.name,
-            kind:'image',
-            natural_w:canvasEl.width,
-            natural_h:canvasEl.height
-        }], {select:true, skipUndo:true});
-        outputNode.title = 'Grid Join';
-        closeImageEditor();
-        render();
-        scheduleSave();
-        toast(tr('smart.gridJoinOutputDone'));
-    }
-}
-async function applyImageResize(){
-    if(!cropState) return;
-    const {node, image} = currentEditImage();
-    if(!node || !image) return;
-    let resized = null;
-    try {
-        resized = await resizedImageBlobFromEditor();
-    } catch(err) {
-        toast(tr('smart.zoomFailedRewrite'));
-        return;
-    }
-    if(!resized?.blob) return;
-    const base = safeExportFileName((downloadNameForMediaItem(image, 'image') || image.name || 'image').replace(/\.[^.]+$/, ''), 'image');
-    const suffix = `${Math.round(resized.scale * 100)}pct`;
-    const file = await uploadCroppedBlob(resized.blob, `${base}_resize_${suffix}.png`);
-    if(!file) return;
-    if(!replaceEditedImage(file, {kind:'image', role:image.role || '', natural_w:resized.targetW, natural_h:resized.targetH})){
-        return;
-    }
-    closeImageEditor();
-    render();
-    scheduleSave();
-}
-function applyImageEdit(){
-    if(imageEditMode === 'preview') return;
-    if(imageEditMode === 'outpaint') return applyImageOutpaint();
-    if(imageEditMode === 'mask') return applyImageMask();
-    if(imageEditMode === 'brush') return applyImageBrush();
-    if(imageEditMode === 'resize') return applyImageResize();
-    if(imageEditMode === 'grid') return applyImageGridSplit();
-    return applyImageCrop();
-}
-let lastComposerNodeId = '';
-let activeComposerSubject = null;
 function savePromptDraftForCurrent(){
     if(promptInput?.dataset?.promptLocked === '1') return;
     const subject = activeComposerNode();
@@ -17310,17 +11617,6 @@ function savePromptDraftForCurrent(){
     subject.promptDraftHtml = promptInput.innerHTML;
     subject.promptDraftText = promptPlainText();
     subject.runSettings = cloneSmartSettings(settings);
-}
-function setPromptDraftForNode(node, text){
-    if(!isSmartRunnableNode(node)) return;
-    const value = String(text || '');
-    node.promptDraftHtml = escapeHtml(value);
-    node.promptDraftText = value;
-    node.promptDraftTouched = true;
-    if(activeSettingsSubject()?.id === node.id && promptInput){
-        promptInput.textContent = value;
-        delete promptInput.dataset.preserveDraftOnce;
-    }
 }
 function loadPromptDraft(subject){
     if(subject?.promptDraftHtml){
@@ -17716,7 +12012,6 @@ function exitPromptFlow(){
         promptInput.scrollTop = Math.min(scrollTop, Math.max(0, promptInput.scrollHeight - promptInput.clientHeight));
         const node = activeComposerNode();
         if(node) positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
         requestAnimationFrame(() => { composerPromptView.applyingScrollRestore = false; });
     });
     return true;
@@ -17732,7 +12027,6 @@ function collapseExpandedPrompt(){
     syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
     return true;
 }
@@ -17755,7 +12049,6 @@ function expandPromptToContent(){
     syncComposerPromptViewControls();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
     return true;
 }
@@ -17773,7 +12066,6 @@ function refreshExpandedPromptHeight(){
     const node = activeComposerNode();
     if(node) requestAnimationFrame(() => {
         positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
     });
 }
 function bindComposerPromptViewToNode(node){
@@ -17811,34 +12103,6 @@ function positionComposerForNode(node){
     composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`;
     composer.style.top = `${modelRect.y + modelRect.height + 14}px`;
 }
-function keepComposerReachableByPanningCanvas(){
-    if(!shell || !composer?.classList.contains('open') || composerPromptView.mode === 'flow') return false;
-    const frame = shell.getBoundingClientRect();
-    const rect = composer.getBoundingClientRect();
-    const safeTop = frame.top + 16;
-    const safeBottom = frame.bottom - 16;
-    let contentTop = rect.top;
-    let contentBottom = rect.bottom;
-    const node = activeComposerNode();
-    const nodeElement = node?.id
-        ? world?.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`)
-        : null;
-    const nodeRect = nodeElement?.getBoundingClientRect?.();
-    if(nodeRect?.height > 0){
-        const unionTop = Math.min(contentTop, nodeRect.top);
-        const unionBottom = Math.max(contentBottom, nodeRect.bottom);
-        if(unionBottom - unionTop <= safeBottom - safeTop){
-            contentTop = unionTop;
-            contentBottom = unionBottom;
-        }
-    }
-    let shiftY = contentBottom > safeBottom ? safeBottom - contentBottom : 0;
-    if(contentTop + shiftY < safeTop) shiftY += safeTop - (contentTop + shiftY);
-    if(Math.abs(shiftY) < 0.5) return false;
-    viewport.y += shiftY;
-    applyViewport();
-    return true;
-}
 let composerUpdateTimer = 0;
 let composerUpdateSeq = 0;
 function scheduleComposerUpdate(delay=120){
@@ -17861,10 +12125,10 @@ function updateComposer(){
     composerUpdateSeq++;
     const node = selectedNode();
     syncRunButtonState(node);
-    if(smartCascadeSilentSelection && !activeComposerSubject){
+    if(smartCascadeSilentSelection && !canvasState.activeComposerSubject){
         composer.classList.remove('open');
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
+        canvasState.activeComposerSubject = null;
+        canvasState.lastComposerNodeId = '';
         return;
     }
     composer.classList.toggle('open', !!node);
@@ -17872,8 +12136,8 @@ function updateComposer(){
         bindComposerPromptViewToNode(null);
         savePromptDraftForCurrent();
         composer.classList.remove('open');
-        activeComposerSubject = null;
-        lastComposerNodeId = ''; // 取消选择时清空，重新选择节点时 switchedNode=true，loadPromptDraft 恢复提示词
+        canvasState.activeComposerSubject = null;
+        canvasState.lastComposerNodeId = ''; // 取消选择时清空，重新选择节点时 switchedNode=true，loadPromptDraft 恢复提示词
         setPromptInputLocked(false);
         if(!node) setPromptText('');
         return;
@@ -17882,10 +12146,10 @@ function updateComposer(){
     const subject = node;
     bindComposerPromptViewToNode(node);
     const composerKey = `${node.id}:node`;
-    const switchedNode = lastComposerNodeId !== composerKey;
+    const switchedNode = canvasState.lastComposerNodeId !== composerKey;
     if(switchedNode) savePromptDraftForCurrent();
-    lastComposerNodeId = composerKey;
-    activeComposerSubject = subject;
+    canvasState.lastComposerNodeId = composerKey;
+    canvasState.activeComposerSubject = subject;
     const hasPromptInput = promptInputNodesFor(node).length > 0;
     if(switchedNode){
         settings = smartSettingsForNode(subject);
@@ -17937,8 +12201,6 @@ function renderInputPromptPreview(node){
 }
 function renderInputThumbsRow(node){
     if(!inputThumbsRow) return;
-    syncJimengModelPillForRefs();
-    syncJimengVideoModelPillForRefs();
     const dedup = node ? visibleReferenceImagesFor(node) : [];
     const manualRefKeys = new Set(manualReferenceImagesFor(node).map(img => inputRefKey(img)));
     const addActive = mentionInsertMode === 'manual-ref';
@@ -18201,7 +12463,7 @@ function reorderInputThumb(currentNode, items, from, to, placement='before'){
     const toImg = items[to];
     if(!fromImg || !toImg) return;
     if(fromImg.nodeId === toImg.nodeId){
-        const src = nodes.find(n => n.id === fromImg.nodeId);
+        const src = canvasState.nodes.find(n => n.id === fromImg.nodeId);
         if(!src) return;
         pushUndo();
         const fi = Number(fromImg.imageIndex);
@@ -18233,8 +12495,8 @@ function reorderInputThumb(currentNode, items, from, to, placement='before'){
         return;
     }
     const canReorderSources = currentNode && fromImg.nodeId && toImg.nodeId;
-    const a = nodes.find(n => n.id === fromImg.nodeId);
-    const b = nodes.find(n => n.id === toImg.nodeId);
+    const a = canvasState.nodes.find(n => n.id === fromImg.nodeId);
+    const b = canvasState.nodes.find(n => n.id === toImg.nodeId);
     if(!canReorderSources || !a || !b) return;
     pushUndo();
     if(reorderInputSourceNodes(currentNode, fromImg.nodeId, toImg.nodeId, placement)){
@@ -18451,8 +12713,8 @@ async function uploadFiles(files){
 function appendImagesToSmartNode(uploaded, targetId='', opts={}){
     const images = [...(uploaded || [])].filter(file => file?.url);
     if(!images.length) return null;
-    const targetGroup = nodes.find(n => n.id === targetId && isSmartGroupNode(n));
-    let node = targetGroup ? null : (nodes.find(n => n.id === targetId) || selectedNode());
+    const targetGroup = canvasState.nodes.find(n => n.id === targetId && isSmartGroupNode(n));
+    let node = targetGroup ? null : (canvasState.nodes.find(n => n.id === targetId) || selectedNode());
     if(node && !isSmartImageNode(node)) node = null;
     if(opts.forceNew) node = null;
     if(!node){
@@ -18474,7 +12736,7 @@ function appendImagesToSmartNode(uploaded, targetId='', opts={}){
     }
     if(node.images.length === 1){ node.title = uploadTitleForItems(node.images, node.title || 'Image'); delete node.w; delete node.h; }
     if(targetGroup) addNodeToSmartGroup(targetGroup, node);
-    selectedId = node.id;
+    canvasState.selectedId = node.id;
     render();
     scheduleSave();
     return node;
@@ -18542,7 +12804,7 @@ async function acceptProjectGenerationRegistration(taskResult){
     canvas.revision = Math.max(Number(canvas.revision || 0), revision);
     const registeredNode = taskResult.registeredNode;
     if(!registeredNode?.id || !persistedCoreSnapshot?.nodes) return false;
-    const currentNode = nodes.find(item => item.id === registeredNode.id);
+    const currentNode = canvasState.nodes.find(item => item.id === registeredNode.id);
     if(currentNode){
         const localTasks = smartPendingTasks(currentNode);
         const currentTaskIds = new Set((taskResult.taskIds || []).filter(Boolean));
@@ -18607,7 +12869,7 @@ async function pollGenerationTaskResultForNode(node, taskResult, taskKind='image
     } finally {
         if(projectRegistered){
             const completed = new Set(taskIds);
-            const currentNode = nodes.find(item => String(item.id || '') === String(node.id || '')) || node;
+            const currentNode = canvasState.nodes.find(item => String(item.id || '') === String(node.id || '')) || node;
             currentNode.pendingTasks = smartPendingTasks(currentNode).filter(task => !completed.has(task.taskId));
             currentNode.pending = currentNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0);
             if(!currentNode.pendingTasks.length) delete currentNode.pendingTasks;
@@ -18615,21 +12877,6 @@ async function pollGenerationTaskResultForNode(node, taskResult, taskKind='image
             render();
         }
     }
-}
-function aspectRatioForRun(sourceSettings=settings){
-    const ratio = sourceSettings.ratio || 'square';
-    const presets = {
-        square:'1:1', portrait:'2:3', landscape:'3:2', portrait43:'3:4',
-        landscape43:'4:3', story:'9:16', wide:'16:9', ultrawide:'21:9', ultratall:'9:21'
-    };
-    if(ratio === 'custom' || ratio === 'source'){
-        const explicit = String(sourceSettings.customRatio || '').trim();
-        if(explicit) return explicit;
-        const parsed = parseSizePair(sizeForRun(sourceSettings));
-        if(parsed) return reducedAspectRatio(parsed.width, parsed.height);
-        return '';
-    }
-    return presets[ratio] || '1:1';
 }
 function pendingBoxSize(count, options={}){
     const c = Math.max(1, Number(count) || 1);
@@ -18763,7 +13010,7 @@ function upstreamNodesForKinds(node, kinds=['input']){
     if(!canvasUsesConnections && allowed.has('input')){
         (node.inputNodeIds || []).forEach(id => ids.add(id));
     }
-    return [...ids].map(id => nodes.find(n => n.id === id)).filter(Boolean);
+    return [...ids].map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
 }
 function inputNodesFor(node){
     return upstreamNodesForKinds(node, ['input']);
@@ -18774,7 +13021,7 @@ function workflowInputNodesFor(node){
 function clearDetachedRunInputRefs(node){
     if(!node) return;
     const hasUpstream = Boolean((canvas?.connections || []).some(conn => conn.to === node.id && ['input','flow'].includes(conn.kind || 'flow')));
-    if(hasUpstream || (!canvasUsesConnections && Array.isArray(node.inputNodeIds) && node.inputNodeIds.some(id => nodes.some(n => n.id === id)))) return;
+    if(hasUpstream || (!canvasUsesConnections && Array.isArray(node.inputNodeIds) && node.inputNodeIds.some(id => canvasState.nodes.some(n => n.id === id)))) return;
     delete node.runInputRefs;
     delete node.runPromptRefs;
     delete node.sourceNodeId;
@@ -18782,7 +13029,7 @@ function clearDetachedRunInputRefs(node){
 function cleanupDetachedRunInputRefs(){
     if(!canvasUsesConnections) return false;
     let changed = false;
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         const hadRefs = Array.isArray(node?.runInputRefs) && node.runInputRefs.length;
         const hadPromptRefs = Array.isArray(node?.runPromptRefs) && node.runPromptRefs.length;
         const hadSource = Boolean(node?.sourceNodeId);
@@ -18839,7 +13086,7 @@ function isSmartLoopDefaultPrompt(text){
         || value === 'Generate selling-point image 《计数》';
 }
 function setSmartLoopPromptFieldValues(node, values){
-    if(!node || node.type !== 'smart-loop') return;
+    if(!node || node.type !== NODE_TYPE_LOOP) return;
     const fields = (values || []).map(text => String(text || '').trim());
     node.variablePrompts = fields.length ? fields : [''];
     node.variablePrompt = fields.filter(Boolean).join('\n');
@@ -18897,7 +13144,7 @@ function smartLoopPrompt(node, ctx=smartLoopContext){
 function smartLoopInputImages(node, ctx=smartLoopContext){
     if(!node?.imageInput) return [];
     const refs = inputNodesFor(node).flatMap(input => {
-        if(input?.type === 'smart-loop') return smartLoopInputImages(input, ctx);
+        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, ctx);
         return imagesForNode(input);
     }).filter(img => img?.url);
     if(!refs.length) return [];
@@ -18910,36 +13157,33 @@ function smartLoopInputImages(node, ctx=smartLoopContext){
 function smartLoopPreviewImages(node){
     if(!node?.imageInput) return [];
     return inputNodesFor(node).flatMap(input => {
-        if(input?.type === 'smart-loop') return smartLoopInputImages(input, {index:Number(node.loopStart) || 1});
+        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, {index:Number(node.loopStart) || 1});
         return imagesForNode(input);
     }).filter(img => img?.url);
 }
 function outputImagesForNode(node, consume=false, ctx=smartLoopContext){
-    if(node?.type === 'smart-group') return imagesForNode(node).filter(img => img?.url);
-    if(node?.type === 'smart-loop') return smartLoopInputImages(node, ctx);
+    if(node?.type === NODE_TYPE_GROUP) return imagesForNode(node).filter(img => img?.url);
+    if(node?.type === NODE_TYPE_LOOP) return smartLoopInputImages(node, ctx);
     const roundOutputs = ctx?.roundOutputs;
     if(node?.id && roundOutputs && typeof roundOutputs.get === 'function' && roundOutputs.has(node.id)){
         return (roundOutputs.get(node.id) || []).filter(img => img?.url);
     }
     return imagesForNode(node).filter(img => img?.url);
 }
-function selfReferenceImagesForNode(node, consume=false, ctx=smartLoopContext){
-    return outputImagesForNode(node, consume, ctx).filter(img => img?.url);
-}
 function textForNode(node, ctx=smartLoopContext){
     if(!node) return '';
-    if(node.type === 'smart-prompt') return promptNodePromptItems(node).join('\n\n');
-    if(node.type === 'smart-loop') return smartLoopPrompt(node, ctx);
-    if(node.type === 'smart-group') return smartGroupMembers(node).map(member => textForNode(member, ctx)).filter(Boolean).join('\n\n');
+    if(node.type === NODE_TYPE_PROMPT) return promptNodePromptItems(node).join('\n\n');
+    if(node.type === NODE_TYPE_LOOP) return smartLoopPrompt(node, ctx);
+    if(node.type === NODE_TYPE_GROUP) return smartGroupMembers(node).map(member => textForNode(member, ctx)).filter(Boolean).join('\n\n');
     return '';
 }
 function promptInputNodesFor(node){
-    return inputNodesFor(node).filter(input => input?.type === 'smart-prompt' || input?.type === 'smart-loop' || input?.type === 'smart-group');
+    return inputNodesFor(node).filter(input => input?.type === NODE_TYPE_PROMPT || input?.type === NODE_TYPE_LOOP || input?.type === NODE_TYPE_GROUP);
 }
 function inputPromptTextFor(node, ctx=smartLoopContext){
     const directText = promptInputNodesFor(node).map(input => textForNode(input, ctx)).filter(Boolean);
     const relayText = Array.isArray(ctx?.relayPromptNodeIds)
-        ? ctx.relayPromptNodeIds.map(id => nodes.find(n => n.id === id)).map(input => textForNode(input, ctx)).filter(Boolean)
+        ? ctx.relayPromptNodeIds.map(id => canvasState.nodes.find(n => n.id === id)).map(input => textForNode(input, ctx)).filter(Boolean)
         : [];
     const seen = new Set();
     return [...directText, ...relayText].filter(text => {
@@ -18949,20 +13193,11 @@ function inputPromptTextFor(node, ctx=smartLoopContext){
         return true;
     }).join('\n\n');
 }
-function upstreamLoopPromptNodesFor(node){
-    return promptInputNodesFor(node).filter(input => input?.type === 'smart-loop' && input.showPrompt);
-}
 function inputImagesFor(node, consume=false, ctx=smartLoopContext){
     return inputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
 }
 function workflowInputImagesFor(node, consume=false, ctx=smartLoopContext){
     return workflowInputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
-}
-function rememberRoundOutputs(ctx, node, outputs){
-    if(!ctx || !node?.id || !Array.isArray(outputs)) return outputs || [];
-    if(!ctx.roundOutputs || typeof ctx.roundOutputs.set !== 'function') ctx.roundOutputs = new Map();
-    ctx.roundOutputs.set(node.id, outputs.filter(img => img?.url).map(img => ({...img})));
-    return outputs;
 }
 function inputRefKey(img){
     if(!img?.url) return '';
@@ -19010,7 +13245,7 @@ function upstreamLineNodeIds(node){
 function lineImagesFor(node){
     const ids = upstreamLineNodeIds(node);
     return ids.flatMap(id => {
-        const source = nodes.find(n => n.id === id);
+        const source = canvasState.nodes.find(n => n.id === id);
         return imagesForNode(source);
     }).filter(img => img?.url);
 }
@@ -19523,1314 +13758,11 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
         mentioned:false
     };
 }
-function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
-    const sourceRect = nodeRect(sourceNode);
-    const x = (sourceRect.x || 0) + sourceRect.width + 80;
-    const gap = 28;
-    const outputs = outgoingConnectionsFor(sourceNode, ['input','flow'])
-        .map(conn => nodes.find(n => n.id === conn.to))
-        .filter(n => isSmartImageNode(n))
-        .map(n => nodeRect(n))
-        .filter(rect => Math.abs((rect.x || 0) - x) < Math.max(320, (pendingBox?.w || 260) + 120))
-        .sort((a, b) => (a.y || 0) - (b.y || 0));
-    if(!outputs.length) return {x, y:sourceRect.y || 0};
-    let y = sourceRect.y || 0;
-    for(const rect of outputs){
-        const bottom = (rect.y || 0) + (rect.height || 0) + gap;
-        if(y < bottom) y = bottom;
-    }
-    return {x, y};
-}
-function createPendingOutputFromSource(sourceNode, expectedCount, meta, options={}){
-    const pendingBox = pendingBoxSize(expectedCount, {sourceNode, refs:options.refs || meta?.promptRefs || []});
-    const pos = nextOutputPositionForSource(sourceNode, pendingBox);
-    const output = {
-        id:uid('smart'),
-        type:'smart-image',
-        x:pos.x,
-        y:pos.y,
-        title:'Image',
-        images:[],
-        pending:Math.max(1, Number(expectedCount) || 1),
-        _batchTotal:Math.max(1, Number(expectedCount) || 1),
-        runStartedAt:nowMs(),
-        runTimerHidden:false,
-        w:pendingBox.w,
-        h:pendingBox.h,
-        scale:MEDIA_NODE_DEFAULT_SCALE,
-        created_at:Date.now()
-    };
-    output._selectAfterRunId = options.selectOutput ? output.id : sourceNode.id;
-    nodes.push(output);
-    if(options.connectSource === false) addConnection(sourceNode.id, output.id, 'flow');
-    else connectInputNode(sourceNode.id, output.id);
-    attachRunMeta(output, options.stripInputMeta ? stripRunInputMeta(meta) : meta);
-    selectedId = sourceNode.id;
-    selectedImage = {nodeId:'', index:-1};
-    return output;
-}
-function loopOutputSlotsForRoot(rootNode){
-    if(!rootNode?.id) return [];
-    return downstreamNodesForId(rootNode.id)
-        .filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n))
-        .sort((a, b) => {
-            const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-            if(ax !== bx) return ax - bx;
-            return (Number(a.y) || 0) - (Number(b.y) || 0);
-        });
-}
-function loopOutputSlotForRound(rootNode, loopNode, roundIndex, slotIndex){
-    if(!rootNode?.id) return null;
-    const candidates = loopOutputSlotsForRoot(rootNode)
-        .filter(node => node.sourceNodeId === rootNode.id)
-        .filter(node => !loopNode?.id || !node.loopSourceId || node.loopSourceId === loopNode.id);
-    const untagged = candidates.filter(node => !Number.isFinite(Number(node.loopRoundIndex)) && !Number.isFinite(Number(node.loopSlotIndex)));
-    return candidates.find(node => Number(node.loopRoundIndex) === Number(roundIndex))
-        || candidates.find(node => Number(node.loopSlotIndex) === Number(slotIndex))
-        || untagged[Math.max(0, Number(slotIndex) || 0)]
-        || null;
-}
-function tagLoopOutputSlot(output, rootNode, loopNode, roundIndex, slotIndex){
-    if(!output) return output;
-    output.sourceNodeId = rootNode?.id || output.sourceNodeId || '';
-    output.loopSourceId = loopNode?.id || output.loopSourceId || '';
-    output.loopRootId = rootNode?.id || output.loopRootId || '';
-    output.loopRoundIndex = Number(roundIndex) || 0;
-    output.loopSlotIndex = Math.max(0, Number(slotIndex) || 0);
-    return output;
-}
-function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
-    const rootRect = nodeRect(rootNode);
-    const output = cloneSmartNode(rootNode, 0, 0);
-    output.id = uid('smart');
-    output.type = 'smart-image';
-    output.x = (Number(rootNode.x) || 0) + (Number(rootRect.width) || 260) + 80;
-    output.title = `Image ${roundIndex}`;
-    output.images = [];
-    output.pending = options.pending ? Math.max(1, Number(options.pending) || 1) : 0;
-    output.running = Boolean(options.pending);
-    output.queued = Boolean(options.queued);
-    if(options.pending){
-        output.runStartedAt = nowMs();
-        output.runTimerHidden = false;
-    }
-    output.created_at = Date.now();
-    delete output.w;
-    delete output.h;
-    delete output.historyFor;
-    delete output.isHistoryGroup;
-    delete output.sourceNodeId;
-    delete output.runAt;
-    delete output.runPrompt;
-    delete output.runModelPrompt;
-    delete output.runPromptRefs;
-    delete output.runInputRefs;
-    delete output.runFinishedAt;
-    delete output.runElapsedMs;
-    // 同 createParallelLoopOutputNode：清空克隆带来的 inputNodeIds，否则输出槽虽只用 flow
-    // 连接到 root，却会因继承 root 的 inputNodeIds 而误显示上游提示词输入。
-    output.inputNodeIds = [];
-    delete output.blockedInputRefs;
-    delete output.manualInputRefs;
-    tagLoopOutputSlot(output, rootNode, options.loopNode || null, roundIndex, options.slotIndex ?? roundOffset);
-    const slots = loopOutputSlotsForRoot(rootNode).map(nodeRect);
-    let y = (Number(rootNode.y) || 0) + roundOffset * ((Number(rootRect.height) || 180) + 28);
-    slots.forEach(rect => {
-        if((Number(rect.x) || 0) >= (Number(output.x) || 0) - 24){
-            y = Math.max(y, (Number(rect.y) || 0) + (Number(rect.height) || 0) + 28);
-        }
-    });
-    output.y = y;
-    nodes.push(output);
-    addConnection(rootNode.id, output.id, 'flow');
-        const runPath = smartCascadePathForCtx(options.ctx || options.runState);
-        if(runPath?.states) runPath.states[`${rootNode.id}->${output.id}`] = 'wait';
-    return output;
-}
-function finalizePendingNode(pendingNode, urls, meta, kind='image'){
-    if(!pendingNode) return;
-    pendingNode = liveSmartNode(pendingNode);
-    const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-    const imgs = cleanHistoryImages(urls.map((item, i) => {
-        const url = typeof item === 'string' ? item : item?.url || '';
-        const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})});
-    }).filter(img => img.url));
-    pendingNode.images = imgs;
-    markSmartNodeComplete(pendingNode, meta, true);
-    pendingNode.outputKind = kind;
-    if(imgs.length > 1) pendingNode.title = kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group';
-    else pendingNode.title = kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image';
-    pendingNode.scale = mediaNodeDefaultScale(pendingNode);
-    delete pendingNode.w;
-    delete pendingNode.h;
-    const metaTarget = pendingNode._runMetaTargetId ? nodes.find(n => n.id === pendingNode._runMetaTargetId) : pendingNode;
-    if(metaTarget) attachRunMeta(metaTarget, meta);
-    pendingNode.images = (pendingNode.images || []).map(img => stripImageGenerationMeta(img));
-    clearSourceBusyStateIfDownstreamDone(nodes.find(n => n.id === meta?.sourceNodeId));
-    // 生成完成不抢占选择:仅当用户仍停留在该生成节点上(或当前无选择)时才切换选择;
-    // 否则保留用户当前选择 —— 支持并发生成时去调整/编辑别的卡片,A 节点的参数栏不被打断。
-    const afterRunSelection = pendingNode._selectAfterRunId || pendingNode.id;
-    if(!selectedId || selectedId === pendingNode.id) selectedId = afterRunSelection;
-    delete pendingNode._runMetaTargetId;
-    delete pendingNode._selectAfterRunId;
-    if(activeComposerSubject?.id && selectedId === activeComposerSubject.id) lastComposerNodeId = `${selectedId}:node`;
-    selectedImage = {nodeId:'', index:-1};
-    // pending 节点完成时，如果节点在组框内，重新整理成员并计算组框高度
-    const group = smartGroupContainingNode(pendingNode.id);
-    if(group){
-        arrangeSmartGroupMembers(group, {skipUndo:true});
-        scheduleSave();
-    }
-}
-function restoreFromExtraction(node, extracted){
-    if(!node || !extracted) return;
-    node.images = extracted.images.slice();
-    if(Number.isFinite(Number(extracted.w))) node.w = extracted.w;
-    if(Number.isFinite(Number(extracted.h))) node.h = extracted.h;
-    nodes = nodes.filter(n => n.id !== extracted.id); if(canvas) canvas.nodes = nodes;
-    canvas.connections = (canvas.connections || []).filter(c => !(c.from === extracted.id && c.to === node.id));
-    if(Array.isArray(node.inputNodeIds)){
-        node.inputNodeIds = node.inputNodeIds.filter(id => id !== extracted.id);
-    }
-}
-function restoreSourceVisualState(node, state){
-    if(!node || !state) return;
-    node.images = (state.images || []).map(img => ({...img}));
-    node.title = state.title || (node.images.length > 1 ? 'Group' : 'Image');
-    ['w','h','scale','outputKind'].forEach(key => {
-        if(state[key] === undefined) delete node[key];
-        else node[key] = state[key];
-    });
-}
-function finishLoopTargetPreviewState(node){
-    if(!node) return;
-    node = liveSmartNode(node);
-    markSmartNodeComplete(node);
-    if((node.images || []).some(img => img?.url)){
-        node.title = node.images.length > 1 ? 'Group' : 'Image';
-        node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
-        node.outputKind = mediaKindForUrls(node.images || [], (node.images || []).some(isVideoMediaItem) ? 'video' : 'image');
-        delete node.w;
-        delete node.h;
-    }
-}
-function refsForDirectLoopRound(loopNode, loopIndex, total){
-    if(!loopNode?.imageInput) return [];
-    return outputImagesForNode(loopNode, true, {index:loopIndex, total, nodeId:loopNode.id})
-        .filter(ref => ref?.url)
-        .map((ref, index) => ({
-            ...ref,
-            role:ref.role || `image_${index + 1}`,
-            name:ref.name || trf('canvas.loopImageLabel', {n:loopIndex + index})
-        }));
-}
-function showDirectLoopRoundPreview(loopNode, target, refs, loopIndex, total){
-    if(!loopNode?.imageInput || !isSmartImageNode(target)) return false;
-    const cleanRefs = (refs || []).filter(ref => ref?.url);
-    if(!cleanRefs.length) return false;
-    const preview = cleanRefs.map((ref, index) => stripImageGenerationMeta({
-        asset_id:ref.asset_id || '',
-        url:ref.url || '',
-        name:ref.name || trf('canvas.loopImageLabel', {n:loopIndex + index}),
-        kind:ref.kind || (isVideoMediaItem(ref) ? 'video' : 'image'),
-        nodeId:ref.nodeId || '',
-        imageIndex:ref.imageIndex ?? '',
-        loopInputPreview:true
-    })).filter(ref => ref.url);
-    if(!preview.length) return false;
-    target.images = preview;
-    target.pending = 0;
-    target.running = true;
-    target.runStartedAt = nowMs();
-    delete target.runFinishedAt;
-    delete target.runElapsedMs;
-    target.runTimerHidden = false;
-    target.runInputRefs = cleanRefs.map(ref => ({
-        asset_id:ref.asset_id || '',
-        url:ref.url || '',
-        name:ref.name || '',
-        nodeId:ref.nodeId || '',
-        imageIndex:ref.imageIndex ?? '',
-        kind:ref.kind || ''
-    })).filter(ref => ref.url);
-    target.outputKind = mediaKindForUrls(preview, preview.some(isVideoMediaItem) ? 'video' : 'image');
-    target.scale = preview.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
-    target.title = total > 1 ? `Image ${loopIndex}/${total}` : (target.title || 'Image');
-    delete target.w;
-    delete target.h;
-    render();
-    return true;
-}
-function directImageInputsFor(node){
-    const upstream = smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : inputNodesFor(node);
-    return upstream
-        .filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n) && (n.images || []).some(img => img?.url))
-        .sort((a, b) => {
-            const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-            if(ax !== bx) return bx - ax;
-            return (Number(a.y) || 0) - (Number(b.y) || 0);
-        });
-}
-function directImageInputsForKinds(node, kinds=['input']){
-    const upstream = upstreamNodesForKinds(node, kinds);
-    return upstream
-        .filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n) && (n.images || []).some(img => img?.url))
-        .sort((a, b) => {
-            const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-            if(ax !== bx) return bx - ax;
-            return (Number(a.y) || 0) - (Number(b.y) || 0);
-        });
-}
-function primaryImageInputFor(node, options={}){
-    const direct = options.includeFlow
-        ? directImageInputsForKinds(node, ['input', 'flow'])[0]
-        : directImageInputsFor(node)[0];
-    if(direct) return direct;
-    const inputs = options.includeFlow ? upstreamNodesForKinds(node, ['input', 'flow']) : (smartImageUsesWorkflowInput(node) ? workflowInputNodesFor(node) : inputNodesFor(node));
-    const loop = inputs.find(n => n?.type === 'smart-loop');
-    if(loop?.imageInput){
-        const upstream = upstreamNodesForKinds(loop, options.includeFlow ? ['input', 'flow'] : ['input']).find(n => isSmartImageNode(n) && (n.images || []).some(img => img?.url));
-        if(upstream) return upstream;
-    }
-    return null;
-}
-function hasDownstreamImageNode(node){
-    return downstreamNodesForId(node?.id).some(n => isSmartImageNode(n) && !isHistoryGroupNode(n));
-}
-function isGeneratedOutputForNode(sourceNode, targetNode){
-    return Boolean(sourceNode?.id && targetNode?.sourceNodeId === sourceNode.id);
-}
-function downstreamWorkflowImageTargetsFor(node){
-    return downstreamImageTargetsFor(node).filter(target => !isGeneratedOutputForNode(node, target));
-}
-function hasDownstreamWorkflowImageNode(node){
-    return downstreamWorkflowImageTargetsFor(node).length > 0;
-}
-function smartImageChainTo(nodeId, options={}){
-    const tail = nodes.find(n => n.id === nodeId);
-    if(!isSmartImageNode(tail) || isHistoryGroupNode(tail)) return [];
-    const chain = [];
-    const seen = new Set();
-    let cur = tail;
-    while(cur && !seen.has(cur.id)){
-        seen.add(cur.id);
-        chain.unshift(cur);
-        cur = primaryImageInputFor(cur, options);
-    }
-    return chain;
-}
-function upstreamNodesForId(nodeId, kinds=['input']){
-    const result = [];
-    const seen = new Set([nodeId]);
-    const walk = id => {
-        upstreamNodesForKinds(nodes.find(n => n.id === id), kinds).forEach(input => {
-            if(seen.has(input.id)) return;
-            seen.add(input.id);
-            walk(input.id);
-            result.push(input);
-        });
-    };
-    walk(nodeId);
-    return result;
-}
-function resolveSmartCascadeLoop(nodeId){
-    const loops = upstreamNodesForId(nodeId, ['input', 'flow']).filter(n => n.type === 'smart-loop');
-    if(!loops.length) return null;
-    const loop = loops[loops.length - 1];
-    return {node:loop, count:smartLoopCount(loop), mode:loop.mode === 'parallel' ? 'parallel' : 'serial'};
-}
-function relayLoopPromptNodesForEdge(sourceNode, targetNode){
-    if(!sourceNode?.id || !targetNode?.id) return [];
-    const directLoopIds = new Set(promptInputNodesFor(targetNode).filter(n => n?.type === 'smart-loop' && n.showPrompt).map(n => n.id));
-    return inputNodesFor(sourceNode)
-        .filter(n => n?.type === 'smart-loop' && n.showPrompt && !directLoopIds.has(n.id));
-}
-function relayLoopPromptNodesForTarget(node){
-    if(!node?.id) return [];
-    return inputNodesFor(node).filter(n => n?.type === 'smart-loop' && n.showPrompt);
-}
-function downstreamNodesForId(nodeId){
-    const result = [];
-    const seen = new Set([nodeId]);
-    const walk = id => {
-        (canvas?.connections || [])
-            .filter(conn => conn.from === id && ['input','flow'].includes(conn.kind || 'flow'))
-            .map(conn => nodes.find(n => n.id === conn.to))
-            .filter(Boolean)
-            .forEach(next => {
-                if(seen.has(next.id)) return;
-                seen.add(next.id);
-                result.push(next);
-                walk(next.id);
-            });
-    };
-    walk(nodeId);
-    return result;
-}
-function downstreamImageTargetsFor(node){
-    if(!node?.id) return [];
-    return (canvas?.connections || [])
-        .filter(conn => conn.from === node.id && ['input','flow'].includes(conn.kind || 'flow'))
-        .map(conn => nodes.find(n => n.id === conn.to))
-        .filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n))
-        .sort((a, b) => {
-            const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-            if(ax !== bx) return ax - bx;
-            return (Number(a.y) || 0) - (Number(b.y) || 0);
-        });
-}
-function downstreamCascadeTargetsFor(node){
-    if(!node?.id) return [];
-    return (canvas?.connections || [])
-        .filter(conn => conn.from === node.id && ['input','flow'].includes(conn.kind || 'flow'))
-        .map(conn => nodes.find(n => n.id === conn.to))
-        .filter(n => n && !isHistoryGroupNode(n) && (isSmartImageNode(n) || n.type === 'smart-loop'))
-        .sort((a, b) => {
-            const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-            if(ax !== bx) return ax - bx;
-            return (Number(a.y) || 0) - (Number(b.y) || 0);
-        });
-}
-function directLoopRunTargets(loop){
-    if(!loop?.id) return [];
-    return downstreamImageTargetsFor(loop)
-        .filter(node => !hasDownstreamWorkflowImageNode(node));
-}
-function smartCascadeGraphForTail(tail){
-    const path = smartImageChainTo(tail?.id, {includeFlow:true}).filter(n => isSmartImageNode(n) && !isHistoryGroupNode(n));
-    if(!path.length) return {root:null, path:[], edges:[], children:new Map()};
-    const loop = resolveSmartCascadeLoop(tail?.id);
-    const loopRoots = loop?.node?.id ? downstreamImageTargetsFor(loop.node) : [];
-    const loopRoot = loopRoots.find(n => path.some(p => p.id === n.id));
-    const root = loopRoot || path[0];
-    const edges = [];
-    const children = new Map();
-    const seenEdges = new Set();
-    const visiting = new Set();
-    const walk = node => {
-        if(!node?.id || visiting.has(node.id)) return;
-        visiting.add(node.id);
-        const targets = downstreamCascadeTargetsFor(node);
-        children.set(node.id, targets);
-        targets.forEach(target => {
-            const key = `${node.id}->${target.id}`;
-            if(!seenEdges.has(key)){
-                seenEdges.add(key);
-                edges.push({source:node, target, key});
-            }
-            walk(target);
-        });
-        visiting.delete(node.id);
-    };
-    walk(root);
-    return {root, path, edges, children};
-}
-function cascadeTailForLoop(loopId){
-    const loop = nodes.find(n => n.id === loopId && n.type === 'smart-loop');
-    const directTargets = directLoopRunTargets(loop);
-    if(directTargets.length) return directTargets[directTargets.length - 1];
-    const directImages = downstreamImageTargetsFor({id:loopId});
-    const directIds = new Set(directImages.map(n => n.id));
-    const candidates = downstreamNodesForId(loopId)
-        .filter(n => isSmartImageNode(n))
-        .filter(n => !isHistoryGroupNode(n))
-        .filter(n => canRunSmartCascade(n));
-    if(!candidates.length) return null;
-    return candidates.sort((a, b) => {
-        const ad = directIds.has(a.id) ? 1 : 0;
-        const bd = directIds.has(b.id) ? 1 : 0;
-        if(ad !== bd) return ad - bd;
-        const ax = Number(a.x) || 0, bx = Number(b.x) || 0;
-        if(ax !== bx) return bx - ax;
-        return (Number(b.y) || 0) - (Number(a.y) || 0);
-    })[0];
-}
-function canRunSmartCascade(node){
-    if(!isSmartImageNode(node) || isHistoryGroupNode(node)) return false;
-    const graph = smartCascadeGraphForTail(node);
-    const loop = resolveSmartCascadeLoop(node.id);
-    if(loop && isDirectLoopTargetRun(loop, node, graph)) return true;
-    if(hasDownstreamImageNode(node)) return false;
-    if(graph.edges.length) return true;
-    return Boolean(loop);
-}
-function isDirectLoopTargetRun(loop, tail, graph){
-    if(!loop?.node?.id || !tail?.id) return false;
-    if(graph?.root?.id !== tail.id) return false;
-    if(hasDownstreamWorkflowImageNode(tail)) return false;
-    return downstreamImageTargetsFor(loop.node).some(node => node.id === tail.id);
-}
-function coolNodeRunningState(node, ms=2000){
-    if(!node) return 0;
-    const token = ++smartRunStateToken;
-    smartNodeRunTokens.set(node.id, token);
-    node.running = true;
-    setTimeout(() => {
-        if(smartNodeRunTokens.get(node.id) !== token) return;
-        smartNodeRunTokens.delete(node.id);
-        const current = nodes.find(n => n.id === node.id);
-        if(current){
-            current.running = false;
-            render();
-        }
-    }, ms);
-    return token;
-}
-function clearNodeRunningState(node){
-    if(!node) return;
-    smartNodeRunTokens.delete(node.id);
-    node.running = false;
-}
-function pushRightSideNodes(sourceNode, delta){
-    const shift = Math.ceil(Number(delta) || 0);
-    if(!sourceNode || shift <= 0) return;
-    const sourceRight = (Number(sourceNode.x) || 0) + nodeRect(sourceNode).width - shift;
-    const downstreamIds = new Set(downstreamNodesForId(sourceNode.id).map(n => n.id));
-    nodes.forEach(n => {
-        if(!n || n.id === sourceNode.id) return;
-        const r = nodeRect(n);
-        const shouldShift = downstreamIds.has(n.id) || (Number(r.x) > sourceRight && Math.abs((Number(r.y) || 0) - (Number(sourceNode.y) || 0)) < 520);
-        if(shouldShift) n.x = (Number(n.x) || 0) + shift;
-    });
-}
-function cascadeOutputTitle(kind='image', count=1){
-    if(Number(count) > 1) return kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group';
-    return kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image';
-}
-function nonPreviewOutputImages(images=[]){
-    return (images || []).filter(img => img?.url && !img.loopInputPreview);
-}
-function cleanHistoryImages(images=[]){
-    const seen = new Set();
-    return nonPreviewOutputImages(images)
-        .map(img => stripImageGenerationMeta({...img}))
-        .filter(img => {
-            const key = `${img.kind || ''}|${img.url || ''}`;
-            if(seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-}
-function demoteHistoryGroupNode(group){
-    if(!group) return;
-    delete group.historyFor;
-    delete group.isHistoryGroup;
-    // #91：身份判定用 titleTouched 标志而不是比对中文标题——当前画布节点无用户重命名入口，
-    // 候选池标题永远由系统设置，titleTouched 恒缺失（视为未改名）；未来加重命名入口时置 true 即可保留用户标题。
-    if(!group.titleTouched){
-        const count = (group.images || []).length;
-        group.title = count > 1 ? 'Group' : count === 1 ? 'Image' : tr('smart.createImportNode');
-    }
-    delete group.titleTouched;
-}
-// #85：候选池摆放位置——生图框右侧列（x = 右缘 + 80，顶边对齐），
-// 与现有节点碰撞时同列下移，仍放不下才回退到节点下方（旧版摆放）。
-// 新建时池内还没有图，调用方用 estW/estH 估计尺寸参与碰撞检测。
-function candidatePoolPosition(node, estW, estH){
-    const r = nodeRect(node);
-    const x = Math.round((Number(node.x) || 0) + r.width + 80);
-    let y = Math.round(Number(node.y) || 0);
-    const overlapsAny = (px, py) => nodes.some(n => {
-        if(!n || n.id === node.id) return false;
-        if(n.isHistoryGroup && n.historyFor === node.id) return false;
-        const nr = nodeRect(n);
-        return px < nr.x + nr.width && px + estW > nr.x && py < nr.y + nr.height && py + estH > nr.y;
-    });
-    for(let i = 0; i < 8; i++){
-        if(!overlapsAny(x, y)) break;
-        const blocker = nodes.find(n => {
-            if(!n || n.id === node.id) return false;
-            if(n.isHistoryGroup && n.historyFor === node.id) return false;
-            const nr = nodeRect(n);
-            return y < nr.y + nr.height && y + estH > nr.y && x < nr.x + nr.width && x + estW > nr.x;
-        });
-        if(!blocker) break;
-        const br = nodeRect(blocker);
-        y = Math.round((Number(blocker.y) || 0) + br.height + 24);
-    }
-    if(!overlapsAny(x, y)) return {x, y};
-    return {x:Math.round((Number(node.x) || 0) + Math.max(0, (r.width - estW) / 2)), y:Math.round((Number(node.y) || 0) + r.height + 56)};
-}
-function historyGroupForNode(node){
-    if(!node?.id) return null;
-    // #85：候选池不再绘制 history 连线（视觉上无连线），关联唯一以 historyFor 字段为准；
-    // 级联删除/撤销/保存恢复均依赖 historyFor，不依赖连线。
-    return nodes.find(n => isHistoryGroupNode(n) && n.historyFor === node.id) || null;
-}
-function positionHistoryGroupForNode(node, group){
-    if(!node || !group) return;
-    const r = nodeRect(node);
-    const gr = nodeRect(group);
-    if(!Number.isFinite(Number(group.x))) group.x = Math.round((Number(node.x) || 0) + Math.max(0, (r.width - gr.width) / 2));
-    if(!Number.isFinite(Number(group.y))) group.y = Math.round((Number(node.y) || 0) + r.height + 56);
-}
-function ensureHistoryGroupForNode(node){
-    if(!node?.id) return null;
-    let group = historyGroupForNode(node);
-    if(!group){
-        const r = nodeRect(node);
-        // #85：候选池固定摆在生图框右侧列（碰撞时同列下移/回退下方）；
-        // 新建时池内还没图，用「至少一行缩略格」估计尺寸参与碰撞检测。
-        const estW = Math.max(316, Math.round(r.width || 0));
-        const estH = 200;
-        const pos = candidatePoolPosition(node, estW, estH);
-        group = {
-            id:uid('smart'),
-            type:'smart-image',
-            x:pos.x,
-            y:pos.y,
-            title:tr('smart.historyGroupTitle'),
-            images:[],
-            historyFor:node.id,
-            isHistoryGroup:true,
-            scale:MEDIA_GROUP_DEFAULT_SCALE,
-            created_at:Date.now()
-        };
-        nodes.push(group);
-    }
-    group.type = 'smart-image';
-    group.title = tr('smart.historyGroupTitle');
-    group.isHistoryGroup = true;
-    group.historyFor = node.id;
-    if(!Number.isFinite(Number(group.scale))) group.scale = MEDIA_GROUP_DEFAULT_SCALE;
-    // #85：不再绘制 history 连线（含线上的 X 与端点圆点）；数据关联走 historyFor，
-    // 删生图框级联删池、撤销/重做、保存恢复全部照旧。
-    positionHistoryGroupForNode(node, group);
-    return group;
-}
-function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=null, options={}){
-    if(!node || !additions?.length) return [];
-    node = liveSmartNode(node);
-    const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const existing = cleanHistoryImages(node.images || []);
-    const next = cleanHistoryImages(additions);
-    if(!next.length) return [];
-    const history = existing.length ? ensureHistoryGroupForNode(node) : historyGroupForNode(node);
-    if(history){
-        const archived = cleanHistoryImages([...existing, ...(history.images || [])]);
-        history.images = archived;
-        history.title = tr('smart.historyGroupTitle');
-        history.outputKind = kind;
-        history.scale = MEDIA_GROUP_DEFAULT_SCALE;
-        delete history.w;
-        delete history.h;
-    }
-    node.images = next;
-    markSmartNodeComplete(node, meta, true);
-    node.outputKind = kind;
-    node.title = cascadeOutputTitle(kind, node.images.length);
-    node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : MEDIA_NODE_DEFAULT_SCALE;
-    delete node.w;
-    delete node.h;
-    if(meta) attachRunMeta(node, meta);
-    const afterRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const skipShift = options.skipShift || Boolean(smartLoopContext?.nodeId);
-    if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
-    selectedImage = {nodeId:'', index:-1};
-    return next;
-}
-function appendOutputsToNode(node, additions, kind='image', options={}){
-    if(!node || !additions?.length) return [];
-    node = liveSmartNode(node);
-    const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const existing = cleanHistoryImages(node.images || []);
-    const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
-    const next = cleanHistoryImages(additions).filter(img => {
-        const key = `${img.kind || ''}|${img.url || ''}`;
-        if(seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
-    if(!next.length) return [];
-    node.images = [...existing, ...next];
-    markSmartNodeComplete(node, undefined, true);
-    node.outputKind = kind;
-    node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image');
-    delete node.w;
-    delete node.h;
-    const afterRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const skipShift = options.skipShift || Boolean(smartLoopContext?.nodeId);
-    if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);
-    return next;
-}
 
-function appendLoopOutputsToNode(node, additions, kind='image', ctx=smartLoopContext){
-    if(!node || !additions?.length) return [];
-    const runState = ctx?.runState;
-    if(runState && !runState.loopAppendInitialized) runState.loopAppendInitialized = new Set();
-    const initialized = runState?.loopAppendInitialized;
-    if(initialized && !initialized.has(node.id)){
-        initialized.add(node.id);
-        const existing = cleanHistoryImages(node.images || []);
-        if(existing.length){
-            const history = ensureHistoryGroupForNode(node);
-            history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-            history.title = tr('smart.historyGroupTitle');
-            history.outputKind = kind;
-            history.scale = MEDIA_GROUP_DEFAULT_SCALE;
-            delete history.w;
-            delete history.h;
-        }
-        node.images = [];
-    }
-    return appendOutputsToNode(node, additions, kind, {skipShift:true});
-}
-function promptDraftHtmlForNode(node){
-    const draftHtml = String(node?.promptDraftHtml || '');
-    if(draftHtml){
-        if(draftHtml.includes('mention-image-token')) return draftHtml;
-        return promptHtmlWithMentionTokens(node.promptDraftText || node.runPrompt || '', node.runPromptRefs || []) || draftHtml;
-    }
-    const prompt = node?.promptDraftText || node?.runPrompt || '';
-    return promptHtmlWithMentionTokens(prompt, node?.runPromptRefs || []) || escapeHtml(prompt);
-}
 // Local ComfyUI task transport and workflow parameter serialization were removed.
 
-function buildPromptRequestForNode(node, defaultImages, ctx=smartLoopContext){
-    // Button-state checks run on every keystroke. Build against a detached root
-    // so IME composition, selection, and the caret in the live editor are never
-    // interrupted by a temporary draft load/restore cycle.
-    const promptRoot = document.createElement('div');
-    promptRoot.innerHTML = promptDraftHtmlForNode(node);
-    return buildPromptRequest(node, defaultImages, false, ctx, promptRoot);
-}
-async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=settings){
-    const activeSettings = runSettings || settings;
-    if(activeSettings.engine === 'runninghub' && runningHubSelectedModel(activeSettings)){
-        const taskResult = await runApiGeneration(prompt, refs, runningHubModelApiSettings(activeSettings), node);
-        const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
-        }
-        const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
-    }
-    if(isApiLikeEngine(activeSettings.engine) && activeSettings.apiKind === 'video'){
-        const taskResult = await runApiVideoGeneration(prompt, refs, activeSettings, node);
-        if(Array.isArray(taskResult?.taskIds) && taskResult.taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult, 'video');
-            const appliedUrls = resultMediaUrls(node?.images || []);
-            const urls = appliedUrls.length
-                ? appliedUrls
-                : settled.flatMap(result => {
-                    const items = result?.video_items?.length ? result.video_items : (result?.videos?.length ? result.videos : result);
-                    return resultMediaUrls(items);
-                }).filter(Boolean);
-            return {urls, kind:'video'};
-        }
-        return {urls:resultMediaUrls(taskResult), kind:'video'};
-    }
-    if(isApiLikeEngine(activeSettings.engine)){
-        const taskResult = await runApiGeneration(prompt, refs, activeSettings, node);
-        const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
-        }
-        const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
-    }
-    if(activeSettings.engine === 'modelscope'){
-        const routed = {
-            ...activeSettings,
-            engine:'api',
-            apiKind:'image',
-            routingMode:'manual',
-            provider_id:'modelscope',
-            model:activeSettings.msCustomModel || modelscopeImageModels()[0] || ''
-        };
-        const taskResult = await runApiGeneration(prompt, refs, routed, node);
-        const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:mediaKindForUrls(urls, 'image')};
-        }
-        const urls = resultMediaUrls(taskResult);
-        return {urls, kind:mediaKindForUrls(urls, 'image')};
-    }
-    return {urls:[], kind:'image'};
-}
 // Local ComfyUI generation URL construction was removed.
 
-async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=smartLoopContext){
-    const outputNode = targetNode || sourceNode;
-    if(!sourceNode || !targetNode || !outputNode) return [];
-    const requestNode = sourceNode?.type === 'smart-loop' ? targetNode : sourceNode;
-    const previousSettings = cloneSmartSettings(settings);
-    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(requestNode) || {})}, ctx);
-    settings = runSettings;
-    const outpaintSize = validOutpaintSize(requestNode);
-    const selfRefs = sourceNode?.type === 'smart-loop' ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
-    const sourceRefs = (selfRefs.length ? selfRefs : defaultReferenceImagesFor(requestNode, false, ctx)).filter(img => img?.url);
-    const refsForRequest = sourceRefs.length
-        ? sourceRefs
-        : (inputRefs && inputRefs.length ? inputRefs : null);
-    const request = buildPromptRequestForNode(
-        requestNode,
-        refsForRequest,
-        ctx
-    );
-    const prompt = (request.prompt || '').trim();
-    const displayPrompt = (request.displayPrompt || '').trim();
-    if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)){
-        settings = previousSettings;
-        throw new Error(tr('smart.chainNodeMissingPrompt'));
-    }
-    const meta = {
-        prompt,
-        displayPrompt:request.displayPrompt || '',
-        promptRefs:(request.refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || '', nodeId:ref.nodeId || '', imageIndex:ref.imageIndex ?? ''})).filter(ref => ref.url),
-        inputRefs:(request.refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || '', nodeId:ref.nodeId || '', imageIndex:ref.imageIndex ?? '', kind:ref.kind || ''})).filter(ref => ref.url),
-        sourceNodeId:sourceNode.id,
-        settings:JSON.parse(JSON.stringify(runSettings)),
-        createdAt:Date.now()
-    };
-    if(requestNode.promptDraftHtml != null){
-        meta.promptHtml = requestNode.promptDraftHtml;
-        meta.promptText = requestNode.promptDraftText || request.displayPrompt || '';
-    }
-    const logKind = isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
-    const runLog = smartRunSnapshot(requestNode, prompt, request.refs || [], logKind);
-    const runLogStart = nowMs();
-    const targetPromptState = {
-        promptDraftHtml:targetNode.promptDraftHtml,
-        promptDraftText:targetNode.promptDraftText,
-        runPrompt:targetNode.runPrompt,
-        runModelPrompt:targetNode.runModelPrompt,
-        runPromptRefs:targetNode.runPromptRefs ? targetNode.runPromptRefs.map(ref => ({...ref})) : undefined,
-        runInputRefs:targetNode.runInputRefs ? targetNode.runInputRefs.map(ref => ({...ref})) : undefined,
-        runSettings:targetNode.runSettings ? cloneSmartSettings(targetNode.runSettings) : undefined,
-        sourceNodeId:targetNode.sourceNodeId,
-        runAt:targetNode.runAt
-    };
-    outputNode.running = true;
-    outputNode.runStartedAt = nowMs();
-    delete outputNode.runFinishedAt;
-    delete outputNode.runElapsedMs;
-    outputNode.runTimerHidden = false;
-    rememberRecentSmartSettings(runSettings, requestNode);
-    render();
-    settings = previousSettings;
-    try {
-        const result = await generateUrlsForCurrentSettings(outputNode, prompt, request.refs || [], runSettings);
-        if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
-        if(outpaintSize) delete requestNode.outpaintSize;
-        if(!outputNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
-        delete outputNode._serverGenerationHistoryRecorded;
-        const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
-        const additions = result.urls.map((item, i) => {
-            const url = typeof item === 'string' ? item : item?.url || '';
-            return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
-        }).filter(item => item.url);
-        if(ctx?.appendLoopOutputs) {
-            appendLoopOutputsToNode(outputNode, additions, result.kind, ctx);
-        } else {
-            replaceOutputsToNodeWithHistory(outputNode, additions, result.kind, null, {skipShift:Boolean(ctx?.nodeId)});
-        }
-        outputNode.runPrompt = targetPromptState.runPrompt;
-        outputNode.runModelPrompt = targetPromptState.runModelPrompt;
-        outputNode.runPromptRefs = targetPromptState.runPromptRefs || [];
-        outputNode.runInputRefs = targetPromptState.runInputRefs || [];
-        outputNode.runSettings = targetPromptState.runSettings;
-        outputNode.sourceNodeId = targetPromptState.sourceNodeId;
-        outputNode.runAt = targetPromptState.runAt;
-        if(targetPromptState.promptDraftHtml === undefined) delete outputNode.promptDraftHtml;
-        else outputNode.promptDraftHtml = targetPromptState.promptDraftHtml;
-        if(targetPromptState.promptDraftText === undefined) delete outputNode.promptDraftText;
-        else outputNode.promptDraftText = targetPromptState.promptDraftText;
-        ['runPrompt','runModelPrompt','runSettings','sourceNodeId','runAt'].forEach(key => {
-            if(targetPromptState[key] === undefined) delete outputNode[key];
-        });
-        settings = previousSettings;
-        render();
-        return rememberRoundOutputs(ctx, outputNode, additions);
-    } catch(e) {
-        settings = previousSettings;
-        if(handleJimengPendingSignal(outputNode, e)){
-            render();
-            return [];
-        }
-        outputNode.running = false;
-        if(!e?.smartGenerationLogged) addSmartGenerationHistory({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
-        render();
-        throw e;
-    }
-}
-async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx){
-    if(!loopNode || !rootNode || !outputSlot) return [];
-    outputSlot = liveSmartNode(outputSlot);
-    const previousSettings = cloneSmartSettings(settings);
-    const edgeKey = `${rootNode.id}->${outputSlot.id}`;
-    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})}, ctx);
-    settings = runSettings;
-    try {
-        const refsForRequest = outputImagesForNode(loopNode, true, ctx).filter(img => img?.url);
-        const request = buildPromptRequestForNode(rootNode, refsForRequest.length ? refsForRequest : null, ctx);
-        const prompt = (request.prompt || '').trim();
-        const displayPrompt = (request.displayPrompt || '').trim();
-        if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)) throw new Error(tr('smart.chainNodeMissingPrompt'));
-        const meta = {
-            prompt,
-            displayPrompt:request.displayPrompt || '',
-            promptRefs:(request.refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || '', nodeId:ref.nodeId || '', imageIndex:ref.imageIndex ?? ''})).filter(ref => ref.url),
-            inputRefs:(request.refs || []).map(ref => ({asset_id:ref.asset_id || '', url:ref.url || '', name:ref.name || '', nodeId:ref.nodeId || '', imageIndex:ref.imageIndex ?? '', kind:ref.kind || ''})).filter(ref => ref.url),
-            sourceNodeId:rootNode.id,
-            settings:JSON.parse(JSON.stringify(runSettings)),
-            createdAt:Date.now()
-        };
-        const logKind = isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
-        const runLog = smartRunSnapshot(rootNode, prompt, request.refs || [], logKind);
-        const runLogStart = nowMs();
-        const expectedCount = isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'
-            ? Math.max(1, Math.min(8, Number(runSettings.count || 1)))
-            : 1;
-        outputSlot.queued = false;
-        outputSlot.running = true;
-        outputSlot.pending = expectedCount;
-        outputSlot.runStartedAt = nowMs();
-        delete outputSlot.runFinishedAt;
-        delete outputSlot.runElapsedMs;
-        outputSlot.runTimerHidden = false;
-        const runPath = smartCascadePathForCtx(ctx);
-        if(runPath?.states) {
-            runPath.states[edgeKey] = 'active';
-            scheduleConnectionLayerRefresh();
-        }
-        render();
-        settings = previousSettings;
-        let result;
-        if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
-            const existing = cleanHistoryImages(outputSlot.images || []);
-            let archiveRollback = null;
-            if(existing.length){
-                const previousHistory = historyGroupForNode(outputSlot);
-                const previousHistorySnapshot = previousHistory ? JSON.parse(JSON.stringify(previousHistory)) : null;
-                const history = ensureHistoryGroupForNode(outputSlot);
-                archiveRollback = {
-                    outputNodeId:outputSlot.id,
-                    outputImages:JSON.parse(JSON.stringify(outputSlot.images || [])),
-                    historyNodeId:history.id,
-                    previousHistory:previousHistorySnapshot
-                };
-                history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
-                history.title = tr('smart.historyGroupTitle');
-                history.outputKind = 'image';
-                history.scale = MEDIA_GROUP_DEFAULT_SCALE;
-                delete history.w;
-                delete history.h;
-                outputSlot.images = [];
-                archiveRollback.archivedOutputImages = JSON.parse(JSON.stringify(outputSlot.images));
-                archiveRollback.archivedHistory = JSON.parse(JSON.stringify(history));
-                archiveRollback.archivedHistoryConnections = JSON.parse(JSON.stringify(
-                    (canvas.connections || []).filter(connection =>
-                        connection.from === history.id || connection.to === history.id
-                    )
-                ));
-            }
-            let taskResult;
-            try {
-                taskResult = await runApiGeneration(prompt, request.refs || [], runSettings, outputSlot);
-                if(!Array.isArray(taskResult?.taskIds) || !taskResult.taskIds.length) throw new Error(tr('smart.errRunFailed'));
-            } catch(submitError) {
-                const restoreArchive = (conditional=false) => {
-                    if(!archiveRollback) return;
-                    const liveOutput = nodes.find(item => item.id === archiveRollback.outputNodeId);
-                    if(liveOutput && (
-                        !conditional
-                        || JSON.stringify(liveOutput.images || []) === JSON.stringify(archiveRollback.archivedOutputImages || [])
-                    )) liveOutput.images = JSON.parse(JSON.stringify(archiveRollback.outputImages));
-                    const historyIndex = nodes.findIndex(item => item.id === archiveRollback.historyNodeId);
-                    if(archiveRollback.previousHistory){
-                        if(historyIndex >= 0 && conditional){
-                            const currentHistory = nodes[historyIndex];
-                            if(JSON.stringify(currentHistory.images || []) === JSON.stringify(archiveRollback.archivedHistory?.images || [])){
-                                currentHistory.images = JSON.parse(JSON.stringify(archiveRollback.previousHistory.images || []));
-                            }
-                        } else {
-                            const restoredHistory = JSON.parse(JSON.stringify(archiveRollback.previousHistory));
-                            if(historyIndex >= 0) nodes[historyIndex] = restoredHistory;
-                            else nodes.push(restoredHistory);
-                        }
-                    } else {
-                        const exactArchivedHistory = historyIndex >= 0
-                            && JSON.stringify(nodes[historyIndex]) === JSON.stringify(archiveRollback.archivedHistory);
-                        const currentHistoryConnections = (canvas.connections || []).filter(connection =>
-                            connection.from === archiveRollback.historyNodeId || connection.to === archiveRollback.historyNodeId
-                        );
-                        const connectionSnapshot = connections => (connections || [])
-                            .map(connection => JSON.stringify(connection)).sort();
-                        const exactArchivedConnections = JSON.stringify(connectionSnapshot(currentHistoryConnections))
-                            === JSON.stringify(connectionSnapshot(archiveRollback.archivedHistoryConnections));
-                        if(historyIndex >= 0 && (!conditional || (exactArchivedHistory && exactArchivedConnections))){
-                            nodes.splice(historyIndex, 1);
-                            canvas.connections = (canvas.connections || []).filter(connection =>
-                                connection.from !== archiveRollback.historyNodeId && connection.to !== archiveRollback.historyNodeId
-                            );
-                        } else if(historyIndex >= 0 && conditional){
-                            const currentHistory = nodes[historyIndex];
-                            if(JSON.stringify(currentHistory.images || []) === JSON.stringify(archiveRollback.archivedHistory?.images || [])){
-                                currentHistory.images = [];
-                            }
-                        }
-                    }
-                };
-                restoreArchive();
-                render();
-                if(canvas?.format === 'firefly-canvas-v1'){
-                    const restored = await saveCanvas();
-                    if(restored === false){
-                        restoreArchive(true);
-                        render();
-                        await saveCanvas();
-                    }
-                } else {
-                    scheduleSave();
-                }
-                throw submitError;
-            }
-            const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-            outputSlot.pendingTasks = taskIds.map(taskId => ({taskId, kind:'image', count:taskResult.count || 1, providerId:taskResult.providerId, model:taskResult.model}));
-            ensureSmartPendingHistoryLogs(outputSlot, outputSlot.pendingTasks, {prompt, kind:'image'});
-            outputSlot.pending = Math.max(taskIds.length, Number(outputSlot.pending || 0) || taskIds.length);
-            outputSlot.running = false;
-            render();
-            if(!await acceptProjectGenerationRegistration(taskResult)){
-                scheduleSave();
-                await saveCanvas();
-            }
-            await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
-            if(outputSlot.jimengPending || smartRecoverableImageTask(outputSlot)){
-                outputSlot.queued = false;
-                return [];
-            }
-            result = {urls:(outputSlot.images || []).map(img => img?.url ? img : null).filter(Boolean), kind:'image'};
-        } else {
-            result = await generateUrlsForCurrentSettings(outputSlot, prompt, request.refs || [], runSettings);
-        }
-        if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
-        let additions;
-        if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
-            additions = (outputSlot.images || []).map(img => stripImageGenerationMeta({...img})).filter(img => img?.url);
-            if(meta) attachRunMeta(outputSlot, meta);
-        } else {
-            const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
-            additions = result.urls.map((item, i) => {
-                const url = typeof item === 'string' ? item : item?.url || '';
-                return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:(typeof item === 'object' && item.kind) || result.kind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
-            }).filter(item => item.url);
-            outputSlot = liveSmartNode(outputSlot);
-            outputSlot.images = nonPreviewOutputImages(outputSlot.images);
-            replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
-        }
-        outputSlot = liveSmartNode(outputSlot);
-        markSmartNodeComplete(outputSlot, meta, true);
-        clearSourceBusyStateIfDownstreamDone(rootNode);
-        if(runPath?.states) {
-            runPath.states[edgeKey] = 'done';
-            scheduleConnectionLayerRefresh();
-        }
-        if(!outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
-        delete outputSlot._serverGenerationHistoryRecorded;
-        return rememberRoundOutputs(ctx, outputSlot, additions);
-    } catch(e) {
-        if(handleJimengPendingSignal(outputSlot, e)){
-            outputSlot.queued = false;
-            return [];
-        }
-        outputSlot.queued = false;
-        outputSlot.pending = 0;
-        outputSlot.running = false;
-        throw e;
-    } finally {
-        settings = previousSettings;
-    }
-}
-function appendCascadeRefsToReceiver(node, refs, ctx=smartLoopContext){
-    if(!node || !refs?.length) return [];
-    const additions = refs
-        .filter(ref => ref?.url)
-        .map((ref, i) => stripImageGenerationMeta({
-            asset_id:ref.asset_id || '',
-            url:ref.url,
-            name:ref.name || `output-${i + 1}.png`,
-            kind:ref.kind || (isVideoMediaItem(ref) ? 'video' : 'image')
-        }));
-    if(!additions.length) return [];
-    replaceOutputsToNodeWithHistory(node, additions, mediaKindForUrls(additions, additions.some(isVideoMediaItem) ? 'video' : 'image'), null, {skipShift:Boolean(ctx?.nodeId)});
-    render();
-    return rememberRoundOutputs(ctx, node, additions);
-}
-function cascadeRefsFromOutputs(outputs, targetNode){
-    return (outputs || []).filter(img => img?.url).map((img, index) => ({
-        asset_id:img.asset_id || '',
-        url:img.url,
-        name:img.name || `图${index + 1}`,
-        kind:img.kind || 'image',
-        role:`image_${index + 1}`,
-        nodeId:targetNode?.id || '',
-        imageIndex:targetNode ? (targetNode.images || []).length - outputs.length + index : index
-    }));
-}
-function smartCascadeStopText(stopping=false){
-    return stopping ? tr('smart.stopping') : tr('smart.stopRun');
-}
-function smartCascadeAbortError(){
-    const err = new Error(tr('smart.oneClickStopped'));
-    err.smartCascadeStopped = true;
-    return err;
-}
-function throwIfSmartCascadeStopRequested(runState=null){
-    if(runState?.stopRequested) throw smartCascadeAbortError();
-}
-function requestSmartCascadeStop(loopId=''){
-    const runState = loopId ? smartCascadeRunForLoop(loopId) : ([...smartCascadeRuns.values()].pop() || null);
-    if(!runState) return;
-    if(runState.stopRequested) return;
-    runState.stopRequested = true;
-    toast(tr('smart.stopRequested'));
-    render();
-}
-function smartCascadeParallelLimit(chain=[]){
-    return 6;
-}
-async function runSmartCascadeRoundsWithLimit(roundIndexes, limit, runner, runState=null){
-    let next = 0;
-    const workerCount = Math.max(1, Math.min(Number(limit) || 1, roundIndexes.length));
-    const workers = Array.from({length:workerCount}, async () => {
-        while(next < roundIndexes.length){
-            if(runState?.stopRequested) break;
-            const roundOffset = next++;
-            const current = roundIndexes[roundOffset];
-            try {
-                await runner(current, roundOffset);
-            } catch(e) {
-                if(e?.smartCascadeStopped) break;
-                throw e;
-            }
-        }
-    });
-    await Promise.all(workers);
-}
-async function runSmartCascade(targetNode=null){
-    const tail = targetNode || selectedNode();
-    if(!canRunSmartCascade(tail)){ toast(tr('smart.cascadeTailRequired')); return; }
-    savePromptDraftForCurrent();
-    const graph = smartCascadeGraphForTail(tail);
-    const chain = graph.path;
-    const loop = resolveSmartCascadeLoop(tail.id);
-    const loopId = loop?.node?.id || '';
-    if(loopId && smartCascadeIsLoopRunning(loopId)){ requestSmartCascadeStop(loopId); return; }
-    if(!loopId && smartCascadeAnyRunning()){ requestSmartCascadeStop(); return; }
-    const directLoopTargetRun = Boolean(loop && isDirectLoopTargetRun(loop, tail, graph));
-    const singleNodeLoopRun = Boolean(loop && (chain.length === 1 || directLoopTargetRun));
-    if(!graph.edges.length && !singleNodeLoopRun){ toast(tr('smart.loopNoChain')); return; }
-    const originalSelected = selectedId;
-    const originalSettings = cloneSmartSettings(settings);
-    const originalPromptHtml = promptInput.innerHTML;
-    const runKey = loopId || `cascade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const runState = {runKey, loopId, stopRequested:false, runPath:null};
-    smartCascadeRuns.set(runKey, runState);
-    smartCascadeSilentSelection = true;
-    runBtn.disabled = true;
-    pushUndo();
-    const totalRounds = loop?.count || 1;
-    const startIndex = Math.max(1, Number(loop?.node?.loopStart) || 1);
-    const batchSize = loop?.node?.imageInput ? Math.max(1, Math.min(100, Number(loop.node.imageBatchSize) || 1)) : 1;
-    const endIndex = startIndex + (totalRounds - 1) * batchSize;
-    const loopMode = loop?.mode === 'parallel' ? 'parallel' : 'serial';
-    const parallelLimit = loopMode === 'parallel' && totalRounds > 1 ? smartCascadeParallelLimit(chain) : 1;
-    const precreateSingleSlots = singleNodeLoopRun && loopMode === 'parallel' && totalRounds > 1 && parallelLimit > 1;
-    let singleLoopSlots = [];
-    if(singleNodeLoopRun){
-        runState.runPath = {states:{}};
-    }
-    if(singleNodeLoopRun){
-        singleLoopSlots = Array.from({length:totalRounds}, (_, round) => {
-            const loopIndex = startIndex + round * batchSize;
-            const slot = loopOutputSlotForRound(tail, loop.node, loopIndex, round);
-            return slot ? tagLoopOutputSlot(slot, tail, loop.node, loopIndex, round) : null;
-        });
-        singleLoopSlots.filter(Boolean).forEach(slot => { runState.runPath.states[`${tail.id}->${slot.id}`] = 'wait'; });
-        if(precreateSingleSlots){
-            for(let slotOffset = 0; slotOffset < totalRounds; slotOffset++){
-                if(singleLoopSlots[slotOffset]) continue;
-                const loopIndex = startIndex + slotOffset * batchSize;
-                singleLoopSlots[slotOffset] = createLoopOutputSlot(tail, loopIndex, slotOffset, {queued:true, loopNode:loop.node, slotIndex:slotOffset, runState});
-            }
-        }
-        render();
-    }
-    if(!singleNodeLoopRun){
-        const runStates = {};
-        if(loop?.node?.id && graph.root?.id) runStates[`${loop.node.id}->${graph.root.id}`] = 'wait';
-        graph.edges.forEach(edge => { runStates[edge.key] = 'wait'; });
-        runState.runPath = {states:runStates};
-        scheduleConnectionLayerRefresh();
-        updateComposer();
-    }
-    try {
-        const runRound = async (loopIndex=startIndex, options={}) => {
-            throwIfSmartCascadeStopRequested(runState);
-            const ctx = loop
-                ? {index:loopIndex, total:endIndex, nodeId:loop.node.id, forceWorkflow:chain.length > 1 && !singleNodeLoopRun, runState, roundOutputs:new Map()}
-                : {runState, roundOutputs:new Map()};
-            if(parallelLimit === 1) smartLoopContext = ctx;
-            if(singleNodeLoopRun){
-                const refs = refsForDirectLoopRound(loop.node, loopIndex, endIndex);
-                if(directLoopTargetRun && parallelLimit === 1) showDirectLoopRoundPreview(loop.node, tail, refs, loopIndex, endIndex);
-                const slotIndex = Math.max(0, Math.floor((loopIndex - startIndex) / batchSize));
-                const outputTarget = tagLoopOutputSlot(
-                    options.outputTarget || singleLoopSlots[slotIndex] || loopOutputSlotForRound(tail, loop.node, loopIndex, slotIndex) || createLoopOutputSlot(tail, loopIndex, slotIndex, {loopNode:loop.node, slotIndex, runState}),
-                    tail,
-                    loop.node,
-                    loopIndex,
-                    slotIndex
-                );
-                singleLoopSlots[slotIndex] = outputTarget;
-                await runLoopRoundIntoSlot(loop.node, tail, outputTarget, loopIndex, ctx);
-                return;
-            }
-            const producedRefs = new Map();
-            const runBranch = async (source, incomingRefs=[]) => {
-                throwIfSmartCascadeStopRequested(runState);
-                let targets = graph.children.get(source.id) || [];
-                const loopPrompts = isSmartImageNode(source) ? upstreamLoopPromptNodesFor(source) : [];
-                const sourceLoopPrompts = isSmartImageNode(source) ? relayLoopPromptNodesForTarget(source) : [];
-                if(runState.runPath && sourceLoopPrompts.length && source?.id){
-                    sourceLoopPrompts.forEach(loopNode => {
-                        runState.runPath.states[`${loopNode.id}->${source.id}`] = 'done';
-                    });
-                    scheduleConnectionLayerRefresh();
-                }
-                if(loopPrompts.length && targets.length > 1){
-                    const firstLoop = loopPrompts[0];
-                    const startBase = Math.max(1, Number(firstLoop.loopStart) || 1);
-                    const currentIndex = Math.max(1, Number(ctx?.index || startBase) || startBase);
-                    const selectedTarget = targets[(currentIndex - 1) % targets.length];
-                    if(runState.runPath && firstLoop?.id && source?.id){
-                        runState.runPath.states[`${firstLoop.id}->${source.id}`] = 'done';
-                        scheduleConnectionLayerRefresh();
-                    }
-                    targets = [selectedTarget].filter(Boolean);
-                }
-                let sharedRefs = incomingRefs;
-                for(let index = 0; index < targets.length; index++){
-                    throwIfSmartCascadeStopRequested(runState);
-                    const target = targets[index];
-                    const edgeKey = `${source.id}->${target.id}`;
-                    let outputs = [];
-                    const targetChildren = (graph.children.get(target.id) || []).filter(child => child && child.type !== 'smart-loop');
-                    const targetIsLeaf = target.type !== 'smart-loop' && targetChildren.length === 0;
-                    const relayLoops = isSmartImageNode(source) && isSmartImageNode(target)
-                        ? relayLoopPromptNodesForEdge(source, target)
-                        : [];
-                    const stepCtx = relayLoops.length && isSmartImageNode(target)
-                        ? {...(ctx || {}), appendLoopOutputs:Boolean(ctx?.nodeId && targetIsLeaf), relayPromptNodeIds:[...new Set([...(ctx?.relayPromptNodeIds || []), ...relayLoops.map(n => n.id)])]}
-                        : {...(ctx || {}), appendLoopOutputs:Boolean(ctx?.nodeId && targetIsLeaf)};
-                    try {
-                        if(runState.runPath && relayLoops.length && source?.id && isSmartImageNode(target)){
-                            relayLoops.forEach(loopNode => {
-                                runState.runPath.states[`${loopNode.id}->${source.id}`] = 'done';
-                            });
-                            scheduleConnectionLayerRefresh();
-                        }
-                        if(runState.runPath){
-                            runState.runPath.states[edgeKey] = 'active';
-                            scheduleConnectionLayerRefresh();
-                        }
-                        if(target.type === 'smart-loop'){
-                            outputs = outputImagesForNode(source, true, ctx).filter(img => img?.url);
-                            sharedRefs = cascadeRefsFromOutputs(outputs, source);
-                        } else if(index === 0){
-                            outputs = await runCascadeStepIntoNode(source, target, incomingRefs, stepCtx);
-                            sharedRefs = cascadeRefsFromOutputs(outputs, target);
-                        } else {
-                            outputs = appendCascadeRefsToReceiver(target, sharedRefs, stepCtx);
-                        }
-                    } catch(err) {
-                        if(/缺少提示词|需要输入文本|need prompt/i.test(err.message || '') && incomingRefs.length){
-                            outputs = appendCascadeRefsToReceiver(target, incomingRefs, stepCtx);
-                            if(index === 0){
-                                sharedRefs = cascadeRefsFromOutputs(outputs, target);
-                            }
-                        } else {
-                            throw err;
-                        }
-                    }
-                    if(runState.runPath){
-                        runState.runPath.states[edgeKey] = 'done';
-                        scheduleConnectionLayerRefresh();
-                    }
-                    const refs = target.type === 'smart-loop' ? sharedRefs : (index === 0 ? sharedRefs : cascadeRefsFromOutputs(outputs, target));
-                    producedRefs.set(target.id, refs);
-                    throwIfSmartCascadeStopRequested(runState);
-                    await runBranch(target, refs);
-                }
-            };
-            const rootRefs = defaultReferenceImagesFor(graph.root, true, ctx).filter(img => img?.url);
-            producedRefs.set(graph.root.id, rootRefs);
-            await runBranch(graph.root, rootRefs);
-        };
-        const roundIndexes = Array.from({length:totalRounds}, (_, round) => startIndex + round * batchSize);
-        if(loopMode === 'parallel' && totalRounds > 1){
-            const parallelTargets = singleNodeLoopRun
-                ? singleLoopSlots
-                : [];
-            if(parallelTargets.length) render();
-            await runSmartCascadeRoundsWithLimit(roundIndexes, parallelLimit, (loopIndex, roundOffset) => {
-                const outputTarget = parallelTargets[roundOffset] || null;
-                return runRound(loopIndex, {outputTarget});
-            }, runState);
-        } else {
-            for(const loopIndex of roundIndexes){
-                throwIfSmartCascadeStopRequested(runState);
-                await runRound(loopIndex);
-            }
-        }
-        throwIfSmartCascadeStopRequested(runState);
-        if(parallelLimit === 1) smartLoopContext = null;
-        selectedId = '';
-        selectedIds = [];
-        selectedImage = {nodeId:'', index:-1};
-        activeComposerSubject = null;
-        lastComposerNodeId = '';
-        composer.classList.remove('open');
-        settings = originalSettings;
-        promptInput.innerHTML = originalPromptHtml;
-        scheduleSave();
-        toast(totalRounds > 1
-            ? trf(loopMode === 'parallel' ? 'smart.loopParallelRoundsDone' : 'smart.loopRunRoundsDone', {n:totalRounds})
-            : tr('smart.loopRunDone'));
-    } catch(e) {
-        if(parallelLimit === 1) smartLoopContext = null;
-        selectedId = originalSelected;
-        settings = originalSettings;
-        promptInput.innerHTML = originalPromptHtml;
-        toast(e?.smartCascadeStopped ? tr('smart.oneClickStopped') : (e.message || tr('smart.errRunFailed')).slice(0, 160));
-    } finally {
-        smartCascadeRuns.delete(runKey);
-        smartCascadeSilentSelection = false;
-        syncRunButtonState();
-        if(directLoopTargetRun) finishLoopTargetPreviewState(tail);
-        scheduleSave();
-        render();
-    }
-}
-function runSmartCascadeFromLoop(loopId){
-    const loop = nodes.find(n => n.id === loopId && n.type === 'smart-loop');
-    if(!loop){ toast(tr('smart.loopNodeNotFound')); return; }
-    const tail = cascadeTailForLoop(loop.id);
-    if(!tail){ toast(tr('smart.loopNeedsTail')); return; }
-    selectedId = tail.id;
-    selectedIds = [];
-    selectedImage = {nodeId:'', index:-1};
-    runSmartCascade(tail);
-}
 async function runGeneration(){
     const node = selectedNode();
     const request = buildPromptRequest(node, null, true, smartLoopContext);
@@ -20914,7 +13846,7 @@ async function runGeneration(){
             pendingNode.images = [];
             pendingNode.failedGenerationTasks = [];
             pendingNode.recoveredGenerationTasks = [];
-            selectedImage = {nodeId:'', index:-1};
+            canvasState.selectedImage = {nodeId:'', index:-1};
         }
         const priorPendingCount = priorPendingTasks.reduce((total, task) => total + Math.max(1, Number(task?.count || 1)), 0);
         pendingNode.pending = Math.max(1, priorPendingCount + Math.max(1, Number(expectedCount) || 1));
@@ -20964,7 +13896,7 @@ async function runGeneration(){
                 }
                 await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
                 const completedVideoNode = liveNode(pendingNode);
-                if(completedVideoNode.jimengPending || smartRecoverableImageTask(completedVideoNode)){
+                if(smartRecoverableImageTask(completedVideoNode)){
                     if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                     clearPromptInput({preserveDraft:true});
                     settings = previousSettings;
@@ -21033,7 +13965,7 @@ async function runGeneration(){
             }
             await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
             const completedImageNode = liveNode(pendingNode);
-            if(completedImageNode.jimengPending || smartRecoverableImageTask(completedImageNode)){
+            if(smartRecoverableImageTask(completedImageNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -21060,6 +13992,15 @@ async function runGeneration(){
         scheduleSave();
     } catch(e) {
         settings = previousSettings;
+        if(e?.smartSavePendingResume){
+            // #189: the pre-generation flush failed. The request stays pending and is replayed
+            // automatically once the canvas save settles (see markAutosaveSaved).
+            pendingNode.running = false;
+            pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
+            scheduleSave();
+            toast((e.message || tr('smart.submitUnknownRecover')).slice(0, 160));
+            return;
+        }
         if(e?.smartSubmissionUnknown){
             pendingNode.running = false;
             pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
@@ -21067,20 +14008,14 @@ async function runGeneration(){
             toast((e.message || tr('smart.submitUnknownRecover')).slice(0, 160));
             return;
         }
-        if(handleJimengPendingSignal(pendingNode, e)){
-            if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            delete pendingNode._runMetaTargetId;
-            clearPromptInput({preserveDraft:true});
-            return;
-        }
         const remainingTasks = smartPendingTasks(pendingNode);
         pendingNode.pending = remainingTasks.length
             ? Math.max(remainingTasks.length, remainingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0))
             : 0;
         if(branchNode){
-            nodes = nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = nodes;
+            canvasState.nodes = canvasState.nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = canvasState.nodes;
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);
-            selectedId = node.id;
+            canvasState.selectedId = node.id;
         } else {
             pendingNode.pending = remainingTasks.length ? pendingNode.pending : 0;
             pendingNode.running = false;
@@ -21101,1045 +14036,8 @@ async function runGeneration(){
         render();
     }
 }
-async function runPromptLLMNode(nodeId){
-    const node = nodes.find(n => n.id === nodeId);
-    if(!node || node.type !== 'smart-prompt') return;
-    const projectId = canvas?.project_id || canvas?.project || canvasId || '';
-    const message = promptNodeLLMInputText(node).trim();
-    if(!message){ toast(tr('smart.promptLlmNeedText')); return; }
-    const systemPrompt = (node.llmSystemPrompt || '').trim();
-    node.llmEnabled = true;
-    node.running = true;
-    render();
-    try {
-        const provider = resolveChatProviderId(node.llmProvider || '');
-        const model = resolveChatModel(node.llmModel || '', provider);
-        const mediaRefs = promptNodeInputMediaForLLM(node);
-        const images = imageRefsOnly(mediaRefs).map(img => img.url).filter(Boolean);
-        const videos = videoRefsOnly(mediaRefs).map(video => video.url).filter(Boolean);
-        const result = await fetch('/api/canvas-llm', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                project_id:projectId,
-                message,
-                messages:[],
-                images,
-                videos,
-                model,
-                provider,
-                ms_model: provider === 'modelscope' ? model : '',
-                system_prompt:node.llmSystemEnabled ? (systemPrompt || 'You are a helpful prompt assistant.') : ''
-            })
-        }).then(async r => {
-            if(!r.ok) throw new Error(await r.text());
-            return r.json();
-        });
-        node.text = (result.text || '').trim();
-        node.llmProvider = provider;
-        node.llmModel = model;
-        scheduleSave();
-    } catch(e) {
-        toast((e.message || tr('smart.promptLlmFailed')).slice(0, 160));
-    } finally {
-        node.running = false;
-        render();
-    }
-}
-async function queueSmartGenerationRegistration(nodeId, operation){
-    const key = String(nodeId || '');
-    const previous = smartGenerationRegistrationQueues.get(key) || Promise.resolve();
-    const current = previous.catch(() => {}).then(operation);
-    smartGenerationRegistrationQueues.set(key, current);
-    try {
-        return await current;
-    } finally {
-        if(smartGenerationRegistrationQueues.get(key) === current){
-            smartGenerationRegistrationQueues.delete(key);
-        }
-    }
-}
-function upsertSmartGenerationSubmission(node, submission){
-    if(!node || !submission?.idempotencyKey) return null;
-    const key = String(submission.idempotencyKey);
-    const current = smartGenerationSubmissions(node).filter(item => String(item.idempotencyKey) !== key);
-    const saved = {...submission, idempotencyKey:key, outcome:'unknown'};
-    node.generationSubmissions = [...current, saved];
-    node.pending = Math.max(Number(node.pending || 0), node.generationSubmissions.length);
-    return saved;
-}
-function clearSmartGenerationSubmission(node, idempotencyKey){
-    if(!node || !idempotencyKey) return;
-    const remaining = smartGenerationSubmissions(node).filter(item => String(item.idempotencyKey) !== String(idempotencyKey));
-    if(remaining.length) node.generationSubmissions = remaining;
-    else delete node.generationSubmissions;
-}
-async function postProjectImageTaskWithReplay(projectId, payload){
-    let lastError = null;
-    for(let attempt = 0; attempt < 2; attempt += 1){
-        try {
-            const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks`, {
-                method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-            });
-            const data = await response.json().catch(() => ({}));
-            if(response.ok) return data;
-            const error = new Error(apiErrorMessage(data, tr('smart.errRunFailed')));
-            if(response.status < 500){
-                error.smartSubmissionRejected = true;
-                throw error;
-            }
-            lastError = error;
-        } catch(error) {
-            if(error?.smartSubmissionRejected) throw error;
-            if(error?.message && !lastError) lastError = error;
-            if(attempt >= 1 || error?.name === 'AbortError') break;
-        }
-        await sleep(250);
-    }
-    const unknown = new Error(trf('smart.submitUnknownRecoverDetail', {m: lastError?.message || tr('smart.networkInterrupted')}));
-    unknown.smartSubmissionUnknown = true;
-    unknown.idempotencyKey = payload.idempotency_key;
-    throw unknown;
-}
-async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=null, runOptions={}){
-    const count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
-    const pendingHistoryId = runOptions.pendingHistoryId || beginSmartPendingHistoryLog(resultNode, {
-            prompt,
-            kind:'image',
-            providerId:runSettings.providerId || runSettings.provider_id || '',
-            model:runSettings.model || '',
-            runSettings
-        });
-    if(canvas?.format === 'firefly-canvas-v1' && !runOptions.registrationQueued){
-        if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
-        return queueSmartGenerationRegistration(resultNode.id, () => runApiGeneration(prompt, refs, runSettings, resultNode, {
-            ...runOptions,
-            pendingHistoryId,
-            registrationQueued:true
-        }));
-    }
-    if(canvas?.format === 'firefly-canvas-v1'){
-        if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
-        const outpaintSize = validOutpaintSize(resultNode);
-        const usesExplicitResolution = !outpaintSize && apiImageUsesExplicitResolution(runSettings);
-        // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution
-        const size = usesExplicitResolution ? sizeForRun(runSettings) : '';
-        const parsed = usesExplicitResolution ? parseSizeValue(size) : null;
-        if(usesExplicitResolution && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
-        const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(importProjectMediaReference));
-        const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
-        if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));
-        const projectId = canvas.project_id || canvas.project || canvasId;
-        const payload = {
-            prompt,
-            routing_mode:runSettings.routingMode === 'manual' ? 'manual' : 'auto',
-            provider_id:runSettings.routingMode === 'manual' ? (runSettings.provider_id || '') : '',
-            model:runSettings.routingMode === 'manual' ? (runSettings.model || '') : '',
-            size,
-            width:parsed?.width || null,
-            height:parsed?.height || null,
-            aspect_ratio:aspectRatioForRun(runSettings),
-            resolution:usesExplicitResolution ? (runSettings.resolution || '') : '',
-            quality:runSettings.quality || 'auto',
-            n:count,
-            reference_asset_ids,
-            media_type:'image',
-            result_node_id:resultNode.id,
-            angle_preset:runSettings.anglePreset || 'none',
-            base_revision:Number(canvas.revision || 0),
-            idempotency_key:runOptions.idempotencyKey || `browser:${projectId}:${pendingHistoryId || uid('generation')}`
-        };
-        const submission = upsertSmartGenerationSubmission(resultNode, {
-            idempotencyKey:payload.idempotency_key,
-            requestPayload:{...payload},
-            pendingHistoryId,
-            count,
-            prompt,
-            createdAt:nowMs()
-        });
-        scheduleSave();
-        if(!await flushProjectCanvasBeforeGeneration()){
-            clearSmartGenerationSubmission(resultNode, payload.idempotency_key);
-            scheduleSave();
-            throw new Error(tr('smart.canvasUnsavedImageStopped'));
-        }
-        // The durable submission marker was saved at the previous revision.
-        // A first-time replay uses the latest revision; duplicate resolution
-        // ignores this mutable field and still returns the original task.
-        payload.base_revision = Number(canvas.revision || payload.base_revision || 0);
-        if(submission) submission.requestPayload = {...payload};
-        const task = await postProjectImageTaskWithReplay(projectId, payload);
-        const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
-        await acceptProjectGenerationRegistration(taskResult);
-        // 新运行重置计时器：项目 API 提交路径不经过 runCascadeStepIntoNode，
-        // 必须显式重置，否则持久化节点会带着上次生成的旧 runStartedAt 无限涨。
-        const refreshedNode = nodes.find(item => item.id === resultNode.id) || resultNode;
-        refreshedNode.runStartedAt = nowMs();
-        delete refreshedNode.runFinishedAt;
-        delete refreshedNode.runElapsedMs;
-        refreshedNode.runTimerHidden = false;
-        clearSmartGenerationSubmission(nodes.find(item => item.id === resultNode.id) || resultNode, payload.idempotency_key);
-        scheduleSave();
-        return taskResult;
-    }
-    if(!runSettings.provider_id || !runSettings.model) throw new Error(tr('smart.errNoApiModel'));
-    const payload = {prompt, provider_id:runSettings.provider_id, model:runSettings.model, size:sizeForRun(runSettings), quality:runSettings.quality || 'auto', n:1, reference_images:imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX)};
-    const tasks = await Promise.all(Array.from({length:count}, () => fetch('/api/canvas-image-tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).then(async r => {
-        if(!r.ok) throw new Error(await r.text());
-        return r.json();
-    })));
-    return {taskIds:tasks.map(task => task.task_id).filter(Boolean), count, providerId:payload.provider_id, model:payload.model};
-}
-async function runRunningHubGeneration(prompt, refs, runSettings=settings){
-    const ref = selectedRunningHubRef(runSettings);
-    if(!ref) throw new Error(tr('smart.rhNeedConfig'));
-    const fields = rhActiveFields(runSettings);
-    if(!fields.length) throw new Error(tr('smart.rhNeedFields'));
-    const randomValues = {};
-    const mode = ref.kind === 'app' ? 'app' : 'model';
-    if(mode !== 'app') throw new Error(tr('smart.rhNeedConfig'));
-    const media = rhMediaForRun(prompt, refs);
-    const nodeInfoList = await rhBuildNodeInfoList(media, runSettings, randomValues);
-    const endpoint = '/api/runninghub/submit';
-    const body = {webappId:ref.id, nodeInfoList, instanceType:runSettings.rhInstanceType || '', useWallet:runSettings.rhPayment === 'wallet'};
-    const submit = await fetch(endpoint, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(body)
-    }).then(async r => {
-        const data = await r.json();
-        if(!r.ok || data.success === false) throw new Error(data.detail || data.error || tr('smart.rhFailed'));
-        return data.data || data;
-    });
-    const taskId = submit.taskId;
-    if(!taskId) throw new Error(tr('smart.rhNoTaskId'));
-    const useWallet = runSettings.rhPayment === 'wallet';
-    for(let i = 0; i < 720; i++){
-        await sleep(2500);
-        const data = await fetch(`/api/runninghub/query?taskId=${encodeURIComponent(taskId)}&useWallet=${useWallet ? '1' : '0'}`).then(async r => {
-            const json = await r.json();
-            if(!r.ok || json.success === false) throw new Error(json.detail || json.error || tr('smart.rhFailed'));
-            return json.data || json;
-        });
-        if(data.status === 'SUCCESS'){
-            const urls = resultMediaUrls(data.image_items?.length ? data.image_items : (data.urls || []));
-            if(!urls.length) throw new Error(tr('smart.rhOutputsEmpty'));
-            return urls;
-        }
-        if(data.status === 'FAILED') throw new Error(data.failReason || tr('smart.rhFailed'));
-    }
-    throw new Error(tr('smart.rhTimeout'));
-}
-function projectVideoSizeForRun(runSettings=settings){
-    const ratio = runSettings.videoAspect || '16:9';
-    const base = {
-        '16:9':[1280,720], '9:16':[720,1280], '1:1':[720,720],
-        '4:3':[960,720], '3:4':[720,960], '21:9':[1280,544], '9:21':[544,1280]
-    }[ratio] || [1280,720];
-    const resolution = String(runSettings.videoResolution || '720p').toLowerCase();
-    const scale = resolution === '480p' ? 2 / 3 : resolution === '1080p' ? 1.5 : 1;
-    const width = Math.max(64, Math.round(base[0] * scale / 8) * 8);
-    const height = Math.max(64, Math.round(base[1] * scale / 8) * 8);
-    return {width, height, size:`${width}x${height}`};
-}
-async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultNode=null){
-    if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
-    if(canvas?.format === 'firefly-canvas-v1'){
-        if(!resultNode?.id) throw new Error(tr('smart.projectVideoMissingResult'));
-        if(!await flushProjectCanvasBeforeGeneration()) throw new Error(tr('smart.canvasUnsavedVideoStopped'));
-        const projectRefs = (refs || []).filter(ref => ['image','video','audio'].includes(mediaKindForItem(ref)));
-        const ownedRefs = await Promise.all(projectRefs.map(ref => importProjectMediaReference(ref)));
-        if(ownedRefs.some(item => !item?.asset_id) || ownedRefs.length !== projectRefs.length) throw new Error(tr('smart.videoRefsNotInProject'));
-        const projectId = canvas.project_id || canvas.project || canvasId;
-        const size = projectVideoSizeForRun(runSettings);
-        const payload = {
-            prompt,
-            routing_mode:(runSettings.engine === 'volcengine' || runSettings.videoRoutingMode === 'manual') ? 'manual' : 'auto',
-            provider_id:(runSettings.engine === 'volcengine' || runSettings.videoRoutingMode === 'manual') ? (runSettings.videoProvider || '') : '',
-            model:(runSettings.engine === 'volcengine' || runSettings.videoRoutingMode === 'manual') ? (runSettings.videoModel || '') : '',
-            size:size.size,
-            width:size.width,
-            height:size.height,
-            aspect_ratio:runSettings.videoAspect || '16:9',
-            resolution:runSettings.videoResolution || '',
-            duration:Math.max(1, Math.min(600, Number(runSettings.videoDuration) || 5)),
-            quality:runSettings.videoQuality || runSettings.quality || 'auto',
-            n:1,
-            seed:Number.isFinite(Number(runSettings.videoSeed)) ? Number(runSettings.videoSeed) : null,
-            enhance_prompt:Boolean(runSettings.videoEnhancePrompt),
-            enable_upsample:Boolean(runSettings.videoEnableUpsample),
-            watermark:Boolean(runSettings.videoWatermark),
-            camera_fixed:Boolean(runSettings.videoCameraFixed),
-            return_last_frame:Boolean(runSettings.videoReturnLastFrame),
-            generate_audio:Boolean(runSettings.videoGenerateAudio),
-            image_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'image').map(item => item.asset_id),
-            video_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'video').map(item => item.asset_id),
-            audio_reference_asset_ids:ownedRefs.filter(item => mediaKindForItem(item) === 'audio').map(item => item.asset_id),
-            media_type:'video',
-            result_node_id:resultNode.id,
-            base_revision:Number(canvas.revision || 0)
-        };
-        const task = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/video-generation-tasks`, {
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-        }).then(async response => {
-            const data = await response.json().catch(() => ({}));
-            if(!response.ok) throw new Error(apiErrorMessage(data, tr('smart.errRunFailed')));
-            return data;
-        });
-        return {taskIds:[task.task_id].filter(Boolean), count:1, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, kind:'video'};
-    }
-    try {
-        const uploadedRefs = applyUploadedUrlsToSmartRefs(refs, runSettings);
-        const trustedMode = Boolean(runSettings.videoTrustedAsset);
-        const trustedSource = trustedMode ? (['library','cloud','manual'].includes(runSettings.videoTrustedSource) ? runSettings.videoTrustedSource : 'library') : 'none';
-        // 仅「素材库链接」来源才走 asset:// 认证地址 + 后端可信素材路由；上传云端/手动网址走普通直链。
-        const useAssetUris = trustedSource === 'library';
-        const targetPlatform = videoProviderPlatform(runSettings.videoProvider || 'comfly');
-        let mismatchedAsset = false;
-        const effUrl = ref => {
-            const uris = (ref && ref.asset_uris && typeof ref.asset_uris === 'object') ? ref.asset_uris : null;
-            if(useAssetUris && uris && Object.keys(uris).length){
-                // asset:// 与平台绑定：取当前视频平台对应的认证地址；该素材没注册到这个平台就回退本地 url
-                if(targetPlatform && uris[targetPlatform]) return uris[targetPlatform];
-                mismatchedAsset = true;
-            }
-            return ref?.url;
-        };
-        const refImages = imageRefsOnly(uploadedRefs).map((ref, i) => {
-            const item = {url:effUrl(ref), name:ref.name || `图${i + 1}`};
-            if(runSettings.videoUseFrameRoles){
-                if(i === 0) item.role = 'first_frame';
-                else if(i === 1) item.role = 'last_frame';
-            }
-            return item;
-        });
-        const manualVideo = manualSmartVideoLink(runSettings)?.url || '';
-        const refVideos = manualVideo ? manualSmartMediaLinks(runSettings).map(item => item.url).filter(Boolean) : videoRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean);
-        const refAudios = audioRefsOnly(uploadedRefs).map(ref => effUrl(ref)).filter(Boolean).slice(0, 3);
-        const videoSize = projectVideoSizeForRun(runSettings);
-        if(mismatchedAsset) toast(tr('smart.assetPlatformMismatch'));
-        const payload = {
-            prompt,
-            provider_id: runSettings.videoProvider || 'comfly',
-            model: runSettings.videoModel || 'veo3-fast',
-            size:videoSize.size,
-            width:videoSize.width,
-            height:videoSize.height,
-            duration: Math.max(1, Math.min(60, Number(runSettings.videoDuration) || 5)),
-            aspect_ratio: runSettings.videoAspect || '16:9',
-            resolution: runSettings.videoResolution || '',
-            quality:runSettings.videoQuality || runSettings.quality || 'auto',
-            media_type:'video',
-            images: refImages,
-            videos: refVideos,
-            audios: refAudios,
-            enhance_prompt: Boolean(runSettings.videoEnhancePrompt),
-            enable_upsample: Boolean(runSettings.videoEnableUpsample),
-            watermark: Boolean(runSettings.videoWatermark),
-            camerafixed: Boolean(runSettings.videoCameraFixed),
-            return_last_frame: Boolean(runSettings.videoReturnLastFrame),
-            generate_audio: Boolean(runSettings.videoGenerateAudio),
-            multimodal: Boolean(runSettings.videoMultimodal),
-            trusted_asset: useAssetUris
-        };
-        const result = await fetch('/api/canvas-video', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify(payload)
-        }).then(async r => { if(!r.ok) throw new Error(await smartResponseErrorMessage(r, tr('smart.errRunFailed'))); return r.json(); });
-        if(result && result.jimeng_pending) throw new JimengPendingSignal({submitId:result.submit_id, kind:result.kind || 'video', queueInfo:result.queue_info, message:result.message});
-        return resultMediaUrls(result);
-    } finally {
-        transientSmartCloudLinks = [];
-    }
-}
-function sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
 // Local ComfyUI generation execution was removed.
 
-function smartPendingTasks(node){
-    if(!node || !Array.isArray(node.pendingTasks)) return [];
-    return node.pendingTasks.filter(task => task && task.taskId);
-}
-function projectImageTaskUrl(taskId){
-    const projectId = canvas?.project_id || canvas?.project || canvasId;
-    const tid = String(taskId || '');
-    if(canvas?.format === 'firefly-canvas-v1' && tid.startsWith('project_img_')){
-        return `/api/project-library/${encodeURIComponent(projectId)}/image-generation-tasks/${encodeURIComponent(taskId)}`;
-    }
-    if(canvas?.format === 'firefly-canvas-v1' && tid.startsWith('project_vid_')){
-        return `/api/project-library/${encodeURIComponent(projectId)}/video-generation-tasks/${encodeURIComponent(taskId)}`;
-    }
-    return `/api/canvas-image-tasks/${encodeURIComponent(taskId)}`;
-}
-class JimengPendingSignal extends Error {
-    constructor(info){
-        const data = info || {};
-        super(data.message || tr('smart.jimengQueuedFallback'));
-        this.jimengPending = true;
-        this.submitId = data.submitId || data.submit_id || '';
-        this.kind = data.kind || 'image';
-        this.queueInfo = data.queueInfo || data.queue_info || {};
-    }
-}
-class ImageTaskRecoverSignal extends Error {
-    constructor(info){
-        const data = info || {};
-        super(data.message || tr('smart.taskNotLostLater'));
-        this.imageTaskRecover = true;
-        this.taskId = data.taskId || data.task_id || '';
-        this.recoverTaskId = data.recoverTaskId || data.upstream_task_id || data.task_id || '';
-        this.providerId = data.providerId || data.provider_id || '';
-        this.kind = data.kind || 'image';
-    }
-}
-function extractUpstreamTaskId(text){
-    const match = String(text || '').match(/(?:task_id|taskId|task id)\s*[=:：]\s*([A-Za-z0-9_.:-]+)/i);
-    return match ? match[1] : '';
-}
-const activeJimengPolls = new Set();
-const JIMENG_POLL_INTERVAL = 60000;
-const JIMENG_POLL_MAX = 1440;
-function jimengQueueText(queueInfo){
-    const qi = queueInfo || {};
-    const idx = qi.queue_idx;
-    const len = qi.queue_length;
-    if(idx != null && len != null) return trf('smart.jimengCloudQueued', {idx: idx, len: len});
-    return tr('smart.jimengCloudGenerating');
-}
-function setNodeJimengPending(node, signal){
-    if(!node || !signal || !signal.submitId) return;
-    const prev = node.jimengPending && node.jimengPending.submitId === signal.submitId ? node.jimengPending : null;
-    node.jimengPending = {
-        submitId:signal.submitId,
-        kind:signal.kind || (prev && prev.kind) || 'image',
-        queueInfo:signal.queueInfo || (prev && prev.queueInfo) || {},
-        message:signal.message || (prev && prev.message) || '',
-        startedAt:(prev && prev.startedAt) || nowMs(),
-        updatedAt:nowMs(),
-        querying:prev ? prev.querying : false
-    };
-    node.running = false;
-    node.pending = 0;
-    delete node.pendingTasks;
-    if(!node.runStartedAt) node.runStartedAt = node.jimengPending.startedAt;
-    delete node.runFinishedAt;
-    delete node.runElapsedMs;
-    node.runTimerHidden = false;
-    render();
-    scheduleStateSave();
-    startJimengPoll(node);
-}
-function handleJimengPendingSignal(node, e){
-    if(!(e && e.jimengPending && e.submitId)) return false;
-    setNodeJimengPending(node, e);
-    toast((e.message || jimengQueueText(e.queueInfo)).slice(0, 160));
-    return true;
-}
-function finalizeJimengPending(node, urls, kind='image'){
-    if(!node) return false;
-    const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-    const additions = (urls || []).map((item, i) => {
-        const url = typeof item === 'string' ? item : item?.url || '';
-        const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
-    }).filter(item => item.url);
-    if(!additions.length) return false;
-    delete node.jimengPending;
-    replaceOutputsToNodeWithHistory(node, additions, kind, null, {skipShift:true});
-    node.running = false;
-    node.pending = 0;
-    node.runFinishedAt = nowMs();
-    if(!node.runStartedAt) node.runStartedAt = node.runFinishedAt;
-    node.runElapsedMs = Math.max(0, node.runFinishedAt - Number(node.runStartedAt || node.runFinishedAt));
-    node.runTimerHidden = false;
-    render();
-    scheduleSave();
-    return true;
-}
-function applyJimengQueryResult(node, data){
-    if(!node || !data) return false;
-    if(data.status === 'succeeded'){
-        const kind = data.kind || node.jimengPending?.kind || 'image';
-        return finalizeJimengPending(node, data.urls || [], kind);
-    }
-    if(data.status === 'failed'){
-        delete node.jimengPending;
-        node.running = false;
-        node.pending = 0;
-        toast((data.error || tr('smart.jimengTaskFailed')).slice(0, 160));
-        render();
-        scheduleStateSave();
-        return true;
-    }
-    if(node.jimengPending){
-        node.jimengPending.queueInfo = data.queue_info || node.jimengPending.queueInfo || {};
-        node.jimengPending.message = data.message || node.jimengPending.message || '';
-        node.jimengPending.updatedAt = nowMs();
-    }
-    render();
-    scheduleStateSave();
-    return false;
-}
-async function fetchJimengQuery(submitId, kind){
-    return fetch('/api/jimeng/query-media', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({submit_id:submitId, kind:kind || 'image'})
-    }).then(async r => { if(!r.ok) throw new Error(await r.text()); return r.json(); });
-}
-async function queryJimengNow(nodeId){
-    const node = nodes.find(n => n.id === nodeId);
-    if(!node || !node.jimengPending || !node.jimengPending.submitId) return;
-    if(node.jimengPending.querying) return;
-    const submitId = node.jimengPending.submitId;
-    const kind = node.jimengPending.kind || 'image';
-    node.jimengPending.querying = true;
-    render();
-    try {
-        const data = await fetchJimengQuery(submitId, kind);
-        applyJimengQueryResult(node, data);
-    } catch(e){
-        toast((e.message || tr('smart.queryFailed')).slice(0, 160));
-    } finally {
-        if(node.jimengPending) node.jimengPending.querying = false;
-        render();
-    }
-}
-function providerIdForSmartTask(node, task){
-    return task?.providerId || node?.runSettings?.provider_id || settings.provider_id || 'comfly';
-}
-async function fetchImageTaskQuery(providerId, taskId){
-    return fetch('/api/image-task-query', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({provider_id:providerId || 'comfly', task_id:taskId})
-    }).then(async r => {
-        if(!r.ok) throw new Error(await r.text());
-        return r.json();
-    });
-}
-async function querySmartImageTaskNow(nodeId, localTaskId){
-    const node = nodes.find(n => n.id === nodeId);
-    if(!node) return;
-    const task = smartPendingTasks(node).find(item => item.taskId === localTaskId) || smartRecoverableImageTask(node);
-    if(!task || task.querying) return;
-    const recoverTaskId = task.recoverTaskId || extractUpstreamTaskId(task.error || '');
-    if(!recoverTaskId){
-        toast(tr('smart.queryMissingTaskId'));
-        return;
-    }
-    task.querying = true;
-    task.recoverTaskId = recoverTaskId;
-    render();
-    try {
-        const data = await fetchImageTaskQuery(providerIdForSmartTask(node, task), recoverTaskId);
-        if(data.status === 'succeeded'){
-            task.failed = false;
-            task.querying = false;
-            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
-            node.recoveredGenerationTasks = (node.recoveredGenerationTasks || []).filter(item => item.taskId !== task.taskId);
-            if(!node.recoveredGenerationTasks.length) delete node.recoveredGenerationTasks;
-            render();
-            scheduleSave();
-            return;
-        }
-        if(data.status === 'failed'){
-            task.error = data.error || tr('smart.errRunFailed');
-            toast(task.error.slice(0, 160));
-        } else {
-            task.error = data.message || tr('smart.taskStillGenerating');
-            toast(task.error);
-        }
-    } catch(e){
-        task.error = e.message || tr('smart.queryFailed');
-        toast(task.error.slice(0, 160));
-    } finally {
-        const latest = smartPendingTasks(node).find(item => item.taskId === localTaskId);
-        if(latest) latest.querying = false;
-        render();
-        scheduleStateSave();
-    }
-}
-function startJimengPoll(node){
-    if(!node || !node.jimengPending || !node.jimengPending.submitId) return;
-    const submitId = node.jimengPending.submitId;
-    if(activeJimengPolls.has(submitId)) return;
-    activeJimengPolls.add(submitId);
-    const nodeId = node.id;
-    (async () => {
-        try {
-            for(let i = 0; i < JIMENG_POLL_MAX; i++){
-                await new Promise(resolve => setTimeout(resolve, JIMENG_POLL_INTERVAL));
-                const cur = nodes.find(n => n.id === nodeId);
-                if(!cur || !cur.jimengPending || cur.jimengPending.submitId !== submitId) return;
-                if(cur.jimengPending.querying) continue;
-                let data;
-                try {
-                    data = await fetchJimengQuery(submitId, cur.jimengPending.kind || 'image');
-                } catch(err){ continue; }
-                const done = applyJimengQueryResult(cur, data);
-                if(done) return;
-                const after = nodes.find(n => n.id === nodeId);
-                if(!after || !after.jimengPending || after.jimengPending.submitId !== submitId) return;
-            }
-        } finally {
-            activeJimengPolls.delete(submitId);
-        }
-    })();
-}
-function resumeJimengPendingNodes(){
-    nodes.filter(n => n && n.jimengPending && n.jimengPending.submitId).forEach(n => {
-        n.jimengPending.querying = false;
-        startJimengPoll(n);
-    });
-}
-async function pollSmartCanvasTask(taskId){
-    if(!taskId) throw new Error(tr('smart.errRunFailed'));
-    if(activeSmartTaskPolls.has(taskId)) return activeSmartTaskPolls.get(taskId);
-    const promise = (async () => {
-        for(let i = 0; i < 900; i++){
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            const task = await fetch(projectImageTaskUrl(taskId)).then(async r => {
-                if(!r.ok) throw new Error(await r.text());
-                return r.json();
-            });
-            applySmartTaskProgress(taskId, task.progress);
-            if(task.status === 'succeeded'){
-                const result = task.result || {};
-                absorbProjectGenerationResult(result, taskId);
-                return result;
-            }
-            if(task.status === 'jimeng_pending') throw new JimengPendingSignal({submitId:task.submit_id, kind:task.kind, queueInfo:task.queue_info, message:task.message});
-            if(task.status === 'cancelled'){
-                const cancelledResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                const error = new Error(task.error || tr('smart.taskCancelled'));
-                error.generationCancelled = true;
-                // 服务端终态：前端必须按服务商失败处理，不能当网络错误重试
-                error.providerFailure = true;
-                if(cancelledResult?.history_recorded) error.smartGenerationLogged = true;
-                if(cancelledResult?.project_node_applied) error.projectNodeApplied = true;
-                throw error;
-            }
-            if(task.status === 'failed'){
-                const failureResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                if(!failureResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunFailed'));
-                const recoverTaskId = task.upstream_task_id || extractUpstreamTaskId(task.error || '');
-                const error = recoverTaskId
-                    ? new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind:task.kind || 'image', message:task.error || tr('smart.errRunFailed')})
-                    : new Error(task.error || tr('smart.errRunFailed'));
-                // 服务端终态失败：前端必须直接进入 failedGenerationTasks，
-                // 不能按关键词误判成网络错误做 3 轮无效重试（用户反馈的
-                // “失败取回机制不生效”根因之一）。
-                error.providerFailure = true;
-                if(failureResult?.history_recorded) error.smartGenerationLogged = true;
-                if(failureResult?.project_node_applied) error.projectNodeApplied = true;
-                throw error;
-            }
-            if(task.status === 'timeout'){
-                // #41：任务级硬超时是终态——按失败处理，立即清理 pending/计时器，
-                // 不再进入 30 分钟轮询超时路径。
-                const timeoutResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                if(!timeoutResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunTimeout'));
-                const error = new Error(task.error || tr('smart.errRunTimeout'));
-                error.generationTimedOut = true;
-                error.providerFailure = true;
-                if(timeoutResult?.history_recorded) error.smartGenerationLogged = true;
-                if(timeoutResult?.project_node_applied) error.projectNodeApplied = true;
-                throw error;
-            }
-        }
-        throw new Error(tr('smart.errRunTimeout'));
-    })();
-    activeSmartTaskPolls.set(taskId, promise);
-    try {
-        return await promise;
-    } finally {
-        activeSmartTaskPolls.delete(taskId);
-    }
-}
-function absorbProjectGenerationResult(result, taskId=''){
-    if(!result?.history_recorded || !canvas) return result;
-    const revision = Number(result.project_revision || 0);
-    const registeredRevision = Number(result.registered_revision || 0);
-    if(result.history_record?.id){
-        canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
-        let pendingProgress = null;
-        if(taskId){
-            const pendingId = smartPendingHistoryId(taskId);
-            const taskLog = canvas.history.find(log => String(log?.id || '') === pendingId || smartHistoryTaskId(log) === String(taskId));
-            if(taskLog?.progress) pendingProgress = {...taskLog.progress};
-            canvas.history = canvas.history.filter(log => String(log?.id || '') !== pendingId && !(log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId)));
-        }
-        const hydratedRecord = hydrateProjectMediaReferences(result.history_record);
-        if(['failed', 'cancelled'].includes(result.history_record.status) && pendingProgress) hydratedRecord.progress = {...pendingProgress, failed:result.history_record.status === 'failed'};
-        const index = canvas.history.findIndex(item => item?.id === result.history_record.id);
-        if(index >= 0) canvas.history[index] = hydratedRecord;
-        else canvas.history.unshift(hydratedRecord);
-        canvas.history = mergeSmartHistoryRecordLists(canvas.history, []);
-        if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
-    }
-    const resultNode = nodes.find(item => item.id === result.result_node_id);
-    const resultNodeId = String(resultNode?.id || '');
-    const appliedNodeRevision = resultNodeId ? Number(smartGenerationNodeRevisions.get(resultNodeId) || 0) : 0;
-    const nodeSnapshotCurrent = revision <= 0 || revision >= appliedNodeRevision;
-    if(resultNode && result.final_node && nodeSnapshotCurrent){
-        const finalNode = hydrateProjectMediaReferences(result.final_node);
-        for(const key of ['images', 'pendingTasks', 'pending', 'running', 'queued', 'title', 'outputKind', '_generationBatchApplied']){
-            if(Object.prototype.hasOwnProperty.call(finalNode, key)) resultNode[key] = finalNode[key];
-            else delete resultNode[key];
-        }
-        if(!smartPendingTasks(resultNode).length){
-            delete resultNode._pendingHistoryId;
-            resultNode.runFinishedAt = nowMs();
-            if(!resultNode.runStartedAt) resultNode.runStartedAt = resultNode.runFinishedAt;
-            resultNode.runElapsedMs = Math.max(0, resultNode.runFinishedAt - Number(resultNode.runStartedAt || resultNode.runFinishedAt));
-            resultNode.runTimerHidden = false;
-        }
-        if(revision > 0 && resultNodeId) smartGenerationNodeRevisions.set(resultNodeId, revision);
-        result.project_node_applied = true;
-        if(Array.isArray(resultNode.images) && resultNode.images.length && result.history_record?.status === 'succeeded'){
-            requestSmartEdgeReveal(resultNode);
-        }
-    } else if(resultNode && !nodeSnapshotCurrent && taskId){
-        // #41：服务端快照落后于本地编辑（revision < appliedNodeRevision）时不能覆盖
-        // 节点内容，但任务已是终态——必须终结该任务的 pending 状态，否则节点永远
-        // “生成中”、计时器无限增长。
-        const pendingTask = smartPendingTasks(resultNode).find(item => item.taskId === taskId);
-        finalizeSmartPendingTask(resultNode, taskId, [], 'image', Number(pendingTask?.count || 1));
-        result.project_node_applied = true;
-    }
-    if(
-        revision > 0
-        && registeredRevision > 0
-        && revision === registeredRevision + 1
-        && Number(canvas.revision || 0) === registeredRevision
-        && nodeSnapshotCurrent
-    ){
-        canvas.revision = revision;
-        if(result.final_node?.id && persistedCoreSnapshot?.nodes){
-            persistedCoreSnapshot.nodes[String(result.final_node.id)] = JSON.stringify(result.final_node);
-        }
-    }
-    if(resultNode && result.history_record?.status === 'succeeded') resultNode._serverGenerationHistoryRecorded = true;
-    return result;
-}
-function finalizeSmartPendingTask(node, taskId, images, kind='image', completedCount=1){
-    if(!node || !taskId) return;
-    node.pendingTasks = smartPendingTasks(node).filter(task => task.taskId !== taskId);
-    node.pending = Math.max(0, Number(node.pending || 0) - Math.max(1, Number(completedCount) || 1));
-    const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-    const mediaItems = resultMediaUrls(images);
-    const existing = cleanHistoryImages(node.images || []);
-    const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
-    const additions = cleanHistoryImages((mediaItems || []).map((item, i) => {
-        const url = typeof item === 'string' ? item : item?.url || '';
-        const itemKind = (typeof item === 'object' && item.kind) || kind;
-        return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true, ...(typeof item === 'object' && item.mime_type ? {mime_type:item.mime_type} : {})}));
-    }).filter(item => item.url)).filter(item => {
-        const key = `${item.kind || ''}|${item.url || ''}`;
-        if(seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
-    node.images = [...existing, ...additions];
-    if(additions.length){
-        node.outputKind = kind;
-        requestSmartEdgeReveal(node);
-    }
-    if(!node.pending && smartPendingTasks(node).length === 0){
-        delete node.pendingTasks;
-        node.runFinishedAt = nowMs();
-        if(!node.runStartedAt) node.runStartedAt = node.runFinishedAt;
-        node.runElapsedMs = Math.max(0, node.runFinishedAt - Number(node.runStartedAt || node.runFinishedAt));
-        node.runTimerHidden = false;
-        node.running = false;
-        node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : 'Image');
-        if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
-        else node.scale = mediaNodeDefaultScale(node);
-        // 保留固化后的尺寸（占位图、写回、完成三个阶段统一），不再删除
-        // delete node.w;
-        // delete node.h;
-        // 批量生图完成时，如果节点在组框内，重新整理成员并计算组框尺寸
-        //（与 finalizePendingNode 保持一致，避免占位图→真实图切换时组框尺寸不匹配）
-        const group = smartGroupContainingNode(node.id);
-        if(group){
-            arrangeSmartGroupMembers(group, {skipUndo:true});
-            scheduleSave();
-        }
-    }
-}
-async function resumeSmartPendingNode(node, logContext={}){
-    const scopedTaskIds = new Set(Array.isArray(logContext.taskIds) ? logContext.taskIds.filter(Boolean) : []);
-    const tasks = smartPendingTasks(node).filter(task => !scopedTaskIds.size || scopedTaskIds.has(task.taskId));
-    if(!node || !tasks.length) return;
-    const logTaskFailure = (message, task) => {
-        if(!logContext?.run || !message) return;
-        const runMs = Math.max(0, nowMs() - Number(logContext.runLogStart || nowMs()));
-        addSmartGenerationHistory({
-            run:logContext.run,
-            outputs:[],
-            runMs,
-            error:message
-        });
-    };
-    node.pending = Math.max(tasks.length, Number(node.pending || 0) || tasks.length);
-    node.running = false;
-    render();
-    const failures = [];
-    await Promise.all(tasks.map(async task => {
-        if(task.failed && task.recoverTaskId) return;
-        try {
-            const result = await pollSmartCanvasTask(task.taskId);
-            const resultItems = task.kind === 'video'
-                ? (result?.video_items?.length ? result.video_items : (result?.videos?.length ? result.videos : result))
-                : (result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result));
-            const resultImages = result?.project_node_applied
-                ? []
-                : resultMediaUrls(resultItems);
-            if(!result?.project_node_applied){
-                finalizeSmartPendingTask(node, task.taskId, resultImages, task.kind || 'image', task.count || 1);
-            }
-            render();
-            scheduleSave();
-        } catch(e) {
-            if(e && e.jimengPending && e.submitId){
-                node.pendingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
-                setNodeJimengPending(node, e);
-                render();
-                scheduleStateSave();
-                return;
-            }
-            if(e && e.imageTaskRecover && e.recoverTaskId){
-                // #41：任务在服务端已丢失（终态），不能继续留在 pendingTasks 里让节点
-                // 永远“生成中”。把可手动查询的恢复信息移入 recoveredGenerationTasks，
-                // 再按终态清理 pending，停止计时器/轮询/loading。
-                task.failed = true;
-                task.querying = false;
-                task.recoverTaskId = e.recoverTaskId;
-                task.providerId = e.providerId || task.providerId || providerIdForSmartTask(node, task);
-                task.error = e.message || tr('smart.errRunFailed');
-                if(!e?.smartGenerationLogged) logTaskFailure(task.error, task);
-                node.recoveredGenerationTasks = Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks : [];
-                if(!node.recoveredGenerationTasks.some(item => item.taskId === task.taskId && item.recoverTaskId === task.recoverTaskId)){
-                    node.recoveredGenerationTasks.push({taskId:task.taskId, recoverTaskId:task.recoverTaskId, providerId:task.providerId, kind:task.kind || 'image', error:task.error, failed:true, at:nowMs()});
-                }
-                finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
-                node.running = false;
-                toast(tr('smart.taskNotLostLater'));
-                render();
-                scheduleSave();
-                return;
-            }
-            // 区分服务商失败和网络问题：服务端终态失败带 providerFailure 标记；
-            // 其余情况再按错误文本关键词兜底判断。
-            const isProviderFailure = e && (e.providerFailure || (e.message && (e.message.includes('failed') || e.message.includes('cancelled') || e.message.includes('timeout') || e.message.includes('sensitive') || e.message.includes('FAILURE'))));
-            
-            if(isProviderFailure){
-                // 服务商失败（终态）：无论节点状态是否已被服务端同步，都必须登记
-                // failedGenerationTasks，让节点显示"重试/取回"UI。
-                // （后端 fail_image_generation 已把任务从 pendingTasks 移除并同步节点，
-                //  若像旧逻辑那样用 projectNodeApplied 作守卫，失败任务会被静默吞掉，
-                //  用户永远看不到重试入口——即"失败取回机制不生效"的根因。）
-                node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
-                if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                    node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
-                }
-                if(!e?.projectNodeApplied){
-                    // 服务端未同步节点状态时，前端负责清理该任务的 pending
-                    const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
-                    node.pendingTasks = remainingTasks;
-                    node.pending = remainingTasks.length
-                        ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
-                        : 0;
-                }
-                if(!node.pending && smartPendingTasks(node).length === 0){
-                    delete node.pendingTasks;
-                    node.running = false;
-                    if(!(node.images || []).length){
-                        delete node.w;
-                        delete node.h;
-                    }
-                }
-                if(!e?.smartGenerationLogged){
-                    logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                    if(e && typeof e === 'object') e.smartGenerationLogged = true;
-                }
-                toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
-                render();
-                scheduleSave();
-                return;
-            }
-            
-            // 网络问题，自动重试
-            task._retryCount = (task._retryCount || 0) + 1;
-            if(task._retryCount <= 3){
-                const delay = task._retryCount * 5000; // 5s, 10s, 15s
-                toast(trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
-                await sleep(delay);
-                // 图片回载后取消重试
-                if(activeSmartTaskPolls.has(task.taskId)){
-                    return; // 图片已回载，取消重试
-                }
-                return resumeSmartPendingNode(node, logContext);
-            }
-            
-            // 重试耗尽
-            if(!e?.projectNodeApplied){
-                const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
-                node.pendingTasks = remainingTasks;
-                node.pending = remainingTasks.length
-                    ? Math.max(remainingTasks.length, remainingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0))
-                    : 0;
-                node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
-                if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
-                    node.failedGenerationTasks.push({taskId:task.taskId, error:trf('smart.networkRetryExhausted', {n: task._retryCount}), at:nowMs(), retryable:true});
-                }
-            }
-            if(!node.pending && smartPendingTasks(node).length === 0){
-                delete node.pendingTasks;
-                node.running = false;
-                if(!(node.images || []).length){
-                    delete node.w;
-                    delete node.h;
-                }
-            }
-            failures.push(e);
-            if(!e?.smartGenerationLogged){
-                logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                if(e && typeof e === 'object') e.smartGenerationLogged = true;
-            }
-            toast(tr('smart.writeFailedMaxRetries'));
-            render();
-            scheduleSave();
-        }
-    }));
-    if(failures.length){
-        throw failures[0];
-    }
-}
-async function retryFailedGeneration(nodeId){
-    const node = nodes.find(item => String(item.id || '') === String(nodeId));
-    if(!node) return;
-    // 防连点：重试在途时不重复提交（会生成新的幂等键并重复计费）
-    if(node._retryInFlight) return;
-    node._retryInFlight = true;
-    try{
-        await retryFailedGenerationInner(node);
-    } finally {
-        node._retryInFlight = false;
-    }
-}
-async function retryFailedGenerationInner(node){
-    const failedTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks.slice() : [];
-    if(failedTasks.length){
-        // 1) 先尝试取回失败任务里已归档成功的图（服务端兑底 outputs）
-        const projectId = canvas.project_id || canvas.project || canvasId;
-        for(const failedTask of failedTasks){
-            try{
-                const response = await fetch(projectImageTaskUrl(failedTask.taskId));
-                if(!response.ok) continue;
-                const task = await response.json();
-                const outputs = Array.isArray(task?.result?.history_record?.outputs) ? task.result.history_record.outputs : [];
-                if(task.status === 'failed' && outputs.length){
-                    const base = `/api/project-library/${encodeURIComponent(projectId)}/media/`;
-                    const images = outputs.map(item => ({url: base + encodeURIComponent(item.asset_id || ''), kind: item.kind || 'image'}));
-                    node.failedGenerationTasks = [];
-                    finalizeSmartPendingTask(node, failedTask.taskId, images, 'image', images.length);
-                    render();
-                    scheduleSave();
-                    toast(trf('smart.recoveredResults', {n: images.length}));
-                    return;
-                }
-            }catch(_){
-                // 取回失败则继续尝试重新提交
-            }
-        }
-    }
-    // 2) 无已归档结果 → 用原请求重新生成。
-    // 显式重试是用户主动的新尝试：换新的幂等键，避免服务端按幂等重放
-    // 同一个已失败的任务（那样重试永远返回旧失败，取回机制无法生效）。
-    node.failedGenerationTasks = [];
-    const submission = smartGenerationSubmissions(node).find(item => item && item.requestPayload);
-    if(submission){
-        submission.idempotencyKey = `regen-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        await resumeSmartGenerationSubmission(node, submission);
-        render();
-        return;
-    }
-    render();
-    toast(tr('smart.noRetryableRequest'));
-}
-
-async function resumeSmartGenerationSubmission(node, submission){
-    const nodeId = String(node?.id || '');
-    const idempotencyKey = String(submission?.idempotencyKey || '');
-    const recoveryKey = `${nodeId}:${idempotencyKey}`;
-    if(!nodeId || !idempotencyKey || activeSmartSubmissionRecoveries.has(recoveryKey)) return;
-    activeSmartSubmissionRecoveries.add(recoveryKey);
-    try {
-        const projectId = canvas.project_id || canvas.project || canvasId;
-        const payload = {...(submission.requestPayload || {}), idempotency_key:idempotencyKey, result_node_id:nodeId, base_revision:Number(canvas.revision || 0)};
-        const task = await postProjectImageTaskWithReplay(projectId, payload);
-        const pendingHistoryId = String(submission.pendingHistoryId || smartPendingHistoryId(task.task_id));
-        const taskResult = {
-            taskIds:[task.task_id].filter(Boolean),
-            count:Number(submission.count || payload.n || 1),
-            providerId:task.route?.provider_id || '',
-            model:task.route?.model || '',
-            route:task.route,
-            projectRevision:task.project_revision,
-            registeredNode:task.registered_node,
-            pendingHistoryId,
-            idempotencyKey:task.idempotency_key || idempotencyKey
-        };
-        await acceptProjectGenerationRegistration(taskResult);
-        const currentNode = nodes.find(item => String(item.id || '') === nodeId) || node;
-        clearSmartGenerationSubmission(currentNode, idempotencyKey);
-        const taskIds = taskResult.taskIds;
-        const newTasks = taskIds.map(taskId => ({
-            taskId,
-            kind:'image',
-            count:taskResult.count,
-            providerId:taskResult.providerId,
-            model:taskResult.model,
-            prompt:submission.prompt || payload.prompt || '',
-            createdAt:Number(submission.createdAt || nowMs()),
-            pendingHistoryId,
-            idempotencyKey
-        }));
-        currentNode.pendingTasks = [...smartPendingTasks(currentNode).filter(item => !taskIds.includes(item.taskId)), ...newTasks];
-        // 恢复提交同样固化比例（size 取原始请求快照，服务端 task_record 也带 size）。
-        const resumeSize = String((submission?.requestPayload?.size || payload?.size || submission?.size || ''));
-        currentNode._generationAspect = parseSizeAspect(resumeSize);
-        ensureSmartPendingHistoryLogs(currentNode, newTasks, {prompt:submission.prompt || payload.prompt || '', kind:'image'});
-        currentNode.pending = Math.max(currentNode.pendingTasks.length, currentNode.pendingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0));
-        // 恢复提交：保持占位格总数固化（已有则保留，避免覆盖）
-        if(!Number(currentNode._batchTotal)) currentNode._batchTotal = currentNode.pending;
-        currentNode.running = false;
-        render();
-        scheduleSave();
-        await resumeSmartPendingNode(currentNode, {taskIds});
-    } catch(error) {
-        if(!error?.smartSubmissionUnknown){
-            const currentNode = nodes.find(item => String(item.id || '') === nodeId) || node;
-            clearSmartGenerationSubmission(currentNode, idempotencyKey);
-            scheduleSave();
-        }
-        toast((error?.message || tr('smart.recoverSubmitFailed')).slice(0, 160));
-    } finally {
-        activeSmartSubmissionRecoveries.delete(recoveryKey);
-    }
-}
-function resumeSmartPendingTasks(){
-    nodes.filter(node => smartGenerationSubmissions(node).length).forEach(node => {
-        smartGenerationSubmissions(node).forEach(submission => {
-            void resumeSmartGenerationSubmission(node, submission);
-        });
-    });
-    nodes.filter(node => smartPendingTasks(node).length).forEach(node => {
-        void resumeSmartPendingNode(node).catch(() => {});
-    });
-}
 function updateSelectionBox(event){
     if(!selectionState) return;
     const sx = selectionState.startScreen.x, sy = selectionState.startScreen.y;
@@ -22156,12 +14054,12 @@ function finishSelection(event){
     const b = screenToWorld(event);
     const minX = Math.min(a.x, b.x), minY = Math.min(a.y, b.y);
     const maxX = Math.max(a.x, b.x), maxY = Math.max(a.y, b.y);
-    selectedIds = nodes.filter(node => {
+    canvasState.selectedIds = canvasState.nodes.filter(node => {
         const r = nodeRect(node);
         return r.x < maxX && r.x + r.width > minX && r.y < maxY && r.y + r.height > minY;
     }).map(n => n.id);
-    selectedId = selectedIds.length === 1 ? selectedIds[0] : '';
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
+    canvasState.selectedImage = {nodeId:'', index:-1};
     selectionState = null;
     selectionJustFinished = true;
     selectionBox.style.display = 'none';
@@ -22169,8 +14067,8 @@ function finishSelection(event){
     setTimeout(() => { selectionJustFinished = false; }, 0);
 }
 function groupSelectedNodes(){
-    const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
-    const selected = ids.map(id => nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
+    const ids = canvasState.selectedIds.length ? canvasState.selectedIds.slice() : (canvasState.selectedId ? [canvasState.selectedId] : []);
+    const selected = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(n => n && !isSmartGroupNode(n));
     if(selected.length < 1){ toast(tr('smart.groupSelectRequired')); return; }
     // #148: 过滤掉不能进组的节点类型（agent/conversation/local-edit/agent-task），并 toast 提示。
     const groupable = selected.filter(n => isSmartGroupableNode(n));
@@ -22185,7 +14083,7 @@ function groupSelectedNodes(){
     const maxY = Math.max(...rects.map(r => r.y + r.height));
     const group = {
         id:uid('group'),
-        type:'smart-group',
+        type:NODE_TYPE_GROUP,
         x:Math.round(minX - 18),
         y:Math.round(minY - 44),
         w:Math.max(340, Math.round(maxX - minX + 36)),
@@ -22195,18 +14093,18 @@ function groupSelectedNodes(){
         images:[],
         created_at:Date.now()
     };
-    nodes.push(group);
+    canvasState.nodes.push(group);
     // 图片成员吸收进分组网格，提示词/循环作为成员节点；随后自动整理。
     groupable.forEach(node => addNodeToSmartGroup(group, node));
     arrangeSmartGroupMembers(group, {skipUndo:true});
-    selectedIds = [];
-    selectedId = group.id;
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedIds = [];
+    canvasState.selectedId = group.id;
+    canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
 }
 function ungroupNode(groupId){
-    const group = nodes.find(n => n.id === groupId);
+    const group = canvasState.nodes.find(n => n.id === groupId);
     if(!group) return false;
     // 释放智能分组：把收进卡片的图片重新拆成独立图片节点（平铺在分组原位置），提示词/循环成员原地保留，再删除分组容器。
     if(isSmartGroupNode(group)){
@@ -22245,22 +14143,22 @@ function ungroupNode(groupId){
                 const size = sizes[index];
                 const x = Math.round(Number(group.x || 0) + pad + colWidths.slice(0, col).reduce((sum, w) => sum + w + gap, 0));
                 const y = Math.round(Number(group.y || 0) + pad + rowHeights.slice(0, row).reduce((sum, h) => sum + h + gap, 0));
-                const node = {id:uid('smart'), type:'smart-image', x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
+                const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
                 inheritNodeMetaFromImage(node);
                 clearDetachedRunInputRefs(node);
                 return node;
             });
         }
-        nodes = nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = nodes;
-        nodes.push(...created);
+        canvasState.nodes = canvasState.nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = canvasState.nodes;
+        canvasState.nodes.push(...created);
         if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
-        nodes.forEach(node => {
+        canvasState.nodes.forEach(node => {
             if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(id => id !== groupId);
             if(isSmartGroupNode(node) && Array.isArray(node.items)) node.items = node.items.filter(id => id !== groupId);
         });
-        selectedIds = [...created.map(n => n.id), ...memberIds].filter(id => nodes.some(n => n.id === id));
-        selectedId = selectedIds.length === 1 ? selectedIds[0] : '';
-        selectedImage = {nodeId:'', index:-1};
+        canvasState.selectedIds = [...created.map(n => n.id), ...memberIds].filter(id => canvasState.nodes.some(n => n.id === id));
+        canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
+        canvasState.selectedImage = {nodeId:'', index:-1};
         render();
         scheduleSave();
         return true;
@@ -22279,7 +14177,7 @@ function ungroupNode(groupId){
         const y = Math.round(Number(group.y || 0) + pad + row * (cell + gap) + Math.max(0, (cell - size.height) / 2));
         const node = {
             id:uid('smart'),
-            type:'smart-image',
+            type:NODE_TYPE_IMAGE,
             x,
             y,
             w:size.width,
@@ -22293,24 +14191,24 @@ function ungroupNode(groupId){
         clearDetachedRunInputRefs(node);
         return node;
     });
-    nodes = nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = nodes;
-    nodes.push(...created);
+    canvasState.nodes = canvasState.nodes.filter(n => n.id !== groupId); if(canvas) canvas.nodes = canvasState.nodes;
+    canvasState.nodes.push(...created);
     if(canvas) canvas.connections = (canvas.connections || []).filter(c => c.from !== groupId && c.to !== groupId);
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         if(Array.isArray(node.inputNodeIds)){
             node.inputNodeIds = node.inputNodeIds.filter(inputId => inputId !== groupId);
         }
     });
-    selectedIds = created.map(node => node.id);
-    selectedId = selectedIds.length === 1 ? selectedIds[0] : '';
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.selectedIds = created.map(node => node.id);
+    canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
+    canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
     return true;
 }
 function mergeImageNodesIntoGroup(sourceId, targetId){
-    const source = nodes.find(n => n.id === sourceId);
-    const target = nodes.find(n => n.id === targetId);
+    const source = canvasState.nodes.find(n => n.id === sourceId);
+    const target = canvasState.nodes.find(n => n.id === targetId);
     if(!source || !target || source.id === target.id) return false;
     if(!(source.images || []).length || !(target.images || []).length) return false;
     const sourceImages = (source.images || []).map(img => stripImageGenerationMeta({...img}));
@@ -22324,15 +14222,15 @@ function mergeImageNodesIntoGroup(sourceId, targetId){
         if(c.to === source.id) return {...c, to:target.id};
         return c;
     }).filter((c, index, arr) => c.from !== c.to && arr.findIndex(x => x.from === c.from && x.to === c.to && (x.kind || 'flow') === (c.kind || 'flow')) === index);
-    nodes.forEach(node => {
+    canvasState.nodes.forEach(node => {
         if(Array.isArray(node.inputNodeIds)){
             node.inputNodeIds = Array.from(new Set(node.inputNodeIds.map(id => id === source.id ? target.id : id).filter(id => id !== node.id)));
         }
     });
-    nodes = nodes.filter(n => n.id !== source.id); if(canvas) canvas.nodes = nodes;
-    selectedIds = [];
-    selectedId = target.id;
-    selectedImage = {nodeId:'', index:-1};
+    canvasState.nodes = canvasState.nodes.filter(n => n.id !== source.id); if(canvas) canvas.nodes = canvasState.nodes;
+    canvasState.selectedIds = [];
+    canvasState.selectedId = target.id;
+    canvasState.selectedImage = {nodeId:'', index:-1};
     return true;
 }
 function smartGroupTargetForDraggedNode(draggedNode){
@@ -22342,12 +14240,12 @@ function smartGroupTargetForDraggedNode(draggedNode){
     const excluded = new Set([draggedNode.id, ...(dragState?.groupIds || [])]);
     const cx = r.x + r.width / 2;
     const cy = r.y + r.height / 2;
-    const groups = nodes
+    const groups = canvasState.nodes
         .filter(node => isSmartGroupNode(node) && !excluded.has(node.id))
         .map(group => ({group, rect:nodeRect(group)}))
         .filter(item => cx >= item.rect.x && cx <= item.rect.x + item.rect.width && cy >= item.rect.y && cy <= item.rect.y + item.rect.height);
     if(!groups.length) return null;
-    groups.sort((a, b) => (nodes.indexOf(b.group) - nodes.indexOf(a.group)));
+    groups.sort((a, b) => (canvasState.nodes.indexOf(b.group) - canvasState.nodes.indexOf(a.group)));
     return groups[0].group;
 }
 // 把一个或多个被拖动的节点批量加入目标分组（支持多选拖入）。入组后只整理一次并选中目标分组。
@@ -22367,21 +14265,34 @@ function addDraggedNodesToSmartGroup(draggedNodes, group){
     if(!added) return false;
     // 提示词/循环成员入组后自动整理成网格（图片已收进卡片网格，自动平铺）。
     arrangeSmartGroupMembers(group, {skipUndo:true});
-    selectedIds = [];
+    canvasState.selectedIds = [];
     // 图片被吸收进分组（原节点已删除），统一选中目标分组；仅当单个提示词/循环节点拖入时保持选中它。
-    const survivingSingle = list.length === 1 && nodes.some(n => n.id === list[0].id) ? list[0].id : '';
-    selectedId = survivingSingle || group.id;
-    selectedImage = {nodeId:'', index:-1};
+    const survivingSingle = list.length === 1 && canvasState.nodes.some(n => n.id === list[0].id) ? list[0].id : '';
+    canvasState.selectedId = survivingSingle || group.id;
+    canvasState.selectedImage = {nodeId:'', index:-1};
     return true;
 }
 function closeCreateMenu(){
     createMenu?.classList.remove('open');
-    createMenuGroupId = '';
+    canvasState.createMenuGroupId = '';
 }
 function openCreateMenu(event, options={}){
     if(!createMenu) return;
     createMenuPoint = screenToWorld(event);
-    createMenuGroupId = options.groupId || '';
+    canvasState.createMenuGroupId = options.groupId || '';
+    // #256：右键图片节点时记下源节点，并让「提取文字」卡片可见（其余入口隐藏它）。
+    canvasState.createMenuImageNodeId = options.imageNodeId || '';
+    const ocrCard = createMenu.querySelector('[data-create-type="ocr"]');
+    if(ocrCard) ocrCard.hidden = !options.imageNodeId;
+    // #253：节点操作卡——重命名（右键落在节点上才可见）+ 整理排版（选中 >=2 才可见）。
+    const renameCard = createMenu.querySelector('[data-create-type="rename"]');
+    const tidyCard = createMenu.querySelector('[data-create-type="tidy"]');
+    const opVisibility = FireflyQuickEdit.operationCardVisibility({
+        nodeId: options.imageNodeId || options.groupId || '',
+        nodeCount: selectedNodeIds().length,
+    });
+    if(renameCard) renameCard.hidden = !opVisibility.rename;
+    if(tidyCard) tidyCard.hidden = !opVisibility.tidy;
     createMenu.style.left = '14px';
     createMenu.style.top = '14px';
     createMenu.classList.add('open');
@@ -22393,32 +14304,6 @@ function openCreateMenu(event, options={}){
     createMenu.style.left = `${left}px`;
     createMenu.style.top = `${top}px`;
     refreshIcons();
-}
-function addCreatedNodeToMenuGroup(node){
-    const group = createMenuGroupId ? nodes.find(n => n.id === createMenuGroupId) : null;
-    if(addNodeToSmartGroup(group, node)){
-        // 通过分组小菜单新建的节点入组后自动整理（节点创建已压过 undo，这里不再重复）。
-        arrangeSmartGroupMembers(group, {skipUndo:true});
-        render();
-        scheduleSave();
-    }
-}
-function createNodeFromMenu(type){
-    const p = createMenuPoint || viewportCenter();
-    const groupId = createMenuGroupId;
-    closeCreateMenu();
-    if(type === 'group') return createSmartGroupNode(p.x - 170, p.y - 110);
-    let created = null;
-    if(type === 'prompt') created = createPromptNode(p.x - 158, p.y - 97);
-    else if(type === 'conversation') created = createConversationNode(p.x - 195, p.y - 215);
-    else if(type === 'agent') created = createAgentNode(p.x - 191, p.y - 180);
-    else if(type === 'local-edit') created = createLocalEditNode(p.x - 180, p.y - 165);
-    else if(type === 'loop') created = createLoopNode(p.x - 135, p.y - 95);
-    else created = createImageNodeAt(p);
-    createMenuGroupId = groupId;
-    addCreatedNodeToMenuGroup(created);
-    createMenuGroupId = '';
-    return created;
 }
 shell.addEventListener('mousedown', e => {
     if(!zoomPreviewState) return;
@@ -22486,13 +14371,21 @@ shell.oncontextmenu = e => {
     e.stopPropagation();
     const groupEl = e.target.closest('.image-node.smart-group-node');
     if(groupEl?.dataset?.id){
-        selectedId = groupEl.dataset.id;
-        selectedIds = [];
-        selectedImage = {nodeId:'', index:-1};
+        canvasState.selectedId = groupEl.dataset.id;
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId:'', index:-1};
         openCreateMenu(e, {groupId:groupEl.dataset.id});
         return;
     }
-    if(e.target.closest('.image-node')) return;
+    // #256：右键图片节点 → 打开创建菜单（带 imageNodeId，「提取文字」卡片可见）。
+    const imageNodeEl = e.target.closest('.image-node');
+    if(imageNodeEl?.dataset?.id){
+        canvasState.selectedId = imageNodeEl.dataset.id;
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId: imageNodeEl.dataset.id, index: -1};
+        openCreateMenu(e, {imageNodeId: imageNodeEl.dataset.id});
+        return;
+    }
     openCreateMenu(e);
 };
 shell.ondblclick = e => {
@@ -22551,15 +14444,8 @@ async function exportSelectedSmartNodes(){
             toast(`${tr('smart.exportFailed')}: ${detail}`);
             return;
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `excel_export_${Date.now()}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        const { blob } = await canvasReceiveBlob(res);
+        downloadBlobAsZip(blob, `excel_export_${Date.now()}.zip`);
     }catch(err){
         toast(`${tr('smart.exportFailed')}: ${err?.message || err}`);
     }
@@ -22573,24 +14459,21 @@ smartExcelExportBtn?.addEventListener('click', e => {
 });
 // #53/#58：星标 → 收集/导出。已标记图片面板内的「导出星标节点」：
 // 目录留空 = 浏览器 zip 下载；填服务器目录（项目库根之下）= 按任务 ID 命名写入服务器目录。
-function markedNodeIds(){
-    const ids = getMarkedAssetIds();
-    if(!ids.length) return [];
+// #206：导出打标按图片粒度——收集星标图片的资源标识（asset_ids）交给导出接口筛选；
+// 不再收集「含星标图的节点 ID 列表」（那会把同节点未打标的图也一起导出）。
+// 节点粒度的全量导出是「导出选中节点」的职责，两条语义各管各的。
+function markedAssetIdsForExport(){
     const out = [];
-    nodes.forEach(n => {
-        if((n.images || []).some(img => img && ids.includes(String(img.asset_id || '')))) out.push(String(n.id));
+    (getMarkedAssetIds() || []).forEach(id => {
+        const s = String(id || '');
+        if(s && !out.includes(s)) out.push(s);
     });
     return out;
 }
+// #223：落盘交给下载模块。固定 4000ms 撤销 blob URL 会把大 zip 截断成 0 字节；
+// canvasSaveBlobAsFile 按体积给撤销窗口。
 function downloadBlobAsZip(blob, filename){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    canvasSaveBlobAsFile(blob, filename);
 }
 function renderMarkedExportFiles(files, dir){
     const el = document.getElementById('smartMarkedExportFiles');
@@ -22606,8 +14489,8 @@ function renderMarkedExportFiles(files, dir){
 async function exportMarkedSmartNodes(){
     const projectId = (typeof canvas !== 'undefined' && (canvas?.project_id || canvas?.project)) || sourceProjectId || canvasId || '';
     if(!projectId){ toast(tr('smart.exportNoProject')); return; }
-    const nodeIds = markedNodeIds();
-    if(!nodeIds.length){ toast(tr('smart.exportNoMarked')); return; }
+    const assetIds = markedAssetIdsForExport();
+    if(!assetIds.length){ toast(tr('smart.exportNoMarked')); return; }
     const dir = String(document.getElementById('smartMarkedExportDir')?.value || '').trim();
     const btn = document.getElementById('smartMarkedExportBtn');
     if(btn){ btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
@@ -22615,7 +14498,7 @@ async function exportMarkedSmartNodes(){
         const res = await fetch('/api/excel/export-zip', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(dir ? {project_id: projectId, node_ids: nodeIds, export_dir: dir} : {project_id: projectId, node_ids: nodeIds}),
+            body: JSON.stringify(dir ? {project_id: projectId, asset_ids: assetIds, export_dir: dir} : {project_id: projectId, asset_ids: assetIds}),
         });
         if(!res.ok){
             let detail = res.status;
@@ -22628,7 +14511,7 @@ async function exportMarkedSmartNodes(){
             renderMarkedExportFiles(j?.files || [], dir);
             toast(trf('smart.exportDone', {n: (j?.files || []).length || 0}));
         } else {
-            const blob = await res.blob();
+            const { blob } = await canvasReceiveBlob(res);
             downloadBlobAsZip(blob, `excel_marked_${Date.now()}.zip`);
             toast(tr('smart.exportZipOk'));
         }
@@ -22649,6 +14532,21 @@ document.getElementById('smartMarkedClose')?.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
     toggleSmartMarkedPanel(false);
+});
+document.getElementById('smartMarkedRecords')?.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    // #228：打包回执只闪一次就没了。这里给一个本机回查入口，
+    // 记录由 canvas-download.js 落在 localStorage（canvasDownloadRecords）。
+    const box = document.getElementById('smartMarkedRecordsList');
+    if(!box) return;
+    if(box.hidden){
+        box.innerHTML = canvasDownloadRecordsHtml();
+        box.hidden = false;
+        if(window.lucide) lucide.createIcons();
+    }else{
+        box.hidden = true;
+    }
 });
 document.getElementById('smartMarkedDownloadAll')?.addEventListener('click', e => {
     e.preventDefault();
@@ -22718,7 +14616,6 @@ window.onmousemove = e => {
         }
         const node = activeComposerNode();
         if(node) positionComposerForNode(node);
-        keepComposerReachableByPanningCanvas();
         return;
     }
     if(selectionState){
@@ -22768,14 +14665,14 @@ window.onmousemove = e => {
         return;
     }
     if(resizeState){
-        const node = nodes.find(n => n.id === resizeState.id);
+        const node = canvasState.nodes.find(n => n.id === resizeState.id);
         if(!node) return;
         const dx = (e.clientX - resizeState.startX) / viewport.scale;
         const dy = (e.clientY - resizeState.startY) / viewport.scale;
-        const minW = node.type === 'smart-prompt' ? 260 : node.type === 'smart-loop' ? 252 : node.type === 'smart-agent' ? 330 : node.type === 'agent-task' ? 280 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_WIDTH : 48;
+        const minW = node.type === NODE_TYPE_PROMPT ? 260 : node.type === NODE_TYPE_LOOP ? 252 : node.type === NODE_TYPE_AGENT ? 330 : node.type === NODE_TYPE_TASK ? 280 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_WIDTH : 48;
         // 拖拽预览阶段就用内容最小高度钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
-        const minH = node.type === 'smart-prompt' ? promptNodeMinHeight(node) : node.type === 'smart-loop' ? smartLoopHeight(node) : node.type === 'smart-agent' ? 270 : node.type === 'agent-task' ? 210 : node.type === 'local-edit' ? 360 : node.type === 'smart-group' ? SMART_GROUP_MIN_HEIGHT : 48;
-        if(node.type === 'smart-group' && smartGroupImageRefs(node).some(ref => ref.item?.url)){
+        const minH = node.type === NODE_TYPE_PROMPT ? promptNodeMinHeight(node) : node.type === NODE_TYPE_LOOP ? smartLoopHeight(node) : node.type === NODE_TYPE_AGENT ? 270 : node.type === NODE_TYPE_TASK ? 210 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_HEIGHT : 48;
+        if(node.type === NODE_TYPE_GROUP && smartGroupImageRefs(node).some(ref => ref.item?.url)){
             // 图片分组：和普通节点一样直接改 w/h，缩略图网格按新尺寸实时重排。不要走下面的“成员缩放”那套，
             // 否则拖动过程里会按成员包围盒/缩放比例收缩，松手才回到拖动宽度（用户反馈的“变宽时先缩小”）。
             node.w = Math.max(minW, Math.round(resizeState.startW + dx));
@@ -22784,7 +14681,7 @@ window.onmousemove = e => {
             updateNodeElementDuringResize(node);
             return;
         }
-        if(node.type === 'smart-group'){
+        if(node.type === NODE_TYPE_GROUP){
             // 分组当“画布中的画布”：拖手柄按宽度方向算出统一缩放比例，组内所有成员（图片+提示词）按相对手势
             // 起点的快照整体缩放+重排，然后把分组框自动收紧到成员的包围盒——盒子始终贴合内容，右侧不会留空白。
             const startZoom = resizeState.startZoom || 1;
@@ -22801,7 +14698,7 @@ window.onmousemove = e => {
             const SMART_GROUP_PAD = 16;
             let maxRight = gx, maxBottom = gy, hasMember = false;
             (resizeState.members || []).forEach(snap => {
-                const member = nodes.find(n => n.id === snap.id);
+                const member = canvasState.nodes.find(n => n.id === snap.id);
                 if(!member) return;
                 hasMember = true;
                 member.x = gx + (snap.sx - gx) * memberRatio;
@@ -22838,7 +14735,7 @@ window.onmousemove = e => {
         return;
     }
     if(llmInstructionResizeState){
-        const node = nodes.find(n => n.id === llmInstructionResizeState.id);
+        const node = canvasState.nodes.find(n => n.id === llmInstructionResizeState.id);
         if(!node) return;
         const dy = (e.clientY - llmInstructionResizeState.startY) / viewport.scale;
         const newInstrH = Math.max(PROMPT_LLM_INSTRUCTION_MIN_H, Math.min(PROMPT_LLM_INSTRUCTION_MAX_H, Math.round(llmInstructionResizeState.startH + dy)));
@@ -22853,7 +14750,7 @@ window.onmousemove = e => {
         return;
     }
     if(promptSplitResizeState){
-        const node = nodes.find(n => n.id === promptSplitResizeState.id);
+        const node = canvasState.nodes.find(n => n.id === promptSplitResizeState.id);
         if(!node) return;
         const dy = (e.clientY - promptSplitResizeState.startY) / viewport.scale;
         // 让拖拽预览阶段就用 promptNodeMinHeight 钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
@@ -22871,7 +14768,7 @@ window.onmousemove = e => {
     if(thumbDragState){
         const dx = e.clientX - thumbDragState.startX;
         const dy = e.clientY - thumbDragState.startY;
-        const source = nodes.find(n => n.id === thumbDragState.nodeId);
+        const source = canvasState.nodes.find(n => n.id === thumbDragState.nodeId);
         if(!thumbDragState.detached && Math.abs(dx) + Math.abs(dy) > 6){
             const canDetachThumb = source && (isSmartGroupNode(source) ? (source.images || []).length >= 1 : (source.images || []).length > 1);
             if(canDetachThumb){
@@ -22889,8 +14786,8 @@ window.onmousemove = e => {
                         inheritNodeMetaFromImage(source);
                     }
                     const point = screenToWorld(e);
-                    selectedId = '';
-                    selectedImage = {nodeId:'', index:-1};
+                    canvasState.selectedId = '';
+                    canvasState.selectedImage = {nodeId:'', index:-1};
                     const newNode = createImageNodeAt(point, [img], {select:false, skipUndo:true});
                     undoSuppressed = false;
                     dragState = {id:newNode.id, startX:e.clientX, startY:e.clientY, ox:newNode.x, oy:newNode.y, thumbDetached:true};
@@ -22912,17 +14809,34 @@ window.onmousemove = e => {
         return;
     }
     if(!dragState) return;
-    const node = nodes.find(n => n.id === dragState.id);
+    const node = canvasState.nodes.find(n => n.id === dragState.id);
     if(!node) return;
     const moveDx = (e.clientX - dragState.startX) / viewport.scale;
     const moveDy = (e.clientY - dragState.startY) / viewport.scale;
     if(Math.abs(moveDx) > 1 || Math.abs(moveDy) > 1) dragState.moved = true;
     (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
-        const n = nodes.find(x => x.id === item.id);
+        const n = canvasState.nodes.find(x => x.id === item.id);
         if(!n) return;
         n.x = item.ox + moveDx;
         n.y = item.oy + moveDy;
     });
+    // #253：拖拽对齐吸附——对被拖主节点做 center/edge 阈值吸附（屏幕 8px 阈值换算世界坐标），
+    // 整组同步偏移并画参考线；ctrlGroup 连线拖拽时跳过并清线。
+    if(!dragState.ctrlGroup){
+        const snapThreshold = Math.max(2, 8 / (viewport.scale || 1));
+        const dragIds = new Set(dragState.groupIds || [dragState.id]);
+        const otherRects = canvasState.nodes.filter(n => !dragIds.has(n.id)).map(nodeRect);
+        const snapResult = FireflySnap.computeSnap(nodeRect(node), otherRects, {threshold: snapThreshold});
+        if(snapResult.dx || snapResult.dy){
+            (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
+                const n = canvasState.nodes.find(x => x.id === item.id);
+                if(n){ n.x += snapResult.dx; n.y += snapResult.dy; }
+            });
+        }
+        FireflySnapUI.showGuides(world, snapResult.guides);
+    } else {
+        FireflySnapUI.clearGuides(world);
+    }
     if(assetLibraryOpen){
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         if(hit && assetPanel?.contains(hit)){
@@ -22935,7 +14849,7 @@ window.onmousemove = e => {
     }
     const draggedRect = nodeRect(node);
     const rawTarget = dragState.ctrlGroup
-        ? (['smart-prompt','smart-loop'].includes(node.type)
+        ? ([NODE_TYPE_PROMPT,NODE_TYPE_LOOP].includes(node.type)
             ? dragConnectTargetFor(node, screenToWorld(e))
             : rectOverlapNode(node.id, draggedRect.x, draggedRect.y, draggedRect.width, draggedRect.height, dragState.groupIds))
         : null;
@@ -22949,6 +14863,7 @@ window.onmouseup = e => {
     const nodeDragMoved = Boolean(dragState?.moved);
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
+    FireflySnapUI.clearGuides(world); // #253：拖拽结束清参考线
     if(nodeDragMoved){
         document.body.classList.add('smart-node-drag-settling');
         if(composerDragSettleTimer) clearTimeout(composerDragSettleTimer);
@@ -22988,7 +14903,7 @@ window.onmouseup = e => {
         cropDrag = null;
     }
     if(resizeState){
-        const node = nodes.find(n => n.id === resizeState.id);
+        const node = canvasState.nodes.find(n => n.id === resizeState.id);
         const rect = node ? nodeRect(node) : null;
         const changed = rect && (Math.abs(rect.width - resizeState.startW) > 1 || Math.abs(rect.height - resizeState.startH) > 1);
         if(changed){
@@ -22998,7 +14913,7 @@ window.onmouseup = e => {
         if(changed) render();
     }
     if(llmInstructionResizeState){
-        const node = nodes.find(n => n.id === llmInstructionResizeState.id);
+        const node = canvasState.nodes.find(n => n.id === llmInstructionResizeState.id);
         const changed = node && promptLlmInstructionHeight(node) !== llmInstructionResizeState.startH;
         document.body.classList.remove('smart-node-resize', 'smart-llm-instr-resize');
         if(changed) commitPendingUndo(); else discardPendingUndo();
@@ -23006,7 +14921,7 @@ window.onmouseup = e => {
         render();
     }
     if(promptSplitResizeState){
-        const node = nodes.find(n => n.id === promptSplitResizeState.id);
+        const node = canvasState.nodes.find(n => n.id === promptSplitResizeState.id);
         const changed = node && promptNodeSplitPreviewHeight(node) !== promptSplitResizeState.startH;
         document.body.classList.remove('smart-node-resize', 'smart-prompt-split-resize');
         if(changed) commitPendingUndo(); else discardPendingUndo();
@@ -23026,7 +14941,7 @@ window.onmouseup = e => {
         smartMinimapDrag = false;
     }
     if(dragState){
-        const draggedNode = nodes.find(n => n.id === dragState.id);
+        const draggedNode = canvasState.nodes.find(n => n.id === dragState.id);
         let stateChanged = false;
         let contentChanged = false;
         const hit = document.elementFromPoint(e.clientX, e.clientY);
@@ -23035,7 +14950,7 @@ window.onmouseup = e => {
             const imagesToSave = (draggedNode.images || []).filter(img => img?.url);
             imagesToSave.forEach(img => addUrlToAssetLibrary(img.url, img.name || draggedNode.title || 'image', img));
             (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
-                const n = nodes.find(x => x.id === item.id);
+                const n = canvasState.nodes.find(x => x.id === item.id);
                 if(n){ n.x = item.ox; n.y = item.oy; }
             });
             setAssetDragOver(false);
@@ -23047,7 +14962,7 @@ window.onmouseup = e => {
             return;
         }
         const autoTarget = draggedNode && dragState.ctrlGroup ? dragConnectTargetFor(draggedNode, screenToWorld(e)) : null;
-        const insertHit = draggedNode?.type === 'smart-loop' && dragState.ctrlGroup && (dragState.group || []).length <= 1
+        const insertHit = draggedNode?.type === NODE_TYPE_LOOP && dragState.ctrlGroup && (dragState.group || []).length <= 1
             ? insertionConnectionForNode(draggedNode)
             : null;
         const draggedRect = draggedNode ? nodeRect(draggedNode) : null;
@@ -23056,7 +14971,7 @@ window.onmouseup = e => {
             : null;
         // 拖入分组：单个节点、多选（批量拖入）或整个分组（其成员会并入目标分组）都允许并入主分组下的目标分组。
         // 目标分组由主拖动节点的中心命中决定；smartGroupTargetForDraggedNode 已排除正在被拖动的节点/分组。
-        const draggedNodes = (dragState.group || []).map(item => nodes.find(n => n.id === item.id)).filter(Boolean);
+        const draggedNodes = (dragState.group || []).map(item => canvasState.nodes.find(n => n.id === item.id)).filter(Boolean);
         const smartGroupTarget = draggedNode ? smartGroupTargetForDraggedNode(draggedNode) : null;
         if(
             insertHit &&
@@ -23092,14 +15007,14 @@ window.onmouseup = e => {
             stateChanged = true;
             contentChanged = true;
             restoreDraggedNodePosition();
-            if(selectedId === draggedNode.id) selectedId = '';
+            if(canvasState.selectedId === draggedNode.id) canvasState.selectedId = '';
             render();
         } else if(draggedNode && (draggedNode.images || []).length && (dragState.group || []).length <= 1){
             const r = nodeRect(draggedNode);
             const target = rectOverlapNode(draggedNode.id, r.x, r.y, r.width, r.height, dragState.groupIds);
             if(target && isSmartGroupNode(target)){
                 if((dragState.group || []).some(item => {
-                    const n = nodes.find(x => x.id === item.id);
+                    const n = canvasState.nodes.find(x => x.id === item.id);
                     return n && (Math.abs((Number(n.x) || 0) - item.ox) > 1 || Math.abs((Number(n.y) || 0) - item.oy) > 1);
                 })) stateChanged = true;
             } else if(target && dragState.ctrlGroup && !isSmartGroupNode(target) && canAutoConnectDraggedNode(draggedNode, target)){
@@ -23107,16 +15022,16 @@ window.onmouseup = e => {
                 contentChanged = true;
                 connectInputNode(draggedNode.id, target.id);
                 if(!dragState.thumbDetached) restoreDraggedNodePosition();
-                if(selectedId === draggedNode.id) selectedId = '';
+                if(canvasState.selectedId === draggedNode.id) canvasState.selectedId = '';
                 render();
             } else if((dragState.group || []).some(item => {
-                const n = nodes.find(x => x.id === item.id);
+                const n = canvasState.nodes.find(x => x.id === item.id);
                 return n && (Math.abs((Number(n.x) || 0) - item.ox) > 1 || Math.abs((Number(n.y) || 0) - item.oy) > 1);
             })){
                 stateChanged = true;
             }
         } else if((dragState.group || []).some(item => {
-            const n = nodes.find(x => x.id === item.id);
+            const n = canvasState.nodes.find(x => x.id === item.id);
             return n && (Math.abs((Number(n.x) || 0) - item.ox) > 1 || Math.abs((Number(n.y) || 0) - item.oy) > 1);
         }) || (draggedNode && (Math.abs((draggedNode.x || 0) - dragState.ox) > 1 || Math.abs((draggedNode.y || 0) - dragState.oy) > 1))){
             stateChanged = true;
@@ -23139,6 +15054,7 @@ window.onmouseup = e => {
             scheduleSave();
         }
         if(stateChanged || dragState.thumbDetached) suppressNodeClickUntil = Date.now() + 180;
+        if(stateChanged) markNodePositionsLocallyUpdated(dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]);
         clearDropHighlight();
         loopInsertPreview = null;
         dragState = null;
@@ -23222,7 +15138,7 @@ window.addEventListener('paste', e => {
     const files = [...(e.clipboardData?.files || [])].filter(isSupportedUploadFile);
     if(files.length){
         lastImagePasteAt = Date.now();
-        handleFiles(files, selectedId);
+        handleFiles(files, canvasState.selectedId);
         return;
     }
     // 素材库管理页「复制到画布」过来的素材：Ctrl+V 批量粘贴成图片节点
@@ -23236,6 +15152,17 @@ window.addEventListener('keydown', e => {
     if((e.ctrlKey || e.metaKey) && key === 's'){
         e.preventDefault();
         void manualSaveCanvas();
+        return;
+    }
+    // #253：Tab = 单个选中节点就地快速重命名（仅恰好选中 1 个节点时拦截 Tab，
+    // 否则保持正常焦点移动；模态框打开/可编辑目标内不触发）。
+    if(e.key === 'Tab' && !e.shiftKey && !isEditableTarget(e.target)){
+        const tabIds = selectedNodeIds();
+        if(tabIds.length !== 1) return;
+        if(document.getElementById('imageEditModal')?.classList.contains('open')) return;
+        if(!document.getElementById('smartBatchRenameBackdrop')?.hidden) return;
+        e.preventDefault();
+        quickEditNode(canvasState.nodes.find(n => n.id === tabIds[0]));
         return;
     }
     if(key === 'r' && !isEditableTarget(e.target)) isRKeyDown = true;
@@ -23255,10 +15182,31 @@ window.addEventListener('keydown', e => {
             toggleZoomPreview();
             return;
         }
+        // #253：Shift+A = 整理排版选中节点（复用现有 arrangeSelectedSmartNodes；不占裸 A 资源库键）。
+        if(key === 'a' && e.shiftKey){
+            if(e.repeat) return;
+            e.preventDefault();
+            arrangeSelectedSmartNodes();
+            return;
+        }
+        // #253：方向键微调选中节点（1px；Shift=10px）。
+        if(['arrowleft','arrowright','arrowup','arrowdown'].includes(key)){
+            if(!selectedNodeIds().length) return;
+            e.preventDefault();
+            nudgeSelectedNodes(key, e.shiftKey ? 10 : 1, e.repeat);
+            return;
+        }
         if(key === 'a'){
             if(e.repeat) return;
             e.preventDefault();
             toggleAssetLibrary();
+            return;
+        }
+        // #260：F2 批量重命名选中节点（ComfyArt BatchRename）。
+        if(key === 'f2'){
+            if(e.repeat) return;
+            e.preventDefault();
+            openBatchRenameDialog();
             return;
         }
     }
@@ -23269,6 +15217,37 @@ window.addEventListener('keydown', e => {
         copySelectedNodes();
         return;
     }
+    // #253：Ctrl+A = 全选节点。
+    if((e.ctrlKey || e.metaKey) && key === 'a' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        canvasState.selectedIds = canvasState.nodes.map(n => n.id);
+        canvasState.selectedId = '';
+        canvasState.selectedImage = {nodeId:'', index:-1};
+        render();
+        return;
+    }
+    // #253：Ctrl+D = 复制选中节点。
+    if((e.ctrlKey || e.metaKey) && key === 'd' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        duplicateSelectedNodes();
+        return;
+    }
+    // #253：视图快捷键 Ctrl+= / Ctrl+- / Ctrl+0。
+    if((e.ctrlKey || e.metaKey) && (key === '=' || key === '+') && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '-' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        zoomViewportAroundCenter(1 / 1.25);
+        return;
+    }
+    if((e.ctrlKey || e.metaKey) && key === '0' && !isEditableTarget(e.target)){
+        e.preventDefault();
+        fitAllNodesViewport();
+        return;
+    }
     if((e.ctrlKey || e.metaKey) && key === 'v' && !isEditableTarget(e.target) && nodeClipboard?.nodes?.length){
         const requestedAt = Date.now();
         setTimeout(() => {
@@ -23277,10 +15256,8 @@ window.addEventListener('keydown', e => {
             pasteNodes();
         }, 90);
     }
-    if(e.key === 'Escape' && imageEditModal.classList.contains('open')){
-        closeImageEditor();
-        return;
-    }
+    // #249：图片编辑器的 Escape 已迁入 Escape 栈（canvas-image-editor.js openImageEditor/closeImageEditor），
+    // 一次 Escape 只关最顶层，不再与下方画布快捷键同时触发。
     if((e.ctrlKey || e.metaKey) && (e.shiftKey && key === 'z' || key === 'y') && !isEditableTarget(e.target)){
         e.preventDefault();
         performRedo();
@@ -23291,11 +15268,11 @@ window.addEventListener('keydown', e => {
         performUndo();
         return;
     }
-    if((e.key === 'Delete' || e.key === 'Backspace') && (selectedId || selectedIds.length) && !isEditableTarget(e.target)){
+    if((e.key === 'Delete' || e.key === 'Backspace') && (canvasState.selectedId || canvasState.selectedIds.length) && !isEditableTarget(e.target)){
         e.preventDefault();
-        const ids = selectedIds.length ? selectedIds.slice() : [selectedId];
+        const ids = canvasState.selectedIds.length ? canvasState.selectedIds.slice() : [canvasState.selectedId];
         // #65: 选中项里有生成中的节点时禁止删除（先取消任务）。
-        if(ids.map(id => nodes.find(n => n.id === id)).some(node => node && smartNodeInFlight(node))){
+        if(ids.map(id => canvasState.nodes.find(n => n.id === id)).some(node => node && smartNodeInFlight(node))){
             toast(tr('smart.nodeDeleteBusy'));
             return;
         }
@@ -23306,7 +15283,7 @@ window.addEventListener('keydown', e => {
     }
     if((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'g' && !isEditableTarget(e.target)){
         e.preventDefault();
-        const ids = selectedIds.length ? selectedIds.slice() : (selectedId ? [selectedId] : []);
+        const ids = canvasState.selectedIds.length ? canvasState.selectedIds.slice() : (canvasState.selectedId ? [canvasState.selectedId] : []);
         const ok = ids.map(id => ungroupNode(id)).some(Boolean);
         if(ok) return;
     }
@@ -23385,7 +15362,7 @@ fileInput.onchange = () => {
         uploadTargetId = '';
         return;
     }
-    const targetId = groupPoint ? '' : (uploadTargetId || selectedId);
+    const targetId = groupPoint ? '' : (uploadTargetId || canvasState.selectedId);
     handleFiles(fileInput.files, targetId, groupPoint ? {point:groupPoint} : {});
     pendingGroupUploadPoint = null;
     uploadTargetId = '';
@@ -23539,7 +15516,7 @@ if(promptPresetDelete) promptPresetDelete.onclick = () => {
         return;
     }
     promptPresets = promptPresets.filter(p => p.id !== preset.id);
-    nodes.forEach(node => { if(node.promptPresetId === preset.id) node.promptPresetId = ''; });
+    canvasState.nodes.forEach(node => { if(node.promptPresetId === preset.id) node.promptPresetId = ''; });
     savePromptPresets();
     renderPromptPresetPanel(promptPresets[0]?.id || '', tr('smart.promptPresetDeleted'));
     setPromptPresetStatus(tr('smart.promptPresetDeleted'), 'ok');
@@ -23666,11 +15643,155 @@ assetDropZone?.addEventListener('drop', handleAssetPanelDrop);
 assetPanel?.addEventListener('dragover', handleAssetPanelDragOver);
 assetPanel?.addEventListener('dragleave', e => { if(!assetPanel?.contains(e.relatedTarget)) setAssetDragOver(false); });
 assetPanel?.addEventListener('drop', handleAssetPanelDrop);
+// #256：右键图片节点「提取文字」→ 服务端 OCR → 复用现有 prompt 节点类型落可编辑文本。
+// 镜像 createLocalEditNodeFromImage 的「从图片节点旁创建节点」模式：
+// 用 canvasCore.nodeRect 定位、createPromptNode 复用现有类型（不新增节点形态）。
+async function createPromptNodeFromOcr(){
+    const sourceNodeId = canvasState.createMenuImageNodeId || '';
+    canvasState.createMenuImageNodeId = '';
+    const sourceNode = canvasState.nodes.find(n => n.id === sourceNodeId);
+    const img = sourceNode?.type === NODE_TYPE_IMAGE ? (sourceNode.images || [])[0] : null;
+    const assetId = img?.asset_id || '';
+    const imageUrl = img?.url || '';
+    if(!sourceNode || !img || (!assetId && !imageUrl)){
+        toast(tr('smart.ocrNoImage'));
+        return;
+    }
+    const projectId = (canvas?.project_id || canvas?.project || canvasCore.sourceProjectId || '') || '';
+    toast(tr('smart.ocrWorking'));
+    try{
+        const res = await fetch('/api/ocr', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({project_id: projectId, asset_id: assetId, image_url: imageUrl})
+        });
+        const data = await res.json().catch(() => null);
+        if(!res.ok){
+            toast(`${tr('smart.ocrFailed')}: ${data?.detail || res.status}`);
+            return;
+        }
+        const text = String(data?.text || '').trim();
+        if(!text){
+            toast(tr('smart.ocrEmpty'));
+            return;
+        }
+        const rect = canvasCore.nodeRect(sourceNode);
+        const x = rect.x + rect.width + 48;
+        const y = Math.max(40, rect.y + Math.max(0, (rect.height - 240) / 2));
+        createPromptNode(x, y, {text, sourceNodeId: sourceNode.id, title: tr('smart.ocrPromptTitle')});
+        toast(tr('smart.ocrDone'));
+    }catch(err){
+        toast(`${tr('smart.ocrFailed')}: ${err?.message || err}`);
+    }
+}
+// #253：就地快速重命名——图片节点改首图名（显示名徽章），其余节点类型改 node.title。
+// 入口：Tab 快捷键、右键「重命名」卡。提交后 pushUndo + render + scheduleSave。
+function quickEditNode(node){
+    if(!node) return;
+    const target = FireflyQuickEdit.quickEditRenameTarget(node, NODE_TYPE_IMAGE);
+    if(!target) return;
+    const el = world.querySelector(`.image-node[data-id="${CSS.escape(node.id)}"]`);
+    if(!el) return;
+    const anchor = target.kind === 'image'
+        ? (el.querySelector('.image-name-badge') || el.querySelector('.node-title'))
+        : el.querySelector('.node-title');
+    if(!anchor) return;
+    const img = target.kind === 'image' ? (node.images || [])[0] : null;
+    FireflyQuickEdit.openQuickEdit({
+        anchor,
+        getValue: () => target.kind === 'image' ? imageNameLabel(img) : (node.title || ''),
+        placeholder: tr('smart.quickEditPlaceholder'),
+        onCommit(value){
+            pushUndo();
+            if(target.kind === 'image') img.name = value;
+            else node.title = value;
+            canvasCore.render();
+            canvasCore.scheduleSave();
+        },
+    });
+}
+function quickEditFromMenu(){
+    const nodeId = canvasState.createMenuImageNodeId || canvasState.createMenuGroupId || selectedNodeIds()[0] || canvasState.selectedId || '';
+    canvasState.createMenuImageNodeId = '';
+    canvasState.createMenuGroupId = '';
+    closeCreateMenu();
+    quickEditNode(canvasState.nodes.find(n => n.id === nodeId));
+}
+// #253：方向键微调选中节点（1px；Shift=10px；分组合其成员一起移动）。
+function nudgeSelectedNodes(dir, step, repeat){
+    const ids = selectedNodeIds();
+    if(!ids.length) return;
+    const dx = dir === 'arrowleft' ? -step : dir === 'arrowright' ? step : 0;
+    const dy = dir === 'arrowup' ? -step : dir === 'arrowdown' ? step : 0;
+    if(!repeat) pushUndo();
+    ids.forEach(id => {
+        const moved = canvasState.nodes.find(n => n.id === id);
+        if(!moved) return;
+        if(isSmartGroupNode(moved)) translateSmartNodeWithMembers(moved, dx, dy);
+        else { moved.x = Math.round((Number(moved.x) || 0) + dx); moved.y = Math.round((Number(moved.y) || 0) + dy); }
+    });
+    render();
+    scheduleSave();
+}
+// #253：Ctrl+D = 复制选中节点（同 Alt 拖复制 duplicateForAltDrag 机制，固定 32px 对角偏移，选中新节点）。
+function duplicateSelectedNodes(dx=32, dy=32){
+    const ids = selectedNodeIds();
+    if(!ids.length) return;
+    pushUndo();
+    const idMap = new Map();
+    const copies = [];
+    ids.forEach(id => {
+        const sourceNode = canvasState.nodes.find(n => n.id === id);
+        if(!sourceNode) return;
+        const copy = cloneSmartNode(sourceNode, dx, dy);
+        idMap.set(sourceNode.id, copy.id);
+        copies.push(copy);
+    });
+    if(!copies.length) return;
+    copies.forEach(copy => {
+        if(Array.isArray(copy.inputNodeIds)) copy.inputNodeIds = copy.inputNodeIds.map(id => idMap.get(id) || id).filter(Boolean);
+        if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || copy.sourceNodeId;
+    });
+    const idSet = new Set(ids);
+    const nextConnections = [...(canvas.connections || [])];
+    (canvas.connections || []).forEach(conn => {
+        if(!idSet.has(conn.from) || !idSet.has(conn.to)) return;
+        const mapped = {...conn, from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to};
+        if(!mapped.from || !mapped.to || mapped.from === mapped.to) return;
+        const kind = mapped.kind || 'flow';
+        if(nextConnections.some(c => c.from === mapped.from && c.to === mapped.to && (c.kind || 'flow') === kind)) return;
+        nextConnections.push(mapped);
+    });
+    canvas.connections = nextConnections;
+    canvasState.nodes.push(...copies);
+    canvasState.selectedId = copies.length === 1 ? copies[0].id : '';
+    canvasState.selectedIds = copies.map(c => c.id);
+    canvasState.selectedImage = {nodeId:'', index:-1};
+    render();
+    scheduleSave();
+}
+// #253：以视口中心为锚点按因子缩放（Ctrl+/Ctrl-）。
+function zoomViewportAroundCenter(factor){
+    if(!shell) return;
+    const cx = shell.clientWidth / 2;
+    const cy = shell.clientHeight / 2;
+    const worldX = (cx - viewport.x) / viewport.scale;
+    const worldY = (cy - viewport.y) / viewport.scale;
+    viewport.scale = safeScale(viewport.scale * factor);
+    viewport.x = cx - worldX * viewport.scale;
+    viewport.y = cy - worldY * viewport.scale;
+    applyViewport();
+}
 createMenu?.addEventListener('mousedown', event => event.stopPropagation());
 createMenu?.addEventListener('click', event => {
     event.stopPropagation();
     const card = event.target.closest('[data-create-type]');
-    if(card) createNodeFromMenu(card.dataset.createType || 'image');
+    if(!card) return;
+    const type = card.dataset.createType || 'image';
+    if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
+    if(type === 'rename') return quickEditFromMenu(); // #253：右键「重命名」→ 就地快速编辑
+    if(type === 'tidy'){ closeCreateMenu(); arrangeSelectedSmartNodes(); return; } // #253：右键「整理排版」→ 复用现有 arrangeSelectedSmartNodes
+    createNodeFromMenu(type);
 });
 function createCanvasStarterImage(pickMedia=false){
     closeCreateMenu();
@@ -23881,30 +16002,6 @@ document.addEventListener('keydown', event => {
     // transient layers only; the drawer itself is closed by its button.
     if(event.key === 'Escape') { closeAllSmartPopovers(); closeCreateMenu(); closeSmartCanvasShortcuts(); closePromptPresetPanel(); closePromptTemplatePanel(); }
 });
-function cropDragModeFromPointer(event){
-    const explicit = event.target.closest?.('[data-crop-handle]')?.dataset?.cropHandle;
-    if(explicit) return `crop-${explicit}`;
-    if(imageEditMode !== 'crop') return 'move';
-    const box = document.getElementById('cropBox');
-    const rect = box?.getBoundingClientRect?.();
-    if(!rect) return 'move';
-    const slop = 16;
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const nearL = x <= slop;
-    const nearR = rect.width - x <= slop;
-    const nearT = y <= slop;
-    const nearB = rect.height - y <= slop;
-    if(nearT && nearL) return 'crop-nw';
-    if(nearT && nearR) return 'crop-ne';
-    if(nearB && nearL) return 'crop-sw';
-    if(nearB && nearR) return 'crop-se';
-    if(nearT) return 'crop-n';
-    if(nearR) return 'crop-e';
-    if(nearB) return 'crop-s';
-    if(nearL) return 'crop-w';
-    return 'move';
-}
 document.getElementById('cropBox').addEventListener('mousedown', event => beginCropDrag(event, cropDragModeFromPointer(event)));
 document.querySelectorAll('[data-crop-handle]').forEach(handle => {
     handle.addEventListener('mousedown', event => beginCropDrag(event, `crop-${handle.dataset.cropHandle || 'se'}`));
@@ -24172,12 +16269,6 @@ window.addEventListener('message', event => {
     if(event.data?.type === 'canvas_updated') handleCanvasUpdatedMessage(event.data);
     if(event.data?.type === 'studio-lang' && window.StudioI18n) {
         window.StudioI18n.set(event.data.lang || 'zh');
-    }
-});
-window.addEventListener('keydown', event => {
-    if(event.key === 'Escape' && smartSettingsModal?.classList.contains('open')){
-        event.preventDefault();
-        closeSmartSettings();
     }
 });
 window.addEventListener('studio-lang-change', () => {

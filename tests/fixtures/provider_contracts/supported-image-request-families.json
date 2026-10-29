@@ -8,30 +8,59 @@
     "protocol:gemini-cli",
     "protocol:volcengine",
     "protocol:runninghub",
-    "protocol:jimeng",
     "protocol:codex",
     "openai-mode:openai-json",
     "openai-mode:openai-video-proxy",
     "openai-mode:openai-responses",
     "runninghub-mode:ai-app",
     "openai-model:gpt-image-2",
-    "openai-model:gemini-image"
+    "openai-model:gemini-image",
+    "openai-mode:fal"
   ],
   "execution_tests": {
-    "protocol:openai": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_generic_openai_json_generation_reaches_the_final_request"],
-    "protocol:apimart": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_apimart_preserves_resolution_ratio_and_ordered_duplicate_references"],
-    "protocol:gemini": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_rest_preserves_image_config_and_ordered_duplicate_parts"],
-    "protocol:gemini-cli": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_cli_freezes_the_full_prompt_and_duplicate_reference_order"],
-    "protocol:volcengine": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_volcengine_preserves_size_and_ordered_duplicate_images"],
-    "protocol:runninghub": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_runninghub_schema_endpoint_preserves_parameters_and_reference_order"],
-    "protocol:jimeng": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_jimeng_cli_preserves_ordered_duplicate_reference_arguments"],
-    "protocol:codex": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_codex_skill_preserves_ordered_duplicate_ref_image_arguments"],
-    "openai-mode:openai-json": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_json_wrapper_preserves_ordered_duplicate_references"],
-    "openai-mode:openai-video-proxy": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_video_proxy_preserves_resolution_and_ordered_duplicate_images"],
-    "openai-mode:openai-responses": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_responses_preserves_ordered_duplicate_input_images"],
-    "runninghub-mode:ai-app": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_runninghub_ai_app_preserves_prompt_and_ordered_duplicate_references"],
-    "openai-model:gpt-image-2": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_gpt_image_2_special_case_omits_generic_images_fields"],
-    "openai-model:gemini-image": ["tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_image_model_routes_to_the_openai_images_boundary"]
+    "protocol:openai": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_generic_openai_json_generation_reaches_the_final_request"
+    ],
+    "protocol:apimart": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_apimart_preserves_resolution_ratio_and_ordered_duplicate_references"
+    ],
+    "protocol:gemini": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_rest_preserves_image_config_and_ordered_duplicate_parts"
+    ],
+    "protocol:gemini-cli": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_cli_freezes_the_full_prompt_and_duplicate_reference_order"
+    ],
+    "protocol:volcengine": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_volcengine_preserves_size_and_ordered_duplicate_images"
+    ],
+    "protocol:runninghub": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_runninghub_schema_endpoint_preserves_parameters_and_reference_order"
+    ],
+    "protocol:codex": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_codex_skill_preserves_ordered_duplicate_ref_image_arguments"
+    ],
+    "openai-mode:openai-json": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_json_wrapper_preserves_ordered_duplicate_references"
+    ],
+    "openai-mode:openai-video-proxy": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_video_proxy_preserves_resolution_and_ordered_duplicate_images"
+    ],
+    "openai-mode:openai-responses": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_responses_preserves_ordered_duplicate_input_images"
+    ],
+    "runninghub-mode:ai-app": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_runninghub_ai_app_preserves_prompt_and_ordered_duplicate_references"
+    ],
+    "openai-model:gpt-image-2": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_gpt_image_2_special_case_omits_generic_images_fields"
+    ],
+    "openai-model:gemini-image": [
+      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_gemini_image_model_routes_to_the_openai_images_boundary"
+    ],
+    "openai-mode:fal": [
+      "tests.test_fal_queue_image_mode.FalQueueModeTests.test_fal_branch_submits_polls_and_returns_the_upscale_payload",
+      "tests.test_fal_queue_image_mode.FalFinalRequestGoldenTests.test_canvas_task_posts_the_golden_fal_queue_request"
+    ]
   },
   "retrieved_at": "2026-08-09",
   "excluded_families": [
@@ -39,13 +68,28 @@
       "key": "provider-id:modelscope",
       "status": "removed",
       "reason": "The built-in provider identity is rejected by production provider lookup and is not a supported execution family.",
-      "source_refs": ["local-generation-adapters", "local-image-routing"]
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ]
     },
     {
       "key": "provider-id:runninghub",
       "status": "removed",
       "reason": "The built-in provider identity is removed; configurable providers using protocol:runninghub remain supported and separately contracted.",
-      "source_refs": ["local-generation-adapters", "local-image-routing"]
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ]
+    },
+    {
+      "key": "provider-id:jimeng",
+      "status": "removed",
+      "reason": "Jimeng (Dreamina) provider fully retired in #236: the run_jimeng_cli / dreamina CLI adapter no longer exists in production, so the protocol:jimeng family is excluded from supported contracts.",
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ]
     }
   ],
   "sources": [
@@ -54,21 +98,27 @@
       "authority": "primary-documentation",
       "url": "https://developers.openai.com/api/reference/resources/images",
       "retrieved_at": "2026-08-09",
-      "supports": ["OpenAI Images generation and edit request shapes"]
+      "supports": [
+        "OpenAI Images generation and edit request shapes"
+      ]
     },
     {
       "id": "openai-responses",
       "authority": "primary-documentation",
       "url": "https://developers.openai.com/api/reference/resources/responses",
       "retrieved_at": "2026-08-09",
-      "supports": ["OpenAI Responses input content and image generation tool shapes"]
+      "supports": [
+        "OpenAI Responses input content and image generation tool shapes"
+      ]
     },
     {
       "id": "google-gemini-image",
       "authority": "primary-documentation",
       "url": "https://ai.google.dev/gemini-api/docs/image-generation",
       "retrieved_at": "2026-08-09",
-      "supports": ["Gemini generateContent image request and response shapes"]
+      "supports": [
+        "Gemini generateContent image request and response shapes"
+      ]
     },
     {
       "id": "local-generation-adapters",
@@ -80,22 +130,40 @@
         "generate_codex_provider_image_via_gpt_image_2_skill",
         "generate_gemini_cli_provider_image",
         "generate_gemini_provider_image",
-        "generate_jimeng_provider_image",
         "generate_runninghub_entry_image",
         "generate_runninghub_provider_image",
         "generate_volcengine_provider_image"
       ],
       "retrieved_at": "2026-08-09",
-      "supports": ["Firefly Canvas adapter dispatch and final transport boundaries"]
+      "supports": [
+        "Firefly Canvas adapter dispatch and final transport boundaries"
+      ]
     },
     {
       "id": "local-image-routing",
       "authority": "reference-implementation",
       "url": "https://github.com/miaomiaozii/Firefly-Canvas/blob/main/firefly_generation.py",
       "path": "firefly_generation.py",
-      "symbols": ["ImageGenerationRequest", "GenerationRoute", "route_image_generation"],
+      "symbols": [
+        "ImageGenerationRequest",
+        "GenerationRoute",
+        "route_image_generation"
+      ],
       "retrieved_at": "2026-08-09",
-      "supports": ["Provider routing preserves user request parameters"]
+      "supports": [
+        "Provider routing preserves user request parameters"
+      ]
+    },
+    {
+      "id": "fal-queue-api",
+      "authority": "primary-documentation",
+      "url": "https://docs.fal.ai/model-apis/queue",
+      "retrieved_at": "2026-10-28",
+      "supports": [
+        "fal.ai queue submit/status/result endpoints; model id lives in the URL path, not the body",
+        "submit response fields request_id, status_url, response_url",
+        "status values IN_QUEUE, IN_PROGRESS, COMPLETED, ERRORED with logs array"
+      ]
     }
   ],
   "contracts": [
@@ -104,28 +172,88 @@
       "status": "active",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "OpenAI Images JSON generation or multipart edit",
-      "response_shape": {"data": [{"url": "string"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json.prompt", "aspect_ratio": "json.aspect_ratio", "resolution": "json.resolution", "references": "multipart image occurrences in caller order"},
-      "source_refs": ["openai-images", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json.prompt",
+        "aspect_ratio": "json.aspect_ratio",
+        "resolution": "json.resolution",
+        "references": "multipart image occurrences in caller order"
+      },
+      "source_refs": [
+        "openai-images",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "contract-image-model", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "response_format": "url", "n": 1, "quality": "high"},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "contract-image-model",
+          "prompt": "provider family contract prompt",
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "response_format": "url",
+          "n": 1,
+          "quality": "high"
+        },
         "data": null,
         "files": []
       },
       "reference_edit_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/edits",
-        "header_names": ["authorization"],
+        "header_names": [
+          "authorization"
+        ],
         "json": null,
-        "data": {"model": "contract-image-model", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "quality": "high"},
+        "data": {
+          "model": "contract-image-model",
+          "prompt": "provider family contract prompt",
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "quality": "high"
+        },
         "files": [
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"},
-          {"field": "image", "filename": "second.png", "mime_type": "image/png", "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"},
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"}
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          },
+          {
+            "field": "image",
+            "filename": "second.png",
+            "mime_type": "image/png",
+            "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"
+          },
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          }
         ]
       }
     },
@@ -134,15 +262,58 @@
       "status": "active-configurable",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "APIMart JSON generation with image_urls and polling task id",
-      "response_shape": {"data": [{"url": "string"}], "task_id": "optional-string"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json.prompt", "size": "json.size", "aspect_ratio": "json.aspect_ratio", "resolution": "json.resolution", "references": "json.image_urls in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ],
+        "task_id": "optional-string"
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json.prompt",
+        "size": "json.size",
+        "aspect_ratio": "json.aspect_ratio",
+        "resolution": "json.resolution",
+        "references": "json.image_urls in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "contract-image-model", "prompt": "provider family contract prompt", "n": 1, "size": "2048x1152", "resolution": "2k", "official_fallback": false, "image_urls": ["https://refs.invalid/a.png", "https://refs.invalid/b.png", "https://refs.invalid/a.png"], "aspect_ratio": "16:9"},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "contract-image-model",
+          "prompt": "provider family contract prompt",
+          "n": 1,
+          "size": "2048x1152",
+          "resolution": "2k",
+          "official_fallback": false,
+          "image_urls": [
+            "https://refs.invalid/a.png",
+            "https://refs.invalid/b.png",
+            "https://refs.invalid/a.png"
+          ],
+          "aspect_ratio": "16:9"
+        },
         "data": null,
         "files": []
       }
@@ -152,17 +323,85 @@
       "status": "active-configurable",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "Gemini generateContent contents.parts and generationConfig.imageConfig",
-      "response_shape": {"candidates": [{"content": {"parts": [{"inlineData": "object"}]}}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "contents.parts.text", "aspect_ratio": "generationConfig.imageConfig.aspectRatio", "resolution": "generationConfig.imageConfig.imageSize", "references": "contents.parts.fileData in caller order"},
-      "source_refs": ["google-gemini-image", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "inlineData": "object"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "contents.parts.text",
+        "aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+        "resolution": "generationConfig.imageConfig.imageSize",
+        "references": "contents.parts.fileData in caller order"
+      },
+      "source_refs": [
+        "google-gemini-image",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/models/gemini-2.5-flash-image:generateContent",
-        "header_names": ["authorization"],
+        "header_names": [
+          "authorization"
+        ],
         "json": {
-          "contents": [{"role": "user", "parts": [{"text": "provider family contract prompt"}, {"fileData": {"fileUri": "https://refs.invalid/a.png"}}, {"fileData": {"fileUri": "https://refs.invalid/b.png"}}, {"fileData": {"fileUri": "https://refs.invalid/a.png"}}]}],
-          "generationConfig": {"responseModalities": ["TEXT", "IMAGE"], "imageConfig": {"aspectRatio": "16:9", "imageSize": "2K"}}
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "provider family contract prompt"
+                },
+                {
+                  "fileData": {
+                    "fileUri": "https://refs.invalid/a.png"
+                  }
+                },
+                {
+                  "fileData": {
+                    "fileUri": "https://refs.invalid/b.png"
+                  }
+                },
+                {
+                  "fileData": {
+                    "fileUri": "https://refs.invalid/a.png"
+                  }
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "responseModalities": [
+              "TEXT",
+              "IMAGE"
+            ],
+            "imageConfig": {
+              "aspectRatio": "16:9",
+              "imageSize": "2K"
+            }
+          }
         },
         "data": null,
         "files": []
@@ -173,16 +412,53 @@
       "status": "active-configurable",
       "boundary": "run_gemini_cli",
       "request_shape": "prompt containing task, requested size, ordered local references, and output directory",
-      "response_shape": {"text": "string", "raw": "object", "output_files": "image paths"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "normalized CLI prompt", "size": "normalized CLI prompt", "references": "normalized CLI prompt path list in caller order"},
-      "source_refs": ["google-gemini-image", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "text": "string",
+        "raw": "object",
+        "output_files": "image paths"
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "normalized CLI prompt",
+        "size": "normalized CLI prompt",
+        "references": "normalized CLI prompt path list in caller order"
+      },
+      "source_refs": [
+        "google-gemini-image",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "boundary": "run_gemini_cli",
-        "argv": ["agy-contract.exe", "--print-timeout", "300s", "--model", "gemini-2.5-flash-image", "--dangerously-skip-permissions", "-p", "你正在为萤火画布生成图片。\n任务：provider family contract prompt\n\n目标输出分辨率：2048x1152 像素（宽 x 高），画面方向：横版。最终保存到输出目录的图片文件实际像素必须是 2048x1152。如果生成器先得到较小图片，请在保存前放大或导出到目标尺寸，不要返回 1024px 小图。\n\n参考图片本地路径：\n<root>\\A.png\n<root>\\B.png\n<root>\\A.png\n\n如果当前 Antigravity CLI/模型支持图片生成或图片编辑，请把最终图片保存到这个本地目录：<root>\n文件格式优先 png 或 jpg。只输出最终文件路径和一句简短说明；不要修改项目代码，不要创建额外文档。\n如果你无法真正创建图片文件，请在 60 秒内直接回复“无法生成图片文件”，不要只写计划，也不要持续尝试。"],
+        "argv": [
+          "agy-contract.exe",
+          "--print-timeout",
+          "300s",
+          "--model",
+          "gemini-2.5-flash-image",
+          "--dangerously-skip-permissions",
+          "-p",
+          "你正在为萤火画布生成图片。\n任务：provider family contract prompt\n\n目标输出分辨率：2048x1152 像素（宽 x 高），画面方向：横版。最终保存到输出目录的图片文件实际像素必须是 2048x1152。如果生成器先得到较小图片，请在保存前放大或导出到目标尺寸，不要返回 1024px 小图。\n\n参考图片本地路径：\n<root>\\A.png\n<root>\\B.png\n<root>\\A.png\n\n如果当前 Antigravity CLI/模型支持图片生成或图片编辑，请把最终图片保存到这个本地目录：<root>\n文件格式优先 png 或 jpg。只输出最终文件路径和一句简短说明；不要修改项目代码，不要创建额外文档。\n如果你无法真正创建图片文件，请在 60 秒内直接回复“无法生成图片文件”，不要只写计划，也不要持续尝试。"
+        ],
         "prompt_sha256": "7436a5049d75bab2b4d9905e1d17bec5143ac7cc172a134880c1dc9554bb1f96",
         "prompt": "你正在为萤火画布生成图片。\n任务：provider family contract prompt\n\n目标输出分辨率：2048x1152 像素（宽 x 高），画面方向：横版。最终保存到输出目录的图片文件实际像素必须是 2048x1152。如果生成器先得到较小图片，请在保存前放大或导出到目标尺寸，不要返回 1024px 小图。\n\n参考图片本地路径：\n<root>\\A.png\n<root>\\B.png\n<root>\\A.png\n\n如果当前 Antigravity CLI/模型支持图片生成或图片编辑，请把最终图片保存到这个本地目录：<root>\n文件格式优先 png 或 jpg。只输出最终文件路径和一句简短说明；不要修改项目代码，不要创建额外文档。\n如果你无法真正创建图片文件，请在 60 秒内直接回复“无法生成图片文件”，不要只写计划，也不要持续尝试。",
-        "ordered_reference_tokens": ["<root>\\A.png", "<root>\\B.png", "<root>\\A.png"]
+        "ordered_reference_tokens": [
+          "<root>\\A.png",
+          "<root>\\B.png",
+          "<root>\\A.png"
+        ]
       }
     },
     {
@@ -190,15 +466,52 @@
       "status": "active-default",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "Volcengine JSON model, prompt, size, response_format, and image array",
-      "response_shape": {"data": [{"url": "string"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json.prompt", "size": "json.size", "references": "json.image in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json.prompt",
+        "size": "json.size",
+        "references": "json.image in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "doubao-seedream-4-0-250828", "prompt": "provider family contract prompt", "size": "2048x1152", "response_format": "url", "image": ["https://refs.invalid/a.png", "https://refs.invalid/b.png", "https://refs.invalid/a.png"]},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "doubao-seedream-4-0-250828",
+          "prompt": "provider family contract prompt",
+          "size": "2048x1152",
+          "response_format": "url",
+          "image": [
+            "https://refs.invalid/a.png",
+            "https://refs.invalid/b.png",
+            "https://refs.invalid/a.png"
+          ]
+        },
         "data": null,
         "files": []
       }
@@ -208,31 +521,57 @@
       "status": "backend-configurable",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "RunningHub schema-selected endpoint body and optional task polling",
-      "response_shape": {"data": {"results": [{"url": "string"}]}, "taskId": "optional-string"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "nodeInfoList prompt field", "aspect_ratio": "nodeInfoList aspectRatio field", "resolution": "nodeInfoList resolution field", "references": "nodeInfoList imageUrls in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": {
+          "results": [
+            {
+              "url": "string"
+            }
+          ]
+        },
+        "taskId": "optional-string"
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "nodeInfoList prompt field",
+        "aspect_ratio": "nodeInfoList aspectRatio field",
+        "resolution": "nodeInfoList resolution field",
+        "references": "nodeInfoList imageUrls in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/openapi/contract/schema-image",
-        "header_names": ["authorization"],
-        "json": {"prompt": "provider family contract prompt", "aspectRatio": "16:9", "resolution": "2k", "imageUrls": ["https://refs.invalid/a.png", "https://refs.invalid/b.png", "https://refs.invalid/a.png"]},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "prompt": "provider family contract prompt",
+          "aspectRatio": "16:9",
+          "resolution": "2k",
+          "imageUrls": [
+            "https://refs.invalid/a.png",
+            "https://refs.invalid/b.png",
+            "https://refs.invalid/a.png"
+          ]
+        },
         "data": null,
         "files": []
-      }
-    },
-    {
-      "key": "protocol:jimeng",
-      "status": "active-configurable",
-      "boundary": "run_jimeng_cli",
-      "request_shape": "text2image or image2image CLI argv with ratio, resolution, model version, and ordered image paths",
-      "response_shape": {"outputs": "image paths"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "--prompt", "resolution": "--resolution_type", "references": "--images comma list in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
-      "final_request_golden": {
-        "boundary": "run_jimeng_cli",
-        "argv": ["dreamina-contract", "image2image", "--images=A.png,B.png,A.png", "--prompt=provider family contract prompt", "--resolution_type=2k", "--poll=900", "--model_version=4.5"]
       }
     },
     {
@@ -240,13 +579,60 @@
       "status": "active-configurable",
       "boundary": "asyncio.create_subprocess_exec",
       "request_shape": "gpt-image-2-skill images generate or edit argv with repeated ref-image arguments",
-      "response_shape": {"images": "output paths", "tool_provider": "string"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "--prompt", "resolution": "--size", "references": "repeated --ref-image arguments in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "images": "output paths",
+        "tool_provider": "string"
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "--prompt",
+        "resolution": "--size",
+        "references": "repeated --ref-image arguments in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "boundary": "asyncio.create_subprocess_exec",
-        "argv": ["gpt-image-2-contract", "--json", "--provider", "codex", "images", "edit", "--prompt", "<prompt>", "--out", "<output>", "--model", "gpt-5.4", "--format", "png", "--size", "2K", "--quality", "high", "--ref-image", "A.png", "--ref-image", "B.png", "--ref-image", "A.png"],
+        "argv": [
+          "gpt-image-2-contract",
+          "--json",
+          "--provider",
+          "codex",
+          "images",
+          "edit",
+          "--prompt",
+          "<prompt>",
+          "--out",
+          "<output>",
+          "--model",
+          "gpt-5.4",
+          "--format",
+          "png",
+          "--size",
+          "2K",
+          "--quality",
+          "high",
+          "--ref-image",
+          "A.png",
+          "--ref-image",
+          "B.png",
+          "--ref-image",
+          "A.png"
+        ],
         "prompt_sha256": "acc6679739c6335dbbe2b6002de53231d8bb2af124b04619bb41392e7b2667ec",
         "prompt": "provider family contract prompt 画质要求：目标输出 2K 高分辨率图片。画幅要求：必须生成 横版/宽幅 图片，宽高比 16:9。请不要交换宽高，不要输出反向比例。 Image quality requirement: output a 2K high-resolution image. Canvas requirement: generate a landscape/wide image with aspect ratio 16:9; do not swap width and height."
       }
@@ -256,15 +642,56 @@
       "status": "active-recognized-mode",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "OpenAI-compatible JSON wrapper with extra_body.response_format and ordered image data URLs",
-      "response_shape": {"data": [{"url": "string"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json.prompt", "aspect_ratio": "json.aspect_ratio", "resolution": "json.resolution", "references": "json.extra_body.image in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json.prompt",
+        "aspect_ratio": "json.aspect_ratio",
+        "resolution": "json.resolution",
+        "references": "json.extra_body.image in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "contract-image-model", "prompt": "provider family contract prompt", "extra_body": {"response_format": "url", "image": ["https://refs.invalid/a.png", "https://refs.invalid/b.png", "https://refs.invalid/a.png"]}, "aspect_ratio": "16:9", "resolution": "2k"},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "contract-image-model",
+          "prompt": "provider family contract prompt",
+          "extra_body": {
+            "response_format": "url",
+            "image": [
+              "https://refs.invalid/a.png",
+              "https://refs.invalid/b.png",
+              "https://refs.invalid/a.png"
+            ]
+          },
+          "aspect_ratio": "16:9",
+          "resolution": "2k"
+        },
         "data": null,
         "files": []
       }
@@ -274,15 +701,54 @@
       "status": "active-recognized-mode",
       "boundary": "httpx request helper or sync multipart post",
       "request_shape": "video proxy model, prompt, aspect_ratio, resolution, and ordered images",
-      "response_shape": {"data": [{"url": "string"}], "id": "optional-task-id"},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json.prompt", "aspect_ratio": "json.aspect_ratio", "resolution": "json.resolution", "references": "json.images in caller order"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ],
+        "id": "optional-task-id"
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json.prompt",
+        "aspect_ratio": "json.aspect_ratio",
+        "resolution": "json.resolution",
+        "references": "json.images in caller order"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/videos",
-        "header_names": ["authorization"],
-        "json": {"model": "contract-image-model", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "images": ["https://refs.invalid/a.png", "https://refs.invalid/b.png", "https://refs.invalid/a.png"]},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "contract-image-model",
+          "prompt": "provider family contract prompt",
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "images": [
+            "https://refs.invalid/a.png",
+            "https://refs.invalid/b.png",
+            "https://refs.invalid/a.png"
+          ]
+        },
         "data": null,
         "files": []
       }
@@ -292,19 +758,79 @@
       "status": "active-recognized-mode",
       "boundary": "post_openai_responses",
       "request_shape": "Responses input_text and ordered input_image content with image_generation tool",
-      "response_shape": {"output": [{"type": "image_generation_call", "result": "base64"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "input content input_text", "size": "image_generation tool size", "references": "input content input_image values in caller order"},
-      "source_refs": ["openai-responses", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "output": [
+          {
+            "type": "image_generation_call",
+            "result": "base64"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "input content input_text",
+        "size": "image_generation tool size",
+        "references": "input content input_image values in caller order"
+      },
+      "source_refs": [
+        "openai-responses",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/responses",
-        "header_names": ["authorization"],
+        "header_names": [
+          "authorization"
+        ],
         "json": {
           "model": "contract-image-model",
-          "input": [{"role": "user", "content": [{"type": "input_text", "text": "请生成横版（宽幅）图片：宽高比 16:9，目标尺寸为宽 2048 × 高 1152 像素，绝对不要输出正方形（1:1）。 Generate a LANDSCAPE (wide) image with aspect ratio 16:9, target size 2048x1152 pixels (width x height). Never output a square 1:1 image. Do not swap width and height.\n\nprovider family contract prompt"}, {"type": "input_image", "image_url": "https://refs.invalid/a.png"}, {"type": "input_image", "image_url": "https://refs.invalid/b.png"}, {"type": "input_image", "image_url": "https://refs.invalid/a.png"}]}],
-          "tools": [{"type": "image_generation", "action": "edit", "size": "2048x1152", "quality": "high"}],
-          "tool_choice": {"type": "image_generation"},
+          "input": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "请生成横版（宽幅）图片：宽高比 16:9，目标尺寸为宽 2048 × 高 1152 像素，绝对不要输出正方形（1:1）。 Generate a LANDSCAPE (wide) image with aspect ratio 16:9, target size 2048x1152 pixels (width x height). Never output a square 1:1 image. Do not swap width and height.\n\nprovider family contract prompt"
+                },
+                {
+                  "type": "input_image",
+                  "image_url": "https://refs.invalid/a.png"
+                },
+                {
+                  "type": "input_image",
+                  "image_url": "https://refs.invalid/b.png"
+                },
+                {
+                  "type": "input_image",
+                  "image_url": "https://refs.invalid/a.png"
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "type": "image_generation",
+              "action": "edit",
+              "size": "2048x1152",
+              "quality": "high"
+            }
+          ],
+          "tool_choice": {
+            "type": "image_generation"
+          },
           "background": true
         },
         "data": null,
@@ -316,24 +842,80 @@
       "status": "backend-configurable",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "RunningHub AI-app apiKey, webappId, and ordered nodeInfoList",
-      "response_shape": {"code": 0, "data": {"taskId": "string"}},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "nodeInfoList prompt field", "references": "nodeInfoList image fields in caller order", "task": "submit taskId then poll taskId"},
-      "source_refs": ["local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "code": 0,
+        "data": {
+          "taskId": "string"
+        }
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "nodeInfoList prompt field",
+        "references": "nodeInfoList image fields in caller order",
+        "task": "submit taskId then poll taskId"
+      },
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": [
         {
           "method": "POST",
           "url": "https://provider.invalid/v1/task/openapi/ai-app/run",
-          "header_names": ["authorization"],
-          "json": {"apiKey": "contract-api-key", "webappId": "contract-app", "nodeInfoList": [{"nodeId": "1", "fieldName": "imageA", "fieldValue": "A.png"}, {"nodeId": "2", "fieldName": "imageB", "fieldValue": "B.png"}, {"nodeId": "3", "fieldName": "imageC", "fieldValue": "A.png"}, {"nodeId": "4", "fieldName": "prompt", "fieldValue": "provider family contract prompt"}]},
+          "header_names": [
+            "authorization"
+          ],
+          "json": {
+            "apiKey": "contract-api-key",
+            "webappId": "contract-app",
+            "nodeInfoList": [
+              {
+                "nodeId": "1",
+                "fieldName": "imageA",
+                "fieldValue": "A.png"
+              },
+              {
+                "nodeId": "2",
+                "fieldName": "imageB",
+                "fieldValue": "B.png"
+              },
+              {
+                "nodeId": "3",
+                "fieldName": "imageC",
+                "fieldValue": "A.png"
+              },
+              {
+                "nodeId": "4",
+                "fieldName": "prompt",
+                "fieldValue": "provider family contract prompt"
+              }
+            ]
+          },
           "data": null,
           "files": []
         },
         {
           "method": "POST",
           "url": "https://provider.invalid/v1/task/openapi/outputs",
-          "header_names": ["authorization"],
-          "json": {"apiKey": "contract-api-key", "taskId": "contract-task"},
+          "header_names": [
+            "authorization"
+          ],
+          "json": {
+            "apiKey": "contract-api-key",
+            "taskId": "contract-task"
+          },
           "data": null,
           "files": []
         }
@@ -344,28 +926,83 @@
       "status": "active-model-special-case",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "OpenAI Images JSON without generic n or response_format, with fallback edit only for unsupported endpoint",
-      "response_shape": {"data": [{"url": "string"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json/data.prompt", "aspect_ratio": "json/data.aspect_ratio", "resolution": "json/data.resolution", "references": "multipart image occurrences in caller order"},
-      "source_refs": ["openai-images", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json/data.prompt",
+        "size": "json/data.size (aspect_ratio+resolution 经 gpt_image_2_request_size 换算为合规像素)",
+        "references": "multipart image occurrences in caller order"
+      },
+      "source_refs": [
+        "openai-images",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "quality": "high"},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "gpt-image-2",
+          "prompt": "provider family contract prompt",
+          "size": "2048x1152",
+          "quality": "high"
+        },
         "data": null,
         "files": []
       },
       "reference_edit_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/edits",
-        "header_names": ["authorization"],
+        "header_names": [
+          "authorization"
+        ],
         "json": null,
-        "data": {"model": "gpt-image-2", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "quality": "high"},
+        "data": {
+          "model": "gpt-image-2",
+          "prompt": "provider family contract prompt",
+          "size": "2048x1152",
+          "quality": "high"
+        },
         "files": [
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"},
-          {"field": "image", "filename": "second.png", "mime_type": "image/png", "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"},
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"}
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          },
+          {
+            "field": "image",
+            "filename": "second.png",
+            "mime_type": "image/png",
+            "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"
+          },
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          }
         ]
       }
     },
@@ -374,28 +1011,168 @@
       "status": "active-model-special-case",
       "boundary": "httpx.AsyncClient.post",
       "request_shape": "OpenAI-compatible Images JSON with Gemini image_size mapping",
-      "response_shape": {"data": [{"url": "string"}]},
-      "capability_matrix": {"resolutions": ["1k", "2k", "4k"], "aspect_ratios": ["1:1", "16:9", "2:3"], "references": "ordered-with-duplicates"},
-      "parameter_mapping": {"prompt": "json/data.prompt", "aspect_ratio": "json/data.aspect_ratio", "resolution": "json/data.image_size", "references": "multipart image occurrences in caller order"},
-      "source_refs": ["google-gemini-image", "openai-images", "local-generation-adapters", "local-image-routing"],
+      "response_shape": {
+        "data": [
+          {
+            "url": "string"
+          }
+        ]
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "prompt": "json/data.prompt",
+        "aspect_ratio": "json/data.aspect_ratio",
+        "resolution": "json/data.image_size",
+        "references": "multipart image occurrences in caller order"
+      },
+      "source_refs": [
+        "google-gemini-image",
+        "openai-images",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
       "final_request_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/generations",
-        "header_names": ["authorization"],
-        "json": {"model": "gemini-2.5-flash-image", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "image_size": "2K", "response_format": "url", "n": 1, "quality": "high"},
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "model": "gemini-2.5-flash-image",
+          "prompt": "provider family contract prompt",
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "image_size": "2K",
+          "response_format": "url",
+          "n": 1,
+          "quality": "high"
+        },
         "data": null,
         "files": []
       },
       "reference_edit_golden": {
         "method": "POST",
         "url": "https://provider.invalid/v1/images/edits",
-        "header_names": ["authorization"],
+        "header_names": [
+          "authorization"
+        ],
         "json": null,
-        "data": {"model": "gemini-2.5-flash-image", "prompt": "provider family contract prompt", "aspect_ratio": "16:9", "resolution": "2k", "image_size": "2K", "quality": "high"},
+        "data": {
+          "model": "gemini-2.5-flash-image",
+          "prompt": "provider family contract prompt",
+          "aspect_ratio": "16:9",
+          "resolution": "2k",
+          "image_size": "2K",
+          "quality": "high"
+        },
         "files": [
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"},
-          {"field": "image", "filename": "second.png", "mime_type": "image/png", "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"},
-          {"field": "image", "filename": "first.png", "mime_type": "image/png", "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"}
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          },
+          {
+            "field": "image",
+            "filename": "second.png",
+            "mime_type": "image/png",
+            "sha256": "69c0968d87945cf84f13efbfdafde032b66d43ddce05572eef2def85173cc85f"
+          },
+          {
+            "field": "image",
+            "filename": "first.png",
+            "mime_type": "image/png",
+            "sha256": "ef504a6a99a0bcd1b509be3a4281c6bfbc65fcfb2ea2a415d2e7d11c7644364e"
+          }
+        ]
+      }
+    },
+    {
+      "key": "openai-mode:fal",
+      "status": "active-recognized-mode",
+      "boundary": "generate_fal_queue_image",
+      "request_shape": "POST {base}/fal/{endpoint} with image_url plus per-endpoint parameters; no model/size/quality/n",
+      "response_shape": {
+        "submit": {
+          "request_id": "id",
+          "status_url": "https://…/status",
+          "response_url": "https://…"
+        },
+        "status": {
+          "status": "COMPLETED",
+          "queue_position": 0
+        },
+        "result": {
+          "image": {
+            "url": "https://…",
+            "content_type": "image/png",
+            "width": 4096,
+            "height": 2304
+          }
+        }
+      },
+      "capability_matrix": {
+        "resolutions": [
+          "1k",
+          "2k",
+          "4k"
+        ],
+        "aspect_ratios": [
+          "1:1",
+          "16:9",
+          "2:3"
+        ],
+        "references": "ordered-with-duplicates"
+      },
+      "parameter_mapping": {
+        "references": "first public reference image url becomes image_url (queue models are image-to-image only)",
+        "resolution": "fal_request.model_by_resolution[1k|2k|4k] selects the Topaz engine; upscale_factor defaults 1x/2x/4x",
+        "endpoint parameters": "image_model_capabilities[model].fal_request.params passed through verbatim",
+        "prompt": "not sent - fal upscale endpoints reject unknown fields with HTTP 422",
+        "size/quality": "not sent - output dimensions follow upscale_factor",
+        "aspect_ratio": "not sent to fal; output keeps the input image ratio, canvas ratio only gates compatibility"
+      },
+      "source_refs": [
+        "fal-queue-api",
+        "local-generation-adapters",
+        "local-image-routing"
+      ],
+      "final_request_golden": {
+        "method": "POST",
+        "url": "https://provider.invalid/fal/fal-ai/topaz/upscale/image",
+        "header_names": [
+          "authorization"
+        ],
+        "json": {
+          "output_format": "png",
+          "face_enhancement": true,
+          "crop_to_fill": false,
+          "image_url": "https://refs.invalid/a.png",
+          "upscale_factor": 2,
+          "model": "High Fidelity V2"
+        },
+        "data": null,
+        "files": []
+      },
+      "transport_rules": {
+        "auth_header": "Authorization: Bearer <provider key> (fal official uses `Authorization: key`)",
+        "url_prefix": "https://queue.fal.run replaced by {base_without_v1}/{path_prefix}",
+        "echoed_urls": "status_url/response_url in submit and result bodies point at queue.fal.run; only same-host values are trusted, others rebuilt from request_id",
+        "result_locations": [
+          "image.url",
+          "images[].url"
         ]
       }
     }

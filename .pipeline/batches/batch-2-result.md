@@ -1,70 +1,95 @@
-# batch-2 结果（#117 US-27 + US-22）：Agent 会话的项目生命周期 + 模型默认行为确认
+# batch-2 结果：#160 画布前端模块化 P2c：抽取节点操作模块
 
-## 完成时间
-2026-09-24
+## 最终搬/留函数清单
 
-## 改动清单
+### 搬到 `static/js/canvas-node-ops.js`（16 个函数）
 
-### 1. AgentHostManager.cleanup_project(project_id) — 新增
-**文件**: `app/services/agent_host.py`
-- 新增 `cleanup_project(project_id: str)` 方法
-- 收集该项目所有 session（key 前缀 `{project_id}:`）
-- 在锁内从 `self.sessions` 移除（防止并发 get_or_create 竞争）
-- 在锁外逐个 `stop_session`（避免持锁期间做进程 I/O）
-- 幂等：重复调用不报错；无 session 时静默返回
+**创建簇（9 个）：**
+1. `createImageNodeAt(point, images, options)` — 在指定位置创建图片节点
+2. `createNode(x, y, images, options)` — 创建通用节点
+3. `createPromptNode(x, y, options)` — 创建提示词节点
+4. `createConversationNode(x, y, options)` — 创建对话节点
+5. `createAgentNode(x, y, options)` — 创建 Agent 节点
+6. `createLocalEditNode(x, y, options)` — 创建局部编辑节点
+7. `createLocalEditNodeFromImage(nodeId, imageIndex)` — 从图片节点创建局部编辑节点
+8. `createLoopNode(x, y, options)` — 创建循环节点
+9. `createSmartGroupNode(x, y, options)` — 创建智能分组节点
 
-### 2. 项目删除/回收站时调用清理 — 接线
-**文件**: `app/routers/api_project_library.py`
-- 导入 `agent_host_manager`
-- `trash_firefly_project`（DELETE /api/project-library/{project_id}）：trash 成功后调用 `cleanup_project`
-- `purge_trashed_project`（DELETE /api/project-library/trash/{project_id}）：purge 成功后调用 `cleanup_project`
-- `restore_trashed_project`（POST /api/project-library/trash/{project_id}/restore）：无需清理（会话文件随目录回来，下次交互 --continue 自动恢复）
+**删除簇（3 个）：**
+10. `deleteNode(id)` — 删除节点
+11. `clearNodeMediaBeforeDelete(id)` — 删除前清空节点媒体
+12. `deleteNodeFromButton(id)` — 从按钮删除节点（含 #65 生成中禁删守卫）
 
-### 3. 项目导出包含 agent_nodes/ — 导出/导入
-**文件**: `firefly_projects.py`
-- `export_fly_to`: 遍历 `agent_nodes/{node_id}/sessions/` 下所有文件，加入 zip（路径 `agent_nodes/{relative}`，ZIP_DEFLATED 压缩）并加入 manifest
-- 导入验证：允许 `agent_nodes/` 前缀路径（原只允许 fixed_files + `media/`）
-- 导入提取：遍历 `agent_nodes/` 文件，解压到项目目录（含路径安全检查）
+**移动/缩放 DOM 同步（2 个）：**
+13. `moveNodeElementsDuringDrag()` — 拖拽中同步节点 DOM 位置
+14. `updateNodeElementDuringResize(node)` — 缩放中同步节点 DOM 尺寸
 
-### 4. 测试 — 新增
-**文件**: `tests/test_agent_tui.py`
-- `TestCleanupProject` 类，4 个测试：
-  - `test_cleanup_project_kills_sessions`: 创建 session → cleanup → 进程被 terminate、session 记录清除
-  - `test_cleanup_project_multi_project_isolation`: 删 A 项目不影响 B 项目的 session
-  - `test_cleanup_project_idempotent`: 重复调用 cleanup 不报错
-  - `test_cleanup_project_no_sessions`: 对无 session 的项目调用 cleanup 不报错
-- 使用既有 `FakeAgentProcess`（tests/fake_agent_host.py）
+**重命名（1 个）：**
+15. `renameSmartNodeImage(nodeId, imageIndex)` — 重命名节点内图片（async）
 
-## US-27 验收标准逐条核对
+**菜单创建（1 个）：**
+16. `createNodeFromMenu(type)` — 从右键菜单创建节点
 
-| # | 标准 | 状态 | 证据 |
-|---|---|---|---|
-| 1 | 项目永久删除时 kill agent 会话 | ✅ | `purge_trashed_project` 端点调用 `cleanup_project`；测试 `test_cleanup_project_kills_sessions` |
-| 2 | 项目进回收站时 kill agent 会话 | ✅ | `trash_firefly_project` 端点调用 `cleanup_project`；session 文件在项目目录内随项目进回收区 |
-| 3 | 项目恢复时无需特殊处理 | ✅ | 会话文件随项目目录回来；`spawn_session` 自动检测 `--continue`（agent_host.py:123-128） |
-| 4 | 项目导出包含 agent_nodes/ | ✅ | `export_fly_to` 遍历并打包 agent_nodes/ 文件；导入验证+提取已支持 |
-| 5 | AgentHostManager 项目级清理方法 | ✅ | `cleanup_project(project_id)` 已实现 |
-| 6 | fake_agent_host 单测覆盖 | ✅ | `TestCleanupProject` 4 个测试全过 |
-| 7 | 全量回归全绿 | ✅ | 1005 passed, 12 warnings, 351 subtests passed in 316.30s |
-| 8 | result.md | ✅ | 本文件 |
-| 9 | 不提交 commit | ✅ | 工作区未提交 |
+### 留在 `smart-canvas.js`（排除项及理由）
 
-## US-22 确认
+- **布局/缩放辅助函数**（`safeScale`/`nodeScale`/`mediaNodeDefaultScale`）：P1 已决定留主脚本的布局工具，不搬。
+- **画布视口缩放**（`zoomPanAroundPoint`）：属画布视口操作，不是节点操作。
+- **拖拽事件接线**（`dragState`、mousedown 处理器、drag 处理逻辑）：核心状态机，深度纠缠渲染/同步，留主脚本。`moveNodeElementsDuringDrag` 和 `updateNodeElementDuringResize` 是拖拽/缩放中的 DOM 同步函数，可独立搬移。
+- **复制/粘贴/Alt 拖拽复制**（`cloneSmartNode`/`copySelectedNodes`/`pasteNodes`/`duplicateForAltDrag`）：属剪贴板操作，不是核心 CRUD。
+- **`renamePromptTemplateGroup`**：提示词模板组重命名，不是画布节点操作。
+- **连线相关**：P2a 已搬 canvas-connections.js。
+- **undo/redo**：batch-1 已搬 canvas-undo.js。
+- **媒体归档**：P2d 领域，本批不碰。
 
-**结论**: 设计满足，无需代码改动。
+## 改了什么
 
-**验证**:
-- app 无全局文本模型设置（`grep default_model` 仅找到 `volcengine_default_model_payload`，是图片生成相关）
-- `spawn_session(session, model="", continue_session=False)`: 当 `model` 和 `session.model` 都为空时，不传 `--model` 参数给 pi CLI（agent_host.py:131-137）
-- pi CLI 不传 `--model` 时使用自身配置的默认模型（~/.pi/config.json 或环境变量）
-- 因此"全局默认模型" = pi 的默认模型，行为正确
+| 文件 | 变化 |
+|------|------|
+| `static/js/canvas-node-ops.js` | 新建，341 行（16 个函数 + 头部注释） |
+| `static/js/smart-canvas.js` | 24033 → 23709 行（净减 324 行） |
+| `static/smart-canvas.html` | 在 `canvas-undo.js` 与 `smart-canvas.js` 之间插入 `<script src="/static/js/canvas-node-ops.js"></script>` |
+
+## 为什么（关键决策）
+
+1. **纯位置移动，零逻辑改动**：所有搬移的代码连注释一起原样搬，未改任何逻辑。
+2. **共享全局作用域模式**：沿用 P2a/P2b 模式，新模块先于主脚本加载，所有标识符在同一个全局作用域中互相可见。
+3. **只搬语义清晰的节点操作函数**：与渲染/同步核心状态机深度纠缠的混合函数（拖拽事件接线、复制/粘贴）留主脚本。
+4. **`moveNodeElementsDuringDrag`/`updateNodeElementDuringResize` 搬移**：这两个函数是拖拽/缩放中的 DOM 同步函数，不依赖拖拽状态机本身，可独立搬移。
+
+## 验证结果
+
+| 验证项 | 结果 | 关键输出 |
+|--------|------|----------|
+| `node --check canvas-node-ops.js` | PASS | 语法正确 |
+| `node --check smart-canvas.js` | PASS | 语法正确 |
+| grep 重复定义检查 | PASS | 主脚本无重复定义，16 个函数全部在新模块 |
+| 浏览器冒烟：全局可用性 | PASS | 16 个节点操作函数全部 window 可见 |
+| 浏览器冒烟：节点创建（image/prompt/loop/conversation/agent/local-edit/group） | PASS | 7/7 类型创建成功 |
+| 浏览器冒烟：删除节点 | PASS | 节点正确删除 |
+| 浏览器冒烟：moveNodeElementsDuringDrag 可用 | PASS | typeof = function |
+| 浏览器冒烟：updateNodeElementDuringResize 可用 | PASS | typeof = function |
+| 浏览器冒烟：拖拽移动节点 | PASS | dx=100 dy=80 |
+| 浏览器冒烟：缩放节点 | PASS | size: 340x286 -> 390x336 |
+| 浏览器冒烟：renameSmartNodeImage 可用 | PASS | typeof = function |
+| 浏览器冒烟：生成中禁删守卫 | PASS | smartNodeInFlight 守卫代码存在 |
+| 浏览器冒烟：ReferenceError | PASS | 0 个 |
+| 浏览器冒烟：console error | PASS | 0 个 |
+| 浏览器冒烟：清理+保存 | PASS | 恢复基线，保存成功 |
+| 全量回归 `pytest tests/` | PASS | **1040 passed, 351 subtests passed**（与基线完全一致） |
+
+**冒烟测试总结果：19/19 全部通过 ✓**
+
+## 审核修复（round 1）
+
+审核发现测试脚本 `tmp/qa/qa19-p2c-nodeops.js` 的 spot 计算有 bug：重叠检查只在循环前查询一次节点 box，不含循环中创建的节点，导致 agent/group 节点的右键落在已有节点上而非空白画布。
+
+修复：循环内每次右键前重新查询所有类型节点的 box 做重叠检查。
+
+修复后重跑验证：
+- 浏览器冒烟：**19/19 全部通过**（agent/group 创建 PASS，拖拽/缩放 best-effort 也 PASS）
+- 无 ReferenceError、无 console error
 
 ## 遗留风险
-- `cleanup_project` 在 trash/purge 成功后调用；如果 cleanup 本身异常（理论上不会，stop_session 有 try/except），不影响已完成的 trash/purge 操作
-- 导出包含 agent_nodes/ 会增加 .fly 包大小（通常很小，JSONL 会话文件）；无大小限制检查（与 media 文件不同，agent 会话文件通常 < 1MB）
-- 旧版 .fly 包（无 agent_nodes/）导入时不受影响（agent_nodes/ 是可选的）
 
-## 测试输出
-```
-1005 passed, 12 warnings, 351 subtests passed in 316.30s (0:05:16)
-```
+1. **状态变量不在 window 上**：与 batch-1 相同，const/let 声明的状态变量不在 window 对象上，但同一页面全局作用域内可访问，不影响功能。
+2. **缓存 busting**：canvas-node-ops.js 无 ?v= 参数，首次加载不受影响。
