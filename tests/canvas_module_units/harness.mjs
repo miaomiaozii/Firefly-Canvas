@@ -45,6 +45,8 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-download.js',
     'canvas-media-history.js',
     'canvas-undo.js',
+    // #272：画布批注层（见 static/js/canvas-annotations.js）
+    'canvas-annotations.js',
     'canvas-node-ops.js',
     // #255：分数坐标骨架（0..1 公共坐标，crop/mask/brush 换算地基）。
     'canvas-geometry.js',
