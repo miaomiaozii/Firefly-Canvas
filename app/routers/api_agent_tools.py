@@ -240,6 +240,20 @@ async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: 
     return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"))
 
 
+@router.post("/edit_rotate")
+async def canvas_edit_rotate(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266b canvas.edit_rotate: 本地旋转节点图（90/180/270 逆时针）覆写节点图（写操作；调用方先施加确认门）。"""
+    body = await request.json()
+    return await rotate_node_image_core(project_id, body.get("node_id"), body.get("angle"))
+
+
+@router.post("/edit_flip")
+async def canvas_edit_flip(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266b canvas.edit_flip: 本地镜像节点图（horizontal 左右 / vertical 上下）覆写节点图（写操作；调用方先施加确认门）。"""
+    body = await request.json()
+    return await flip_node_image_core(project_id, body.get("node_id"), body.get("direction"))
+
+
 # =============================================================================
 # Core (Request-free) implementations — shared by the HTTP endpoints above and
 # the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
@@ -908,6 +922,54 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
 BATCH_EDIT_MAX_NODES = 10
 
 
+async def _load_node_image(project_id: str, node_id: str, picked: dict):
+    """#266 edit_* 共享：从资源库加载节点选中图像；404/400 错误文案带下一步建议（票面规范）。"""
+    store = _app_main.FIREFLY_PROJECT_STORE
+    try:
+        record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
+    path = str(record.get("path") or "")
+    source = await asyncio.to_thread(_load_image_or_none, path)
+    if source is None:
+        raise HTTPException(status_code=400, detail=f"节点 {node_id} 的图像无法读取；请检查媒体文件是否损坏后重试。")
+    return source
+
+
+async def _replace_node_image(project_id: str, node: dict, node_id: str, picked: dict, edited, filename: str) -> dict:
+    """#266 edit_* 共享写回：新资源入资源库（原资源保留可恢复）+ 覆写节点图，返回结果摘要。"""
+    from local_edit import encode_png
+
+    store = _app_main.FIREFLY_PROJECT_STORE
+    asset = await asyncio.to_thread(store.import_media, project_id, encode_png(edited), filename, "image/png")
+    new_asset_id = str(asset["asset_id"])
+    # 覆写节点图（其余 image 条目保留；原资源仍在资源库，可恢复）
+    images = [dict(it) for it in (node.get("images") or [])]
+    replaced = False
+    for it in images:
+        if str(it.get("asset_id") or "") == str(picked["asset_id"]):
+            it["asset_id"] = new_asset_id
+            it["kind"] = "image"
+            it["name"] = filename
+            replaced = True
+            break
+    if not replaced:
+        images.insert(0, {"asset_id": new_asset_id, "kind": "image", "name": filename})
+    node["images"] = images
+    if node.get("output_asset_id"):
+        node["output_asset_id"] = new_asset_id
+    node["updated_at"] = _app_main.now_ms()
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    return {
+        "success": True,
+        "node_id": node_id,
+        "asset_id": new_asset_id,
+        "original_asset_id": str(picked["asset_id"]),
+        "width": edited.width,
+        "height": edited.height,
+    }
+
+
 async def batch_edit_core(project_id: str, node_ids, prompt) -> dict:
     """#266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成，结果放各自旁边。
 
@@ -965,46 +1027,60 @@ async def crop_node_image_core(project_id: str, node_id, rect) -> dict:
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="rect 参数必须是数字；请检查 x/y/width/height 后重试。") from None
     picked = _node_image_for_edit(node, node_id)
-    store = _app_main.FIREFLY_PROJECT_STORE
-    try:
-        record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
-    path = str(record.get("path") or "")
-    source = await asyncio.to_thread(_load_image_or_none, path)
-    if source is None:
-        raise HTTPException(status_code=400, detail=f"节点 {node_id} 的图像无法读取；请检查媒体文件是否损坏后重试。")
+    source = await _load_node_image(project_id, node_id, picked)
     try:
         left, top, right, bottom = validate_rect([x, y, x + w, y + h], source.size)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"选区越界（图像 {source.width}x{source.height}）；先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 的 x/y/width/height 后重试。") from None
     cropped = await asyncio.to_thread(crop_rect, source, [left, top, right, bottom])
     filename = f"edit-crop-{int(_time.time() * 1000)}.png"
-    asset = await asyncio.to_thread(store.import_media, project_id, encode_png(cropped), filename, "image/png")
-    new_asset_id = str(asset["asset_id"])
-    # 覆写节点图（其余 image 条目保留；原资源仍在资源库，可恢复）
-    images = [dict(it) for it in (node.get("images") or [])]
-    replaced = False
-    for it in images:
-        if str(it.get("asset_id") or "") == str(picked["asset_id"]):
-            it["asset_id"] = new_asset_id
-            it["kind"] = "image"
-            it["name"] = filename
-            replaced = True
-            break
-    if not replaced:
-        images.insert(0, {"asset_id": new_asset_id, "kind": "image", "name": filename})
-    node["images"] = images
-    if node.get("output_asset_id"):
-        node["output_asset_id"] = new_asset_id
-    node["updated_at"] = _app_main.now_ms()
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
-    return {
-        "success": True,
-        "node_id": node_id,
-        "asset_id": new_asset_id,
-        "original_asset_id": str(picked["asset_id"]),
-        "rect": [left, top, right, bottom],
-        "width": cropped.width,
-        "height": cropped.height,
-    }
+    result = await _replace_node_image(project_id, node, node_id, picked, cropped, filename)
+    result["rect"] = [left, top, right, bottom]
+    return result
+
+
+async def rotate_node_image_core(project_id: str, node_id, angle) -> dict:
+    """#266b canvas.edit_rotate：本地旋转节点图（90/180/270 逆时针，纯 PIL，不消耗外部生成）并覆写节点图。
+
+    新资源入资源库（原资源保留可恢复）。写操作：MCP 面施加 #242 确认门（CONFIRMATION_GATED_TOOLS）；
+    错误文案带下一步建议（票面规范）。
+    """
+    from local_edit import rotate_image
+
+    node_id = str(node_id or "")
+    node = _find_node_for_view(project_id, node_id)
+    try:
+        angle = int(angle)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="angle 必须是 90/180/270 之一（逆时针）；先调用 canvas.get_node 查看节点媒体。") from None
+    if angle not in (90, 180, 270):
+        raise HTTPException(status_code=400, detail=f"angle 必须是 90/180/270 之一（本次 {angle}）；先调用 canvas.get_node 查看节点媒体。")
+    picked = _node_image_for_edit(node, node_id)
+    source = await _load_node_image(project_id, node_id, picked)
+    edited = await asyncio.to_thread(rotate_image, source, angle)
+    filename = f"edit-rotate-{int(time.time() * 1000)}.png"
+    result = await _replace_node_image(project_id, node, node_id, picked, edited, filename)
+    result["angle"] = angle
+    return result
+
+
+async def flip_node_image_core(project_id: str, node_id, direction) -> dict:
+    """#266b canvas.edit_flip：本地镜像节点图（horizontal 左右 / vertical 上下，纯 PIL，不消耗外部生成）并覆写节点图。
+
+    新资源入资源库（原资源保留可恢复）。写操作：MCP 面施加 #242 确认门（CONFIRMATION_GATED_TOOLS）；
+    错误文案带下一步建议（票面规范）。
+    """
+    from local_edit import flip_image
+
+    node_id = str(node_id or "")
+    node = _find_node_for_view(project_id, node_id)
+    direction = str(direction or "").strip().lower()
+    if direction not in ("horizontal", "vertical"):
+        raise HTTPException(status_code=400, detail=f"direction 必须是 horizontal（左右）或 vertical（上下）之一（本次 {direction!r}）；先调用 canvas.get_node 查看节点媒体。")
+    picked = _node_image_for_edit(node, node_id)
+    source = await _load_node_image(project_id, node_id, picked)
+    edited = await asyncio.to_thread(flip_image, source, direction)
+    filename = f"edit-flip-{int(time.time() * 1000)}.png"
+    result = await _replace_node_image(project_id, node, node_id, picked, edited, filename)
+    result["direction"] = direction
+    return result

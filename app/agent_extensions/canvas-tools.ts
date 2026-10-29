@@ -304,6 +304,81 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    // #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 既有能力，flip 同族本地变换）：写操作先走确认门（#242 语义）
+    pi.registerTool({
+        name: "canvas.edit_rotate",
+        description:
+            "Rotate a node image (90/180/270 degrees counter-clockwise) and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            angle: Type.Union([Type.Literal(90), Type.Literal(180), Type.Literal(270)], { description: "Counter-clockwise rotation in degrees: 90, 180 or 270" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_rotate",
+                    params: { node_id: params.node_id, angle: params.angle },
+                    message: `旋转节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_rotate`, "POST", {
+                node_id: params.node_id,
+                angle: params.angle,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "canvas.edit_flip",
+        description:
+            "Mirror a node image (horizontal left-right / vertical top-bottom) and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            direction: Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")], { description: "horizontal = left-right mirror, vertical = top-bottom mirror" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_flip",
+                    params: { node_id: params.node_id, direction: params.direction },
+                    message: `镜像节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_flip`, "POST", {
+                node_id: params.node_id,
+                direction: params.direction,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",
