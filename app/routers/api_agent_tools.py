@@ -226,6 +226,13 @@ async def canvas_view_media(project_id: str, request: Request, x_agent_project: 
     return await view_media_core(project_id, body.get("node_id"), body.get("max_px"), body.get("frames"))
 
 
+@router.post("/edit_crop")
+async def canvas_edit_crop(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266 canvas.edit_crop: 本地裁节点图选区覆写节点图（写操作；调用方先施加确认门）。"""
+    body = await request.json()
+    return await crop_node_image_core(project_id, body.get("node_id"), body.get("rect"))
+
+
 # =============================================================================
 # Core (Request-free) implementations — shared by the HTTP endpoints above and
 # the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
@@ -888,4 +895,80 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
         "frames": frames_used,
         "asset_id": str(picked["asset_id"]),
         "name": str(picked.get("name") or record.get("name") or ""),
+    }
+
+
+def _node_image_for_edit(node: dict, node_id: str) -> dict:
+    """Pick the node's first image-kind media entry, or raise 400 with a next-step hint."""
+    images = [it for it in (node.get("images") or [])
+              if isinstance(it, dict) and str(it.get("asset_id") or "") and str(it.get("kind") or "") != "video"]
+    if not images:
+        raise HTTPException(status_code=400, detail=f"节点 {node_id} 没有可编辑的图像；先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
+    return images[0]
+
+
+async def crop_node_image_core(project_id: str, node_id, rect) -> dict:
+    """#266 canvas.edit_crop：本地裁节点图选区（纯 PIL，不消耗外部生成）并覆写节点图。
+
+    rect 为原图像素坐标 {x, y, width, height}；新资源入资源库（原资源保留）。
+    写操作：MCP 面施加 #242 确认门（CONFIRMATION_GATED_TOOLS）；错误文案带下一步建议。
+    """
+    import time as _time
+
+    from local_edit import crop_rect, encode_png, validate_rect
+
+    node_id = str(node_id or "")
+    node = _find_node_for_view(project_id, node_id)
+    if not isinstance(rect, dict):
+        raise HTTPException(status_code=400, detail="rect 必须是 {x, y, width, height}（原图像素坐标）；先调用 canvas.get_node 查看节点媒体。")
+    try:
+        x = float(rect.get("x") or 0)
+        y = float(rect.get("y") or 0)
+        w = float(rect.get("width") or 0)
+        h = float(rect.get("height") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="rect 参数必须是数字；请检查 x/y/width/height 后重试。") from None
+    picked = _node_image_for_edit(node, node_id)
+    store = _app_main.FIREFLY_PROJECT_STORE
+    try:
+        record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
+    path = str(record.get("path") or "")
+    source = await asyncio.to_thread(_load_image_or_none, path)
+    if source is None:
+        raise HTTPException(status_code=400, detail=f"节点 {node_id} 的图像无法读取；请检查媒体文件是否损坏后重试。")
+    try:
+        left, top, right, bottom = validate_rect([x, y, x + w, y + h], source.size)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"选区越界（图像 {source.width}x{source.height}）；先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 的 x/y/width/height 后重试。") from None
+    cropped = await asyncio.to_thread(crop_rect, source, [left, top, right, bottom])
+    filename = f"edit-crop-{int(_time.time() * 1000)}.png"
+    asset = await asyncio.to_thread(store.import_media, project_id, encode_png(cropped), filename, "image/png")
+    new_asset_id = str(asset["asset_id"])
+    # 覆写节点图（其余 image 条目保留；原资源仍在资源库，可恢复）
+    images = [dict(it) for it in (node.get("images") or [])]
+    replaced = False
+    for it in images:
+        if str(it.get("asset_id") or "") == str(picked["asset_id"]):
+            it["asset_id"] = new_asset_id
+            it["kind"] = "image"
+            it["name"] = filename
+            replaced = True
+            break
+    if not replaced:
+        images.insert(0, {"asset_id": new_asset_id, "kind": "image", "name": filename})
+    node["images"] = images
+    if node.get("output_asset_id"):
+        node["output_asset_id"] = new_asset_id
+    node["updated_at"] = _app_main.now_ms()
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    return {
+        "success": True,
+        "node_id": node_id,
+        "asset_id": new_asset_id,
+        "original_asset_id": str(picked["asset_id"]),
+        "rect": [left, top, right, bottom],
+        "width": cropped.width,
+        "height": cropped.height,
     }

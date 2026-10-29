@@ -240,6 +240,49 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    // #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：写操作先走确认门（#242 语义）
+    pi.registerTool({
+        name: "canvas.edit_crop",
+        description:
+            "Crop a node image selection and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            rect: Type.Object({
+                x: Type.Number({ description: "Selection left (image px)" }),
+                y: Type.Number({ description: "Selection top (image px)" }),
+                width: Type.Number({ description: "Selection width (image px)" }),
+                height: Type.Number({ description: "Selection height (image px)" }),
+            }, { description: "Selection in source-image pixel coordinates" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_crop",
+                    params: { node_id: params.node_id, rect: params.rect },
+                    message: `裁剪节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop`, "POST", {
+                node_id: params.node_id,
+                rect: params.rect,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",

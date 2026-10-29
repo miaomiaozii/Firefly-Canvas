@@ -46,6 +46,7 @@ from app.routers.api_agent_tools import (
     canvas_view_core,
     create_edge_core,
     create_node_core,
+    crop_node_image_core,
     delete_edge,
     delete_media,
     delete_node,
@@ -83,7 +84,7 @@ CONFIRM_TIMEOUT_SECONDS = 60.0
 PERSIST_INTERVAL_S = 3.0
 
 #: Destructive MCP tools that must pass the materialized confirmation gate.
-CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete"})
+CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete", "canvas.edit_crop"})
 
 #: #266 慢操作独立超时契约（ComfyArt SLOW_S=90s 模式）：慢视图工具与
 #: generate.wait 的 600s 契约分开，单独 90s 超时；超时返回 isError 带下一步建议。
@@ -275,7 +276,7 @@ mcp_event_recorder = McpEventRecorder()
 
 # ---------------------------------------------------------------------------
 # Tool surface — the canvas agent tools minus the fake canvas.get_selection
-# (ADR 0022 known gap: 摘除; semantics unchanged from canvas-tools.ts). 18 tools.
+# (ADR 0022 known gap: 摘除; semantics unchanged from canvas-tools.ts). 19 tools.
 # ---------------------------------------------------------------------------
 
 #: #266 公共参数片段（票面规范：公共参数片段 + additionalProperties:false，
@@ -287,6 +288,16 @@ _PARAM_MAX_PX = {
     "maximum": MAX_VIEW_MAX_PX,
 }
 _PARAM_NODE_IDS = {"type": "array", "items": {"type": "string"}, "description": "节点 ID 列表"}
+_PARAM_RECT = {
+    "type": "object",
+    "description": "选区（原图像素坐标，x/y 左上角 + width/height）",
+    "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"},
+        "width": {"type": "number"}, "height": {"type": "number"},
+    },
+    "required": ["x", "y", "width", "height"],
+    "additionalProperties": False,
+}
 
 TOOLS = [
     {"name": "canvas.list_nodes", "description": "列出画布上所有节点（含连边摘要）", "inputSchema": {"type": "object", "properties": {}, "required": []}},
@@ -299,6 +310,8 @@ TOOLS = [
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
     {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，base64 PNG）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
     {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
+    # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
+    {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
     {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120"}}, "required": ["task_id"]}},
@@ -401,6 +414,16 @@ async def _impl_view_media(project_id, agent_node_id, args):
         raise ValueError(str(exc.detail)) from exc
 
 
+async def _impl_edit_crop(project_id, agent_node_id, args):
+    # #242 确认门语义：写操作（覆写节点图）必须过画布确认门
+    node_id = str(args.get("node_id") or "")
+    await _confirm_gate(project_id, agent_node_id, "canvas.edit_crop", args, f"裁剪节点 {node_id} 的图像并覆写节点图（原资源保留在资源库）")
+    try:
+        return await crop_node_image_core(project_id, node_id, args.get("rect"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
 TOOL_IMPLS = {
     "canvas.list_nodes": _impl_list_nodes,
     "canvas.get_node": _impl_get_node,
@@ -420,6 +443,7 @@ TOOL_IMPLS = {
     "viewport.state": _impl_viewport_state,
     "canvas.view": _impl_view,
     "canvas.view_media": _impl_view_media,
+    "canvas.edit_crop": _impl_edit_crop,
 }
 
 
