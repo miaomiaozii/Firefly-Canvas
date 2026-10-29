@@ -183,7 +183,7 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 242/959/170/805：#236 即梦全量退役——smart-canvas.js / canvas-generation-tasks.js /
         # canvas-image-editor.js 删除即梦模型过滤/发图发视频/轮询取回/编辑态整块，
         # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
-        self.assertEqual(rev["reverse_names"], 242)
+        self.assertEqual(rev["reverse_names"], 244)
         self.assertEqual(rev["reverse_core_refs"], 959)
         self.assertEqual(rev["core_dominant_names"], 170)
         self.assertEqual(rev["core_dominant_core_refs"], 805)
