@@ -8,7 +8,6 @@
     "protocol:gemini-cli",
     "protocol:volcengine",
     "protocol:runninghub",
-    "protocol:jimeng",
     "protocol:codex",
     "openai-mode:openai-json",
     "openai-mode:openai-video-proxy",
@@ -36,9 +35,6 @@
     ],
     "protocol:runninghub": [
       "tests.test_provider_contract_families.ProviderFamilyContractTests.test_runninghub_schema_endpoint_preserves_parameters_and_reference_order"
-    ],
-    "protocol:jimeng": [
-      "tests.test_provider_contract_families.ProviderFamilyContractTests.test_jimeng_cli_preserves_ordered_duplicate_reference_arguments"
     ],
     "protocol:codex": [
       "tests.test_provider_contract_families.ProviderFamilyContractTests.test_codex_skill_preserves_ordered_duplicate_ref_image_arguments"
@@ -85,6 +81,15 @@
         "local-generation-adapters",
         "local-image-routing"
       ]
+    },
+    {
+      "key": "provider-id:jimeng",
+      "status": "removed",
+      "reason": "Jimeng (Dreamina) provider fully retired in #236: the run_jimeng_cli / dreamina CLI adapter no longer exists in production, so the protocol:jimeng family is excluded from supported contracts.",
+      "source_refs": [
+        "local-generation-adapters",
+        "local-image-routing"
+      ]
     }
   ],
   "sources": [
@@ -125,7 +130,6 @@
         "generate_codex_provider_image_via_gpt_image_2_skill",
         "generate_gemini_cli_provider_image",
         "generate_gemini_provider_image",
-        "generate_jimeng_provider_image",
         "generate_runninghub_entry_image",
         "generate_runninghub_provider_image",
         "generate_volcengine_provider_image"
@@ -568,49 +572,6 @@
         },
         "data": null,
         "files": []
-      }
-    },
-    {
-      "key": "protocol:jimeng",
-      "status": "active-configurable",
-      "boundary": "run_jimeng_cli",
-      "request_shape": "text2image or image2image CLI argv with ratio, resolution, model version, and ordered image paths",
-      "response_shape": {
-        "outputs": "image paths"
-      },
-      "capability_matrix": {
-        "resolutions": [
-          "1k",
-          "2k",
-          "4k"
-        ],
-        "aspect_ratios": [
-          "1:1",
-          "16:9",
-          "2:3"
-        ],
-        "references": "ordered-with-duplicates"
-      },
-      "parameter_mapping": {
-        "prompt": "--prompt",
-        "resolution": "--resolution_type",
-        "references": "--images comma list in caller order"
-      },
-      "source_refs": [
-        "local-generation-adapters",
-        "local-image-routing"
-      ],
-      "final_request_golden": {
-        "boundary": "run_jimeng_cli",
-        "argv": [
-          "dreamina-contract",
-          "image2image",
-          "--images=A.png,B.png,A.png",
-          "--prompt=provider family contract prompt",
-          "--resolution_type=2k",
-          "--poll=900",
-          "--model_version=4.5"
-        ]
       }
     },
     {

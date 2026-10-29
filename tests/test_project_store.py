@@ -978,7 +978,6 @@ class ProjectStoreContractTests(unittest.TestCase):
             "running": True,
             "queued": True,
             "pendingTasks": [{"taskId": "task-source", "kind": "image"}],
-            "jimengPending": {"taskId": "jimeng-source"},
             "runStartedAt": 123,
             "runFinishedAt": 456,
             "runElapsedMs": 333,

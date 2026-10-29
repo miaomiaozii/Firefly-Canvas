@@ -91,7 +91,6 @@ def load_app(root: Path, store: ProjectStore):
 
     module.codex_status = cli_unavailable
     module.gemini_cli_status = cli_unavailable
-    module.jimeng_status = cli_unavailable
     module.httpx.AsyncClient = _FakeModelClient
 
     Path(module.API_ENV_FILE).parent.mkdir(parents=True, exist_ok=True)

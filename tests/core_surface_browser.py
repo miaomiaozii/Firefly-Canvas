@@ -27,7 +27,7 @@ from tests.native_browser import AsgiBrowserServer, NativeBrowser, VIEWPORTS, fi
 
 FONT_FAMILIES = ("Inter", "JetBrains Mono", "Space Grotesk")
 RUNTIME_NODE_FIELDS = {
-    "pending", "running", "queued", "pendingTasks", "jimengPending",
+    "pending", "running", "queued", "pendingTasks",
     "runStartedAt", "runFinishedAt", "runElapsedMs", "runTimerHidden",
     "_runMetaTargetId", "conversationSending", "agentPlanning", "agentExecuting",
 }

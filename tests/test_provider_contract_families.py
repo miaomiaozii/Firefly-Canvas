@@ -562,39 +562,6 @@ class ProviderFamilyContractTests(unittest.TestCase):
             FINAL_REQUEST_GOLDENS["runninghub-mode:ai-app"],
         )
 
-    def test_jimeng_cli_preserves_ordered_duplicate_reference_arguments(self):
-        fixture = provider("jimeng", model="jimeng-4.5")
-        observed = []
-
-        class Process:
-            returncode = 0
-
-            async def communicate(self):
-                return (b'{"outputs":["http://127.0.0.1/fake.png"]}', b"")
-
-        async def prepare(url, _kind):
-            return ({REFERENCES[0]["url"]: "A.png", REFERENCES[1]["url"]: "B.png"}[url], [])
-
-        async def create_process(*args, **kwargs):
-            observed.append({"args": list(args), "kwargs": kwargs})
-            return Process()
-
-        with (
-            patch.object(APP, "get_api_provider_exact", return_value=fixture),
-            patch.object(APP, "jimeng_prepare_local_media", side_effect=prepare),
-            patch.object(APP, "jimeng_store_outputs", new=AsyncMock(return_value=["http://127.0.0.1/fake.png"])),
-            patch.object(SERVICES, "jimeng_cli_executable", return_value="dreamina-contract"),
-            patch.object(SERVICES, "jimeng_use_wsl", return_value=False),
-            patch.object(CONVERSATION.asyncio, "create_subprocess_exec", side_effect=create_process),
-        ):
-            asyncio.run(APP.generate_ai_image(
-                PROMPT, SIZE, "high", "jimeng-4.5", REFERENCES,
-                fixture["id"], preserve_model=True, image_parameters=PARAMETERS,
-            ))
-        self.assertEqual(len(observed), 1)
-        golden = FINAL_REQUEST_GOLDENS["protocol:jimeng"]
-        self.assertEqual(observed[0]["args"], golden["argv"])
-
     def test_codex_skill_preserves_ordered_duplicate_ref_image_arguments(self):
         fixture = provider("codex", model="gpt-image-2")
         observed = []

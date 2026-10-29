@@ -312,7 +312,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("title=\"${escapeAttr(modelMeta.raw)}\"", self.source)
 
     def test_generation_has_persistent_pending_feedback_and_result_entry_effect(self):
-        self.assertIn("const isPending = Boolean(node.pending || isQueued || isJimengPending);", self.source)
+        # #236：即梦已退役，pending 判定只剩 node.pending / 排队态。
+        self.assertIn("const isPending = Boolean(node.pending || isQueued);", self.source)
         # generationPlaceholderHtml was extended with completedImgs (progressive
         # completion: show finished thumbs in placeholder slots) and
         # candidatePhases (per-cell stage from backend progress.candidate_phases).
