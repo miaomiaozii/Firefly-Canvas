@@ -7,7 +7,7 @@ import asyncio
 import time
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (BaseModel, Field, GLOBAL_LOOP, HTTPException, IMAGE_TASK_FAILED_STATUSES, ImageTaskQueryRequest, _os, _sys, asyncio, extract_images, httpx, image_task_fail_reason, image_task_status, is_runninghub_provider, log_net_error, rewrite_runninghub_file_url, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, time)
+from app.core import (BaseModel, Field, GLOBAL_LOOP, HTTPException, IMAGE_TASK_FAILED_STATUSES, IMAGE_TASK_UNKNOWN_STATUSES, ImageTaskQueryRequest, _os, _sys, asyncio, extract_images, httpx, image_task_fail_reason, image_task_status, is_runninghub_provider, log_net_error, rewrite_runninghub_file_url, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, time)
 _from_main_names = ['fetch_image_task_payload', 'get_api_provider', 'image_output_meta', 'manager', 'runninghub_api_key', 'runninghub_app_headers', 'runninghub_store_remote_output', 'save_ai_image_to_output', 'save_to_history']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -92,6 +92,9 @@ async def query_upstream_image_task(provider, task_id, *, record_history: bool =
         return result
     if status in IMAGE_TASK_FAILED_STATUSES:
         return {'status': 'failed', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'error': image_task_fail_reason(raw), 'raw': raw}
+    if status in IMAGE_TASK_UNKNOWN_STATUSES:
+        # #235：provider 明确返回未知/不存在（含上游 404 映射出的 NOT_FOUND）→ 终态 fail（带 task ID），不得当 running。
+        return {'status': 'failed', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'error': f'服务商侧任务不存在或状态未知（task_id={task_id}，最后状态：{status}）', 'raw': raw}
     return {'status': 'running', 'task_id': task_id, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'message': '任务仍在生成中', 'raw': raw}
 
 @router.post('/api/image-task-query')
