@@ -255,6 +255,54 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         return persisted
 
     @staticmethod
+    def _migrate_retired_jimeng_nodes(canvas: Dict[str, Any]) -> bool:
+        """#236: 即梦服务商全量退役 —— 把遗留 jimengPending 节点定格为失败终态（幂等）。
+
+        即梦服务商已移除，其 in-flight 提交无法再轮询/取回：将每个带 jimengPending
+        的节点（含卡在“生成中”的僵尸态）写入 failedGenerationTasks（message 携带
+        submit_id，引导重新生成/服务商侧核对），并清空 running/pending/queued/
+        pendingTasks 等运行时忙态。首次迁移后即幂等：jimengPending 键已删，
+        后续打开不再变更。历史记录（canvas history）不做删除，保留可追溯性。
+        """
+        changed = False
+        now_val = _now_ms()
+        for node in canvas.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            jp = node.get("jimengPending")
+            if not isinstance(jp, dict):
+                continue
+            submit_id = str(jp.get("submitId") or "").strip()
+            node.pop("jimengPending", None)
+            pending_tasks = node.get("pendingTasks")
+            tasks = [t for t in pending_tasks if isinstance(t, dict)] if isinstance(pending_tasks, list) else []
+            failed_tasks = node.get("failedGenerationTasks")
+            if not isinstance(failed_tasks, list):
+                failed_tasks = []
+            seen = {str(t.get("taskId")) for t in failed_tasks if isinstance(t, dict)}
+            candidates = [str(t.get("taskId")) for t in tasks if str(t.get("taskId") or "")]
+            if not candidates:
+                candidates = [submit_id or "jimeng-retired"]
+            if submit_id:
+                message = f"即梦服务商已退役，任务未完成（提交号 {submit_id}）；可重新生成或到服务商侧核对"
+            else:
+                message = "即梦服务商已退役，任务未完成；可重新生成"
+            for task_id in candidates:
+                if task_id and task_id not in seen:
+                    failed_tasks.append({"taskId": task_id, "error": message, "at": now_val})
+                    seen.add(task_id)
+            node["failedGenerationTasks"] = failed_tasks
+            node["running"] = False
+            node["pending"] = 0
+            node["queued"] = False
+            node.pop("pendingTasks", None)
+            if not node.get("runFinishedAt"):
+                node["runFinishedAt"] = now_val
+            node["runTimerHidden"] = False
+            changed = True
+        return changed
+
+    @staticmethod
     def _is_path_redirect(path: Path) -> bool:
         """Return whether an existing component can redirect filesystem access."""
         try:
@@ -1232,6 +1280,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             if history is None:
                 history = self._load_history(project_id)
                 self._histories[project_id] = history
+            # #236: 即梦已全量退役 —— 遗留 jimengPending 节点定格为失败终态（幂等，变更即持久化）。
+            if self._migrate_retired_jimeng_nodes(canvas):
+                self.flush(project_id)
             self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
             opened_canvas["history"] = copy.deepcopy(history)
