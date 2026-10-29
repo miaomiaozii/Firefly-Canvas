@@ -180,10 +180,13 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 素材粘贴行排新增 NODE_TYPE_IMAGE 核心引用 +2（reverse_core_refs +2）；
         # createPromptNode 由 core 2/owner 1 → core 2/owner 2（owner +1）退出核心主导体
         # （175→174）；core_dominant_core_refs 净 0（+2 与 -2 对冲）。均非新债。
-        self.assertEqual(rev["reverse_names"], 247)
-        self.assertEqual(rev["reverse_core_refs"], 967)
-        self.assertEqual(rev["core_dominant_names"], 174)
-        self.assertEqual(rev["core_dominant_core_refs"], 812)
+        # 242/959/170/805：#236 即梦全量退役——smart-canvas.js / canvas-generation-tasks.js /
+        # canvas-image-editor.js 删除即梦模型过滤/发图发视频/轮询取回/编辑态整块，
+        # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
+        self.assertEqual(rev["reverse_names"], 242)
+        self.assertEqual(rev["reverse_core_refs"], 959)
+        self.assertEqual(rev["core_dominant_names"], 170)
+        self.assertEqual(rev["core_dominant_core_refs"], 805)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])
