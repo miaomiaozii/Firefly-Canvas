@@ -39,7 +39,6 @@ def load_core():
 
 def build_providers():
     return {
-        'jimeng': {'protocol': 'jimeng', 'id': 'jimeng', 'name': 'Jimeng(即梦)'},
         'runninghub': {'protocol': 'runninghub', 'id': 'runninghub', 'name': 'RunningHub'},
         'modelscope': {'protocol': 'openai', 'id': 'modelscope', 'name': 'ModelScope'},
         'codex': {'protocol': 'codex', 'id': 'codex', 'name': 'Codex'},
@@ -57,8 +56,6 @@ def gather_default_groups(c):
             if m:
                 g.append((pk, media, str(m)))
 
-    add('jimeng', 'image', c.JIMENG_DEFAULT_IMAGE_MODELS)
-    add('jimeng', 'video', c.JIMENG_DEFAULT_VIDEO_MODELS)
     add('codex', 'image', c.CODEX_DEFAULT_IMAGE_MODELS)
     add('codex', 'chat', c.CODEX_DEFAULT_CHAT_MODELS)
     add('gemini-cli', 'image', c.GEMINI_CLI_DEFAULT_IMAGE_MODELS)
@@ -80,12 +77,6 @@ def dispatch_image(c, provider, model):
         return ('codex', 'adapted', 'via generate_codex_provider_image (CLI)')
     if c.is_gemini_cli_provider(provider):
         return ('gemini-cli', 'adapted', 'via generate_gemini_cli_provider_image (CLI)')
-    if c.is_jimeng_provider(provider):
-        ver = c.jimeng_normalize_image_model(model)
-        allowed = set(c.JIMENG_TEXT2IMAGE_MODELS or []) | set(c.JIMENG_IMAGE2IMAGE_MODELS or [])
-        if ver and ver in allowed:
-            return ('jimeng', 'adapted', f'version={ver!r} in allowed {sorted(allowed)}')
-        return ('jimeng', 'GAP?', f'version={ver!r} NOT in allowed {sorted(allowed)} -> empty model_version')
     if c.is_runninghub_provider(provider):
         # entry config (rh-apps) or model definition -> model-agnostic-ish
         return ('runninghub', 'adapted', 'via runninghub_entry_config_from_model / runninghub_model_definition')
@@ -108,8 +99,6 @@ def dispatch_video(c, provider, model):
     """Replicate video dispatch (provider-specific fns + name). Returns (path, status, detail)."""
     pid = str(provider.get('id') or '').strip().lower()
     lc = str(model or '').lower()
-    if c.is_jimeng_provider(provider):
-        return ('jimeng', 'adapted', 'via jimeng_video_* fns (name->version args)')
     if c.is_runninghub_provider(provider):
         return ('runninghub', 'adapted', 'via runninghub video model_definition')
     if c.is_agnes_provider(provider, model):

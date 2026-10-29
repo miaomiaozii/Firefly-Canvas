@@ -2,6 +2,12 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 
+# #212: 默认全局资源库的规范名 + 历史默认名（加载时一次性迁移）。
+# 只认默认库的稳定身份 id='default' 且名字为已知历史名，用户自己重命名的库不受影响。
+# （#236 误删后恢复：与即梦退役无关，d18a238 批量删即梦函数时误伤。）
+DEFAULT_LIBRARY_NAME = '默认全局资源库'
+DEFAULT_LIBRARY_LEGACY_NAMES = {'默认资产库', '默认素材抽屉'}
+
 def default_asset_library():
     categories = [{'id': 'characters', 'name': '角色', 'type': 'image', 'items': []}, {'id': 'scenes', 'name': '场景', 'type': 'image', 'items': []}]
     return {'active_library_id': 'default', 'libraries': [{'id': 'default', 'name': '默认全局资源库', 'type': 'asset', 'categories': categories}], 'categories': categories, 'updated_at': _svc._main('now_ms')()}
