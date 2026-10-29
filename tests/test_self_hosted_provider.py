@@ -159,5 +159,45 @@ class SelfHostedProviderChatEndToEndTests(SelfHostedProviderBase):
         self.assertEqual(body['model'], CHAT_MODEL)
 
 
+class SelfHostedProviderImageEndToEndTests(SelfHostedProviderBase):
+    """第二条熔断线：假图像端点 /v1/images/generations 端到端出图。
+
+    _generate_ai_image_impl 内部自建 httpx.AsyncClient，
+    这里把 httpx.AsyncClient 换成注入 MockTransport 的子类，零真实外连。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.captured = []
+
+    def test_image_end_to_end_via_fake_server(self):
+        from app.services.generation import generate_ai_image
+
+        captured = self.captured
+
+        class FakeClient(httpx.AsyncClient):
+            def __init__(self, *args, **kwargs):
+                kwargs.pop('transport', None)
+                kwargs['transport'] = httpx.MockTransport(make_fake_openai_compat_server(captured))
+                super().__init__(*args, **kwargs)
+
+        with patch('httpx.AsyncClient', FakeClient):
+            image, raw = asyncio.run(generate_ai_image(
+                'a cat', '1024x1024', 'medium', IMAGE_MODEL,
+                reference_images=None, provider_id=PROVIDER_ID, preserve_model=True,
+            ))
+        self.assertEqual(image, {'type': 'url', 'value': f'http://127.0.0.1:8318/out/{IMAGE_MODEL}.png'})
+        self.assertEqual(raw['data'][0]['url'], f'http://127.0.0.1:8318/out/{IMAGE_MODEL}.png')
+        gen = [r for r in self.captured if r.url.path == '/v1/images/generations']
+        self.assertEqual(len(gen), 1)
+        req = gen[0]
+        self.assertEqual(req.url.host, '127.0.0.1')
+        self.assertEqual(req.headers.get('authorization'), f'Bearer {FAKE_KEY}')
+        body = json.loads(req.content.decode('utf-8'))
+        self.assertEqual(body['model'], IMAGE_MODEL)
+        self.assertEqual(body['prompt'], 'a cat')
+        self.assertEqual(body['size'], '1024x1024')
+
+
 if __name__ == '__main__':
     unittest.main()
