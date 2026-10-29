@@ -1239,6 +1239,8 @@ from app.routers import api_gemini_cli as _r_api_gemini_cli
 app.include_router(_r_api_gemini_cli.router)
 from app.routers import api_global_settings as _r_api_global_settings
 app.include_router(_r_api_global_settings.router)
+from app.routers import api_global_tasks as _r_api_global_tasks
+app.include_router(_r_api_global_tasks.router)
 
 from app.routers import api_image_jpeg as _r_api_image_jpeg
 app.include_router(_r_api_image_jpeg.router)

@@ -315,3 +315,34 @@ class ProjectUsageMixin:
             "by_day": [by_day[day] for day in sorted(by_day)],
             "by_model": [by_model[key] for key in sorted(by_model)],
         }
+
+    def list_usage_by_node(self, project_id: str) -> Dict[str, Dict[str, Any]]:
+        """usage 租户只读聚合：按 node_id 摊平成本/ token（issue #262 全局任务总控台用）。
+
+        与 list_usage_summary 同租户同锁：每项目独立 ops.db + project_id 过滤（ADR 0021）；
+        无 ops.db 文件 = 空状态。返回 {node_id: {'turns','cost_usd','input_tokens',
+        'output_tokens','total_tokens'}}；node_id 为空的行归到 "" 桶。
+        """
+        project_id = self._require_project_id(project_id)
+        db = self._opsdb()
+        if not db.has_db(project_id):
+            return {}
+        with db.project_lock(project_id), db.connect(project_id) as conn:
+            rows = conn.execute(
+                "SELECT node_id, input_tokens, output_tokens, total_tokens, cost_usd "
+                "FROM usage_turns WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = str(row["node_id"] or "")
+            bucket = buckets.setdefault(
+                key, {'turns': 0, 'cost_usd': 0.0, 'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
+            )
+            bucket['turns'] += 1
+            bucket['cost_usd'] += float(row["cost_usd"] or 0.0)
+            for source, target in (('input_tokens', 'input_tokens'), ('output_tokens', 'output_tokens'), ('total_tokens', 'total_tokens')):
+                bucket[target] += int(row[source] or 0)
+        for bucket in buckets.values():
+            bucket['cost_usd'] = round(bucket['cost_usd'], 6)
+        return buckets
