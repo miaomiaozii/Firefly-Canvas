@@ -95,3 +95,10 @@ OpenAI 兼容形态下 P0 近零后端改动，缺口在声明与守卫而非请
 - worktree：`D:/ff-wt/w271b`（`D:/ff-wt/w271` 空壳已清理）；
   origin/main 基线全量日志在 `/d/ff-wt/w271b-baseline-logs/`（前 worker 产物，沿用）。
 - core.py 零改动，未触碰 #235 的 IMAGE_TASK_* 区（冲突警示遵守）。
+
+## 终态（domain 门重跑）
+
+工作区干净后 `python tools/quality_gate.py domain` 重跑：✅ **passed**
+（134s，final_exit_code=0，证据目录 `20261029-171343-domain-80208`）。
+首跑 failed 纯属流程噪声：门运行期间本文件尚未 commit，触发 worktree-preservation
+守卫（门自身的设计：运行中内容变化即判失败）。无任何检查项失败。
