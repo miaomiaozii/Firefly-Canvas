@@ -195,6 +195,51 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    // #266 只读视图工具（ComfyArt §59.4 语义；慢操作独立 90s 超时契约，服务端施加）
+    pi.registerTool({
+        name: "canvas.view",
+        description:
+            "Export canvas nodes' media as one contact-sheet image (base64 PNG) to feed the model. scope: page (all media nodes) or selection (node_ids). Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+        parameters: Type.Object({
+            scope: Type.Union([Type.Literal("page"), Type.Literal("selection")], { description: "page=整页；selection=指定节点" }),
+            node_ids: Type.Optional(Type.Array(Type.String(), { description: "Node IDs for scope=selection" })),
+            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view`, "POST", {
+                scope: params.scope,
+                node_ids: params.node_ids,
+                max_px: params.max_px,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "canvas.view_media",
+        description:
+            "View one node's media: image downscaled, video as frame contact sheet. Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to view" }),
+            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
+            frames: Type.Optional(Type.Number({ description: "Video frame count 1..16, default 4" })),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view_media`, "POST", {
+                node_id: params.node_id,
+                max_px: params.max_px,
+                frames: params.frames,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",

@@ -212,6 +212,20 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_pro
     return {"success": True, "from": from_node, "to": to_node}
 
 
+@router.post("/view")
+async def canvas_view(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266 canvas.view: 整页/选区媒体导出为一张图喂模型（只读，contact sheet base64）。"""
+    body = await request.json()
+    return await canvas_view_core(project_id, body.get("scope") or "page", body.get("node_ids"), body.get("max_px"))
+
+
+@router.post("/view_media")
+async def canvas_view_media(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#266 canvas.view_media: 查看单节点媒体（图像下缩放 / 视频抽帧拼图，只读）。"""
+    body = await request.json()
+    return await view_media_core(project_id, body.get("node_id"), body.get("max_px"), body.get("frames"))
+
+
 # =============================================================================
 # Core (Request-free) implementations — shared by the HTTP endpoints above and
 # the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
@@ -695,3 +709,183 @@ async def request_confirmation_core(
         # Clean up the temporary handler
         if handle_confirm_response in session.confirm_handlers:
             session.confirm_handlers.remove(handle_confirm_response)
+
+
+# =============================================================================
+# Canvas view tools (#266) — read-only; ADR 0022 双面上线（REST 端点 + MCP TOOLS）。
+# 慢操作独立 90s 超时契约由 api_mcp.SLOW_TOOL_TIMEOUTS 施加（ComfyArt SLOW_S=90s 模式）。
+# =============================================================================
+
+
+def _load_image_or_none(path: str):
+    """Open a local media file as an Image, or None when unreadable."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return img.copy()
+    except Exception:
+        return None
+
+
+def _video_frame_or_none(path: str, width: int):
+    """Extract one video preview frame (ffmpeg), or None when unavailable."""
+    try:
+        from app.services.generation import generate_video_preview_image
+
+        return generate_video_preview_image(path, width)
+    except Exception:
+        return None
+
+
+def _find_node_for_view(project_id: str, node_id: str) -> dict:
+    """_find_node with the #266 error-text contract (next-step hint)."""
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id 必填；先调用 canvas.list_nodes 获取节点 ID。")
+    try:
+        return _find_node(project_id, node_id)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在；先调用 canvas.list_nodes 查看画布状态。") from None
+
+
+async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, max_px=None) -> dict:
+    """#266 canvas.view: 整页/选区导出为一张 contact sheet（base64 PNG）喂模型（只读）。
+
+    ComfyArt §59.4 契约：max_px = min(2048, args.max_px || 1024)；视频资产用单帧
+    预览图代表（无 ffmpeg 时摘除）；错误文案带下一步建议（票面规范）。
+    """
+    from app.services.canvas_view import clamp_view_max_px, compose_contact_sheet
+
+    scope = str(scope or "page").strip().lower()
+    if scope not in ("page", "selection"):
+        raise HTTPException(status_code=400, detail="scope 必须是 page 或 selection；先调用 canvas.list_nodes 获取节点 ID。")
+    px = clamp_view_max_px(max_px)
+    canvas = _open_canvas(project_id)
+    nodes = [n for n in canvas.get("nodes", []) if isinstance(n, dict)]
+    if scope == "selection":
+        wanted = [str(x) for x in (node_ids or []) if str(x).strip()]
+        if not wanted:
+            raise HTTPException(status_code=400, detail="selection 作用域需要 node_ids；先调用 canvas.list_nodes 获取节点 ID。")
+        by_id = {str(n.get("id", "")): n for n in nodes}
+        selected = []
+        for nid in wanted:
+            node = by_id.get(nid)
+            if node is None:
+                raise HTTPException(status_code=404, detail=f"节点 {nid} 不存在；先调用 canvas.list_nodes 查看画布状态。")
+            selected.append(node)
+    else:
+        selected = nodes
+    store = _app_main.FIREFLY_PROJECT_STORE
+    items = []
+    for node in selected:
+        for image in node.get("images") or []:
+            if not isinstance(image, dict):
+                continue
+            asset_id = str(image.get("asset_id") or "")
+            if not asset_id:
+                continue
+            kind = str(image.get("kind") or "")
+            try:
+                record = await asyncio.to_thread(store.media_record, project_id, asset_id)
+            except Exception:
+                continue  # dangling asset 引用——跳过，不整单失败
+            path = str(record.get("path") or "")
+            if not path:
+                continue
+            if kind == "video":
+                tile = await asyncio.to_thread(_video_frame_or_none, path, 256)
+                if tile is None:
+                    continue  # 无 ffmpeg/不可读——可用 canvas.view_media 查看 ffmpeg 下一步提示
+                tile_kind = kind
+            else:
+                tile = await asyncio.to_thread(_load_image_or_none, path)
+                if tile is None:
+                    continue
+                tile_kind = "image"
+            items.append({
+                "node_id": str(node.get("id", "")),
+                "asset_id": asset_id,
+                "kind": tile_kind,
+                "name": str(image.get("name") or record.get("name") or ""),
+                "tile": tile,
+            })
+    if not items:
+        if scope == "selection":
+            raise HTTPException(status_code=404, detail="选区节点没有可查看的媒体；先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
+        raise HTTPException(status_code=400, detail="画布上没有可查看的媒体节点；先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
+    sheet = await asyncio.to_thread(compose_contact_sheet, [(it["node_id"], it.pop("tile")) for it in items], px)
+    import base64
+
+    from local_edit import encode_png
+
+    data_url = "data:image/png;base64," + base64.b64encode(encode_png(sheet)).decode("ascii")
+    return {
+        "image_data_url": data_url,
+        "width": sheet.width,
+        "height": sheet.height,
+        "max_px": px,
+        "node_count": len({it["node_id"] for it in items}),
+        "items": items,
+    }
+
+
+async def view_media_core(project_id: str, node_id, max_px=None, frames=None) -> dict:
+    """#266 canvas.view_media: 查看单节点媒体（图像下缩放 / 视频抽帧拼图，只读）。
+
+    视频抽帧复用 generate_video_preview_image 链路（均匀采样，contact sheet 拼贴）；
+    全部帧失败时报错带 ffmpeg 下一步建议（票面规范）。
+    """
+    from app.services.canvas_view import (
+        MAX_VIDEO_FRAMES,
+        clamp_view_max_px,
+        fit_tile,
+        video_contact_sheet,
+        video_duration_seconds,
+        video_frame_times,
+    )
+
+    node = _find_node_for_view(project_id, str(node_id or ""))
+    store = _app_main.FIREFLY_PROJECT_STORE
+    px = clamp_view_max_px(max_px)
+    try:
+        n_frames = max(1, min(MAX_VIDEO_FRAMES, int(frames or 4)))
+    except (TypeError, ValueError):
+        n_frames = 4
+    images = [it for it in (node.get("images") or []) if isinstance(it, dict) and str(it.get("asset_id") or "")]
+    if not images:
+        raise HTTPException(status_code=400, detail=f"节点 {node_id} 没有可查看的媒体；先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
+    image_items = [it for it in images if str(it.get("kind") or "") != "video"]
+    picked = image_items[0] if image_items else images[0]
+    is_video = str(picked.get("kind") or "") == "video"
+    try:
+        record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
+    path = str(record.get("path") or "")
+    if is_video:
+        from app.services.generation import generate_video_preview_image
+
+        duration = await asyncio.to_thread(video_duration_seconds, path)
+        sheet = await asyncio.to_thread(video_contact_sheet, path, generate_video_preview_image, duration, n_frames, max(256, px // 2), px)
+        if sheet is None:
+            raise HTTPException(status_code=400, detail=f"视频抽帧失败（节点 {node_id}）；请检查服务器已安装 ffmpeg 且媒体文件可播放，然后重试；也可先调用 canvas.list_nodes 查看节点状态。")
+        kind, frames_used = "video", len(video_frame_times(duration, n_frames))
+    else:
+        src = await asyncio.to_thread(_load_image_or_none, path)
+        if src is None:
+            raise HTTPException(status_code=400, detail=f"节点 {node_id} 的媒体无法读取；请检查媒体文件是否损坏，或先调用 canvas.list_nodes 查看节点状态。")
+        sheet, kind, frames_used = fit_tile(src, px, px), "image", 1
+    import base64
+
+    from local_edit import encode_png
+
+    data_url = "data:image/png;base64," + base64.b64encode(encode_png(sheet)).decode("ascii")
+    return {
+        "kind": kind,
+        "image_data_url": data_url,
+        "width": sheet.width,
+        "height": sheet.height,
+        "frames": frames_used,
+        "asset_id": str(picked["asset_id"]),
+        "name": str(picked.get("name") or record.get("name") or ""),
+    }

@@ -180,13 +180,14 @@ class McpProtocolTests(McpTestBase):
         resp = self.mcp({"jsonrpc": "2.0", "id": 7, "method": "tools/list"})
         tools = resp.json()["result"]["tools"]
         names = {t["name"] for t in tools}
-        self.assertEqual(len(tools), 16, names)  # 17 in canvas-tools.ts minus fake get_selection
+        self.assertEqual(len(tools), 18, names)  # 19 in canvas-tools.ts minus fake get_selection
         # ADR 0022 已知缺口「假 canvas.get_selection」→ 摘除，不得再出现
         self.assertNotIn("canvas.get_selection", names)
         for expected in (
             "canvas.list_nodes", "canvas.get_node", "canvas.create_node",
             "canvas.update_node", "canvas.delete_node", "canvas.connect",
-            "canvas.disconnect", "generate.trigger", "generate.status",
+            "canvas.disconnect", "canvas.view", "canvas.view_media",
+            "generate.trigger", "generate.status",
             "generate.wait", "media.upload", "media.list", "media.delete",
             "viewport.focus", "viewport.zoom", "viewport.state",
         ):
