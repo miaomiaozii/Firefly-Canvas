@@ -203,6 +203,11 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-snap.js": 0,
     # #253 新建就地快速重命名：纯函数 + DOM 层，不引用 smart-canvas.js 的任何顶层名（回调由接线方传入）。
     "canvas-quick-edit.js": 0,
+    # #272 新建画布批注层：实测 3 处全是 `getElementById('world')` 字符串字面量（棘轮口径的误计，
+    # 真实自由全局耦合为 0——本模块只依赖 canvas-core 的 tr/escapeHtml 与 canvas-undo 的
+    # pushUndo/undoStack，核心只调 renderAnnotationLayer/restorePersistedAnnotations 两处接线）。
+    # 钉 3 是防未来出现真·smart-canvas.js 顶层名引用而漏计。
+    "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-state.js": 0,
@@ -241,6 +246,9 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-snap.js": 0,
     # #253 新建就地快速重命名：零自由全局（纯函数 + 回调式 DOM 层）。
     "canvas-quick-edit.js": 0,
+    # #272 新建画布批注层：同 REVERSE_REFERENCE_CEILINGS 注释——3 处为字符串字面量误计，
+    # 真实自由全局为 0；钉 3 防真·自由全局引用增长。
+    "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
     "canvas-state.js": 0,
