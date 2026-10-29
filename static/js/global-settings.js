@@ -415,5 +415,162 @@
       setStatus(localText(`项目库已切换，完整校验 ${files} 个文件；原库已保留`, `Project library switched after verifying ${files} file(s); the original library was retained`), 'success');
     } catch(error) { setStatus(`${error.message || localText('项目库迁移失败', 'Project library migration failed')}${localText('；仍使用原项目库', '; the original library remains active')}`, 'error'); }
   });
+
+  // ── 全局任务总控台（#262）───────────────────────────────────────────────────────────
+  // 数据：GET /api/global-tasks（内存内飞 + canvas.history 持久化 + usage 租户成本归因）；
+  // 取消复用项目级取消端点（与画布侧 controlProjectImageTask 同一端点）；
+  // 「查看」以 URL 参数跳产物所在画布，focus_node 定位节点（见 smart-canvas.js）。
+  const taskConsoleList = document.getElementById('taskConsoleList');
+  const consoleStatusFilter = document.getElementById('consoleStatusFilter');
+  const consoleProviderFilter = document.getElementById('consoleProviderFilter');
+  const consoleProjectFilter = document.getElementById('consoleProjectFilter');
+  const consoleAutoRefresh = document.getElementById('consoleAutoRefresh');
+  const consoleReady = Boolean(taskConsoleList && consoleStatusFilter && consoleProviderFilter && consoleProjectFilter && consoleAutoRefresh);
+  let consoleProjects = [];
+  let consoleRows = [];
+  let consoleTimer = null;
+  let consoleBusy = false;
+
+  const consoleStatusText = status => ({
+    queued: localText('排队', 'Queued'),
+    running: localText('运行中', 'Running'),
+    succeeded: localText('成功', 'Succeeded'),
+    failed: localText('失败', 'Failed'),
+    cancelled: localText('已取消', 'Cancelled'),
+    uncertain: localText('不确定', 'Uncertain'),
+  }[status] || status || localText('未知', 'Unknown'));
+  const consoleKindText = kind => ({
+    image: localText('图片', 'Image'),
+    video: localText('视频', 'Video'),
+    'local-edit': localText('本地编辑', 'Local edit'),
+  }[kind] || kind || '');
+  const formatConsoleDuration = sec => {
+    if(sec == null) return '—';
+    const total = Math.max(0, Number(sec) || 0);
+    if(total < 60) return `${total < 10 ? total.toFixed(1) : Math.round(total)}s`;
+    return `${Math.floor(total / 60)}m${Math.round(total % 60)}s`;
+  };
+  const formatConsoleCost = task => task.cost_usd == null ? '—' : `$${Number(task.cost_usd).toFixed(4)}`;
+  const consoleRevealHref = task => {
+    const project = (consoleProjects.find(item => item.id === task.project_id) || {});
+    const canvasId = encodeURIComponent(project.canvas_id || project.id || task.project_id);
+    const focus = task.result_node_id ? `&focus_node=${encodeURIComponent(task.result_node_id)}` : '';
+    return `/static/smart-canvas.html?id=${canvasId}&project=${encodeURIComponent(task.project_id)}&project_mode=1${focus}`;
+  };
+
+  const makeConsoleRow = task => {
+    const row = document.createElement('div');
+    row.className = 'task-console-row';
+    row.dataset.taskId = task.task_id;
+    row.setAttribute('role', 'listitem');
+    const statusClass = task.status === 'succeeded' ? 'ok' : (task.status === 'failed' || task.status === 'uncertain') ? 'err' : ((task.status === 'running' || task.status === 'queued') ? 'busy' : '');
+    row.innerHTML = `
+      <span class="task-console-status ${statusClass}"></span>
+      <div class="task-console-main">
+        <p class="task-console-title"></p>
+        <p class="task-console-meta"></p>
+      </div>
+      <div class="task-console-actions"></div>`;
+    row.querySelector('.task-console-status').textContent = consoleStatusText(task.status);
+    const title = row.querySelector('.task-console-title');
+    title.textContent = `${task.project_name || task.project_id || '—'} · ${task.prompt || localText('（无提示词）', '(no prompt)')}`;
+    if(task.error) title.title = task.error;
+    row.querySelector('.task-console-meta').textContent = `${consoleKindText(task.kind)} · ${task.provider_name || task.provider || '—'}${task.model ? ` · ${task.model}` : ''} · ${formatConsoleDuration(task.duration_sec)} · ${formatConsoleCost(task)}`;
+    const actions = row.querySelector('.task-console-actions');
+    const reveal = document.createElement('a');
+    reveal.href = consoleRevealHref(task);
+    reveal.textContent = localText('查看', 'View');
+    reveal.title = localText('跳转到产物所在画布并定位节点', 'Open the canvas that owns this result and locate its node');
+    actions.append(reveal);
+    if(task.cancellable){
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'quiet-button';
+      cancel.textContent = localText('取消', 'Cancel');
+      cancel.addEventListener('click', () => { void cancelConsoleTask(task, cancel); });
+      actions.append(cancel);
+    }
+    return row;
+  };
+
+  const renderConsoleRows = () => {
+    if(!taskConsoleList) return;
+    const providerFilter = consoleProviderFilter ? consoleProviderFilter.value : '';
+    const visible = consoleRows.filter(task => !providerFilter || task.provider === providerFilter);
+    taskConsoleList.replaceChildren(...visible.map(makeConsoleRow));
+    if(!visible.length){
+      const empty = document.createElement('p');
+      empty.className = 'task-console-empty';
+      empty.textContent = localText('暂无匹配任务', 'No matching tasks');
+      taskConsoleList.append(empty);
+    }
+  };
+
+  const syncConsoleFilters = () => {
+    const fill = (select, options, placeholder) => {
+      const current = select.value;
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = placeholder;
+      select.replaceChildren(first, ...options.map(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        return option;
+      }));
+      if(current && [...select.options].some(option => option.value === current)) select.value = current;
+    };
+    fill(consoleProviderFilter, [...new Set(consoleRows.map(task => task.provider).filter(Boolean))].sort().map(provider => [provider, provider]), localText('全部', 'All'));
+    fill(consoleProjectFilter, consoleProjects.map(project => [project.id, project.name || project.id]), localText('全部', 'All'));
+  };
+
+  async function cancelConsoleTask(task, button){
+    button.disabled = true;
+    try {
+      await requestJson(`/api/project-library/${encodeURIComponent(task.project_id)}/image-generation-tasks/${encodeURIComponent(task.task_id)}/cancel`, {method:'POST'});
+      task.status = 'cancelled';
+      task.cancellable = false;
+      task.error = localText('任务已取消', 'Task cancelled');
+      renderConsoleRows();
+    } catch(error) {
+      button.disabled = false;
+      setStatus(error.message || localText('任务取消失败', 'Failed to cancel task'), 'error');
+    }
+  }
+
+  async function refreshConsoleTasks(){
+    if(!consoleReady || consoleBusy) return;
+    consoleBusy = true;
+    try {
+      const query = new URLSearchParams({limit: '200'});
+      if(consoleStatusFilter.value) query.set('status', consoleStatusFilter.value);
+      if(consoleProjectFilter.value) query.set('project_id', consoleProjectFilter.value);
+      const data = await requestJson(`/api/global-tasks?${query.toString()}`);
+      consoleProjects = data.projects || [];
+      consoleRows = data.tasks || [];
+      syncConsoleFilters();
+      renderConsoleRows();
+    } catch(error) {
+      consoleRows = [];
+      renderConsoleRows();
+      setStatus(error.message || localText('任务总控台读取失败', 'Failed to load global tasks'), 'error');
+    } finally { consoleBusy = false; }
+  }
+
+  const startConsoleTimer = () => {
+    if(!consoleReady) return;
+    if(consoleTimer){ clearInterval(consoleTimer); consoleTimer = null; }
+    if(consoleAutoRefresh.checked) consoleTimer = setInterval(() => { void refreshConsoleTasks(); }, 2000);
+  };
+
+  if(consoleReady){
+    document.getElementById('consoleRefresh').addEventListener('click', () => { void refreshConsoleTasks(); });
+    consoleStatusFilter.addEventListener('change', () => { void refreshConsoleTasks(); });
+    consoleProjectFilter.addEventListener('change', () => { void refreshConsoleTasks(); });
+    consoleProviderFilter.addEventListener('change', renderConsoleRows);
+    consoleAutoRefresh.addEventListener('change', startConsoleTimer);
+    void refreshConsoleTasks();
+    startConsoleTimer();
+  }
   load();
 })();

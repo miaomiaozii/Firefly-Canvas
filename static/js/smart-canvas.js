@@ -1999,6 +1999,23 @@ function applyViewport(){
     renderMinimap();
     scheduleSmartNodeFloatingMenuPosition();
 }
+
+// #262 全局任务总控台 reveal：URL focus_node 定位产物节点——选中并居中（画布加载完成后调用）。
+function focusRevealNode(nodeId){
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    const el = world.querySelector(`[data-id="${nodeId}"]`);
+    if(!node || !el) return false;
+    canvasState.selectedId = nodeId;
+    canvasState.selectedIds = [nodeId];
+    const cx = Number(node.x) + el.offsetWidth / 2;
+    const cy = Number(node.y) + el.offsetHeight / 2;
+    const rect = shell.getBoundingClientRect();
+    viewport.x = rect.width / 2 - cx * viewport.scale;
+    viewport.y = rect.height / 2 - cy * viewport.scale;
+    applyViewport();
+    render();
+    return true;
+}
 function screenToWorld(event){
     const rect = shell.getBoundingClientRect();
     return {
@@ -6519,6 +6536,11 @@ async function loadCanvas(){
         // #251：画布加载完成后恢复跨刷新的 undo/redo 栈（ops.db undo_snapshots 租户；
         // 逻辑全在 canvas-undo.js，这里只接线；fire-and-forget，不阻塞渲染）。
         void restorePersistedUndoStack();
+        // #262 全局任务总控台 reveal：URL focus_node 定位产物节点（自全局设置页跳转）。
+        const revealNodeId = params.get('focus_node') || '';
+        if(revealNodeId && canvasState.nodes.some(node => node.id === revealNodeId)){
+            requestAnimationFrame(() => focusRevealNode(revealNodeId));
+        }
         return true;
     } catch(e) {
         toast(tr('smart.toastCanvasFail'));
