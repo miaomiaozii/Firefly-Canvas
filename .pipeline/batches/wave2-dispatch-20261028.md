@@ -51,3 +51,5 @@
 - #272 收口（总控代交）：三波接力——首波 150m 烧穿但四提交在盘（租户/CRUD/前端层/undo/单测）、接管波 provider 猝死零动作、总控固化棘轮（242/959/170/805→244/961/171/806，批注层首次非核心引用 core 名家族）+ 全绿（去 bun 项 1560 passed）+ fast 16.6s/domain 155.4s；merge 进 wave1-live 后 fast+domain 复核。
 - #262 收口（总控核验）：接管波虽死于时箱但产出完整——5 commits（3ac2ff6 usage 按节点聚合 / 34a656c /api/global-tasks 数据面 / 8e5b121 验收8例 / 29b9af3 总控台面板+focus_node reveal / e8b8501 cache-buster 不变量修复）；总控跑实：29 tests passed + 浏览器验收脚本 global_settings_browser.py 三视口全 PASS（含主题对比度/移动端布局断言）+ fast 18.3s/domain 142.9s。merge 进 wave1-live。
 - #267 收口（接管波）：registry 红点=缺 fal 家族合同（根因），补齐转绿+queue mock 断言；尾票登记（specs 清单核对/前端能力展示）见 issue-267-result.md；集成 fast 全绿。
+- #267 实据收口（接管波）：实交付=model_specs fal-all 登记+queue 断言扩充+generation 小修（issue/267 已 push 合并）；前记录'registry 红点根因'系未验证假设，更正——registry 本绿。教训：worker result.md 的根因陈述必须实测后才准进票面（误关→重开已纠偏）。
+- #271 收口（接管波）：三保命线全过（假服务器文本/图像双通路+能力登记+声明表），7 例测试+集成 fast 全绿。两票 worker 均'写完 result.md 但没 push 分支'——收尾 push 必须提前到收尾模式第一步（模板再改）。
