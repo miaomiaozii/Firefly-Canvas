@@ -43,17 +43,18 @@ class OpsDbTests(unittest.TestCase):
             self.assertIn("versions_snapshots", tables)
             self.assertIn("usage_turns", tables)
             self.assertIn("undo_snapshots", tables)   # #251 undo 栈租户
+            self.assertIn("anno_annotations", tables)  # #272 画布批注租户
             applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
-            self.assertEqual(applied, ["versions_001", "usage_001", "undo_001"])
+            self.assertEqual(applied, ["versions_001", "usage_001", "undo_001", "anno_001"])
         # 幂等：第二次短连接迁移不重跑（done-row 标记）
         with ops.connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 3)
+            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 4)
 
     def test_migration_runs_once_across_instances(self):
         with self.make_ops().connect("p1"):
             pass
         with self.make_ops().connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 3)
+            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 4)
 
     def test_wal_and_fk_pragmas(self):
         with self.make_ops().connect("p1") as conn:

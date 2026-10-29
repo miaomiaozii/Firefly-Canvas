@@ -191,6 +191,7 @@ from firefly_projects_deletion import ProjectDeletionMixin
 from firefly_projects_cleanup import ProjectCleanupMixin
 from firefly_project_versions import ProjectVersionsMixin
 from firefly_project_undo import ProjectUndoStackMixin
+from firefly_project_annotations import ProjectAnnotationsMixin
 from firefly_usage import ProjectUsageMixin
 
 # 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
@@ -198,7 +199,7 @@ from firefly_usage import ProjectUsageMixin
 _BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
 
 
-class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin, ProjectUsageMixin, ProjectUndoStackMixin):
+class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin, ProjectUsageMixin, ProjectUndoStackMixin, ProjectAnnotationsMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
         "input_asset_id", "inputAssetId",
