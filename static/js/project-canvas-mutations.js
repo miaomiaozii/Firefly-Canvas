@@ -162,7 +162,7 @@
     // the normal save payload still retains them when a real content edit is
     // being persisted.
     const TRANSIENT_NODE_KEYS = [
-        'running', 'pending', 'queued', 'pendingTasks', 'jimengPending',
+        'running', 'pending', 'queued', 'pendingTasks',
         'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden',
         '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'
     ];

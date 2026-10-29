@@ -181,13 +181,6 @@ function groupImageGridLayout(count, explicitW, explicitH, maxThumb, pad=32, gap
     return best || {cols:fallbackCols, rows:fallbackRows, visibleRows:Math.min(canvasCore.MEDIA_GROUP_MAX_VISIBLE_ROWS, fallbackRows), thumb:28};
 }
 
-function jimengImageEditMode(){
-    if(settings.provider_id !== 'jimeng') return false;
-    const node = activeComposerNode() || selectedNode();
-    const refs = node ? visibleReferenceImagesFor(node) : [];
-    return refs.length > 0;
-}
-
 function cropImageDisplaySize(){
     const img = document.getElementById('cropImage');
     const clientW = Number(img?.clientWidth || 0);

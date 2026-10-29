@@ -218,7 +218,6 @@
         "online.modeModelscope": { zh: "ModelScope", en: "ModelScope" },
         "online.modeRunningHub": { zh: "RunningHub", en: "RunningHub" },
         "online.modeVolcengine": { zh: "火山引擎", en: "Volcengine" },
-        "online.modeJimeng": { zh: "即梦", en: "Jimeng" },
         "online.modeGemini": { zh: "Gemini", en: "Gemini" },
         "online.rhApp": { zh: "应用", en: "App" },
         "online.rhNoEntries": { zh: "未配置 RunningHub 应用", en: "No RunningHub apps configured" },
