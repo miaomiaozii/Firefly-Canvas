@@ -1,7 +1,7 @@
 {
   "_schema_version": "1.0",
   "_description": "Firefly-Canvas 模型参数规范。运行时读取此文件作为参数/能力的权威数据源（size/宽高比/vision/参数默认值）。新增模型优先在此添加条目。",
-  "_last_updated": "2026-10-13",
+  "_last_updated": "2026-10-29",
   "chat_models": {
     "gpt-4o-mini": {
       "display_name": "GPT-4o mini",
@@ -1388,6 +1388,68 @@
         }
       },
       "notes": "服务商文档 api-515693868（文生图）/ api-515694152（图像编辑）。逆向分组仅支持 model、prompt、size、image、quality 参数；-2k / -4k 是服务商自定义的档位命名，请求里的 size 仍按画布的比例 + 档位换算。"
+    },
+    "fal-ai/topaz/upscale/image": {
+      "display_name": "Topaz 高清修复",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "1:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9",
+            "21:9",
+            "9:21"
+          ],
+          "default": "1:1",
+          "description": "高清修复输出比例继承输入图，没有独立比例参数；声明画布标准比例只用于路由与前端预校验（#187：不支持的比例必须停下点名，不静默降级），不会进入 fal 请求体"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图（高清修复是 image-to-image，必须且只接受一张输入图；站内图先公网化再交给 fal，见 fal_reference_public_url）"
+        }
+      },
+      "notes": "fal.ai 队列协议（image_request_mode='fal'）：POST {base}/fal/{model} 提交 → GET status 轮询 → GET 拉取结果。Topaz 引擎按画布档位 1k/2k/4k 选择（fal_request.model_by_resolution，见 tools/configure_comfly_fal_topaz.py）；服务商侧须在 image_model_capabilities[model].fal_request 配置 endpoint/params 才能走队列通道。"
+    },
+    "fal-ai/topaz/upscale/image/generative": {
+      "display_name": "Topaz 生成式高清修复",
+      "api_type": "images_generations",
+      "supports_vision": true,
+      "async_mode": true,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "1:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9",
+            "21:9",
+            "9:21"
+          ],
+          "default": "1:1",
+          "description": "生成式高清修复输出比例继承输入图，没有独立比例参数；声明画布标准比例只用于路由与前端预校验，不会进入 fal 请求体"
+        },
+        "image": {
+          "type": "array",
+          "description": "参考图（生成式高清修复是 image-to-image，必须且只接受一张输入图）"
+        }
+      },
+      "notes": "fal.ai 队列协议（image_request_mode='fal'），Topaz 生成式修复（细节生成补全）：提交/轮询/拉取同 fal-ai/topaz/upscale/image，引擎档位 1k=Recover 3 / 2k=Wonder 3 / 4k=Wonder 3.5。"
     }
   },
   "video_models": {

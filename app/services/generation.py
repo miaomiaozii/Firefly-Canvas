@@ -1366,6 +1366,7 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
     status_url = request_urls['status']
     deadline = time.monotonic() + RESPONSES_POLL_MAX_SECONDS
     last_status = ''
+    unknown_streak = 0
     while time.monotonic() < deadline:
         status_response = await client.get(status_url, headers=headers)
         if status_response.status_code >= 400:
@@ -1382,6 +1383,14 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         if status in {'ERRORED', 'ERROR', 'FAILED', 'CANCELLED'}:
             logs = ' | '.join(str(item)[:200] for item in (status_payload.get('logs') or [])[:4])
             raise HTTPException(status_code=502, detail=f"fal 任务失败（{status}）：{logs or '上游未给出日志'}")
+        if status in IMAGE_TASK_UNKNOWN_STATUSES:
+            # #235 终态语义复用（不许另发明）：连续 N 次 provider 明确返回未知/不存在 → 终态 fail
+            # （文案显式带 request_id），不再空转到 25 分钟超时；单次抖动容忍——出现可识别状态即重置计数。
+            unknown_streak += 1
+            if unknown_streak >= IMAGE_TASK_UNKNOWN_TERMINAL_AFTER:
+                raise HTTPException(status_code=502, detail=f"fal 任务不存在或状态未知（request_id={request_id}，连续 {unknown_streak} 次状态查询返回 {status}），请确认请求 ID 后显式重试")
+        else:
+            unknown_streak = 0
         if callable(progress_callback):
             try:
                 progress_callback('provider_generating', queue_position=status_payload.get('queue_position'), fal_status=status)
