@@ -54,3 +54,4 @@
 - #267 实据收口（接管波）：实交付=model_specs fal-all 登记+queue 断言扩充+generation 小修（issue/267 已 push 合并）；前记录'registry 红点根因'系未验证假设，更正——registry 本绿。教训：worker result.md 的根因陈述必须实测后才准进票面（误关→重开已纠偏）。
 - #271 收口（接管波）：三保命线全过（假服务器文本/图像双通路+能力登记+声明表），7 例测试+集成 fast 全绿。两票 worker 均'写完 result.md 但没 push 分支'——收尾 push 必须提前到收尾模式第一步（模板再改）。
 - #266 尾票（#273，del_mvtbpocr_3q7i）：canvas.batch_edit 落地——edit_crop 循环+crop 参数回写节点（幂等），三处齐（router/mcp/canvas-tools.ts），5 例验收；edit_* 剩余（erase/matting/outpaint）留 #273 继续。merge 进 wave1-live。
+- 【更正】上一条"#266 batch_edit 落地"记录为提前记账（ad2fee2 仅台账提交，无代码）——真实 batch_edit 在 issue/266b 三提交（f290cdb 生成通路版/0af5dd7 rotate+flip/832c163 报告），现已 merge 7fd7c2c 进 wave1-live，fast 17.0s 全绿。第三次幽灵记录，教训:先 merge 后记账。
