@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import unittest.mock
 
 import app.services.generation as GENERATION
 import app.services.media as MEDIA
@@ -350,6 +351,106 @@ class FalReferencePublicUrlTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             self._run({'url': self.CANVAS_LOCAL}, upload=failing_upload, fn='openai_video_proxy_public_reference_url')
         self.assertIn('图床', raised.exception.detail)
+
+
+class FalModelSpecRegistrationTests(unittest.TestCase):
+    """#267：fal-all（topaz/upscale/image 系列）登记进 model_specs.json —— 注册表缺口。
+
+    改前 model_specs.json 里 "fal" 全部是 "false"/"default" 的子串，topaz 条目为零；
+    前端 apiImageAllowedAspectRatios / specModelIds（smart-canvas.js）认不出这个模型家族，
+    服务商能力表缺失时比例预校验与模型列表合并都拿不到依据。
+    """
+
+    TOPAZ_IMAGE = 'fal-ai/topaz/upscale/image'
+    TOPAZ_GENERATIVE = 'fal-ai/topaz/upscale/image/generative'
+
+    def test_both_topaz_models_are_registered(self):
+        from app.services.model_specs import get_model_spec
+        for model in (self.TOPAZ_IMAGE, self.TOPAZ_GENERATIVE):
+            spec = get_model_spec(model)
+            self.assertIsNotNone(spec, f'{model} 未登记进 model_specs.json')
+            self.assertEqual(spec['api_type'], 'images_generations')
+            self.assertTrue(spec['supports_vision'], f'{model} 是 image-to-image，必须声明参考图能力')
+            self.assertTrue(spec['async_mode'], f'{model} 是队列任务（提交→轮询→拉取），必须声明异步')
+
+    def test_spec_aspect_ratios_match_the_capability_single_source(self):
+        from app.services.model_specs import get_aspect_ratios
+        from tools.configure_comfly_fal_topaz import COMFLY_ASPECT_RATIOS
+        # tools/configure_comfly_fal_topaz.py 的 COMFLY_ASPECT_RATIOS 是能力单一事实源，spec 必须同集。
+        for model in (self.TOPAZ_IMAGE, self.TOPAZ_GENERATIVE):
+            self.assertEqual(sorted(get_aspect_ratios(model)), sorted(COMFLY_ASPECT_RATIOS), model)
+
+    def test_spec_does_not_declare_parameters_the_fal_schema_rejects(self):
+        """fal 官方 schema 严格：多余字段直接 422（见 fal_submit_body 的 forbidden 断言），
+        spec 里若声明 response_format/size/quality 会诱导前端把必拒参数送进请求。"""
+        from app.services.model_specs import get_model_spec
+        for model in (self.TOPAZ_IMAGE, self.TOPAZ_GENERATIVE):
+            params = (get_model_spec(model) or {}).get('parameters') or {}
+            for forbidden in ('response_format', 'size', 'quality', 'n', 'image_size'):
+                self.assertNotIn(forbidden, params, f'{model} 的 spec 声明了 fal 会 422 的参数 {forbidden}')
+
+
+class FalQueueUnknownStatusTests(unittest.TestCase):
+    """#267：fal 队列未知状态终态化 —— 复用 #235 IMAGE_TASK_UNKNOWN_STATUSES 终态语义，不许另发明。
+
+    改前：status 持续返回 NOT_FOUND/UNKNOWN（任务 ID 在服务商侧不存在/被清理）→ 空转轮询到 25 分钟
+    deadline → 502「未在 N 分钟内完成」，用户以为在排队。现在：连续 2 次未知 → 502 终态，
+    文案显式带 request_id（可拿去服务商后台查询），单次抖动容忍（出现可识别状态即重置计数）。
+    """
+
+    def _run(self, status_payloads):
+        """跑一遍提交→轮询；status_payloads 是 status 端点依次返回的 body。"""
+        from fastapi import HTTPException
+        from tests.provider_contract import ProviderContractCapture
+        # 提交 ack + 状态序列；COMPLETED 之后还要一次结果 GET。
+        tail = []
+        if status_payloads and str(status_payloads[-1].get('status') or '').upper() in {'COMPLETED', 'SUCCEEDED', 'SUCCESS'}:
+            tail = [TOPAZ_RESULT]
+        capture = ProviderContractCapture([SUBMIT_ACK] + list(status_payloads) + tail)
+
+        async def exercise():
+            with _stubbed_service(), unittest.mock.patch.object(GENERATION, 'RESPONSES_POLL_INTERVAL', 0):
+                return await GENERATION.generate_fal_queue_image(
+                    capture.async_client(), BASE_URL, provider(), MODEL, [dict(REFERENCE)], {'output_format': 'png'})
+
+        try:
+            payload = asyncio.run(exercise()).json()
+            return payload, capture, None
+        except HTTPException as exc:
+            return None, capture, exc
+
+    def test_consecutive_unknown_terminalizes_with_request_id(self):
+        payload, capture, exc = self._run([{'status': 'NOT_FOUND'}, {'status': 'NOT_FOUND'}])
+        self.assertIsNotNone(exc, '连续未知状态必须终态 fail，不能继续空转')
+        self.assertIsNone(payload)
+        self.assertEqual(exc.status_code, 502)
+        self.assertIn('019e06a4-3218', str(exc.detail))          # 带 request_id，可去服务商后台查
+        self.assertIn('NOT_FOUND', str(exc.detail))
+        self.assertIn('状态未知', str(exc.detail))
+        # 恰好 2 次状态查询（提交 1 + 状态 2），没有多烧请求。
+        status_gets = [r for r in capture.requests if str(r['method']).upper() == 'GET' and '/status' in str(r['url'])]
+        self.assertEqual(len(status_gets), 2)
+
+    def test_single_unknown_blip_then_recognized_status_recovers(self):
+        payload, capture, exc = self._run([{'status': 'NOT_FOUND'}, {'status': 'IN_QUEUE'}, {'status': 'COMPLETED'}])
+        self.assertIsNone(exc, '单次未知抖动必须容忍（#235 语义：出现可识别状态即重置计数）')
+        self.assertEqual(payload['image']['url'], 'https://fal.media/files/lion/out.png')
+
+    def test_empty_status_is_not_unknown_and_keeps_polling(self):
+        # 空状态与 #235 一致：不属于 IMAGE_TASK_UNKNOWN_STATUSES，不计数、不终态，继续轮询。
+        payload, capture, exc = self._run([{'status': ''}, {'status': 'IN_PROGRESS'}, {'status': 'COMPLETED'}])
+        self.assertIsNone(exc)
+        self.assertEqual(payload['image']['url'], 'https://fal.media/files/lion/out.png')
+
+    def test_unknown_terminal_uses_the_shared_235_constants(self):
+        """不许另发明：终态语义必须挂在 #235 的共享常量上。"""
+        from app.core import IMAGE_TASK_UNKNOWN_STATUSES, IMAGE_TASK_UNKNOWN_TERMINAL_AFTER
+        self.assertIn('NOT_FOUND', IMAGE_TASK_UNKNOWN_STATUSES)
+        self.assertIn('UNKNOWN', IMAGE_TASK_UNKNOWN_STATUSES)
+        self.assertEqual(IMAGE_TASK_UNKNOWN_TERMINAL_AFTER, 2)
+        # 终态判定用的就是这套常量（同一对象，不是抄了一份字面量）。
+        self.assertIs(GENERATION.IMAGE_TASK_UNKNOWN_STATUSES, IMAGE_TASK_UNKNOWN_STATUSES)
+        self.assertIs(GENERATION.IMAGE_TASK_UNKNOWN_TERMINAL_AFTER, IMAGE_TASK_UNKNOWN_TERMINAL_AFTER)
 
 
 class FalErrorDetailTests(unittest.TestCase):
