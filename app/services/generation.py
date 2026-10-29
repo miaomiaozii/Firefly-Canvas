@@ -54,14 +54,16 @@ def smart_owned_result_items(images: List[Any], paths: List[str]) -> List[Any]:
     """Return generated results, including legacy results without the marker."""
     return [item for item in images if isinstance(item, dict) and item.get('loopInputPreview') is not True and (item.get('generatedResult') is True or any((_svc._main('json_references_media_path')(item, path) for path in paths)))]
 
-def generate_video_preview_image(path: str, width: int) -> Image.Image:
+def generate_video_preview_image(path: str, width: int, time_seconds: float = 0.5) -> Image.Image:
+    """Extract one frame at time_seconds (default 0.5s keeps the legacy behavior)."""
     ffmpeg = shutil.which('ffmpeg')
     if not ffmpeg:
         raise RuntimeError('未找到 ffmpeg，无法生成视频预览图')
+    seek = max(0.0, float(time_seconds))
     fd, frame_path = tempfile.mkstemp(prefix='media_preview_frame_', suffix='.jpg')
     os.close(fd)
     try:
-        cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', path, '-frames:v', '1', '-vf', f"scale='min({width},iw)':-2", frame_path]
+        cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(seek), '-i', path, '-frames:v', '1', '-vf', f"scale='min({width},iw)':-2", frame_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0 or not os.path.exists(frame_path) or os.path.getsize(frame_path) <= 0:
             raise RuntimeError((proc.stderr or 'ffmpeg 未能抽取视频首帧').strip()[:300])

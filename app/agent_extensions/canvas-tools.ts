@@ -195,6 +195,94 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    // #266 只读视图工具（ComfyArt §59.4 语义；慢操作独立 90s 超时契约，服务端施加）
+    pi.registerTool({
+        name: "canvas.view",
+        description:
+            "Export canvas nodes' media as one contact-sheet image (base64 PNG) to feed the model. scope: page (all media nodes) or selection (node_ids). Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+        parameters: Type.Object({
+            scope: Type.Union([Type.Literal("page"), Type.Literal("selection")], { description: "page=整页；selection=指定节点" }),
+            node_ids: Type.Optional(Type.Array(Type.String(), { description: "Node IDs for scope=selection" })),
+            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view`, "POST", {
+                scope: params.scope,
+                node_ids: params.node_ids,
+                max_px: params.max_px,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    pi.registerTool({
+        name: "canvas.view_media",
+        description:
+            "View one node's media: image downscaled, video as frame contact sheet. Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to view" }),
+            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
+            frames: Type.Optional(Type.Number({ description: "Video frame count 1..16, default 4" })),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view_media`, "POST", {
+                node_id: params.node_id,
+                max_px: params.max_px,
+                frames: params.frames,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
+    // #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：写操作先走确认门（#242 语义）
+    pi.registerTool({
+        name: "canvas.edit_crop",
+        description:
+            "Crop a node image selection and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            rect: Type.Object({
+                x: Type.Number({ description: "Selection left (image px)" }),
+                y: Type.Number({ description: "Selection top (image px)" }),
+                width: Type.Number({ description: "Selection width (image px)" }),
+                height: Type.Number({ description: "Selection height (image px)" }),
+            }, { description: "Selection in source-image pixel coordinates" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_crop",
+                    params: { node_id: params.node_id, rect: params.rect },
+                    message: `裁剪节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop`, "POST", {
+                node_id: params.node_id,
+                rect: params.rect,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",

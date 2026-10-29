@@ -34,7 +34,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.core import ensure_agent_same_origin
@@ -43,8 +43,10 @@ from app.routers.api_agent_tools import (
     _app_main,
     _find_node,
     _open_canvas,
+    canvas_view_core,
     create_edge_core,
     create_node_core,
+    crop_node_image_core,
     delete_edge,
     delete_media,
     delete_node,
@@ -59,8 +61,10 @@ from app.routers.api_agent_tools import (
     trigger_generation_core,
     update_node_core,
     upload_media_core,
+    view_media_core,
     wait_for_task_core,
 )
+from app.services.canvas_view import DEFAULT_VIEW_MAX_PX, MAX_VIEW_MAX_PX, VIEW_SLOW_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +84,11 @@ CONFIRM_TIMEOUT_SECONDS = 60.0
 PERSIST_INTERVAL_S = 3.0
 
 #: Destructive MCP tools that must pass the materialized confirmation gate.
-CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete"})
+CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete", "canvas.edit_crop"})
+
+#: #266 慢操作独立超时契约（ComfyArt SLOW_S=90s 模式）：慢视图工具与
+#: generate.wait 的 600s 契约分开，单独 90s 超时；超时返回 isError 带下一步建议。
+SLOW_TOOL_TIMEOUTS = {"canvas.view": VIEW_SLOW_TIMEOUT_S, "canvas.view_media": VIEW_SLOW_TIMEOUT_S}
 
 EXTERNAL_AGENT_NODE_TYPE = "smart-agent"
 
@@ -268,8 +276,28 @@ mcp_event_recorder = McpEventRecorder()
 
 # ---------------------------------------------------------------------------
 # Tool surface — the canvas agent tools minus the fake canvas.get_selection
-# (ADR 0022 known gap: 摘除; semantics unchanged from canvas-tools.ts). 16 tools.
+# (ADR 0022 known gap: 摘除; semantics unchanged from canvas-tools.ts). 19 tools.
 # ---------------------------------------------------------------------------
+
+#: #266 公共参数片段（票面规范：公共参数片段 + additionalProperties:false，
+#: ComfyArt §59.4 建议 5 的 _ID/_IDS/_REGION/_PLACE 模式在本仓的对应实现）
+_PARAM_MAX_PX = {
+    "type": "integer",
+    "description": f"最长边像素，默认 {DEFAULT_VIEW_MAX_PX}，上限 {MAX_VIEW_MAX_PX}（ComfyArt maxPx 契约）",
+    "minimum": 64,
+    "maximum": MAX_VIEW_MAX_PX,
+}
+_PARAM_NODE_IDS = {"type": "array", "items": {"type": "string"}, "description": "节点 ID 列表"}
+_PARAM_RECT = {
+    "type": "object",
+    "description": "选区（原图像素坐标，x/y 左上角 + width/height）",
+    "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"},
+        "width": {"type": "number"}, "height": {"type": "number"},
+    },
+    "required": ["x", "y", "width", "height"],
+    "additionalProperties": False,
+}
 
 TOOLS = [
     {"name": "canvas.list_nodes", "description": "列出画布上所有节点（含连边摘要）", "inputSchema": {"type": "object", "properties": {}, "required": []}},
@@ -279,6 +307,11 @@ TOOLS = [
     {"name": "canvas.delete_node", "description": "删除节点（破坏性：需画布确认门批准，阻塞最长 60s）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "canvas.connect", "description": "创建节点连线（edge 对象需含 from/to）", "inputSchema": {"type": "object", "properties": {"edge": {"type": "object"}}, "required": ["edge"]}},
     {"name": "canvas.disconnect", "description": "删除节点连线", "inputSchema": {"type": "object", "properties": {"from_node": {"type": "string"}, "to_node": {"type": "string"}}, "required": ["from_node", "to_node"]}},
+    # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
+    {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，base64 PNG）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
+    {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
+    # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
+    {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
     {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120"}}, "required": ["task_id"]}},
@@ -367,6 +400,30 @@ async def _impl_viewport_state(project_id, agent_node_id, args):
     return await get_viewport_state(project_id)
 
 
+async def _impl_view(project_id, agent_node_id, args):
+    try:
+        return await canvas_view_core(project_id, str(args.get("scope") or "page"), args.get("node_ids"), args.get("max_px"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
+async def _impl_view_media(project_id, agent_node_id, args):
+    try:
+        return await view_media_core(project_id, str(args.get("node_id") or ""), args.get("max_px"), args.get("frames"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
+async def _impl_edit_crop(project_id, agent_node_id, args):
+    # #242 确认门语义：写操作（覆写节点图）必须过画布确认门
+    node_id = str(args.get("node_id") or "")
+    await _confirm_gate(project_id, agent_node_id, "canvas.edit_crop", args, f"裁剪节点 {node_id} 的图像并覆写节点图（原资源保留在资源库）")
+    try:
+        return await crop_node_image_core(project_id, node_id, args.get("rect"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
 TOOL_IMPLS = {
     "canvas.list_nodes": _impl_list_nodes,
     "canvas.get_node": _impl_get_node,
@@ -384,6 +441,9 @@ TOOL_IMPLS = {
     "viewport.focus": _impl_viewport_focus,
     "viewport.zoom": _impl_viewport_zoom,
     "viewport.state": _impl_viewport_state,
+    "canvas.view": _impl_view,
+    "canvas.view_media": _impl_view_media,
+    "canvas.edit_crop": _impl_edit_crop,
 }
 
 
@@ -437,10 +497,21 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             result={"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True},
         )
     started = time.time()
+    slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     try:
         project_id = resolve_project(str(request.query_params.get("project") or ""))
         node_id = await ensure_external_agent_node(project_id, sid)
-        result = await TOOL_IMPLS[name](project_id, node_id, args)
+        if slow_timeout is not None:
+            # #266 慢操作独立超时契约（90s，区别于 generate.wait 的 600s）
+            result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
+        else:
+            result = await TOOL_IMPLS[name](project_id, node_id, args)
+    except asyncio.TimeoutError:
+        mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"timeout after {slow_timeout}s"})
+        return _rpc_response(
+            200, msg_id, sid,
+            result={"content": [{"type": "text", "text": f"工具 {name} 超时（慢操作契约 {int(slow_timeout)} 秒）。先调用 canvas.list_nodes 查看画布状态，再调低 max_px 或改用 selection 作用域缩小批量后重试。"}], "isError": True},
+        )
     except (McpToolError, ValueError) as exc:
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": str(exc)})
         return _rpc_response(200, msg_id, sid, result={"content": [{"type": "text", "text": str(exc)}], "isError": True})
