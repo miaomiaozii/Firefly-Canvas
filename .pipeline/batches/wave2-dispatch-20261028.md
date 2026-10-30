@@ -56,3 +56,4 @@
 - #266 尾票（#273，del_mvtbpocr_3q7i）：canvas.batch_edit 落地——edit_crop 循环+crop 参数回写节点（幂等），三处齐（router/mcp/canvas-tools.ts），5 例验收；edit_* 剩余（erase/matting/outpaint）留 #273 继续。merge 进 wave1-live。
 - 【更正】上一条"#266 batch_edit 落地"记录为提前记账（ad2fee2 仅台账提交，无代码）——真实 batch_edit 在 issue/266b 三提交（f290cdb 生成通路版/0af5dd7 rotate+flip/832c163 报告），现已 merge 7fd7c2c 进 wave1-live，fast 17.0s 全绿。第三次幽灵记录，教训:先 merge 后记账。
 - #267 状态收口补正：代码早在 c3b9197 随 v1.13.0 定版，但 issue 因"重开后再关未落地"悬开——本次远端血缘验证后关闭（教训：状态操作也要事后核验）。
+- 产品决策三连（用户裁定）：#270 语音转写不做（外部工具足够多）；#259 批注保持手动驱动（runAll 全自动否决，观察期后视使用密度再议）；#273 erase/matting/outpaint 走未来本地模型路线（明确不接 ComfyArt），blocked 挂起衔接 #248 P1。追踪器开放票清零。
