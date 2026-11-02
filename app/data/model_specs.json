@@ -1450,6 +1450,74 @@
         }
       },
       "notes": "fal.ai 队列协议（image_request_mode='fal'），Topaz 生成式修复（细节生成补全）：提交/轮询/拉取同 fal-ai/topaz/upscale/image，引擎档位 1k=Recover 3 / 2k=Wonder 3 / 4k=Wonder 3.5。"
+    },
+    "moss-image-sft-1.0": {
+      "display_name": "MOSS 图像 SFT（推荐）",
+      "api_type": "images_generations",
+      "supports_vision": false,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "description": "宽x高；每边256-2048且16的倍数，总像素≤2097152（MOSS 约束）",
+          "default": "1024x1024"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "MOSS 支持"
+        },
+        "prompt_enhance": {
+          "type": "boolean",
+          "description": "MOSS 提示词增强开关（默认由服务商决定）"
+        }
+      },
+      "request_params": {
+        "output_watermark": {
+          "enabled": false
+        }
+      },
+      "limits": {
+        "n": 1,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 0,
+        "size_rule": "each side 256-2048, multiple of 16, total pixels <= 2097152"
+      },
+      "source": "MOSS API 文档（api.mosi.cn，用户提供 2026-11-02）"
+    },
+    "moss-image-base-1.0": {
+      "display_name": "MOSS 图像 Base",
+      "api_type": "images_generations",
+      "supports_vision": false,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "description": "宽x高；每边256-2048且16的倍数，总像素≤2097152（MOSS 约束）",
+          "default": "1024x1024"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "MOSS 支持"
+        },
+        "prompt_enhance": {
+          "type": "boolean",
+          "description": "MOSS 提示词增强开关（默认由服务商决定）"
+        }
+      },
+      "request_params": {
+        "output_watermark": {
+          "enabled": false
+        }
+      },
+      "limits": {
+        "n": 1,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 0,
+        "size_rule": "each side 256-2048, multiple of 16, total pixels <= 2097152"
+      },
+      "source": "MOSS API 文档（api.mosi.cn，用户提供 2026-11-02）"
     }
   },
   "video_models": {
