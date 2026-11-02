@@ -38,6 +38,9 @@ def fake_moss_server(captured):
         captured.append(request)
         if request.method == 'POST' and request.url.path == '/v1/images/generations':
             body = json.loads(request.content.decode('utf-8'))
+            # MOSS 实测（2026-11-02 curl 双组对照）：quality 字段 → 400 invalid_field_value
+            if 'quality' in body:
+                return httpx.Response(400, json={'error': {'message': 'invalid image generation request', 'code': 'invalid_field_value'}})
             return httpx.Response(200, json={
                 'created': 1730000000,
                 'data': [{'url': f'https://api.mosi.cn/out/{body.get("model")}.png'}],
@@ -114,6 +117,8 @@ class MossImageEndToEndTests(MossBase):
         self.assertEqual(body['size'], '1024x1024')
         # MOSS 特有：关闭可见水印（经 model_specs request_params 注入）
         self.assertEqual(body.get('output_watermark'), {'enabled': False})
+        # MOSS 实测：quality 被服务商拒收（400 invalid_field_value），必须按能力表裁剪
+        self.assertNotIn('quality', body)
 
     def test_spec_request_params_flow_into_route(self):
         from app.core import route_image_from_spec

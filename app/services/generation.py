@@ -1465,6 +1465,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
     model = image_route['model']
     routed_image_params = image_route['params']
+    routed_omit = set(image_route.get('omit') or ())
     is_gpt2 = is_gpt_image_2_model(model)
     if is_gpt2:
         if routed_image_params.get('aspect_ratio') or routed_image_params.get('resolution'):
@@ -1696,7 +1697,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                     body['size'] = size
                 if routed_image_params:
                     body.update(routed_image_params)
-                if quality and not is_comfly_provider:
+                if quality and not is_comfly_provider and 'quality' not in routed_omit:
                     body['quality'] = quality
                 response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
                 if response.status_code >= 400 and images_api_unsupported(response):
@@ -1709,7 +1710,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             body['n'] = 1
             if routed_image_params:
                 body.update(routed_image_params)
-            if quality and not is_comfly_provider:
+            if quality and not is_comfly_provider and 'quality' not in routed_omit:
                 body['quality'] = quality
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
             if response.status_code >= 400 and images_api_unsupported(response):

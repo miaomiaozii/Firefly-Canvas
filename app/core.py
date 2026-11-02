@@ -4167,6 +4167,7 @@ def route_image_from_spec(requested_model, size, spec):
     """
     sp = (spec or {}).get('parameters', {}) or {}
     extra = dict((spec or {}).get('request_params', {}) or {})
+    omit = list(((spec or {}).get('limits') or {}).get('unsupported_params') or [])
     if 'aspect_ratio' in sp or 'image_size' in sp:
         route = {
             'requested_model': requested_model,
@@ -4183,6 +4184,8 @@ def route_image_from_spec(requested_model, size, spec):
         }
     if extra:
         route['params'].update(extra)
+    if omit:
+        route['omit'] = omit
     return route
 
 def route_openai_image_request(provider, model, size):
