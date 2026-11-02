@@ -4166,19 +4166,24 @@ def route_image_from_spec(requested_model, size, spec):
       - otherwise                 -> OpenAI style (rely on ``size`` sent downstream)
     """
     sp = (spec or {}).get('parameters', {}) or {}
+    extra = dict((spec or {}).get('request_params', {}) or {})
     if 'aspect_ratio' in sp or 'image_size' in sp:
-        return {
+        route = {
             'requested_model': requested_model,
             'model': requested_model,
             'params': banana_image_request_params(size),
             'family': 'spec-aspect',
         }
-    return {
-        'requested_model': requested_model,
-        'model': requested_model,
-        'params': {},
-        'family': '',
-    }
+    else:
+        route = {
+            'requested_model': requested_model,
+            'model': requested_model,
+            'params': {},
+            'family': '',
+        }
+    if extra:
+        route['params'].update(extra)
+    return route
 
 def route_openai_image_request(provider, model, size):
     requested_model = selected_model(model, IMAGE_MODEL)

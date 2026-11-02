@@ -59,3 +59,4 @@
 - 产品决策三连（用户裁定）：#270 语音转写不做（外部工具足够多）；#259 批注保持手动驱动（runAll 全自动否决，观察期后视使用密度再议）；#273 erase/matting/outpaint 走未来本地模型路线（明确不接 ComfyArt），blocked 挂起衔接 #248 P1。追踪器开放票清零。
 - MOSS 生图 key 已配置（API/.env 第17行 MOSS_API_KEY，gitignored）；真实烟测通过：19.2s 出图 1024x1024，url 形态+usage 字段与文档一致，水印关闭生效。#273 fal 线上方案废弃（用户裁定），维持本地模型路线 blocked。
 - 记账更正：#247 实为"画布视频编辑"wayfinder，早已由维护者裁定不做（2026-10-29）；总控曾把"统一层"话题误挂此票号并已在本票留言更正。"统一层"从未建票——工具面三层（声明/HTTP/MCP）经 #238/#266/#273 已事实成型，无需抽象票。教训：引用票号前必须 gh issue view 核对标题。
+- #274 MOSS 生图接入（总控 solo 接管，worker 115m 零产出勘察死）：provider 记录（id=moss，约定密钥 API_PROVIDER_MOSS_KEY 零代码特判）+ model_specs 两模型（request_params 注水印关闭，core.route_image_from_spec 增 4 行 request_params 透传机制）+ tests/test_moss_image_provider.py 5 例（假服务器 E2E：认证/水印关闭/url-only/usage）。全量 1635 passed 零红；fast 16.6s/domain 132.7s（/tmp/gate-274*）；真烟测走软件真实解析链 HTTP 200（21s，img.mosi.cn，usage.output_width/height 字段名与文档 width/height 不同——记账映射留意）。MOSS 特性钉死：n=1、url-only、无参考图（max_reference_images=0 路由层执法）、size 16倍数≤2097152。
