@@ -1483,8 +1483,14 @@
         "max_reference_images": 0,
         "size_rule": "each side 256-2048, multiple of 16, total pixels <= 2097152",
         "unsupported_params": [
-          "quality"
-        ]
+          "quality",
+          "aspect_ratio",
+          "resolution"
+        ],
+        "max_edge": 2048,
+        "min_edge": 256,
+        "max_pixels": 2097152,
+        "size_multiple": 16
       },
       "source": "MOSS API 文档（api.mosi.cn，用户提供 2026-11-02）"
     },
@@ -1520,8 +1526,14 @@
         "max_reference_images": 0,
         "size_rule": "each side 256-2048, multiple of 16, total pixels <= 2097152",
         "unsupported_params": [
-          "quality"
-        ]
+          "quality",
+          "aspect_ratio",
+          "resolution"
+        ],
+        "max_edge": 2048,
+        "min_edge": 256,
+        "max_pixels": 2097152,
+        "size_multiple": 16
       },
       "source": "MOSS API 文档（api.mosi.cn，用户提供 2026-11-02）"
     }

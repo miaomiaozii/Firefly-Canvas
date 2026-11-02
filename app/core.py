@@ -3863,6 +3863,39 @@ def snap_size_to_multiple(size, multiple=16):
     snapped_h = max(step, int(math.ceil(height / step) * step))
     return f'{snapped_w}x{snapped_h}'
 
+def clamp_size_to_spec(size, limits):
+    """把请求像素压进服务商硬约束（max_edge/min_edge/max_pixels/size_multiple），保持比例。
+
+    #274 MOSS：任意比例可用，但每边 256-2048、总像素 ≤2097152、必须是 16 的倍数。
+    画布预选的 4K 档位（4096x2304）直接发会被 400；预检门只能表达枚举/任意，
+    区间型约束在发请求前在这里压实（ADR 0006 的例外：比例不变，只缩分辨率，
+    等同于 gpt_image_2_request_size 先例）。
+    """
+    width, height = parse_size_pair(size)
+    if not width or not height or not isinstance(limits, dict):
+        return size
+    step = max(1, int(limits.get('size_multiple') or 16))
+    max_edge = int(limits.get('max_edge') or 0) or None
+    min_edge = max(step, int(limits.get('min_edge') or step))
+    max_pixels = int(limits.get('max_pixels') or 0) or None
+    w, h = float(width), float(height)
+    if max_edge:
+        scale = min(1.0, max_edge / max(w, h))
+        w, h = w * scale, h * scale
+    if max_pixels and w * h > max_pixels:
+        scale = math.sqrt(max_pixels / (w * h))
+        w, h = w * scale, h * scale
+    # 向下取步进（宁小勿超硬上限），再保最短边 ≥ min_edge（等比回调）。
+    def floor_step(v):
+        return max(step, int(math.floor(v / step)) * step)
+    w, h = floor_step(w), floor_step(h)
+    if min(w, h) < min_edge:
+        scale = min_edge / min(w, h)
+        w, h = floor_step(w * scale), floor_step(h * scale)
+    if max_edge:
+        w, h = min(w, max_edge), min(h, max_edge)
+    return f'{int(w)}x{int(h)}'
+
 def chat_prompt_size_override(message, current_size=''):
     text = str(message or '')
     direct = re.search('(?<!\\d)([1-9]\\d{2,4})\\s*[xX×*]\\s*([1-9]\\d{2,4})(?!\\d)', text)

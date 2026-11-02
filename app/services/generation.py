@@ -6,7 +6,7 @@ import random  # noqa: E402
 import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
-from app.core import _local_upload_kind_ext, banana_model_family, looks_like_gemini_image_model  # noqa: E402,F401
+from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -1466,6 +1466,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     model = image_route['model']
     routed_image_params = image_route['params']
     routed_omit = set(image_route.get('omit') or ())
+    # #274：模型声明不吃的参数（model_specs.limits.unsupported_params → route['omit']）
+    # 不能随画布选项透传，否则严格服务商直接 400（MOSS 实测 aspect_ratio/resolution/quality）。
+    for _omit_key in routed_omit:
+        routed_image_params.pop(_omit_key, None)
     is_gpt2 = is_gpt_image_2_model(model)
     if is_gpt2:
         if routed_image_params.get('aspect_ratio') or routed_image_params.get('resolution'):
@@ -1477,6 +1481,12 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         else:
             # 没有比例/档位参数时，也不能把超出服务商硬约束的像素直接发出去（如 4K 正方形 4096）。
             size = gpt_image_2_request_size(size)
+    else:
+        # #274：非 gpt2 家族也可能有区间型像素约束（max_edge/max_pixels/size_multiple），
+        # 预检门表达不了区间，发请求前在这里压实（只缩分辨率，不改比例）。
+        _spec_limits = ((model_spec_for(model) or {}).get('limits') or {})
+        if _spec_limits.get('max_edge') or _spec_limits.get('max_pixels'):
+            size = clamp_size_to_spec(size, _spec_limits)
     if is_comfly_provider:
         image_route['params'].pop('resolution', None)
     is_apimart = is_apimart_provider(provider)

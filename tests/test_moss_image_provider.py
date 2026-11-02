@@ -28,7 +28,7 @@ def moss_record():
         'id': PROVIDER_ID, 'name': 'MOSS', 'base_url': BASE, 'protocol': 'openai',
         'image_request_mode': 'openai', 'enabled': True, 'primary': False,
         'image_models': models,
-        'image_model_capabilities': {m: {'media_types': ['image'], 'sizes': ['1024x1024'], 'max_reference_images': 0} for m in models},
+        'image_model_capabilities': {m: {'media_types': ['image'], 'arbitrary_size': True, 'aspect_ratios': ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '9:21'], 'resolutions': ['auto', '1k', '2k'], 'max_reference_images': 0} for m in models},
         'recommended_models': [MOSS_MODEL],
     }
 
@@ -125,6 +125,75 @@ class MossImageEndToEndTests(MossBase):
         spec = {'parameters': {'size': {}}, 'request_params': {'output_watermark': {'enabled': False}}}
         route = route_image_from_spec(MOSS_MODEL, '1024x1024', spec)
         self.assertEqual(route['params'].get('output_watermark'), {'enabled': False})
+
+
+class MossRoutingGateTests(MossBase):
+    """#274 补丁：预检能力门必须按 MOSS 真实能力放行画布请求（尺寸/比例/档位任意，参考图拒绝）。"""
+
+    def _request(self, refs=(), size='1536x864', ratio='16:9'):
+        from firefly_generation import ImageGenerationRequest
+        return ImageGenerationRequest(prompt='猫', size=size, width=None, height=None,
+                                      aspect_ratio=ratio, resolution='auto',
+                                      reference_asset_ids=refs, media_type='image',
+                                      quality='auto', count=1)
+
+    def test_pinned_moss_routes_ratio_request(self):
+        from firefly_generation import route_image_generation
+        providers = json.load(open(self.providers_file, encoding='utf-8'))
+        route = route_image_generation(self._request(), providers, provider_id='moss', model=MOSS_MODEL)
+        self.assertEqual(route.model, MOSS_MODEL)
+
+    def test_reference_image_rejected_with_clear_incompatibles(self):
+        from firefly_generation import ModelRoutingError, route_image_generation
+        providers = json.load(open(self.providers_file, encoding='utf-8'))
+        try:
+            route_image_generation(self._request(refs=('asset-1',)), providers, provider_id='moss', model=MOSS_MODEL)
+        except ModelRoutingError as exc:
+            self.assertEqual(list(exc.incompatible_parameters), ['reference_count'])
+        else:
+            self.fail('参考图请求必须被拒，且只能因 reference_count')
+
+
+class MossPayloadHygieneTests(MossBase):
+    def _captured_body(self, image_parameters):
+        from app.services.generation import generate_ai_image
+        captured = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={'created': 1, 'data': [{'url': 'https://api.mosi.cn/out/x.png'}]})
+
+        class FakeClient(httpx.AsyncClient):
+            def __init__(self, *args, **kwargs):
+                kwargs.pop('transport', None)
+                kwargs['transport'] = httpx.MockTransport(respond)
+                super().__init__(*args, **kwargs)
+
+        with patch('httpx.AsyncClient', FakeClient):
+            asyncio.run(generate_ai_image('猫', '1536x864', 'auto', MOSS_MODEL,
+                                         reference_images=None, provider_id=PROVIDER_ID,
+                                         preserve_model=True, image_parameters=image_parameters))
+        body = json.loads([r for r in captured if r.url.path == '/v1/images/generations'][0].content.decode('utf-8'))
+        return body
+
+    def test_canvas_ratio_resolution_not_leaked(self):
+        body = self._captured_body({'aspect_ratio': '16:9', 'resolution': 'auto'})
+        for key in ('aspect_ratio', 'resolution', 'quality'):
+            self.assertNotIn(key, body, f'MOSS 不收 {key}，必须按 unsupported_params 裁剪')
+        self.assertEqual(body.get('size'), '1536x864')
+        self.assertEqual(body.get('output_watermark'), {'enabled': False})
+
+    def test_oversized_request_clamped_to_moss_limits(self):
+        from app.core import clamp_size_to_spec
+        limits = {'max_edge': 2048, 'min_edge': 256, 'max_pixels': 2097152, 'size_multiple': 16}
+        w, h = clamp_size_to_spec('4096x2304', limits).split('x')
+        self.assertLessEqual(int(w), 2048)
+        self.assertLessEqual(int(w) * int(h), 2097152)
+        self.assertEqual(int(w) % 16, 0)
+        self.assertEqual(int(h) % 16, 0)
+        # 保持比例（误差 ≤ 1 个步进）
+        self.assertAlmostEqual(int(w) / int(h), 4096 / 2304, delta=0.05)
+        self.assertEqual(clamp_size_to_spec('1536x864', limits), '1536x864')
 
 
 if __name__ == '__main__':
