@@ -126,6 +126,7 @@
         "globalSettings.videoModels": { zh: "视频模型", en: "Video models" },
         "globalSettings.availableModels": { zh: "可选模型", en: "Available models" },
         "globalSettings.modelSelectionHint": { zh: "拉取到的模型不会自动加入；勾选后才会进入项目列表。", en: "Fetched models stay out of the project list until you select them." },
+        "globalSettings.modelsHint": { zh: "模型清单可能不完整，拉取模型不会覆盖已保存的清单，可手动补充模型。", en: "The model list may be incomplete. Fetching merges with the saved list without replacing it — add models manually if needed." },
         "globalSettings.searchModels": { zh: "搜索模型…", en: "Search models…" },
         "globalSettings.testConnection": { zh: "验证地址", en: "Test endpoint" },
         "globalSettings.fetchModels": { zh: "拉取模型", en: "Fetch models" },

@@ -335,6 +335,14 @@ input[type="radio"] {
   line-height: var(--line-body);
 }
 
+.provider-models-hint {
+  margin-top: var(--space-8);
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: var(--weight-regular);
+  line-height: var(--line-body);
+}
+
 .model-picker-search {
   margin-top: var(--space-8);
 }

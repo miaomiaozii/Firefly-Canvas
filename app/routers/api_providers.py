@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (AGNES_DEFAULT_VIDEO_MODELS, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
+from app.core import (AGNES_DEFAULT_VIDEO_MODELS, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
 _from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'api_key_from_payload', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'runninghub_models_payload', 'save_api_providers', 'update_env_values', 'volcengine_provider_api_key']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -644,24 +644,54 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
         return {'total': payload['model_count'], 'image_models': payload['image_models'], 'chat_models': payload['chat_models'], 'video_models': payload['video_models'], 'all': payload['all'], 'message': payload['message'], 'raw': payload['raw']}
     return {'total': len(ids), 'image_models': grouped['image'], 'chat_models': grouped['chat'], 'video_models': grouped['video'], 'recommended_models': recommend_upstream_models(grouped), 'all': ids, 'image_request_mode': detect_image_request_mode(base_url, ids) or normalize_image_request_mode(image_request_mode)}
 
+FETCH_MODELS_INCOMPLETE_HINT = '模型清单可能不完整，可手动补充模型。'
+
+def merge_fetched_models_with_saved(provider_id: str, fetched: dict) -> dict:
+    """#275：拉取结果与已保存服务商清单合并去重，不覆盖手填模型。
+
+    顺序：已保存选择（image_models 等）→ 已保存 available_models → 拉取结果；
+    平台未保存时不合并，仅提示清单可能不完整。
+    """
+    target = (provider_id or '').strip().lower()
+    result = dict(fetched or {})
+    saved = next((p for p in public_api_providers() if str(p.get('id') or '').strip().lower() == target), None) if target else None
+    if saved:
+        saved_available = normalize_available_models(saved.get('available_models'))
+        for fetched_key in ('image_models', 'chat_models', 'video_models'):
+            values = []
+            for source in (saved.get(fetched_key) or [], saved_available.get(fetched_key) or [], result.get(fetched_key) or []):
+                for value in source:
+                    value = str(value or '').strip()
+                    if value and value not in values:
+                        values.append(value)
+            result[fetched_key] = values
+        result['recommended_models'] = recommend_upstream_models({'image': result['image_models'], 'chat': result['chat_models'], 'video': result['video_models']})
+    base = str(result.get('message') or '').strip()
+    result['message'] = (base + ' ' if base else '') + FETCH_MODELS_INCOMPLETE_HINT
+    return result
+
 @router.post('/api/providers/fetch-models')
 async def fetch_upstream_models_from_payload(payload: TestConnectionPayload):
     """按页面当前表单值拉取模型，支持新增平台未保存时直接使用临时 Base URL / Key。"""
     protocol = protocol_from_payload(payload)
     api_key = api_key_from_payload(payload, protocol)
-    return await fetch_models_from_upstream(payload.base_url, api_key, protocol, payload.image_request_mode)
+    fetched = await fetch_models_from_upstream(payload.base_url, api_key, protocol, payload.image_request_mode)
+    return merge_fetched_models_with_saved(payload.provider_id, fetched)
 
 @router.get('/api/providers/{provider_id}/fetch-models')
 async def fetch_upstream_models(provider_id: str):
     """从已保存的上游 OpenAI 兼容接口拉取 /v1/models 列表，按名称智能分类为 image/chat/video。"""
     provider = get_api_provider_exact(provider_id)
     if is_codex_provider(provider):
-        return await fetch_models_from_upstream('', '', 'codex', provider.get('image_request_mode') or 'openai')
+        fetched = await fetch_models_from_upstream('', '', 'codex', provider.get('image_request_mode') or 'openai')
+        return merge_fetched_models_with_saved(provider['id'], fetched)
     if is_gemini_cli_provider(provider):
-        return await fetch_models_from_upstream('', '', 'gemini-cli', provider.get('image_request_mode') or 'openai')
+        fetched = await fetch_models_from_upstream('', '', 'gemini-cli', provider.get('image_request_mode') or 'openai')
+        return merge_fetched_models_with_saved(provider['id'], fetched)
     api_key = os.getenv(runninghub_wallet_key_env(), '') if provider['id'] == 'runninghub' else ''
     if not api_key:
         api_key = _app_main.provider_env_key_value(provider['id'])
     if not api_key:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider_id} 未配置 API Key")
-    return await fetch_models_from_upstream(provider.get('base_url') or '', api_key, provider_protocol(provider), provider.get('image_request_mode') or 'openai')
+    fetched = await fetch_models_from_upstream(provider.get('base_url') or '', api_key, provider_protocol(provider), provider.get('image_request_mode') or 'openai')
+    return merge_fetched_models_with_saved(provider['id'], fetched)

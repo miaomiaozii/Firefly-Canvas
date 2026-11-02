@@ -170,6 +170,7 @@
         <div class="model-field"><span class="model-field-title">${tr('globalSettings.chatModels')}</span><textarea data-models="chat_models"></textarea><div class="model-picker" data-model-picker="chat_models" hidden></div></div>
         <div class="model-field"><span class="model-field-title">${tr('globalSettings.videoModels')}</span><textarea data-models="video_models"></textarea><div class="model-picker" data-model-picker="video_models" hidden></div></div>
       </div>
+      <div class="provider-models-hint">${tr('globalSettings.modelsHint')}</div>
       <div class="provider-actions">
         <button type="button" class="quiet-button" data-provider-action="test">${tr('globalSettings.testConnection')}</button>
         <button type="button" class="quiet-button" data-provider-action="fetch">${tr('globalSettings.fetchModels')}</button>
