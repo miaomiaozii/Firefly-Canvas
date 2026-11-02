@@ -1536,6 +1536,94 @@
         "size_multiple": 16
       },
       "source": "MOSS API 文档（api.mosi.cn，用户提供 2026-11-02）"
+    },
+    "qwen-image-2.1-pro": {
+      "display_name": "阿里云百炼 Qwen-Image 2.1 Pro（推荐）",
+      "api_type": "images_generations",
+      "supports_vision": false,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "description": "宽x高（'<W>x<H>' 格式，'W*H' 会被400）；任意比例；面积 512²–2560²（实测）",
+          "default": "1328x1328"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "百炼支持（实测）"
+        },
+        "prompt_extend": {
+          "type": "boolean",
+          "description": "提示词扩写开关（实测接受，默认服务商开）"
+        },
+        "watermark": {
+          "type": "boolean",
+          "description": "水印开关（实测接受）"
+        }
+      },
+      "request_params": {
+        "watermark": false
+      },
+      "limits": {
+        "n": 4,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 2,
+        "size_rule": "WxH, area between 262144 and 6553600 (实测 800x2600 OK, 4096x4096 400)",
+        "unsupported_params": [
+          "quality",
+          "aspect_ratio",
+          "resolution"
+        ],
+        "min_edge": 256,
+        "max_pixels": 6553600,
+        "size_multiple": 1
+      },
+      "source": "百炼实测探针 2026-11-02（维护者提供端点/key；D:/tmp/mosi-smoke/ 存档）"
+    },
+    "qwen-image-2.1-turbo": {
+      "display_name": "阿里云百炼 Qwen-Image 2.1 Turbo（快速）",
+      "api_type": "images_generations",
+      "supports_vision": false,
+      "parameters": {
+        "size": {
+          "type": "string",
+          "description": "宽x高（'<W>x<H>' 格式，'W*H' 会被400）；任意比例；面积 512²–2560²（实测）",
+          "default": "1328x1328"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "description": "百炼支持（实测）"
+        },
+        "prompt_extend": {
+          "type": "boolean",
+          "description": "提示词扩写开关（实测接受，默认服务商开）"
+        },
+        "watermark": {
+          "type": "boolean",
+          "description": "水印开关（实测接受）"
+        }
+      },
+      "request_params": {
+        "watermark": false
+      },
+      "limits": {
+        "n": 4,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 2,
+        "size_rule": "WxH, area between 262144 and 6553600 (实测 800x2600 OK, 4096x4096 400)",
+        "unsupported_params": [
+          "quality",
+          "aspect_ratio",
+          "resolution"
+        ],
+        "min_edge": 256,
+        "max_pixels": 6553600,
+        "size_multiple": 1
+      },
+      "source": "百炼实测探针 2026-11-02（维护者提供端点/key；D:/tmp/mosi-smoke/ 存档）"
     }
   },
   "video_models": {
