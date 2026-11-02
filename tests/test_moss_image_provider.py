@@ -150,6 +150,7 @@ class MossRoutingGateTests(MossBase):
             route_image_generation(self._request(refs=('asset-1',)), providers, provider_id='moss', model=MOSS_MODEL)
         except ModelRoutingError as exc:
             self.assertEqual(list(exc.incompatible_parameters), ['reference_count'])
+            self.assertIn('不支持参考图', str(exc), '文案必须说人话：用户看不出 reference_count 是什么')
         else:
             self.fail('参考图请求必须被拒，且只能因 reference_count')
 

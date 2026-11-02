@@ -552,6 +552,11 @@ def _capability_hint(provider: Mapping[str, Any], model: str, capability: Mappin
     """
     parts = []
     for parameter in mismatches:
+        if parameter in {"reference_count", "image_reference_count", "video_reference_count", "audio_reference_count"}:
+            # #274 MOSS：max_reference_images=0 时只报参数名用户无法自查，直接说人话。
+            if capability.get("max_reference_images") == 0:
+                parts.append(f"{model} 不支持参考图/垫图，请移除接入的上游图像（或换支持垫图的模型）")
+                continue
         key = CAPABILITY_HINT_KEYS.get(parameter)
         if not key:
             continue
