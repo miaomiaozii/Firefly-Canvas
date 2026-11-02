@@ -201,6 +201,70 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(payload["recommended_models"]["image"], "nano-banana-pro")
         self.assertEqual(upstream.request["url"], "https://upstream.test/v1/models")
 
+    def test_saved_provider_fetch_merges_saved_models_without_replacing(self):
+        """#275：拉取结果与已保存清单合并去重，不覆盖手填模型。"""
+        Path(main.API_PROVIDERS_FILE).write_text(json.dumps([{
+            "id": "moss", "name": "Moss", "base_url": "https://upstream.test/v1",
+            "protocol": "openai",
+            "image_models": ["moss-image-sft-1.0"], "chat_models": [], "video_models": [],
+            "available_models": {"image_models": ["moss-image-sft-1.0"], "chat_models": [], "video_models": []},
+            "enabled": True,
+        }]), encoding="utf-8")
+        upstream = FakeUpstreamClient(FakeUpstreamResponse({"data": [
+            {"id": "moss-image-prompt-enhancer-1.0"},
+            {"id": "moss-image-sft-1.0"},
+            {"id": "moss-chat"},
+        ]}))
+        with patch.object(main.httpx, "AsyncClient", return_value=upstream):
+            response = self.client.post("/api/providers/fetch-models", json={
+                "provider_id": "moss",
+                "base_url": "https://upstream.test/v1",
+                "api_key": "sk-test",
+                "protocol": "openai",
+            })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["image_models"], ["moss-image-sft-1.0", "moss-image-prompt-enhancer-1.0"])
+        self.assertEqual(payload["chat_models"], ["moss-chat"])
+        self.assertEqual(payload["recommended_models"]["image"], "moss-image-sft-1.0")
+        self.assertIn("可能不完整", payload["message"])
+
+    def test_unsaved_provider_fetch_keeps_fetched_list_without_merge(self):
+        """#275：未保存的平台没有历史清单，拉取结果原样返回（仍提示清单可能不完整）。"""
+        upstream = FakeUpstreamClient(FakeUpstreamResponse({"data": [{"id": "moss-image-sft-1.0"}]}))
+        with patch.object(main.httpx, "AsyncClient", return_value=upstream):
+            response = self.client.post("/api/providers/fetch-models", json={
+                "provider_id": "moss",
+                "base_url": "https://upstream.test/v1",
+                "api_key": "sk-test",
+                "protocol": "openai",
+            })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["image_models"], ["moss-image-sft-1.0"])
+        self.assertIn("可能不完整", payload["message"])
+
+    def test_get_saved_provider_fetch_merges_saved_models(self):
+        """#275：已保存平台的 GET 拉取端点同样合并手填模型。"""
+        Path(main.API_PROVIDERS_FILE).write_text(json.dumps([{
+            "id": "moss", "name": "Moss", "base_url": "https://upstream.test/v1",
+            "protocol": "openai",
+            "image_models": ["moss-image-sft-1.0"], "chat_models": [], "video_models": [],
+            "available_models": {"image_models": ["moss-image-sft-1.0"]},
+            "enabled": True,
+        }]), encoding="utf-8")
+        Path(main.API_ENV_FILE).write_text("API_PROVIDER_MOSS_KEY=moss-key\n", encoding="utf-8")
+        upstream = FakeUpstreamClient(FakeUpstreamResponse({"data": [{"id": "moss-image-prompt-enhancer-1.0"}]}))
+        with patch.object(main.httpx, "AsyncClient", return_value=upstream):
+            response = self.client.get("/api/providers/moss/fetch-models")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["image_models"], ["moss-image-sft-1.0", "moss-image-prompt-enhancer-1.0"])
+        self.assertIn("可能不完整", payload["message"])
+
     def test_recommendations_prefer_chatgpt_5_4_and_nano_banana_pro(self):
         grouped = {
             "image": ["gpt-image-2", "nano-banana-pro"],
@@ -453,6 +517,17 @@ class GlobalSettingsApiTests(unittest.TestCase):
 
 
 class GlobalSettingsUiContractTests(unittest.TestCase):
+    def test_provider_cards_show_the_incomplete_models_hint(self):
+        """#275：服务商卡片提示模型清单可能不完整、可手动补充。"""
+        settings_script = (ROOT / "static" / "js" / "global-settings.js").read_text(encoding="utf-8")
+        i18n = (ROOT / "static" / "js" / "i18n" / "studio.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "css" / "global-settings.css").read_text(encoding="utf-8")
+        self.assertIn("provider-models-hint", settings_script)
+        self.assertIn("globalSettings.modelsHint", settings_script)
+        self.assertIn("globalSettings.modelsHint", i18n)
+        self.assertIn("可能不完整", i18n)
+        self.assertIn(".provider-models-hint", css)
+
     def test_both_product_surfaces_open_the_same_global_settings_page(self):
         project_page = (ROOT / "static" / "project-list.html").read_text(encoding="utf-8")
         canvas_page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
