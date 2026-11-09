@@ -36,10 +36,16 @@
 //         acceptProjectGenerationRegistration / importProjectMediaReference /
 //         mediaNodeDefaultScale / smartGroupContainingNode / canvasId —— 零逻辑
 //         记录器/数据；trf / copyMediaSizeFields / stripImageGenerationMeta 见上
-//       canvas-media-history.js 5 个（该模块 98 处反向引用，不可独立加载）：
+//       canvas-media-history.js 9 个（该模块 98 处反向引用，不可独立加载）：
 //       - beginSmartPendingHistoryLog（记录器，返回固定 id）/ smartPendingHistoryId（'') /
 //         ensureSmartPendingHistoryLogs（记录器）/ failSmartPendingHistoryLog（记录器）/
 //         cleanHistoryImages（恒等，测试只喂空数组或已成形媒体项）
+//       - hydrateProjectMediaReferences（恒等）/ smartHistoryTaskId、smartPendingHistoryTaskId
+//         （纯数据访问器）/ mergeSmartHistoryRecordLists（拼接）/ smartHistoryModal（元素桩）
+//         —— cancel/重试终态落账路径依赖；曾缺桩导致假时钟回调里 ReferenceError 吞进
+//         promise 链 → 测试永挂（#287）
+//       canvas-core.js 1 个：nowMs（忠实时钟访问器）；scheduleSmartHistoryWindowRender no-op/ hydrateProjectMediaReferences（恒等）/
+//       smartHistoryTaskId、smartPendingHistoryTaskId（纯数据访问器，与真实实现同语义）
 //       canvas-image-editor.js 1 个：
 //       - validOutpaintSize（零逻辑返回 null；测试节点不设置 outpaintSize）
 //   - 浏览器全局：fetch 换成测试内记录器（桩掉 harness 默认的抛错 fetch），
@@ -168,7 +174,7 @@ function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
         return `${w / a}:${h / a}`;
     };
 
-    // --- canvas-media-history.js 5 个桩（该模块不可独立加载） ---
+    // --- canvas-media-history.js 9 个桩（该模块不可独立加载） ---
     ctx.beginSmartPendingHistoryLog = (node, defaults) => {
         const id = `ph-${harness.pendingHistoryLogs.length + 1}`;
         harness.pendingHistoryLogs.push({ node: node?.id || '', defaults });
@@ -182,6 +188,22 @@ function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
         harness.failHistoryCalls.push({ taskId, error });
     };
     ctx.cleanHistoryImages = (images = []) => (images || []);
+    // hydrateProjectMediaReferences：恒等桩。真实实现重写媒体引用 URL，测试喂的
+    // 都是已成形媒体项（与 cleanHistoryImages 同约定）；缺这个桩会让 cancel 终态
+    // 路径在假时钟回调里抛 ReferenceError，promise 链被假时钟吞掉 → 进程永挂（#287）。
+    ctx.hydrateProjectMediaReferences = (value) => value;
+    // 纯数据访问器（与 canvas-media-history.js 真实实现同语义，无业务逻辑）：
+    ctx.smartHistoryTaskId = (log) => String(log?.task_id || log?.request?.task_id || log?.request?.taskId || '').trim();
+    ctx.smartPendingHistoryTaskId = (log) => {
+        const request = log?.request || {};
+        return String(request.task_id || request.taskId || '').trim();
+    };
+    // 拼接桩：真实实现按 key 去重合并；测试只喂单边列表，拼接即可满足断言。
+    ctx.mergeSmartHistoryRecordLists = (localLogs, remoteLogs) => [...(localLogs || []), ...(remoteLogs || [])];
+    // 终态落账路径的 UI/时钟依赖（忠实时钟访问器 + 无状态渲染 no-op + 弹窗元素）：
+    ctx.nowMs = () => Date.now();
+    ctx.scheduleSmartHistoryWindowRender = () => {};
+    ctx.smartHistoryModal = harness.element('smartHistoryModal');
 
     // --- canvas-image-editor.js 1 个桩 ---
     ctx.validOutpaintSize = () => null;  // 测试节点不设置 outpaintSize
@@ -1108,8 +1130,15 @@ test('resumeSmartPendingNode: 用户主动 stop 是中性终态（stop≠error�
         }});
     };
     const resume = globalFunction(ctx, 'resumeSmartPendingNode');
+    let resumeSettled = false;
     const p = resume(node);
-    harness.advanceTimers();  // 放行 2000ms 轮询间隔
+    p.then(() => { resumeSettled = true; }, () => { resumeSettled = true; });
+    // 假时钟需要多轮放行（resume 内部可能链式调度多个 sleep）；有界泵避免死等
+    for (let i = 0; i < 20 && !resumeSettled; i++) {
+        harness.advanceTimers();
+        await tick();
+    }
+    assert.ok(resumeSettled, 'resumeSmartPendingNode 在 20 轮假时钟内应落定');
     await p;
     await tick();
 
