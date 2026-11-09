@@ -343,6 +343,107 @@ def _offline_local_edit_adapter(request: Dict[str, Any]) -> bytes:
     image.putpixel((0, 0), ((r + 1) % 256, g, b, a))
     return encode_png(image)
 
+#: #290 production local-edit adapter：bailian（阿里云百炼 / dashscope 系）qwen 编辑模型。
+BAILIAN_PROVIDER_ID = 'bailian'
+BAILIAN_LOCAL_EDIT_MODEL = 'qwen-image-edit-max-2026-01-16'
+BAILIAN_LOCAL_EDIT_TIMEOUT_S = 180
+
+
+def _bailian_local_edit_adapter(request: Dict[str, Any]) -> bytes:
+    """#290 production local-edit adapter（同步）：qwen-image-edit-max-2026-01-16（model_specs.json：img2img + size）。
+
+    ADR 0007：REST 链已在调用本 adapter 前裁好选区（request['image'] = 裁剪区 PNG 字节），
+    模型只收到裁剪图 + prompt，绝不发送 mask。调用方式镜像既有图片生成链路
+    （app/services/generation.py:1499-1726）：provider_endpoint_url + api_headers +
+    /images/generations JSON body（image 数组传 data URL，与 reference_to_data_url 约定一致），
+    images_api_unsupported 时回退 OpenAI /images/edits multipart（同 post_openai_edits 模式）。
+    """
+    from app.services.providers import api_headers, get_api_provider_exact, provider_endpoint_url
+
+    prompt = str(request.get('prompt') or '').strip()
+    if not prompt:
+        raise ValueError('局部编辑 prompt 为空')
+    image_bytes = bytes(request.get('image') or b'')
+    if not image_bytes:
+        raise ValueError('局部编辑图像为空')
+    provider = get_api_provider_exact(BAILIAN_PROVIDER_ID)
+    if provider is None:
+        raise RuntimeError('bailian provider 未注册（api_providers.json），无法调用 qwen 局部编辑模型')
+    model = str(request.get('model') or BAILIAN_LOCAL_EDIT_MODEL)
+    size = str(request.get('size') or '').strip()
+    if not size:
+        rect = request.get('selection') or []
+        try:
+            width = max(1, int(rect[2]) - int(rect[0]))
+            height = max(1, int(rect[3]) - int(rect[1]))
+        except Exception:  # noqa: BLE001
+            width = height = 1024
+        size = f'{width}x{height}'
+    body = {
+        'model': model,
+        'prompt': prompt,
+        'size': size,
+        'response_format': 'b64_json',
+        'n': 1,
+        # OpenAI 兼容 image 数组：每项为 URL 或 base64（model_specs.json 登记约定）
+        'image': ['data:image/png;base64,' + base64.b64encode(image_bytes).decode('ascii')],
+    }
+    gen_url = provider_endpoint_url(provider, 'image_generation_endpoint', '/v1/images/generations')
+    edit_url = provider_endpoint_url(provider, 'image_edit_endpoint', '/v1/images/edits')
+    headers = api_headers(json_body=True, provider=provider, model=model)
+    with _bailian_http_session() as session:
+        response = session.post(gen_url, headers=headers, json=body, timeout=BAILIAN_LOCAL_EDIT_TIMEOUT_S)
+        if int(response.status_code) >= 400 and images_api_unsupported(response):
+            # 回退 OpenAI /images/edits multipart（镜像 app/services/generation.py post_openai_edits 模式）
+            response = session.post(
+                edit_url,
+                headers={'Accept': 'application/json', 'Authorization': headers.get('Authorization', '')},
+                data={'model': model, 'prompt': prompt, 'n': '1'},
+                files={'image': ('edit.png', image_bytes, 'image/png')},
+                timeout=BAILIAN_LOCAL_EDIT_TIMEOUT_S,
+            )
+        if int(response.status_code) >= 400:
+            raise RuntimeError(f'qwen-image-edit 调用失败（HTTP {response.status_code}）：{str(response.text)[:300]}')
+        try:
+            data = response.json()
+        except Exception:  # noqa: BLE001
+            raise RuntimeError(f'qwen-image-edit 返回非 JSON 响应（状态 {response.status_code}）：{str(response.text)[:300]}')
+    image = extract_image(data)
+    if not isinstance(image, dict) or image.get('type') not in {'url', 'b64'} or not image.get('value'):
+        raise RuntimeError('qwen-image-edit 返回中没有可识别的图片数据')
+    if image.get('type') == 'b64':
+        return base64.b64decode(image['value'])
+    with _bailian_http_session() as session:
+        download = session.get(str(image['value']), timeout=BAILIAN_LOCAL_EDIT_TIMEOUT_S)
+    if int(download.status_code) >= 400:
+        raise RuntimeError(f'qwen-image-edit 图片下载失败（HTTP {download.status_code}）')
+    return download.content
+
+
+def _bailian_http_session():
+    """#290 拆出的网络会话入口：测试 stub 此函数即可零真实外连。"""
+    import requests
+
+    return requests.Session()
+
+
+def wire_local_edit_adapter(app_main: Any) -> bool:
+    """#290 bailian 凭据存在时把生产 local-edit adapter 挂到 app_main.local_edit_adapter。
+
+    返回 True = 已替换（生产 adapter）；False = 保留离线 fake（无凭据，测试/离线环境）。
+    凭据判定失败（如 main 尚未完成初始化）时退回进程环境变量，绝不让启动崩溃。
+    """
+    try:
+        from app.services.providers import provider_env_key_value
+
+        credential = (provider_env_key_value(BAILIAN_PROVIDER_ID) or '').strip()
+    except Exception:  # noqa: BLE001 — main 半初始化（API_ENV_FILE 未就绪）
+        credential = (os.environ.get('API_PROVIDER_BAILIAN_KEY', '') or '').strip()
+    if not credential:
+        return False
+    app_main.local_edit_adapter = _bailian_local_edit_adapter
+    return True
+
 def _conversation_pending_task_keys_from_canvas(project_id: str, canvas: Optional[Dict[str, Any]]) -> set[Tuple[str, str, str]]:
     keys: set[Tuple[str, str, str]] = set()
     if not isinstance(canvas, dict):

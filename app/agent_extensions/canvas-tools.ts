@@ -471,6 +471,54 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    pi.registerTool({
+        name: "canvas.edit_erase",
+        description:
+            "Erase content inside a node-image selection (rect x/y/width/height in original image pixels) per prompt: the rect is cropped, sent to the bailian local-edit model (qwen-image-edit-max-2026-01-16), and the result is composited back into the node image (consumes one external model call; no mask is sent to any model — ADR 0007; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            rect: Type.Object({
+                x: Type.Number({ description: "Selection left edge in original image pixels" }),
+                y: Type.Number({ description: "Selection top edge in original image pixels" }),
+                width: Type.Number({ description: "Selection width in original image pixels" }),
+                height: Type.Number({ description: "Selection height in original image pixels" }),
+            }, { description: "Selection in original image pixels (x/y top-left corner + width/height)" }),
+            prompt: Type.String({ description: "Describe what to erase and how to fill the region" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_erase",
+                    params: {
+                        node_id: params.node_id,
+                        rect: params.rect,
+                        prompt: params.prompt,
+                    },
+                    message: `擦除节点 ${params.node_id} 选区（${params.rect?.x},${params.rect?.y} ${params.rect?.width}x${params.rect?.height}，"${params.prompt}"）并覆写节点图？将消耗一次外部模型调用（qwen-image-edit），原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase`, "POST", {
+                node_id: params.node_id,
+                rect: params.rect,
+                prompt: params.prompt,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",
