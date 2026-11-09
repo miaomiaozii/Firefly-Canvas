@@ -49,14 +49,19 @@ MODELS_FIXTURE = {
             "baseUrl": "https://dashscope.example/compatible-mode/v1",
             "api": "openai-completions",
             "models": [
-                {"id": "qwen-plus", "name": "Qwen Plus"},
-                {"id": "qwen3-max", "name": "Qwen3 Max"},
+                {"id": "qwen-plus", "name": "Qwen Plus"},                          # 无 type → 按 chat（pi 缺省）
+                {"id": "qwen3-max", "name": "Qwen3 Max"},                          # 无 type → chat
+                {"id": "qwen-image-2.1-pro", "name": "Qwen Image 2.1 Pro", "type": "image"},  # 图像端点 → 必须剔除
+                {"id": "sentiment-classifier", "type": "classifier"},               # classifier → 必须剔除
             ],
         },
         "vllm-remote-nvfp4": {
             "baseUrl": "http://127.0.0.1:8080/v1",
             "api": "openai-completions",
-            "models": [{"id": "qwen3.8-27b-quasar-nvfp4"}],
+            "models": [
+                {"id": "qwen3.8-27b-quasar-nvfp4"},                                 # 无 type → chat
+                {"id": "explicit-chat", "name": "Explicit Chat", "type": "chat"},   # 显式 chat → 收录
+            ],
         },
     }
 }
@@ -97,10 +102,37 @@ class AgentChatModelsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         ids = [m["id"] for m in payload["models"]]
+        # chat 模型（含无 type 缺省 + 显式 chat）都在池里。
         self.assertIn("bailian/qwen-plus", ids)
         self.assertIn("bailian/qwen3-max", ids)
         self.assertIn("vllm-remote-nvfp4/qwen3.8-27b-quasar-nvfp4", ids)
+        self.assertIn("vllm-remote-nvfp4/explicit-chat", ids)
         self.assertEqual(payload["current"], "bailian/qwen-plus")
+
+    def test_chat_models_endpoint_excludes_image_and_classifier(self):
+        """#285 核心：图片模型不得混入——image/classifier 类型的模型不进会话池。"""
+        response = self.client.get(f"/api/projects/{self.project_id}/agent-nodes/chat-models")
+        self.assertEqual(response.status_code, 200, response.text)
+        ids = [m["id"] for m in response.json()["models"]]
+        self.assertNotIn("bailian/qwen-image-2.1-pro", ids, "图像端点混入会话池（选中即无响应）")
+        self.assertNotIn("bailian/sentiment-classifier", ids, "classifier 混入会话池")
+        # 其余 chat 模型不受影响（不是把所有 bailian 都剔了）。
+        self.assertIn("bailian/qwen-plus", ids)
+
+    def test_set_model_reflected_in_healthz_session(self):
+        """#285 回归钉：选择后 /api/healthz 的 sessions.model 变化（只读投影，无真实 spawn）。"""
+        node_id = "agent_healthz_probe"
+        response = self.client.post(
+            f"/api/projects/{self.project_id}/agent-nodes/{node_id}/model",
+            json={"model": "bailian/qwen3-max"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        health = self.client.get("/api/healthz")
+        self.assertEqual(health.status_code, 200, health.text)
+        sessions = health.json()["agents"]["sessions"]
+        match = [s for s in sessions if s["node_id"] == node_id]
+        self.assertEqual(len(match), 1, f"healthz 应含 {node_id} 会话：{sessions}")
+        self.assertEqual(match[0]["model"], "bailian/qwen3-max")
 
     def test_chat_models_endpoint_missing_dir_returns_empty(self):
         os.environ["FIREFLY_PI_AGENT_DIR"] = str(self.agent_dir.parent / "nope")
