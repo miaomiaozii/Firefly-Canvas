@@ -5,6 +5,7 @@ over stdin/stdout. This service handles spawning, event forwarding, command
 sending, and crash recovery.
 """
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -431,7 +432,9 @@ class AgentHostManager:
             # Notify handlers
             for handler in session.event_handlers:
                 try:
-                    await handler(session, {"type": "process_exited", "exit_code": exit_code, "result": dict(session.result)})
+                    out = handler(session, {"type": "process_exited", "exit_code": exit_code, "result": dict(session.result)})
+                    if inspect.isawaitable(out):  # #281：同步处理器（capture_response 等）直接调用
+                        await out
                 except Exception:
                     pass
 
@@ -468,7 +471,9 @@ class AgentHostManager:
 
         for handler in session.event_handlers:
             try:
-                await handler(session, event)
+                out = handler(session, event)
+                if inspect.isawaitable(out):  # #281：同步处理器直接调用，异步才 await（修 NoneType await 错误风暴）
+                    await out
             except Exception as e:
                 logger.error(f"Error in event handler for agent {session.node_id}: {e}")
 
