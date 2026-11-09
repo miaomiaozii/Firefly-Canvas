@@ -25,7 +25,6 @@ await page.goto("$URL", {waitUntil: "domcontentloaded"});
 if (!page.url().includes('smart-canvas')) throw new Error('NAV_FAIL: ' + page.url());
 await page.waitForSelector('.agent-tui-card, [class*="agent-tui"]', {timeout: 30000}).catch(()=>{});
 await page.waitForTimeout(4000);
-const card = page.locator('.agent-tui-card').first();
 $js
 JS
 )
@@ -38,26 +37,27 @@ echo "== Firefly E2E QA @ $URL =="
 
 # S1 Agent 卡片连接成功（无“启动失败/Failed to start”；重启后卡片有退避重试，给 90s 收敛）
 run s1-agent-connected <<'JS'
-await page.waitForFunction(() => {
-  const t = document.body.innerText;
-  return !/启动失败|Failed to start agent/.test(t);
-}, null, {timeout: 90000}).catch(async () => {
-  const btn = await page.evaluateHandle(() => [...document.querySelectorAll('button')].find(x => /重试连接/.test(x.textContent)));
-  await btn.asElement()?.click();
-  await page.waitForFunction(() => !/启动失败|Failed to start agent/.test(document.body.innerText), null, {timeout: 60000});
-});
-const msgs = await page.evaluate(() => [...document.querySelectorAll('[class*="agent-tui"]')].length);
+// #288 教训升级：卡片文字残留(chat history 含旧“启动失败”)不作数——以服务端 healthz 为真相
+var st = await page.evaluate(async () => (await (await fetch('/api/healthz', {cache:'no-store'})).json()).agents.by_status);
+if (st.crashed) {
+  // crashed 态下卡片应提供“重试连接”；点击→等待→以 healthz 复核
+  await page.evaluate(() => { const b=[...document.querySelectorAll('button')].find(x=>/重试连接|启动|连接/.test(x.textContent)); b&&b.click(); });
+  await page.waitForTimeout(15000);
+  st = await page.evaluate(async () => (await (await fetch('/api/healthz', {cache:'no-store'})).json()).agents.by_status);
+}
+if (st.crashed) throw new Error('crashed 态点重试后仍 crashed（agent 无法复活）: ' + JSON.stringify(st));
+if (st.crashed) throw new Error('agent crashed: ' + JSON.stringify(st));
+var msgs = await page.evaluate(() => [...document.querySelectorAll('[class*="agent-tui"]')].length);
 if (msgs < 3) throw new Error('agent tui elements missing');
-return {status:'ok', evidence:'agent card clean'};
+return {status:'ok', evidence:'healthz ' + JSON.stringify(st)};
 JS
-
 # S2 模型池新鲜且不含 image/classifier（#285 + cache:no-store 回归）
 run s2-model-pool <<JS
-const pool = await page.evaluate(async pid => (await (await fetch('/api/projects/' + pid + '/agent-nodes/chat-models', {cache:'no-store'})).json()), "$PID");
-const sel = await page.evaluate(() => [...(document.querySelector('select.agent-tui-model-select')||{options:[]}).options].map(o=>o.value));
+var pool = await page.evaluate(async pid => (await (await fetch('/api/projects/' + pid + '/agent-nodes/chat-models', {cache:'no-store'})).json()), "$PID");
+var sel = await page.evaluate(() => [...(document.querySelector('select.agent-tui-model-select')||{options:[]}).options].map(o=>o.value));
 if (!sel.length) throw new Error('model select empty/absent');
 if (!pool.models || !pool.models.length) throw new Error('pool empty');
-const leaked = sel.filter(v => /image|classifier|embedding|ranker/i.test(v));
+var leaked = sel.filter(v => /image|classifier|embedding|ranker/i.test(v));
 if (leaked.length) throw new Error('non-chat models leaked: ' + leaked.join(','));
 if (sel.join('|') !== '|' + pool.models.map(m=>m.id).join('|')) throw new Error('select stale vs pool (cache bug)');
 return {status:'ok', evidence: pool.models.map(m=>m.id).slice(0,3).join('|')};
@@ -65,13 +65,13 @@ JS
 
 # S3 真实对话有回复（本地 vllm 优先；无则 llama-cpp-local）
 run s3-real-reply <<'JS'
-const card = page.locator('.agent-tui-card').first();
-const sel = card.locator('select.agent-tui-model-select');
-const opts = await sel.evaluate(sx => [...sx.options].map(o=>o.value));
-const pick = opts.find(v=>/vllm|llama-cpp|strata/.test(v));
+var card = page.locator('.agent-tui-card').first();
+var sel = card.locator('select.agent-tui-model-select');
+var opts = await sel.evaluate(sx => [...sx.options].map(o=>o.value));
+var pick = opts.find(v=>/vllm|llama-cpp|strata/.test(v));
 if (!pick) throw new Error('no local chat model in pool: '+opts.join(','));
 await sel.selectOption({value: pick});
-const input = card.locator('textarea.agent-tui-input');
+var input = card.locator('textarea.agent-tui-input');
 await input.fill('reply with exactly one word: OK');
 await input.press('Enter');
 await page.waitForFunction(() => {
@@ -83,15 +83,15 @@ JS
 
 # S4 上游错误可见化（#288）：仅当 bailian 存在时测；403/404/401 必须是“模型错误”气泡而非沉默
 run s4-error-visible <<JS
-const card = page.locator('.agent-tui-card').first();
-const sel = card.locator('select.agent-tui-model-select');
-const opts = await sel.evaluate(sx => [...sx.options].map(o=>o.value));
-const pick = opts.find(v=>/bailian/.test(v));
+var card = page.locator('.agent-tui-card').first();
+var sel = card.locator('select.agent-tui-model-select');
+var opts = await sel.evaluate(sx => [...sx.options].map(o=>o.value));
+var pick = opts.find(v=>/bailian/.test(v));
 if (!pick) return {status:'ok', evidence:'bailian absent, skip'};
 await sel.selectOption({value: pick});
 await page.waitForTimeout(2000);
-const before = await page.evaluate(() => document.querySelectorAll('[class*="agent-tui-msg"]').length);
-const input = card.locator('textarea.agent-tui-input');
+var before = await page.evaluate(() => document.querySelectorAll('[class*="agent-tui-msg"]').length);
+var input = card.locator('textarea.agent-tui-input');
 await input.fill('hi e2e');
 await input.press('Enter');
 try {
@@ -102,7 +102,7 @@ try {
            fresh.some(m => !/agent-tui-msg-user/.test(m.className||'') && (m.innerText||'').trim().length > 0);
   }, before, {timeout: 150000});
 } catch(e) { throw new Error('neither reply nor visible error bubble (沉默失败回归)'); }
-const bubble = await page.evaluate(() => { const m=[...document.querySelectorAll('[class*="agent-tui-msg"]')].slice(-1)[0]; return (m&&m.innerText||'').slice(0,120); });
+var bubble = await page.evaluate(() => { const m=[...document.querySelectorAll('[class*="agent-tui-msg"]')].slice(-1)[0]; return (m&&m.innerText||'').slice(0,120); });
 return {status:'ok', evidence: bubble};
 JS
 
