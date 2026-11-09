@@ -68,7 +68,10 @@ function Bump-AssetVersions {
     # 同一页所有静态资产共用一个 ?v=；选择性 bump（只 css/js）会把守卫刷红。
     $updated = [regex]::Replace($content, '((?:href|src)="/static/[^"]*\?v=)[^"]+', "`${1}$newVersion")
     if ($updated -ne $content) {
-        [System.IO.File]::WriteAllText($htmlPath, $updated, $utf8NoBom)
+        # 原子写：先写 temp 再覆盖——进程被杀时不会留下 0 字节 html（本仓实测两次被杀即归零）。
+        $tmp = "$htmlPath.tmp"
+        [System.IO.File]::WriteAllText($tmp, $updated, $utf8NoBom)
+        Move-Item -LiteralPath $tmp -Destination $htmlPath -Force
         Write-Host "[RESTART] Bumped smart-canvas css/js versions to $newVersion (browser cache invalidated)."
     } else {
         Write-Host "[WARN] smart-canvas.css/js ?v= parameters not found in smart-canvas.html."
