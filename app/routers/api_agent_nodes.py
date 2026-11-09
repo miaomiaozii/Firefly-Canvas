@@ -113,6 +113,42 @@ async def get_agent_status(
     }
 
 
+@router.get("/chat-models")
+async def list_chat_models(project_id: str):
+    """#285：只读列出 pi 的会话模型池（~/.pi/agent/models.json + settings.json）。
+
+    此前 Agent 模型下拉列的是 Firefly 图片生成模型（选中即会话无响应）。
+    返回 [{id: "provider/modelId", name, provider, model}] + current（settings 默认）。
+    绝不写 ~/.pi。FIREFLY_PI_AGENT_DIR 可覆盖目录（测试用）。
+    """
+    import pathlib
+    agent_dir = pathlib.Path(_os.environ.get("FIREFLY_PI_AGENT_DIR", "")) if _os.environ.get("FIREFLY_PI_AGENT_DIR") \
+        else pathlib.Path.home() / ".pi" / "agent"
+    models: List[Dict[str, str]] = []
+    current = ""
+    try:
+        data = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+        for provider_id, provider in (data.get("providers") or {}).items():
+            for item in (provider.get("models") or []):
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                models.append({
+                    "id": f"{provider_id}/{item['id']}",
+                    "name": item.get("name") or item["id"],
+                    "provider": provider_id,
+                    "model": item["id"],
+                })
+    except (OSError, ValueError):
+        models = []
+    try:
+        settings = json.loads((agent_dir / "settings.json").read_text(encoding="utf-8"))
+        if settings.get("defaultProvider") and settings.get("defaultModel"):
+            current = f"{settings['defaultProvider']}/{settings['defaultModel']}"
+    except (OSError, ValueError):
+        pass
+    return {"models": models, "current": current}
+
+
 @router.post("/{node_id}/model")
 async def set_agent_model(
     project_id: str,
@@ -126,10 +162,9 @@ async def set_agent_model(
     Always persists the model to the node's attributes.
     """
     model = body.get("model", "")
-    # Persist to node attributes
-    node = await _update_node_field(project_id, node_id, "model", model)
-
-    # If session is running, switch model via RPC
+    # #285：会话优先。WS spawn 的会话不在持久画布 nodes 里，此前
+    # _update_node_field 先执行且找不到节点直接 404（用户实测 "Node not found:
+    # agent_probe2"），后面的 set_model 永远执行不到——选模型“无效”的根因。
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if session.is_running:
         await agent_host_manager.set_model(session, model)
@@ -137,11 +172,21 @@ async def set_agent_model(
         # Update session model for next spawn
         session.model = model
 
+    # 持久化 best-effort：节点不在画布（纯会话）时不报错，只记 persisted=False。
+    persisted = True
+    try:
+        await _update_node_field(project_id, node_id, "model", model)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        persisted = False
+
     return {
         "success": True,
         "node_id": node_id,
         "model": model,
         "is_running": session.is_running,
+        "persisted": persisted,
     }
 
 
