@@ -109,6 +109,45 @@ def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Opt
         return ["cmd", "/c", *argv]
     return argv
 
+
+# #279：画布工具回连基址的默认端口（与 main.py uvicorn 默认监听端口一致）。
+DEFAULT_AGENT_API_PORT = "3000"
+DEFAULT_AGENT_API_BASE = f"http://127.0.0.1:{DEFAULT_AGENT_API_PORT}"
+
+
+def resolve_agent_api_base(env: Optional[Dict[str, str]] = None) -> str:
+    """计算注入 sidecar 的 FIREFLY_AGENT_API_BASE（#279）。
+
+    优先级：显式 FIREFLY_AGENT_API_BASE → FIREFLY_PORT 端口 → 默认 3000。
+    默认与 main.py 实际监听端口（uvicorn 3000）一致，消除旧兜底 8000
+    （sidecar 启动成功后所有画布工具调用会打到 8000 全失败）。
+    """
+    source = os.environ if env is None else env
+    explicit = source.get("FIREFLY_AGENT_API_BASE")
+    if explicit:
+        return explicit
+    port = (source.get("FIREFLY_PORT") or "").strip()
+    try:
+        port_number = int(port)
+    except ValueError:
+        port_number = 0
+    if 0 < port_number <= 65535:
+        return f"http://127.0.0.1:{port_number}"
+    return DEFAULT_AGENT_API_BASE
+
+
+def ensure_agent_api_base_env(env: Optional[Dict[str, str]] = None) -> str:
+    """确保 env（默认 os.environ）中有与监听端口一致的 FIREFLY_AGENT_API_BASE，返回最终值。
+
+    服务启动处（main.py）在拉起 sidecar 前调用，使 agent_host 注入的
+    回连基址跟随实际监听端口（#279）。
+    """
+    target = os.environ if env is None else env
+    base = resolve_agent_api_base(target)
+    if not target.get("FIREFLY_AGENT_API_BASE"):
+        target["FIREFLY_AGENT_API_BASE"] = base
+    return base
+
 # Default system prompt for canvas agents
 DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执行者，不是编排器——不要让用户填表/选任务。
 
@@ -282,7 +321,8 @@ class AgentHostManager:
 
             # Set environment for the canvas-tools extension
             env = os.environ.copy()
-            env["FIREFLY_AGENT_API_BASE"] = os.environ.get("FIREFLY_AGENT_API_BASE", "http://127.0.0.1:8000")
+            # #279：回连基址跟随实际监听端口（显式值 → FIREFLY_PORT → 默认 3000）
+            env["FIREFLY_AGENT_API_BASE"] = resolve_agent_api_base(env)
             env["FIREFLY_AGENT_PROJECT_ID"] = session.project_id
             env["FIREFLY_AGENT_NODE_ID"] = session.node_id
 

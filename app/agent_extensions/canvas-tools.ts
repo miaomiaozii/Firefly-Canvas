@@ -2,7 +2,9 @@ import type { ExtensionAPI } from "pi-stable";
 import { Type } from "typebox";
 
 // Base URL for FastAPI backend (injected via environment or config)
-const API_BASE = process.env.FIREFLY_AGENT_API_BASE || "http://127.0.0.1:8000";
+// #279：兜底与服务默认监听端口 3000 一致（见 main.py）；实际由 agent_host 注入
+// FIREFLY_AGENT_API_BASE 覆盖，不再出现 8000。
+const API_BASE = process.env.FIREFLY_AGENT_API_BASE || "http://127.0.0.1:3000";
 const PROJECT_ID = process.env.FIREFLY_AGENT_PROJECT_ID || "";
 const NODE_ID = process.env.FIREFLY_AGENT_NODE_ID || "";
 
