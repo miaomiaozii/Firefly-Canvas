@@ -3763,6 +3763,43 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #565f89;
 }
 
+/* #280：Agent 连接失败/重连横幅（此前 spawn 失败在画布上完全静默） */
+.agent-tui-error-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 6px 10px 0;
+    padding: 6px 8px;
+    border: 1px solid rgba(247, 118, 142, 0.35);
+    border-left: 3px solid #f7768e;
+    border-radius: 6px;
+    background: rgba(247, 118, 142, 0.08);
+    color: #f7768e;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.agent-tui-error-banner .agent-tui-error-banner-text {
+    flex: 1;
+}
+
+.agent-tui-error-banner .agent-tui-btn-retry {
+    flex: none;
+    width: auto;
+    height: auto;
+    padding: 2px 10px;
+    font-size: 11px;
+    background: #44475a;
+    color: #f7768e;
+    border: 1px solid rgba(247, 118, 142, 0.5);
+}
+
+.agent-tui-error-banner .agent-tui-btn-retry:hover:not(:disabled) {
+    background: #f7768e;
+    border-color: #f7768e;
+    color: #1a1b26;
+}
+
 .agent-tui-settings {
     display: flex;
     gap: 4px;

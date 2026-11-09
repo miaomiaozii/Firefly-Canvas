@@ -25,16 +25,88 @@ function getAgentTuiState(nodeId) {
             toolActivities: new Map(),
             thinkingVisible: false,
             pendingImages: [], // #268：待随下一条 prompt 发出的附件（图片/视频 contact sheet/音频波形卡 dataURL）
+            // #280：重连退避状态（指数退避 + 连续失败上限，见 connectAgentWebSocket）
+            retryCount: 0,           // 连续连接失败次数
+            reconnectTimer: null,    // 待执行的退避定时器（setTimeout 返回值）
+            reconnectStopped: false, // 触顶后停止自动重连，等待手动「重试连接」
+            lastError: '',           // 后端失败原因（error 事件 message），供横幅展示
+            closing: false,          // cleanupAgentTuiState 关闭前置位，onclose 据此不安排重连
         });
     }
     return agentTuiState.get(nodeId);
 }
 
-function connectAgentWebSocket(nodeId, projectId) {
+// #280：连续连接失败上限——达到后停止自动重连，节点保持失败态直到用户点「重试连接」。
+const AGENT_RECONNECT_MAX_ATTEMPTS = 8;
+
+// #280：重连指数退避（纯函数，tests/canvas_module_units/test-canvas-agent-tui.mjs 单测）。
+// failCount 为已发生的连接失败次数（>=1），返回值是下一次连接前的等待毫秒数：
+// 1s 起步、每次翻倍、上限 30s → 1, 2, 4, 8, 16, 30, 30, 30（第 8 次失败触顶直接停止，不再排程）。
+function agentReconnectDelayMs(failCount, baseMs = 1000, capMs = 30000) {
+    if (!Number.isFinite(failCount) || failCount < 1) return baseMs;
+    const exponent = Math.min(failCount - 1, 30);
+    return Math.min(capMs, baseMs * Math.pow(2, exponent));
+}
+
+// #280：安排一次退避重连（定时器到期直接尝试连接；失败后的下一次排程由 onclose 负责）。
+function scheduleAgentReconnect(state, nodeId, projectId) {
+    state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        openAgentWebSocket(nodeId, projectId);
+    }, agentReconnectDelayMs(state.retryCount));
+}
+
+// #280：一次连接失败（后端断开 / 构造函数抛错）的统一记账：
+// 累加连续失败次数；触顶停止等手动重试；否则按退避排下一次——
+// 后端已明确报告失败（lastError 非空，如 spawn 失败）时徽标保持「启动失败」，
+// 纯网络断开则显示「重连中」。然后重渲染。
+function recordAgentConnectFailure(state, nodeId, projectId) {
+    state.retryCount += 1;
+    if (state.retryCount >= AGENT_RECONNECT_MAX_ATTEMPTS) {
+        state.reconnectStopped = true;
+        state.status = 'reconnect_stopped';
+    } else {
+        state.status = state.lastError ? 'failed' : 'reconnecting';
+        scheduleAgentReconnect(state, nodeId, projectId);
+    }
+    renderAgentNode(nodeId);
+}
+
+function connectAgentWebSocket(nodeId, projectId, options = {}) {
     const state = getAgentTuiState(nodeId);
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    // CONNECTING(0)/OPEN(1) 都算「连接在途」：不再新建（重复建连正是重连风暴的根源之一）。
+    if (state.socket && Number(state.socket.readyState) <= 1) {
         return state.socket;
     }
+
+    // #280：重连策略。此前每次渲染重绑定都立即 new WebSocket，后端失败
+    // （握手成功但 spawn 炸掉→服务端立刻断开）会形成 关闭→重渲染→重连 的高频风暴。
+    // 现在：失败后按 agentReconnectDelayMs 退避排程；达到 AGENT_RECONNECT_MAX_ATTEMPTS
+    // 停止自动重连；force（手动「重试连接」）清退避状态并立即连接。
+    const force = Boolean(options && options.force);
+    if (force) {
+        if (state.reconnectTimer) {
+            clearTimeout(state.reconnectTimer);
+            state.reconnectTimer = null;
+        }
+        state.retryCount = 0;
+        state.reconnectStopped = false;
+    } else if (state.reconnectStopped || state.reconnectTimer) {
+        // 已触顶停止，或已有退避在途：不重复建连/排程（渲染重绑定也会走到这里）。
+        return null;
+    } else if (state.retryCount > 0) {
+        // 有失败记录且无在途定时器（防御路径，正常情况 onclose 已排好）。
+        state.status = state.lastError ? 'failed' : 'reconnecting';
+        scheduleAgentReconnect(state, nodeId, projectId);
+        renderAgentNode(nodeId);
+        return null;
+    }
+
+    return openAgentWebSocket(nodeId, projectId);
+}
+
+function openAgentWebSocket(nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
@@ -44,10 +116,18 @@ function connectAgentWebSocket(nodeId, projectId) {
         state.socket = new WebSocket(wsUrl);
     } catch (e) {
         console.error('Failed to connect agent WebSocket:', e);
+        // #280：构造函数失败也算一次连续失败（拿不到 close 事件，否则不会进入退避）。
+        recordAgentConnectFailure(state, nodeId, projectId);
         return null;
     }
+    const socket = state.socket;
 
-    state.socket.onmessage = (event) => {
+    // #280：本实例已被新连接（如手动「重试连接」）顶替时，忽略它迟到的事件——
+    // 否则旧实例的 close/error 会误触发一次退避排程、或把新连接的状态改回 error。
+    const isStale = () => Boolean(state.socket) && state.socket !== socket;
+
+    socket.onmessage = (event) => {
+        if (isStale()) return;
         try {
             const data = JSON.parse(event.data);
             handleAgentEvent(nodeId, data);
@@ -56,17 +136,25 @@ function connectAgentWebSocket(nodeId, projectId) {
         }
     };
 
-    state.socket.onclose = () => {
-        state.status = 'disconnected';
+    socket.onclose = () => {
+        if (isStale()) return;
         state.socket = null;
         finalizeAgentStreamingTurn(state);
-        // Re-render to show disconnected state
-        renderAgentNode(nodeId);
+        if (state.closing) {
+            // #280：节点删除/主动清理——只标记已断开，不安排重连。
+            state.status = 'disconnected';
+            return;
+        }
+        // #280：后端主动断开（含「握手成功但 spawn 失败被服务端切断」）算一次连续失败：
+        // 指数退避排下一次，触顶则停止等手动重试。
+        recordAgentConnectFailure(state, nodeId, projectId);
     };
 
-    state.socket.onerror = () => {
+    socket.onerror = () => {
+        if (isStale()) return;
         state.status = 'error';
         finalizeAgentStreamingTurn(state);
+        // 真实契约里 onerror 之后总会跟 onclose，退避排程由 onclose 统一负责，这里不重复。
     };
 
     state.status = 'connecting';
@@ -92,6 +180,14 @@ function handleAgentEvent(nodeId, event) {
     switch (eventType) {
         case 'session':
             state.status = 'idle';
+            // #280：后端确认会话就绪 = 连接成功，清退避状态（失败计数/触顶标志/失败原因）。
+            state.retryCount = 0;
+            state.reconnectStopped = false;
+            state.lastError = '';
+            if (state.reconnectTimer) {
+                clearTimeout(state.reconnectTimer);
+                state.reconnectTimer = null;
+            }
             break;
         case 'agent_start':
             state.status = 'busy';
@@ -205,6 +301,19 @@ function handleAgentEvent(nodeId, event) {
         case 'response':
             // Command response, ignore for now
             break;
+        case 'error': {
+            // #280：后端失败事件（stream 端点在 spawn 失败时发送 {"type":"error","message":...}）。
+            // 此前 default 分支静默吞掉，节点上完全看不到失败。现在渲染失败状态 + 原因
+            // （agentNodeBodyHtml 的横幅 + 卡片状态），并保留手动「重试连接」入口。
+            state.status = 'failed';
+            const errMsg = String(event.message || 'Agent 会话启动失败');
+            if (state.lastError !== errMsg) {
+                // 后端每次重连失败都会重发同一原因，历史区不重复堆叠相同警告。
+                state.lastError = errMsg;
+                state.messages.push({ role: 'system', text: `⚠️ ${errMsg}` });
+            }
+            break;
+        }
         default:
             break;
     }
@@ -233,11 +342,24 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
         }));
     } else {
         // WebSocket not connected, use HTTP API
+        // #280：送达失败不再静默吞掉（例如 500 "Failed to start agent session"）——
+        // 在历史区写一条可见警告，避免用户以为指令已送达。
         fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, images: imageList }),
-        }).catch(e => console.error('Failed to send agent prompt:', e));
+        }).then(async (resp) => {
+            if (resp.ok) return;
+            let detail = `HTTP ${resp.status}`;
+            try {
+                const data = await resp.json();
+                if (data && data.detail) detail = String(data.detail);
+            } catch (e) { /* 非 JSON 错误体 */ }
+            state.messages.push({ role: 'system', text: `⚠️ 指令未送达：${detail}` });
+        }).catch(e => {
+            console.error('Failed to send agent prompt:', e);
+            state.messages.push({ role: 'system', text: `⚠️ 指令未送达：${e && e.message || e}` });
+        });
     }
 
     renderAgentNode(nodeId);
@@ -513,6 +635,10 @@ const AGENT_STATUS_PRESENTATION = {
     error: { statusClass: 'agent-tui-status-error', statusText: '错误' },
     crashed: { statusClass: 'agent-tui-status-error', statusText: '已崩溃' },
     disconnected: { statusClass: 'agent-tui-status-disconnected', statusText: '已断开' },
+    // #280：连接失败三态（启动失败可见 + 退避中 + 触顶停止）
+    failed: { statusClass: 'agent-tui-status-error', statusText: '启动失败' },
+    reconnecting: { statusClass: 'agent-tui-status-disconnected', statusText: '重连中' },
+    reconnect_stopped: { statusClass: 'agent-tui-status-error', statusText: '重连停止' },
 };
 const AGENT_STATUS_IDLE = { statusClass: 'agent-tui-status-idle', statusText: '空闲' };
 
@@ -550,6 +676,27 @@ function agentCardStatusHtml(nodeId) {
     
     const previewHtml = lastLine ? `<span class="agent-card-preview">${escapeHtml(lastLine)}</span>` : '';
     return `<span class="agent-card-status ${statusClass}">${statusText}</span>${previewHtml}`;
+}
+
+// #280：失败/重连横幅——此前 spawn 失败在画布上完全静默（节点一直「空闲」）。
+// 失败三态（启动失败 / 重连中 / 重连停止）展示明确原因与可操作提示 + 手动「重试连接」。
+function agentReconnectBannerHtml(state) {
+    const status = state && state.status;
+    if (status !== 'failed' && status !== 'reconnecting' && status !== 'reconnect_stopped') return '';
+    const reason = state.lastError ? `（${escapeHtml(state.lastError)}）` : '';
+    let text;
+    if (status === 'failed') {
+        const retrying = state.retryCount > 0 && state.retryCount < AGENT_RECONNECT_MAX_ATTEMPTS
+            ? ` 正在自动重试：已连续失败 ${state.retryCount} 次，${Math.max(1, Math.round(agentReconnectDelayMs(state.retryCount) / 1000))} 秒后再次尝试。`
+            : '';
+        text = `Agent 启动失败${reason}。请检查智能体运行时是否安装，或设置 FIREFLY_PI_CLI 指向可用的 pi 可执行文件。${retrying}`;
+    } else if (status === 'reconnecting') {
+        const seconds = Math.max(1, Math.round(agentReconnectDelayMs(state.retryCount) / 1000));
+        text = `连接中断，${seconds} 秒后自动重连（已连续失败 ${state.retryCount} 次）${reason}…`;
+    } else {
+        text = `自动重连已停止（连续失败 ${AGENT_RECONNECT_MAX_ATTEMPTS} 次）${reason}。请检查智能体运行时安装或设置 FIREFLY_PI_CLI 后手动重试。`;
+    }
+    return `<div class="agent-tui-error-banner" role="alert"><span class="agent-tui-error-banner-text">${text}</span><button type="button" class="agent-tui-btn agent-tui-btn-retry" data-agent-retry="1">重试连接</button></div>`;
 }
 
 function agentNodeBodyHtml(node) {
@@ -687,6 +834,7 @@ function agentNodeBodyHtml(node) {
                 ${forkButtonHtml}
             </span>
         </div>
+        ${agentReconnectBannerHtml(state)}
         <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
                 ${thinkingHtml}
@@ -747,7 +895,21 @@ function bindAgentNodeControls(el, node){
     const projectId = canvasId || '';
 
     // Connect WebSocket when node is rendered
+    // #280：普通路径不再无条件建连——退避在途/已触顶停止时直接跳过（见 connectAgentWebSocket）。
     connectAgentWebSocket(nodeId, projectId);
+
+    // #280：手动重试——点「重试连接」清退避上限并强制立即重连（仅失败横幅里存在）。
+    const retryBtn = el.querySelector('[data-agent-retry]');
+    if (retryBtn) {
+        retryBtn.addEventListener('mousedown', event => event.stopPropagation());
+        retryBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            const rState = getAgentTuiState(nodeId);
+            if (rState) rState.lastError = '';
+            connectAgentWebSocket(nodeId, projectId, { force: true });
+            renderAgentNode(nodeId);
+        });
+    }
 
     // Bind tool activity row toggle (collapsible)
     const toolRows = el.querySelectorAll('[data-tool-call-id]');
@@ -999,6 +1161,12 @@ function bindAgentTaskNodeControls(el, node){
 function cleanupAgentTuiState(nodeId) {
     const state = agentTuiState.get(nodeId);
     if (state) {
+        // #280：先标记再关——onclose 见 closing 不会安排重连；并取消在途退避定时器。
+        state.closing = true;
+        if (state.reconnectTimer) {
+            clearTimeout(state.reconnectTimer);
+            state.reconnectTimer = null;
+        }
         if (state.socket) {
             try { state.socket.close(); } catch (e) {}
         }
