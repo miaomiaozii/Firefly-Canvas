@@ -219,5 +219,41 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class AgentCanvasToolsMediaUrlTests(unittest.TestCase):
+    """#284：canvas-tools.ts 工具返回值带「可服务绝对 URL」（源码契约；行为测试在
+    tests/canvas_module_units/test-agent-canvas-tools.mjs，由本目录 runner 纳管）。
+
+    背景：Agent 回复里的 MEDIA: 行此前是原始文本 `MEDIA:/media/generated_image_*.png`，
+    该 URL 404——真实挂载 StaticFiles /output 与 /assets（main.py:1180-1182），生成目录
+    OUTPUT_OUTPUT_DIR=ASSETS_DIR/output（main.py:1090）→ 可服务前缀 /assets/output/<file>。
+    """
+
+    @classmethod
+    def _source(cls) -> str:
+        return (ROOT / "app" / "agent_extensions" / "canvas-tools.ts").read_text(encoding="utf-8")
+
+    def test_normalize_helpers_present(self):
+        src = self._source()
+        self.assertIn("const MEDIA_NAME_RE = ", src)
+        self.assertIn("function normalizeMediaUrl(raw) {", src)
+        self.assertIn("function normalizeMediaPayload(value) {", src)
+        # 归一目标前缀：API_BASE + /assets/output/<file>（不是 /media/）。
+        self.assertIn("${API_BASE}/assets/output/${name}", src)
+
+    def test_media_generate_tools_apply_normalization(self):
+        src = self._source()
+        # 每个工具块 = 工具名 → 下一个 registerTool（或文件尾）。钉到真实工具，防止
+        # 只加了一个 normalize 调用而其它工具仍返回 404 路径。
+        for tool in ("generate.status", "generate.wait", "media.upload", "media.list", "canvas.view_media"):
+            start = src.index(f'name: "{tool}"')
+            end = src.find("pi.registerTool", start + 1)
+            block = src[start:end if end != -1 else len(src)]
+            self.assertIn(
+                "JSON.stringify(normalizeMediaPayload(data), null, 2)",
+                block,
+                f"{tool} 返回值未过 normalizeMediaPayload（#284 可服务绝对 URL 缺失）",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

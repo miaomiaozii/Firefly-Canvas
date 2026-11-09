@@ -119,7 +119,9 @@ async def list_chat_models(project_id: str):
 
     此前 Agent 模型下拉列的是 Firefly 图片生成模型（选中即会话无响应）。
     返回 [{id: "provider/modelId", name, provider, model}] + current（settings 默认）。
-    绝不写 ~/.pi。FIREFLY_PI_AGENT_DIR 可覆盖目录（测试用）。
+    只收会话（chat）模型：pi 模型 type 为 image/classifier 的一律剔除（type 缺省按 chat，
+    与 pi provider-composer 一致）——图片模型不得混入。绝不写 ~/.pi。
+    FIREFLY_PI_AGENT_DIR 可覆盖目录（测试用）。
     """
     import pathlib
     agent_dir = pathlib.Path(_os.environ.get("FIREFLY_PI_AGENT_DIR", "")) if _os.environ.get("FIREFLY_PI_AGENT_DIR") \
@@ -131,6 +133,12 @@ async def list_chat_models(project_id: str):
         for provider_id, provider in (data.get("providers") or {}).items():
             for item in (provider.get("models") or []):
                 if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                # #285：图片模型不得混入。pi 的模型 type 只有 "chat"/"image"/"classifier"
+                # （见 pi toModelType），且 type 缺省即按 chat 处理（provider-composer 的
+                # `entry.type ?? "chat"`）。会话模型池只收 chat：image（如 qwen-image-2.1-pro
+                # 图像端点）与 classifier 选中即会话无响应，一律剔除。
+                if (item.get("type") or "chat") != "chat":
                     continue
                 models.append({
                     "id": f"{provider_id}/{item['id']}",
