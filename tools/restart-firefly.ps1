@@ -64,8 +64,9 @@ function Bump-AssetVersions {
     # keep the HTML (and git) clean; vendor assets are untouched.
     $newVersion = (Get-Date -Format 'yyyyMMdd.HHmmss') + '.' + ((Get-Random -Maximum 9000) + 1000)
     # Use ${1} (not $1) so .NET does not swallow the version digits into the group ref.
-    $updated = [regex]::Replace($content, '(smart-canvas\.css\?v=)[^"]+', "`${1}$newVersion")
-    $updated = [regex]::Replace($updated, '(smart-canvas\.js\?v=)[^"]+', "`${1}$newVersion")
+    # #292 后遗症：必须整页统一 bump——守卫 test_canvas_assets_share_one_cache_buster 要求
+    # 同一页所有静态资产共用一个 ?v=；选择性 bump（只 css/js）会把守卫刷红。
+    $updated = [regex]::Replace($content, '((?:href|src)="/static/[^"]*\?v=)[^"]+', "`${1}$newVersion")
     if ($updated -ne $content) {
         [System.IO.File]::WriteAllText($htmlPath, $updated, $utf8NoBom)
         Write-Host "[RESTART] Bumped smart-canvas css/js versions to $newVersion (browser cache invalidated)."
