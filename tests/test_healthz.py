@@ -112,6 +112,7 @@ class HealthzTests(unittest.TestCase):
                 "model": "provider/model-x",
                 "autonomy": "standard",
                 "alive": False,
+                "last_error": "",  # #278：可操作错误可见（默认空）
             }
         ])
 

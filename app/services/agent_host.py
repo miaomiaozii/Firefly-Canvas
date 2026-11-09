@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -67,6 +68,47 @@ def normalize_result(status: str, error_kind: str = "") -> dict:
 # Pi CLI path
 PI_CLI = os.environ.get("FIREFLY_PI_CLI", "pi")
 
+# #278：pi 可执行解析——Windows 上 npm 安装只有 pi.cmd 包装器，CreateProcess
+# 不自动补 .cmd 后缀，直接 Popen(["pi", ...]) 会 WinError 2。
+# FIREFLY_PI_CLI 原值缺失时回落到 PI_CLI 默认名（which 可按 PATHEXT 找到 .cmd 包装器）。
+PI_CLI_FALLBACK_NAME = "pi"
+
+
+def resolve_pi_cli(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """解析 pi 可执行入口（找不到返回 None）。
+
+    优先级：FIREFLY_PI_CLI 原值（若存在）→ ``shutil.which(PI_CLI)``
+    （Windows 上能解析到 pi.cmd 包装器）→ None。
+    """
+    source = os.environ if env is None else env
+    explicit = source.get("FIREFLY_PI_CLI")
+    if explicit:
+        return explicit
+    return shutil.which(PI_CLI or PI_CLI_FALLBACK_NAME)
+
+
+def _is_batch_wrapper(path: str) -> bool:
+    """是否为 .cmd/.bat 批处理包装器（Windows npm 安装形态）。"""
+    name = os.path.basename(path).lower()
+    return name.endswith(".cmd") or name.endswith(".bat")
+
+
+def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Optional[List[str]]:
+    """构造 pi 启动 argv（解析失败返回 None）。
+
+    解析结果是 .cmd/.bat 包装器时用 ``cmd /c`` 前缀数组形式启动：直接
+    Popen 多参数 .cmd 依赖 CreateProcess 的隐式处理（不可靠），显式
+    cmd /c 安全且避免 shell=True 字符串拼接。包装器进程仍作为
+    session.process 顶层进程，_kill_process_tree 的 taskkill /T /F 覆盖
+    整棵进程树，不会产生 cmd.exe 僵尸。
+    """
+    if not resolved_cli:
+        return None
+    argv = [resolved_cli, *args]
+    if _is_batch_wrapper(resolved_cli):
+        return ["cmd", "/c", *argv]
+    return argv
+
 # Default system prompt for canvas agents
 DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执行者，不是编排器——不要让用户填表/选任务。
 
@@ -125,6 +167,8 @@ class AgentSession:
     _stopping: bool = False  # 手动 stop 进行中：reader finally 不得自动 respawn
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
     result: dict = field(default_factory=lambda: normalize_result(RESULT_DONE, ""))
+    # #278：最近一次可操作错误（如 pi 未找到），供会话状态可见（#280 使用）
+    last_error: str = ""
     _stderr_chunks: deque = field(default_factory=lambda: deque(maxlen=STDERR_MAX_CHUNKS), repr=False)
     _stderr_thread: Optional[threading.Thread] = None
 
@@ -193,17 +237,31 @@ class AgentHostManager:
             # Build system prompt with autonomy suffix
             system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
 
-            # Build command
-            cmd = [
-                PI_CLI, "--mode", "rpc",
-                "--no-extensions",
-                "-e", self._get_canvas_tools_path(),
-                "--no-builtin-tools",
-                "--tools", "canvas.*,generate.*,media.*,viewport.*",
-                "--session-dir", session_dir,
-                "--name", f"firefly-agent-{session.node_id[:8]}",
-                "--system-prompt", system_prompt,
-            ]
+            # Build command（#278：先解析可执行入口——Windows 上 pi 只有 pi.cmd
+            # 包装器，直接 Popen(["pi", ...]) 会 WinError 2；解析失败记可操作错误，不启动进程）
+            cmd = build_pi_launch_command(
+                resolve_pi_cli(),
+                [
+                    "--mode", "rpc",
+                    "--no-extensions",
+                    "-e", self._get_canvas_tools_path(),
+                    "--no-builtin-tools",
+                    "--tools", "canvas.*,generate.*,media.*,viewport.*",
+                    "--session-dir", session_dir,
+                    "--name", f"firefly-agent-{session.node_id[:8]}",
+                    "--system-prompt", system_prompt,
+                ],
+            )
+            if cmd is None:
+                error = (
+                    "未找到 pi 可执行文件：PATH 中没有 'pi'，且未设置 FIREFLY_PI_CLI。"
+                    "请先安装 pi（npm i -g @earendil-works/pi）或设置 FIREFLY_PI_CLI "
+                    "环境变量指向 pi 可执行文件"
+                )
+                logger.error(f"Failed to spawn agent session {session.node_id}: {error}")
+                session.status = "crashed"
+                session.last_error = error
+                return False
 
             # If continuing an existing session, add --continue flag
             # Auto-detect: if session_dir has existing session files, continue
@@ -230,6 +288,7 @@ class AgentHostManager:
 
             logger.info(f"Spawning pi subprocess for agent {session.node_id}: {' '.join(cmd[:6])}...")
 
+            session.last_error = ""
             session.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -272,6 +331,7 @@ class AgentHostManager:
         except Exception as e:
             logger.error(f"Failed to spawn agent session {session.node_id}: {e}")
             session.status = "crashed"
+            session.last_error = str(e) or e.__class__.__name__
             # #239: spawn 失败路径同样要树杀幸存进程，不留僵尸
             if session.process is not None and session.process.poll() is None:
                 await self._kill_process_tree(session, reason="spawn failure")
@@ -827,23 +887,7 @@ class AgentHostManager:
                     "model": session.model,
                     "autonomy": session.autonomy,
                     "alive": session.is_running,
-                }
-                for session in self.sessions.values()
-            ]
-    async def snapshot_sessions(self) -> List[dict]:
-        """Read-only projection of live agent session state for /api/healthz.
-
-        Never mutates session state; safe for concurrent health probes.
-        """
-        async with self._lock:
-            return [
-                {
-                    "project_id": session.project_id,
-                    "node_id": session.node_id,
-                    "status": session.status,
-                    "model": session.model,
-                    "autonomy": session.autonomy,
-                    "alive": session.is_running,
+                    "last_error": session.last_error,  # #278：可操作错误可见
                 }
                 for session in self.sessions.values()
             ]
