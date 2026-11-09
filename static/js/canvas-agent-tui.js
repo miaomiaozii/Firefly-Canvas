@@ -1309,7 +1309,9 @@ function applyAgentChatModelPool(payload){
     return agentChatModelPool.models;
 }
 function fetchAgentChatModels(projectId){
-    return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/chat-models`)
+    // cache:no-store —— 否则浏览器启发式缓存会回放旧池（实测：改 models.json+重启后
+    // 下拉仍是旧模型 ID，选不到新选项）。
+    return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/chat-models`, {cache: 'no-store'})
         .then(r => (r && r.ok ? r.json() : Promise.reject(new Error('chat-models HTTP ' + (r && r.status)))))
         .then(payload => applyAgentChatModelPool(payload));
 }
