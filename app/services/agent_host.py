@@ -925,12 +925,14 @@ class AgentHostManager:
             if idle > TURN_STALL_NOTIFY_SECONDS and not session._stall_notified:
                 session._stall_notified = True
                 logger.warning(f"Agent {session.node_id} turn stalled: no events for {idle:.0f}s while busy (#286)")
+                _tail = session.stderr_tail.strip()[-300:]
                 await self._dispatch_event(session, {
                     "type": "error",
                     "stall": True,
                     "message": (
                         f"模型已 {idle:.0f} 秒无响应（可能上游不可达或模型服务器未启动）。"
                         "请在模型下拉换一个模型重发；仍无响应可点重试连接。"
+                        + (f"\npi 诊断（stderr 尾部）：{_tail}" if _tail else "")
                     ),
                 })
             if idle <= IDLE_TIMEOUT_SECONDS:

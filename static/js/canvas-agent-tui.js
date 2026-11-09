@@ -227,6 +227,15 @@ function handleAgentEvent(nodeId, event) {
                 // 流式增量已经把文本写进历史，turn_end 再推一遇就是重复回复。
                 state.messages.push({ role: 'assistant', text });
             }
+            // #288：上游 4xx（百炼额度耗尽/模型 ID 不存在等）时 pi 回空 content+errorMessage，
+            // 此前前端只渲染 text → 用户看到的是“永久无响应”。错误必须可见、可操作。
+            if (msg.stopReason === 'error' || msg.errorMessage) {
+                const em = String(msg.errorMessage || '未知错误').slice(0, 300);
+                state.messages.push({ role: 'assistant', text:
+                    '⚠️ **模型错误（本轮无回复）**：' + em +
+                    '\n\n处置：模型下拉换一个再试；百炼报 quota → 控制台充值或关掉“仅用免费额度”；'
+                    + '报 model_not_found → 当前账号无此模型，改选其它项。' });
+            }
             break;
         }
         case 'message_update': {
