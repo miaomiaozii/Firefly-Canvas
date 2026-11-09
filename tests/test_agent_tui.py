@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from starlette.websockets import WebSocketDisconnect
 from firefly_projects import ProjectStore
 from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
 from tests.fake_agent_host import (
@@ -749,6 +750,57 @@ class TestMultiNodeIsolation(unittest.TestCase):
             self.assertIn("status", first)
             self.assertIn("model", first)
             self.assertIn("autonomy", first)
+
+
+class TestAgentStreamSpawnFailure(unittest.TestCase):
+    """#280：stream 端点 spawn 失败时必须向前端发 error 事件（失败可见的服务端契约）。
+
+    现场：后端 spawn 反复失败（[WinError 2]，pi CLI 缺失），日志 1 分钟内 255 次 accept；
+    前端此前把 error 事件在 default 分支静默吞掉，节点一直显示「空闲」且高频重连。
+    本测试钉住服务端半边：spawn 失败时 stream 必须发一条 {"type": "error",
+    "message": ...} 然后关闭连接，前端据此渲染「启动失败」并进入退避重连。
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-agent-stream-fail-tests-")
+        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
+        run_async(agent_host_manager.cleanup_all())
+        # 模拟 spawn 失败（WinError 2 同路径）：只 mock manager 方法，不改 agent_host.py。
+        self._patcher = patch.object(
+            agent_host_manager, "spawn_session",
+            AsyncMock(side_effect=lambda *a, **k: False),
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        run_async(agent_host_manager.cleanup_all())
+        self.client.close()
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp_dir.cleanup()
+
+    def test_stream_sends_error_event_then_closes_when_spawn_fails(self):
+        project = self.store.create_project("Stream Spawn Failure")
+        project_id = project["id"]
+        node_id = "node-spawn-fail"
+        run_async(agent_host_manager.get_or_create_session(project_id, node_id))
+
+        with self.client.websocket_connect(
+            f"ws://127.0.0.1/api/projects/{project_id}/agent-nodes/{node_id}/stream"
+        ) as ws:
+            msg = ws.receive_json()
+            self.assertEqual(
+                msg.get("type"), "error",
+                f"spawn 失败时首个事件必须是 error（前端据此呈现「启动失败」），实际：{msg}",
+            )
+            self.assertTrue(msg.get("message"), "error 事件必须带原因文案")
+            # error 事件之后服务端主动断开，前端 onclose 进入退避重连。
+            with self.assertRaises(WebSocketDisconnect):
+                ws.receive_json()
 
 
 class TestAgentConfirmation(unittest.TestCase):

@@ -45,8 +45,8 @@
 //   - steer/follow_up/abort 的 wsPayload 与系统消息、abort 把 status 复位 idle；
 //   - setAgentModel / setAgentAutonomy 的乐观更新（state + node 两处都要写）；
 //   - connectAgentWebSocket 回调面：onmessage 派发到真实 handleAgentEvent、畸形 JSON 走
-//     console.error 不外抛、onerror→error、onclose→disconnected+socket=null、构造器抛错
-//     →null、https location 切 wss；
+//     console.error 不外抛、onerror→error、onclose→socket 复位 null 并进入 #280 退避
+//     （重连中/启动失败/重连停止）、构造器抛错→null 且计入失败、https location 切 wss；
 //   - sendAgentSteer / sendAgentFollowUp 的 HTTP 回退（WS 未连：URL/body 精确；onSuccess 不
 //     执行——#221 缺口，断言钉现状）；
 //   - forkAgentSession / switchAgentBranch：成功写回 node.branches/current_branch 且清空
@@ -66,6 +66,11 @@
 //   - agentNodeBodyHtml 的 retrying/crashed 映射、HTML 转义、按钮 disabled 门、
 //     model/autonomy/branch select 的 selected 判定；
 //   - renderMarkdown 的 XSS 门：非 https/http/mailto///#/./ 协议必须降级为 '#'。
+//   - #280 重连退避与失败可见：agentReconnectDelayMs 纯退避序列（1s 起步翻倍、30s 封顶）、
+//     onclose/构造器失败计入连续失败、退避在途/触顶后重复 connect 拒绝建连、连续失败 8 次
+//     停止自动重连、force 重试清上限立即建连、后端 session 事件清退避态、后端 error 事件
+//     （此前 default 分支静默吞掉→节点一直显示空闲）置 failed 态+原因且不重复堆叠、
+//     失败横幅（agentNodeBodyHtml）与手动「重试连接」按钮；
 //
 // 明确判为「单测盖不住」的行为（不写假测试）：
 //   - WebSocket 真实服务端行为：握手/断线重连/服务端事件顺序（onmessage JSON.parse 异常
@@ -421,27 +426,213 @@ test('connectAgentWebSocket: onmessage 派发到真实 handleAgentEvent；畸形
         '解析失败走 console.error，不是未捕获异常');
 });
 
-test('connectAgentWebSocket: onerror → error；onclose → disconnected 且 socket 复位 null', () => {
-    const { ctx } = loadAgentTuiModule({ open: true });
+test('connectAgentWebSocket: onerror → error；onclose → socket 复位 null 并排 1s 退避重连（#280）', () => {
+    const { ctx, harness } = loadAgentTuiModule({ open: true });
+    const sockets = [];
+    const Base = ctx.WebSocket;
+    ctx.WebSocket = class extends Base { constructor(url) { super(url); sockets.push(this); } };
     const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
     socket.onerror();
     assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'error');
     socket.onclose();
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'disconnected');
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").socket')), null,
+    const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.equal(state.socket, null,
         '断开后 socket 必须复位 null，否则下次 connect 被陈旧实例挡住');
+    assert.equal(state.status, 'reconnecting', '后端没报原因时是纯断线：显示重连中');
+    assert.equal(state.retryCount, 1);
+    const pending = harness.timers.filter(t => !t.fired && !t.cancelled);
+    assert.equal(pending.length, 1, '断开必须排一个退避定时器（旧实现无退避→重连风暴）');
+    assert.equal(pending[0].ms, 1000, '首次失败 1s 起步');
+    harness.advanceTimers();
+    assert.equal(sockets.length, 2, '退避到期必须真的发起下一次连接');
 });
 
-test('connectAgentWebSocket: 构造器抛错 → 返回 null 且状态无残留', () => {
-    const { ctx, consoleErrors } = loadAgentTuiModule({ open: false });
+test('connectAgentWebSocket: 构造器抛错 → 返回 null、计入一次失败并排 1s 退避（#280）', () => {
+    const { ctx, harness, consoleErrors } = loadAgentTuiModule({ open: false });
     class Boom { constructor() { throw new Error('boom'); } }
     ctx.WebSocket = Boom;
     const r = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
     assert.equal(r, null);
     assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").socket')), null);
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
-        '构造失败路径不能置成 connecting');
+    const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    assert.equal(state.status, 'reconnecting', '构造失败拿不到 close 事件，也要进入退避（旧实现卡 idle 且重试无门）');
+    assert.equal(state.retryCount, 1);
+    const pending = harness.timers.filter(t => !t.fired && !t.cancelled);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 1000);
     assert.ok(consoleErrors.some(m => m.startsWith('Failed to connect agent WebSocket:')));
+});
+
+// ── #280：重连退避与失败可见（重连风暴 + 启动失败静默）────────────────
+test('agentReconnectDelayMs: 指数退避序列——1s 起步、翻倍、30s 封顶（#280）', () => {
+    const { ctx } = loadAgentTuiModule();
+    const delay = fn(ctx, 'agentReconnectDelayMs');
+    const seq = [1, 2, 3, 4, 5, 6, 7, 8, 9, 20].map(n => fromContext(delay(n)));
+    assert.deepEqual(seq, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000],
+        '1s 起步、每次翻倍、30s 封顶');
+    assert.equal(fromContext(delay(0)), 1000, '无效输入回退起步值');
+    assert.equal(fromContext(delay(NaN)), 1000);
+    assert.equal(fromContext(delay(3, 500, 10000)), 2000, '自定义 base/cap 生效');
+});
+
+test('#280 onclose 指数退避：1→2→4→8→16→30s 逐次翻倍，退避在途拒绝重复建连，session 事件清退避态', () => {
+    const { ctx, harness } = loadAgentTuiModule({ open: false });
+    const state = () => fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    const sockets = [];
+    const Base = ctx.WebSocket;
+    ctx.WebSocket = class extends Base { constructor(url) { super(url); sockets.push(this); } };
+
+    fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    assert.equal(sockets.length, 1);
+    for (let attempt = 2; attempt <= 7; attempt++) {
+        sockets.at(-1).onclose();                       // 第 attempt-1 条连接失败
+        const st = state();
+        assert.equal(st.retryCount, attempt - 1);
+        assert.equal(st.status, 'reconnecting');
+        const pending = harness.timers.filter(t => !t.fired && !t.cancelled);
+        assert.equal(pending.length, 1, '同一时刻只能有一个退避定时器');
+        assert.equal(pending[0].ms, [1000, 2000, 4000, 8000, 16000, 30000][attempt - 2],
+            `连续失败 ${attempt - 1} 次的退避时长`);
+        // 旧重连风暴的根源：失败后的每次渲染重绑定都立即 new WebSocket——现在必须拒绝。
+        assert.equal(fn(ctx, 'connectAgentWebSocket')('n1', 'p1'), null, '退避在途不重复建连');
+        harness.advanceTimers();
+        assert.equal(sockets.length, attempt, '退避到期必须真的发起下一次连接');
+    }
+    // 重连成功（后端 session 事件）：清退避态。
+    sockets.at(-1).onmessage({ data: JSON.stringify({ type: 'session' }) });
+    const after = state();
+    assert.equal(after.status, 'idle');
+    assert.equal(after.retryCount, 0);
+    assert.equal(after.reconnectTimer, null);
+    assert.equal(harness.timers.filter(t => !t.fired && !t.cancelled).length, 0);
+});
+
+test('#280 连续失败 8 次触顶：停止自动重连，force 重试清上限并立即连接', () => {
+    const { ctx, harness } = loadAgentTuiModule({ open: false });
+    const state = () => fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    const sockets = [];
+    const Base = ctx.WebSocket;
+    ctx.WebSocket = class extends Base { constructor(url) { super(url); sockets.push(this); } };
+
+    fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    for (let i = 1; i <= 8; i++) {
+        sockets.at(-1).onclose();
+        const st = state();
+        assert.equal(st.retryCount, i);
+        if (i < 8) {
+            assert.equal(st.status, 'reconnecting');
+            assert.notEqual(st.reconnectTimer, null, `第 ${i} 次失败应排退避`);
+            harness.advanceTimers();
+            assert.equal(sockets.length, i + 1);
+        }
+    }
+    const st = state();
+    assert.equal(st.status, 'reconnect_stopped', '触顶显示「重连停止」，不再假装在连');
+    assert.equal(st.reconnectStopped, true);
+    assert.equal(st.reconnectTimer, null, '触顶后不得再有在途定时器');
+    assert.equal(harness.timers.filter(t => !t.fired && !t.cancelled).length, 0);
+    assert.equal(fn(ctx, 'connectAgentWebSocket')('n1', 'p1'), null, '触顶后普通路径不再建连');
+
+    // 手动「重试连接」（force）：清上限、立即建连。
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1', { force: true });
+    assert.ok(socket, 'force 必须立即建连，不等退避');
+    assert.equal(sockets.length, 9);
+    assert.equal(state().retryCount, 0);
+    assert.equal(state().reconnectStopped, false);
+});
+
+test('#280 后端 error 事件（spawn 失败）→「启动失败」态+原因，重发不堆叠，close 后保持失败态', () => {
+    const { ctx, harness } = loadAgentTuiModule({ open: false });
+    const state = () => fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
+    // 真实后端行为（app/routers/api_agent_nodes.py agent_event_stream）：
+    // 握手成功后 spawn 失败，发 {"type":"error","message":...} 然后立刻断开。
+    socket.onmessage({ data: JSON.stringify({ type: 'error', message: 'Failed to start agent session' }) });
+    let st = state();
+    assert.equal(st.status, 'failed', '失败必须可见（此前 default 分支静默吞掉，节点一直显示空闲）');
+    assert.equal(st.lastError, 'Failed to start agent session');
+    assert.deepEqual(st.messages, [{ role: 'system', text: '⚠️ Failed to start agent session' }]);
+    // 每次重连失败后端都会重发同一原因——历史区不得重复堆叠。
+    socket.onmessage({ data: JSON.stringify({ type: 'error', message: 'Failed to start agent session' }) });
+    assert.equal(state().messages.length, 1, '同一失败原因不重复堆叠');
+    // 服务端断开：徽标保持「启动失败」（不被「重连中」盖掉），后台 1s 退避重试。
+    socket.onclose();
+    st = state();
+    assert.equal(st.status, 'failed');
+    assert.equal(st.retryCount, 1);
+    const pending = harness.timers.filter(t => !t.fired && !t.cancelled);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 1000);
+});
+
+test('#280 失败横幅：failed/reconnect_stopped 渲染原因+可操作提示+「重试连接」，正常态无横幅', () => {
+    const { ctx } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    assert.ok(!fromContext(body({ id: 'n1', type: 'agent' })).includes('agent-tui-error-banner'),
+        '正常态不能出现失败横幅');
+
+    evaluate(ctx, `(() => {
+        const s = getAgentTuiState("n1");
+        s.status = "failed";
+        s.lastError = "Failed to start agent session";
+        s.retryCount = 3;
+    })()`);
+    let html = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(html.includes('agent-tui-error-banner'), html);
+    assert.ok(html.includes('启动失败'), '徽标文案「启动失败」');
+    assert.ok(html.includes('Failed to start agent session'), '展示后端原因');
+    assert.ok(html.includes('FIREFLY_PI_CLI'), '可操作提示');
+    assert.ok(html.includes('重试连接'), '手动重试入口');
+    assert.ok(html.includes('已连续失败 3 次'), '退避进度可见');
+
+    evaluate(ctx, `(() => {
+        const s = getAgentTuiState("n1");
+        s.status = "reconnect_stopped";
+        s.retryCount = 8;
+    })()`);
+    html = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(html.includes('自动重连已停止'), html);
+    assert.ok(html.includes('重试连接'), html);
+});
+
+test('#280 卡片状态映射：failed→启动失败 / reconnecting→重连中 / reconnect_stopped→重连停止', () => {
+    const { ctx } = loadAgentTuiModule();
+    const card = fn(ctx, 'agentCardStatusHtml');
+    for (const [status, cls, text] of [
+        ['failed', 'agent-tui-status-error', '启动失败'],
+        ['reconnecting', 'agent-tui-status-disconnected', '重连中'],
+        ['reconnect_stopped', 'agent-tui-status-error', '重连停止'],
+    ]) {
+        evaluate(ctx, `getAgentTuiState("n-${status}").status = ${JSON.stringify(status)}`);
+        const html = fromContext(card(`n-${status}`));
+        assert.ok(html.includes(`class="agent-card-status ${cls}"`), html);
+        assert.ok(html.includes(`>${text}<`), html);
+    }
+});
+
+test('#280 点「重试连接」→ force 重连（清上限）并重渲染；触顶后重绑定不建连', () => {
+    const { ctx, harness } = loadAgentTuiModule({ open: false, nodes: [{ id: 'n1', type: 'agent' }] });
+    const el = harness.makeElement('div');
+    const retryBtn = harness.makeElement('button');
+    const renders = [];
+    ctx.renderAgentNode = nodeId => renders.push(nodeId);
+    el.querySelector = (sel) => (sel === '[data-agent-retry]' ? retryBtn : null);
+    // 触顶态：普通路径不会建连，只有点按钮才会。
+    evaluate(ctx, `(() => {
+        const s = getAgentTuiState("n1");
+        s.reconnectStopped = true;
+        s.retryCount = 8;
+        s.lastError = "Failed to start agent session";
+    })()`);
+    const sockets = [];
+    const Base = ctx.WebSocket;
+    ctx.WebSocket = class extends Base { constructor(url) { super(url); sockets.push(this); } };
+    fn(ctx, 'bindAgentNodeControls')(el, { id: 'n1', type: 'agent' });
+    assert.equal(sockets.length, 0, '触顶后重绑定不得建连（防风暴）');
+    retryBtn.dispatchEvent(ev('click'));
+    assert.equal(sockets.length, 1, '点「重试连接」必须立即建连');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").retryCount')), 0, '手动重试清退避上限');
+    assert.deepEqual(renders, ['n1'], '重连后要重渲染');
 });
 
 test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭走 HTTP POST，两条路径都推 user 消息并置 busy', () => {
