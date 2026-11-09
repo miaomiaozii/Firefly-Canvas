@@ -1,0 +1,1 @@
+| 2026-10-29 | v1.13.3 | D:\ff-builds\Firefly-Canvas-Portable-v1.13.3.zip | 157MB | main@1aa7017 (含 #280-#287 修复) | verify_portable: ALL PASS（自含解释器3.12.10/干净初始态/无密钥泄漏/页面+providers+model_specs+settings+healthz 全200/MOSS真实出图3.1MB/ffmpeg） |
