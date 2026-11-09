@@ -471,7 +471,6 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    // Generate tools
     pi.registerTool({
         name: "canvas.edit_erase",
         description:
@@ -487,11 +486,40 @@ export default function (pi: ExtensionAPI) {
             prompt: Type.String({ description: "Describe what to erase and how to fill the region" }),
         }),
         async execute(toolCallId, params) {
-            // TODO(#290): confirm gate + POST /canvas/edit_erase（镜像 canvas.edit_outpaint）
-            throw new Error('canvas.edit_erase is not implemented yet (issue #290)');
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_erase",
+                    params: {
+                        node_id: params.node_id,
+                        rect: params.rect,
+                        prompt: params.prompt,
+                    },
+                    message: `擦除节点 ${params.node_id} 选区（${params.rect?.x},${params.rect?.y} ${params.rect?.width}x${params.rect?.height}，"${params.prompt}"）并覆写节点图？将消耗一次外部模型调用（qwen-image-edit），原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase`, "POST", {
+                node_id: params.node_id,
+                rect: params.rect,
+                prompt: params.prompt,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
         },
     });
 
+    // Generate tools
     pi.registerTool({
         name: "generate.trigger",
         description: "Trigger generation on a node, returns task ID",

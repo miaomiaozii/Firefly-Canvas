@@ -1149,12 +1149,78 @@ async def outpaint_node_image_core(project_id: str, node_id, outpaint_size, offs
 
 
 async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
-    """#290 canvas.edit_erase core：节点图选区裁剪 → local-edit adapter → 合成回节点图。
+    """#290 canvas.edit_erase core：节点图选区裁剪 → 生产 local-edit adapter → 合成回节点图。
 
-    TODO(#290): 实现（镜像 outpaint_node_image_core 结构 + create_project_local_edit 的模型链：
-    validate_rect → crop_rect → _app_main.local_edit_adapter(request) → composite_rect）。
+    与站内局部编辑同一模型链（create_project_local_edit 的 modify 分支，
+    app/routers/api_project_library.py:3546）：validate_rect → crop_rect → 裁剪区 PNG 作为
+    request['image'] 交给 _app_main.local_edit_adapter（#290 起默认接
+    _bailian_local_edit_adapter，qwen-image-edit-max-2026-01-16）→ 模型只收到裁剪图 + prompt，
+    绝不发送 mask（ADR 0007）→ composite_rect 把模型结果贴回原图像素坐标 → 覆写节点图。
+
+    写操作：MCP 面施加 #242 确认门（CONFIRMATION_GATED_TOOLS）；错误文案带下一步建议（票面规范）。
     """
-    raise HTTPException(status_code=501, detail='canvas.edit_erase 尚未实现（issue #290）。整节点删除请用 canvas.delete_node。')
+    import inspect
+
+    from local_edit import as_rgba, composite_rect, crop_rect, encode_png, validate_rect
+
+    prompt = str(prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt 必填（描述要擦除什么、如何填补，如 erase the red cup）；先调用 canvas.view 查看节点图像内容，再补充 prompt 重试。整节点删除请用 canvas.delete_node。")
+    node_id = str(node_id or "")
+    node = _find_node_for_view(project_id, node_id)
+    if not isinstance(rect, dict):
+        raise HTTPException(status_code=400, detail="rect 必须是 {x, y, width, height}（原图像素坐标）；先调用 canvas.get_node 查看节点媒体。")
+    try:
+        x = float(rect.get("x") or 0)
+        y = float(rect.get("y") or 0)
+        w = float(rect.get("width") or 0)
+        h = float(rect.get("height") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="rect 参数必须是数字；请检查 x/y/width/height 后重试。") from None
+    if w <= 0 or h <= 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail=f"rect 宽/高必须为正、原点必须为非负（本次 ({x},{y}) {w}x{h}）；先调用 canvas.get_node 查看节点媒体尺寸后重试。")
+    picked = _node_image_for_edit(node, node_id)
+    source = await _load_node_image(project_id, node_id, picked)
+    try:
+        crop_box = validate_rect([x, y, x + w, y + h], source.size)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"选区越界（图像 {source.width}x{source.height}，选区 ({x},{y}) {w}x{h}）；先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 后重试。") from None
+    model_input = await asyncio.to_thread(encode_png, crop_rect(source, crop_box))
+    adapter = _app_main.local_edit_adapter
+    if adapter is None:
+        raise HTTPException(status_code=500, detail="local_edit_adapter 未初始化；请检查服务启动配置后重试。")
+    request_data = {
+        'project_id': project_id,
+        'mode': 'modify',
+        'image': model_input,
+        'references': [],
+        'prompt': prompt,
+        'selection': list(crop_box),
+        'aspect_ratio': None,
+        'size': f'{int(crop_box[2] - crop_box[0])}x{int(crop_box[3] - crop_box[1])}',
+        'resolution': None,
+        'source_size': [source.width, source.height],
+    }
+    try:
+        if inspect.iscoroutinefunction(adapter):
+            adapter_result = await adapter(request_data)
+        else:
+            adapter_result = await asyncio.to_thread(adapter, request_data)
+            if inspect.isawaitable(adapter_result):
+                adapter_result = await adapter_result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"局部编辑模型调用失败：{exc}；请检查 bailian 凭据/网络后重试（原图未改动）。") from exc
+    model_image = await asyncio.to_thread(as_rgba, adapter_result)
+    result_image = await asyncio.to_thread(composite_rect, source, model_image, crop_box, 0)
+    filename = f"edit-erase-{int(time.time() * 1000)}.png"
+    result = await _replace_node_image(project_id, node, node_id, picked, result_image, filename)
+    result["rect"] = [x, y, w, h]
+    result["selection"] = list(crop_box)
+    result["next_step"] = ("选区已按 prompt 重绘并贴回节点图（原资源保留在资源库，可恢复）；"
+                           "调用 canvas.view 查看擦除结果，不满意可调整 prompt 或重新选区再调用 canvas.edit_erase。")
+    return result
 
 
 @router.post("/edit_erase")
