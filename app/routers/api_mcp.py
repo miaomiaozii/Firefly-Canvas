@@ -49,6 +49,7 @@ from app.routers.api_agent_tools import (
     crop_node_image_core,
     rotate_node_image_core,
     flip_node_image_core,
+    outpaint_node_image_core,
     batch_edit_core,
     delete_edge,
     delete_media,
@@ -87,7 +88,7 @@ CONFIRM_TIMEOUT_SECONDS = 60.0
 PERSIST_INTERVAL_S = 3.0
 
 #: Destructive MCP tools that must pass the materialized confirmation gate.
-CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete", "canvas.edit_crop", "canvas.edit_rotate", "canvas.edit_flip"})
+CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete", "canvas.edit_crop", "canvas.edit_rotate", "canvas.edit_flip", "canvas.edit_outpaint"})
 
 #: #266 慢操作独立超时契约（ComfyArt SLOW_S=90s 模式）：慢视图工具与
 #: generate.wait 的 600s 契约分开，单独 90s 超时；超时返回 isError 带下一步建议。
@@ -320,6 +321,7 @@ TOOLS = [
     # #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 是既有能力，flip 同族本地变换）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_rotate", "description": "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "angle": {"type": "integer", "enum": [90, 180, 270], "description": "逆时针旋转角度，90/180/270 之一"}}, "required": ["node_id", "angle"], "additionalProperties": False}},
     {"name": "canvas.edit_flip", "description": "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "direction": {"type": "string", "enum": ["horizontal", "vertical"], "description": "horizontal=左右镜像，vertical=上下镜像"}}, "required": ["node_id", "direction"], "additionalProperties": False}},
+    {"name": "canvas.edit_outpaint", "description": "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "outpaint_size": {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}, "required": ["width", "height"], "additionalProperties": False, "description": "目标画布尺寸（像素；须大于原图像素）"}, "offset": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "additionalProperties": False, "description": "原图在新画布中的位置（像素，默认 0,0 左上角）"}}, "required": ["node_id", "outpaint_size"], "additionalProperties": False}},
     {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120"}}, "required": ["task_id"]}},
@@ -460,6 +462,16 @@ async def _impl_edit_flip(project_id, agent_node_id, args):
         raise ValueError(str(exc.detail)) from exc
 
 
+async def _impl_edit_outpaint(project_id, agent_node_id, args):
+    # #289：#242 确认门语义：写操作（覆写节点图）必须过画布确认门（gate 先行，同 _impl_edit_crop 顺序）
+    node_id = str(args.get("node_id") or "")
+    await _confirm_gate(project_id, agent_node_id, "canvas.edit_outpaint", args, f"红底扩图节点 {node_id}：扩大画布（#ff0044 填充外区）并覆写节点图（原资源保留在资源库）")
+    try:
+        return await outpaint_node_image_core(project_id, node_id, args.get("outpaint_size"), args.get("offset"))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
 TOOL_IMPLS = {
     "canvas.list_nodes": _impl_list_nodes,
     "canvas.get_node": _impl_get_node,
@@ -482,6 +494,7 @@ TOOL_IMPLS = {
     "canvas.edit_crop": _impl_edit_crop,
     "canvas.edit_rotate": _impl_edit_rotate,
     "canvas.edit_flip": _impl_edit_flip,
+    "canvas.edit_outpaint": _impl_edit_outpaint,
     "canvas.batch_edit": _impl_batch_edit,
 }
 
