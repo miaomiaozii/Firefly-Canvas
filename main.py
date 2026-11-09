@@ -1074,8 +1074,6 @@ agent_image_adapter = None
 agent_video_adapter = None
 
 local_edit_adapter = project_local_edit_online_adapter
-# #290: bailian 凭据存在 → 生产 local-edit adapter；否则保留离线 fake（wire 不抛错）
-wire_local_edit_adapter(sys.modules[__name__])
 
 FLY_MAX_PACKAGE_BYTES = 20 * 1024 * 1024 * 1024
 
@@ -1132,6 +1130,9 @@ apply_storage_settings()
 ensure_runtime_config_files()
 
 load_env_file()
+
+# #290: bailian 凭据存在 → 生产 local-edit adapter；否则保留离线 fake（须晚于 API_ENV_FILE 定义与 load_env_file）
+wire_local_edit_adapter(sys.modules[__name__])
 
 FIREFLY_PROJECT_STORE = ProjectStore()
 

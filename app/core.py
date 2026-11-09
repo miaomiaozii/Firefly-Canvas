@@ -365,10 +365,15 @@ def wire_local_edit_adapter(app_main: Any) -> bool:
     """#290 bailian 凭据存在时把生产 local-edit adapter 挂到 app_main.local_edit_adapter。
 
     返回 True = 已替换（生产 adapter）；False = 保留离线 fake（无凭据，测试/离线环境）。
+    凭据判定失败（如 main 尚未完成初始化）时退回进程环境变量，绝不让启动崩溃。
     """
-    from app.services.providers import provider_env_key_value
+    try:
+        from app.services.providers import provider_env_key_value
 
-    if not (provider_env_key_value(BAILIAN_PROVIDER_ID) or '').strip():
+        credential = (provider_env_key_value(BAILIAN_PROVIDER_ID) or '').strip()
+    except Exception:  # noqa: BLE001 — main 半初始化（API_ENV_FILE 未就绪）
+        credential = (os.environ.get('API_PROVIDER_BAILIAN_KEY', '') or '').strip()
+    if not credential:
         return False
     app_main.local_edit_adapter = _bailian_local_edit_adapter
     return True
