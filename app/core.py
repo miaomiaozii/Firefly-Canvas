@@ -343,6 +343,36 @@ def _offline_local_edit_adapter(request: Dict[str, Any]) -> bytes:
     image.putpixel((0, 0), ((r + 1) % 256, g, b, a))
     return encode_png(image)
 
+#: #290 production local-edit adapter：bailian（阿里云百炼 / dashscope 系）qwen 编辑模型。
+BAILIAN_PROVIDER_ID = 'bailian'
+BAILIAN_LOCAL_EDIT_MODEL = 'qwen-image-edit-max-2026-01-16'
+BAILIAN_LOCAL_EDIT_TIMEOUT_S = 180
+
+
+def _bailian_local_edit_adapter(request: Dict[str, Any]) -> bytes:
+    """#290 production local-edit adapter（同步）：qwen-image-edit-max-2026-01-16。
+
+    ADR 0007：REST 链已在调用本 adapter 前裁好选区（request['image'] = 裁剪区 PNG 字节），
+    模型只收到裁剪图 + prompt，绝不发送 mask。
+    """
+    # TODO(#290): 用 api_headers(provider, model) POST 到 provider 的
+    # image_generation_endpoint（body: model/prompt/size/response_format=b64_json/n/image=[data-url]），
+    # images_api_unsupported 时回退 /images/edits multipart；extract_image 取 b64/url → bytes。
+    raise NotImplementedError('canvas.edit_erase production adapter not implemented yet (issue #290)')
+
+
+def wire_local_edit_adapter(app_main: Any) -> bool:
+    """#290 bailian 凭据存在时把生产 local-edit adapter 挂到 app_main.local_edit_adapter。
+
+    返回 True = 已替换（生产 adapter）；False = 保留离线 fake（无凭据，测试/离线环境）。
+    """
+    from app.services.providers import provider_env_key_value
+
+    if not (provider_env_key_value(BAILIAN_PROVIDER_ID) or '').strip():
+        return False
+    app_main.local_edit_adapter = _bailian_local_edit_adapter
+    return True
+
 def _conversation_pending_task_keys_from_canvas(project_id: str, canvas: Optional[Dict[str, Any]]) -> set[Tuple[str, str, str]]:
     keys: set[Tuple[str, str, str]] = set()
     if not isinstance(canvas, dict):

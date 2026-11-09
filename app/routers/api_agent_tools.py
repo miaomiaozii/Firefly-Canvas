@@ -1146,3 +1146,19 @@ async def outpaint_node_image_core(project_id: str, node_id, outpaint_size, offs
                           "（提示词含红底扩图语义，如 keep the existing image, extend the scene beyond the red border）；"
                           "画布尺寸信息见本结果 outpaint_size / node.outpaintSize")
     return result
+
+
+async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
+    """#290 canvas.edit_erase core：节点图选区裁剪 → local-edit adapter → 合成回节点图。
+
+    TODO(#290): 实现（镜像 outpaint_node_image_core 结构 + create_project_local_edit 的模型链：
+    validate_rect → crop_rect → _app_main.local_edit_adapter(request) → composite_rect）。
+    """
+    raise HTTPException(status_code=501, detail='canvas.edit_erase 尚未实现（issue #290）。整节点删除请用 canvas.delete_node。')
+
+
+@router.post("/edit_erase")
+async def canvas_edit_erase(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#290 canvas.edit_erase: 按 prompt 擦除节点图选区内容（写操作；调用方先施加确认门）。"""
+    body = await request.json()
+    return await erase_node_image_core(project_id, body.get("node_id"), body.get("rect"), body.get("prompt"))

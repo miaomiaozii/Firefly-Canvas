@@ -473,6 +473,26 @@ export default function (pi: ExtensionAPI) {
 
     // Generate tools
     pi.registerTool({
+        name: "canvas.edit_erase",
+        description:
+            "Erase content inside a node-image selection (rect x/y/width/height in original image pixels) per prompt: the rect is cropped, sent to the bailian local-edit model (qwen-image-edit-max-2026-01-16), and the result is composited back into the node image (consumes one external model call; no mask is sent to any model — ADR 0007; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            rect: Type.Object({
+                x: Type.Number({ description: "Selection left edge in original image pixels" }),
+                y: Type.Number({ description: "Selection top edge in original image pixels" }),
+                width: Type.Number({ description: "Selection width in original image pixels" }),
+                height: Type.Number({ description: "Selection height in original image pixels" }),
+            }, { description: "Selection in original image pixels (x/y top-left corner + width/height)" }),
+            prompt: Type.String({ description: "Describe what to erase and how to fill the region" }),
+        }),
+        async execute(toolCallId, params) {
+            // TODO(#290): confirm gate + POST /canvas/edit_erase（镜像 canvas.edit_outpaint）
+            throw new Error('canvas.edit_erase is not implemented yet (issue #290)');
+        },
+    });
+
+    pi.registerTool({
         name: "generate.trigger",
         description: "Trigger generation on a node, returns task ID",
         parameters: Type.Object({
