@@ -646,6 +646,54 @@ function agentStatusPresentation(state) {
     return AGENT_STATUS_PRESENTATION[state && state.status] || AGENT_STATUS_IDLE;
 }
 
+// #284：Agent 回复里的 MEDIA: 行渲染为图片缩略。
+// 此前显示原始文本「MEDIA:/media/generated_image_*.png」且该 URL 404：
+// StaticFiles 实际挂载 /output 与 /assets（main.py:1180-1182），生成目录
+// OUTPUT_OUTPUT_DIR=ASSETS_DIR/output（main.py:1090）→ 可服务前缀 /assets/output/。
+function normalizeAgentMediaUrl(raw){
+    const file = String(raw || '').trim();
+    if (!file) return '';
+    if (/^(https?:|\/assets\/output\/|\/output\/)/i.test(file)) return file;
+    if (/^\/media\//i.test(file)) return '/assets/output/' + file.replace(/^\/media\//i, '');
+    if (/\//.test(file)) {
+        // 其他绝对/相对路径：落在 output 根下的取文件名，其余原样（交给 onerror 隐藏）
+        const name = file.split(/[\\/]/).filter(Boolean).pop();
+        return /^generated_image|^generated_video|^generated_audio|^frame_|^thumbnail_/.test(name)
+            ? '/assets/output/' + name : file;
+    }
+    return '/assets/output/' + file;
+}
+
+function splitAgentMediaLines(text){
+    // 返回 [{text, media:[urls...]}]：MEDIA: 前缀行从文本流中拆出（同一行多个空格分隔 URL 也可）。
+    const segments = [];
+    for (const line of String(text || '').split('\n')) {
+        const match = /^\s*MEDIA:\s*(\S.*)$/.exec(line);
+        if (match) {
+            segments.push({ text: '', media: match[1].split(/\s+/).filter(Boolean) });
+        } else {
+            segments.push({ text: line, media: [] });
+        }
+    }
+    return segments;
+}
+
+function agentMediaThumbsHtml(urls){
+    return urls.map((raw) => {
+        const src = normalizeAgentMediaUrl(raw);
+        if (!src) return '';
+        const safe = escapeAttr(src);
+        return `<span class="agent-tui-media-thumb"><a href="${safe}" target="_blank" rel="noopener"><img src="${safe}" loading="lazy" alt="agent media" onerror="this.closest('.agent-tui-media-thumb').style.display='none'"></a></span>`;
+    }).join('');
+}
+
+function renderAgentAssistantHtml(text){
+    // 文本段走 renderMarkdown；MEDIA 段渲染缩略图（点开大图）。
+    return splitAgentMediaLines(text)
+        .map((seg) => renderMarkdown(seg.text) + agentMediaThumbsHtml(seg.media))
+        .join('');
+}
+
 function agentCardStatusHtml(nodeId) {
     const state = agentTuiState.get(nodeId);
     if (!state) {
@@ -727,7 +775,7 @@ function agentNodeBodyHtml(node) {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderMarkdown(msg.text)}</span></div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</span></div>`;
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         }
