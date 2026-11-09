@@ -26,6 +26,12 @@ import sys as _sys_boot
 _os_boot.environ.setdefault("FIREFLY_MAIN_MODULE", __name__)
 import app.services as _svc  # W1c services layer
 from app.services import *
+from app.services import agent_host as _agent_host_boot
+
+# #279：sidecar 画布工具回连基址跟随实际监听端口——未显式设置
+# FIREFLY_AGENT_API_BASE 时按 FIREFLY_PORT/默认 3000 生成并写入 os.environ；
+# 旧兜底 8000 与监听端口不一致，sidecar 启动成功后所有画布工具调用全失败。
+_agent_host_boot.ensure_agent_api_base_env(_os_boot.environ)
 api_headers = _svc.api_headers
 get_api_provider_exact = _svc.get_api_provider_exact
 
