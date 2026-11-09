@@ -38,6 +38,10 @@ RPC_TIMEOUT_SECONDS = 10.0
 IDLE_TIMEOUT_SECONDS = 15 * 60
 # 空闲 watchdog 扫描间隔。
 IDLE_WATCHDOG_INTERVAL_SECONDS = 60.0
+# #286：turn 停顿提醒阈值。busy 会话超过该秒数无任何事件（如上游模型服务器
+# 未启动/不可达时 pi 静默挂起）先向事件流注入 stall error（前端可见、可换
+# 模型/重连），不杀进程；真正 reap 仍按 IDLE_TIMEOUT_SECONDS。
+TURN_STALL_NOTIFY_SECONDS = 120.0
 # 连续自动 respawn 上限：超过说明 sidecar 处于崩溃循环，停止自愈并终态化。
 MAX_CONSECUTIVE_RESPAWNS = 5
 # stderr 尾截断：只留尾 800 字（对照 ComfyArt _cli_common.py STDERR_TAIL=800）。
@@ -203,6 +207,7 @@ class AgentSession:
     _started_at: float = 0.0
     _last_activity: float = 0.0
     _turn_started_at: float = 0.0  # #258：当前 turn 起点（agent_start → agent_end 时长）
+    _stall_notified: bool = False  # #286：本 turn 是否已发过停顿提醒
     # --- #239：超时必杀 / 退出树杀 / 错误五元组 ---
     _stopping: bool = False  # 手动 stop 进行中：reader finally 不得自动 respawn
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
@@ -456,6 +461,7 @@ class AgentHostManager:
         if event_type == "agent_start":
             session.status = "busy"
             session._turn_started_at = time.time()  # #258：turn 起点（用量时长用）
+            session._stall_notified = False  # #286：新 turn 重置停顿提醒
         elif event_type == "agent_end":
             session.status = "running"
         elif event_type == "tool_execution_start":
@@ -908,16 +914,30 @@ class AgentHostManager:
     async def _idle_watchdog_loop(self, interval: float) -> None:
         while True:
             await asyncio.sleep(interval)
-            now = time.time()
-            for session in list(self.sessions.values()):
-                if session.status not in ("busy", "waiting_confirm"):
-                    continue
-                idle = now - session._last_activity
-                if idle <= IDLE_TIMEOUT_SECONDS:
-                    continue
-                logger.error(f"Agent {session.node_id} idle for {idle:.0f}s while busy — killing process tree")
-                session.result = normalize_result(RESULT_ERROR, ERROR_KIND_TIMEOUT_IDLE)
-                await self._kill_process_tree(session, reason="idle timeout")
+            await self._idle_watchdog_pass(time.time())
+
+    async def _idle_watchdog_pass(self, now: float) -> None:
+        """#286：单轮扫描。先短阈值发 stall 提醒（可操作），后长阈值 reap。"""
+        for session in list(self.sessions.values()):
+            if session.status not in ("busy", "waiting_confirm"):
+                continue
+            idle = now - session._last_activity
+            if idle > TURN_STALL_NOTIFY_SECONDS and not session._stall_notified:
+                session._stall_notified = True
+                logger.warning(f"Agent {session.node_id} turn stalled: no events for {idle:.0f}s while busy (#286)")
+                await self._dispatch_event(session, {
+                    "type": "error",
+                    "stall": True,
+                    "message": (
+                        f"模型已 {idle:.0f} 秒无响应（可能上游不可达或模型服务器未启动）。"
+                        "请在模型下拉换一个模型重发；仍无响应可点重试连接。"
+                    ),
+                })
+            if idle <= IDLE_TIMEOUT_SECONDS:
+                continue
+            logger.error(f"Agent {session.node_id} idle for {idle:.0f}s while busy — killing process tree")
+            session.result = normalize_result(RESULT_ERROR, ERROR_KIND_TIMEOUT_IDLE)
+            await self._kill_process_tree(session, reason="idle timeout")
     async def snapshot_sessions(self) -> List[dict]:
         """Read-only projection of live agent session state for /api/healthz.
 
