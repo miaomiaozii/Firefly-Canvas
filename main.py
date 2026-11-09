@@ -1346,5 +1346,5 @@ if __name__ == "__main__":
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
-    uvicorn.run(app, host="127.0.0.1", port=3000,
+    uvicorn.run(app, host="127.0.0.1", port=int(_os_boot.environ.get("FIREFLY_PORT", "3000")),
                 ws_ping_interval=None, ws_ping_timeout=None)
