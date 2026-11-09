@@ -94,6 +94,47 @@ def flip_image(image: Image.Image | bytes, direction: str) -> Image.Image:
     return source.transpose(constant)
 
 
+#: #289 扩图红底 keying 色（与前端 applyImageOutpaint 的 fillStyle '#ff0044' 一致）：
+#: 高饱和红在真实场景中极少出现，提示词 "remove the red background/area" 更稳定。
+OUTPAINT_FILL = (255, 0, 68, 255)
+
+
+def outpaint_rgba(image: Image.Image | bytes, width: int, height: int, offset: Sequence[int]) -> Image.Image:
+    """#289 canvas.edit_outpaint：复刻前端 applyImageOutpaint 的 pad+paste 合成语义。
+
+    新 width×height 画布用高饱和红 OUTPAINT_FILL 填充，原图按 offset（原图左上角在
+    新画布中的位置）以 source-over 语义贴上（与 canvas drawImage 一致，半透明像素与
+    红底混合）。模型侧靠红底 keying + 提示词，绝不在本地合成外发 mask（ADR 0007）。
+    校验：画布必须按轴完整含住原图（宽/高 >= 原图，offset 在界内）——与前端
+    outW/outH = max(原图, 目标)（canvas-image-editor.js:1953-1954）同语义：等尺寸合法
+    （红底被原图全覆盖，即纯重合成），小于原图即拒绝。
+    """
+    source = as_rgba(image)
+    src_w, src_h = source.size
+    w = int(round(float(width)))
+    h = int(round(float(height)))
+    if w < src_w or h < src_h:
+        raise ValueError(f"outpaint canvas {w}x{h} must contain the source image {src_w}x{src_h}")
+    ox, oy = int(round(float(offset[0]))), int(round(float(offset[1])))
+    if not (0 <= ox <= w - src_w and 0 <= oy <= h - src_h):
+        raise ValueError(f"offset ({ox}, {oy}) must keep the source {src_w}x{src_h} inside the {w}x{h} canvas")
+    base = Image.new("RGBA", (w, h), OUTPAINT_FILL)
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    layer.paste(source, (ox, oy))
+    # source-over 混合（canvas drawImage 语义），而非简单覆写：半透明像素与红底混合
+    return Image.alpha_composite(base, layer)
+
+
+def reduced_aspect_ratio(width: int, height: int) -> str:
+    """复刻前端 canvasCore.reducedAspectRatio（smart-canvas.js:898）：GCD 约分到最小整数比。"""
+    w = max(1, int(round(float(width) or 1)))
+    h = max(1, int(round(float(height) or 1)))
+    a, b = w, h
+    while b:
+        a, b = b, a % b
+    return f"{w // a}:{h // a}"
+
+
 def _blurred_mask(mask: Image.Image, feather_radius: float) -> Image.Image:
     radius = max(0.0, float(feather_radius or 0))
     return mask.filter(ImageFilter.GaussianBlur(radius)) if radius else mask

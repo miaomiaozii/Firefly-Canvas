@@ -254,6 +254,13 @@ async def canvas_edit_flip(project_id: str, request: Request, x_agent_project: s
     return await flip_node_image_core(project_id, body.get("node_id"), body.get("direction"))
 
 
+@router.post("/edit_outpaint")
+async def canvas_edit_outpaint(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+    """#289 canvas.edit_outpaint: 服务端复刻站内红底扩图链（PIL 填 #ff0044 + 贴原图）覆写节点图（写操作；调用方先施加确认门）。"""
+    body = await request.json()
+    return await outpaint_node_image_core(project_id, body.get("node_id"), body.get("outpaint_size"), body.get("offset"))
+
+
 # =============================================================================
 # Core (Request-free) implementations — shared by the HTTP endpoints above and
 # the MCP streamable-HTTP endpoint (app/routers/api_mcp.py, #243 / ADR 0022).
@@ -936,8 +943,11 @@ async def _load_node_image(project_id: str, node_id: str, picked: dict):
     return source
 
 
-async def _replace_node_image(project_id: str, node: dict, node_id: str, picked: dict, edited, filename: str) -> dict:
-    """#266 edit_* 共享写回：新资源入资源库（原资源保留可恢复）+ 覆写节点图，返回结果摘要。"""
+async def _replace_node_image(project_id: str, node: dict, node_id: str, picked: dict, edited, filename: str, extra_node_fields: dict | None = None) -> dict:
+    """#266 edit_* 共享写回：新资源入资源库（原资源保留可恢复）+ 覆写节点图，返回结果摘要。
+
+    extra_node_fields：可选的附加节点字段（如 #289 的 node.outpaintSize），与 images 覆写同一次 upsert 落盘。
+    """
     from local_edit import encode_png
 
     store = _app_main.FIREFLY_PROJECT_STORE
@@ -958,6 +968,8 @@ async def _replace_node_image(project_id: str, node: dict, node_id: str, picked:
     node["images"] = images
     if node.get("output_asset_id"):
         node["output_asset_id"] = new_asset_id
+    if extra_node_fields:
+        node.update(extra_node_fields)
     node["updated_at"] = _app_main.now_ms()
     await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
     return {
@@ -1083,4 +1095,54 @@ async def flip_node_image_core(project_id: str, node_id, direction) -> dict:
     filename = f"edit-flip-{int(time.time() * 1000)}.png"
     result = await _replace_node_image(project_id, node, node_id, picked, edited, filename)
     result["direction"] = direction
+    return result
+
+
+async def outpaint_node_image_core(project_id: str, node_id, outpaint_size, offset) -> dict:
+    """#289 canvas.edit_outpaint：服务端复刻站内红底扩图链（applyImageOutpaint 语义，ADR 0022 双面对齐）。
+
+    站内手工扩图 = 扩大画布 + canvas 填高饱和红 #ff0044 + 原图按 (offsetX, offsetY) 贴回
+    （static/js/canvas-image-editor.js:1944-1987）；本 core 用 PIL 同语义复刻：
+    #ff0044 新画布 + 原图 source-over 贴放（半透明像素与红底混合，与 canvas drawImage 一致），
+    结果作为节点图内容覆写（原资源保留可恢复），写 node.outpaintSize（含前端同语义的约分比例，
+    canvasCore.reducedAspectRatio，smart-canvas.js:898）。红底是下游 generate.trigger 外区重绘的
+    keying 底色——**绝不在服务端/模型侧发送 mask**（ADR 0007）。
+
+    写操作：MCP 面施加 #242 确认门（CONFIRMATION_GATED_TOOLS）；错误文案带下一步建议（票面规范）。
+    """
+    from local_edit import OUTPAINT_FILL, outpaint_rgba, reduced_aspect_ratio
+
+    node_id = str(node_id or "")
+    node = _find_node_for_view(project_id, node_id)
+    picked = _node_image_for_edit(node, node_id)
+    try:
+        target_width = int(outpaint_size.get("width"))
+        target_height = int(outpaint_size.get("height"))
+        off_x = int((offset or {}).get("x") or 0)
+        off_y = int((offset or {}).get("y") or 0)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="outpaint_size 必须是 {width, height} 正整数（offset 为 {x, y} 非负整数）；先调用 canvas.get_node 查看节点媒体尺寸，再按目标扩图范围传 outpaint_size。") from None
+    if target_width <= 0 or target_height <= 0 or off_x < 0 or off_y < 0:
+        raise HTTPException(status_code=400, detail=f"outpaint_size 宽/高必须为正（本次 {target_width}x{target_height}），offset 必须为非负（本次 {off_x},{off_y}）；先调用 canvas.get_node 查看节点媒体尺寸后重试。")
+    source = await _load_node_image(project_id, node_id, picked)
+    try:
+        outpainted = await asyncio.to_thread(outpaint_rgba, source, target_width, target_height, (off_x, off_y))
+    except ValueError as exc:
+        detail = str(exc)
+        if "offset" in detail:
+            raise HTTPException(status_code=400, detail=f"offset ({off_x},{off_y}) 越界（原图 {source.width}x{source.height}，目标画布 {target_width}x{target_height}）；offset 须满足 0≤x、0≤y 且 x+原图宽≤目标宽、y+原图高≤目标高，先调用 canvas.get_node 查看尺寸后重试。") from None
+        raise HTTPException(status_code=400, detail=f"目标画布必须完整含住原图（原图 {source.width}x{source.height}，目标 {target_width}x{target_height}）；先调用 canvas.get_node 查看节点媒体尺寸，再放大 outpaint_size 后重试。") from None
+    outpaint_size = {
+        "width": target_width,
+        "height": target_height,
+        "aspectRatio": reduced_aspect_ratio(target_width, target_height),
+    }
+    filename = f"edit-outpaint-{int(time.time() * 1000)}.png"
+    result = await _replace_node_image(project_id, node, node_id, picked, outpainted, filename,
+                                       extra_node_fields={"outpaintSize": outpaint_size})
+    result["outpaint_size"] = outpaint_size
+    result["fill"] = "#%02x%02x%02x" % OUTPAINT_FILL[:3]
+    result["next_step"] = ("外区现为高饱和红（#ff0044，与站内红底扩图一致）：调用 generate.trigger 对节点重绘填充外区"
+                          "（提示词含红底扩图语义，如 keep the existing image, extend the scene beyond the red border）；"
+                          "画布尺寸信息见本结果 outpaint_size / node.outpaintSize")
     return result

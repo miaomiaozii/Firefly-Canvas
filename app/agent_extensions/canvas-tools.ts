@@ -422,6 +422,55 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    pi.registerTool({
+        name: "canvas.edit_outpaint",
+        description:
+            "Red-mask outpaint: enlarge the canvas, fill the outer region with saturated red (#ff0044) and paste the original image at offset, then overwrite the node image (local PIL, no external generation; the red outer region is later filled by generate.trigger — no mask is sent to any model, ADR 0007; requires user confirmation; the original asset stays in the library)",
+        parameters: Type.Object({
+            node_id: Type.String({ description: "The node ID to edit" }),
+            outpaint_size: Type.Object({
+                width: Type.Number({ description: "Target canvas width in pixels (must exceed the original image width)" }),
+                height: Type.Number({ description: "Target canvas height in pixels (must exceed the original image height)" }),
+            }, { description: "Target canvas size in pixels" }),
+            offset: Type.Object({
+                x: Type.Number({ description: "Original image X position on the new canvas (default 0)" }),
+                y: Type.Number({ description: "Original image Y position on the new canvas (default 0)" }),
+            }, { description: "Position of the original image on the new canvas (default 0,0 top-left)" }),
+        }),
+        async execute(toolCallId, params) {
+            const confirmData = await callApi(
+                `/api/projects/${PROJECT_ID}/agent/confirm`,
+                "POST",
+                {
+                    node_id: NODE_ID,
+                    tool: "canvas.edit_outpaint",
+                    params: {
+                        node_id: params.node_id,
+                        outpaint_size: params.outpaint_size,
+                        offset: params.offset,
+                    },
+                    message: `红底扩图节点 ${params.node_id}（目标画布 ${params.outpaint_size?.width}x${params.outpaint_size?.height}，外区填 #ff0044）并覆写节点图？原资源保留在资源库。`,
+                }
+            );
+            if (!confirmData.approved) {
+                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+                    details: {},
+                };
+            }
+            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_outpaint`, "POST", {
+                node_id: params.node_id,
+                outpaint_size: params.outpaint_size,
+                offset: params.offset,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // Generate tools
     pi.registerTool({
         name: "generate.trigger",
