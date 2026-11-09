@@ -58,7 +58,7 @@ def main() -> None:
         txt = py.read_text(encoding='utf-8', errors='ignore')
         for line_no, line in enumerate(txt.splitlines(), 1):
             if 'D:\\Firefly-Canvas' in line or 'D:/Firefly-Canvas' in line:
-                # 容忍已知回退：firefly_projects.py 默认项目根（便携启动器总会用 FIREFLY_PROJECTS_ROOT 覆盖）
+                # 容忍已知回退：firefly_projects.py 预置项目根（便携启动器总会用 FIREFLY_PROJECTS_ROOT 覆盖）
                 if py.name == 'firefly_projects.py' and 'return _validated_projects_root' in line:
                     continue
                 offenders.append(f'{py.relative_to(app_root)}:{line_no}')
