@@ -337,6 +337,31 @@ class TestSpawnReadyTimeout(AgentHostKillBase):
         self.assertFalse(session.is_running)
 
 
+class TestUtf8StdoutDecoding(AgentHostKillBase):
+    """#292 回归：pi stdout 含中文 UTF-8 不得炸 reader（Windows GBK 默认解码误杀活 agent）。"""
+
+    fake_env = {"FAKE_PI_UTF8": "1", "FAKE_PI_ECHO_STATE": "1"}
+
+    def test_chinese_utf8_event_does_not_kill_agent(self):
+        session = self._session()
+        received = []
+        session.event_handlers.append(lambda s, e: received.append(e))
+        self.assertTrue(self._spawn(session))
+        # 给 reader 跨过中文事件的时间窗；若解码配置回退 GBK，reader 会异常退出
+        # → finally 误杀活进程 → 会话落 crashed。
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not any(
+            e.get("type") == "notice" and "免费额度" in str(e.get("message", "")) for e in received
+        ):
+            time.sleep(0.2)
+        self.assertTrue(
+            any(e.get("type") == "notice" and "免费额度" in str(e.get("message", "")) for e in received),
+            f"中文 UTF-8 事件未被 reader 正常送达：{received}",
+        )
+        self.assertTrue(session.is_running, "reader 误杀：会话不再存活")
+        self.assertNotEqual(session.status, "crashed")
+
+
 class TestRunCommandSuccess(AgentHostKillBase):
     """run_command 成功路径：有响应则正常返回，不得误杀。"""
 

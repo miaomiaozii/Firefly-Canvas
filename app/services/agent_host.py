@@ -341,6 +341,10 @@ class AgentHostManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # #292：Windows 中文环境下 text=True 默认 GBK；pi 的 UTF-8 JSON 含中文即解码爆炸，
+                # reader 退出→误杀活进程→5 连crash。显式 UTF-8 + replace，杜绝编码误杀。
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env=env,
             )

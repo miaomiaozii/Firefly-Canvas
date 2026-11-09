@@ -12,6 +12,8 @@
 - ``FAKE_PI_GRANDCHILD=1``          派生一个孙进程 sleeper（进程树的一员）
 - ``FAKE_PI_GRANDCHILD_PIDFILE``    把孙进程 pid 写入该文件
 - ``FAKE_PI_STDERR_LINES=<n>``      先向 stderr 写 n 行 80 字符（测尾部 800 字截断 + 管道背压）
+- ``FAKE_PI_UTF8=1``                回应 get_state 后再向 stdout 写一行含中文的 UTF-8 事件
+                                    （#292：回归「GBK 默认解码误杀活 agent」）
 
 默认行为：回应第一个 get_state，然后无限 sleep（模拟挂死的 pi）。
 """
@@ -33,6 +35,12 @@ def _write(path: str, value: str) -> None:
 
 
 def main() -> None:
+    # 真实 pi 是 Node 进程，管道里永远吐 UTF-8 字节；假 pi 对齐这一契约，
+    # 不被 Windows 管道的 GBK 默认编码带偏（#292）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     _write(os.environ.get("FAKE_PI_PIDFILE", ""), str(os.getpid()))
 
     # 先写 stderr：总量超过管道缓冲区时必须靠 agent_host 的 drain 线程取走，
@@ -59,6 +67,13 @@ def main() -> None:
                 "success": True,
                 "data": {"sessionId": "fake-session-239", "sessionFile": "fake-239.session.jsonl"},
             }), flush=True)
+            if os.environ.get("FAKE_PI_UTF8") == "1":
+                # #292 回归：非 ASCII 直接以 UTF-8 字节上屏（ensure_ascii=False），
+                # 模拟真实 pi 的中文错误文案；解码配置错（GBK）时 reader 必炸。
+                print(json.dumps({
+                    "type": "notice",
+                    "message": "模型错误（本轮无回复）：免费额度已耗尽，请充值或换模型",
+                }, ensure_ascii=False), flush=True)
             if not echo_state:
                 break  # 只答第一次 get_state，随后进入挂死/退出
 
