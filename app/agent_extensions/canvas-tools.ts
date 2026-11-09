@@ -32,6 +32,47 @@ async function callApi(path: string, method: string, body?: any) {
     }
 }
 
+// ── #284 媒体 URL 归一化（纯函数；行为测试 tests/canvas_module_units/test-agent-canvas-tools.mjs）──
+// 工具返回值带「可服务绝对 URL」：生成目录 OUTPUT_OUTPUT_DIR=ASSETS_DIR/output（main.py:1090），
+// StaticFiles 实际挂载 /output 与 /assets（main.py:1180-1182）→ 可服务前缀 /assets/output/<file>。
+// 历史的 /media/<f>、裸文件名会 404；这里统一改写成带 API_BASE 主机的绝对 URL，
+// 模型可直接放进 MEDIA: 行。非媒体字符串原样返回（保守，不污染 task_id/status/base64/提示词）。
+// 注意：下面两个纯函数故意不写 TS 类型标注（保持可被 Node 直接求值的行为测试所抽取），
+// 仅依赖模块级 API_BASE。测试按 SENTINEL 注释切片后在 new Function 里求值（当前 realm，避免 vm 跨 realm 原型差异）。
+const MEDIA_NAME_RE = /^(generated_image|generated_video|generated_audio|frame_|thumbnail_|online_|video_|audio_)/;
+
+function normalizeMediaUrl(raw) {
+    if (typeof raw !== "string") return raw;                                   // null/undefined/数字 原样
+    const file = raw.trim();
+    if (!file) return file;
+    if (/^https?:\/\//i.test(file)) return file;                            // 已是绝对 URL，原样
+    if (/^\/(api\/|assets\/|output\/)/i.test(file)) return API_BASE + file; // 已可服务的相对路径 → 补主机
+    const toAbsolute = (name) => `${API_BASE}/assets/output/${name}`;
+    if (/^\/media\//i.test(file)) return toAbsolute(file.replace(/^\/media\//i, ""));
+    const served = /[\\/](?:assets[\\/])?output[\\/]([^\\/]+)$/.exec(file);
+    if (served && (/^([A-Za-z]:[\\/]|\/|\.)/.test(file) || /assets[\\/]output/i.test(file))) {
+        return toAbsolute(served[1]);                                       // 绝对/磁盘路径里的 output/<file>
+    }
+    if (file.includes("/")) {
+        const name = file.split(/[\\/]/).filter(Boolean).pop() || file;
+        return MEDIA_NAME_RE.test(name) ? toAbsolute(name) : file;          // 相对路径：仅改写已知媒体前缀
+    }
+    return MEDIA_NAME_RE.test(file) ? toAbsolute(file) : file;              // 裸文件名：仅改写已知媒体前缀
+}
+
+// 递归改写工具返回值中的媒体 URL（只处理字符串；数字/布尔/null 原样；对象/数组深遍历）。
+function normalizeMediaPayload(value) {
+    if (typeof value === "string") return normalizeMediaUrl(value);
+    if (Array.isArray(value)) return value.map(normalizeMediaPayload);
+    if (value && typeof value === "object") {
+        const out = {};
+        for (const key of Object.keys(value)) out[key] = normalizeMediaPayload(value[key]);
+        return out;
+    }
+    return value;
+}
+// ── end #284 媒体 URL 归一化 ──
+
 export default function (pi: ExtensionAPI) {
     // Query tools
     pi.registerTool({
@@ -236,7 +277,7 @@ export default function (pi: ExtensionAPI) {
                 frames: params.frames,
             });
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
                 details: {},
             };
         },
@@ -413,7 +454,7 @@ export default function (pi: ExtensionAPI) {
                 "GET"
             );
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
                 details: {},
             };
         },
@@ -435,7 +476,7 @@ export default function (pi: ExtensionAPI) {
                 "GET"
             );
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
                 details: {},
             };
         },
@@ -455,7 +496,7 @@ export default function (pi: ExtensionAPI) {
                 { file_path: params.file_path }
             );
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
                 details: {},
             };
         },
@@ -471,7 +512,7 @@ export default function (pi: ExtensionAPI) {
                 "GET"
             );
             return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
                 details: {},
             };
         },
