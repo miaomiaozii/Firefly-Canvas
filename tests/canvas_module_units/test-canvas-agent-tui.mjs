@@ -1453,3 +1453,60 @@ test('bindAgentTaskNodeControls: 结果链接点击选中结果节点 + 视口�
     assert.equal(fromContext(evaluate(ctx, 'canvasState.selectedId')), 'R1', '缺失结果保持原选中');
     assert.equal(renders.filter(r => r.kind === 'render').length, 1, '缺失结果不触发 render');
 });
+
+// ── #284 MEDIA: 行渲染 + URL 归一化 ─────────────────────────────────────────
+test('#284 normalizeAgentMediaUrl：/media/<f> 与裸文件名归一到 /assets/output/<f>，已服务前缀原样', () => {
+    const { ctx } = loadAgentTuiModule();
+    const norm = fn(ctx, 'normalizeAgentMediaUrl');
+    assert.equal(fromContext(norm('/media/generated_image_20260304_012846_9490.png')),
+        '/assets/output/generated_image_20260304_012846_9490.png');
+    assert.equal(fromContext(norm('generated_image_a.png')), '/assets/output/generated_image_a.png');
+    assert.equal(fromContext(norm('/assets/output/x.png')), '/assets/output/x.png');
+    assert.equal(fromContext(norm('/output/x.png')), '/output/x.png');
+    assert.equal(fromContext(norm('https://cdn.example/a.png')), 'https://cdn.example/a.png');
+    assert.equal(fromContext(norm('D:/FF/assets/output/y.png')), '/assets/output/y.png');
+    assert.equal(fromContext(norm('')), '');
+});
+
+test('#284 splitAgentMediaLines + renderAgentAssistantHtml：MEDIA 行拆出并渲染缩略图，正文仍走 markdown', () => {
+    const { ctx } = loadAgentTuiModule();
+    const split = fn(ctx, 'splitAgentMediaLines');
+    const segs = fromContext(split('已生成。\nMEDIA:/media/gen_a.png MEDIA:/media/gen_b.png\n完成'));
+    assert.equal(segs.length, 3);
+    assert.deepEqual(segs[1].media, ['/media/gen_a.png', '/media/gen_b.png']);
+    assert.equal(segs[0].text, '已生成。');
+    const render = fn(ctx, 'renderAgentAssistantHtml');
+    const html = String(fromContext(render('看图\nMEDIA:/media/gen_a.png')));
+    assert.ok(html.includes('<img src="/assets/output/gen_a.png"'), `缩略图缺归一化 src：${html}`);
+    assert.ok(html.includes('agent-tui-media-thumb'), '缩略图容器缺失');
+    assert.ok(!html.includes('MEDIA:'), '原始 MEDIA: 文本不应再出现');
+});
+
+// ── #285 会话模型池 ─────────────────────────────────────────────────────────
+test('#285 applyAgentChatModelPool：provider/modelId 池生效并覆盖 getChatModels 回退池', () => {
+    const { ctx } = loadAgentTuiModule({
+        chatProviders: [{ id: 'custom', name: '自定义', models: ['qwen-image-2.1-pro'] }],
+        modelsByProvider: { custom: ['qwen-image-2.1-pro'] },
+    });
+    const getModels = fn(ctx, 'getChatModels');
+    assert.deepEqual(fromContext(getModels()).map(m => m.id), ['qwen-image-2.1-pro'],
+        '未加载池时回退旧生成模型池（回归基线）');
+    const apply = fn(ctx, 'applyAgentChatModelPool');
+    const mapped = fromContext(apply({ models: [
+        { id: 'bailian/qwen-plus', name: 'Qwen Plus', provider: 'bailian', model: 'qwen-plus' },
+        { id: 'vllm-remote/qwen3', name: 'qwen3', provider: 'vllm-remote', model: 'qwen3' },
+    ] }));
+    assert.equal(mapped[0].name, 'bailian/Qwen Plus', '人可读名=provider/name');
+    assert.equal(mapped[1].name, 'vllm-remote/qwen3', 'name==model 时不重复');
+    assert.deepEqual(fromContext(getModels()).map(m => m.id), ['bailian/qwen-plus', 'vllm-remote/qwen3'],
+        '池到位后 getChatModels 返回会话模型池');
+});
+
+test('#285 fetchAgentChatModels：走 /agent-nodes/chat-models 端点（# 号编码正确）', async () => {
+    const { ctx, fetchCalls } = loadAgentTuiModule();
+    const fetchModels = fn(ctx, 'fetchAgentChatModels');
+    await fetchModels('proj#1');
+    assert.equal(fetchCalls.length, 1, '恰一次拉取');
+    const url = String(fromContext(fetchCalls[0].url));
+    assert.ok(url.includes('/api/projects/proj%231/agent-nodes/chat-models'), `请求 URL 异常：${url}`);
+});

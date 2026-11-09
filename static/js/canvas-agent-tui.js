@@ -74,6 +74,13 @@ function recordAgentConnectFailure(state, nodeId, projectId) {
 
 function connectAgentWebSocket(nodeId, projectId, options = {}) {
     const state = getAgentTuiState(nodeId);
+    // #285：首次连接时异步拉取会话模型池，到位后重渲染以替换回退池。
+    if (!state.chatModelsFetched) {
+        state.chatModelsFetched = true;
+        Promise.resolve().then(() => fetchAgentChatModels(projectId)).then(() => {
+            try { renderAgentNode(nodeId); } catch (e) {}
+        }).catch(() => { state.chatModelsFetched = false; });
+    }
     // CONNECTING(0)/OPEN(1) 都算「连接在途」：不再新建（重复建连正是重连风暴的根源之一）。
     if (state.socket && Number(state.socket.readyState) <= 1) {
         return state.socket;
@@ -655,8 +662,12 @@ function normalizeAgentMediaUrl(raw){
     if (!file) return '';
     if (/^(https?:|\/assets\/output\/|\/output\/)/i.test(file)) return file;
     if (/^\/media\//i.test(file)) return '/assets/output/' + file.replace(/^\/media\//i, '');
+    const served = /[\\/](?:assets[\\/])?output[\\/]([^\\/]+)$/.exec(file);
+    if (served && (/^([A-Za-z]:[\\/]|\/|\.)/.test(file) || /assets[\\/]output/i.test(file))) {
+        // 绝对/磁盘路径里的 output/<file>（含 Windows D:\...\output\x.png）→ 可服务前缀。
+        return '/assets/output/' + served[1];
+    }
     if (/\//.test(file)) {
-        // 其他绝对/相对路径：落在 output 根下的取文件名，其余原样（交给 onerror 隐藏）
         const name = file.split(/[\\/]/).filter(Boolean).pop();
         return /^generated_image|^generated_video|^generated_audio|^frame_|^thumbnail_/.test(name)
             ? '/assets/output/' + name : file;
@@ -670,7 +681,7 @@ function splitAgentMediaLines(text){
     for (const line of String(text || '').split('\n')) {
         const match = /^\s*MEDIA:\s*(\S.*)$/.exec(line);
         if (match) {
-            segments.push({ text: '', media: match[1].split(/\s+/).filter(Boolean) });
+            segments.push({ text: '', media: match[1].split(/\s+/).map(t => t.replace(/^MEDIA:/i, '')).filter(Boolean) });
         } else {
             segments.push({ text: line, media: [] });
         }
@@ -1265,6 +1276,9 @@ function renderMarkdown(text){
     return html;
 }
 function getChatModels(){
+    // #285：优先用 pi 会话模型池（/agent-nodes/chat-models 异步加载）。
+    // 旧回退：Firefly 生成模型池——其中含图片端点，选中即会话无响应（#285 根因）。
+    if (agentChatModelPool.models) return agentChatModelPool.models.slice();
     // Return a list of chat model IDs across all providers
     const models = [];
     for (const provider of chatApiProviders()) {
@@ -1274,4 +1288,19 @@ function getChatModels(){
         }
     }
     return models;
+}
+
+// #285：会话模型池（只读自 pi 的 models.json），加载完成前用旧回退池。
+const agentChatModelPool = { models: null };
+function applyAgentChatModelPool(payload){
+    const list = payload && Array.isArray(payload.models) ? payload.models : null;
+    agentChatModelPool.models = list
+        ? list.map(m => ({ id: m.id, name: m.name && m.name !== m.model ? `${m.provider}/${m.name}` : m.id }))
+        : null;
+    return agentChatModelPool.models;
+}
+function fetchAgentChatModels(projectId){
+    return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/chat-models`)
+        .then(r => (r && r.ok ? r.json() : Promise.reject(new Error('chat-models HTTP ' + (r && r.status)))))
+        .then(payload => applyAgentChatModelPool(payload));
 }

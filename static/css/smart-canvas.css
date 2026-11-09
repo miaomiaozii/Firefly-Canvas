@@ -4250,3 +4250,7 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-input::placeholder {
     color: #565f89;
 }
+
+/* #284：Agent 会话内 MEDIA: 缩略图（点开大图） */
+.agent-tui-media-thumb { display:inline-block; margin:4px 6px 0 0; vertical-align:top; }
+.agent-tui-media-thumb img { max-height:120px; max-width:100%; border-radius:8px; border:1px solid rgba(255,255,255,0.14); object-fit:contain; background:rgba(15,23,42,0.6); cursor:zoom-in; }
