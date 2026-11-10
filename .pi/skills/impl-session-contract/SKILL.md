@@ -15,6 +15,7 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 2. 自检两条，缺一就上报维护者、不要开工：`orca worktree current --json` 不报 `selector_not_found`；`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID。
 3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（维护者预建再转交给你会把邮件注入到维护者会话）。监理的 Run 由维护者粘给你。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
 4. **流程契约取法（`流程契约取法`，2026-11-10 loop-2 实测）**：三份流程契约一律从 `origin/main` 读，**不读自己工作树那份**——`git fetch origin main && git show origin/main:.pi/skills/impl-session-contract/SKILL.md`；判据：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于维护者本轮宣布的流程版本，读不到或读数不符 → **即停**上报维护者先推流程层。**不得用 `git merge main`/`rebase main` 到 `issue/<N>` 来取流程更新**——那些无关改动会被监理 `git diff --stat origin/main...HEAD` 算成你干的活（实测 `issue/310`@`16df89a` 上 v1/v2 的 14 项收紧全部不可见：`grep -n "^version:" .pi/skills/*/SKILL.md` exit 1、`grep -rlE "卡点上报|双盲三查|单写|上岗前置" .pi/skills` exit 1，该会话全程按旧口径跑）。你引用任何契约条文的行号与原文，都按本条取法。
+5. **核对任务书的「台账例外声明（`台账例外声明`）」**：任务书须含一行「台账例外：`docs/acceptance/ledger.md` 照写」——那是监理的自有写入面，不含即上报监理补一行。你自己不写该文件（`单写`：`pain.md` 归流程优化者、`ledger.md` 归监理）。维护者当面设的临时口头约束若与成文契约冲突，照停止条件上报等明示，不得自行解释边界。
 5. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理完整 RunId（含 run_ 前缀）>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数），然后才等任务书。监理未收到回执不应发任务书。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
 
 ## 上岗档位

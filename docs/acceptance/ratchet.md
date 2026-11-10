@@ -26,6 +26,9 @@
 | `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `--help 核对`（v3 校准追加） | `impl-session-contract/SKILL.md` |
 | `归因带原始出处`（v3 追加，单写者自约束） | `process-optimizer/SKILL.md` |
+| `取证含会话JSONL`、`toolCall arguments`（v3 追加，P-23） | `process-optimizer/SKILL.md` |
+| `适用面与失效轮次`（v3 追加，P-24） | `process-optimizer/SKILL.md` |
+| `台账例外声明`（v3 追加，P-24） | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `旁证不定主体`（v3 追加） | `process-optimizer/SKILL.md` |
 
 ## v2 回归标记
@@ -85,6 +88,8 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （v3 实测，`gh issue close --help` 于 `D:/Firefly-Canvas`）`gh issue close` 支持 `-c/--comment string`、`-r/--reason`、`--duplicate-of`，**无** `-F/--body-file`；`gh issue comment` 支持 `-b/--body`、`-F/--body-file`、`--edit-last/--delete-last`。`docs/agents/issue-tracker.md:26` 的 `gh issue close … --comment "..."` 有效。P-06 原「没有 `--comment-file`」表述属实但易误读，已按「自造 flag 前先 `--help` 核对」改写（P-05 校准注记落在此行）。
 - （loop-3 归因取证，P-06/P-22）`--comment-file` 失败的**行为主体无法核实，取证为空**：`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/comments --jq '.[]|select(.body|test("comment-file";"i"))'` → 0 命中；`grep -rIl -- "--comment-file" D:/Firefly-Canvas-evidence D:/ff-wt D:/Firefly-Canvas/docs` → 只命中 `docs/acceptance/pain.md` 与 `ratchet.md`（我们自己的台账）；`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/events` 的 closed 事件 → `actor=miaomiaozii, created_at=2026-11-10T09:33:34Z`（三方共用同一 bot 账号，无法定主体）；`git show cd83733:docs/acceptance/pain.md` 的 P-06 原文未记主体。**台账只写「主体未核实」，不指名任何一方**；我此前那句「监理自造」已删（立 P-22，标记 `归因带原始出处`）。
 - （loop-3 旁证登记，P-06）监理 msg_0b6dad4f97dc 递来：**自报级**证据——交付方 msg_e489f891f126（from=term_b300bceb，09:33 后送达）原文「已按契约收尾：结论评论 issuecomment-6763910725 + Issue #310 关闭（reason=completed）」，时间吐合 closed 事件 `2026-11-10T09:33:34Z`。等级不够：自报 + 三方共用 bot 账号 ⇒ 不能定主体，P-06 维持「主体未核实」，本条只作旁证（已写成契约口径 `旁证不定主体`）。交付方另确认 pain.md 零写入（msg_b46d784c771c）。
+- （loop-3 取证翻案，P-06）主体由「未核实」改为**交付会话**：`--D--ff-wt-w310--/…_01a1c475-6aaa-….jsonl` L220 ts=09:33:20.303Z toolCall(bash) `arguments.command` = `gh issue close 310 … --comment-file "…close-comment-310.md" …`；L222 ts=09:33:29.958Z thinking 「`--comment-file` might not be a valid flag…」。监理会话 JSONL 的 toolCall `arguments` 命中 = 0（行 160/161/163/166/176/177 全为邮件正文文本，ts 10:56–11:16）——按原始行 grep 会把读邮件误算成敲命令。维护者引的 222 行是 thinking，命令文本在 220 行。
+- （loop-3 台账裁定）台账边界归监理：「不得创建/修改文件」属临时口头约束，不覆盖监理自有写入面；豁免条款早在 `12cf55a` 就成文（监理契约「台账行不可豁免」），本轮未落属监理未按成文执行；#310 两行由监理下轮上岗第一件事自落，维护者不代写。
 - （维护者 msg_db4b3380d294 执行面）`git merge --ff-only loop/ratchet` 已在维护者侧把本地 main 推到 `a6dfa39`，三份 skill 现 `version: 3`；其独立复跑 v3 的 8 项标记命中一致，v1+v2 的 15 项记我方口径。**`origin/main` 仍未推**（向公共仓发布需维护者本人点头）。
 
 ## 待维护者定的事
@@ -93,7 +98,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - 本机存量红与 `scenario_keys.sh` 3/3 必挂无人认领 → 门禁的组级 fail-fast 会永久遮住尾组（P-12、P-13）。
 - 流程文件的合并权在维护者：优化会话的改动走 `loop/*` 分支，监理复核通过后由维护者合并。
 - **v3 合并状态**：本地 main 已 ff 到 `a6dfa39`（维护者执行）；`origin/main` 未推（发布需维护者点头）。
-- **台账硬约束边界待维护者裁定（非卡点，口径解释权在他）**：监理立场是本轮「不得修改/创建任何文件（仅 /tmp 可写）」由维护者当面设定且未解除，明示前只备文本不落 `ledger.md`；这与 v1 将 `docs/acceptance/ledger.md` 定为监理写入面（台账缺失列为停止条件）相冲。已向维护者发二选一（msg_b4a5dbb6b739）：①解除硬约束→监理自落；②维持→维护者代落。明示前不立项、不定性。
+- **台账硬约束边界：已裁定（维护者 msg_bfff2cd265f6）**——临时口头约束止于该轮代码与产物，不覆盖监理台账写入面；#310 两行由监理下轮上岗第一件事自落，维护者不代写。已入契约（`台账例外声明`、`适用面与失效轮次`）。
 - **`git push origin main` 需维护者（人）批准**——已列为待办。推上去之前，下一轮三方按 `流程契约取法` 触发「即停」是预期行为，**不是新卡点，不得重复立项**（维护者 msg_db4b3380d294 明示）。
 - **下一轮用哪个 Issue：留空待维护者指定**，流程优化者与另两方不得自行领活。
 - #310 台账两行是否由监理自落（其称硬约束未解除）或维护者代落（P-04 面）。
