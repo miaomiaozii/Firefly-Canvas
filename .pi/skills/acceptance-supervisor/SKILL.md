@@ -102,7 +102,7 @@ orca orchestration inbox --json                             # 只读，不消费
 
 顺序错了就白等。实测：监理 08:05 发任务书，交付方 08:08 才绑 Run，任务书没唤醒它，08:11 重发一遍才生效。
 
-0. **流程契约取法（`流程契约取法`，2026-11-10 loop-2 实测）**：流程契约一律从 `origin/main` 读，**不读自己工作区那份**——`git fetch origin main && git show origin/main:.pi/skills/acceptance-supervisor/SKILL.md`（交付方换成交付契约路径 `git fetch origin main && git show origin/main:.pi/skills/impl-session-contract/SKILL.md`）。判据：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于维护者本轮宣布的流程版本；读不到、或读数与宣布值不一致 → **即停**上报维护者先推流程层（实测 `origin/main` 曾停在 `7e03237`，v1/v2 只在本地 main：`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`）。**不得用 `git merge main`/`rebase main` 到 `issue/<N>` 来取流程更新**——无关改动会被监理 `git diff --stat origin/main...HEAD` 算成交付方的活。你引用任何契约条文的行号与原文，都按本条取法。
+0. **流程契约取法（`流程契约取法`，2026-11-10 loop-2 实测）**：流程契约一律从 `origin/main` 读，**不读自己工作区那份**——`git fetch origin main && git show origin/main:.pi/skills/acceptance-supervisor/SKILL.md`（交付方换成交付契约路径 `git fetch origin main && git show origin/main:.pi/skills/impl-session-contract/SKILL.md`）。判据：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于维护者本轮宣布的流程版本；读不到、或读数与宣布值不一致 → **即停**上报流程优化者（棘轮）先推流程层（实测 v3：班规由棘轮写并直推 `origin/main`，维护者只确认；你不得自己改班规）（实测 `origin/main` 曾停在 `7e03237`，v1/v2 只在本地 main：`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`）。**不得用 `git merge main`/`rebase main` 到 `issue/<N>` 来取流程更新**——无关改动会被监理 `git diff --stat origin/main...HEAD` 算成交付方的活。你引用任何契约条文的行号与原文，都按本条取法。
 
 1. 你自己先绑 Run：`run-current` 为 null → `run-use --id <MY_RUN>`（维护者给的）或 `run-create --objective "acceptance #<N>"`。
 2. 发探针：`send --to run:<PEER_RUN> --subject "probe-连接测试" --body "收到请回执 SELF_RUN + tabId + 工作树 path + HEAD"`。

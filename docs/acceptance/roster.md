@@ -125,3 +125,50 @@
 ### 3.11 消息类型与 Dispatch 权限（`类型需Dispatch`）
 
 `--type escalation`（及 `worker_done`）要求发送方有 active Dispatch，否则报 `error: sender_not_assignee: No active Dispatch belongs to this message sender.`；`--type status` / `question` 无此要求（实测：同一正文 escalation 失败 → status 成功，`msg_ed891ec8b7f3`）。合法取值：`status, dispatch, worker_done, merge_ready, escalation, handoff, decision_gate, question, heartbeat`。**给维护者/跨角色的一般上报一律用 `status`；`escalation` 只在有 Dispatch 的 worker 会话里用**。
+
+## 4. 流程层发权与上架状态（`流程层发权`）
+
+- **谁写谁推**：流程层 = 三份班规（`班规@*`）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
+- **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归维护者。
+- **收权（`收权`）**：维护者一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
+- **上架状态**：已上架 = `origin/main@<本轮 sha>`（本轮 v3-patch 推送后由棘轮回读 sha 填入，读法 `git fetch origin main && git rev-parse --short origin/main`）。生效三判据见 §3.8：① `git ls-tree -r --name-only origin/main` 含 `docs/acceptance/roster.md`；② `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 读数 = 维护者宣布值；③ 三方上岗回执版本读数 = 宣布值。三条任一不成立 → 即停。
+
+## 5. 流程全景（一图）
+
+```mermaid
+flowchart LR
+  subgraph M["维护者（唯一裁决人；只确认，不动手改流程层）"]
+    M1["① 放行本轮吸收（卡点编号清单）<br/>② 确认流程层发权<br/>③ 宣布流程版本号"]
+  end
+  subgraph R["流程优化者（棘轮）term_e7ba05f8… run_c40189b45d94<br/>工作区 …/workspaces/Firefly-Canvas/loop @ loop/ratchet"]
+    R1["读 pain.md 队列 + 双盲取证<br/>（会话JSONL toolCall arguments 等四项）"]
+    R2["改三份班规 + pain/ratchet/roster<br/>version: +1；只收紧不放宽；每条留可复跑回归"]
+    R3["git push origin loop/ratchet<br/>再直推 origin/main（只含流程层文件）"]
+    R1 --> R2 --> R3
+  end
+  subgraph S["监理 term_6d6c2fb9… run_12b3ab55bf53<br/>D:/Firefly-Canvas @ main"]
+    S1["上岗前置 + 双盲三查 + 版本对账（读 班规@origin）"]
+    S2["验收 / 裁定<br/>写入面：docs/acceptance/ledger.md + Issue 评论 + 证据目录"]
+    S3["卡点：只发邮件给棘轮（不写 pain.md）"]
+  end
+  subgraph D["交付方 term_b300bceb… run_79684022c565<br/>D:/ff-wt/w310 @ issue/310"]
+    D1["上岗前置 + 读 班规@origin（不读 班规@被验树）"]
+    D2["票面白名单实现 + 自证证据<br/>一票否决面：碰了先停等裁定"]
+    D3["卡点：只发邮件给棘轮（不写 pain.md）"]
+  end
+  M1 -->|"放行/确认"| R1
+  R3 -->|"班规@origin 上架"| S1
+  R3 -->|"班规@origin 上架"| D1
+  D2 -->|"交付 + 证据"| S2
+  S2 -->|"裁定 / 台账"| M1
+  S3 -->|"四段卡点"| R1
+  D3 -->|"四段卡点"| R1
+```
+
+| 载体 | 谁能写 | 谁推 | 生效条件 |
+|---|---|---|---|
+| 产品代码与测试（`src/tools/tests/e2e/.github`） | 仅交付方（票面白名单内，仅 `issue/<N>`） | 交付方推 `issue/<N>`；`main` 由监理裁定 + 维护者决定合并 | 监理台账 PASS + 门禁复跑 |
+| `docs/acceptance/ledger.md` | 仅监理 | 监理 | 上岗台账不可豁免 |
+| 流程层（三份班规 + pain/ratchet/roster） | 仅棘轮 | 棘轮直推 `origin/main` | 维护者确认 + 版本号宣布 + 三方回执版本一致 |
+| `AGENTS.md` | 维护者 | 维护者 | — |
+
