@@ -47,6 +47,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 |---|---|---|---|---|---|---|---|---|---|
 | #310 演练 | 2026-11-10 | 2（监理两次要求更正） | 0 | 13 / 0 | 32 | 未做 | 未做（交付在 `pty:` 游离终端） | 14（v1 补丁） | v0→v1 |
 | loop-1（优化者上岗） | — | 未演练 | — | — | — | — | — | — | v1 待跑 |
+| loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
 
 ## 已核实的事实（带来源，供下轮做差）
 
@@ -54,6 +55,9 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - `docs/acceptance/ledger.md` 只有表头 + 示例行（#310 两条裁定至今未落台账）——**监理自己的写入面实际未执行**，v1 已将其列为停止条件。
 - 基线与交付的 trial 红项完全同集（零新增红）；`scenario_keys.sh` 实测 3/3 必挂（不是飘）。
 - 上述两条均无未发生的事：本轮只跑过监理 + 交付两个会话，**流程优化者会话尚未上岗**（无对应终端/工作树/Run）。
+- （loop-2 实测）`D:/ff-wt/w310`（`issue/310`@`16df89a`）上流程契约为 `b2b3399` 时代旧版：`grep -n "^version:" .pi/skills/*/SKILL.md` exit 1、四标记 grep exit 1 → v1/v2 收紧对被验会话不可见（P-15）。根因：v1 补丁 `cd83733`/`1771944` 晚于 `issue/310` 基线 `b2b3399`。
+- （loop-2 实测）三方身份与工作区：监理 `term_6d6c2fb9…`（`D:/Firefly-Canvas`，main@a4e458c，run_12b3ab55bf53）；交付方 `term_b300bceb…`（`D:/ff-wt/w310`，issue/310@16df89a，run_79684022c565）；维护者 `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（run_b203fe4d1bef，pi chat 内嵌会话，无 tabId）；流程优化者 `term_e7ba05f8…`（`C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop`，loop/ratchet@a4e458c，run_c40189b45d94）。
+- （loop-2 实测）`send` 寻址：`--to run:12b3ab55bf53` 报 `run_not_found`；`--to run_12b3ab55bf53` 报 `terminal_not_found`；`--to run:run_12b3ab55bf53` 成功（P-18）。
 
 ## 待维护者定的事
 
