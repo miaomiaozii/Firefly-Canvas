@@ -3701,13 +3701,14 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-marked-export-file span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* Agent TUI (terminal-style) styles */
+/* #301：圆角与内部控件统一（卡片 8px / 控件 6px），与画布节点语言一致 */
 .agent-tui-card {
     display: flex;
     flex-direction: column;
     height: 100%;
     background: #1a1b26;
     color: #c0caf5;
-    border-radius: 6px;
+    border-radius: 8px;
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
     font-size: 12px;
     line-height: 1.5;
@@ -3718,7 +3719,9 @@ button.prompt-flow-context-image { cursor:pointer; }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 10px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 8px 10px;
     background: #16161e;
     border-bottom: 1px solid #2f3549;
     flex-shrink: 0;
@@ -3728,6 +3731,10 @@ button.prompt-flow-context-image { cursor:pointer; }
     font-weight: 600;
     color: #7aa2f7;
     font-size: 12px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .agent-tui-status {
@@ -3735,6 +3742,9 @@ button.prompt-flow-context-image { cursor:pointer; }
     padding: 2px 6px;
     border-radius: 4px;
     font-weight: 500;
+    /* #301：状态徽标（空闲/运行中/连接中…）永远单行，不竖排折行 */
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .agent-tui-status-idle {
@@ -3800,10 +3810,29 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #1a1b26;
 }
 
+/* #301：设置控件成簇（左侧分隔线 + 统一间距 + 窄宽时整体换行），不再像散落的调试控件 */
 .agent-tui-settings {
     display: flex;
-    gap: 4px;
+    gap: 6px;
     align-items: center;
+    flex-wrap: wrap;
+    row-gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding-left: 8px;
+    border-left: 1px solid #2f3549;
+}
+
+.agent-tui-settings-label {
+    font-size: 10px;
+    color: #565f89;
+    flex: 0 0 auto;
+}
+
+.agent-tui-settings .agent-tui-btn {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
 }
 
 .agent-tui-model-select,
@@ -3811,9 +3840,17 @@ button.prompt-flow-context-image { cursor:pointer; }
     background: #2f3549;
     color: #c0caf5;
     border: 1px solid #3b4261;
-    border-radius: 4px;
-    padding: 2px 4px;
-    font-size: 10px;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    height: 22px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
     outline: none;
 }
@@ -3845,6 +3882,19 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #565f89;
     font-style: italic;
     padding: 8px 0;
+    text-align: center;
+    line-height: 1.7;
+    max-width: 90%;
+}
+
+/* #301：空会话时消息区垂直居中，缓解「中间大空白 vs 拥挤工具栏」的失衡 */
+.agent-tui-body-empty {
+    display: flex;
+    flex-direction: column;
+}
+.agent-tui-body-empty .agent-tui-messages {
+    margin: auto 0;
+    width: 100%;
 }
 
 .agent-tui-msg {
@@ -3947,14 +3997,28 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #f7768e;
 }
 
+/* #301：输入区拆两行——输入行独占整宽（占位符不再被按钮挤断），操作行按钮+发送 */
 .agent-tui-input-row {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 6px;
     padding: 8px;
     background: #16161e;
     border-top: 1px solid #2f3549;
     flex-shrink: 0;
+}
+.agent-tui-input-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.agent-tui-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 /* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
@@ -4043,6 +4107,7 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-action-buttons {
     display: flex;
     gap: 4px;
+    flex-wrap: wrap;
 }
 
 .agent-tui-btn {
@@ -4112,6 +4177,24 @@ button.prompt-flow-context-image { cursor:pointer; }
 
 .agent-tui-btn-abort:hover:not(:disabled) {
     color: #f7768e;
+}
+
+/* #301：主按钮「发送」放在操作行右下角——与 smart-save 同一套画布主按钮语言
+   （--strong/--strong-text），右下角的发送/中止操作可见且含义明确 */
+.agent-tui-btn-send {
+    width: auto;
+    min-width: 58px;
+    padding: 0 12px;
+    background: var(--strong, #7aa2f7);
+    border: 1px solid var(--strong, #7aa2f7);
+    color: var(--strong-text, #fff);
+    font-weight: 600;
+}
+.agent-tui-btn-send:hover:not(:disabled) {
+    background: var(--strong, #7aa2f7);
+    border-color: var(--strong, #7aa2f7);
+    color: var(--strong-text, #fff);
+    filter: brightness(1.08);
 }
 
 @keyframes agent-tui-cursor-blink {
