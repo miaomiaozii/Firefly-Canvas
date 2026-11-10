@@ -104,3 +104,15 @@
 3. 维护者的版本宣布邮件里同时给出上述两条的命令原文与输出（只有「按 v3 干」这类无证据宣布 → 视为未生效，即停上报）。
 
 **名册自身的一致性**：本轮流程层版本号以「`origin/main` 上实际读到的 `version:` 行」为准，不以棘轮支头读数为准；`班规@棘轮@5820225` 现读数 `version: 3`。
+
+### 3.9 交付方「班规@origin 已=3」读数不成立（`读数贴错路径`，2026-11-10）
+
+三方工作区（`D:/ff-wt/w310`、`D:/Firefly-Canvas`、棘轮 loop）的 `origin` 全部 = `https://github.com/miaomiaozii/Firefly-Canvas.git`，`refs/remotes/origin/main` 全部 = `7e03237`（committerdate 2026-11-10 15:45:52 +0800）。三处 `git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 均 **无匹配**；`7e03237:.pi/skills/impl-session-contract/SKILL.md` 前 8 行是 `---/name/disable-model-invocation/description/---`，**根本没有 version 行**。
+唯一含 `3:version: 3` 的读数是 `a0a8615`（= `D:/Firefly-Canvas` 的**本地 main**，含棘轮推的流程层）。所以交付方 msg_7042f14d178b 报的「origin/main 已=3」是把 `班规@本地main` 当成了 `班规@origin`。
+**规范写法（三方必须照抄，不得简写）**：
+1. `git fetch origin main`
+2. `git rev-parse --short origin/main` → 当前必须是 `7e03237`（v3 未上架前的读数），≠ 宣布值即停
+3. `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` → 未上架前 rc=1
+4. 报告里必须同时写第 2 步的 sha。只有 grep 输出没有 sha 的读数一律不采信。
+
+**流程层仍未上架**（截至本轮）：`origin/main` = `7e03237`，`docs/acceptance/**` 只有 `ledger.md`；`loop/ratchet` = `85bdbfd` 是 `origin/main` 的非祖先，合并面 = `git diff --name-only origin/main origin/loop/ratchet` 的 8 个文件。
