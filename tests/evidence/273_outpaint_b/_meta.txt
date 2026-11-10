@@ -1,0 +1,3 @@
+src=assets/input/ai_ref_10073401ad09.png 897x845
+expanded=1346x1268
+offset=(224, 211)

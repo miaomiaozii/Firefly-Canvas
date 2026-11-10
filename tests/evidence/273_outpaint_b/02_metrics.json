@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "model": "qwen-image-2.1-pro",
+  "prompt": "仅将品红色区域替换为与原图边缘自然衔接的延续内容，中央原图区域保持不变",
+  "size_requested": "1346x1268",
+  "result_native_size": null,
+  "resized": false,
+  "crop": [
+    224,
+    211,
+    1121,
+    1056
+  ],
+  "offset": [
+    224,
+    211
+  ],
+  "central_change": {
+    "pixels": 757965,
+    "mean_l1_total_0_765": 22.051,
+    "mean_l1_per_channel_0_255": 7.35,
+    "rmse_per_channel": 17.56,
+    "visible_changed_pixels_gt15": 59671,
+    "visible_changed_pct": 7.87
+  },
+  "magenta_pixels": {
+    "top": 0,
+    "bottom": 0,
+    "left": 0,
+    "right": 0,
+    "inside_src": 0,
+    "whole": 0
+  },
+  "fallback_errors": []
+}
