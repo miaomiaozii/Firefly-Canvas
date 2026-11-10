@@ -131,7 +131,7 @@
 - **谁写谁推**：流程层 = 三份班规（`班规@*`）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
 - **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归维护者。
 - **收权（`收权`）**：维护者一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
-- **上架状态**：已上架 = `origin/main@<本轮 sha>`（本轮 v3-patch 推送后由棘轮回读 sha 填入，读法 `git fetch origin main && git rev-parse --short origin/main`）。生效三判据见 §3.8：① `git ls-tree -r --name-only origin/main` 含 `docs/acceptance/roster.md`；② `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 读数 = 维护者宣布值；③ 三方上岗回执版本读数 = 宣布值。三条任一不成立 → 即停。
+- **上架状态**：**已上架 = `origin/main@cac1818`**（棘轮 2026-11-10 实推并回读：`git push origin <sha>:main` → `7e03237..cac1818`；`git rev-parse --short origin/main` = `cac1818`；三份班规在 `origin/main` 上均 `version: 3`；`docs/acceptance/{ledger,pain,ratchet,roster}.md` 均已在 `origin/main`）。本轮上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`（这两处是 loop-2 期间监理会话在本地 main 上的改动，随本次快进上架，无产品代码）、`docs/acceptance/{pain,ratchet,roster}.md`。
 
 ## 5. 流程全景（一图）
 
@@ -171,4 +171,9 @@ flowchart LR
 | `docs/acceptance/ledger.md` | 仅监理 | 监理 | 上岗台账不可豁免 |
 | 流程层（三份班规 + pain/ratchet/roster） | 仅棘轮 | 棘轮直推 `origin/main` | 维护者确认 + 版本号宣布 + 三方回执版本一致 |
 | `AGENTS.md` | 维护者 | 维护者 | — |
+
+### 5.1 上架实测与 git-bash 坑（`推main用sha`）
+
+- 坑：棘轮工作区里 `git branch -f main <sha>` 报 `fatal: cannot force update the branch 'main' used by worktree at 'D:/Firefly-Canvas'`（`main` 被主工作区占用）。**规范推法**：`git push origin <sha>:main`（不碰本地分支），推后必验 `git fetch origin main && git rev-parse --short origin/main`。
+- 主工作区 `D:/Firefly-Canvas` 的本地 `main` 现在是 `a0a8615`，落后于 `origin/main@cac1818`。监理要取本轮班规**不要切分支**：用 `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/acceptance-supervisor/SKILL.md'`（`流程契约取法`），或在主工作区 `git merge --ff-only origin/main`（需维护者同意，监理不得自己动被验树 git 状态）。
 

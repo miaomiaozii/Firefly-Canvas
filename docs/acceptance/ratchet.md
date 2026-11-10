@@ -37,6 +37,7 @@
 | `读数贴错路径`、`类型需Dispatch`（v3 追加，P-28/P-29） | `docs/acceptance/roster.md` §3.9/§3.11 |
 | `旁证不定主体`（v3 追加） | `process-optimizer/SKILL.md` |
 | `流程层发权`、`发权范围`、`收权`（v3-patch 追加，P-30） | `process-optimizer/SKILL.md` |
+| `推main用sha`（v3-patch 追加，P-31） | `docs/acceptance/roster.md` §5.1 |
 
 ## v2 回归标记
 

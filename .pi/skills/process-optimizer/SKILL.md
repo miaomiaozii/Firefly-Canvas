@@ -60,7 +60,7 @@ disable-model-invocation: true
 
 - 实测教训：我把「维护者确认」读成「维护者亲手合并」，写下「我不推 main」，三方因此空等两个时钟点（`origin/main` 停在 `7e03237`，v3 只在 `loop/ratchet`）。这是流程层自己的 bug，归我改。
 - 发权范围（`发权范围`）：只有流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）**绝对禁推**；`AGENTS.md` 归维护者，我不写。推前必跑：`git diff --name-only origin/main...origin/loop/ratchet | grep -E '^(src|tools|tests|e2e|\.github|scripts|package|uv\.lock|pyproject)'` → 必须为空。
-- 推法（棘轮工作区，HEAD 不在 main 上）：`git branch -f main origin/loop/ratchet && git push origin main`。
+- 推法（实测口径，`push-main-with-sha`）：`git push origin <sha>:main`——**不碰本地分支**（实测 `git branch -f main <sha>` 在棘轮工作区被拒：`fatal: cannot force update the branch 'main' used by worktree at 'D:/Firefly-Canvas'`，P-31）。推后必验：`git fetch origin main && git rev-parse --short origin/main`。
 - 收权（`收权`）：维护者一句「流程层不许直推」即回到他合并；他可随时 revert 我的提交。三方对流程层的异议走 `pain.md`，不得自行改流程层。
 
 ## 棘轮规则（只向前的硬口径）
