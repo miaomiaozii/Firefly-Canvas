@@ -24,7 +24,7 @@ disable-model-invocation: true
 | `REPO` | `miaomiaozii/Firefly-Canvas`（`git remote -v` 为准） |
 | `MY_RUN` | 你自己 `run-create` 的 Run（会话内建） |
 | `PEER_RUNS` | 监理与交付方的 Run，由维护者粘给你 |
-| `PAIN_QUEUE` | `docs/acceptance/pain.md`（一行一条，真相在此，邮件只唤醒） |
+| `PAIN_QUEUE` | `docs/acceptance/pain.md`（一行一条，真相在此，邮件只唤醒；**`单写`：只由流程优化者写**——另两方不得追行，卡点以邮件正文上报，状态由我回写） |
 | `RATCHET` | `docs/acceptance/ratchet.md`（棘轮台账，只向前） |
 | `EVIDENCE_ROOT` | `D:/Firefly-Canvas-evidence`（实测在用；命名 `<issue>-<role>-<短sha>-<mode>`，如 `310-supervisor-20261110-092301-trial`）。**不得用仓库内目录**（会被别的会话 `git clean` 清掉，也会把基线 png 落在 `tools/e2e/baselines/` 变成改考卷） |
 

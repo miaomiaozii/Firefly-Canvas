@@ -24,13 +24,14 @@
 | `流程层必须推到 origin` | `process-optimizer/SKILL.md` |
 | `git show origin/main:` | 三个 skill |
 | `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
+| `--help 核对`（v3 校准追加） | `impl-session-contract/SKILL.md` |
 
 ## v2 回归标记
 
 | 标记 | 实际所在文件 |
 |---|---|
 | `version: 2` | 三个 skill |
-| `单写` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
+| `单写` | 三个 skill（v3 补齐 `process-optimizer/SKILL.md` 的 `PAIN_QUEUE` 行） |
 
 ## v1 回归标记（复跑：`grep -rlE -e <标记> .pi/skills AGENTS.md`，缺任一项即棘轮破损；标记按正则匹配）
 
@@ -79,13 +80,16 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （loop-2 实测）`send` 寻址：`--to run:12b3ab55bf53` 报 `run_not_found`；`--to run_12b3ab55bf53` 报 `terminal_not_found`；`--to run:run_12b3ab55bf53` 成功（P-18）。
 - （loop-3 自查实测）交付契约上岗前置第 4 项原文写「同时给 `docs/acceptance/pain.md` 追一行（状态 `pending`）」，与监理契约「队列只由流程优化者单写」矛盾（P-20，已 v3 修平：`单写` 现三个 skill 全含）。
 - （loop-2 监理自报，msg_1061adfdfedf）台账行未落地的归因：本轮演练硬约束「不得修改/创建任何文件（仅 /tmp 可写）」由维护者设定且未解除，监理称台账行文本已两次交付（状态邮件正文 + 监理会话报告），等维护者代落或授权；监理承诺下一轮上岗第一件事补行。台账现仍只有表头 + 示例行 —— 事实入册，归因待维护者确认（不记成监理单方执行缺口）。
-- （v3 生效前置，待维护者执行）`git push origin main` 把 v1→v3 流程层推上 `origin/main`；未推之前，下一轮三方按 `流程契约取法` 一律触发「即停」。
+- （v3 实测，`gh issue close --help` 于 `D:/Firefly-Canvas`）`gh issue close` 支持 `-c/--comment string`、`-r/--reason`、`--duplicate-of`，**无** `-F/--body-file`；`gh issue comment` 支持 `-b/--body`、`-F/--body-file`、`--edit-last/--delete-last`。`docs/agents/issue-tracker.md:26` 的 `gh issue close … --comment "..."` 有效。P-06 原「没有 `--comment-file`」表述属实但易误读，已按「自造 flag 前先 `--help` 核对」改写（P-05 校准注记落在此行）。
+- （维护者 msg_db4b3380d294 执行面）`git merge --ff-only loop/ratchet` 已在维护者侧把本地 main 推到 `a6dfa39`，三份 skill 现 `version: 3`；其独立复跑 v3 的 8 项标记命中一致，v1+v2 的 15 项记我方口径。**`origin/main` 仍未推**（向公共仓发布需维护者本人点头）。
 
 ## 待维护者定的事
 
 - `16df89a`（#310 改动）未进 main 但 Issue 已关闭 → 要不要补合并（P-11）。
 - 本机存量红与 `scenario_keys.sh` 3/3 必挂无人认领 → 门禁的组级 fail-fast 会永久遮住尾组（P-12、P-13）。
 - 流程文件的合并权在维护者：优化会话的改动走 `loop/*` 分支，监理复核通过后由维护者合并。
-- **v3 待合并**：`loop/ratchet` 上的 v3 补丁（三份 skill `version: 3` + `pain.md` 状态与 P-20/P-21 + `ratchet.md` v3 标记表与读数行）→ 需维护者合并到 main 并 `git push origin main`（P-19 的执行面）。
+- **v3 合并状态**：本地 main 已 ff 到 `a6dfa39`（维护者执行）；`origin/main` 未推（发布需维护者点头）。
+- **`git push origin main` 需维护者（人）批准**——已列为待办。推上去之前，下一轮三方按 `流程契约取法` 触发「即停」是预期行为，**不是新卡点，不得重复立项**（维护者 msg_db4b3380d294 明示）。
+- **下一轮用哪个 Issue：留空待维护者指定**，流程优化者与另两方不得自行领活。
 - #310 台账两行是否由监理自落（其称硬约束未解除）或维护者代落（P-04 面）。
 - P-14（诱饵，unverified）：如要覆盖「交完验收后的等待」，须先补证据（命令原文 + 时间戳/日志）再重设计改法，不得采用「轮询 `check`」。
