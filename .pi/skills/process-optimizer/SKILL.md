@@ -1,6 +1,6 @@
 ---
 name: process-optimizer
-description: 流程优化者（棘轮）契约：收监理与工人的卡点、改流程 skill、上架流程层、轮间通知与读数。
+version: 11
 version: 10
 disable-model-invocation: true
 ---
@@ -100,7 +100,7 @@ disable-model-invocation: true
 4. `RATCHET` 加版本行 + 读数行；`ROSTER` 更新 §1.4 生效版本与 §4 上架 sha。
 5. `TABLE_CHECK` 绿 + 产品面 grep 空 → 按 §6 **上架六步**（`上架顺序`，不得即兴）推 `origin/main`。
 6. 重写 `ROSTER` §0 状态锚（≤6 行；队列计数按 `pain.md` 实际行数数）。
-7. 每方各一封生效通知（前提＝两个 `轮末 <issue> <sha>` 信号齐，见 §5；正文=版本号+sha+**该方需要改变的动作 ≤5 条**+通俗解释），回执只需一行 `已读 version:<n> @<sha>`；两行回执记进 `RATCHET`。
+7. 每方各一封生效通知（前提＝两个 `轮末 <issue> <sha>` 信号齐，见 §5；正文=版本号+sha+**该方需要改变的动作 ≤5 条**+通俗解释），回执只需一行 `已读 version:<n> @<sha>`；两行回执记进 `RATCHET`。（`发信写法`：`orca orchestration send --from <自己Run> --to run:<对方Run> --subject … --body "$(cat <正文文件>)" --json`；`send` 无 `--body-file`，自造 flag 前先 `--help` 核对）
 8. 补 `RATCHET` 棘轮读数行（列以 `ratchet.md` 该表现有表头为准，不在本文件重述 schema）；坏指标连续两轮不降 → 同 commit 写复盘段落。
 9. 轮内他们按旧版跑完手头工作，不中途换版（`轮内冻结`）。
 
@@ -132,3 +132,4 @@ skill 由会话自行调用，契约只保证硬口径不被 skill 跳过。你�
 - 队列积压 > 10 条或连续两轮读数不清零 → 上报，先清账。
 - 双盲或可见性任一不成立 → 立即停；发现同一角色多个存活会话 → 停，等 user 退役。
 - 状态锚门命令五行读数不一致，或 ≠ `ROSTER` §1.4 登记值 → 先补推流程层再开工。
+

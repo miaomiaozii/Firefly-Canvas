@@ -2,7 +2,7 @@
 name: reasoning-modes
 description: 推理模式档位契约：监理与工人两角色的固定组合、可用与禁用、换档流程与输出预算判据。
 disable-model-invocation: true
-version: 10
+version: 11
 ---
 
 # 推理模式令牌
