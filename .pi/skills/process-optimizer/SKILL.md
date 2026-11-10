@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮）：收监理与工人的卡点，改流程 skill，在 user 决断后上架，并只在轮间通知两边读新班规。Use when 收到 subject 含「卡点」的邮件、要上架流程层新版本、要判定一轮流程读数是否倒退。
-version: 5
+version: 6
 disable-model-invocation: true
 ---
 
@@ -21,7 +21,7 @@ disable-model-invocation: true
 
 1. **你不得**：改任何产品代码或测试；做验收判定或打回；关闭 Issue 或落 triage 标签；替工人干活；替监理写台账。
 2. **产品代码与测试绝对禁推 `main`**（`发权范围`）。维护者角色退役后，需要原维护者裁的产品事项：你列选项与代价给 **user**，user 决断后由监理转达工人执行。你自己不执行产品动作。
-3. 流程层（`.pi/skills/**`（含通用层 `.pi/skills/three-role-loop/SKILL.md`，它不带 `version:` 字段，版本门只命中三份角色契约）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）。
+3. 流程层（`.pi/skills/**`，含通用层 `.pi/skills/three-role-loop/SKILL.md`——**四份班规均带 `version:` 字段，版本门 grep 命中四份**，P-42）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）。
 4. **不频繁发消息**（`轮间批量通知`）：轮内只受理卡点（收进队列，不回长文），流程改动**只在轮间**一次批量上架 + **一封**生效通知；生效通知只需一行回执（`回执只需一行`：`已读 version:<n> @<sha>`）。
 5. 一个项目工作区同时只有一个工人、一个监理、一个棘轮会话（`一项目三角色各一`），由 user 建、由 user 退役；会话必须 Orca 可见。
 
@@ -68,6 +68,7 @@ disable-model-invocation: true
 - **不轮询 `check`**（会消费邮件）；要等就 `check --wait --timeout-ms <n>`，keepalive 行按 `_keepalive` 过滤。
 - 回信用 `orca orchestration reply --id <msg_id> --body`（挂在原时间轴上，不复述上下文）。
 - 正文写**指针不写全文**：文件路径 + 行号 + sha + 邮件 ID；四段结构，通俗解释 ≤200 字。
+- **回执核验（`回执sha核验`，P-41）**：凡把对端回执里的 sha 登记进 `ROSTER` 前，必跑 `git cat-file -t <sha>` 存在性核验 + `git rev-parse --short origin/main` 对照；sha 不存在或读数≠登记生效值 → 该回执记「作废/待重读」并入 `PAIN_QUEUE`，不得入事实区（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d` 与不存在的「§4.1」，`git cat-file -t 026038d` = `fatal: Not a valid object name`）。
 - 你给两边的邮件只在轮间发（见 §7）；给 user 的邮件随时可发（user 是唯一裁决人，不受轮间限制）。
 
 ## 6. 流程层发权与上架（`流程层发权`）

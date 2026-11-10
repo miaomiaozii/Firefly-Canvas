@@ -1,5 +1,6 @@
 ---
 name: three-role-loop
+version: 6
 disable-model-invocation: true
 description: 三角色循环（工人 / 监理 / 流程优化者）的通用运行规则：角色边界、上岗前置与版本门、信箱增量协议、卡点队列、流程层发权、会话可见性与卫生。跨项目复用；具体项目的参数与例外看该项目 .pi/skills/ 下三份契约。
 ---

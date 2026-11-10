@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 5
+version: 6
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -68,6 +68,8 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 实测反例（本次演练踩到）：`git worktree add D:/ff-wt/w310` 建的工作树 Orca 不认（`orca worktree current` 报 `No Orca workspace contains the current directory`），`orca terminal create --worktree path:<非托管路径>` 退化成后台句柄，`tabId` 形如 `pty:6a25…`，界面里没有页签——结果维护者只看到一个新会话。`orca terminal create` 自己的措辞就是「creates a visible terminal tab … falls back to a background handle if the UI cannot adopt it」。
 
 认人认 handle，别认标题：`orca terminal rename` 会被 pi 自己的标题刷新覆盖（实测监理会话改名 `监理-310` 被改回 `π - Firefly-Canvas`）。
+
+- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或版本读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数必须四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
 
 ## 信箱与上下文卫生（v5，`信箱增量`）
 

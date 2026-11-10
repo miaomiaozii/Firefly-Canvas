@@ -1,6 +1,6 @@
 ---
 name: impl-session-contract
-version: 5
+version: 6
 disable-model-invocation: true
 description: 工人（旧称交付方）与监理的交接协议。Use when 准备提交一次交付、收到 subject 含「验收打回」或「指示推送并关闭」的邮件、要关某个 Issue。
 ---
@@ -29,6 +29,8 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 6. **口径表与名册（`口径表`）**：`docs/acceptance/roster.md` 是称呼、编号、同名班规副本指代、版本基准的唯一真相源（棘轮单写，你只读）。上岗先对册；引用角色一律写 `规范名 + term_<handle> + run_<id>`（`认人编号`），引用流程文件必须写代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径——你在 `issue/<N>` 工作树里看到的那份班规叫 `班规@被验树`，不作数。
 5a. **信箱与上下文卫生（`信箱增量`）**：`check` 会消费邮件且只回未读批次（这本身就是增量），**不得循环 `check` 当轮询**；等启用 `check --wait --timeout-ms <n>`。看有什么信用 `inbox --limit <n>`（索引视图），只点名读需要全文的那几封；断档恢复用 `inbox --terminal run:<SELF_RUN> --limit <n> --full`。回信优先 `reply --id msg_<id>`；正文只写指针（路径+行号+sha+邮件 ID）。棘轮只在轮间发生效通知，你只回一行 `已读 version:<n> @<sha>`。
 5. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理完整 RunId（含 run_ 前缀）>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数），然后才等任务书。监理未收到回执不应发任务书。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
+
+5b. **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或版本读数≠名册登记值，该回执作废重读（实测 2026-11-10：v5 回执报 `origin/main@026038d`，该对象在仓库不存在，还引了不存在的「§4.1」）。上岗门读数四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
 
 ## 上岗档位
 

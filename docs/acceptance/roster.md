@@ -43,7 +43,8 @@
 
 ### 1.4 版本基准
 
-- 本轮基准值 = **5**（v5 边界令 user m00719，维护者退役、宣布方改为棘轮；本版由棘轮宣布并登记于此）。
+- 本轮基准值 = **6**（v6：P-41 回执sha核验 + P-42 通用层进门，由棘轮宣布并登记于此）。
+- 历史基准：v5 = 边界令（m00719，维护者退役）；上架 `origin/main@e78a29d`，监理回执 `已读 version:5 @e78a29d`（msg_560fd955e257，`git cat-file -t e78a29d`=commit，**有效**）；工人 v5 回执 msg_551a1fda9aa9 报 `026038d`/`version:4`/`§4.1`——sha 不存在（`git cat-file -t` fatal），**作废待重读**（P-41）。
 - 历史基准（保留供追溯）：本轮之前 = **4**（依原维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4）；棘轮自测 `origin/main@c53f877` 三份全 `version: 4`；监理 msg_71852e372417、交付方 msg_d52bb7e1a11b 同 sha 互证 → v4 版本门闭合。
 - 上岗版本门判据（v5）：**读数等于本节登记的生效值**（宣布方=棘轮），不得填自报值、不得填「读过就行」；在途轮次按 `班规@origin` 当时读到的版本跑完（轮内冻结），新轮开工前必须先读到 5。
 - v5 上架自测（棘轮，当场）：三份班规本地 `grep -n "^version:"` 全 = 5；上架后须复测 `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 全 = 5，并把 sha 写进 §4 与 §7.1。
@@ -133,7 +134,7 @@
 
 ## 4. 流程层发权与上架状态（`流程层发权`）
 
-- **谁写谁推**：流程层 = 四份班规（三份角色契约 + 通用层 `.pi/skills/three-role-loop/SKILL.md`，代号 `班规@通用`；通用层不带 `version:` 字段，版本门 grep 只命中三份角色契约）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
+- **谁写谁推**：流程层 = 四份班规（三份角色契约 + 通用层 `.pi/skills/three-role-loop/SKILL.md`，代号 `班规@通用`；**通用层带 `version:` 字段，版本门 grep 命中四份**，P-42）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
 - **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归 user，棘轮持 user 授权时可改并同 commit 上架（`AGENTS写权`，实测：v5 边界令 m00719 后的同步）。
 - **收权（`收权`）**：user 一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
 - **上架状态**：**最新已上架 = `origin/main@0bba2ce`（v5）**：`git push origin HEAD:main` → `318c505..0bba2ce`；上架后当场回读三份班规 `^version:` 全 = 5（process-optimizer `4:version: 5`、acceptance-supervisor `3:version: 5`、impl-session-contract `3:version: 5`）；产品面 grep 为空（exit 1）；`check_tables.py` exit 0。上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md`、`AGENTS.md`（`AGENTS写权`，user m00719 授权）、`docs/acceptance/{pain,ratchet,roster}.md`。**通用层 skill 不在仓内**（`班规@origin:.pi/skills/three-role-loop/SKILL.md`，本机全局目录，无 git 版本控制——已知局限，user 可裁决是否进仓）。
@@ -236,5 +237,5 @@ flowchart LR
 |---|---|
 | 三份契约 `version: 5` | **已上架**：`origin/main@f1a270f`（含通用层进仓 P-40），当场回读三份全 `version: 5`；`git ls-tree origin/main .pi/skills/three-role-loop/SKILL.md` 非空；全局副本已移出加载路径（备份 `C:/Users/Administrator/AppData/Local/Temp/three-role-loop-global-backup`）（§4） |
 | 生效通知 | **已发（user 批准 m00809「1、2 按推荐」）**：监理 `msg_637dc8b6366d`、工人 `msg_c5e01278589b`（各一封，5 条动作 + 一行回执要求）。回执待落，到后记本表 | 
-| 回执 | 监理：待；工人：待 |
+| 回执 | 监理：`已读 version:5 @e78a29d`（msg_560fd955e257，sha 核验通过）；工人：v5 回执**作废**（假 sha，P-41），v6 重读待落 |
 | 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |
