@@ -25,6 +25,7 @@
 | `git show origin/main:` | 三个 skill |
 | `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `--help 核对`（v3 校准追加） | `impl-session-contract/SKILL.md` |
+| `归因带原始出处`（v3 追加，单写者自约束） | `process-optimizer/SKILL.md` |
 
 ## v2 回归标记
 
@@ -81,6 +82,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （loop-3 自查实测）交付契约上岗前置第 4 项原文写「同时给 `docs/acceptance/pain.md` 追一行（状态 `pending`）」，与监理契约「队列只由流程优化者单写」矛盾（P-20，已 v3 修平：`单写` 现三个 skill 全含）。
 - （loop-2 监理自报，msg_1061adfdfedf）台账行未落地的归因：本轮演练硬约束「不得修改/创建任何文件（仅 /tmp 可写）」由维护者设定且未解除，监理称台账行文本已两次交付（状态邮件正文 + 监理会话报告），等维护者代落或授权；监理承诺下一轮上岗第一件事补行。台账现仍只有表头 + 示例行 —— 事实入册，归因待维护者确认（不记成监理单方执行缺口）。
 - （v3 实测，`gh issue close --help` 于 `D:/Firefly-Canvas`）`gh issue close` 支持 `-c/--comment string`、`-r/--reason`、`--duplicate-of`，**无** `-F/--body-file`；`gh issue comment` 支持 `-b/--body`、`-F/--body-file`、`--edit-last/--delete-last`。`docs/agents/issue-tracker.md:26` 的 `gh issue close … --comment "..."` 有效。P-06 原「没有 `--comment-file`」表述属实但易误读，已按「自造 flag 前先 `--help` 核对」改写（P-05 校准注记落在此行）。
+- （loop-3 归因取证，P-06/P-22）`--comment-file` 失败的**行为主体无法核实，取证为空**：`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/comments --jq '.[]|select(.body|test("comment-file";"i"))'` → 0 命中；`grep -rIl -- "--comment-file" D:/Firefly-Canvas-evidence D:/ff-wt D:/Firefly-Canvas/docs` → 只命中 `docs/acceptance/pain.md` 与 `ratchet.md`（我们自己的台账）；`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/events` 的 closed 事件 → `actor=miaomiaozii, created_at=2026-11-10T09:33:34Z`（三方共用同一 bot 账号，无法定主体）；`git show cd83733:docs/acceptance/pain.md` 的 P-06 原文未记主体。**台账只写「主体未核实」，不指名任何一方**；我此前那句「监理自造」已删（立 P-22，标记 `归因带原始出处`）。
 - （维护者 msg_db4b3380d294 执行面）`git merge --ff-only loop/ratchet` 已在维护者侧把本地 main 推到 `a6dfa39`，三份 skill 现 `version: 3`；其独立复跑 v3 的 8 项标记命中一致，v1+v2 的 15 项记我方口径。**`origin/main` 仍未推**（向公共仓发布需维护者本人点头）。
 
 ## 待维护者定的事
