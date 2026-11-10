@@ -13,6 +13,8 @@ if [ ! -x "$TABBIT" ]; then echo "FATAL: tabbit-cli 不存在: $TABBIT"; exit 99
 PID=$(curl -s -m 5 "$BASE/api/healthz" | python -c 'import sys,json;d=json.load(sys.stdin);ids=d.get("open_project_ids") or [];print(ids[0] if ids else "")' 2>/dev/null)
 [ -z "$PID" ] && { echo "FATAL: $BASE 上没有打开的项目"; exit 98; }
 URL="$BASE/static/smart-canvas.html?id=$PID&project=$PID&project_mode=1"
+# #296：场景结束态自动截图存证；基线对比 tools/e2e_shot_diff.py
+EVID_DIR="$(cd "$(dirname "$0")/../.." && pwd -W)/.pipeline/evidence/screenshots"
 FAILS=0
 
 run() {
@@ -38,9 +40,15 @@ await page.evaluate(() => {
   return true;
 });
 await page.waitForTimeout(400);
+const __r = await (async () => {
 $js
+})();
+await page.screenshot();
+return __r;
 JS
 )
+    SHOT=$(echo "$out" | grep -o '"path":"[^"]*screenshot[^"]*\.png"' | tail -1 | sed 's/"path":"//;s/"$//;s/\\/\//g')
+    if [ -n "$SHOT" ] && [ -f "$SHOT" ]; then mkdir -p "$EVID_DIR"; cp -f "$SHOT" "$EVID_DIR/$name-attempt$i.png" 2>/dev/null || true; fi
     if echo "$out" | grep -q '"status":"succeeded"'; then
       echo "PASS  $name  $(echo "$out" | grep -o '"evidence":"[^"]*"' | head -1)"
       return
