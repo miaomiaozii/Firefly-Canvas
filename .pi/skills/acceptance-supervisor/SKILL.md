@@ -19,6 +19,40 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 | `WORKTREE` | 被验收工作树：`orca worktree current --json` → `path` |
 | `MODE` | 推理档位，默认 `{REASON:hyper}{REASON:ihyper}`；输出预算紧时用 `{REASON:socrates}{REASON:ihouse}`。全部规定见 `.pi/skills/reasoning-modes/SKILL.md` |
 | `EVIDENCE_ROOT` | 仓库外可写归档根，默认 `D:/Firefly-Canvas-evidence`。门禁不传 `--evidence-dir` 时落系统临时目录，会被清理，等于证据消失 |
+| `MY_TERM` | 你所在终端的 handle：`orca terminal list --json` 里按 `worktreePath` 与自己 cwd 对上号的那条，`handle` 字段 |
+
+## 会话可见性（硬性前置，2026-11-10 两会话演练实测）
+
+监理和交付方两个会话都必须是 Orca 界面里看得见、点得开的会话——维护者要能随时抽查现场。子代理看不见是可以接受的（维护者原话：「监理和woker必须是都是可见的会话」）；监理或交付方看不见，这一轮验收不作数。
+
+上岗先跑三条自检，任一不成立就停下上报维护者，不要开始验收：
+
+```bash
+orca worktree current --json                    # 报 selector_not_found = 本会话不在 Orca 托管的工作树里
+orca terminal show --terminal <MY_TERM> --json  # tabId 是 UUID = 界面里有页签；tabId 以 pty: 开头 = 后台游离句柄，界面里看不见
+orca terminal list --json                       # 按 handle 找得到自己，且那条的 worktreePath 就是自己 cwd 所在的工作树
+```
+
+启动配方（维护者执行，2026-11-10 实测跑过一遍）。工作树必须让 Orca 自己建，**不要 `git worktree add`**：
+
+```bash
+orca worktree create --name w<issue> --repo path:D:/Firefly-Canvas \
+  --base-branch main --branch issue/<issue> --issue <issue> --setup skip --json
+# 返回 result.worktree.path = C:/Users/Administrator/orca/workspaces/Firefly-Canvas/w<issue>
+# （落点由 Orca 定，不是你指定的路径；--setup skip 跳过安装钩子）
+orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thinking xhigh" --json
+# 实测返回 tabId = UUID（如 8829d00e-…）= 界面里有可见页签
+```
+
+监理一侧在主工作区再起一个可见终端即可：`orca terminal create --worktree path:D:/Firefly-Canvas --command "pi.cmd --thinking xhigh" --focus --json`。
+
+上面的 `--agent pi` 不保证能把 harness 档位带到 `--thinking xhigh`（`--effort` 未实测），所以配方用 `terminal create --command`。会话起来后把「读 `.pi/skills/impl-session-contract/SKILL.md` 照它执行」+ 首条 `{REASON:…}` 令牌发给它。
+
+演练完收尾：`orca terminal close --terminal <handle>` 再 `orca worktree rm --worktree path:<path> --force --delete-branch`。
+
+实测反例（本次演练踩到）：`git worktree add D:/ff-wt/w310` 建的工作树 Orca 不认（`orca worktree current` 报 `No Orca workspace contains the current directory`），`orca terminal create --worktree path:<非托管路径>` 退化成后台句柄，`tabId` 形如 `pty:6a25…`，界面里没有页签——结果维护者只看到一个新会话。`orca terminal create` 自己的措辞就是「creates a visible terminal tab … falls back to a background handle if the UI cannot adopt it」。
+
+认人认 handle，别认标题：`orca terminal rename` 会被 pi 自己的标题刷新覆盖（实测监理会话改名 `监理-310` 被改回 `π - Firefly-Canvas`）。
 
 ## 上岗档位
 
@@ -131,6 +165,7 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 
 ## 停止条件
 
+- 可见性三条前置任一不成立（见「会话可见性」）→ 停下上报维护者，不要开始验收：不可见的监理会话无法被抽查，等于没有监理。
 - 门禁脚本不存在或 `--help` 失败 → 停下上报，用现成门禁判定；手写等价命令不算门禁。
 - 端到端三条前置条件（tabbit-cli / healthz 有已打开项目 / 能起 bash）任一不满足 → 该维记「证据不可得」并写清缺哪条，**不得记通过，也不得记交付方缺陷**。
 - `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。

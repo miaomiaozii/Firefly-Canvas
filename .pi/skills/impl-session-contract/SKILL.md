@@ -8,6 +8,12 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 你（含你派出的子代理）是交付方。判定权在监理（`.pi/skills/acceptance-supervisor/SKILL.md`）：它自己复跑门禁，你的汇报是索引，不是证据。
 
+## 上岗前置（先验，缺就停）
+
+1. **工作树由维护者用 `orca worktree create` 建好交给你**（带 `--branch issue/<N> --issue <N>`）。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），维护者在界面里找不到你——监理轮当场失效。
+2. 自检两条，缺一就上报维护者、不要开工：`orca worktree current --json` 不报 `selector_not_found`；`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID。
+3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（维护者预建再转交给你会把邮件注入到维护者会话）。监理的 Run 由维护者粘给你。
+
 ## 上岗档位
 
 默认 `{REASON:007}{REASON:icode}`（agentic 操作员：多步工具编排 + 错误隔离 + 改→跑门禁→修到绿的自纠错循环），后续每条重复同一组合。选型是 2026-11-10 两轮六组合×两任务实测定的（见 `.pi/skills/reasoning-modes/SKILL.md`）；备选 `{REASON:ultra}{REASON:icoder}`，阶段拆分最清楚、“先提交再汇报”说得最明，但实测两轮都把正文写到截断，用它就需把输出预算提到 4000+。
