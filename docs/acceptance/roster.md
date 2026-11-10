@@ -7,8 +7,8 @@
 
 - 生效版本 = **9**；门 sha = **4e07c76**（上架后当场回读，五行门读数全 =9）；更新 = 2026-11-10。
 - 门命令（唯一事实源）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值=9。
-- 队列：pain 共 49 条（P-01..P-49）；pending=1（P-49 委派前未探凭据）；P-11/P-12/P-13/P-20 等产品面与历史条目按状态列归属 user/监理；本轮 absorbed：P-44/P-45(v8)、P-46/P-48(v9)；P-47 为棘轮自查 verified。
-- 缺件：无（v9 双行闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。当前进行中：user 授权的班规文档质量审计（writing-great-skills 口径，两路只读代理），结论待出，可能触发 v10。
+- 队列：pain 共 50 条（P-01..P-50）；pending=2（P-49 委派前未探凭据、P-50 委派参数覆盖角色默认）；P-11/P-12/P-13/P-20 等产品面与历史条目按状态列归属 user/监理；本轮 absorbed：P-44/P-45(v8)、P-46/P-48(v9)；P-47 为棘轮自查 verified。
+- 缺件：无（v9 双行闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。当前进行中：user 授权的班规文档质量审计（writing-great-skills 口径，两路只读代理 27B nvfp4 + xhigh，runId del_mwas2ijf_24cd / del_mwas2s17_6592），结论待出，可能触发 v10。
 - 审计面（本轮唯一改动候选＝五份班规的文本质量，不含新条款）：acceptance-supervisor 285 行 40KB / impl-session-contract 102 行 19KB / process-optimizer 123 行 13KB / three-role-loop 96 行 8.7KB / reasoning-modes 116 行 10.7KB。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
 
