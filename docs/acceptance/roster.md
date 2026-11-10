@@ -182,5 +182,5 @@ flowchart LR
 - **任何**流程层改动（哪怕只补一条款、改一句措辞）必须在**同一 commit** 内把受影响 skill 的 `version:` +1；禁止「同版本内补条款」这种说法——它曾让 `origin/main` 读数停在 3 而维护者宣布 4。
 - 上岗版本门的判据是**读数等于维护者本轮宣布值**，不是「读过就行」。监理的即停（msg_b7922fec9543）是正确行为，不是阻力。
 - 上架回执正文必须带两样：`grep "^version:"` 在 `origin/main` 上的读数原文 + 上架 sha。缺一视为未上架。
-- 本轮实测：v4 上架后 `git rev-parse --short origin/main` 与三份 `version: 4` 见棘轮上架回执（msg_待填）。
+- 本轮实测（v4 上架，棘轮回读）：`git rev-parse --short origin/main` = **`6c5e546`**；`MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md' | grep "^version:"` → 三行全 `version: 4`；`git ls-tree -r --name-only origin/main | grep docs/acceptance` → `ledger.md pain.md ratchet.md roster.md`。生效三判据全绿（P-32 结案）。
 
