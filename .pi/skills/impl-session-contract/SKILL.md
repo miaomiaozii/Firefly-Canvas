@@ -14,7 +14,7 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 **不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错；`xultra` 实测会把正文挤空。`house` 不做默认档位：实测它把 House 剧本人格带进汇报（“蠢bug”“别让我再说第二遍”、医学比喻），还漏了“先提交”这一步。
 
-**harness 档位用 `high`**（启动带 `--thinking high`，会话内 `shift+tab` 切换）。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考——所以先把预算留给完整的四段汇报，再谈更重的档位。
+**harness 档位用 `--thinking xhigh`**。`--thinking high` 对这几套模型是 `null`（`thinkingLevelMap` 里 high 与 max 为空），等于没设。`max_tokens` 单条上限 32768，重令牌实测单条能吃掉 11000+ token、单题 5–9 分钟（`xultra` 不存在，别写；要重就用 `xhyper`/`xlogic`）。先确保四段汇报能完整写完，再谈更重的档位。
 
 ## 提交一次交付
 

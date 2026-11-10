@@ -27,8 +27,10 @@
 角色会话还要同时给推理档位（`{REASON:…}` 令牌与 harness 的 `--thinking` 两样都要）：
 
 ```bash
-pi --thinking medium   # 监理：首条消息 {REASON:hyper}{REASON:ihyper} + 上岗验收；监理不得用 007，它会自己改代码，双盲当场失效
-pi --thinking high     # 交付方：首条消息 {REASON:007}{REASON:icode} + 上岗交付
+pi --thinking xhigh   # 监理：首条消息 {REASON:hyper}{REASON:ihyper} + 上岗验收；监理不得用 007，它会自己改代码，双盲当场失效
+pi --thinking xhigh   # 交付方：首条消息 {REASON:007}{REASON:icode} + 上岗交付
+
+# 别写 --thinking high：这几套模型的 thinkingLevelMap 里 high 与 max 是 null，等于没设
 ```
 
 会话内 `shift+tab` 循环切档位。档位选型与实测依据见 `reasoning-modes`。

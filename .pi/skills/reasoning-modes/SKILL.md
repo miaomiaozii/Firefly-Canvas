@@ -30,7 +30,9 @@ orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
   --prompt "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。PEER_RUN=run_xxxx"
 ```
 
-令牌只管模式，不管 harness 的推理预算——两个都要给。启动参数：监理 `--thinking medium`，交付方 `--thinking high`（会话内 `shift+tab` 循环切换，`ctrl+s` 存进 settings）。`--model <模型>:medium` 也可以。
+令牌只管模式，不管 harness 的推理预算——两个都要给。
+
+**harness 档位统一 `--thinking xhigh`**（会话内 `shift+tab` 循环，`ctrl+s` 存 settings）。实测依据：`~/.pi/agent/models.json` 里 `strata-*` / `llama-cpp-local` 的 `thinkingLevelMap` = `{minimal:null, low:"low", medium:"medium", high:null, xhigh:"xhigh", max:null}`——**`high` 与 `max` 是空值，写上去等于没设**。这套模型真正生效的只有 `low` / `medium` / `xhigh`。模型单条生成上限 32768 token。
 
 ## 两个角色的固定组合
 
