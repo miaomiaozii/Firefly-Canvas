@@ -5,12 +5,12 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **10**；门 sha 与上架 sha 在下方「门命令」跑完后回读（棘轮上架后当场改写本行为准）；更新 = 2026-11-10。
+- 生效版本 = **10**；上架 sha = `9d2d532`（origin/main，2026-11-10 回读：五份班规 `^version:` 全 =10）；更新 = 2026-11-10。
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
 - 队列：pain 共 56 条（P-01..P-56）；pending/queued=3（P-51 监理契约渐进披露、P-52 术语指针与工人契约瘦身、P-53 台账头部称呼——均 queued 待 v11）；本轮 v10 absorbed：P-49/P-50（委派自证）、P-54（标记可命中）、P-55（易变事实唯一落点）、P-56（班规单一源）；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
 - 缺件：无。v9 双行已闭合（监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。v10 生效通知待两个 `轮末` 信号齐后发，回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
 - 本轮性质：班规文本质量审计（非产品轮）——两路只读子代理按 writing-great-skills 口径审五份班规，自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh（runId del_mwas2s17_6592 / del_mwas2ijf_24cd）；产品代码与测试零改动。
-- 下一轮开工前两件事（user 侧）：①指定新 Issue；②确认 v10 上架 sha（棘轮上架后写进本节第二行）。
+- 下一轮开工前两件事（user 侧）：①指定新 Issue；②v10 已上架 `origin/main@9d2d532`（第二行已回写，无需 user 动手）。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
 
 ## 1. 口径表（先统一这个，再谈别的）
