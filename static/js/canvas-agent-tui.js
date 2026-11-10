@@ -849,11 +849,12 @@ function agentNodeBodyHtml(node) {
         const selected = currentModel === modelValue ? 'selected' : '';
         modelOptionsHtml += `<option value="${escapeAttr(modelValue)}" ${selected}>${escapeHtml(modelLabel)}</option>`;
     }
-    const modelSelectHtml = `<select class="agent-tui-model-select" data-agent-model="${escapeAttr(nodeId)}" title="模型">${modelOptionsHtml}</select>`;
+    // #301：模型下拉整合进头部设置簇（「模型」前缀标签 + aria-label），不再像散落的调试控件。
+    const modelSelectHtml = `<select class="agent-tui-model-select" data-agent-model="${escapeAttr(nodeId)}" title="模型" aria-label="选择模型">${modelOptionsHtml}</select>`;
 
     // Autonomy select options — node is the source of truth
     const currentAutonomy = node.autonomy || 'cautious';
-    const autonomySelectHtml = `<select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治级别">
+    const autonomySelectHtml = `<select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治级别" aria-label="选择自治级别">
         <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>谨慎</option>
         <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>标准</option>
         <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>自主</option>
@@ -869,11 +870,11 @@ function agentNodeBodyHtml(node) {
             const selected = branch.id === currentBranchId ? 'selected' : '';
             branchOptionsHtml += `<option value="${escapeAttr(branch.id)}" ${selected}>${escapeHtml(branch.name)}</option>`;
         }
-        branchSelectHtml = `<select class="agent-tui-branch-select" data-agent-branch="${escapeAttr(nodeId)}" title="切换分支">${branchOptionsHtml}</select>`;
+        branchSelectHtml = `<select class="agent-tui-branch-select" data-agent-branch="${escapeAttr(nodeId)}" title="切换分支" aria-label="切换分支">${branchOptionsHtml}</select>`;
     }
 
     // Fork button
-    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉">🌿</button>`;
+    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉" aria-label="从历史轮次分叉">🌿</button>`;
 
     // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
@@ -886,16 +887,20 @@ function agentNodeBodyHtml(node) {
                     <div class="agent-tui-attach-name">${escapeHtml(img.name)}</div>
                     ${img.caption ? `<div class="agent-tui-attach-caption">${escapeHtml(img.caption)}</div>` : ''}
                 </div>
-                <button type="button" class="agent-tui-attach-remove" data-agent-attach-remove="${idx}" title="${tr('smart.agentAttachRemove')}">×</button>
+                <button type="button" class="agent-tui-attach-remove" data-agent-attach-remove="${idx}" title="${tr('smart.agentAttachRemove')}" aria-label="${tr('smart.agentAttachRemove')}">×</button>
             </div>`).join('');
         pendingHtml = `<div class="agent-tui-attach-row">${chips}</div>`;
     }
+
+    // #301：空会话给 body 加类，空状态垂直居中，缓解「中间大空白」的失衡感。
+    const hasTuiContent = Boolean(state.messages.length || state.toolActivities.size || state.confirm);
 
     return `<div class="agent-tui-card">
         <div class="agent-tui-header">
             <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
             <span class="agent-tui-status ${statusClass}">${statusText}</span>
             <span class="agent-tui-settings">
+                <span class="agent-tui-settings-label">模型</span>
                 ${modelSelectHtml}
                 ${autonomySelectHtml}
                 ${branchSelectHtml}
@@ -903,24 +908,29 @@ function agentNodeBodyHtml(node) {
             </span>
         </div>
         ${agentReconnectBannerHtml(state)}
-        <div class="agent-tui-body" data-agent-tui-body="${escapeAttr(nodeId)}">
+        <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
                 ${thinkingHtml}
-                ${messagesHtml || '<div class="agent-tui-empty">输入自然语言描述你的创作目标...</div>'}
+                ${messagesHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
                 ${toolsHtml}
                 ${confirmHtml}
             </div>
         </div>
         ${pendingHtml}
         <div class="agent-tui-input-row">
-            <span class="agent-tui-prompt">&gt;</span>
-            <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令... (Enter 发送 / Shift+Enter 换行，运行中 Enter 排队)" rows="1"></textarea>
-            <div class="agent-tui-action-buttons">
-                <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}">📎</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="Steer (重定向当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="Follow-up (排队后续指令)" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
-                <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="Abort (中止当前回合)" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
+            <div class="agent-tui-input-line">
+                <span class="agent-tui-prompt" aria-hidden="true">&gt;</span>
+                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="1"></textarea>
+            </div>
+            <div class="agent-tui-action-row">
+                <div class="agent-tui-action-buttons">
+                    <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">📎</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
+                </div>
+                <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令">发送</button>
             </div>
             <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
         </div>
@@ -956,6 +966,23 @@ function agentTaskNodeBodyHtml(node){
 }
 
 function agentProjectId(){ return canvas?.project_id || canvas?.project || sourceProjectId || ''; }
+
+// #301：「Enter 发送」与「发送」按钮共用的提交逻辑（空输入 no-op）：
+// busy → 排队 follow_up（#268：该通道无 images 参数，附件留在队列随下一条 prompt 发出）；
+// 否则发 prompt 并带上待发附件（图片/视频 contact sheet/音频波形卡）。
+function agentTuiSendInput(inputEl, nodeId, projectId) {
+    const message = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
+    if (!message) return;
+    const inputState = getAgentTuiState(nodeId);
+    if (inputState && inputState.status === 'busy') {
+        sendAgentFollowUp(nodeId, projectId, message);
+    } else {
+        const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];
+        if (inputState) inputState.pendingImages = [];
+        sendAgentPrompt(nodeId, projectId, message, pending);
+    }
+    inputEl.value = '';
+}
 
 function bindAgentNodeControls(el, node){
     // TUI-style agent node: bind terminal input
@@ -1002,21 +1029,18 @@ function bindAgentNodeControls(el, node){
             event.stopPropagation();
             if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { // #252：IME 候选确认回车不触发发送
                 event.preventDefault();
-                const message = inputEl.value.trim();
-                if (message) {
-                    const inputState = getAgentTuiState(nodeId);
-                    if (inputState && inputState.status === 'busy') {
-                        // #268：follow-up 通道无 images 参数，附件留在队列随下一条 prompt 发出
-                        sendAgentFollowUp(nodeId, projectId, message);
-                    } else {
-                        // #268：带上待发附件（图片/视频 contact sheet/音频波形卡）
-                        const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];
-                        if (inputState) inputState.pendingImages = [];
-                        sendAgentPrompt(nodeId, projectId, message, pending);
-                    }
-                    inputEl.value = '';
-                }
+                agentTuiSendInput(inputEl, nodeId, projectId);
             }
+        });
+    }
+
+    // #301：「发送」按钮——行为与 Enter 发送完全一致（空输入 no-op）
+    const sendBtn = el.querySelector('[data-agent-send]');
+    if (sendBtn) {
+        sendBtn.addEventListener('mousedown', event => event.stopPropagation());
+        sendBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            agentTuiSendInput(inputEl, nodeId, projectId);
         });
     }
 
