@@ -23,3 +23,12 @@
 两份都设了 `disable-model-invocation: true`，不会自动加载。激活方式二选一：会话内手敲 `/skill:acceptance-supervisor` 或 `/skill:impl-session-contract`；或在新会话的启动 prompt 里写明"读上面那个路径并照它执行"。
 
 监理裁定台账在 `docs/acceptance/ledger.md`，一行一条，供维护者抽查。
+
+角色会话还要同时给推理档位（`{REASON:…}` 令牌与 harness 的 `--thinking` 两样都要）：
+
+```bash
+pi --thinking medium   # 监理：首条消息 {REASON:socrates}{REASON:ihouse} + 上岗验收；监理不得用 007，它会自己改代码，双盲当场失效
+pi --thinking high     # 交付方：首条消息 {REASON:ultra}{REASON:icoder} + 上岗交付
+```
+
+会话内 `shift+tab` 循环切档位。档位选型与实测依据见 `reasoning-modes`。

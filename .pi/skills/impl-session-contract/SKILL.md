@@ -10,15 +10,18 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 ## 上岗档位
 
-首条消息最前面带 `{REASON:007}{REASON:icode}`（多步执行 + 技术精确），后续每条重复同一组合；档位选择与禁用项见 `.pi/skills/reasoning-modes/SKILL.md`。换档位必须重开会话，并把新 Run 告知监理。
+默认 `{REASON:ultra}{REASON:icoder}`（把任务拆成有序阶段 + 技术精确），后续每条重复同一组合。选型是 2026-11-10 六组合×两任务实测定的（见 `.pi/skills/reasoning-modes/SKILL.md`）；备选 `{REASON:007}{REASON:icode}`，它更爱自己跑命令，代价是汇报偏短、边界说明少。
 
-**不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考。
+**不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错；`xultra` 实测会把正文挤空。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考。
+
+**harness 档位用 `high`**（启动带 `--thinking high`，会话内 `shift+tab` 切换）。实测交付方需要把任务拆成阶段并自己设验证门槛，`medium` 不够。
 
 ## 提交一次交付
 
-1. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。
-2. **自查**：`python tools/quality_gate.py fast --repo-root <工作树>`；交付前跑 `trial`（300 s），证据归档到监理指定的 `EVIDENCE_ROOT`。新增红项清零才算可提交。
-3. **汇报**：
+1. **先锁约束**：开工前把 Issue 正文与现有测试里写死的值（端口、阈值、档位名、目录名）列成一份约束清单，贴进计划。改动前先比对——实测两个档位组合都因为凭直觉改端口值，把场景弄挂而不自知。
+2. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。`git status --porcelain` 必须为空，未跟踪文件也算脏。
+3. **自查**：`python tools/quality_gate.py fast --repo-root <工作树>`；交付前跑 `trial`（300 s，累计超集：跑 trial 就不用再跑 fast/domain），证据归档到监理指定的 `EVIDENCE_ROOT`。新增红项清零才算可提交。**改前端或 agent 宿主还要跑端到端**：`bash tools/e2e_qa.sh --shots-dir <EVIDENCE_ROOT>/<issue>/shots --out-json <EVIDENCE_ROOT>/<issue>/e2e.json`（截图基线比对：`python tools/e2e_shot_diff.py --evidence-dir … --baseline-dir …`）。
+4. **汇报**：
 
    ```bash
    orca orchestration send --to run:<监理的 Run> \
@@ -26,16 +29,28 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
    ```
 
    监理的 Run 由维护者在激活时给你。你自己这一侧：`orca orchestration run-current --json`，没有就 `orca orchestration run-create --objective "delivery #<N>" --json`——监理打回要靠这个 Run 找到你。邮件由 Orca 主动送达，不要写脚本轮询 `check`（它会消费邮件）。
-4. **关闭**：等监理签字。签字后由你按 `docs/agents/issue-tracker.md` 写结论评论并关闭 Issue，triage 标签由监理落。
+5. **关闭**：等监理签字。签字后由你按 `docs/agents/issue-tracker.md` 写结论评论并关闭 Issue，triage 标签由监理落。
+
+汇报里另加两行：①**改动清单逐项对照 Issue 声明**（改了哪些文件，各自对应 Issue 里哪一条；Issue 没声明的改动要么删除要么先补声明）；②**断言与场景改动单独自证**：改动或新增 `tests/**` 与 `tools/e2e/**` 断言时，写清断的是什么行为终态、为什么不是放宽旧断言；修飘报测试时先给复现统计（跑 20 次挂几次），没复现就说没复现，不得先改断言。
 
 **完成判定**：改动已提交、四段齐全（含末尾通俗解释）、证据落在 `EVIDENCE_ROOT`、Issue 状态与监理裁定一致。汇报正文为空即未完成——重档位下模型可能把预算全花在思考通道，加大预算或降档重发。
 
+## 什么时候停下来问
+
+满三种就停，不要自己拍：
+
+- **验收口径本身成了待改对象**（要改断言、改门禁、改 Issue 里的验收标准）——这属于改考卷，只有维护者能批。
+- **Issue 未声明的改动变得必要**（如要改 `tests/**` 既有断言、`tools/quality_gate.py`、`tools/e2e/**`、`package*.json`）——先补声明与理由，再动。
+- **出现产品取舍或两种都能过的方案**——转给监理，由它升级维护者。
+
+停下来时发一封 `--subject "#<issue> 待决断"` 的邮件，列出 2–4 个选项及各自代价，等回复再动。
+
 ## 收到打回
 
-按维护者指令处理：只修打回列出的项 → 重跑自查 → 汇报标"第 N 轮 + 本轮改了什么"。两轮未过就问监理要不要升级；验收口径本身不是可改的对象。
+按维护者指令处理：只修打回列出的项 → 重跑自查 → 汇报标"第 N 轮 + 本轮改了什么"。两轮未过就问监理要不要升级。验收口径不是交付方可改的对象。
 
 ## 让改动经得起一票否决
 
-- 改动 `tools/quality_gate.py`、`tests/**` 断言、`.github/**`、`package*.json` 时：先让 Issue 声明这项改动，并在汇报里单列一行说明为什么非改不可。
+- 改动 `tools/quality_gate.py`、`tests/**` 断言、`tools/e2e/**` 场景断言、`.github/**`、`package*.json` 时：先让 Issue 声明这项改动，并在汇报里单列一行说明为什么非改不可。
 - "按钮已存在"回答不了"功能是否可用"：按六维验收面的口径回答（Issue #294）。
 - 汇报里只写本会话真跑过的命令与真拿到的结果。
