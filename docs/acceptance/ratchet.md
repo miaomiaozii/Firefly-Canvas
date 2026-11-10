@@ -122,6 +122,11 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - P-41 定案 verified：假 sha 成因=工人自认「照抄宣布值、未先当场自证」（msg_4b95cbd70254）；`回执sha核验` 首次实战生效（当场抓住假读数并逼出重读）。
 - P-43 新卡点（pending，拟入 v7）：空 body 邮件 msg_2fa4a81b84ab——`cat 不存在的文件` 不阻塞 `send`；工人自见自报（msg_f789063434d9），按作废登记。
 
+- v10 回执（双行闭合）：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f（均 `已读 version:10 @9d2d532（门命令自跑，五份全=10）`）；通知 msg_c0ae5ab63a45/msg_a8b74a2db804。
+- v11 回执（双行闭合）：监理 msg_d492c2b4648f（`已读 version:11 @3a1f19a（门命令自跑，五份全=11）` + 台账称呼自改 commit `d97157c`）、工人 msg_3fb0d8d47fbf（`五份各恰好 1 行 version: 11，gate_rc=0；cat-file 3a1f19a=commit；origin/main 现头 d97157c 属名册自身行前移`——主动核了 `version字段唯一` 与状态锚可复现性）；通知 msg_e2fa17dd9bf2/msg_88f4dde04dc3；user 汇报 msg_d2c473ec44f7（durable 信箱 run_d2a14b6c9cd3）。
+- P-53 独立复核（本轮）：`git show d97157c:docs/acceptance/ledger.md` 头部与两处注记已改 `user`；全文残留 1 处「维护者」在第 14 行历史补记内（带引号说明「v5 后『维护者』即 user」），属历史原文合规。`d97157c` 已在 origin/main。
+- 观察（未定级）：发往 durable 信箱 `run_d2a14b6c9cd3` 的信，随后在 `check --run run_d2a14b6c9cd3` 里以「from run_c40189b45d94」出现在我自己视野（msg_d2c473ec44f7）。待对方回执出现后再判定是否记账（不在回执前下结论）。
+
 ## 已核实的事实（带来源，供下轮做差）
 - v10（2026-11-10，班规文本质量审计轮）：上架主 commit `9d2d532`（门命令回读五份 `version: 10`），名册自身行后续 commit `456d752`/`0f9b274` 不改门集；通知 msg_c0ae5ab63a45（监理）/msg_a8b74a2db804（工人）；回执双行闭合 msg_83155bb54a63（监理）/msg_e5397fca2f9f（工人）。事故：我发通知时用 `--body-file`（`orca orchestration send` 无此 flag，两次失败）→ P-57 pending。
 

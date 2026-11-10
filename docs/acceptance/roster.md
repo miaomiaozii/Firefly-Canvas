@@ -8,7 +8,7 @@
 - 生效版本 = **11**；门 sha = `3a1f19a`（origin/main 现头，2026-11-10 门命令回读：五份各恰好 1 行 `version: 11`；v11 上架主 commit 见 §1.4；名册自身行后续前移不影响门集文件，照抄下行门命令即可复现）
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
 - 队列：pain 共 58 条（P-01..P-58）；pending/queued=0；v11 absorbed：P-51/P-52/P-53/P-57/P-58；v10 absorbed：P-49/P-50/P-54/P-55/P-56；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
-- 缺件：无——v10 双行已闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f（两条均为 `已读 version:10 @9d2d532（门命令自跑，五份全=10）`，工人另自报现头 `0f9b274` 互证）。通知：监理 msg_c0ae5ab63a45、工人 msg_a8b74a2db804。本轮无在途产品轮，故生效通知未等 `轮末` 信号即发（无在途轮＝无冻结对象）。本轮无在途产品轮，故生效通知未等 `轮末` 信号即发（无在途轮＝无冻结对象）。回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
+- 缺件：无——v11 双行已闭合（监理 msg_d492c2b4648f、工人 msg_3fb0d8d47fbf）；v10 双行已闭合（监理 msg_83155bb54a63、工人 msg_e5397fca2f9f）。P-53 已独立复核（`d97157c`：台账头部称呼改 user，残留 1 处为第 14 行历史补记原文）。待 user：下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）。
 - 本轮性质：v11=审计 P2 三项（渐进披露/术语指针/台账称呼）+ P-57 发信写法；非产品轮，零产品代码。监理下轮上岗第一件事：照 `台账称呼同径` 把 `docs/acceptance/ledger.md` 头部「维护者」改成 `user`（棘轮不写该文件）。
 - 本轮性质：班规文本质量审计（非产品轮）——两路只读子代理按 writing-great-skills 口径审五份班规，自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh（runId del_mwas2s17_6592 / del_mwas2ijf_24cd）；产品代码与测试零改动。
 - 下一轮开工前两件事（user 侧）：①指定新 Issue；②v10 已上架 `origin/main@9d2d532`（第二行已回写，无需 user 动手）。
