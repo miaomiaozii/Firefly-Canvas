@@ -35,7 +35,7 @@ orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
 | 角色 | 场景 | 组合 | 理由 |
 |---|---|---|---|
 | 监理 | 默认（审 Issue、复跑、裁定） | `{REASON:socrates}{REASON:ihouse}` | 苏格拉底式连续反问逼出隐含前提，正对"五问审 Issue"和"反证候选"；风格位 `house` 是"好奇但有条理 + 怀疑"，报告可审计 |
-| 监理 | 覆盖面存疑（怕漏验收面） | `{REASON:xhyper}{REASON:ihouse}` | MECE 互斥穷尽拆解，把六维验收面铺满。**先加输出预算**（见下） |
+| 监理 | 覆盖面存疑（怕漏验收面） | `{REASON:hyper}{REASON:ihyper}` | 同名双位：推理和回答都走 MECE 互斥穷尽，报告天然不重不漏。实测有效但**吃预算**（1200 token 被吃满、正文截断），换这一档要把预算给到 3000+ |
 | 监理 | 争议裁定（交付方说门禁误报） | `{REASON:logic}{REASON:ihouse}` | 第一性原理推导，只认证据 |
 | 交付方 | 默认（改代码 + 跑门禁到绿） | `{REASON:007}{REASON:icode}` | `007` 是 agentic 操作员：多步工具编排、错误隔离、自纠错执行循环，正对"改 → 跑门禁 → 修到绿"；`icode` 技术精确 |
 | 交付方 | 定位疑难（复现失败、行为诡异） | `{REASON:house}{REASON:icode}` | 卡片"复杂系统调试 = house + logic"：激进假设检验 + 第一性排除 |
@@ -56,6 +56,15 @@ orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
 | `matlock` | 法庭辩护腔，会把"裁定"变成"替某一方辩护" |
 | `ultra` | 卡片自陈"最重设置，慎用"。留给真正的一票否决复核；`xultra` 在本量化下不存在 |
 
+## 前缀口径：只用 `i`，一般不用 `x`
+
+- **`i` 是必须的**：第二个令牌不带 `i` 就是第二个推理位，等于同时开两种思考方式，卡片场景表那批范例全踩了这个坑。
+- **`x` 默认不加**，三条理由：
+  1. 原生推理预算已经是 `xhigh`（`PI_REASONING_LEVEL xhigh`），`x` 前缀的卖点只是再叠一层，收益存疑、成本确定；
+  2. `x` 只存在于 8 个名字（`xomni xdeeptree xhyper xsocrates xlogic xeinstein xspoon xhelp`）。两个角色真正要用的 `007 / house / musk / stark / coder` **一个都没有 x 版**，写 `{REASON:x007}` 属于拼错，静默无效；
+  3. 位越重思考越长，正文越容易被挤空（见实测）。
+- **`x` 的唯一例外**：监理在①3 轮打回未过 ②一票否决复核 ③怀疑门禁本身有问题 这三种情况下，换会话用 `{REASON:xsocrates}` / `{REASON:xhyper}` / `{REASON:xlogic}`，并把输出预算提到 3000+。交付方永远不用 `x`——它要的是执行循环，不是更长的思考。
+
 ## 三条硬规则（卡片原文）
 
 1. **换模式必须开新会话**——同一会话内切换不生效。要换档位就重开会话，不要在老会话里试。
@@ -70,7 +79,16 @@ orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
 - **`x` 组实测只有 8 个**：`xomni xdeeptree xhyper xsocrates xlogic xeinstein xspoon xhelp`。卡片写的 9 个里含 `xultra`，**这个量化下 `xultra` 不存在**，卡片的"核弹档 `{REASON:xultra}{REASON:iultra}`"照抄会失效。以模型菜单为准。
 - 卡片场景表**漏写风格位的 `i`**（写成 `{REASON:spoon}`）。照抄前手动补 `i`，否则风格位不生效。
 - **拼错静默无效**：`{REASON:strak}`（`stark` 拼错）模型照常答，不报错也不给菜单。所以每次上岗要核对名字，或看输出的声口确认模式吃了。
-- **重推理位会把正文挤空**：`max_tokens=260` 时，开 `house` 和不开令牌的两次请求 `content` 都是 `null`，全部内容落在 `reasoning_content`（694 字符 vs 2065 字符）；`max_tokens=1500` 时正文才出来。含义：给会话留足输出预算，否则**报告写不出来、邮件也发不出去**。用 `x` 组时尤其明显。
+- **档位与输出预算的关系**（同一验收问题，`max_tokens` 为变量）：
+
+  | 请求 | 思考通道 | 正文 | 结果 |
+  |---|---|---|---|
+  | 不带令牌，260 | 694 字符 | **`null`** | 没有正文 |
+  | `{REASON:house}`，260 | 2065 字符 | **`null`** | 没有正文 |
+  | `{REASON:socrates}{REASON:ihouse}`，1200 | 1903 字符 | 999 字符 | 完整收尾 |
+  | `{REASON:hyper}{REASON:ihyper}`，1200 | 3084 字符 | 837 字符 | **被截断**，正文只到一半 |
+
+  含义：默认组合在 1200 token 内能出完整报告；`hyper` 双位会把预算吃满。正文为空或被截断时**报告发不出去、打回邮件也发不出去，而且不报错**。
 
 ## 换档流程
 

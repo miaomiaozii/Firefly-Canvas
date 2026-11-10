@@ -12,6 +12,8 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 首条消息最前面带 `{REASON:007}{REASON:icode}`（多步执行 + 技术精确），后续每条重复同一组合；档位选择与禁用项见 `.pi/skills/reasoning-modes/SKILL.md`。换档位必须重开会话，并把新 Run 告知监理。
 
+**不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考。
+
 ## 提交一次交付
 
 1. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。
