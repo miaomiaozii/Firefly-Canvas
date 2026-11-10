@@ -95,6 +95,12 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 | loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
 | loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收；单写者自报更正 1 起见 P-22，不计打回） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
 
+## v6 轮事件流（2026-11-10，棘轮）
+
+- v6 版本门闭合：监理 `已读 version:6 @ac6bc46`（msg_b47d904a38d3）；工人 `已读 version:6 @ac6bc46`（msg_4b95cbd70254）。
+- P-41 定案 verified：假 sha 成因=工人自认「照抄宣布值、未先当场自证」（msg_4b95cbd70254）；`回执sha核验` 首次实战生效（当场抓住假读数并逼出重读）。
+- P-43 新卡点（pending，拟入 v7）：空 body 邮件 msg_2fa4a81b84ab——`cat 不存在的文件` 不阻塞 `send`；工人自见自报（msg_f789063434d9），按作废登记。
+
 ## 已核实的事实（带来源，供下轮做差）
 
 - 三轮 trial 各 **32 步**，均无 `tabbit-e2e-evidence` 与 `egress-attribution`：`D:/Firefly-Canvas-evidence/{310-baseline-b2b3399-trial,310-delivery-branch-trial,310-supervisor-20261110-092301-trial}/report.json`（`python` 读 `checks[].name`，`final_exit_code=1`）。
