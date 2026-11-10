@@ -11,6 +11,7 @@
 | v3 | 2026-11-10 | P-15、P-17、P-18、P-19（维护者 12:2x 放行清单）；P-16 保持 merged→P-15；P-20 当场修矛盾并入 P-15/P-19 口径；P-05 追加「已完成运行」口径 | 三个 skill `version:` 2→3；新增 grep 标记 `流程契约取法`、`即停`、`收尾归属固定句`、`run-current` 回读非 null、`已完成运行`、`流程层必须推到 origin`；`origin/main` 可读性判据写进三份契约 | 无（只收紧：P-20 是把交付契约里与「单写」矛盾的「自己往 pain.md 追一行」改成单写口径） |
 | v3-patch | 2026-11-10 | P-30（维护者 msg：流程层由棘轮写并推，维护者只确认） | 新增 grep 标记 `流程层发权`、`发权范围`、`收权`（棘轮契约）；监理/交付契约即停上报对象由「维护者先推流程层」改为「棘轮先推流程层」；`docs/acceptance/roster.md` 新增 §5 发权与流程全景（含 mermaid 流程图与上架三判据）。v3 版本号不变（同版本内补条款） | 放宽一项流程瓶颈：原「由维护者把 main 推上去」改为「由棘轮直推、维护者只确认」——产品代码与测试仍绝对禁推、`AGENTS.md` 归维护者、维护者可一句收权或 revert（收紧面：新增推前零产品改动校验 + 推后 sha 必验） |
 | v4 | 2026-11-10 | P-32（监理 msg_b7922fec9543 即停上报：维护者边界令第六条要求 `origin/main` 上读数=4，实测读数=3 → 版本门未过；我把「维护者只确认」当成了不必 bump 的理由，v3-patch 只补条款没 +1） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 必须三行全为 `version: 4`；新增 grep 标记 `版本门读数=宣布值`（名册 §5.2）：任何流程层改动同 commit 必须 bump `version:`，且上架回执正文必须带 grep 读数与 sha | 无（只收紧：新增「改班规必同 commit bump」的机器判据） |
+| v5 | 2026-11-10 | P-36（维护者退役、裁决人迁移）、P-37（信箱无增量读法）、P-38（无「完成指示令」）、P-39（无通用层 skill）——均源自 user 边界令（m00719） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 三行全为 `version: 5`；`test -f C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`；`grep -c "完成指示令" .pi/skills/acceptance-supervisor/SKILL.md` ≥ 1；`grep -c "信箱增量" .pi/skills/acceptance-supervisor/SKILL.md` ≥ 1；`grep -c "AGENTS写权" .pi/skills/process-optimizer/SKILL.md` ≥ 1；`python docs/acceptance/check_tables.py` exit 0。新增 grep 标记：`v5边界令`、`完成指示令`、`信箱增量`、`通用层skill`、`技能自选`、`同名角色唯一性`、`AGENTS写权`。上架 sha：`origin/main@0bba2ce`（当场回读全 5） | 放宽一项（user 明令）：原「维护者发任务书/宣布版本/合并」的单一裁决人改为 user+棘轮分段（版本宣布方=棘轮；产品 merge 仍归 user）；其余只收紧 |
 
 ## v4 回归标记（复跑：`grep -rlE -e <标记> .pi/skills docs/acceptance` + `python docs/acceptance/check_tables.py`，缺任一项即棘轮破损）
 
@@ -110,7 +111,9 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （loop-3 台账裁定）台账边界归监理：「不得创建/修改文件」属临时口头约束，不覆盖监理自有写入面；豁免条款早在 `12cf55a` 就成文（监理契约「台账行不可豁免」），本轮未落属监理未按成文执行；#310 两行由监理下轮上岗第一件事自落，维护者不代写。
 - （维护者 msg_db4b3380d294 执行面）`git merge --ff-only loop/ratchet` 已在维护者侧把本地 main 推到 `a6dfa39`，三份 skill 现 `version: 3`；其独立复跑 v3 的 8 项标记命中一致，v1+v2 的 15 项记我方口径。**`origin/main` 仍未推**（向公共仓发布需维护者本人点头）。
 
-## 待维护者定的事
+## 待 user 定的事（原「待维护者定的事」，v5 起改称；以下历史条目保留供追溯）
+
+- **v5 状态（2026-11-10）**：下列带「维护者」的旧条目已随角色退役重新映射——流程层由棘轮直推（已在 `origin/main@0bba2ce`）；产品代码合并归 user；版本宣布方=棘轮（登记 `ROSTER` §1.4）。下列未销账的仍是 open：P-11/#310 的 `16df89a` 是否补合并、存量红与 keys 3/3 必挂无人认领（P-12/P-13）、下一轮 Issue 由 user 指定、通用层 skill 是否进仓。
 
 - `16df89a`（#310 改动）未进 main 但 Issue 已关闭 → 要不要补合并（P-11）。
 - 本机存量红与 `scenario_keys.sh` 3/3 必挂无人认领 → 门禁的组级 fail-fast 会永久遮住尾组（P-12、P-13）。

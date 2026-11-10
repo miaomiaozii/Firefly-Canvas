@@ -135,8 +135,9 @@
 
 - **谁写谁推**：流程层 = 三份班规（`班规@*`）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
 - **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归 user，棘轮持 user 授权时可改并同 commit 上架（`AGENTS写权`，实测：v5 边界令 m00719 后的同步）。
-- **收权（`收权`）**：维护者一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
-- **上架状态**：**已上架 = `origin/main@cac1818`**（棘轮 2026-11-10 实推并回读：`git push origin <sha>:main` → `7e03237..cac1818`；`git rev-parse --short origin/main` = `cac1818`；三份班规在 `origin/main` 上均 `version: 3`；`docs/acceptance/{ledger,pain,ratchet,roster}.md` 均已在 `origin/main`）。本轮上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`（这两处是 loop-2 期间监理会话在本地 main 上的改动，随本次快进上架，无产品代码）、`docs/acceptance/{pain,ratchet,roster}.md`。
+- **收权（`收权`）**：user 一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
+- **上架状态**：**最新已上架 = `origin/main@0bba2ce`（v5）**：`git push origin HEAD:main` → `318c505..0bba2ce`；上架后当场回读三份班规 `^version:` 全 = 5（process-optimizer `4:version: 5`、acceptance-supervisor `3:version: 5`、impl-session-contract `3:version: 5`）；产品面 grep 为空（exit 1）；`check_tables.py` exit 0。上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md`、`AGENTS.md`（`AGENTS写权`，user m00719 授权）、`docs/acceptance/{pain,ratchet,roster}.md`。**通用层 skill 不在仓内**（`C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`，本机全局目录，无 git 版本控制——已知局限，user 可裁决是否进仓）。
+  历史：**已上架 = `origin/main@cac1818`**（棘轮 2026-11-10 实推并回读：`git push origin <sha>:main` → `7e03237..cac1818`；`git rev-parse --short origin/main` = `cac1818`；三份班规在 `origin/main` 上均 `version: 3`；`docs/acceptance/{ledger,pain,ratchet,roster}.md` 均已在 `origin/main`）。本轮上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`（这两处是 loop-2 期间监理会话在本地 main 上的改动，随本次快进上架，无产品代码）、`docs/acceptance/{pain,ratchet,roster}.md`。
 
 ## 5. 流程全景（一图）
 
@@ -233,6 +234,6 @@ flowchart LR
 
 | 项 | 状态 |
 |---|---|
-| 三份契约 `version: 5` | 已写（本 commit），上架 sha 见 §4 |
+| 三份契约 `version: 5` | **已上架**：`origin/main@0bba2ce`，当场回读三份全 `version: 5`（§4） |
 | 生效通知 | **未发**（等两边手头轮次结束，边界 3） |
 | 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |
