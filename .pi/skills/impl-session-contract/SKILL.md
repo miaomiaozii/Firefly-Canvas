@@ -1,5 +1,6 @@
 ---
 name: impl-session-contract
+version: 1
 disable-model-invocation: true
 description: 交付方与验收监理的交接协议。Use when 准备关闭某个 Issue 或打 ready-for-agent、收到 subject 含「验收打回」的邮件、要向监理提交一次交付。
 ---
@@ -12,7 +13,8 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 1. **工作树由维护者用 `orca worktree create` 建好交给你**（带 `--branch issue/<N> --issue <N>`）。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），维护者在界面里找不到你——监理轮当场失效。
 2. 自检两条，缺一就上报维护者、不要开工：`orca worktree current --json` 不报 `selector_not_found`；`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID。
-3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（维护者预建再转交给你会把邮件注入到维护者会话）。监理的 Run 由维护者粘给你。
+3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（维护者预建再转交给你会把邮件注入到维护者会话）。监理的 Run 由维护者粘给你。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
+4. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理 Run>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit），然后才等任务书。监理未收到回执不应发任务书。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
 
 ## 上岗档位
 
@@ -26,10 +28,12 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 1. **先锁约束**：开工前把 Issue 正文与现有测试里写死的值（端口、阈值、档位名、目录名）列成一份约束清单，贴进计划。改动前先比对——实测两个档位组合都因为凭直觉改端口值，把场景弄挂而不自知。
 2. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。`git status --porcelain` 必须为空，未跟踪文件也算脏。
-3. **自查**：`python tools/quality_gate.py fast --repo-root <工作树>`；交付前跑 `trial`（300 s，累计超集：跑 trial 就不用再跑 fast/domain），证据归档到监理指定的 `EVIDENCE_ROOT`。新增红项清零才算可提交。**改前端或 agent 宿主还要在门禁外自己跑端到端**：`bash tools/e2e_qa.sh`（只吃一个位置参数 `base_url`，默认 `http://127.0.0.1:3000`；退出码 = 失败场景数，`99` = tabbit-cli 不存在，`98` = 没有已打开的项目——先把画布打开再跑）。截图自动落到 `.pipeline/evidence/screenshots/`，基线比对 `python tools/e2e_shot_diff.py --strict`（默认已指向该目录与 `tools/e2e/baselines`）。**按改动范围跑对应场景脚本**：`bash tools/e2e/scenario_delete_undo.sh`（撤回链）、`scenario_mouse.sh`（鼠标）、`scenario_keys.sh`（快捷键）、`scenario_ux_rules.sh`（体验规则），`BASE` 用 `FIREFLY_BASE` 覆盖。
+3. **先跑基线再动代码**：开工前在**与交付同档位**（trial）跑一次基线门禁，归档为 `<EVIDENCE_ROOT>/<issue>-baseline-<短sha>-trial`，把红项清单（步骤名 + `verdict_reasons` 原文）逐条记录——本机存量红常驻（实测：`unit-contract-remainder-7`/`-10` 因 `cmd.exe` 归属 S0、`ui-integrity-evidence` 因 Chrome 156 vs 基线只接受 155），不先拿基线你就分不出“存量”与“你弄挂的”（实测交付方先跑 fast，到改完代码才发现存量红，白跑一轮）。**要跑基线就在主工作区干净 main 或另建的基线工作树上跑，不要在交付工作树里 `git checkout <基线 commit>`**——那会破坏被验收对象，也会让监理验不了你。
+4. **自查**：交付前跑 `trial`（300 s，累计超集：跑 trial 就不用再跑 fast/domain），证据归档到监理指定的 `EVIDENCE_ROOT`。**可提交的口径是零新增红**（与基线证据逐条比对，差集为空），不是“无红”；`final_exit_code=124` 是超预算，不算过。门禁按组并行（默认 `FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=8`）且组级 fail-fast（`tools/quality_gate.py:3740` `if group_failed: break`）——**尾部组（含 `tabbit-e2e-evidence`、egress）可能整组没排到**，你以为跑过了其实没跑。自查时核对证据里的已执行步骤清单，被测步骤缺席就补一轮串行：`FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=1 python tools/quality_gate.py trial --repo-root <工作树> --evidence-dir <…>`——**串行轮在 trial 预算内跑不完**（实测 302.1 s → `final_exit_code=124`），它只证明步骤能执行，不是门禁判定；想要门内真覆盖尾部组，先清存量红或用 `release`（900 s）档。实测三轮 trial（基线/交付/监理）各 32 个已执行步骤里均无 `tabbit-e2e-evidence` 与 `egress-attribution`。
+5. **门禁外端到端（改动影响前端或 agent 宿主时必跑）**：`bash tools/e2e_qa.sh`（只吃一个位置参数 `base_url`，默认 `http://127.0.0.1:3000`；退出码 = 失败场景数，`99` = tabbit-cli 不存在，`98` = 没有已打开的项目——先把画布打开再跑）。截图自动落到 `.pipeline/evidence/screenshots/`，基线比对 `python tools/e2e_shot_diff.py --strict`（默认已指向该目录与 `tools/e2e/baselines`）。**按改动范围跑对应场景脚本**：`bash tools/e2e/scenario_delete_undo.sh`（撤回链）、`scenario_mouse.sh`（鼠标）、`scenario_keys.sh`（快捷键）、`scenario_ux_rules.sh`（体验规则），`BASE` 用 `FIREFLY_BASE` 覆盖。完整入口 `python tools/e2e/full_e2e_test.py --baselines-dir tools/e2e/baselines --output-dir <EVIDENCE_ROOT>/<…>` 在 keys 套件红时会 fail-fast（实测：keys 里 3 场景 `page.screenshot: Timeout 30000ms` 直接卡住后面的鼠标套件），这时**直跑对应场景脚本留证**并在汇报里写明入口卡在哪个套件、错误原文（监理已按此口径接受过 P3=B）。首跑会自动新建 `tools/e2e/baselines/m*.png` 等未跟踪基线——那是改考卷（一票否决面），当场删掉并在汇报里声明（实测交付方删了 m1/m2/m4 三张）。飘的场景记“两轮各一次结果”，不要只报一次。
 
 **别拿门禁绿当端到端证据**：门禁里的 `tabbit-e2e-evidence` 步在门内必然「环境未就绪 → exit 0」快速跳过（门内的临时 home 看不见 `tabbit-cli`），`scenario_mouse.sh` 更是不在它的名单里。监理会去证据里搜 `TABBIT-E2E 环境未就绪`，你少跑一次就会被当成缺证据打回。
-4. **汇报**：
+6. **汇报**：
 
    ```bash
    orca orchestration send --to run:<监理的 Run> \
@@ -37,11 +41,23 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
    ```
 
    监理的 Run 由维护者在激活时给你。你自己这一侧：`orca orchestration run-current --json`，没有就 `orca orchestration run-create --objective "delivery #<N>" --json`——监理打回要靠这个 Run 找到你。邮件由 Orca 主动送达，不要写脚本轮询 `check`（它会消费邮件）。
-5. **关闭**：等监理签字。签字后由你按 `docs/agents/issue-tracker.md` 写结论评论并关闭 Issue，triage 标签由监理落。
+7. **关闭**：等监理签字。签字后由你按 `docs/agents/issue-tracker.md` 写结论评论并关闭 Issue，triage 标签由监理落。**关闭不等于合并**：代码可能还在 `issue/<N>` 上没进 main，`issue/<N>` 分支在维护者合并前不得删。
+
+**汇报里每个数字必带来源**：时间、退出码、场景 PASS/FAIL、计数都要标上日志文件或证据目录路径，无来源的数字当作未验证，宁可不写（实测交付方第一版评论里写了不存在的“修复后重跑全 PASS”，被迫另发更正评论）。发 Issue 评论用 `gh issue comment <N> --repo <REPO> --body-file <文件>`，引用评论 ID 前先 `gh issue view <N> --repo <REPO> --json comments --jq '.comments[]|{id:.databaseId,created:.created_at}'` 拿真 ID，别凭记忆写；关闭用 `gh issue close <N> --repo <REPO>`——`gh issue close` 没有 `--comment-file`。
 
 汇报里另加两行：①**改动清单逐项对照 Issue 声明**（改了哪些文件，各自对应 Issue 里哪一条；Issue 没声明的改动要么删除要么先补声明）；②**断言与场景改动单独自证**：改动或新增 `tests/**` 与 `tools/e2e/**` 断言时，写清断的是什么行为终态、为什么不是放宽旧断言；修飘报测试时先给复现统计（跑 20 次挂几次），没复现就说没复现，不得先改断言。
 
 **完成判定**：改动已提交、四段齐全（含末尾通俗解释）、证据落在 `EVIDENCE_ROOT`、Issue 状态与监理裁定一致。汇报正文为空即未完成——重档位下模型可能把预算全花在思考通道，加大预算或降档重发。
+
+## 卡点上报（干活时也盯着流程本身）
+
+遇到「不是代码问题，是流程没覆盖、或流程与实际不符」，当场报流程优化者，不要自己绕过就算完（你踩到的坑最多，不报就是下轮再踩一次）：
+
+```bash
+orca orchestration send --to run:<流程优化者 Run> --subject "#<issue> 卡点 <短标题>" --body "<四段>"
+```
+
+四段（缺一不排进本轮）：**现象**（命令原文 + 退出码/错误原文 + 时间戳或邮件 ID）/ **现行流程**（`<文件:行号>` 怎么说）/ **代价** / **最小改法**（加一条什么机器可判的条件）。同时给 `docs/acceptance/pain.md` 追一行（状态 `pending`）——邮件只唤醒，真相在文件（实测台账被回滚过一次，光靠邮件追不回来）。上报后**继续干活不等回复**；只有触发停止条件的卡点才停。轮中不改流程文件，改动在轮间生效。
 
 ## 什么时候停下来问
 
@@ -56,6 +72,8 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 ## 收到打回
 
 按维护者指令处理：只修打回列出的项 → 重跑自查 → 汇报标"第 N 轮 + 本轮改了什么"。两轮未过就问监理要不要升级。验收口径不是交付方可改的对象。
+
+**对裁定有异议时拿原文对，不要闷头认账**：先 `grep` 契约与 `docs/agents/issue-tracker.md` 原文（带行号），逐条写清“指控成不成立、原文用什么词”。实测监理自造“关闭归维护者”误判交付方越权，交付方引 `impl-session-contract/SKILL.md:40` 与 `issue-tracker.md:51` 申辩成功，监理公开撑回并记为正面观察。
 
 ## 让改动经得起一票否决
 

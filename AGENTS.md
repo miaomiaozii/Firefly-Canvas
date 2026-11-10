@@ -16,11 +16,13 @@
 
 验收监理与交付方是两个角色，只在维护者显式激活的会话里生效。未激活的会话按普通会话工作，既不做验收判定，也不受交付契约约束。
 
-- 监理契约：`.pi/skills/acceptance-supervisor/SKILL.md`
-- 交付方契约：`.pi/skills/impl-session-contract/SKILL.md`
+- 三角色契约：
+  - 监理：`.pi/skills/acceptance-supervisor/SKILL.md`
+  - 交付方：`.pi/skills/impl-session-contract/SKILL.md`
+  - 流程优化者（棘轮）：`.pi/skills/process-optimizer/SKILL.md`——收另两方的卡点上报，把教训固化成可复跑的检查或工具
 - 推理档位：`.pi/skills/reasoning-modes/SKILL.md`（两类会话上岗时各带自己的 `{REASON:…}` 组合；换档位必须换会话）
 
-两份都设了 `disable-model-invocation: true`，不会自动加载。激活方式二选一：会话内手敲 `/skill:acceptance-supervisor` 或 `/skill:impl-session-contract`；或在新会话的启动 prompt 里写明"读上面那个路径并照它执行"。
+三份都设了 `disable-model-invocation: true`，不会自动加载。激活方式二选一：会话内手敲 `/skill:acceptance-supervisor`、`/skill:impl-session-contract` 或 `/skill:process-optimizer`；或在新会话的启动 prompt 里写明"读上面那个路径并照它执行"。
 
 两个角色会话都必须是 Orca 界面里可见、可点开的会话（维护者要能抽查现场）；子代理不可见可以接受。工作树让 Orca 建，不要 `git worktree add`——那样建的树 Orca 不认，会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），界面里看不到：
 
@@ -32,6 +34,11 @@ orca terminal create --worktree path:<新建工作树> --command "pi.cmd --think
 
 # 监理：主工作区里再起一个可见终端
 orca terminal create --worktree path:D:/Firefly-Canvas --command "pi.cmd --thinking xhigh" --focus --json
+
+# 流程优化者：自己的 Orca 工作树（它要改流程文件，不能与另两方同工作区）
+orca worktree create --name loop --repo path:D:/Firefly-Canvas \
+  --base-branch main --branch loop/ratchet --setup skip --json
+orca terminal create --worktree path:<新建工作树> --command "pi.cmd --thinking xhigh" --focus --json
 ```
 
 可见性自检与启动细节、收尾清理见监理契约的「会话可见性」节。
@@ -39,6 +46,8 @@ orca terminal create --worktree path:D:/Firefly-Canvas --command "pi.cmd --think
 起来后各自发首条消息：监理 `{REASON:hyper}{REASON:ihyper}` + 上岗验收（监理不得用 007，它会自己改代码，双盲当场失效）；交付方 `{REASON:007}{REASON:icode}` + 上岗交付。两个 Run 都在会话自己里建（`orca orchestration run-create`），维护者不预建再转交——那会把邮件注入到维护者会话。认人认 handle，`orca terminal rename` 会被 pi 自己的标题刷新覆盖。
 
 监理裁定台账在 `docs/acceptance/ledger.md`，一行一条，供维护者抽查。
+
+自循环与棘轮：三方跑的过程中都要报卡点（四段：现象/现行流程/代价/最小改法），进 `docs/acceptance/pain.md`；流程优化者在**轮间**吸收成流程改动，版本与可复跑回归记在 `docs/acceptance/ratchet.md`。硬口径：只收紧不放宽（要放宽只能提议给维护者）、每条吸收必须留下可复跑的回归、轮内冻结流程文件、上岗报版本号（不一致即停）、优化会话不得改代码/不得落 triage 标签/不得直推 `main`。
 
 角色会话还要同时给推理档位（`{REASON:…}` 令牌与 harness 的 `--thinking` 两样都要，上面配方里的 `pi.cmd --thinking xhigh` 只解决后者）：
 

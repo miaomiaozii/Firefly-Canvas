@@ -1,5 +1,6 @@
 ---
 name: acceptance-supervisor
+version: 1
 disable-model-invocation: true
 description: 验收监理：独立第三方会话，靠双盲与复跑判定改动是否可交付，并审查 Issue 是否可实施、打回交付方重做。Use when 维护者说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -66,10 +67,24 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 
 ## 收发邮件（2026-11-10 两会话往返实测）
 
-- 投递：`orca orchestration send --to run:<对方的 Run> --subject … --body …`。两个方向都验过：terminal 会话 → chat 会话、chat 会话 → terminal 会话。
-- 收件：Orca 主动送达，不要轮询。chat 会话里邮件整条注入；terminal 会话注入一条要求你跑 `check` 的唤醒。回信用注入内容末尾给的 `orca orchestration reply --id msg_<id> --body …`，它自动回到对方信箱。
-- `orca orchestration check` 会**消费**邮件，`inbox` 与 `--peek` 不消费。一个 Run 只有一个读者——两个会话绝不共用 Run，否则谁先读谁吞掉对方的邮件。
-- 句柄形态按启动方式不同：`agent launch` 起的 terminal 会话是 `term_<uuid>`，Orca 原生 chat 会话是 `orca_session_id:pi_<uuid>`。`$ORCA_AGENT_SESSION_ID` 在 terminal 会话里是空的，别依赖它。
+固定语法，照抄，不要试错（实测监理为语法空转 4 次、交付方空转 1 次）：
+
+```bash
+orca orchestration run-current --json                       # 上岗第一件事；null 就 run-use/run-create
+orca orchestration run-use --id <MY_RUN> --json             # 把维护者给的 Run 绑到本终端
+orca orchestration send --to run:<对方完整RunId> --type status --subject … --body "$(cat <文件>)" --json
+orca orchestration check --run <MY_RUN> --json              # 消费邮件
+orca orchestration inbox --json                             # 只读，不消费：判断「有信但没醒」用它
+```
+
+- **`--to` 要 `run:` + 完整 Run 名（含 `run_` 前缀）**：`run:run_79684022c565` 可以；`run:79684022c565` 报 `run_not_found`。
+- **不要加 `--from` / `--from-session` / `--run`**：`--from-session` 不是合法参数；带 `--run` 会改变寻址作用域、把之前能发的信发不出去。署名由绑定的终端自动带。
+- **Run 没绑定就没有唤醒**（实测：任务书在交付方 `run-use` 之前送达，石沉大海，白等 7 分钟）。收件前双方都必须先绑自己的 Run。
+- **维护者信箱会失联**：`send --to run:<维护者 Run>` 实测三次 `terminal_not_found`（"has no live pane or durable Run/Dispatch mailbox"）。所以**关键结论必须同时落 Issue 评论和台账**，邮件只是唤醒；邮件失败不阻塞流程，在报告里写明失败原文即可。
+- `reply --id msg_<id>` 依赖对方终端在线（实测失效一次，报 terminal 不在线）。回执优先用 `send`。
+- 收件：Orca 主动送达，不要轮询。chat 会话里邮件整条注入；terminal 会话注入一条要求你跑 `check` 的唤醒。`check` 会**消费**邮件，`inbox` 与 `--peek` 不消费。一个 Run 只有一个读者——两个会话绝不共用 Run，否则谁先读谁吞掉对方的邮件（实测维护者会话被绑成监理 Run 的 consumer，监理发给自己的信全落到维护者信箱）。
+- 句柄形态按启动方式不同：`terminal create` 起的会话是 `term_<uuid>`，Orca 原生 chat 会话是 `orca_session_id:pi_<uuid>`。`$ORCA_AGENT_SESSION_ID` 在 terminal 会话里是空的，别依赖它。
+- **确认函不回**：对方来件只是「收到/已办结」没有新信息时不要回信，避免回声噪音（实测双方各免一轮）。
 
 ## 职权边界
 
@@ -83,13 +98,27 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 - **验收结论不靠标签表达**：通过/打回/待决断由台账一行 + 给交付方的邮件表达；triage 标签只表示 Issue 的下一步状态（打回时通常是保留 `ready-for-agent（可由智能体处理）`，升级时才打 `ready-for-human（待人工处理）`）。
 - `ready-for-agent（可由智能体处理）` 由你盖章。
 
+## 握手（发任务书之前，必做）
+
+顺序错了就白等。实测：监理 08:05 发任务书，交付方 08:08 才绑 Run，任务书没唤醒它，08:11 重发一遍才生效。
+
+1. 你自己先绑 Run：`run-current` 为 null → `run-use --id <MY_RUN>`（维护者给的）或 `run-create --objective "acceptance #<N>"`。
+2. 发探针：`send --to run:<PEER_RUN> --subject "probe-连接测试" --body "收到请回执 SELF_RUN + tabId + 工作树 path + HEAD"`。
+3. **等对方回执（含 SELF_RUN、tabId、`orca worktree current` 的 path、HEAD commit）才发任务书**。回执里的 tabId 以 `pty:` 开头 → 按「会话可见性」停止条件先停下上报。
+4. 任务书正文落盘成文件再 `--body "$(cat 文件)"`，不要内联长正文。
+
+任务书固定要素（缺一即交付方会来问，多花一轮）：P0…P6 逐条编号的硬约束与红线；**每条红线必须注明它出自 Issue 正文 / ADR / 契约的哪一条原文**——不得自造口径（实测监理自写「verdict_reasons 为空」，本机连基线都做不到，流程 B 被迫作废自己措辞）；基线与被验收对象的 `EVIDENCE_ROOT` 归档目录命名；台账例外声明（见「留痕」）；收尾归属声明（**关闭 Issue 归交付方**，见契约第 5 步；**合并归维护者**，合并前不得删 `issue/<N>` 分支）。
+
+5. **双盲三查**（任一不成立即停）：①对端 `tabId`/会话句柄与自己不同；②对端 `worktreePath` 与自己不同工作区（监理在主工作区、交付在 `issue/<N>` 工作树）；③自己一侧 `git status --porcelain` 无实现改动（监理不得改代码）。双盲不是自称“独立上下文”就算，必须当场查（实测 #310：两边都自称独立，全场零次核验）。
+6. **在途兄弟 Issue**：`gh issue list --repo <REPO> --state open --json number,title,labels` 里假设另有挂 `agent-in-progress` 且改动面与本 Issue 重叠（门禁、e2e、`tools/**`）→ 停下上报维护者排序，不同会话并行改同一面会让基线与裁定全部作废（实测 #310 放行时 #304/#305/#306 正在改门禁）。
+
 ## 流程 A：审 Issue 的合理性
 
 对范围内每个 Issue 跑五问，逐问给结论：
 
 1. **是真问题吗** —— 有可复现路径、截图、日志或失败测试吗。
 2. **重复或已被取代吗** —— 查 `gh issue list --state all` 与 `docs/adr/`；ADR 与 Issue 冲突时以 ADR 为准，并要求改 Issue。
-3. **范围够小够清楚吗** —— 一个 Issue 一件事；含多件事的拆分。
+3. **范围够小够清楚吗** —— 一个 Issue 一件事；含多件事的拆分。开工前先查同面在途 Issue（见「上岗验收」第 6 条），并行冲突先上报排序。
 4. **验收标准可测吗** —— 能翻译成流程 B 六维验收面里的某一项吗。**翻译不出来的 Issue 就是伪需求**：交付方会用"按钮已存在"冒充"功能已实现"，而现有套件只断言功能终态、不覆盖体验维度（Issue #294）。
 5. **依赖成立吗** —— 前置 Issue 已关闭吗；上游通道未通时下游不得进入可实施状态。
 
@@ -114,9 +143,13 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
      --evidence-dir <EVIDENCE_ROOT>/<issue>-<UTC时间戳>-trial
    ```
 
+   **绿的口径是「零新增红」，不是「无红」**（Issue #300 口径）。做法：先在 `origin/main` 同档位跑一次，记下红项集合（步骤名 + `verdict_reasons` 原文），再跑被验收对象，两次集合逐条比对，**只有差集非空才是阻塞**。本机存量红（2026-11-10 实测：`unit-contract-remainder-7`、`unit-contract-remainder-10` 因 `cmd.exe` 归属 S0、`ui-integrity-evidence` 因 Chrome 156 vs 只接受 155）会一直在，写「verdict_reasons 须为空」这种红线既做不到也不该提。
+
+   **门禁会整组吞步骤，别把没跑当跑过**：步骤按组并行（默认 `FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=8`，`tools/quality_gate.py:3474`），且组级 fail-fast（`tools/quality_gate.py:3740` `if group_failed: break`）——前面组一红，尾部组（含 `tabbit-e2e-evidence`、egress）整组不排。判绿前必须在证据里核对**被测步骤出现在已执行清单且 status=passed**；整组没排到就用串行补一轮：`FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=1 python tools/quality_gate.py trial …`，并在报告里注明是串行轮。**串行轮在 trial 预算内跑不完**（实测 302.1 s → `final_exit_code=124`），所以它只能当「被测步骤确实能执行」的旁证，外层超时给到 900 s+，**不能当作门禁判定**（124 本身不算过）。要让门内真覆盖尾部组只有两条正路：先清掉存量红（fail-fast 就不会砍尾组），或走 `release` 档（900 s）。实测三轮 trial（基线 / 交付 / 监理）的 32 个已执行步骤里都没有 `tabbit-e2e-evidence` 与 `egress-attribution`。
+
    门禁自带隔离的离线合成环境，会给子进程设 `FIREFLY_TEST_MODE=1`（这是它自己的机制，不是你要防的）。真正压缩预算的是 `FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS`——**验收时不要设它**，设了判定不作数。外层超时给到档位预算以上（trial 300 s → 给 360 s+）；`final_exit_code = 124` 就是超预算，不算通过。`verdict_reasons` 为空才算绿。严重度：守卫违规 S0、关键发布旅程失败 S1 阻塞、其它步骤失败 S2、证据重试 S1。不传 `--evidence-dir` 时证据落 `%TEMP%/firefly-quality-gate/<stamp>-<mode>-<pid>`，会被清——等于没留证。
 3. **门内的端到端步恒为跳过**：`trial`/`release` 里有一步 `tabbit-e2e-evidence`（`tests/tabbit_e2e_evidence.py`），它按顺序跑 `scenario_keys.sh`、`scenario_delete_undo.sh`、`scenario_ux_rules.sh`，再跑 `tools/e2e_shot_diff.py`（报告模式，不带 `--strict`）。但**门禁内的 `LOCALAPPDATA` 指向临时 home，`tabbit-cli` 必然不可见，这一步在门内永远走「环境未就绪 → exit 0」的快速跳过**（它的措辞刻意不用 `skip` 开头，否则会被判 failed）。所以**门禁绿完全不代表端到端跑过**：要在门内证据里搜 `TABBIT-E2E 环境未就绪`，出现即该步无证据。端到端只能你在门禁外自己跑（三条前置条件见第 5 步的表）。`scenario_mouse.sh`（#299）**根本不在这三个脚本里**，门内门外都不会被这一步跑到。
-4. **红项基线**：先在 `origin/main` 同档位跑一次得到基线，只有新增红项是阻塞项（Issue #300 的口径就是"没有新增红项"）。基线只对门禁成立——端到端那边没有对应的 main 基线，别把两套混用。
+4. **红项基线**：先在 `origin/main` 同档位跑一次得到基线，只有新增红项是阻塞项（Issue #300 的口径就是"没有新增红项"）。基线只对门禁成立——端到端那边没有对应的 main 基线，别把两套混用。**要跑基线就在主工作区干净 main 上跑，或另建一棵 `orca worktree create --base-branch main` 的基线树；绝不能在交付工作树里 `git checkout <基线 commit>`**——那会破坏被验收对象，交付方未推送的工作可能丢（实测交付方自己 `git checkout -q b2b3399` 跑对照，虽恢复但属危险动作）。基线证据目录命名 `<issue>-baseline-<短sha>-<mode>`，交付方与监理各跑各的、各自归档，报告里并列比对。
 5. **六维验收面**（你定的标准，Issue #294 家族；下表是 2026-11-10 快照，口径以 `gh issue view` 的当前正文为准）。验收影响前端或 agent 宿主的改动要逐维给结论，门禁绿灯不等于六维通过：
 
 | 维度 | 口径 | 自动化现状 | 你的动作 |
@@ -128,9 +161,14 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 | 真实鼠标操作 | #299 | `tools/e2e/scenario_mouse.sh`（真实指针事件）；**门禁里根本没有它**——不在三脚本名单，也不在 `e2e_qa.sh` | 门禁外先跑脚本；点选、拖拽、缩放、框选、双击都要覆盖；直接调函数不算 |
 | 删除与撤回链 | #300 | `tools/e2e/scenario_delete_undo.sh`；**已列进门禁三脚本之一，门内恒跳过** | 口径是**逐级撤回**：批选若干个节点+连线 → 一次删除 → 按 Ctrl+Z 若干次，每次只回退一步，最终位置与连线与删除前一致。“删一个→撤回一次”重复三次不算覆盖本维（实测三个档位组合都把本维当成三次单点撤回）；额外核验 agent 触发的写操作是否进入同一撤回链 |
 
-   每一维都要写明证据来自哪条命令的门禁外实跑；只有门禁输出时，该维一律记「证据不可得」，不得记通过（门内的 tabbit 步是跳过）。某一维的验收口径缺失时回到流程 A 打回 Issue。
+每一维开工前先核对本表快照是否过时：`grep -n "SCENARIO_SCRIPTS" -A6 tests/tabbit_e2e_evidence.py` 看实际接线清单（2026-11-10 快照：三个 keys/delete_undo/ux_rules，**#310 合并后变成四个、多 `scenario_mouse.sh`**，但 `16df89a` 当时未进 main，所以本表仍按三个写）。快照与实际不一致时以实际为准并在报告里注明。
+
+每一维都要写明证据来自哪条命令的门禁外实跑；只有门禁输出时，该维一律记「证据不可得」，不得记通过（门内的 tabbit 步是跳过）。某一维的验收口径缺失时回到流程 A 打回 Issue。
 6. **一票否决**：改动触及 `tools/quality_gate.py`、`tests/**` 断言、`tools/e2e/**` 场景断言、`.github/**`、`package*.json` 而 Issue 未声明这项改动 → 打回，要求先补声明与理由。端到端场景的断言就是验收标准本身，放宽它等于自己给自己改考卷（实测交付方会主动提出放宽断言来"让红项清零"）。
 7. **门禁与端到端分别下结论**：门禁绿但没有任何端到端证据，是一条独立打回理由，不能并进门禁那条一起算过。
+8. **飘（flaky）两轮制**：端到端某一维一次红一次绿 → 判该维绿，但**必须记 flaky 并进存量问题清单上报维护者**；两次都红 → 打回。两轮之间不得改任何东西（改了就不是同一个对象）。实测 `scenario_mouse.sh` m4 一轮 `MARQUEE_BOX_MISSING`、次轮全 PASS；交付方侧 m3/m5/m6 的 `page.screenshot: Timeout 30000ms` 在监理侧未复现——都按此处理。
+9. **程序性裁定必须先引原文**：判交付方是否越权（关票、改标签、动分支）之前，先读 `.pi/skills/impl-session-contract/SKILL.md` 与 `docs/agents/issue-tracker.md` 并引用行号；**不得凭自己的措辞加规则**。实测监理在裁定评论里写「合并与关闭归维护者」，据此判交付方「越权关闭」——实际契约第 5 步与 `docs/agents/issue-tracker.md:51` 都写明「监理签字后由交付方写结论评论并关闭」。错裁代价：2 条公开评论 + 3 封邮件 + 4 分钟返工，还差点改掉对方正确行为。发现裁错就在 Issue 公开撤回并作废原评论，别只私下改口。
+10. **关闭 ≠ 合并**：交付方关闭合规，但代码可能还在 `issue/<N>` 上没进 main（实测 #310 已 CLOSED，`16df89a` 只在该分支）。台账行必须记合并状态：未合写 `merge-pending <sha>`；并明确「合并完成前不得删 `issue/<N>` 分支」。你不合并、不重开、不改状态。
 
 **完成判定**：①报告已发给维护者 ②台账一行 ③Issue 标签或 Orca gate 已落。三者缺一即未完成。
 
@@ -141,7 +179,7 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 1. Issue 编号与验收档位；
 2. **失败输出原文的关键片段**（保留精确错误串，不改写成中文）；本次没有失败输出时，**必须写一行“本次无可引错误串：门禁绿但缺硬证据”**，不能缺这一段不写；
 3. 要补什么，具体到文件、断言、证据类型；
-4. 复审条件："我将重跑 `<命令>`，`verdict_reasons` 须为空"。
+4. 复审条件："我将重跑 `<命令>`，红项集合须与基线证据 `<EVIDENCE_ROOT>/<issue>-baseline-<sha>-<mode>` 一致（零新增红），且被测步骤 `<步骤名>` 须出现在已执行清单里"。
 
 **打回最多 3 轮**，第 3 轮仍不合格即升级。
 
@@ -158,18 +196,32 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 每裁定一次，向 `docs/acceptance/ledger.md` 追加一行（不改历史行）：
 
 ```
-日期 | Issue | 工作树 | 档位 | 退出码 | verdict_reasons | 打回轮次 | 结论 | 证据目录
+日期 | Issue | 工作树 | 档位 | 退出码 | verdict_reasons | 打回轮次 | 结论（含 merge-pending <sha>） | 证据目录
 ```
 
-维护者靠台账抽查你。
+维护者靠台账抽查你。**台账行不可豁免**：任务书里的「只读」「不得创建文件」这类硬约束只约束代码、工作树与 Issue 状态，**不覆盖 `docs/acceptance/ledger.md`**——那是监理自己的写入面。写不下去（只读挂载、路径不可写）就按停止条件上报要授权，不许把台账行只写在邮件或报告里就算完（实测 #310 因任务书一句「不得修改/创建任何文件」，监理两次把台账行文本交给维护者代落，台账至今空行，维护者无从抽查）。发任务书时必须写一行「台账例外：`docs/acceptance/ledger.md` 照写」。
+
+4. **流程版本**：`grep -n "^version:" .pi/skills/*/SKILL.md` 的读数写进入户回执，也写进任务书。发现对端版本与自己不一致 → 停下上报，不要带版本裂缝开工。
+
+## 卡点上报（跑的过程中也盯着流程本身）
+
+遇到「不是代码问题，是流程没覆盖或与实际不符」，当场报流程优化者，不要自己绕过就算完：
+
+```bash
+orca orchestration send --to run:<流程优化者 Run> --subject "#<issue> 卡点 <短标题>" --body "<四段>"
+```
+
+四段（缺一不排进本轮）：**现象**（命令原文 + 退出码/错误原文 + 时间戳或邮件 ID）/ **现行流程**（`<文件:行号>` 怎么说）/ **代价** / **最小改法**（加一条什么机器可判的条件）。同时给 `docs/acceptance/pain.md` 追一行（`pending`）——邮件只唤醒，真相在文件。上报后继续干活不等回复。你是流程卡点的最大发现者（实测 #310：台账不可写、工作树退成 `pty:`、基线要同档位三条都是你发现的），漏报即棘轮不转。
 
 ## 停止条件
 
 - 可见性三条前置任一不成立（见「会话可见性」）→ 停下上报维护者，不要开始验收：不可见的监理会话无法被抽查，等于没有监理。
 - 门禁脚本不存在或 `--help` 失败 → 停下上报，用现成门禁判定；手写等价命令不算门禁。
 - 端到端三条前置条件（tabbit-cli / healthz 有已打开项目 / 能起 bash）任一不满足 → 该维记「证据不可得」并写清缺哪条，**不得记通过，也不得记交付方缺陷**。
-- `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。
 - 证据目录不可写 → 停下向维护者要一个仓库外可写路径。
+- `docs/acceptance/ledger.md` 不可写 → 停下上报要授权，不得用邮件/报告里的文本代替台账行。
+- 维护者信箱 `terminal_not_found` → 不阻塞：结论落 Issue 评论 + 台账，报告里写失败原文。
+- `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。
 - 同一命令连续失败 3 次 → 停止重试，报告错误原文。
 
 ## 最终报告（固定格式）
