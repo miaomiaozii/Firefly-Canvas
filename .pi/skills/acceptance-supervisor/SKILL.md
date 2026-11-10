@@ -80,22 +80,23 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
      --evidence-dir <EVIDENCE_ROOT>/<issue>-<UTC时间戳>-trial
    ```
 
-   验收时保持真实环境（`FIREFLY_TEST_MODE` 会压缩预算，判定就不作数了）；外层超时给到档位预算以上（trial 给 360 s+）。`verdict_reasons` 为空才算绿。严重度：守卫违规 S0、关键发布旅程失败 S1 阻塞、其它步骤失败 S2、证据重试 S1。
-3. **红项基线**：先在 `origin/main` 同档位跑一次得到基线，只有新增红项是阻塞项（Issue #300 的口径就是"没有新增红项"）。基线只对门禁成立——端到端那边没有对应的 main 基线，别把两套混用。
-4. **六维验收面**（你定的标准，Issue #294 家族；下表是 2026-11-10 快照，口径以 `gh issue view` 的当前正文为准）。验收影响前端或 agent 宿主的改动要逐维给结论，门禁绿灯不等于六维通过：
+   门禁自带隔离的离线合成环境，会给子进程设 `FIREFLY_TEST_MODE=1`（这是它自己的机制，不是你要防的）。真正压缩预算的是 `FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS`——**验收时不要设它**，设了判定不作数。外层超时给到档位预算以上（trial 300 s → 给 360 s+）；`final_exit_code = 124` 就是超预算，不算通过。`verdict_reasons` 为空才算绿。严重度：守卫违规 S0、关键发布旅程失败 S1 阻塞、其它步骤失败 S2、证据重试 S1。不传 `--evidence-dir` 时证据落 `%TEMP%/firefly-quality-gate/<stamp>-<mode>-<pid>`，会被清——等于没留证。
+3. **门内的端到端步恒为跳过**：`trial`/`release` 里有一步 `tabbit-e2e-evidence`（`tests/tabbit_e2e_evidence.py`），它按顺序跑 `scenario_keys.sh`、`scenario_delete_undo.sh`、`scenario_ux_rules.sh`，再跑 `tools/e2e_shot_diff.py`（报告模式，不带 `--strict`）。但**门禁内的 `LOCALAPPDATA` 指向临时 home，`tabbit-cli` 必然不可见，这一步在门内永远走「环境未就绪 → exit 0」的快速跳过**（它的措辞刻意不用 `skip` 开头，否则会被判 failed）。所以**门禁绿完全不代表端到端跑过**：要在门内证据里搜 `TABBIT-E2E 环境未就绪`，出现即该步无证据。端到端只能你在门禁外自己跑（三条前置条件见第 5 步的表）。`scenario_mouse.sh`（#299）**根本不在这三个脚本里**，门内门外都不会被这一步跑到。
+4. **红项基线**：先在 `origin/main` 同档位跑一次得到基线，只有新增红项是阻塞项（Issue #300 的口径就是"没有新增红项"）。基线只对门禁成立——端到端那边没有对应的 main 基线，别把两套混用。
+5. **六维验收面**（你定的标准，Issue #294 家族；下表是 2026-11-10 快照，口径以 `gh issue view` 的当前正文为准）。验收影响前端或 agent 宿主的改动要逐维给结论，门禁绿灯不等于六维通过：
 
 | 维度 | 口径 | 自动化现状 | 你的动作 |
 | --- | --- | --- | --- |
-| 端到端全绿 | #295 | **未接入门禁**：`bash tools/e2e_qa.sh`（s1–s4，agent/TUI 家族，场景会增减别写死数量）；六维各自另有 `tools/e2e/scenario_*.sh`，要单独跑 | 自己跑 `bash tools/e2e_qa.sh --shots-dir <EVIDENCE_ROOT>/<issue>/shots --out-json <EVIDENCE_ROOT>/<issue>/e2e.json`；脚本对失败场景自带一次重跑，第二次仍红即阻塞；逐场景 PASS/FAIL 归档。前置条件：dev server 在跑且画布能打开，否则整批红属环境问题，先修环境再判 |
-| 截图留证与基线对比 | #296 | 半自动：上面 `--shots-dir` 出图，`python tools/e2e_shot_diff.py` 比对 | 跑 `e2e_shot_diff.py --evidence-dir … --baseline-dir …`（`--threshold` 默认 0.08，`--strict` 超阈值退出码 1）；无基线先建基线。只看脚本差值不够，溢出/折行这类还得人工看图 |
-| 体验规则 | #297 | 有脚本未接门禁：`tools/e2e/scenario_ux_rules.sh`，截图基线 `tools/e2e/baselines/u1–u5.png` | 先跑脚本，再逐条目检五条：文字溢出或截断、徽章竖排折行、可点击目标命中尺寸、纯图标按钮无提示、控件重叠或越出容器 |
-| 快捷键一致性 | #298 | 有脚本未接门禁：`tools/e2e/scenario_keys.sh` | 先跑脚本；再照快捷键帮助面板公示的每一组键位逐键核验；区分输入框内与框外的行为 |
-| 真实鼠标操作 | #299 | 有脚本未接门禁：`tools/e2e/scenario_mouse.sh`（已是真实指针事件） | 先跑脚本；点选、拖拽、缩放、框选、双击都要覆盖；直接调函数不算 |
-| 删除与撤回链 | #300 | 有脚本未接门禁：`tools/e2e/scenario_delete_undo.sh` | 口径是**逐级撤回**：批选若干个节点+连线 → 一次删除 → 按 Ctrl+Z 若干次，每次只回退一步，最终位置与连线与删除前一致。“删一个→撤回一次”重复三次不算覆盖本维（实测三个档位组合都把本维当成三次单点撤回）；额外核验 agent 触发的写操作是否进入同一撤回链 |
+| 端到端全绿 | #295 | `tools/e2e_qa.sh` **不在门禁里**（门禁里的是 `tabbit-e2e-evidence`，且门内恒跳过，见第 3 步）。脚本只吃一个位置参数：`bash tools/e2e_qa.sh [base_url]`，默认 `http://127.0.0.1:3000`；**没有 `--shots-dir`／`--out-json`** | 自己跑 `bash tools/e2e_qa.sh`，退出码 = 失败场景数（`99` tabbit-cli 缺失，`98` 没有已打开的项目）。截图自动归档到 `<repo>/.pipeline/evidence/screenshots/<场景>-attempt<N>.png`；失败场景脚本自带一次重跑，第二次仍红即阻塞。**前置条件三条，缺一条整批红属环境问题**：① app 在跑且 `curl http://127.0.0.1:3000/api/healthz` 的 `open_project_ids` 非空（画布要真的打开）② `%LOCALAPPDATA%/Tabbit/LocalAgent/bin/tabbit-cli.exe` 存在 ③ 项目可用 `FIREFLY_QA_PROJECT` 指定 |
+| 截图留证与基线对比 | #296 | 出图自动（上面那个 `EVID_DIR`）；`python tools/e2e_shot_diff.py` 默认 `--evidence-dir .pipeline/evidence/screenshots --baseline-dir tools/e2e/baselines --threshold 0.08`；`--strict` 超阈值退出码 1，`--update` 刷新基线。基线在册：`u1–u5`（体验）、`k1–k4`+`k2a–k2d`（快捷键）、`m1–m6`（鼠标）、`d1–d4`（删除撤回） | 门禁外的端到端跑完后跑 `python tools/e2e_shot_diff.py --strict`，差值归档到 `<EVIDENCE_ROOT>`。无基线先建基线，但**新建基线就是改考卷，要在汇报里声明**。只看差值不够，溢出/折行还得人工看图 |
+| 体验规则 | #297 | `tools/e2e/scenario_ux_rules.sh`；**已列进门禁的 `tabbit-e2e-evidence` 三脚本之一，但门内恒跳过**（第 3 步） | 门禁外先跑脚本（`BASE` 用 `FIREFLY_BASE` 覆盖），再逐条目检五条：文字溢出或截断、徽章竖排折行、可点击目标命中尺寸、纯图标按钮无提示、控件重叠或越出容器 |
+| 快捷键一致性 | #298 | `tools/e2e/scenario_keys.sh`；**已列进门禁三脚本之一，门内恒跳过** | 门禁外先跑脚本；再照快捷键帮助面板公示的每一组键位逐键核验；区分输入框内与框外的行为 |
+| 真实鼠标操作 | #299 | `tools/e2e/scenario_mouse.sh`（真实指针事件）；**门禁里根本没有它**——不在三脚本名单，也不在 `e2e_qa.sh` | 门禁外先跑脚本；点选、拖拽、缩放、框选、双击都要覆盖；直接调函数不算 |
+| 删除与撤回链 | #300 | `tools/e2e/scenario_delete_undo.sh`；**已列进门禁三脚本之一，门内恒跳过** | 口径是**逐级撤回**：批选若干个节点+连线 → 一次删除 → 按 Ctrl+Z 若干次，每次只回退一步，最终位置与连线与删除前一致。“删一个→撤回一次”重复三次不算覆盖本维（实测三个档位组合都把本维当成三次单点撤回）；额外核验 agent 触发的写操作是否进入同一撤回链 |
 
-   未接入门禁的维度要在报告里写明“本维靠 `tools/e2e/scenario_*.sh` 跑，脚本未断言的部分已人工核对”。某一维的验收口径缺失时回到流程 A 打回 Issue。
-5. **一票否决**：改动触及 `tools/quality_gate.py`、`tests/**` 断言、`tools/e2e/**` 场景断言、`.github/**`、`package*.json` 而 Issue 未声明这项改动 → 打回，要求先补声明与理由。端到端场景的断言就是验收标准本身，放宽它等于自己给自己改考卷（实测交付方会主动提出放宽断言来"让红项清零"）。
-6. **门禁与端到端分别下结论**：门禁绿但没有任何端到端证据，是一条独立打回理由，不能并进门禁那条一起算过。
+   每一维都要写明证据来自哪条命令的门禁外实跑；只有门禁输出时，该维一律记「证据不可得」，不得记通过（门内的 tabbit 步是跳过）。某一维的验收口径缺失时回到流程 A 打回 Issue。
+6. **一票否决**：改动触及 `tools/quality_gate.py`、`tests/**` 断言、`tools/e2e/**` 场景断言、`.github/**`、`package*.json` 而 Issue 未声明这项改动 → 打回，要求先补声明与理由。端到端场景的断言就是验收标准本身，放宽它等于自己给自己改考卷（实测交付方会主动提出放宽断言来"让红项清零"）。
+7. **门禁与端到端分别下结论**：门禁绿但没有任何端到端证据，是一条独立打回理由，不能并进门禁那条一起算过。
 
 **完成判定**：①报告已发给维护者 ②台账一行 ③Issue 标签或 Orca gate 已落。三者缺一即未完成。
 
@@ -131,6 +132,7 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 ## 停止条件
 
 - 门禁脚本不存在或 `--help` 失败 → 停下上报，用现成门禁判定；手写等价命令不算门禁。
+- 端到端三条前置条件（tabbit-cli / healthz 有已打开项目 / 能起 bash）任一不满足 → 该维记「证据不可得」并写清缺哪条，**不得记通过，也不得记交付方缺陷**。
 - `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。
 - 证据目录不可写 → 停下向维护者要一个仓库外可写路径。
 - 同一命令连续失败 3 次 → 停止重试，报告错误原文。
