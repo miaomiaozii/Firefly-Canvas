@@ -112,4 +112,7 @@ if grep -q "TURN_STALL_NOTIFY_SECONDS = 120.0" app/services/agent_host.py; then 
 if grep -q 'encoding="utf-8"' app/services/agent_host.py && grep -q 'encoding="utf-8"' tests/stubs/fake_pi.py; then echo "PASS  s6-utf8-pipe(source)"; else echo "FAIL  s6-utf8-pipe(source)"; FAILS=$((FAILS+1)); fi
 
 echo "== 失败数: $FAILS =="
+# 标签卫生（用户实测反馈：E2E 遗留标签挤占浏览器资源）：套件退出前销毁自己的标签；
+# 不碰非本任务名下的用户标签。
+"$TABBIT" finish --task "Firefly E2E QA" --discard >/dev/null 2>&1 || true
 exit $FAILS
