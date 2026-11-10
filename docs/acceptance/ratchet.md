@@ -7,6 +7,14 @@
 | 版本 | 日期 | 吸收的卡点 | 新增/收紧的可复跑回归 | 放宽了什么 |
 |---|---|---|---|---|
 | v1 | 2026-11-10 | P-01 … P-10（来自 #310 演练复盘，补丁由维护者亲自动手——当时还没有流程优化者会话） | 14 项 grep 标记（见下） | 无 |
+| v2 | 2026-11-10 | 卡点队列改为流程优化者单写（与 P-04 同类风险，上岗前防）；P-11 入队；P-12/P-13 转 `code-issue` | 三个 skill 的 `version:` 字段 1→2（复跑：`grep -n "^version:" .pi/skills/*/SKILL.md` 须全为 2）；新增 grep 标记 `单写` | 无（只收紧） |
+
+## v2 回归标记
+
+| 标记 | 实际所在文件 |
+|---|---|
+| `version: 2` | 三个 skill |
+| `单写` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 
 ## v1 回归标记（复跑：`grep -rlE -e <标记> .pi/skills AGENTS.md`，缺任一项即棘轮破损；标记按正则匹配）
 

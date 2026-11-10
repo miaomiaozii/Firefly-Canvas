@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 1
+version: 2
 disable-model-invocation: true
 description: 验收监理：独立第三方会话，靠双盲与复跑判定改动是否可交付，并审查 Issue 是否可实施、打回交付方重做。Use when 维护者说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---

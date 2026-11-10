@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮角色）。收另外两个会话的卡点上报，把流程教训固化成可复跑的检查或工具，只在轮间生效，任何一轮都不许倒退。
-version: 1
+version: 2
 disable-model-invocation: true
 ---
 
