@@ -1,6 +1,6 @@
 ---
 name: impl-session-contract
-version: 3
+version: 4
 disable-model-invocation: true
 description: 交付方与验收监理的交接协议。Use when 准备关闭某个 Issue 或打 ready-for-agent、收到 subject 含「验收打回」的邮件、要向监理提交一次交付。
 ---

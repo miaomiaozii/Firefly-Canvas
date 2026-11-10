@@ -177,3 +177,10 @@ flowchart LR
 - 坑：棘轮工作区里 `git branch -f main <sha>` 报 `fatal: cannot force update the branch 'main' used by worktree at 'D:/Firefly-Canvas'`（`main` 被主工作区占用）。**规范推法**：`git push origin <sha>:main`（不碰本地分支），推后必验 `git fetch origin main && git rev-parse --short origin/main`。
 - 主工作区 `D:/Firefly-Canvas` 的本地 `main` 现在是 `a0a8615`，落后于 `origin/main@cac1818`。监理要取本轮班规**不要切分支**：用 `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/acceptance-supervisor/SKILL.md'`（`流程契约取法`），或在主工作区 `git merge --ff-only origin/main`（需维护者同意，监理不得自己动被验树 git 状态）。
 
+### 5.2 版本门口径（`版本门读数=宣布值`，v4 追加，P-32）
+
+- **任何**流程层改动（哪怕只补一条款、改一句措辞）必须在**同一 commit** 内把受影响 skill 的 `version:` +1；禁止「同版本内补条款」这种说法——它曾让 `origin/main` 读数停在 3 而维护者宣布 4。
+- 上岗版本门的判据是**读数等于维护者本轮宣布值**，不是「读过就行」。监理的即停（msg_b7922fec9543）是正确行为，不是阻力。
+- 上架回执正文必须带两样：`grep "^version:"` 在 `origin/main` 上的读数原文 + 上架 sha。缺一视为未上架。
+- 本轮实测：v4 上架后 `git rev-parse --short origin/main` 与三份 `version: 4` 见棘轮上架回执（msg_待填）。
+

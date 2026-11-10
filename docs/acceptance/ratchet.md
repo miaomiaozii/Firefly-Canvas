@@ -13,6 +13,8 @@
 
 | v3-patch | 2026-11-10 | P-30（维护者 msg：流程层由棘轮写并推，维护者只确认） | 新增 grep 标记 `流程层发权`、`发权范围`、`收权`（棘轮契约）；监理/交付契约即停上报对象由「维护者先推流程层」改为「棘轮先推流程层」；`docs/acceptance/roster.md` 新增 §5 发权与流程全景（含 mermaid 流程图与上架三判据）。v3 版本号不变（同版本内补条款） | 放宽一项流程瓶颈：原「由维护者把 main 推上去」改为「由棘轮直推、维护者只确认」——产品代码与测试仍绝对禁推、`AGENTS.md` 归维护者、维护者可一句收权或 revert（收紧面：新增推前零产品改动校验 + 推后 sha 必验） |
 
+| v4 | 2026-11-10 | P-32（监理 msg_b7922fec9543 即停上报：维护者边界令第六条要求 `origin/main` 上读数=4，实测读数=3 → 版本门未过；我把「维护者只确认」当成了不必 bump 的理由，v3-patch 只补条款没 +1） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" | grep "^version:"; done` 必须三行全为 `version: 4`；新增 grep 标记 `版本门读数=宣布值`（名册 §5.2）：任何流程层改动同 commit 必须 bump `version:`，且上架回执正文必须带 grep 读数与 sha | 无（只收紧：新增「改班规必同 commit bump」的机器判据） |
+
 ## v3 回归标记（复跑：`grep -rlE -e <标记> .pi/skills`，缺任一项即棘轮破损）
 
 | 标记 | 实际所在文件 |
