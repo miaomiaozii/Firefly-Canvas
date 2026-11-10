@@ -26,6 +26,7 @@
 | `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `--help 核对`（v3 校准追加） | `impl-session-contract/SKILL.md` |
 | `归因带原始出处`（v3 追加，单写者自约束） | `process-optimizer/SKILL.md` |
+| `旁证不定主体`（v3 追加） | `process-optimizer/SKILL.md` |
 
 ## v2 回归标记
 
@@ -68,7 +69,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 | #310 演练 | 2026-11-10 | 2（监理两次要求更正） | 0 | 13 / 0 | 32 | 未做 | 未做（交付在 `pty:` 游离终端） | 14（v1 补丁） | v0→v1 |
 | loop-1（优化者上岗） | — | 未演练 | — | — | — | — | — | — | v1 待跑 |
 | loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
-| loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
+| loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收；单写者自报更正 1 起见 P-22，不计打回） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
 
 ## 已核实的事实（带来源，供下轮做差）
 
@@ -83,6 +84,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （loop-2 监理自报，msg_1061adfdfedf）台账行未落地的归因：本轮演练硬约束「不得修改/创建任何文件（仅 /tmp 可写）」由维护者设定且未解除，监理称台账行文本已两次交付（状态邮件正文 + 监理会话报告），等维护者代落或授权；监理承诺下一轮上岗第一件事补行。台账现仍只有表头 + 示例行 —— 事实入册，归因待维护者确认（不记成监理单方执行缺口）。
 - （v3 实测，`gh issue close --help` 于 `D:/Firefly-Canvas`）`gh issue close` 支持 `-c/--comment string`、`-r/--reason`、`--duplicate-of`，**无** `-F/--body-file`；`gh issue comment` 支持 `-b/--body`、`-F/--body-file`、`--edit-last/--delete-last`。`docs/agents/issue-tracker.md:26` 的 `gh issue close … --comment "..."` 有效。P-06 原「没有 `--comment-file`」表述属实但易误读，已按「自造 flag 前先 `--help` 核对」改写（P-05 校准注记落在此行）。
 - （loop-3 归因取证，P-06/P-22）`--comment-file` 失败的**行为主体无法核实，取证为空**：`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/comments --jq '.[]|select(.body|test("comment-file";"i"))'` → 0 命中；`grep -rIl -- "--comment-file" D:/Firefly-Canvas-evidence D:/ff-wt D:/Firefly-Canvas/docs` → 只命中 `docs/acceptance/pain.md` 与 `ratchet.md`（我们自己的台账）；`gh api repos/miaomiaozii/Firefly-Canvas/issues/310/events` 的 closed 事件 → `actor=miaomiaozii, created_at=2026-11-10T09:33:34Z`（三方共用同一 bot 账号，无法定主体）；`git show cd83733:docs/acceptance/pain.md` 的 P-06 原文未记主体。**台账只写「主体未核实」，不指名任何一方**；我此前那句「监理自造」已删（立 P-22，标记 `归因带原始出处`）。
+- （loop-3 旁证登记，P-06）监理 msg_0b6dad4f97dc 递来：**自报级**证据——交付方 msg_e489f891f126（from=term_b300bceb，09:33 后送达）原文「已按契约收尾：结论评论 issuecomment-6763910725 + Issue #310 关闭（reason=completed）」，时间吐合 closed 事件 `2026-11-10T09:33:34Z`。等级不够：自报 + 三方共用 bot 账号 ⇒ 不能定主体，P-06 维持「主体未核实」，本条只作旁证（已写成契约口径 `旁证不定主体`）。交付方另确认 pain.md 零写入（msg_b46d784c771c）。
 - （维护者 msg_db4b3380d294 执行面）`git merge --ff-only loop/ratchet` 已在维护者侧把本地 main 推到 `a6dfa39`，三份 skill 现 `version: 3`；其独立复跑 v3 的 8 项标记命中一致，v1+v2 的 15 项记我方口径。**`origin/main` 仍未推**（向公共仓发布需维护者本人点头）。
 
 ## 待维护者定的事
@@ -91,6 +93,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - 本机存量红与 `scenario_keys.sh` 3/3 必挂无人认领 → 门禁的组级 fail-fast 会永久遮住尾组（P-12、P-13）。
 - 流程文件的合并权在维护者：优化会话的改动走 `loop/*` 分支，监理复核通过后由维护者合并。
 - **v3 合并状态**：本地 main 已 ff 到 `a6dfa39`（维护者执行）；`origin/main` 未推（发布需维护者点头）。
+- **台账硬约束边界待维护者裁定（非卡点，口径解释权在他）**：监理立场是本轮「不得修改/创建任何文件（仅 /tmp 可写）」由维护者当面设定且未解除，明示前只备文本不落 `ledger.md`；这与 v1 将 `docs/acceptance/ledger.md` 定为监理写入面（台账缺失列为停止条件）相冲。已向维护者发二选一（msg_b4a5dbb6b739）：①解除硬约束→监理自落；②维持→维护者代落。明示前不立项、不定性。
 - **`git push origin main` 需维护者（人）批准**——已列为待办。推上去之前，下一轮三方按 `流程契约取法` 触发「即停」是预期行为，**不是新卡点，不得重复立项**（维护者 msg_db4b3380d294 明示）。
 - **下一轮用哪个 Issue：留空待维护者指定**，流程优化者与另两方不得自行领活。
 - #310 台账两行是否由监理自落（其称硬约束未解除）或维护者代落（P-04 面）。
