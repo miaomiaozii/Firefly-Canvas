@@ -189,22 +189,22 @@ JS
 # K4 展开/收起：帮助面板开→关→开，可见性两次切换后归位
 run k4-panel-collapse <<'JS'
 const toggle = await page.evaluate(() => {
-  const btn = document.querySelector('[class*="shortcut"] button, button[class*="shortcut"], .smart-shortcut-toggle, [title*="快捷"], [aria-label*="快捷"]');
+  const btn = document.getElementById('smartShortcutToggle') || document.querySelector('.smart-shortcut-toggle');
   if (!btn) return 'none';
   btn.click(); return 'clicked';
 });
 if (toggle === 'none') return { evidence: 'PASS-skip: 无可展开/收起的面板开关' };
 await page.waitForTimeout(600);
-const open1 = await page.evaluate(() => !!document.querySelector('.shortcut-modal, [class*="shortcut-panel"]:not([class*="toggle"])') || (document.getElementById('shell')?.classList.contains('shortcut-panel-open')));
-// 收起路径：再点一次开关（Escape 是否绑定未公示，不作断言前提）
+const open1 = await page.evaluate(() => document.querySelector('.shortcut-modal')?.classList.contains('open') || (document.getElementById('shell')?.classList.contains('shortcut-panel-open')));
+// 收起路径：再点一次开关（Escape 已绑定但面板收起主路径是开关 toggle，断言主路径）
 await page.evaluate(() => {
-  const btn = document.querySelector('[class*="shortcut"] button, button[class*="shortcut"], .smart-shortcut-toggle, [title*="快捷"], [aria-label*="快捷"]');
+  const btn = document.getElementById('smartShortcutToggle') || document.querySelector('.smart-shortcut-toggle');
   btn && btn.click();
 });
 await page.waitForTimeout(600);
 const closed = await page.evaluate(() => {
-  const modal = !!document.querySelector('.shortcut-modal, [class*="shortcut-panel"]:not([class*="toggle"])');
-  return !(modal || document.getElementById('shell')?.classList.contains('shortcut-panel-open'));
+  const modalOpen = document.querySelector('.shortcut-modal')?.classList.contains('open');
+  return !(modalOpen || document.getElementById('shell')?.classList.contains('shortcut-panel-open'));
 });
 if (!open1) throw new Error('OPEN_FAIL: 第一次点开未展开');
 if (!closed) throw new Error('COLLAPSE_FAIL: 二次点击开关未收起（#303 回归）');
