@@ -10,8 +10,8 @@
 | 规范名（正文只用这个） | 唯一别名 | 职责边界（一句话） | 不得做 |
 |---|---|---|---|
 | 流程优化者 | 棘轮 | 收卡点、判定入队、把教训固化成可复跑的检查或工具 | 不做验收判定、不改产品代码与测试、不落 triage 标签、不关 Issue、不推 main |
-| 监理 | 无别名 | 独立复现与验收裁定、写 `ledger.md` | 不改产品代码与测试、不推 main、不替交付方写实现 |
-| 交付方 | 无别名 | 按任务书实现并自证、写代码与测试、按契约第 5 步收尾 | 不做自我验收裁定、不推 main、不写 `pain.md`/`ledger.md` |
+| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e` | `run_12b3ab55bf53`（回执：`run-current` 回读非 null，见 §3.3 存疑） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（回执读数；本地 main 会被他会话推进） | 从 `班规@origin` 取：文件存在但 **无 version 行**（`grep -n "^version:"` rc=1）——与棘轮自测一致，见 §3.2 | `docs/acceptance/ledger.md`；GitHub Issue 评论（裁定/记录文书）；证据目录 `D:/Firefly-Canvas-evidence/**`；`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、merge/push `main`、改被验工作树 git 状态、triage 标签以外的 Issue 状态关闭、代交付方写实现 | 回执 `msg_66beb330eb06`，2026-11-10，九项+A/B 齐 |
+| 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（terminal list 标题「π - w310」互证） | `run_79684022c565`（回执：`run-current` 回读非 null，见 §3.3 存疑） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | 从 `班规@origin` 取：**无 version 行**；对照 `班规@棘轮`（`git show origin/loop/ratchet:.pi/skills/impl-session-contract/SKILL.md`）→ `3:version: 3` | 票面白名单文件（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）；`git commit`（仅 `issue/310`）；Issue 收尾序列评论；证据目录 `D:/Firefly-Canvas-evidence/*`；编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；merge/rebase/push `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248`（三段），2026-11-10 |
 | 维护者 | 无别名 | 发任务书、裁定口径解释权、合并与发布 `main` | 不代写监理台账 |
 
 不得用的称呼：「优化会话」「监理会话」「交付会话」「那位」「你们这边」——这些词在归因时产生歧义（实测 P-06 归因两轮错记即源于此）。**认人只认 `HANDLE` 与 `SELF_RUN` 编号（`认人认编号`），不认称呼。**
@@ -58,3 +58,29 @@
 2. 三方上岗回执缺任一项（`ROLE`/`HANDLE`/`SELF_RUN`/`TAB_ID`/`WORKTREE`/`SKILL_VERSION`/`MY_WRITE_SURFACES`/`MY_FORBIDDEN`/`PEERS`）→ 按停止条件处理，不带身份裂缝开工。
 3. 回执与我记录的旧读数不一致 → 以回执为准并记一行变更原因。
 4. 每轮上岗第一件事：对册；轮内冻结本文件。
+
+## 3. 回执核验记录（2026-11-10 loop-3）
+
+### 3.1 三方九项回执状态
+
+三方回执**齐**：监理 1 封（九项+A/B）、交付方 3 封（1/3 项1-5、2/3 项6-9、3/3 两问）、维护者身份由名册记录。`PEERS` 三方互证一致（handle ↔ run ↔ 工作区，无冲突）。
+
+### 3.2 棘轮自我更正①：`班规@origin` 的真实状态（三方读数互证 + 棘轮复测）
+
+- 复测（棘轮，2026-11-10）：`git rev-parse --short origin/main` = `7e03237`；`git ls-tree -r --name-only origin/main | grep -c "^\.pi/skills"` = **4**；`MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/acceptance-supervisor/SKILL.md' | grep -n "^version:"` → **rc=1（无版本行）**。
+- 监理回执（项 6）与交付方回执（项 6）独立给出同一读数：**文件存在、无 version 行**。
+- 因此此前「`origin/main` 上没有 `班规@origin`」的措辞**不准**，已改为：**`origin/main` 有旧版班规（无 `version:` 字段），但没有 `docs/acceptance/{pain,ratchet,roster}.md`，也没有 v2/v3 条款**。`流程契约取法` 的 `即停` 判据据此成立：三方从 `班规@origin` 取到的读数（无版本行）≠ 维护者将宣布的值（棘轮侧 v3）→ 三方在流程层上架前不得按 v3 开工。
+- git-bash 踩坑（三方各踩一次，命令原文可引）：`git show origin/main:.pi/...` 不带 `MSYS_NO_PATHCONV=1` 时冒号路径被转义 → `fatal: ambiguous argument` / `fatal: invalid object name`。**规范写法**：`MSYS_NO_PATHCONV=1 git show 'origin/main:<path>'`（引号包住）。
+
+### 3.3 棘轮自我更正②：`run-current` 是「按调用方上下文」绑定的，不能用来核实对端绑定（`run-current自上下文`）
+
+- 事实：监理与交付方回执均称「`run-current` 回读 = 我的 run」。但 `run-current` 只能由会话**在自己的终端里**执行才有效；三方互发的「回读非 null」若由收信方代跑，读到的是**收信方自己**绑定的 run。棘轮此前对监理「`run-current` 为 null」的断言也来自同类跨上下文读数，已作废。
+- 结论：**对端绑定状态只能凭对端在自己终端里的自证 + `run-list`/`run-show` 的持久字段互证**，不得由第三方代跑 `run-current` 得出。已并入 P-23 取证清单。
+
+### 3.4 棘轮自我更正③：监理写入面含 Issue 评论
+
+监理回执项 7 列 `GitHub Issue 评论`。棘轮此前只把 `ledger.md` 记为监理自有写入面，属登记不全。已补入名册（Issue 评论属监理职权边界第 3 条：只评不改代码）。
+
+### 3.5 gh 在棘轮工作区不可用（`gh主工作区跑`）
+
+`gh issue view 310 --repo zhao1477/Firefly-Canvas` 在 `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` 下报 `GraphQL: Could not resolve to a Repository`；`gh api repos/…/issues/comments` 报 404。同一命令在 `D:/Firefly-Canvas` 下可用（P-20 取证即在该处完成）。规范：**审计类 gh 命令一律在 `D:/Firefly-Canvas` 执行**（`cd D:/Firefly-Canvas && gh …`），或在棘轮侧改用只读网页/`git` 取证。

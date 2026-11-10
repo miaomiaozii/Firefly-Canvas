@@ -30,6 +30,7 @@
 | `适用面与失效轮次`（v3 追加，P-24） | `process-optimizer/SKILL.md` |
 | `台账例外声明`（v3 追加，P-24） | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `口径表`、`认人认编号`、`认人编号`、`班规@origin`（v3 追加，P-25） | 三份 skill + `docs/acceptance/roster.md` |
+| `run-current自上下文`、`gh主工作区跑`（v3 追加，P-26/P-27） | `docs/acceptance/roster.md` §3.3/§3.5 |
 | `旁证不定主体`（v3 追加） | `process-optimizer/SKILL.md` |
 
 ## v2 回归标记
