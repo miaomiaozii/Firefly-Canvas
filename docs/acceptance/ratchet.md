@@ -28,6 +28,7 @@
 | `台账称呼同径` | `acceptance-supervisor/SKILL.md` 命中；`docs/acceptance/ledger.md` 头部称呼与 `ROSTER` §1.1 一致由监理上岗自检，缺行即未完成留痕 |
 | `发信写法` | `three-role-loop/SKILL.md`、`process-optimizer/SKILL.md`、`acceptance-supervisor/SKILL.md` 三处命中；正文含 `--body "$(cat` 且写明无 `--body-file` |
 | `--help 核对` | 三方通用：`three-role-loop/SKILL.md` 命中（v11 起不再只在工人契约），`impl-session-contract/SKILL.md` 保留 |
+| `version字段唯一` | `process-optimizer/SKILL.md` 命中；门集五份逐份 `grep -c "^version:"` =1 且同值（P-58） |
 
 ## v4 回归标记（复跑：`grep -rlE -e <标记> .pi/skills docs/acceptance` + `python docs/acceptance/check_tables.py`，缺任一项即棘轮破损）
 
@@ -113,7 +114,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 | loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
 | loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收；单写者自报更正 1 起见 P-22，不计打回） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
 | loop-8（v10 班规质量审计轮，无产品 Issue） | 2026-11-10 | 0（本轮未开验收） | 0（未触发；P-49/P-50 为自查入队） | 6 / 0（P-51..P-56） | 不适用（本轮零产品代码零门禁） | 双盲成立：审计子代理只读、未参与被审文本写作；子代理自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh | 本会话 Orca 可见（工作树由 Orca 建）；两路子代理后台可接受 | 4 项（`委派自证`/`标记可命中`/`班规单一源`/`术语指针`）+ 3 项完成判据（`版本读数三要素`/`升级完成判定`/`门禁外映射`） | v10（门 sha 待上架回读） |
-| loop-9（v11 审计 P2 三项 + P-57） | 2026-11-10 | 0（本轮无产品验收） | 0 | 4 / 0（P-51/P-52/P-53/P-57） | 不适用（零产品代码零门禁） | 双盲成立：被审文本由棘轮改，审计证据来自上轮只读子代理；ops-notes 不立规矩 | 本会话 Orca 可见；未派新子代理 | 5 项（`渐进披露`/`历史证据上收`/`ops-notes`/`术语指针`/`台账称呼同径`/`发信写法`/`--help 核对`，含一条行号锚正则负判据） | v11 |
+| loop-9（v11 审计 P2 三项 + P-57） | 2026-11-10 | 0（本轮无产品验收） | 0 | 4 / 0（P-51/P-52/P-53/P-57） | 不适用（零产品代码零门禁） | 双盲成立：被审文本由棘轮改，审计证据来自上轮只读子代理；ops-notes 不立规矩 | 本会话 Orca 可见；未派新子代理 | 8 项（`渐进披露`/`历史证据上收`/`ops-notes`/`术语指针`/`台账称呼同径`/`发信写法`/`--help 核对`/`version字段唯一`，含一条行号锚正则负判据；P-58 自查即吸收） | v11 |
 
 ## v6 轮事件流（2026-11-10，棘轮）
 
