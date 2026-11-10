@@ -10,7 +10,7 @@
 | 规范名（正文只用这个） | 唯一别名 | 职责边界（一句话） | 不得做 |
 |---|---|---|---|
 | 流程优化者 | 棘轮 | 收卡点、判定入队、把教训固化成可复跑的检查或工具 | 不做验收判定、不改产品代码与测试、不落 triage 标签、不关 Issue、不推 main |
-| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e` | `run_12b3ab55bf53`（回执：`run-current` 回读非 null，见 §3.3 存疑） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（回执读数；本地 main 会被他会话推进） | 从 `班规@origin` 取：文件存在但 **无 version 行**（`grep -n "^version:"` rc=1）——与棘轮自测一致，见 §3.2 | `docs/acceptance/ledger.md`；GitHub Issue 评论（裁定/记录文书）；证据目录 `D:/Firefly-Canvas-evidence/**`；`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、merge/push `main`、改被验工作树 git 状态、triage 标签以外的 Issue 状态关闭、代交付方写实现 | 回执 `msg_66beb330eb06`，2026-11-10，九项+A/B 齐 |
+| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e` | `run_12b3ab55bf53`（verified：对端自证 `run-current` + `run-show --id run_12b3ab55bf53 --full` 的 `coordinator_handle=term_6d6c2fb9…` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（回执读数；本地 main 会被他会话推进） | 从 `班规@origin` 取：文件存在但 **无 version 行**（`grep -n "^version:"` rc=1）——与棘轮自测一致，见 §3.2 | `docs/acceptance/ledger.md`；GitHub Issue 评论（裁定/记录文书）；证据目录 `D:/Firefly-Canvas-evidence/**`；`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、merge/push `main`、改被验工作树 git 状态、triage 标签以外的 Issue 状态关闭、代交付方写实现 | 回执 `msg_66beb330eb06`，2026-11-10，九项+A/B 齐 |
 | 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（terminal list 标题「π - w310」互证） | `run_79684022c565`（回执：`run-current` 回读非 null，见 §3.3 存疑） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | 从 `班规@origin` 取：**无 version 行**；对照 `班规@棘轮`（`git show origin/loop/ratchet:.pi/skills/impl-session-contract/SKILL.md`）→ `3:version: 3` | 票面白名单文件（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）；`git commit`（仅 `issue/310`）；Issue 收尾序列评论；证据目录 `D:/Firefly-Canvas-evidence/*`；编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；merge/rebase/push `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248`（三段），2026-11-10 |
 | 维护者 | 无别名 | 发任务书、裁定口径解释权、合并与发布 `main` | 不代写监理台账 |
 
@@ -84,3 +84,7 @@
 ### 3.5 gh 在棘轮工作区不可用（`gh主工作区跑`）
 
 `gh issue view 310 --repo zhao1477/Firefly-Canvas` 在 `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` 下报 `GraphQL: Could not resolve to a Repository`；`gh api repos/…/issues/comments` 报 404。同一命令在 `D:/Firefly-Canvas` 下可用（P-20 取证即在该处完成）。规范：**审计类 gh 命令一律在 `D:/Firefly-Canvas` 执行**（`cd D:/Firefly-Canvas && gh …`），或在棘轮侧改用只读网页/`git` 取证。
+
+### 3.6 监理绑定复核结果（P-26 关闭）
+
+监理补证（`msg_8602b4bdebcf`，2026-11-10）：两条命令均在监理自己终端执行——①`orca orchestration run-current --json` → `runId=run_12b3ab55bf53`；②`orca orchestration run-show --id run_12b3ab55bf53 --full` → `coordinator_handle=term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`。**新可互证字段**：`run-show` 的 `coordinator_handle` 是服务端持久字段，跨会话查它不受「自上下文」限制 → 今后核绑定一律用 `run-show` 的 `coordinator_handle`（`run-current` 只用于自证）。监理行状态：verified。交付方行仍待同类 `coordinator_handle` 互证（已发 msg 询问）。
