@@ -234,6 +234,7 @@ flowchart LR
 
 | 项 | 状态 |
 |---|---|
-| 三份契约 `version: 5` | **已上架**：`origin/main@0bba2ce`，当场回读三份全 `version: 5`（§4） |
-| 生效通知 | **未发**（等两边手头轮次结束，边界 3） |
+| 三份契约 `version: 5` | **已上架**：`origin/main@f1a270f`（含通用层进仓 P-40），当场回读三份全 `version: 5`；`git ls-tree origin/main .pi/skills/three-role-loop/SKILL.md` 非空；全局副本已移出加载路径（备份 `C:/Users/Administrator/AppData/Local/Temp/three-role-loop-global-backup`）（§4） |
+| 生效通知 | **已发（user 批准 m00809「1、2 按推荐」）**：监理 `msg_637dc8b6366d`、工人 `msg_c5e01278589b`（各一封，5 条动作 + 一行回执要求）。回执待落，到后记本表 | 
+| 回执 | 监理：待；工人：待 |
 | 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |
