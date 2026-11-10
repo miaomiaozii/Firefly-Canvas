@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 2
+version: 3
 disable-model-invocation: true
 description: 验收监理：独立第三方会话，靠双盲与复跑判定改动是否可交付，并审查 Issue 是否可实施、打回交付方重做。Use when 维护者说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -102,12 +102,14 @@ orca orchestration inbox --json                             # 只读，不消费
 
 顺序错了就白等。实测：监理 08:05 发任务书，交付方 08:08 才绑 Run，任务书没唤醒它，08:11 重发一遍才生效。
 
+0. **流程契约取法（`流程契约取法`，2026-11-10 loop-2 实测）**：流程契约一律从 `origin/main` 读，**不读自己工作区那份**——`git fetch origin main && git show origin/main:.pi/skills/acceptance-supervisor/SKILL.md`（交付方换成交付契约路径 `git fetch origin main && git show origin/main:.pi/skills/impl-session-contract/SKILL.md`）。判据：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于维护者本轮宣布的流程版本；读不到、或读数与宣布值不一致 → **即停**上报维护者先推流程层（实测 `origin/main` 曾停在 `7e03237`，v1/v2 只在本地 main：`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`）。**不得用 `git merge main`/`rebase main` 到 `issue/<N>` 来取流程更新**——无关改动会被监理 `git diff --stat origin/main...HEAD` 算成交付方的活。你引用任何契约条文的行号与原文，都按本条取法。
+
 1. 你自己先绑 Run：`run-current` 为 null → `run-use --id <MY_RUN>`（维护者给的）或 `run-create --objective "acceptance #<N>"`。
 2. 发探针：`send --to run:<PEER_RUN> --subject "probe-连接测试" --body "收到请回执 SELF_RUN + tabId + 工作树 path + HEAD"`。
-3. **等对方回执（含 SELF_RUN、tabId、`orca worktree current` 的 path、HEAD commit）才发任务书**。回执里的 tabId 以 `pty:` 开头 → 按「会话可见性」停止条件先停下上报。
+3. **等对方回执（含 SELF_RUN、tabId、`orca worktree current` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数）才发任务书**。回执里的 tabId 以 `pty:` 开头 → 按「会话可见性」停止条件先停下上报；回执里对端 `run-current` 为 null → **先发一封要求 `run-use --id <其 Run>` 的绑定通知，等它回读非 null 再发任务书**（实测：对端未绑时邮件只排队不唤醒，任务书石沉大海）。
 4. 任务书正文落盘成文件再 `--body "$(cat 文件)"`，不要内联长正文。
 
-任务书固定要素（缺一即交付方会来问，多花一轮）：P0…P6 逐条编号的硬约束与红线；**每条红线必须注明它出自 Issue 正文 / ADR / 契约的哪一条原文**——不得自造口径（实测监理自写「verdict_reasons 为空」，本机连基线都做不到，流程 B 被迫作废自己措辞）；基线与被验收对象的 `EVIDENCE_ROOT` 归档目录命名；台账例外声明（见「留痕」）；收尾归属声明（**关闭 Issue 归交付方**，见契约第 5 步；**合并归维护者**，合并前不得删 `issue/<N>` 分支）。
+任务书固定要素（缺一即交付方会来问，多花一轮）：P0…P6 逐条编号的硬约束与红线；**每条红线必须注明它出自 Issue 正文 / ADR / 契约的哪一条原文**——不得自造口径（实测监理自写「verdict_reasons 为空」，本机连基线都做不到，流程 B 被迫作废自己措辞）；基线与被验收对象的 `EVIDENCE_ROOT` 归档目录命名；台账例外声明（见「留痕」）；收尾归属声明：必须**照抄固定句**「`关闭：归交付方（契约第 5 步）；合并：归维护者；合并完成前不得删 issue/<N> 分支。`」——不得改写、不得只写一半（实测 #310 收尾句只写「合并归维护者」，交付方照契约关了票被判越权，2 条公开评论 + 3 封邮件纠偏）。
 
 5. **双盲三查**（任一不成立即停）：①对端 `tabId`/会话句柄与自己不同；②对端 `worktreePath` 与自己不同工作区（监理在主工作区、交付在 `issue/<N>` 工作树）；③自己一侧 `git status --porcelain` 无实现改动（监理不得改代码）。双盲不是自称“独立上下文”就算，必须当场查（实测 #310：两边都自称独立，全场零次核验）。
 6. **在途兄弟 Issue**：`gh issue list --repo <REPO> --state open --json number,title,labels` 里假设另有挂 `agent-in-progress` 且改动面与本 Issue 重叠（门禁、e2e、`tools/**`）→ 停下上报维护者排序，不同会话并行改同一面会让基线与裁定全部作废（实测 #310 放行时 #304/#305/#306 正在改门禁）。
@@ -131,7 +133,7 @@ orca orchestration inbox --json                             # 只读，不消费
 | 不值得做 | `wontfix（不处理）` | 理由，引用 ADR 或数据 |
 | 需维护者判断 | `ready-for-human（待人工处理）` | 2–4 个选项及各自代价 |
 
-**完成判定**：范围内每个 Issue 都有 ①五问结论评论 ②一个 triage 标签 ③台账一行。少一条就是没跑完。
+**完成判定**：范围内每个 Issue 都有 ①五问结论评论 ②一个 triage 标签 ③台账一行 ④裁定评论与任务书都带「收尾归属固定句」原文（见「握手」第 0 步与任务书要素；口径措辞须逐条对得上 `impl-session-contract` 与 `docs/agents/issue-tracker.md` 原文，对不上即改）。少一条就是没跑完。
 
 ## 流程 B：验收一次交付
 
@@ -201,7 +203,7 @@ orca orchestration inbox --json                             # 只读，不消费
 
 维护者靠台账抽查你。**台账行不可豁免**：任务书里的「只读」「不得创建文件」这类硬约束只约束代码、工作树与 Issue 状态，**不覆盖 `docs/acceptance/ledger.md`**——那是监理自己的写入面。写不下去（只读挂载、路径不可写）就按停止条件上报要授权，不许把台账行只写在邮件或报告里就算完（实测 #310 因任务书一句「不得修改/创建任何文件」，监理两次把台账行文本交给维护者代落，台账至今空行，维护者无从抽查）。发任务书时必须写一行「台账例外：`docs/acceptance/ledger.md` 照写」。
 
-4. **流程版本**：`grep -n "^version:" .pi/skills/*/SKILL.md` 的读数写进入户回执，也写进任务书。发现对端版本与自己不一致 → 停下上报，不要带版本裂缝开工。
+4. **流程版本**：按「流程契约取法」从 `origin/main` 取 `^version:` 的读数（自己工作区那份不作数）写进入户回执，也写进任务书。发现对端版本与自己不一致 → 停下上报，不要带版本裂缝开工。
 
 ## 卡点上报（跑的过程中也盯着流程本身）
 
@@ -223,6 +225,8 @@ orca orchestration send --to run:<流程优化者 Run> --subject "#<issue> 卡�
 - 维护者信箱 `terminal_not_found` → 不阻塞：结论落 Issue 评论 + 台账，报告里写失败原文。
 - `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。
 - 同一命令连续失败 3 次 → 停止重试，报告错误原文。
+- 按「流程契约取法」从 `origin/main` 读不到流程契约或版本读数不等于本轮宣布值 → 停下上报维护者先推流程层（`git push origin main`），不得带旧契约开工；你不得自己推 main、不得在 `issue/<N>` merge main。
+- 对端回执里 `run-current` 为 null → 停在这一步，先让它 `run-use`；Run 未绑时你发的任务书只会排队、不会唤醒它。
 
 ## 最终报告（固定格式）
 

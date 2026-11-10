@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮角色）。收另外两个会话的卡点上报，把流程教训固化成可复跑的检查或工具，只在轮间生效，任何一轮都不许倒退。
-version: 2
+version: 3
 disable-model-invocation: true
 ---
 
@@ -31,7 +31,7 @@ disable-model-invocation: true
 ## 上岗前置（先验，缺就停）
 
 1. 可见性与双盲三查同监理契约「会话可见性」节：`tabId` 为 UUID、`run-current` 绑上、`worktree current` 有路径；对端不是同一终端/会话/工作区。**你与另两个会话必须三条同时独立**——否则你写的规矩会被他们当场改写，棘轮失去外部约束。
-2. 读三份流程文件的当前版本：`grep -n "^version:" .pi/skills/*/SKILL.md`，把版本号写进首条上岗回执。
+2. 读三份流程文件的当前版本，**按「流程契约取法」从 `origin/main` 取**（`git fetch origin main && git show origin/main:.pi/skills/<契约名>/SKILL.md`，自己工作区那份不作数）：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于维护者本轮宣布的流程版本；把版本号写进首条上岗回执。读不到 → 停下上报维护者先推流程层（`git push origin main`）。
 3. 上岗回执（`send` 给监理与交付方）：`SELF_RUN` + `MY_TERM` + 三份文件版本号 + `RATCHET` 当前最后一行（下一轮读数要对它做差）。
 
 ## 卡点上报的准入标准（不是抱怨就收）
@@ -55,6 +55,7 @@ disable-model-invocation: true
 4. **轮内冻结**：一轮开工后到签字交工前，**不改任何流程文件**。卡点即时收进队列，改动只在轮间做。否则同一轮里两边按不同版本跑，验收口径分裂。
 5. **版本单调**：改任一 skill 必须 `version:` +1 并在 `RATCHET` 记一行；两边上岗握手时报版本号，**不一致即停**，谁落后谁更新（本轮实测：流程文件被并行会话回滚过，双方都没察觉）。
 6. **不得用「这次特殊情况」豁免**：任何例外都要落成通用规则或明确记为给维护者的提议。
+7. **流程层必须推到 origin**：每轮吸收完工，改动推上 `origin/loop/ratchet` 并请维护者合并、把 `main` 推到 `origin/main`；上岗前置的版本自检一律取 `origin/main`（`git fetch origin main && git show origin/main:.pi/skills/<契约名>/SKILL.md`）。只停在本地 main 的收紧对别的会话等于不存在（实测 loop-2：本地 main 已有 `pain.md`/`ratchet.md`/三份 v2 契约，`origin/main` 仍 `7e03237`——`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`、无 `.pi/skills/process-optimizer/SKILL.md`、`git show origin/main:.pi/skills/acceptance-supervisor/SKILL.md | grep -c "双盲三查"` = 0）。
 
 ## 棘轮读数（每轮结束记一组，只有它不倒退才算向前）
 
@@ -85,3 +86,4 @@ disable-model-invocation: true
 - 某卡点的根因在产品代码或门禁本身（不是流程）→ 转交维护者建代码 Issue，不得顺手改代码。
 - 队列积压 > 10 条或连续两轮读数不清零 → 上报，先清账再开新轮。
 - 双盲或可见性任一不成立 → 立即停，本轮流程改动作废（改动未合并前不影响两边）。
+- `origin/main` 上读不到本轮流程版本号（`git show origin/main:docs/acceptance/ratchet.md` 或 `git show origin/main:.pi/skills/process-optimizer/SKILL.md` 失败/版本落后）→ 停下上报，由维护者先推流程层；优化会话不得自己推 main。

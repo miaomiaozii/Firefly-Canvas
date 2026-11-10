@@ -9,6 +9,22 @@
 | v1 | 2026-11-10 | P-01 … P-10（来自 #310 演练复盘，补丁由维护者亲自动手——当时还没有流程优化者会话） | 14 项 grep 标记（见下） | 无 |
 | v2 | 2026-11-10 | 卡点队列改为流程优化者单写（与 P-04 同类风险，上岗前防）；P-11 入队；P-12/P-13 转 `code-issue` | 三个 skill 的 `version:` 字段 1→2（复跑：`grep -n "^version:" .pi/skills/*/SKILL.md` 须全为 2）；新增 grep 标记 `单写` | 无（只收紧） |
 
+| v3 | 2026-11-10 | P-15、P-17、P-18、P-19（维护者 12:2x 放行清单）；P-16 保持 merged→P-15；P-20 当场修矛盾并入 P-15/P-19 口径；P-05 追加「已完成运行」口径 | 三个 skill `version:` 2→3；新增 grep 标记 `流程契约取法`、`即停`、`收尾归属固定句`、`run-current` 回读非 null、`已完成运行`、`流程层必须推到 origin`；`origin/main` 可读性判据写进三份契约 | 无（只收紧：P-20 是把交付契约里与「单写」矛盾的「自己往 pain.md 追一行」改成单写口径） |
+
+## v3 回归标记（复跑：`grep -rlE -e <标记> .pi/skills`，缺任一项即棘轮破损）
+
+| 标记 | 实际所在文件 |
+|---|---|
+| `version: 3` | 三个 skill |
+| `流程契约取法` | 三个 skill |
+| `即停` | 三个 skill |
+| `收尾归属固定句` | `acceptance-supervisor/SKILL.md` |
+| `回读非 null` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
+| `已完成运行` | `impl-session-contract/SKILL.md` |
+| `流程层必须推到 origin` | `process-optimizer/SKILL.md` |
+| `git show origin/main:` | 三个 skill |
+| `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
+
 ## v2 回归标记
 
 | 标记 | 实际所在文件 |
@@ -38,6 +54,8 @@
 复跑脚本（一条命令看全）：
 
 ```bash
+cd D:/Firefly-Canvas && for m in "version: 3" "流程契约取法" "即停" "收尾归属固定句" "回读非 null" "已完成运行" "流程层必须推到 origin" "git show origin/main:"; do printf '%-30s :: %s\n' "$m" "$(grep -rlE -- "$m" .pi/skills | tr '\n' ' ')"; done
+# v1+v2 的 15 项标记（缺一即破损）：
 cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据逐条比对" "PARALLEL_WORKERS=1" "必带来源" "json comments" "卡点上报" "双盲三查" "在途兄弟 Issue" "上岗前置" "^version:" "流程优化者" "台账例外" "已执行"; do printf '%-24s :: %s\n' "$m" "$(grep -rlE -- "$m" .pi/skills AGENTS.md | tr '\n' ' ')"; done
 ```
 
@@ -48,6 +66,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 | #310 演练 | 2026-11-10 | 2（监理两次要求更正） | 0 | 13 / 0 | 32 | 未做 | 未做（交付在 `pty:` 游离终端） | 14（v1 补丁） | v0→v1 |
 | loop-1（优化者上岗） | — | 未演练 | — | — | — | — | — | — | v1 待跑 |
 | loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
+| loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
 
 ## 已核实的事实（带来源，供下轮做差）
 
@@ -58,9 +77,15 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - （loop-2 实测）`D:/ff-wt/w310`（`issue/310`@`16df89a`）上流程契约为 `b2b3399` 时代旧版：`grep -n "^version:" .pi/skills/*/SKILL.md` exit 1、四标记 grep exit 1 → v1/v2 收紧对被验会话不可见（P-15）。根因：v1 补丁 `cd83733`/`1771944` 晚于 `issue/310` 基线 `b2b3399`。
 - （loop-2 实测）三方身份与工作区：监理 `term_6d6c2fb9…`（`D:/Firefly-Canvas`，main@a4e458c，run_12b3ab55bf53）；交付方 `term_b300bceb…`（`D:/ff-wt/w310`，issue/310@16df89a，run_79684022c565）；维护者 `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（run_b203fe4d1bef，pi chat 内嵌会话，无 tabId）；流程优化者 `term_e7ba05f8…`（`C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop`，loop/ratchet@a4e458c，run_c40189b45d94）。
 - （loop-2 实测）`send` 寻址：`--to run:12b3ab55bf53` 报 `run_not_found`；`--to run_12b3ab55bf53` 报 `terminal_not_found`；`--to run:run_12b3ab55bf53` 成功（P-18）。
+- （loop-3 自查实测）交付契约上岗前置第 4 项原文写「同时给 `docs/acceptance/pain.md` 追一行（状态 `pending`）」，与监理契约「队列只由流程优化者单写」矛盾（P-20，已 v3 修平：`单写` 现三个 skill 全含）。
+- （loop-2 监理自报，msg_1061adfdfedf）台账行未落地的归因：本轮演练硬约束「不得修改/创建任何文件（仅 /tmp 可写）」由维护者设定且未解除，监理称台账行文本已两次交付（状态邮件正文 + 监理会话报告），等维护者代落或授权；监理承诺下一轮上岗第一件事补行。台账现仍只有表头 + 示例行 —— 事实入册，归因待维护者确认（不记成监理单方执行缺口）。
+- （v3 生效前置，待维护者执行）`git push origin main` 把 v1→v3 流程层推上 `origin/main`；未推之前，下一轮三方按 `流程契约取法` 一律触发「即停」。
 
 ## 待维护者定的事
 
 - `16df89a`（#310 改动）未进 main 但 Issue 已关闭 → 要不要补合并（P-11）。
 - 本机存量红与 `scenario_keys.sh` 3/3 必挂无人认领 → 门禁的组级 fail-fast 会永久遮住尾组（P-12、P-13）。
 - 流程文件的合并权在维护者：优化会话的改动走 `loop/*` 分支，监理复核通过后由维护者合并。
+- **v3 待合并**：`loop/ratchet` 上的 v3 补丁（三份 skill `version: 3` + `pain.md` 状态与 P-20/P-21 + `ratchet.md` v3 标记表与读数行）→ 需维护者合并到 main 并 `git push origin main`（P-19 的执行面）。
+- #310 台账两行是否由监理自落（其称硬约束未解除）或维护者代落（P-04 面）。
+- P-14（诱饵，unverified）：如要覆盖「交完验收后的等待」，须先补证据（命令原文 + 时间戳/日志）再重设计改法，不得采用「轮询 `check`」。
