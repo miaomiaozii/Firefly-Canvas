@@ -25,6 +25,7 @@ disable-model-invocation: true
 | `MY_RUN` | 你自己 `run-create` 的 Run（会话内建） |
 | `PEER_RUNS` | 监理与交付方的 Run，由维护者粘给你 |
 | `PAIN_QUEUE` | `docs/acceptance/pain.md`（一行一条，真相在此，邮件只唤醒；**`单写`：只由流程优化者写**——另两方不得追行，卡点以邮件正文上报，状态由我回写） |
+| `ROSTER` | `docs/acceptance/roster.md`（**口径表 + 身份登记册**，同上 `单写`）：三方的规范名与编号写法、同名班规副本的唯一指代、版本基准、每行一个会话的身份。**`认人认编号`**：邮件/台账/Issue 评论引用角色只写 `规范名 + term_<handle> + run_<id>`，禁用「优化会话/监理会话/交付会话/那位」等模糊称呼（实测 P-06 归因两轮错即源于称呼歧义）；**`口径表`** 引用任何流程文件必须写本表代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径，不得只写 `.pi/skills/…` 这种 ambiguous 指代 |
 | `RATCHET` | `docs/acceptance/ratchet.md`（棘轮台账，只向前） |
 | `EVIDENCE_ROOT` | `D:/Firefly-Canvas-evidence`（实测在用；命名 `<issue>-<role>-<短sha>-<mode>`，如 `310-supervisor-20261110-092301-trial`）。**不得用仓库内目录**（会被别的会话 `git clean` 清掉，也会把基线 png 落在 `tools/e2e/baselines/` 变成改考卷） |
 
