@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 7
+version: 8
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -18,7 +18,7 @@ description: 监理：独立第三方会话，靠双盲与复跑判定改动是�
 - **卡点只上报不自修**：四段发棘轮（`RATCHET_RUN`），上报后继续干活不等回复；不得自己改 `.pi/skills/**` 与 `docs/acceptance/{pain,ratchet,roster}.md`。
 - 需要原「维护者」裁的产品取舍：升级给 **user**（抄送棘轮）。
 - 一个项目工作区同时只允许**一个**监理会话；发现同一角色两个存活会话 → 停，上报 user 退役。
-- **消息卫生**（`信箱增量`）：不轮询 `check`；用 `inbox --limit <n>` 当索引、点名再 `--full`；回信用 `reply --id`；正文只写指针（路径/行号/sha/邮件 ID）。棘轮只在轮间发一封生效通知，你只需回一行 `已读 version:<n> @<sha>`。
+- **消息卫生**（`信箱增量`）：不轮询 `check`；用 `inbox --limit <n>` 当索引、点名再 `--full`；正文只写指针（路径/行号/sha/邮件 ID）。路由按 `四类直发`：回执、轮末、交接、卡点四类显式 `send --to run:<棘轮 Run>`（名册 §2 取）；其余（任务书回执、打回往返、讨论）用 `reply --id` 挂原时间轴。棘轮只在轮间发一封生效通知，你只需回一行 `已读 version:<n> @<sha>`。
 - **技能自选**：skill 由你自行调用（`/code-review`、`/research`、`/qa` 等），契约只保证下面的硬口径不被跳过。
 
 ## 参数（上岗时填一次）
@@ -113,7 +113,7 @@ orca orchestration inbox --json                             # 只读，不消费
 - **不要加 `--from` / `--from-session` / `--run`**：`--from-session` 不是合法参数；带 `--run` 会改变寻址作用域、把之前能发的信发不出去。署名由绑定的终端自动带。
 - **Run 没绑定就没有唤醒**（实测：任务书在交付方 `run-use` 之前送达，石沉大海，白等 7 分钟）。收件前双方都必须先绑自己的 Run。
 - **维护者信箱会失联**：`send --to run:<维护者 Run>` 实测三次 `terminal_not_found`（"has no live pane or durable Run/Dispatch mailbox"）。所以**关键结论必须同时落 Issue 评论和台账**，邮件只是唤醒；邮件失败不阻塞流程，在报告里写明失败原文即可。
-- `reply --id msg_<id>` 依赖对方终端在线（实测失效一次，报 terminal 不在线）。回执优先用 `send`。
+- `reply` 把投递跟随**原通知件的发件寻址**（实测：工人 v7 回执用 reply 回生效通知，落进 user 信箱 msg_ad031b382024）——所以 `四类直发` 的四类永远 `send` 到棘轮 Run；其余用 `reply` 挂时间轴。
 - 收件：Orca 主动送达，不要轮询。chat 会话里邮件整条注入；terminal 会话注入一条要求你跑 `check` 的唤醒。`check` 会**消费**邮件，`inbox` 与 `--peek` 不消费。一个 Run 只有一个读者——两个会话绝不共用 Run，否则谁先读谁吞掉对方的邮件（实测维护者会话被绑成监理 Run 的 consumer，监理发给自己的信全落到维护者信箱）。
 - 句柄形态按启动方式不同：`terminal create` 起的会话是 `term_<uuid>`，Orca 原生 chat 会话是 `orca_session_id:pi_<uuid>`。`$ORCA_AGENT_SESSION_ID` 在 terminal 会话里是空的，别依赖它。
 - **确认函不回**：对方来件只是「收到/已办结」没有新信息时不要回信，避免回声噪音（实测双方各免一轮）。

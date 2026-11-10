@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮）：收监理与工人的卡点，改流程 skill，在 user 决断后上架，并只在轮间通知两边读新班规。Use when 收到 subject 含「卡点」的邮件、要上架流程层新版本、要判定一轮流程读数是否倒退。
-version: 7
+version: 8
 disable-model-invocation: true
 ---
 
@@ -66,7 +66,7 @@ disable-model-invocation: true
 
 - 读信只有三种动作：`check`（消费，FIFO 只回未读批次——这就是增量）、`check --peek`（看了不消费）、`inbox --limit <n>`（**索引视图**，200 字预览 + ID，用它决定读哪封，别 `--full` 全量倒进上下文）。恢复断档用 `inbox --terminal run:<run_id> --limit <n> --full` 点名取。
 - **不轮询 `check`**（会消费邮件）；要等就 `check --wait --timeout-ms <n>`，keepalive 行按 `_keepalive` 过滤。
-- 回信用 `orca orchestration reply --id <msg_id> --body`（挂在原时间轴上，不复述上下文）。
+- 路由按 `四类直发`：回执、轮末、交接、卡点四类显式 `send --to run:<对方 Run>`；其余用 `reply --id` 挂原时间轴（`reply` 的投递跟随原通知件的发件寻址，会落错信箱）。
 - 正文写**指针不写全文**：文件路径 + 行号 + sha + 邮件 ID；四段结构，通俗解释 ≤200 字。
 - **回执核验（`回执sha核验`，P-41）**：凡把对端回执里的 sha 登记进 `ROSTER` 前，必跑 `git cat-file -t <sha>` 存在性核验 + `git rev-parse --short origin/main` 对照；sha 不存在或读数≠登记生效值 → 该回执记「作废/待重读」并入 `PAIN_QUEUE`，不得入事实区（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d` 与不存在的「§4.1」，`git cat-file -t 026038d` = `fatal: Not a valid object name`）。
 - **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发；收到空件按「作废」登记名册，不猜意图。
@@ -77,7 +77,7 @@ disable-model-invocation: true
 ## 6. 流程层发权与上架（`流程层发权`）
 
 - 范围（`发权范围`）：只有流程层。产品面（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`scripts/**`、`package*.json`、`uv.lock`、`pyproject.toml`）**绝对禁推**；`AGENTS.md` 归 user。
-- 上架四步（`推main先rebase`，P-34）：①`git fetch origin main` ②`git rebase origin/main` ③`git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` 必须为空 ④`git push origin HEAD:main`。**永不对 `main` 用 `-f`**（监理会前移 main 落台账，强推会抹掉验收记录）。自己的 `loop/ratchet` 才允许 `+`。
+- 上架六步（`上架顺序`，P-34+P-45，固定顺序不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③`git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` 必须为空 ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:loop/ratchet`（棘轮支是独享镜像，lease 强推安全；先推棘轮支再 rebase 必遇 non-fast-forward，实测两次） ⑥三指针 `git rev-parse --short origin/main origin/loop/ratchet HEAD` 互证。**永不对 `main` 用 `-f`**（监理会前移 main 落台账，强推会抹掉验收记录）。
 - `AGENTS.md`（`AGENTS写权`）：默认归 user；user 在消息里明确授权时棘轮可改（实测例：v5 边界令 m00719 后的角色节与发权段同步，2026-11-10），改动必须同 commit 上架并在 `RATCHET` 记行；未授权时只提议不改。
 - 推后必验：`git rev-parse --short origin/main` 写进 `ROSTER` §4；`grep "^version:"` 读数写进 `ROSTER` §1.4（`版本门读数=宣布值`：改班规必须同 commit bump）。
 - 收权（`收权`）：user 一句「流程层不许直推」即回到他合并；他可随时 revert。
