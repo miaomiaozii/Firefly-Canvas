@@ -207,11 +207,8 @@ const closed = await page.evaluate(() => {
   return !(modal || document.getElementById('shell')?.classList.contains('shortcut-panel-open'));
 });
 if (!open1) throw new Error('OPEN_FAIL: 第一次点开未展开');
-if (!closed) {
-  // 已知缺陷 #303 同类：面板无法收起——暴露后标 skip
-  return { evidence: 'PASS-skip(KNOWN-DEFECT): 面板展开后二次点击开关未收起（可关闭性缺陷）' };
-}
-return { evidence: '展开→收起状态切换断言通过' };
+if (!closed) throw new Error('COLLAPSE_FAIL: 二次点击开关未收起（#303 回归）');
+return { evidence: '展开→二次点击收起状态切换断言通过' };
 JS
 
 # 标签卫生：销毁本套件标签，不碰用户标签
