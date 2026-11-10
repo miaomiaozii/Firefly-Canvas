@@ -241,7 +241,7 @@ flowchart LR
 | 生效通知 | **已发（user 批准 m00809「1、2 按推荐」）**：监理 `msg_637dc8b6366d`、工人 `msg_c5e01278589b`（各一封，5 条动作 + 一行回执要求）。回执待落，到后记本表 | 
 | 生效通知 | **v7 已发 @e6a0d1a**：监理 msg_bef98a1fb8cf、工人 msg_2f539828eb58（v5/v6 历史 msg 见上）。回执一行制 |
 | v7 回执 | 监理：`已读 version:7 @f0063f2`（msg_f471da860db4，sha 核验 commit ✓）；工人：`version:7 @e6a0d1a` 当场自证确认（msg_ad031b382024）——**但该件落在 user durable 信箱而非棘轮 Run**（`reply` 路由跟原通知发件寻址，P-44） |
-| v8 通知/回执 | 通知：监理 msg_315245f6e127、工人 msg_9cbf76e5c180（@a66b1cb）；回执：监理待、工人待（按 `四类直发` 应直达棘轮 Run） |
+| v8 通知/回执 | 通知：监理 msg_315245f6e127、工人 msg_9cbf76e5c180（@a66b1cb）；回执：监理 `已读 version:8 @5719fff`（msg_c7262bdc2017，**新路由首件直达棘轮 Run**，cat-file 复跑 ✓）；工人待 |
 | 轮末信号（v7 首用） | **齐两个，轮间成立**：监理 `轮末 #310 89c947b`（msg_b1ac1e55bc84 ✓）+ 工人 `轮末 #310 16df89a`（msg_32c47d168f06，sha 存在 ✓，收尾态自述完整：push 新分支+结论评论 issuecomment-6763910725+closedAt=09:33:34Z，merge 归 user）。工人 v7 回执按 P-44 路由经 user 信箱转读入账（msg_ad031b382024）——**v8 生效通知的前置条件已满足，待 user 批** |
 | 回执 | **v6 门闭合**：监理 `已读 version:6 @ac6bc46`（msg_b47d904a38d3）；工人 `已读 version:6 @ac6bc46`（msg_4b95cbd70254，自证 `git cat-file -t 026038d`=fatal 并如实认领假 sha 成因=「照抄宣布值、未先当场自证」）。历史：监理 v5 回执 msg_560fd955e257 有效；工人 v5 回执 msg_551a1fda9aa9 作废（P-41） |
 | 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |
