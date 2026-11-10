@@ -435,6 +435,12 @@ STEP_DEFINITIONS = {
     # 按 #167/#185 先例接进 trial/release（并行组），fast/domain 保持快。
     "layers-panel-evidence": lambda python: [python, "tests/layers_panel_browser.py"],
     "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
+    # #295：tabbit 端到端套件接进交付门禁（失败自动重跑+证据归档已在 #296 落地，
+    # 入口脚本只做编排）。按 #167/#185 先例接进 trial/release；无 tabbit/app 没开时
+    # 入口打印原因并 exit 0，不炸门（行首刻意避开 skip——output_reports_skip 会把
+    # skip 行首+exit 0 判成 failed）。门内 LOCALAPPDATA 是临时 home，tabbit 不可见，
+    # 所以门内恒为快速跳过，真跑发生在本机直接执行入口脚本时。
+    "tabbit-e2e-evidence": lambda python: [python, "tests/tabbit_e2e_evidence.py"],
     "edge-compatibility": lambda python: [python, "tests/edge_compatibility_browser.py"],
     "browser-tracer": lambda python: [python, "tests/conversation_browser.py"],
     "browser-harness-contract": lambda python: [python, "-m", "unittest", "tests.test_conversation_browser_harness"],
@@ -483,6 +489,8 @@ MODE_STEPS = {
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
+        # #295：tabbit 端到端套件（#167/#185 先例，接进 trial/release）。
+        "tabbit-e2e-evidence",
         "unit-contract-browser",
         "browser-tracer",
         "egress-attribution",
@@ -505,6 +513,8 @@ MODE_STEPS = {
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
+        # #295：tabbit 端到端套件（#167/#185 先例，接进 trial/release）。
+        "tabbit-e2e-evidence",
         "unit-contract-browser",
         "browser-tracer",
         "browser-harness-contract",
