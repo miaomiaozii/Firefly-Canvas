@@ -29,16 +29,20 @@ function Stop-FireflyServer {
         }
     }
     # 2) Kill orphaned python processes still running run-server.py / main.py.
-    $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'run-server\.py|main\.py' }
-    if ($procs) {
-        foreach ($proc in $procs) {
-            try {
-                Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
-                Write-Host "[RESTART] Stopped orphan server PID $($proc.ProcessId)"
-                $killed = $true
-            } catch {
-                # Ignore; already handled above or gone.
+    # #293：仅在端口未命中时才做全表扫——Get-CimInstance Win32_Process 在重载机上可挂 >200s，
+    # 端口已命中则服务必死，无需再扫；扫描自身也降级为 SilentlyContinue+超时守卫。
+    if (-not $killed) {
+        $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match 'run-server\.py|main\.py' }
+        if ($procs) {
+            foreach ($proc in $procs) {
+                try {
+                    Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+                    Write-Host "[RESTART] Stopped orphan server PID $($proc.ProcessId)"
+                    $killed = $true
+                } catch {
+                    # Ignore; already handled above or gone.
+                }
             }
         }
     }
