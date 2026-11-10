@@ -83,8 +83,6 @@ const target = await page.evaluate(() => {
   const rec = canvasState.nodes.find(v => v.id === n.dataset.id);
   return { id: n.dataset.id, x: rec.x, y: rec.y };
 });
-let deletedHere = false;
-if (!window.__duDeleted) { /* 上一 request 的变量不存活——本请求内自删 */ }
 const before = await page.evaluate((t) => {
   const n = document.querySelector('.image-node[data-id="' + t.id + '"]');
   if (n) { const b = n.querySelector('.node-delete') || null; if (b) { b.click(); return { deleted: true, x: t.x, y: t.y }; } }
@@ -104,34 +102,34 @@ if (Math.abs(after.x - target.x) > 2 || Math.abs(after.y - target.y) > 2) throw 
 return { evidence: `原位恢复 (${after.x.toFixed(1)},${after.y.toFixed(1)} vs 删除前 (${target.x.toFixed(1)},${target.y.toFixed(1)})` };
 JS
 
-# D3 逐级栈对应：删→复制→撤→撤→重做→重做 节点数序列 = N-1, N, N-1, N-2, N-1, N
+# D3 逐级栈对应：复制→删副本→撤→撤→重做→重做，相邻步必须 ±1（避开原节点删除的归档语义）
 run d3-undo-redo-stack <<'JS'
 const N0 = await page.evaluate(() => canvasState.nodes.length);
-const pick = await page.evaluate(() => {
-  const n = document.querySelector('.image-node');
-  canvasState.selectedIds = [n.dataset.id]; canvasState.selectedId = n.dataset.id;
-  return n.dataset.id;
-});
+const idsBefore = await page.evaluate(() => canvasState.nodes.map(v => v.id));
 const seq = [];
-const del = await page.evaluate(() => document.querySelector('.node-delete'));
-if (del) { await page.evaluate(() => document.querySelector('.node-delete').click()); await page.waitForTimeout(600); seq.push(await page.evaluate(() => canvasState.nodes.length)); }
+const selById = (id) => page.evaluate((i) => { canvasState.selectedIds = [i]; canvasState.selectedId = i; }, id);
+// 1) 复制首节点
+await selById(idsBefore[0]);
 await page.keyboard.press('Control+d'); await page.waitForTimeout(600);
+const newId = await page.evaluate((prev) => (canvasState.nodes.map(v => v.id).find(id => !prev.includes(id)) || ''), idsBefore);
 seq.push(await page.evaluate(() => canvasState.nodes.length));
-await page.keyboard.press('Control+z'); await page.waitForTimeout(600);
+if (!newId) throw new Error('D3_SETUP: 复制未产生新节点 ' + JSON.stringify(seq));
+// 2) 删副本
+await selById(newId);
+const del = await page.evaluate(() => document.querySelector('.node-delete'));
+if (del) { await page.evaluate(() => document.querySelector('.node-delete').click()); await page.waitForTimeout(600); }
 seq.push(await page.evaluate(() => canvasState.nodes.length));
-await page.keyboard.press('Control+z'); await page.waitForTimeout(600);
-seq.push(await page.evaluate(() => canvasState.nodes.length));
-await page.keyboard.press('Control+shift+z'); await page.waitForTimeout(600);
-seq.push(await page.evaluate(() => canvasState.nodes.length));
-await page.keyboard.press('Control+shift+z'); await page.waitForTimeout(600);
-const finalN = await page.evaluate(() => canvasState.nodes.length);
-// 现场恢复：一路撤回到初始 N0（上限 6 步）
+// 3) 撤→撤→重做→重做
+for (const k of ['Control+z', 'Control+z', 'Control+Shift+z', 'Control+Shift+z']) {
+  await page.keyboard.press(k); await page.waitForTimeout(600);
+  seq.push(await page.evaluate(() => canvasState.nodes.length));
+}
+// 现场恢复：目标 N0（上限 6 步）
 for (let s = 0; s < 6 && await page.evaluate(() => canvasState.nodes.length) !== N0; s++) {
   await page.keyboard.press('Control+z'); await page.waitForTimeout(500);
 }
 const restored = await page.evaluate(() => canvasState.nodes.length);
-if (restored !== N0) throw new Error('SCENE_NOT_RESTORED: N0=' + N0 + ' final=' + finalN + ' seq=' + JSON.stringify(seq) + ' restored=' + restored);
-// 单调性断言：相邻步骤差值必须为 ±1（一次操作一级栈）
+if (restored !== N0) throw new Error('SCENE_NOT_RESTORED: N0=' + N0 + ' seq=' + JSON.stringify(seq) + ' restored=' + restored);
 for (let s = 1; s < seq.length; s++) if (Math.abs(seq[s] - seq[s-1]) !== 1) throw new Error('STACK_STEP_BAD: seq=' + JSON.stringify(seq));
 return { evidence: 'N0=' + N0 + ' 操作序列=' + JSON.stringify(seq) + ' 逐级 ±1, 现场已恢复' };
 JS
