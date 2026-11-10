@@ -20,7 +20,7 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 1. **先锁约束**：开工前把 Issue 正文与现有测试里写死的值（端口、阈值、档位名、目录名）列成一份约束清单，贴进计划。改动前先比对——实测两个档位组合都因为凭直觉改端口值，把场景弄挂而不自知。
 2. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。`git status --porcelain` 必须为空，未跟踪文件也算脏。
-3. **自查**：`python tools/quality_gate.py fast --repo-root <工作树>`；交付前跑 `trial`（300 s，累计超集：跑 trial 就不用再跑 fast/domain），证据归档到监理指定的 `EVIDENCE_ROOT`。新增红项清零才算可提交。**改前端或 agent 宿主还要跑端到端**：`bash tools/e2e_qa.sh --shots-dir <EVIDENCE_ROOT>/<issue>/shots --out-json <EVIDENCE_ROOT>/<issue>/e2e.json`（截图基线比对：`python tools/e2e_shot_diff.py --evidence-dir … --baseline-dir …`）。
+3. **自查**：`python tools/quality_gate.py fast --repo-root <工作树>`；交付前跑 `trial`（300 s，累计超集：跑 trial 就不用再跑 fast/domain），证据归档到监理指定的 `EVIDENCE_ROOT`。新增红项清零才算可提交。**改前端或 agent 宿主还要跑端到端**：`bash tools/e2e_qa.sh --shots-dir <EVIDENCE_ROOT>/<issue>/shots --out-json <EVIDENCE_ROOT>/<issue>/e2e.json`（截图基线比对：`python tools/e2e_shot_diff.py --evidence-dir … --baseline-dir …`）。**按改动范围跑对应场景脚本**：`tools/e2e/scenario_delete_undo.sh`（撤回链）、`scenario_mouse.sh`（鼠标）、`scenario_keys.sh`（快捷键）、`scenario_ux_rules.sh`（体验规则）——它们没接入门禁，不跑就是没证据。
 4. **汇报**：
 
    ```bash
