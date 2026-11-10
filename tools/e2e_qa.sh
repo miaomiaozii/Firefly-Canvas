@@ -108,6 +108,8 @@ JS
 
 # S5 stall 看门狗在场（#286 源码契约，运行时触发要 120s+，留给手工）
 if grep -q "TURN_STALL_NOTIFY_SECONDS = 120.0" app/services/agent_host.py; then echo "PASS  s5-stall-watchdog(source)"; else echo "FAIL  s5-stall-watchdog(source)"; FAILS=$((FAILS+1)); fi
+# s6：#292 回归——pi 管道必须显式 UTF-8（GBK 默认解码会把中文错误文案炸成 reader 崩溃→误杀活 agent）
+if grep -q 'encoding="utf-8"' app/services/agent_host.py && grep -q 'encoding="utf-8"' tests/stubs/fake_pi.py; then echo "PASS  s6-utf8-pipe(source)"; else echo "FAIL  s6-utf8-pipe(source)"; FAILS=$((FAILS+1)); fi
 
 echo "== 失败数: $FAILS =="
 exit $FAILS
