@@ -133,10 +133,10 @@
 
 ## 4. 流程层发权与上架状态（`流程层发权`）
 
-- **谁写谁推**：流程层 = 三份班规（`班规@*`）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
+- **谁写谁推**：流程层 = 四份班规（三份角色契约 + 通用层 `.pi/skills/three-role-loop/SKILL.md`，代号 `班规@通用`；通用层不带 `version:` 字段，版本门 grep 只命中三份角色契约）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
 - **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归 user，棘轮持 user 授权时可改并同 commit 上架（`AGENTS写权`，实测：v5 边界令 m00719 后的同步）。
 - **收权（`收权`）**：user 一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
-- **上架状态**：**最新已上架 = `origin/main@0bba2ce`（v5）**：`git push origin HEAD:main` → `318c505..0bba2ce`；上架后当场回读三份班规 `^version:` 全 = 5（process-optimizer `4:version: 5`、acceptance-supervisor `3:version: 5`、impl-session-contract `3:version: 5`）；产品面 grep 为空（exit 1）；`check_tables.py` exit 0。上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md`、`AGENTS.md`（`AGENTS写权`，user m00719 授权）、`docs/acceptance/{pain,ratchet,roster}.md`。**通用层 skill 不在仓内**（`C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`，本机全局目录，无 git 版本控制——已知局限，user 可裁决是否进仓）。
+- **上架状态**：**最新已上架 = `origin/main@0bba2ce`（v5）**：`git push origin HEAD:main` → `318c505..0bba2ce`；上架后当场回读三份班规 `^version:` 全 = 5（process-optimizer `4:version: 5`、acceptance-supervisor `3:version: 5`、impl-session-contract `3:version: 5`）；产品面 grep 为空（exit 1）；`check_tables.py` exit 0。上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md`、`AGENTS.md`（`AGENTS写权`，user m00719 授权）、`docs/acceptance/{pain,ratchet,roster}.md`。**通用层 skill 不在仓内**（`班规@origin:.pi/skills/three-role-loop/SKILL.md`，本机全局目录，无 git 版本控制——已知局限，user 可裁决是否进仓）。
   历史：**已上架 = `origin/main@cac1818`**（棘轮 2026-11-10 实推并回读：`git push origin <sha>:main` → `7e03237..cac1818`；`git rev-parse --short origin/main` = `cac1818`；三份班规在 `origin/main` 上均 `version: 3`；`docs/acceptance/{ledger,pain,ratchet,roster}.md` 均已在 `origin/main`）。本轮上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`（这两处是 loop-2 期间监理会话在本地 main 上的改动，随本次快进上架，无产品代码）、`docs/acceptance/{pain,ratchet,roster}.md`。
 
 ## 5. 流程全景（一图）
@@ -227,7 +227,7 @@ flowchart LR
 
 - **技能自选（`技能自选`）**：skill 由会话自行决定调用，契约只保证硬口径不被跳过（user：「skill 这个可以让会话自行决定调用，不必拘泥我上面的举例」）。
 - **维护者退役后的口径映射**：原「升级给维护者」→ 升级 **user**（抄送棘轮）；原「维护者合并 main」→ **user 决定合并**（监理判定通过后指示工人 push，merge 由 user 做）；原「维护者宣布版本号」→ **棘轮宣布并登记在 §1.4**；`AGENTS.md` 归 user。
-- **通用层（P-39）**：跨项目可复用的规则抽到 `C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`（user 裁决：这是一份通用 skill）；项目三份契约只写本项目参数与例外，冲突以项目契约为准。
+- **通用层（P-39）**：跨项目可复用的规则抽到 `班规@origin:.pi/skills/three-role-loop/SKILL.md`（user 裁决：这是一份通用 skill）；项目三份契约只写本项目参数与例外，冲突以项目契约为准。
 - **待生效通知（v5）**：按边界 3，生效通知在**轮间**发——监理与工人当前手头的轮次跑完后，由棘轮各发一封（正文=版本号 5 + sha + 该方需改变的动作 ≤5 条），回执一行 `已读 version:5 @<sha>`。**在此之前他们按 version:4 口径跑完手头工作。**
 
 ### 7.1 v5 生效状态

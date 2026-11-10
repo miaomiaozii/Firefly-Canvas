@@ -9,7 +9,7 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 
 你（含你派出的子代理）是**工人**（旧称：交付方；契约文件名仍名 `impl-session-contract`）。判定权在监理（`.pi/skills/acceptance-supervisor/SKILL.md`）：它自己复跑门禁，你的汇报是索引，不是证据。
 
-通用（跨项目）规则见 `C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`；本文件是本项目的参数与例外。
+通用（跨项目）规则见 `班规@origin:.pi/skills/three-role-loop/SKILL.md`；本文件是本项目的参数与例外。
 
 ## v5 角色边界（user 2026-11-10 边界令，名册 §7）
 

@@ -20,7 +20,7 @@
   - 监理：`.pi/skills/acceptance-supervisor/SKILL.md`——监管工人、判定 Issue 是否完成并指示工人推送与关闭
   - 工人（旧称交付方，文件名不变）：`.pi/skills/impl-session-contract/SKILL.md`
   - 流程优化者（棘轮）：`.pi/skills/process-optimizer/SKILL.md`——收另两方的卡点上报，把教训固化成可复跑的检查或工具
-- 通用层（跨项目复用）：`C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`（三权分立、上岗前置、信箱增量、卡点四段、发权、卫生）；项目三份契约只写本项目参数与例外，冲突以项目契约为准。
+- 通用层（跨项目复用）：`班规@origin:.pi/skills/three-role-loop/SKILL.md`（三权分立、上岗前置、信箱增量、卡点四段、发权、卫生）；项目三份契约只写本项目参数与例外，冲突以项目契约为准。
 - 唯一口径与身份册：`docs/acceptance/roster.md`（棘轮单写，另两方只读）。
 - 推理档位：`.pi/skills/reasoning-modes/SKILL.md`（两类会话上岗时各带自己的 `{REASON:…}` 组合；换档位必须换会话）
 

@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # 流程优化者（棘轮）契约
 
-流程层总口径与角色边界在 `docs/acceptance/roster.md`（§1 口径表、§2 身份册、§4 发权、§5 全景图、§7 v5 边界令）。通用（跨项目）规则在 `C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`；本文件只写**本项目**的参数与例外。
+流程层总口径与角色边界在 `docs/acceptance/roster.md`（§1 口径表、§2 身份册、§4 发权、§5 全景图、§7 v5 边界令）。通用（跨项目）规则在 `班规@origin:.pi/skills/three-role-loop/SKILL.md`；本文件只写**本项目**的参数与例外。
 
 ## 1. 定位：三权分立，你只有流程权（v5 边界令，user msg_…见名册 §7）
 
@@ -21,7 +21,7 @@ disable-model-invocation: true
 
 1. **你不得**：改任何产品代码或测试；做验收判定或打回；关闭 Issue 或落 triage 标签；替工人干活；替监理写台账。
 2. **产品代码与测试绝对禁推 `main`**（`发权范围`）。维护者角色退役后，需要原维护者裁的产品事项：你列选项与代价给 **user**，user 决断后由监理转达工人执行。你自己不执行产品动作。
-3. 流程层（`.pi/skills/**` + `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user。
+3. 流程层（`.pi/skills/**`（含通用层 `.pi/skills/three-role-loop/SKILL.md`，它不带 `version:` 字段，版本门只命中三份角色契约）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）。
 4. **不频繁发消息**（`轮间批量通知`）：轮内只受理卡点（收进队列，不回长文），流程改动**只在轮间**一次批量上架 + **一封**生效通知；生效通知只需一行回执（`回执只需一行`：`已读 version:<n> @<sha>`）。
 5. 一个项目工作区同时只有一个工人、一个监理、一个棘轮会话（`一项目三角色各一`），由 user 建、由 user 退役；会话必须 Orca 可见。
 
