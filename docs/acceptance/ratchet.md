@@ -110,6 +110,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - P-43 新卡点（pending，拟入 v7）：空 body 邮件 msg_2fa4a81b84ab——`cat 不存在的文件` 不阻塞 `send`；工人自见自报（msg_f789063434d9），按作废登记。
 
 ## 已核实的事实（带来源，供下轮做差）
+- v10（2026-11-10，班规文本质量审计轮）：上架主 commit `9d2d532`（门命令回读五份 `version: 10`），名册自身行后续 commit `456d752`/`0f9b274` 不改门集；通知 msg_c0ae5ab63a45（监理）/msg_a8b74a2db804（工人）；回执双行闭合 msg_83155bb54a63（监理）/msg_e5397fca2f9f（工人）。事故：我发通知时用 `--body-file`（`orca orchestration send` 无此 flag，两次失败）→ P-57 pending。
 
 - 三轮 trial 各 **32 步**，均无 `tabbit-e2e-evidence` 与 `egress-attribution`：`D:/Firefly-Canvas-evidence/{310-baseline-b2b3399-trial,310-delivery-branch-trial,310-supervisor-20261110-092301-trial}/report.json`（`python` 读 `checks[].name`，`final_exit_code=1`）。
 - `docs/acceptance/ledger.md` 只有表头 + 示例行（#310 两条裁定至今未落台账）——**监理自己的写入面实际未执行**，v1 已将其列为停止条件。

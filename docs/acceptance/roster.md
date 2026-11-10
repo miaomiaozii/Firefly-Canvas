@@ -7,8 +7,8 @@
 
 - 生效版本 = **10**；门 sha = `456d752`（origin/main 现头，2026-11-10 回读：五份班规 `^version:` 全 =10；上架主 commit `9d2d532`，后续仅名册自身行不改门集文件，照抄下行门命令即可复现）；更新 = 2026-11-10。
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
-- 队列：pain 共 56 条（P-01..P-56）；pending/queued=3（P-51 监理契约渐进披露、P-52 术语指针与工人契约瘦身、P-53 台账头部称呼——均 queued 待 v11）；本轮 v10 absorbed：P-49/P-50（委派自证）、P-54（标记可命中）、P-55（易变事实唯一落点）、P-56（班规单一源）；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
-- 缺件：无。v9 双行已闭合（监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。v10 生效通知待两个 `轮末` 信号齐后发，回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
+- 队列：pain 共 57 条（P-01..P-57）；pending/queued=4（P-51/P-52/P-53 均 queued 待 v11；P-57 pending：`发信写法` + `--help 核对` 升三方通用）；本轮 v10 absorbed：P-49/P-50（委派自证）、P-54（标记可命中）、P-55（易变事实唯一落点）、P-56（班规单一源）；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
+- 缺件：无——v10 双行已闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f（两条均为 `已读 version:10 @9d2d532（门命令自跑，五份全=10）`，工人另自报现头 `0f9b274` 互证）。通知：监理 msg_c0ae5ab63a45、工人 msg_a8b74a2db804。本轮无在途产品轮，故生效通知未等 `轮末` 信号即发（无在途轮＝无冻结对象）。本轮无在途产品轮，故生效通知未等 `轮末` 信号即发（无在途轮＝无冻结对象）。回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
 - 本轮性质：班规文本质量审计（非产品轮）——两路只读子代理按 writing-great-skills 口径审五份班规，自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh（runId del_mwas2s17_6592 / del_mwas2ijf_24cd）；产品代码与测试零改动。
 - 下一轮开工前两件事（user 侧）：①指定新 Issue；②v10 已上架 `origin/main@9d2d532`（第二行已回写，无需 user 动手）。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
