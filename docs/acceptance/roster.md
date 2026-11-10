@@ -116,3 +116,12 @@
 4. 报告里必须同时写第 2 步的 sha。只有 grep 输出没有 sha 的读数一律不采信。
 
 **流程层仍未上架**（截至本轮）：`origin/main` = `7e03237`，`docs/acceptance/**` 只有 `ledger.md`；`loop/ratchet` = `85bdbfd` 是 `origin/main` 的非祖先，合并面 = `git diff --name-only origin/main origin/loop/ratchet` 的 8 个文件。
+
+### 3.10 监理独立复读互证 + 假读数影响面（2026-11-10）
+
+监理四步照抄独立复读（`msg_31214dba38e2`）：`git fetch origin main` → `origin/main=7e03237`；`grep "^version:"` 于 `origin/main:.pi/skills/acceptance-supervisor/SKILL.md` → rc=1；本地 main `a0a8615` 含 `version: 3`（仅本地生效面）。**与棘轮三处互证完全一致 → §3.9 结论 confirmed（两人独立、命令与 sha 齐）**。监理立场：以 `班规@origin` 为准，读不到宣布版本号的对应读数即停，不用本地 main 开工。
+影响面核查（按 P-22 归因链要求）：监理声明其全部裁定发生在该假读数之前且依据均带 sha/评论 ID → 假读数未污染任何在途裁定，不需追级。交付方假读数只影响「是否可按 v3 开工」这一条待决判断，已被本轮预警拦下。
+
+### 3.11 消息类型与 Dispatch 权限（`类型需Dispatch`）
+
+`--type escalation`（及 `worker_done`）要求发送方有 active Dispatch，否则报 `error: sender_not_assignee: No active Dispatch belongs to this message sender.`；`--type status` / `question` 无此要求（实测：同一正文 escalation 失败 → status 成功，`msg_ed891ec8b7f3`）。合法取值：`status, dispatch, worker_done, merge_ready, escalation, handoff, decision_gate, question, heartbeat`。**给维护者/跨角色的一般上报一律用 `status`；`escalation` 只在有 Dispatch 的 worker 会话里用**。
