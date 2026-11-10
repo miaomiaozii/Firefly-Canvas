@@ -5,7 +5,7 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **10**；上架 sha = `9d2d532`（origin/main，2026-11-10 回读：五份班规 `^version:` 全 =10）；更新 = 2026-11-10。
+- 生效版本 = **10**；门 sha = `456d752`（origin/main 现头，2026-11-10 回读：五份班规 `^version:` 全 =10；上架主 commit `9d2d532`，后续仅名册自身行不改门集文件，照抄下行门命令即可复现）；更新 = 2026-11-10。
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
 - 队列：pain 共 56 条（P-01..P-56）；pending/queued=3（P-51 监理契约渐进披露、P-52 术语指针与工人契约瘦身、P-53 台账头部称呼——均 queued 待 v11）；本轮 v10 absorbed：P-49/P-50（委派自证）、P-54（标记可命中）、P-55（易变事实唯一落点）、P-56（班规单一源）；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
 - 缺件：无。v9 双行已闭合（监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。v10 生效通知待两个 `轮末` 信号齐后发，回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
