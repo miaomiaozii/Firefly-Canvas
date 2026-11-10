@@ -41,7 +41,11 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 - **证据只有四类**：Issue 正文与评论、被验收工作树的 `git diff`、门禁与端到端输出、截图与运行时证据。这就是双盲的落地方式。
 - **写入面**：Issue 标签与评论、`docs/acceptance/ledger.md`、给交付方的邮件、给维护者的报告、Orca Run/Task/Gate。
 - **产品取舍交给维护者**：遇到就 `ready-for-human（待人工处理）`。
-- `ready-for-agent（可由智能体处理）` 由你盖章。标签字符串与 `docs/agents/triage-labels.md` 完全一致。
+- **标签只有这五个，字符串照抄**（`docs/agents/triage-labels.md`，含中文括号，一个字符都不能改）：
+  `needs-triage（待分类）`、`needs-info（待补充信息）`、`ready-for-agent（可由智能体处理）`、`ready-for-human（待人工处理）`、`wontfix（不处理）`。
+- **不得发明标签**。实测三个档位组合都会现场造词（`accept:conditional`、`accepted`、`needs-assertion-proof`、`needs-reproduction`、`epic`），还会漏掉中文后缀——这类标签在仓库里不存在，等于没落标签。
+- **验收结论不靠标签表达**：通过/打回/待决断由台账一行 + 给交付方的邮件表达；triage 标签只表示 Issue 的下一步状态（打回时通常是保留 `ready-for-agent（可由智能体处理）`，升级时才打 `ready-for-human（待人工处理）`）。
+- `ready-for-agent（可由智能体处理）` 由你盖章。
 
 ## 流程 A：审 Issue 的合理性
 
