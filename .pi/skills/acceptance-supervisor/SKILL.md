@@ -17,16 +17,17 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 | `MY_RUN` | 你的信箱：`orca orchestration run-current --json`；没有就跑 `orca orchestration run-create --objective "acceptance #<N>" --json` |
 | `PEER_RUN` | 交付方会话的 Run，激活时由维护者从对方会话的 `run-current` 输出里粘过来 |
 | `WORKTREE` | 被验收工作树：`orca worktree current --json` → `path` |
-| `MODE` | 推理档位，默认 `{REASON:socrates}{REASON:ihouse}`。全部规定见 `.pi/skills/reasoning-modes/SKILL.md` |
+| `MODE` | 推理档位，默认 `{REASON:hyper}{REASON:ihyper}`；输出预算紧时用 `{REASON:socrates}{REASON:ihouse}`。全部规定见 `.pi/skills/reasoning-modes/SKILL.md` |
 | `EVIDENCE_ROOT` | 仓库外可写归档根，默认 `D:/Firefly-Canvas-evidence`。门禁不传 `--evidence-dir` 时落系统临时目录，会被清理，等于证据消失 |
 
 ## 上岗档位
 
-- 令牌写在**本会话第一条消息最前面**（例：`{REASON:socrates}{REASON:ihouse}`），后续每条重复同一组合。拼错静默无效，不报错——上岗先核对名字（`{REASON:help}` / `{REASON:ihelp}` 是权威菜单）。
+- 令牌写在**本会话第一条消息最前面**（例：`{REASON:hyper}{REASON:ihyper}`），后续每条重复同一组合。拼错静默无效，不报错——上岗先核对名字（`{REASON:help}` / `{REASON:ihelp}` 是权威菜单）。
 - **换档位必须换会话**，同一会话内切换不生效。换前先把手上 Issue 与轮次写进台账，新会话按开工流程重新入库验收，并让交付方更新 `PEER_RUN`。
 - 本会话**禁用 `007`**：它是 agentic 操作员档位，会自己动手把代码改好，双盲当场失效。
 - **harness 档位用 `medium`**：启动带 `--thinking medium`（或 `--model <模型>:medium`），会话内 `shift+tab` 循环切换，上岗前先确认。监理的力气花在核对证据与措辞上，不在推理链长度——实测 `x` 重档位反而把标签词汇想歪（见职权边界）。
-- **默认不带 `x` 前缀**（原生预算已是 xhigh；`x` 只覆盖 8 个名字，且位越重正文越容易被挤空）。只有三种情况换会话上 `x`：3 轮打回未过、一票否决复核、怀疑门禁本身有问题——同时把输出预算提到 3000+。
+- **默认不带 `x` 前缀**（原生预算已是 xhigh；`x` 只覆盖 8 个名字，且位越重正文越容易被挤空）。只有三种情况换会话上 `x`：3 轮打回未过、一票否决复核、怀疑门禁本身有问题——同时把输出预算提到 4000+。实测 `xhyper` 打回正文截断、`xspoon` 两题都截断，还有一个把 `{REASON:ihouse}` 原样回显进了报告。
+- **默认档 `hyper` 吃输出预算**：实测 1200 token 会把正文截断，1600+ 才完整；写报告给到 2500+。宁可多给预算，不可交一份缺复审条件段的打回单。
 - 档位越重越吃输出预算：实测预算不足时正文直接为空，1200 token 只够默认组合出一份完整报告。发报告前确认正文非空也非截断。
 
 ## 收发邮件（2026-11-10 两会话往返实测）
@@ -103,7 +104,7 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 `orca orchestration send --to run:<PEER_RUN> --subject "#<issue> 验收打回 第N轮" --body <正文>`（回它来件时用 `reply --id msg_<id>` 更省事）（未接入 Orca 时在 Issue 上评论并告知维护者）。正文四段缺一不可：
 
 1. Issue 编号与验收档位；
-2. 失败输出原文的关键片段（保留精确错误串，不改写成中文）；
+2. **失败输出原文的关键片段**（保留精确错误串，不改写成中文）；本次没有失败输出时，**必须写一行“本次无可引错误串：门禁绿但缺硬证据”**，不能缺这一段不写；
 3. 要补什么，具体到文件、断言、证据类型；
 4. 复审条件："我将重跑 `<命令>`，`verdict_reasons` 须为空"。
 

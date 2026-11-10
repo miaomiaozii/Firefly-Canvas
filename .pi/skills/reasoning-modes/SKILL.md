@@ -27,7 +27,7 @@ disable-model-invocation: true
 
 ```bash
 orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
-  --prompt "{REASON:socrates}{REASON:ihouse} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。PEER_RUN=run_xxxx"
+  --prompt "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。PEER_RUN=run_xxxx"
 ```
 
 令牌只管模式，不管 harness 的推理预算——两个都要给。启动参数：监理 `--thinking medium`，交付方 `--thinking high`（会话内 `shift+tab` 循环切换，`ctrl+s` 存进 settings）。`--model <模型>:medium` 也可以。
@@ -36,26 +36,28 @@ orca agent launch --agent pi --worktree path:D:/Firefly-Canvas \
 
 | 角色 | 场景 | 组合 | 理由 |
 |---|---|---|---|
-| 监理 | 默认（审 Issue、复跑、裁定） | `{REASON:socrates}{REASON:ihouse}` | 苏格拉底式连续反问逼出隐含前提，正对"五问审 Issue"和"反证候选"；风格位 `house` 是"好奇但有条理 + 怀疑"，报告可审计 |
-| 监理 | 覆盖面存疑（怕漏验收面） | `{REASON:hyper}{REASON:ihyper}` | 同名双位：推理和回答都走 MECE 互斥穷尽，报告天然不重不漏。实测有效但**吃预算**（1200 token 被吃满、正文截断），换这一档要把预算给到 3000+ |
+| 监理 | 默认（审 Issue、复跑、裁定） | `{REASON:hyper}{REASON:ihyper}` | 同名双位：推理与回答都走 MECE 互斥穷尽，报告不重不漏。五组事到事评分里 10/16 最高，且是唯一会把不可测的验收标准**改写成可测形式**并映射到六维的（流程 A 第四问的核心能力），也是唯一主动处理 ADR 冲突的。代价：吃输出预算，1200 token 截断、1600+ 完整 |
+| 监理 | 输出预算紧 / 要最强的反证推理 | `{REASON:socrates}{REASON:ihouse}` | 苏格拉底式连续反问逼出隐含前提，事到事 8/16 但反证意识最好（“删掉这条断言等于拆掉报警器”），且两题都不断尾；预算不够或要复核某一裁定时用它 |
 | 监理 | 争议裁定（交付方说门禁误报） | `{REASON:logic}{REASON:ihouse}` | 第一性原理推导，只认证据 |
-| 交付方 | 默认（改代码 + 跑门禁到绿） | `{REASON:ultra}{REASON:icoder}` | 2026-11-10 实测选定：把任务拆成有序阶段并自设验证门槛，约束先于行动；能主动挡住"放宽/删断言"这类捷径（陷阱题上直接给出"不得删也不得放宽，除非 Issue 声明"）；`icoder` 技术精确 |
-| 交付方 | 备选（需要它大量自己跑命令） | `{REASON:007}{REASON:icode}` | agentic 操作员：多步工具编排、错误隔离、自纠错执行循环；实测不输 ultra，但汇报偏短、停下条件只给一句 |
+| 交付方 | 默认（改代码 + 跑门禁到绿） | `{REASON:007}{REASON:icode}` | 事到事 11/16 并列第一，但是唯一两题都不断尾、无命令臆造、边界最干净的（只手动跑端到端，不提议把它接进门禁）；实测也不走捷径：只加等待，不动断言表达式 |
+| 交付方 | 备选（要它把长任务拆成可审计阶段） | `{REASON:ultra}{REASON:icoder}` | 阶段拆分与自设验证门槛最清楚、“PR 有 CI 红灯先修 CI 再汇报”说得最明，11/16 并列；但两轮实测都把正文写到 `finish=length`，用它必须把预算提到 4000+ |
 | 交付方 | 定位疑难（复现失败、行为诡异） | `{REASON:house}{REASON:icode}` | 卡片"复杂系统调试 = house + logic"：激进假设检验 + 第一性排除 |
 | 交付方 | 性能 / 响应式（#120、#140） | `{REASON:musk}{REASON:icode}` | 物理优先 + 第一性原理，对成本与延迟类约束有效 |
 | 交付方 | 架构 / 接口设计（#112 契约层） | `{REASON:stark}{REASON:icode}` | 卡片"架构设计 = stark + coder" |
 
 `末尾必须附通俗解释`是**结构要求，写死在汇报模板里**，不要靠风格位 `iteacher` 实现——风格位会同时改变整篇的精度，而结构要求不会。
 
-## 选型实测（2026-11-10，两轮六组合对测）
+## 选型实测（2026-11-10，两轮六组合对测 + 两个独立评分代理）
 
-方法：直连推理端点（`temperature: 0`、`max_tokens` 1600–3000），把真仓工件（`#294`–`#300`、`quality_gate.py` 四档与严重度、红项基线口径、`.pi/skills/**` 会触发 domain 档）写进题面。监理题：A1 埋五个真缺陷（未提交改动、无端到端证据、只跑 fast、"按钮存在"冒充"功能可用"、改断言无声明）；B1/C1 反陷阱（交付方主动提"放宽断言"诱导、以及一次完全干净的交付看会不会过度打回）。交付方题：给 flaky 断言任务诱导走捷径。
+方法：直连推理端点（`temperature: 0`、`max_tokens` 1600–3000），把真仓工件（`#294`–`#300`、`quality_gate.py` 四档与严重度、红项基线口径、`.pi/skills/**` 会触发 domain 档）写进题面；产物写进 `C:/Users/Administrator/backups/firefly-probe/`（`out_*.md`、`out2_*.md`）。两个 `oracle` 代理按 `RUBRIC.md` 事到事事到条打分，另有一轮反陷阱题（干净交付看会不会过度打回；飘报断言看会不会走捷径）。
 
-结论：
+评分（满分 16）：监理 `hyper+ihyper` 10、`spoon+ihouse` 10（两题均截断，剔除）、`ultra+icoder` 9、`socrates+ihouse` 8、`xhyper+ihyper` 8；交付方 `007+icode` 11、`ultra+icoder` 11（两次截断）、`007+ihyper` 11（臆造 `make gate`）、`house+icode` 10（House 人格入报告）、`musk+icode` 10（提议把端到端接入门禁但未要求先声明）。
 
-- **监理选 `{REASON:socrates}{REASON:ihouse}`**：五个缺陷全中，引 Issue 最准，反陷阱不越界改代码，干净交付不编伪问题。`{REASON:hyper}{REASON:ihyper}` 覆盖面最宽但会把标签词汇想歪、往无关方向扩面；`x` 重档位同样想歪标签。
-- **交付方选 `{REASON:ultra}{REASON:icoder}`**：拆阶段 + 自设门槛 + 主动挡住走捷径；`007` 紧随时位第二。
-- **选型靠不靠档位不重要，靠工件里的清单。** 六组合全部漏了同一件事：**现场发明标签**（`accept:conditional`、`accepted`、`needs-assertion-proof`、`needs-reproduction`、`epic`）。这类漏洞只能写在 skill 里（已写成白名单），不能指望任何档位。
+三条结论：
+
+- **监理选 `hyper+ihyper`，交付方选 `007+icode`**。监理的分数差在“能不能把不可测的验收标准改写成可测形式”；交付方的同分裁决在“交不交得出完整正文 + 会不会越界改考卷”。
+- **重档位（`x` 前缀）与剧本人格档位（`house`、`spoon`）都被实测剔除**：推理吃掉 7000–8500 字后正文在半句处断，监理打回单缺复审条件段等于不可用；`house` 会把角色腔调写进汇报，`spoon` 会把 `{REASON:ihouse}` 原样回显进标签清单。
+- **选型不靠档位，靠工件里的清单。** 六组合共同失分处：题面不给门禁口径时，**五组全部**推不出“trial 复跑 + `origin/main` 同档红项基线”；**五组全部**写不齐四段打回正文；**五组只有一组**用对仓库五标签，其余现场造词（`accept:conditional`、`accepted`、`needs-rework`、`needs-reproduction`、`epic`）。这些只能写在 skill 里，已经写了。
 
 ## 监理禁用（每条都有后果）
 

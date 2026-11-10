@@ -10,11 +10,11 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 ## 上岗档位
 
-默认 `{REASON:ultra}{REASON:icoder}`（把任务拆成有序阶段 + 技术精确），后续每条重复同一组合。选型是 2026-11-10 六组合×两任务实测定的（见 `.pi/skills/reasoning-modes/SKILL.md`）；备选 `{REASON:007}{REASON:icode}`，它更爱自己跑命令，代价是汇报偏短、边界说明少。
+默认 `{REASON:007}{REASON:icode}`（agentic 操作员：多步工具编排 + 错误隔离 + 改→跑门禁→修到绿的自纠错循环），后续每条重复同一组合。选型是 2026-11-10 两轮六组合×两任务实测定的（见 `.pi/skills/reasoning-modes/SKILL.md`）；备选 `{REASON:ultra}{REASON:icoder}`，阶段拆分最清楚、“先提交再汇报”说得最明，但实测两轮都把正文写到截断，用它就需把输出预算提到 4000+。
 
-**不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错；`xultra` 实测会把正文挤空。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考。
+**不加 `x` 前缀**：`007`、`house`、`musk`、`stark`、`coder` 都没有 x 版，写 `{REASON:x007}` 是无效令牌且不报错；`xultra` 实测会把正文挤空。`house` 不做默认档位：实测它把 House 剧本人格带进汇报（“蠢bug”“别让我再说第二遍”、医学比喻），还漏了“先提交”这一步。
 
-**harness 档位用 `high`**（启动带 `--thinking high`，会话内 `shift+tab` 切换）。实测交付方需要把任务拆成阶段并自己设验证门槛，`medium` 不够。
+**harness 档位用 `high`**（启动带 `--thinking high`，会话内 `shift+tab` 切换）。你要的深度来自执行循环（改→跑门禁→修到绿），不是更长的思考——所以先把预算留给完整的四段汇报，再谈更重的档位。
 
 ## 提交一次交付
 

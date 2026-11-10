@@ -27,8 +27,8 @@
 角色会话还要同时给推理档位（`{REASON:…}` 令牌与 harness 的 `--thinking` 两样都要）：
 
 ```bash
-pi --thinking medium   # 监理：首条消息 {REASON:socrates}{REASON:ihouse} + 上岗验收；监理不得用 007，它会自己改代码，双盲当场失效
-pi --thinking high     # 交付方：首条消息 {REASON:ultra}{REASON:icoder} + 上岗交付
+pi --thinking medium   # 监理：首条消息 {REASON:hyper}{REASON:ihyper} + 上岗验收；监理不得用 007，它会自己改代码，双盲当场失效
+pi --thinking high     # 交付方：首条消息 {REASON:007}{REASON:icode} + 上岗交付
 ```
 
 会话内 `shift+tab` 循环切档位。档位选型与实测依据见 `reasoning-modes`。
