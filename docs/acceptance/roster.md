@@ -12,7 +12,7 @@
 | 流程优化者 | 棘轮 | 收卡点、判定入队、把教训固化成可复跑的检查或工具 | 不做验收判定、不改产品代码与测试、不落 triage 标签、不关 Issue、不推 main |
 | 监理 | — | 验收与裁定，落台账与 Issue 评论 | 产品代码与测试、流程层文件、推 `main`（产品代码与测试）；台账不可豁免 |
 | 交付方 | — | 按票面白名单实现并自证证据 | 一票否决面、流程层文件、`ledger.md`、推 `main` |
-| 维护者 | 无别名 | 发任务书、裁定口径解释权、合并与发布 `main` | 不代写监理台账 |
+| user（原「维护者」已于 2026-11-10 退役，职责合并进棘轮；v5 起称 user） | 无别名 | 最终裁决：产品取舍、合并 `main`、建/退役会话、收发放权 | 不代写监理台账、不改流程 skill（走棘轮） |
 
 不得用的称呼：「优化会话」「监理会话」「交付会话」「那位」「你们这边」——这些词在归因时产生歧义（实测 P-06 归因两轮错记即源于此）。**认人只认 `HANDLE` 与 `SELF_RUN` 编号（`认人认编号`），不认称呼。**
 
@@ -43,11 +43,10 @@
 
 ### 1.4 版本基准
 
-- 本轮基准值 = **4**（依维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4，见 `版本门读数=宣布值`）。
-- 棘轮自测（`origin/main@c53f877`，当场原文）：三份班规 `grep -n "^version:"` → `acceptance-supervisor 3:version: 4` / `impl-session-contract 3:version: 4` / `process-optimizer 4:version: 4`；`git rev-parse --short origin/main` = `c53f877`。
-- 监理独立复读：msg_71852e372417（同 sha、三份全 4）；交付方四步复读：msg_d52bb7e1a11b（同 sha、`3:version: 4`）。三方读数互证一致 → **版本门闭合**。
-- 上岗版本门判据：**读数等于维护者宣布值**，不得填自报值、不得填「读过就行」。
-- 注：本轮 3→4 **没有**维护者的新「宣布 5」指令；若下轮再改班规，必须先有维护者宣布的新值，否则版本门会自我打脸（`版本门读数=宣布值`）。
+- 本轮基准值 = **5**（v5 边界令 user m00719，维护者退役、宣布方改为棘轮；本版由棘轮宣布并登记于此）。
+- 历史基准（保留供追溯）：本轮之前 = **4**（依原维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4）；棘轮自测 `origin/main@c53f877` 三份全 `version: 4`；监理 msg_71852e372417、交付方 msg_d52bb7e1a11b 同 sha 互证 → v4 版本门闭合。
+- 上岗版本门判据（v5）：**读数等于本节登记的生效值**（宣布方=棘轮），不得填自报值、不得填「读过就行」；在途轮次按 `班规@origin` 当时读到的版本跑完（轮内冻结），新轮开工前必须先读到 5。
+- v5 上架自测（棘轮，当场）：三份班规本地 `grep -n "^version:"` 全 = 5；上架后须复测 `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 全 = 5，并把 sha 写进 §4 与 §7.1。
 
 ## 2. 身份登记册
 
@@ -56,7 +55,7 @@
 | 流程优化者（棘轮） | `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` | `run_c40189b45d94` | `c0d9ff46-eaf7-4959-a1ca-156c392b4850` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` @ `loop/ratchet` @ 见本文件最新 commit | 自写方（不作上岗门读数）；上架自测 = `origin/main@c53f877` → `version: 4` x3 | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`（流程层，可直推 `origin/main`，`流程层发权`） | 产品代码与测试（绝对禁推）、`ledger.md`、triage 标签、Issue 状态、推 `main`（产品代码与测试） | 自报 2026-11-10；上架回执带读数+sha |
 | 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（verified） | `run_12b3ab55bf53`（verified：`run-show --full` 的 `coordinator_handle` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（本地读数；`origin/main` 已到 `4b3305e`） | `origin/main@c53f877` → `version: 4` x3（msg_71852e372417，**门过**） | `docs/acceptance/ledger.md`（含按停止条件自推 `origin/main`，实测 `4b3305e`）、Issue 评论、`D:/Firefly-Canvas-evidence/**`、`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、改被验工作树 git 状态、推 `main`（产品代码与测试）、代交付方写实现、关闭 Issue 以外的状态操作 | 回执 `msg_66beb330eb06` + 版本门 `msg_71852e372417` + 台账自落 `msg_b36245b65bb8` |
 | 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（verified，terminal 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | `origin/main@c53f877` → `3:version: 4`（msg_d52bb7e1a11b，**门过**） | 票面白名单（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）、`git commit`（仅 `issue/310`）、Issue 收尾评论、证据目录、编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；`ledger.md`；推/merge `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执三段 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248` + 版本门 `msg_d52bb7e1a11b` |
-| 维护者 | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（pi chat 内嵌会话，无 tabId） | `run_b203fe4d1bef` | 不适用 | `D:/Firefly-Canvas` @ `main` | 不适用（宣布方：本轮宣布值=4） | `main`（合并与发布）、`AGENTS.md`、任务书、流程版本号宣布与发权收权 | `pain.md`、`roster.md`、三份班规正文（走棘轮入册）、不代写监理台账 | 发权原话（m00568）：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」 |
+| user（原维护者会话已退役 2026-11-10，职责合并进棘轮） | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（退役存档：pi chat 内嵌会话，无 tabId） | `run_b203fe4d1bef`（退役后不再寻址；上报改走本会话或棘轮） | 不适用 | 不适用 | 不适用（版本宣布方=棘轮，见 §1.4） | `main` 合并与发布、`AGENTS.md`、会话建立与退役、发权收权 | 三份班规正文与 pain/roster（走棘轮入册）、不代写监理台账 | 发权原话（m00568）+ 边界令（m00719） |
 
 ### 采信规则
 
@@ -135,7 +134,7 @@
 ## 4. 流程层发权与上架状态（`流程层发权`）
 
 - **谁写谁推**：流程层 = 三份班规（`班规@*`）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
-- **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归维护者。
+- **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归 user，棘轮持 user 授权时可改并同 commit 上架（`AGENTS写权`，实测：v5 边界令 m00719 后的同步）。
 - **收权（`收权`）**：维护者一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
 - **上架状态**：**已上架 = `origin/main@cac1818`**（棘轮 2026-11-10 实推并回读：`git push origin <sha>:main` → `7e03237..cac1818`；`git rev-parse --short origin/main` = `cac1818`；三份班规在 `origin/main` 上均 `version: 3`；`docs/acceptance/{ledger,pain,ratchet,roster}.md` 均已在 `origin/main`）。本轮上架面：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`（这两处是 loop-2 期间监理会话在本地 main 上的改动，随本次快进上架，无产品代码）、`docs/acceptance/{pain,ratchet,roster}.md`。
 
@@ -176,7 +175,7 @@ flowchart LR
 | 产品代码与测试（`src/tools/tests/e2e/.github`） | 仅交付方（票面白名单内，仅 `issue/<N>`） | 交付方推 `issue/<N>`；`main` 由监理裁定 + 维护者决定合并 | 监理台账 PASS + 门禁复跑 |
 | `docs/acceptance/ledger.md` | 仅监理 | 监理 | 上岗台账不可豁免 |
 | 流程层（三份班规 + pain/ratchet/roster） | 仅棘轮 | 棘轮直推 `origin/main` | 维护者确认 + 版本号宣布 + 三方回执版本一致 |
-| `AGENTS.md` | 维护者 | 维护者 | — |
+| `AGENTS.md` | user（棘轮仅在 user 授权时可改，`AGENTS写权`） | user，或棘轮持授权同 commit 上架 | — |
 
 ### 5.1 上架实测与 git-bash 坑（`推main用sha`）
 
@@ -211,3 +210,29 @@ flowchart LR
 ### 6.3 P-33（禁止面措辞口径，已入 pain.md）
 
 「推 `main`」这种笼统写法把两种行为混成一件：产品代码与测试推 `main`（绝对禁止）与流程层/台账按各自职权推 `origin/main`（本轮已实测发生且合规）。名册 §1.1、§2 各行已改为「推 `main`（产品代码与测试）」。三份班规正文的同步改动必须 bump `version: 4 → 5`（`版本门读数=宣布值`），因此**不在本轮轮内推**：等维护者宣布新值后于轮间生效（轮内冻结）。
+
+## 7. v5 边界令（user 2026-11-10，维护者角色退役）
+
+**裁决（user 原话，m00719 摘要）**：「没有维护者了，原来的维护者那个会话已经退役了，所有的职责合并进你这个流程优化者了」；并给出六条边界。三方契约同步 bump 到 **version: 5**（宣布方改为棘轮，登记在本节与 §1.4）。
+
+| # | 边界（v5 硬口径） | 落点 |
+|---|---|---|
+| 1 | 监理只负责监管 worker、判定 Issue 是否完成并**书面指示工人推送与关闭**、发自己卡点给棘轮但**不改**；可用 `/code-review` 等技能辅助 | 监理契约「v5 角色边界」+「完成指示令」 |
+| 2 | 工人只负责项目干活、被监理监管、卡点发棘轮但**不改**；用 `/qa`、`/implement` 等技能辅助 | 工人契约「v5 角色边界」 |
+| 3 | 棘轮只解两方卡点、优化流程 skill、**user 决断后推送更新**；不碰监理与工人的活；**不频繁发消息污染他们上下文**；不让两方碰流程的事；等他们做完手头工作再一次性通知读新班规 | 棘轮契约 §1 边界 + §5 信箱协议 + §7 轮间生效 |
+| 4 | 会话存续：user 建 worker 时同步在当前项目工作区建监理与棘轮会话，**Orca 显式可见**，直到 user 让某个会话退役；**同一时间一个项目工作区三个角色各只存在一个** | 三份契约「同名角色唯一性」+ 停止条件 |
+| 5 | 各角色会话相对独立，各做各的卫生，不遗留垃圾 | 通用层 §8 |
+| 6 | 消息要有时间轴、**增量读取**，不得每次全量读塞爆上下文 | `信箱增量`（通用层 §4 + 三份契约） |
+
+- **技能自选（`技能自选`）**：skill 由会话自行决定调用，契约只保证硬口径不被跳过（user：「skill 这个可以让会话自行决定调用，不必拘泥我上面的举例」）。
+- **维护者退役后的口径映射**：原「升级给维护者」→ 升级 **user**（抄送棘轮）；原「维护者合并 main」→ **user 决定合并**（监理判定通过后指示工人 push，merge 由 user 做）；原「维护者宣布版本号」→ **棘轮宣布并登记在 §1.4**；`AGENTS.md` 归 user。
+- **通用层（P-39）**：跨项目可复用的规则抽到 `C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md`（user 裁决：这是一份通用 skill）；项目三份契约只写本项目参数与例外，冲突以项目契约为准。
+- **待生效通知（v5）**：按边界 3，生效通知在**轮间**发——监理与工人当前手头的轮次跑完后，由棘轮各发一封（正文=版本号 5 + sha + 该方需改变的动作 ≤5 条），回执一行 `已读 version:5 @<sha>`。**在此之前他们按 version:4 口径跑完手头工作。**
+
+### 7.1 v5 生效状态
+
+| 项 | 状态 |
+|---|---|
+| 三份契约 `version: 5` | 已写（本 commit），上架 sha 见 §4 |
+| 生效通知 | **未发**（等两边手头轮次结束，边界 3） |
+| 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |

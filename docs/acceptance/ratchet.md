@@ -40,6 +40,7 @@
 | `适用面与失效轮次`（v3 追加，P-24） | `process-optimizer/SKILL.md` |
 | `台账例外声明`（v3 追加，P-24） | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `口径表`、`认人认编号`、`认人编号`、`班规@origin`（v3 追加，P-25） | 三份 skill + `docs/acceptance/roster.md` |
+| `v5边界令`、`完成指示令`、`信箱增量`、`通用层skill`、`技能自选`、`同名角色唯一性`（v5 追加，P-36..P-39） | 三份 skill version:5 + `C:/Users/Administrator/.agents/skills/three-role-loop/SKILL.md` + `docs/acceptance/roster.md` §7 |
 | `run-current自上下文`、`gh主工作区跑`（v3 追加，P-26/P-27） | `docs/acceptance/roster.md` §3.3/§3.5 |
 | `推main先rebase`（v4 追加，P-34） | `docs/acceptance/pain.md` P-34 四步口径；回归：`grep -c "推main先rebase" docs/acceptance/pain.md` ≥ 1 |
 | `版本宣布带证据`（v3 追加，P-28）、`check截断用inbox--full`（v3 追加） | `docs/acceptance/roster.md` §3.7/§3.8 |
