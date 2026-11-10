@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PythonPath = ''
 )
 
@@ -69,10 +69,16 @@ function Bump-AssetVersions {
     $updated = [regex]::Replace($content, '((?:href|src)="/static/[^"]*\?v=)[^"]+', "`${1}$newVersion")
     if ($updated -ne $content) {
         # 原子写：先写 temp 再覆盖——进程被杀时不会留下 0 字节 html（本仓实测两次被杀即归零）。
-        $tmp = "$htmlPath.tmp"
-        [System.IO.File]::WriteAllText($tmp, $updated, $utf8NoBom)
-        Move-Item -LiteralPath $tmp -Destination $htmlPath -Force
-        Write-Host "[RESTART] Bumped smart-canvas css/js versions to $newVersion (browser cache invalidated)."
+        # bump 失败不该炸掉整次重启：捕获后降级为 WARN，服务照常起。
+        try {
+            $tmp = "$htmlPath.tmp"
+            [System.IO.File]::WriteAllText($tmp, $updated, $utf8NoBom)
+            Move-Item -LiteralPath $tmp -Destination $htmlPath -Force
+            Write-Host "[RESTART] Bumped smart-canvas css/js versions to $newVersion (browser cache invalidated)."
+        } catch {
+            Write-Host ("[WARN] cache bust failed: " + $_.Exception.GetType().FullName + ": " + $_.Exception.Message)
+            Remove-Item -LiteralPath "$htmlPath.tmp" -Force -ErrorAction SilentlyContinue
+        }
     } else {
         Write-Host "[WARN] smart-canvas.css/js ?v= parameters not found in smart-canvas.html."
     }
