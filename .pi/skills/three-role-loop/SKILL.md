@@ -1,6 +1,6 @@
 ---
 name: three-role-loop
-version: 9
+version: 10
 disable-model-invocation: true
 description: 三角色循环（工人 / 监理 / 流程优化者）的通用运行规则：角色边界、上岗前置与版本门、信箱增量协议、卡点队列、流程层发权、会话可见性与卫生。跨项目复用；具体项目的参数与例外看该项目 .pi/skills/ 下三份契约。
 ---
@@ -43,17 +43,18 @@ description: 三角色循环（工人 / 监理 / 流程优化者）的通用运�
 4. **对册**：读名册，确认三方 `规范名 + term_<handle> + run_<id>` 齐全、同角色唯一。
 5. **回执**：上岗回执一次性列齐（SELF_RUN、tabId、工作树 path@branch@sha、契约版本读数、信箱绑定状态），≤30 行，不提问；对端缺项时不得自己补。
 
-## 4. 信箱增量协议（防污染上下文）
+## 4. 信箱增量协议（防污染上下文；`班规单一源`：本节是三方信箱与回执程序的全文所在，项目契约只留参数与指针）
 
 - `check` **消费**邮件且只回未读批次（本身就是增量）；**不得循环 `check` 当轮询**。等启用 `check --wait --timeout-ms <n>`，忽略 `_keepalive` 行。
 - 索引视图优先：`inbox --limit <n>`（200 字预览 + ID）→ 只点名 `--full` 需要全文的那几封；断档恢复 `inbox --terminal run:<run_id> --limit <n> --full`。
-- 门集与版本基准以项目名册的 `状态锚` 节为唯一入口（上岗先读它，不从旧邮件重建进度，`状态锚`）；门集=五份流程契约 `^version:` 同值。
+- 门集与版本基准以项目名册的 `状态锚` 节为唯一入口（上岗先读它，不从旧邮件重建进度，`状态锚`）；门集=五份流程契约 `^version:` 同值（名单与门命令写在名册状态锚里）。
 - 路由按 `四类直发`：回执、轮末、交接、卡点四类显式 `send --to run:<对方 Run>`（项目名册取号）；其余用 `reply --id` 挂原时间轴——`reply` 的投递跟随**原通知件的发件寻址**，会把必要应答送进第三方信箱。
 - 正文写**指针不写全文**：路径 + 行号 + commit sha + 邮件 ID。长内容落文件，正文给路径。
 - 发送前校验（`正文非空校验`）：`send`/`reply` 前 `test -s <正文文件>`，非 0 即不发；空件按作废登记。
 - 纯确认函不回（回声噪音）；生效通知只回一行 `已读 version:<n> @<sha>`。
 - 轮间判据（`轮末信号`）：各方本轮收尾动作完成时向流程优化者发一行 `轮末 <issue> <sha>`；流程优化者齐信号才发生效通知。
 - 升级信箱：user 的 durable Run（不依赖终端在线，项目名册登记）；停止条件上报落该信箱并抄送流程优化者。
+- 回执 sha 核验（`回执sha核验`）：任何回执引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；登记方（棘轮）复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或读数≠名册登记值，该回执作废重读（事故见 P-41/P-42）。
 - 一个 Run 只有一个读者；两个会话绝不共用 Run。认人不认标题（`terminal rename` 会被 harness 覆盖）。
 
 ## 5. 卡点队列与版本门（棘轮的输入）
@@ -66,8 +67,8 @@ description: 三角色循环（工人 / 监理 / 流程优化者）的通用运�
 
 ## 6. 流程层发权
 
-- 流程层（三份契约 + 台账类文档）由**棘轮写并直推 `origin/main`**；产品代码与测试**绝对禁推**（由监理判定后交 user 合并）；`AGENTS.md` 归 user。
-- 上架四步：`git fetch origin main` → `git rebase origin/main` → 产品面 `git diff --name-only origin/main...HEAD` grep 必须为空 → `git push origin HEAD:main`。**永不对 main 用 `-f`**（会抹掉监理的验收记录）。
+- 流程层（门集五份流程契约 + 台账类文档）由**棘轮写并直推 `origin/main`**；产品代码与测试**绝对禁推**（由监理判定后交 user 合并）；`AGENTS.md` 归 user。
+- 上架六步（固定顺序，不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③产品面 `git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` **必须为空** ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:<棘轮独享支>` ⑥三指针 `git rev-parse --short origin/main origin/<棘轮支> HEAD` 互证。**永不对 `main` 用 `-f`**（会抹掉监理的验收记录）。门集与门命令以项目名册的状态锚为单一事实源。
 - 改任一契约同 commit `version:` +1，并登记生效版本；上岗读数 ≠ 登记值即停。
 - 收权：user 一句话即可收回直推权；他可随时 revert。
 - 棘轮规则：只收紧不放宽；每条吸收留可复跑回归；工具优先于文字；轮内冻结流程文件；不得用「这次特殊情况」豁免。

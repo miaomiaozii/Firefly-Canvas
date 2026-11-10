@@ -5,11 +5,12 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **9**；门 sha = **4e07c76**（上架后当场回读，五行门读数全 =9）；更新 = 2026-11-10。
-- 门命令（唯一事实源）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值=9。
-- 队列：pain 共 50 条（P-01..P-50）；pending=2（P-49 委派前未探凭据、P-50 委派参数覆盖角色默认）；P-11/P-12/P-13/P-20 等产品面与历史条目按状态列归属 user/监理；本轮 absorbed：P-44/P-45(v8)、P-46/P-48(v9)；P-47 为棘轮自查 verified。
-- 缺件：无（v9 双行闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。当前进行中：user 授权的班规文档质量审计（writing-great-skills 口径，两路只读代理 27B nvfp4 + xhigh，runId del_mwas2ijf_24cd / del_mwas2s17_6592），结论待出，可能触发 v10。
-- 审计面（本轮唯一改动候选＝五份班规的文本质量，不含新条款）：acceptance-supervisor 285 行 40KB / impl-session-contract 102 行 19KB / process-optimizer 123 行 13KB / three-role-loop 96 行 8.7KB / reasoning-modes 116 行 10.7KB。
+- 生效版本 = **10**；门 sha 与上架 sha 在下方「门命令」跑完后回读（棘轮上架后当场改写本行为准）；更新 = 2026-11-10。
+- 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
+- 队列：pain 共 56 条（P-01..P-56）；pending/queued=3（P-51 监理契约渐进披露、P-52 术语指针与工人契约瘦身、P-53 台账头部称呼——均 queued 待 v11）；本轮 v10 absorbed：P-49/P-50（委派自证）、P-54（标记可命中）、P-55（易变事实唯一落点）、P-56（班规单一源）；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
+- 缺件：无。v9 双行已闭合（监理 msg_3e1b9c044635、工人 msg_a4110b6924e4）。v10 生效通知待两个 `轮末` 信号齐后发，回执闭合按 `inbox` 计数判定（不用 peek 抽样，P-47）。
+- 本轮性质：班规文本质量审计（非产品轮）——两路只读子代理按 writing-great-skills 口径审五份班规，自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh（runId del_mwas2s17_6592 / del_mwas2ijf_24cd）；产品代码与测试零改动。
+- 下一轮开工前两件事（user 侧）：①指定新 Issue；②确认 v10 上架 sha（棘轮上架后写进本节第二行）。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
 
 ## 1. 口径表（先统一这个，再谈别的）
@@ -43,21 +44,22 @@
 
 | 代号 | 绝对路径 | 谁读它 | 状态 |
 |---|---|---|---|
-| `班规@origin` | `origin/main:.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md` | 三方上岗取版本 | **本轮唯一准绳**（`流程契约取法`）；当前 `origin/main` 停在 `7e03237`，尚无流程层 |
-| `班规@本地main` | `D:/Firefly-Canvas/.pi/skills/…`（监理与维护者工作区） | 仅维护者合并前后核对 | 已 ff 到 `a6dfa39`（v3） |
-| `班规@棘轮` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop/.pi/skills/…`（分支 `loop/ratchet`） | 只由棘轮写 | 最新 `e66f850`，三份 `version: 3` |
-| `班规@被验树` | `D:/ff-wt/w310/.pi/skills/…`（分支 `issue/310`@`16df89a`） | 交付方工作区自带 | **`b2b3399` 时代旧版，不作数**（P-15） |
+| `班规@origin` | `origin/main:.pi/skills/<契约名>/SKILL.md`（门集五份的名单见本节上方「门命令」） | 三方上岗取版本 | **唯一准绳**（`流程契约取法`）。版本读数与 sha 一律现读状态锚，本表不写（`易变事实唯一落点`，P-55） |
+| `班规@本地main` | `D:/Firefly-Canvas/.pi/skills/…`（监理工作区） | 仅合并前后核对 | 不作版本准绳；读数现查状态锚 |
+| `班规@棘轮` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop/.pi/skills/…`（分支 `loop/ratchet`） | 只由棘轮写 | 上架前的编辑面；未上架即未生效（生效只认 `班规@origin`） |
+| `班规@被验树` | 工人工作树自带的那份 `issue/<N>/.pi/skills/…` | 工人工作区自带 | **不作数**：任何版本读数与条文引用都不许取自它（P-15） |
 
 流程层文件（同样只有棘轮写，其余两方只读）：`docs/acceptance/{pain,ratchet,roster}.md`；监理自有写入面只有 `docs/acceptance/ledger.md`。
 
 ### 1.4 版本基准
 
-- 本轮基准值 = **9**（v9：P-46 门集五份 + P-48 状态锚，由棘轮宣布并登记于此；user m00991 提议）。历史：v8=P-44/P-45（闭合：监理 msg_c7262bdc2017、工人 msg_9d23ad27d176，均 @5719fff 直达棘轮 Run——`四类直发` 首轮即闭合）。
+- 本轮基准值 = **10**（v10：班规文本质量审计轮吸收 P-49/P-50/P-54/P-55/P-56，由棘轮宣布并登记于此；审计授权 user m01075）。
+- 历史基准：v9=P-46 门集五份 + P-48 状态锚（闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4，门 sha `4e07c76`）。历史：v8=P-44/P-45（闭合：监理 msg_c7262bdc2017、工人 msg_9d23ad27d176，均 @5719fff 直达棘轮 Run——`四类直发` 首轮即闭合）。
 - 历史基准：v7=P-43+H1..H4（闭合：监理 msg_f471da860db4 @f0063f2；工人 msg_ad031b382024 经 user 信箱转读入账）。
 - 历史基准：v6=P-41/P-42（闭合回执 @ac6bc46：监理 msg_b47d904a38d3、工人 msg_4b95cbd70254）；
 - 历史基准：v5 = 边界令（m00719，维护者退役）；上架 `origin/main@e78a29d`，监理回执 `已读 version:5 @e78a29d`（msg_560fd955e257，`git cat-file -t e78a29d`=commit，**有效**）；工人 v5 回执 msg_551a1fda9aa9 报 `026038d`/`version:4`/`§4.1`——sha 不存在（`git cat-file -t` fatal），**作废待重读**（P-41）。
 - 历史基准（保留供追溯）：本轮之前 = **4**（依原维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4）；棘轮自测 `origin/main@c53f877` 三份全 `version: 4`；监理 msg_71852e372417、交付方 msg_d52bb7e1a11b 同 sha 互证 → v4 版本门闭合。
-- 上岗版本门判据（v5）：**读数等于本节登记的生效值**（宣布方=棘轮），不得填自报值、不得填「读过就行」；在途轮次按 `班规@origin` 当时读到的版本跑完（轮内冻结），新轮开工前必须先读到 5。
+- 上岗版本门判据：**读数等于本节登记的生效值**（宣布方=棘轮），不得填自报值、不得填「读过就行」；在途轮次按 `班规@origin` 当时读到的版本跑完（`轮内冻结`），新轮开工前必须先读到本节登记值。
 - v5 上架自测（棘轮，当场）：三份班规本地 `grep -n "^version:"` 全 = 5；上架后须复测 `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<契约名>/SKILL.md' | grep -n "^version:"` 全 = 5，并把 sha 写进 §4 与 §7.1。
 
 ## 2. 身份登记册

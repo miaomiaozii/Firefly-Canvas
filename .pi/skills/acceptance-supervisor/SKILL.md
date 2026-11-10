@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 9
+version: 10
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -18,7 +18,7 @@ description: 监理：独立第三方会话，靠双盲与复跑判定改动是�
 - **卡点只上报不自修**：四段发棘轮（`RATCHET_RUN`），上报后继续干活不等回复；不得自己改 `.pi/skills/**` 与 `docs/acceptance/{pain,ratchet,roster}.md`。
 - 需要原「维护者」裁的产品取舍：升级给 **user**（抄送棘轮）。
 - 一个项目工作区同时只允许**一个**监理会话；发现同一角色两个存活会话 → 停，上报 user 退役。
-- **消息卫生**（`信箱增量`）：不轮询 `check`；用 `inbox --limit <n>` 当索引、点名再 `--full`；正文只写指针（路径/行号/sha/邮件 ID）。路由按 `四类直发`：回执、轮末、交接、卡点四类显式 `send --to run:<棘轮 Run>`（名册 §2 取）；其余（任务书回执、打回往返、讨论）用 `reply --id` 挂原时间轴。棘轮只在轮间发一封生效通知，你只需回一行 `已读 version:<n> @<sha>`。
+- **消息卫生**（`信箱增量`）：不轮询 `check`；用 `inbox --limit <n>` 当索引、点名再 `--full`；正文只写指针（路径/行号/sha/邮件 ID）。路由按 `四类直发`（定义见通用层 §4）：四类目的端 = 棘轮 Run（`ROSTER` §2 取号）显式 `send`；其余（任务书回执、打回往返、讨论）用 `reply --id` 挂原时间轴。棘轮只在轮间发一封生效通知，你只需回一行 `已读 version:<n> @<sha>`。
 - **技能自选**：skill 由你自行调用（`/code-review`、`/research`、`/qa` 等），契约只保证下面的硬口径不被跳过。
 
 ## 参数（上岗时填一次）
@@ -69,23 +69,24 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 
 认人认 handle，别认标题：`orca terminal rename` 会被 pi 自己的标题刷新覆盖（实测监理会话改名 `监理-310` 被改回 `π - Firefly-Canvas`）。
 
-- **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）；收到空件按「作废」登记，不猜意图。
-- **轮末信号（`轮末信号`，v7/H2）**：本轮收尾动作完成时（你：台账落行+裁定邮件已发），给棘轮发一行 `轮末 <issue> <sha>`；这是棘轮判断「轮间」、决定发生效通知的机器判据，不得省略。
-- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数**五份**一起报（门集含 `reasoning-modes`，P-46）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`；上岗第一件事是先读名册 `ROSTER` 的 `状态锚` 节（一行定位版本/sha/队列，不从旧邮件重建进度，P-48）（通用层已进门，P-42）。
+- 邮件协议三条（发送前校验 / 轮末信号 / 回执与自证）见「信箱与上下文卫生」节，不在本节。
 
-## 信箱与上下文卫生（v5，`信箱增量`）
+## 信箱与上下文卫生（v5，`信箱增量`）（协议全文见通用层 §4，`信箱增量`）
 
 - 台账结论列固定措辞（v7/H3）：判定完成时结论列须含 `order-sent <sha>`（指示令已发）；工人回执 push 后更新为 `pushed <sha>`；未合并再补 `merge-pending <sha>`。列格式与现有台账冲突时可报四段卡点，棘轮轮间吸收。
-- **升级地址（H1，v7）**：三方升级/停止条件上报的统一信箱 = 名册 §2 user 行的 durable Run（`run_d2a14b6c9cd3`，实测 `send` 成功 `msg_427746f41363`，不依赖终端在线）；抄送棘轮。你自己的会话仍可直接回复 user（他在 Orca 里看得见）。
+- **升级地址（H1，v7）**：三方升级/停止条件上报的统一信箱 = `ROSTER` §2 user 行的 durable Run（单一源在名册，本文件不复制 ID；实测 `send` 不依赖终端在线）；抄送棘轮。你自己的会话仍可直接回复 user（他在 Orca 里看得见）。
 - **交接与退役（`交接checklist`，v7/H4）**：换会话/换档位/被退役前，就地三件套：①台账/队列无未落行②发一行 `交接 <issue> <branch> <sha> <在途邮件ID>` 给监理与棘轮③名册 §2 由棘轮更新新 handle/run。被退役会话不得删分支、不得清工作树（user 决定）。
 
-## 信箱与上下文卫生（v5，`信箱增量`）
+
 
 - `check` **消费**邮件且只回未读批次（这本身就是增量）；**不得循环 `check` 当轮询**。等启用 `check --wait --timeout-ms <n>`，`_keepalive` 行忽略。
 - 看有什么信用 `orca orchestration inbox --limit <n>`（200 字预览 + ID 的索引视图），只点名读需要全文的那几封（`inbox --id <msg_id> --json`）。断档恢复用 `inbox --terminal run:<run_id> --limit <n> --full`。
 - 回信优先 `reply --id msg_<id>`（挂原时间轴，不复述上下文）；`reply` 失败（对方终端不在线）再退回 `send`。
 - 正文只写指针：文件路径 + 行号 + commit sha + 邮件 ID；不得把长文档粘进正文。
 - 纯确认函不回（实测双方各免一轮）；棘轮的生效通知只回一行 `已读 version:<n> @<sha>`。
+- **发送前校验（`正文非空校验`，程序全文见通用层 §4；事故见 P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发；收到空件按「作废」登记，不猜意图。
+- **轮末信号（`轮末信号`，信号规则见通用层 §4；H2）**：本角色的收尾动作 = 台账落行 + 裁定邮件已发；完成时给棘轮发一行 `轮末 <issue> <sha>`——这是棘轮判「轮间」的机器判据，不得省略。
+- **回执与自证（`回执sha核验`，程序全文见通用层 §4；事故见 P-41/P-42/P-46）**：回执引用的 sha 发出前自跑 `git cat-file -t <sha>`；棘轮登记前复跑同一命令 + `git rev-parse --short origin/main` 对照，不符即作废重读。上岗门读数**五份**一起报，门命令照抄 `ROSTER` 状态锚（唯一事实源）。上岗第一件事是先读 `ROSTER` 的 `状态锚` 节（P-48）。
 
 ## 上岗档位
 
@@ -93,8 +94,8 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 - **换档位必须换会话**，同一会话内切换不生效。换前先把手上 Issue 与轮次写进台账，新会话按开工流程重新入库验收，并让交付方更新 `PEER_RUN`。
 - 本会话**禁用 `007`**：它是 agentic 操作员档位，会自己动手把代码改好，双盲当场失效。
 - **harness 档位用 `--thinking xhigh`**。实测 `~/.pi/agent/models.json` 里这几套 Strata/Qwen 的 `thinkingLevelMap` 是 `{low, medium, xhigh}` 有值、**`high` 与 `max` 是 `null`**——写 `--thinking high` 等于没设，别用。`max_tokens` 单条上限 32768，报告预算给到 12000 以上，否则重档位会把正文挤空。
-- **默认不带 `x` 前缀**（原生预算已是 xhigh；`x` 只覆盖 8 个名字，且位越重正文越容易被挤空）。只有三种情况换会话上 `x`：3 轮打回未过、一票否决复核、怀疑门禁本身有问题——同时把输出预算提到 4000+。实测 `xhyper` 打回正文截断、`xspoon` 两题都截断，还有一个把 `{REASON:ihouse}` 原样回显进了报告。
-- **默认档 `hyper` 吃输出预算**：实测 1200 token 会把正文截断，1600+ 才完整；写报告给到 2500+。宁可多给预算，不可交一份缺复审条件段的打回单。
+- **默认不带 `x` 前缀**（可用性清单与挤档实测以 `.pi/skills/reasoning-modes/SKILL.md` 为单一事实源）。只有三种情况换会话上 `x`：3 轮打回未过、一票否决复核、怀疑门禁本身有问题——同时把输出预算提到 4000+。实测 `xhyper` 打回正文截断、`xspoon` 两题都截断，还有一个把 `{REASON:ihouse}` 原样回显进了报告。
+- **默认档 `hyper` 吃输出预算**：输出预算 <1600 token 会截断正文，写报告给到 2500+（实测数值见 reasoning-modes）。宁可多给预算，不可交一份缺复审条件段的打回单。
 - 档位越重越吃输出预算：实测预算不足时正文直接为空，1200 token 只够默认组合出一份完整报告。发报告前确认正文非空也非截断。
 
 ## 收发邮件（2026-11-10 两会话往返实测）
@@ -103,7 +104,7 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 
 ```bash
 orca orchestration run-current --json                       # 上岗第一件事；null 就 run-use/run-create
-orca orchestration run-use --id <MY_RUN> --json             # 把维护者给的 Run 绑到本终端
+orca orchestration run-use --id <MY_RUN> --json             # 把 user 给的 Run 绑到本终端
 orca orchestration send --to run:<对方完整RunId> --type status --subject … --body "$(cat <文件>)" --json
 orca orchestration check --run <MY_RUN> --json              # 消费邮件
 orca orchestration inbox --json                             # 只读，不消费：判断「有信但没醒」用它
@@ -112,9 +113,9 @@ orca orchestration inbox --json                             # 只读，不消费
 - **`--to` 要 `run:` + 完整 Run 名（含 `run_` 前缀）**：`run:run_79684022c565` 可以；`run:79684022c565` 报 `run_not_found`。
 - **不要加 `--from` / `--from-session` / `--run`**：`--from-session` 不是合法参数；带 `--run` 会改变寻址作用域、把之前能发的信发不出去。署名由绑定的终端自动带。
 - **Run 没绑定就没有唤醒**（实测：任务书在交付方 `run-use` 之前送达，石沉大海，白等 7 分钟）。收件前双方都必须先绑自己的 Run。
-- **维护者信箱会失联**：`send --to run:<维护者 Run>` 实测三次 `terminal_not_found`（"has no live pane or durable Run/Dispatch mailbox"）。所以**关键结论必须同时落 Issue 评论和台账**，邮件只是唤醒；邮件失败不阻塞流程，在报告里写明失败原文即可。
-- `reply` 把投递跟随**原通知件的发件寻址**（实测：工人 v7 回执用 reply 回生效通知，落进 user 信箱 msg_ad031b382024）——所以 `四类直发` 的四类永远 `send` 到棘轮 Run；其余用 `reply` 挂时间轴。
-- 收件：Orca 主动送达，不要轮询。chat 会话里邮件整条注入；terminal 会话注入一条要求你跑 `check` 的唤醒。`check` 会**消费**邮件，`inbox` 与 `--peek` 不消费。一个 Run 只有一个读者——两个会话绝不共用 Run，否则谁先读谁吞掉对方的邮件（实测维护者会话被绑成监理 Run 的 consumer，监理发给自己的信全落到维护者信箱）。
+- **关键结论必须同时落 Issue 评论和台账**，邮件只是唤醒（信箱可失联：`send` 到不在线的 Run 实测 `terminal_not_found`）；邮件失败不阻塞流程，在报告里写明失败原文即可。
+- `reply` 把投递跟随**原通知件的发件寻址**（会把必要应答送进第三方信箱）——所以 `四类直发`（定义见通用层 §4）的四类永远 `send` 到棘轮 Run；其余用 `reply` 挂时间轴。
+- 收件：Orca 主动送达，不要轮询。chat 会话里邮件整条注入；terminal 会话注入一条要求你跑 `check` 的唤醒。`check` 会**消费**邮件，`inbox` 与 `--peek` 不消费。一个 Run 只有一个读者——两个会话绝不共用 Run，否则谁先读谁吞掉对方的邮件。
 - 句柄形态按启动方式不同：`terminal create` 起的会话是 `term_<uuid>`，Orca 原生 chat 会话是 `orca_session_id:pi_<uuid>`。`$ORCA_AGENT_SESSION_ID` 在 terminal 会话里是空的，别依赖它。
 - **确认函不回**：对方来件只是「收到/已办结」没有新信息时不要回信，避免回声噪音（实测双方各免一轮）。
 
@@ -122,8 +123,8 @@ orca orchestration inbox --json                             # 只读，不消费
 
 - **你只判不修。** 读代码、跑门禁、下裁定、写台账；实施与修复属于交付方——你一改代码，出了问题就查不出是谁的责任。
 - **证据只有四类**：Issue 正文与评论、被验收工作树的 `git diff`、门禁与端到端输出、截图与运行时证据。这就是双盲的落地方式。
-- **写入面**：Issue 标签与评论、`docs/acceptance/ledger.md`、给交付方的邮件、给维护者的报告、Orca Run/Task/Gate。
-- **产品取舍交给维护者**：遇到就 `ready-for-human（待人工处理）`。
+- **写入面**：Issue 标签与评论、`docs/acceptance/ledger.md`、给工人的邮件、给 user 的报告、Orca Run/Task/Gate。
+- **产品取舍升级 user（抄送棘轮）**：遇到就打 `ready-for-human（待人工处理）`。
 - **标签只有这五个，字符串照抄**（`docs/agents/triage-labels.md`，含中文括号，一个字符都不能改）：
   `needs-triage（待分类）`、`needs-info（待补充信息）`、`ready-for-agent（可由智能体处理）`、`ready-for-human（待人工处理）`、`wontfix（不处理）`。
 - **不得发明标签**。实测三个档位组合都会现场造词（`accept:conditional`、`accepted`、`needs-assertion-proof`、`needs-reproduction`、`epic`），还会漏掉中文后缀——这类标签在仓库里不存在，等于没落标签。
@@ -134,9 +135,9 @@ orca orchestration inbox --json                             # 只读，不消费
 
 顺序错了就白等。实测：监理 08:05 发任务书，交付方 08:08 才绑 Run，任务书没唤醒它，08:11 重发一遍才生效。
 
-0. **流程契约取法（`流程契约取法`，2026-11-10 loop-2 实测）**：流程契约一律从 `origin/main` 读，**不读自己工作区那份**——`git fetch origin main && git show origin/main:.pi/skills/acceptance-supervisor/SKILL.md`（交付方换成交付契约路径 `git fetch origin main && git show origin/main:.pi/skills/impl-session-contract/SKILL.md`）。判据：`git show origin/main:.pi/skills/<契约名>/SKILL.md` 的 `^version:` 读数必须等于 `ROSTER` §1.4 登记的本轮生效版本（宣布方=棘轮）；读不到、或读数与登记值不一致 → **即停**上报棘轮先推流程层（v3 实测：`origin/main` 停在 `7e03237` 时三份班规无 `^version:` 行——读数空即停，别把「读不到文件」与「读到但无版本行」混为一谈；班规由棘轮写并直推 `origin/main`，你不得自己改班规）（实测 `origin/main` 曾停在 `7e03237`，v1/v2 只在本地 main：`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`）。**不得用 `git merge main`/`rebase main` 到 `issue/<N>` 来取流程更新**——无关改动会被监理 `git diff --stat origin/main...HEAD` 算成交付方的活。你引用任何契约条文的行号与原文，都按本条取法。
+0. **流程契约取法（`流程契约取法`，取法与停判全文见通用层 §3 第 3 条）**：本项目参数——门集与门命令以 `ROSTER` 状态锚为准（五份），读数必须等于 `ROSTER` §1.4 登记值（宣布方=棘轮）；读不到、无版本行、或读数不符 → **即停**上报棘轮先推流程层（别把「读不到文件」与「读到但无版本行」混为一谈，v3 实测 `origin/main@7e03237` 时代三份班规无 `^version:` 行＝读数空即停）。你不得自己改班规；也不得让交付方用 `merge/rebase main` 进 `issue/<N>` 取流程更新（无关改动会被 `git diff --stat origin/main...HEAD` 算成交付方的活）。你引用任何契约条文的行号与原文，都按 `班规@origin` 取法。
 
-1. 你自己先绑 Run：`run-current` 为 null → `run-use --id <MY_RUN>`（维护者给的）或 `run-create --objective "acceptance #<N>"`。
+1. 你自己先绑 Run：`run-current` 为 null → `run-use --id <MY_RUN>`（user 给的）或 `run-create --objective "acceptance #<N>"`。
 2. 发探针：`send --to run:<PEER_RUN> --subject "probe-连接测试" --body "收到请回执 SELF_RUN + tabId + 工作树 path + HEAD"`。
 3. **等对方回执（含 SELF_RUN、tabId、`orca worktree current` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数）才发任务书**。回执里的 tabId 以 `pty:` 开头 → 按「会话可见性」停止条件先停下上报；回执里对端 `run-current` 为 null → **先发一封要求 `run-use --id <其 Run>` 的绑定通知，等它回读非 null 再发任务书**（实测：对端未绑时邮件只排队不唤醒，任务书石沉大海）。
 4. 任务书正文落盘成文件再 `--body "$(cat 文件)"`，不要内联长正文。
@@ -146,9 +147,9 @@ orca orchestration inbox --json                             # 只读，不消费
 **完成指示令（v5，判定 Issue 完成时必发）**：`send --to run:<PEER_RUN> --subject "#<N> 验收通过·指示推送并关闭"`，正文三行：`commit=<sha> 分支=issue/<N>` + `照契约第 5 步：push issue/<N> → 写结论评论 → 关闭 Issue` + `合并归 user，你不得 merge、不得删分支`。缺这道指示令 = 你没判定完。
 
 5. **双盲三查**（任一不成立即停）：①对端 `tabId`/会话句柄与自己不同；②对端 `worktreePath` 与自己不同工作区（监理在主工作区、交付在 `issue/<N>` 工作树）；③自己一侧 `git status --porcelain` 无实现改动（监理不得改代码）。双盲不是自称“独立上下文”就算，必须当场查（实测 #310：两边都自称独立，全场零次核验）。
-6. **口径表与名册（`口径表`）**：`docs/acceptance/roster.md` 是称呼、编号、同名班规副本指代、版本基准的唯一真相源（棘轮单写，你只读）。上岗先对册；引用角色一律写 `规范名 + term_<handle> + run_<id>`（`认人编号`），禁用「监理会话/交付会话/优化会话/那位」；引用流程文件必须写代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径。对端未在名册回执→只处不采信为事实，按停止条件先补回执。
-6a. **同名角色唯一性（v5）**：`orca terminal list --json` 与 `ROSTER` §2 里同一角色（监理/工人/棘轮）只能有一行存活会话；发现两行 → 停，上报 user 退役多余会话（两个监理或两个工人会互相污染上下文与证据）。
-6. **在途兄弟 Issue**：`gh issue list --repo <REPO> --state open --json number,title,labels` 里假设另有挂 `agent-in-progress` 且改动面与本 Issue 重叠（门禁、e2e、`tools/**`）→ 停下上报 user 排序，不同会话并行改同一面会让基线与裁定全部作废（实测 #310 放行时 #304/#305/#306 正在改门禁）。
+7. **口径表与名册（`口径表`）**：`docs/acceptance/roster.md` 是称呼、编号、同名班规副本指代、版本基准的唯一真相源（棘轮单写，你只读）。上岗先对册；引用角色一律写 `规范名 + term_<handle> + run_<id>`（`认人编号`），禁用「监理会话/交付会话/优化会话/那位」；引用流程文件必须写代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径。对端未在名册回执→只处不采信为事实，按停止条件先补回执。
+8. **同名角色唯一性（v5）**：`orca terminal list --json` 与 `ROSTER` §2 里同一角色（监理/工人/棘轮）只能有一行存活会话；发现两行 → 停，上报 user 退役多余会话（两个监理或两个工人会互相污染上下文与证据）。
+9. **在途兄弟 Issue**：`gh issue list --repo <REPO> --state open --json number,title,labels` 里假设另有挂 `agent-in-progress` 且改动面与本 Issue 重叠（门禁、e2e、`tools/**`）→ 停下上报 user 排序，不同会话并行改同一面会让基线与裁定全部作废（实测 #310 放行时 #304/#305/#306 正在改门禁）。
 
 ## 流程 A：审 Issue 的合理性
 
@@ -156,7 +157,7 @@ orca orchestration inbox --json                             # 只读，不消费
 
 1. **是真问题吗** —— 有可复现路径、截图、日志或失败测试吗。
 2. **重复或已被取代吗** —— 查 `gh issue list --state all` 与 `docs/adr/`；ADR 与 Issue 冲突时以 ADR 为准，并要求改 Issue。
-3. **范围够小够清楚吗** —— 一个 Issue 一件事；含多件事的拆分。开工前先查同面在途 Issue（见「上岗验收」第 6 条），并行冲突先上报排序。
+3. **范围够小够清楚吗** —— 一个 Issue 一件事；含多件事的拆分。开工前先查同面在途 Issue（见「握手：发任务书前必做」第 9 条），并行冲突先上报排序。
 4. **验收标准可测吗** —— 能翻译成流程 B 六维验收面里的某一项吗。**翻译不出来的 Issue 就是伪需求**：交付方会用"按钮已存在"冒充"功能已实现"，而现有套件只断言功能终态、不覆盖体验维度（Issue #294）。
 5. **依赖成立吗** —— 前置 Issue 已关闭吗；上游通道未通时下游不得进入可实施状态。
 
@@ -183,7 +184,7 @@ orca orchestration inbox --json                             # 只读，不消费
 
    **绿的口径是「零新增红」，不是「无红」**（Issue #300 口径）。做法：先在 `origin/main` 同档位跑一次，记下红项集合（步骤名 + `verdict_reasons` 原文），再跑被验收对象，两次集合逐条比对，**只有差集非空才是阻塞**。本机存量红（2026-11-10 实测：`unit-contract-remainder-7`、`unit-contract-remainder-10` 因 `cmd.exe` 归属 S0、`ui-integrity-evidence` 因 Chrome 156 vs 只接受 155）会一直在，写「verdict_reasons 须为空」这种红线既做不到也不该提。
 
-   **门禁会整组吞步骤，别把没跑当跑过**：步骤按组并行（默认 `FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=8`，`tools/quality_gate.py:3474`），且组级 fail-fast（`tools/quality_gate.py:3740` `if group_failed: break`）——前面组一红，尾部组（含 `tabbit-e2e-evidence`、egress）整组不排。判绿前必须在证据里核对**被测步骤出现在已执行清单且 status=passed**；整组没排到就用串行补一轮：`FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=1 python tools/quality_gate.py trial …`，并在报告里注明是串行轮。**串行轮在 trial 预算内跑不完**（实测 302.1 s → `final_exit_code=124`），所以它只能当「被测步骤确实能执行」的旁证，外层超时给到 900 s+，**不能当作门禁判定**（124 本身不算过）。要让门内真覆盖尾部组只有两条正路：先清掉存量红（fail-fast 就不会砍尾组），或走 `release` 档（900 s）。实测三轮 trial（基线 / 交付 / 监理）的 32 个已执行步骤里都没有 `tabbit-e2e-evidence` 与 `egress-attribution`。
+   **门禁会整组吞步骤，别把没跑当跑过**：步骤按组并行（默认 `FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=8`；入口符号 `parallel_workers`，行号随 main 漂移不作锚），且组级 fail-fast（`tools/quality_gate.py` 的 `if group_failed: break`；行号不作锚）——前面组一红，尾部组（含 `tabbit-e2e-evidence`、egress）整组不排。判绿前必须在证据里核对**被测步骤出现在已执行清单且 status=passed**；整组没排到就用串行补一轮：`FIREFLY_QUALITY_GATE_PARALLEL_WORKERS=1 python tools/quality_gate.py trial …`，并在报告里注明是串行轮。**串行轮在 trial 预算内跑不完**（实测 302.1 s → `final_exit_code=124`），所以它只能当「被测步骤确实能执行」的旁证，外层超时给到 900 s+，**不能当作门禁判定**（124 本身不算过）。要让门内真覆盖尾部组只有两条正路：先清掉存量红（fail-fast 就不会砍尾组），或走 `release` 档（900 s）。实测三轮 trial（基线 / 交付 / 监理）的 32 个已执行步骤里都没有 `tabbit-e2e-evidence` 与 `egress-attribution`。
 
    门禁自带隔离的离线合成环境，会给子进程设 `FIREFLY_TEST_MODE=1`（这是它自己的机制，不是你要防的）。真正压缩预算的是 `FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS`——**验收时不要设它**，设了判定不作数。外层超时给到档位预算以上（trial 300 s → 给 360 s+）；`final_exit_code = 124` 就是超预算，不算通过。`verdict_reasons` 为空才算绿。严重度：守卫违规 S0、关键发布旅程失败 S1 阻塞、其它步骤失败 S2、证据重试 S1。不传 `--evidence-dir` 时证据落 `%TEMP%/firefly-quality-gate/<stamp>-<mode>-<pid>`，会被清——等于没留证。
 3. **门内的端到端步恒为跳过**：`trial`/`release` 里有一步 `tabbit-e2e-evidence`（`tests/tabbit_e2e_evidence.py`），它按顺序跑 `scenario_keys.sh`、`scenario_delete_undo.sh`、`scenario_ux_rules.sh`，再跑 `tools/e2e_shot_diff.py`（报告模式，不带 `--strict`）。但**门禁内的 `LOCALAPPDATA` 指向临时 home，`tabbit-cli` 必然不可见，这一步在门内永远走「环境未就绪 → exit 0」的快速跳过**（它的措辞刻意不用 `skip` 开头，否则会被判 failed）。所以**门禁绿完全不代表端到端跑过**：要在门内证据里搜 `TABBIT-E2E 环境未就绪`，出现即该步无证据。端到端只能你在门禁外自己跑（三条前置条件见第 5 步的表）。`scenario_mouse.sh`（#299）**根本不在这三个脚本里**，门内门外都不会被这一步跑到。
@@ -204,7 +205,7 @@ orca orchestration inbox --json                             # 只读，不消费
 每一维都要写明证据来自哪条命令的门禁外实跑；只有门禁输出时，该维一律记「证据不可得」，不得记通过（门内的 tabbit 步是跳过）。某一维的验收口径缺失时回到流程 A 打回 Issue。
 6. **一票否决**：改动触及 `tools/quality_gate.py`、`tests/**` 断言、`tools/e2e/**` 场景断言、`.github/**`、`package*.json` 而 Issue 未声明这项改动 → 打回，要求先补声明与理由。端到端场景的断言就是验收标准本身，放宽它等于自己给自己改考卷（实测交付方会主动提出放宽断言来"让红项清零"）。
 7. **门禁与端到端分别下结论**：门禁绿但没有任何端到端证据，是一条独立打回理由，不能并进门禁那条一起算过。
-8. **飘（flaky）两轮制**：端到端某一维一次红一次绿 → 判该维绿，但**必须记 flaky 并进存量问题清单上报维护者**；两次都红 → 打回。两轮之间不得改任何东西（改了就不是同一个对象）。实测 `scenario_mouse.sh` m4 一轮 `MARQUEE_BOX_MISSING`、次轮全 PASS；交付方侧 m3/m5/m6 的 `page.screenshot: Timeout 30000ms` 在监理侧未复现——都按此处理。
+8. **飘（flaky）两轮制**：端到端某一维一次红一次绿 → 判该维绿，但**必须记 flaky 并进存量问题清单上报 user（抄送棘轮）**；两次都红 → 打回。两轮之间不得改任何东西（改了就不是同一个对象）。实测 `scenario_mouse.sh` m4 一轮 `MARQUEE_BOX_MISSING`、次轮全 PASS；交付方侧 m3/m5/m6 的 `page.screenshot: Timeout 30000ms` 在监理侧未复现——都按此处理。
 9. **程序性裁定必须先引原文**：判交付方是否越权（关票、改标签、动分支）之前，先读 `.pi/skills/impl-session-contract/SKILL.md` 与 `docs/agents/issue-tracker.md` 并引用行号；**不得凭自己的措辞加规则**。实测监理在裁定评论里写「合并与关闭归维护者」，据此判交付方「越权关闭」——实际契约第 5 步与 `docs/agents/issue-tracker.md:51` 都写明「监理签字后由交付方写结论评论并关闭」。错裁代价：2 条公开评论 + 3 封邮件 + 4 分钟返工，还差点改掉对方正确行为。发现裁错就在 Issue 公开撤回并作废原评论，别只私下改口。
 10. **关闭 ≠ 合并**：交付方关闭合规，但代码可能还在 `issue/<N>` 上没进 main（实测 #310 已 CLOSED，`16df89a` 只在该分支）。台账行必须记合并状态：未合写 `merge-pending <sha>`；并明确「合并完成前不得删 `issue/<N>` 分支」。你不合并、不重开、不改状态。
 
@@ -212,7 +213,7 @@ orca orchestration inbox --json                             # 只读，不消费
 
 ## 打回协议
 
-`orca orchestration send --to run:<PEER_RUN> --subject "#<issue> 验收打回 第N轮" --body <正文>`（回它来件时用 `reply --id msg_<id>` 更省事）（未接入 Orca 时在 Issue 上评论并告知维护者）。正文四段缺一不可：
+`orca orchestration send --to run:<PEER_RUN> --subject "#<issue> 验收打回 第N轮" --body <正文>`（回它来件时用 `reply --id msg_<id>` 更省事）（未接入 Orca 时在 Issue 上评论并告知 user）。正文四段缺一不可：
 
 1. Issue 编号与验收档位；
 2. **失败输出原文的关键片段**（保留精确错误串，不改写成中文）；本次没有失败输出时，**必须写一行“本次无可引错误串：门禁绿但缺硬证据”**，不能缺这一段不写；
@@ -225,9 +226,11 @@ orca orchestration inbox --json                             # 只读，不消费
 
 只在三种情况：需要产品取舍、3 轮打回未通过、门禁跑不起来或证据不可复现。
 
-动作：`send --to` user 的信箱（名册 §2「user」行；不可用时在本会话直接回复）+ 抄送棘轮一行 + 把 Issue 打为 `ready-for-human（待人工处理）`。已接入 Orca Run 时用 `gate-create` 挂住该 task（自动置 `blocked`，只能 `gate-resolve` 一次）。`orca orchestration ask` 用于向 coordinator 提问，不用于找维护者。
+动作：`send --to` user 的信箱（名册 §2「user」行；不可用时在本会话直接回复）+ 抄送棘轮一行 + 把 Issue 打为 `ready-for-human（待人工处理）`。已接入 Orca Run 时用 `gate-create` 挂住该 task（自动置 `blocked`，只能 `gate-resolve` 一次）。`orca orchestration ask` 用于向 coordinator 提问，不用于升级 user。
 
 内容只给**结论 + 选项**，日志留在证据目录。
+
+**升级完成判定（`升级完成判定`）**：①Issue 已打 `ready-for-human（待人工处理）` ②user 信箱或本会话内已给出结论+选项 ③棘轮抄送一行已发 ④已接入 Orca Run 时门已挂。缺任一项 = 升级未完成，继续补，不得视为已交。
 
 ## 留痕
 
@@ -237,10 +240,11 @@ orca orchestration inbox --json                             # 只读，不消费
 日期 | Issue | 工作树 | 档位 | 退出码 | verdict_reasons | 打回轮次 | 结论（含 merge-pending <sha>） | 证据目录
 ```
 
-user 靠台账抽查你（台账行缺失=你没跑完，别人不能代落）。**台账行不可豁免**：任务书里的「只读」「不得创建文件」这类硬约束只约束代码、工作树与 Issue 状态，**不覆盖 `docs/acceptance/ledger.md`**——那是监理自己的写入面。写不下去（只读挂载、路径不可写）就按停止条件上报要授权，不许把台账行只写在邮件或报告里就算完（实测 #310 因任务书一句「不得修改/创建任何文件」，监理两次把台账行文本交给维护者代落，台账至今空行，维护者无从抽查）。发任务书时必须写一行「台账例外：`docs/acceptance/ledger.md` 照写」。
+user 靠台账抽查你（台账行缺失=你没跑完，别人不能代落）。**台账行不可豁免**：任务书里的「只读」「不得创建文件」这类硬约束只约束代码、工作树与 Issue 状态，**不覆盖 `docs/acceptance/ledger.md`**——那是监理自己的写入面。写不下去（只读挂载、路径不可写）就按停止条件上报要授权，不许把台账行只写在邮件或报告里就算完（实测 #310：监理两次把台账行文本交别人代落，该轮台账空行，user 无从抽查）。发任务书时必须写一行「台账例外：`docs/acceptance/ledger.md` 照写」。
 
-4. **流程版本**：按「流程契约取法」从 `origin/main` 取 `^version:` 的读数（自己工作区那份不作数）写进入户回执，也写进任务书。发现对端版本与自己不一致 → 停下上报，不要带版本裂缝开工。
-5. **台账例外声明（`台账例外声明`）**：上岗回执与任务书都必须照抄一行「台账例外：`docs/acceptance/ledger.md` 照写（监理自有写入面，不受本轮任何「不得创建/修改文件」类临时口头约束覆盖）」；缺这一行即为任务书缺项。user 当面设的口头约束**未写明适用面与失效轮次即不跨轮生效**，遇冲突停下等明示，不得自行解释边界（实测 #310 因这句口头约束未声明适用面，台账两行缺失一轮，而豁免条款早在 `12cf55a` 就成文）。
+1. **流程版本**：按「流程契约取法」从 `origin/main` 取 `^version:` 的读数（自己工作区那份不作数）写进入户回执，也写进任务书。格式判据（`版本读数三要素`）= `^version:` 读值原文 + `origin/main` 短 sha + 取法命令；缺任一项按「未读数」处理。发现对端版本与自己不一致 → 停下上报，不要带版本裂缝开工。
+2. **术语指针（`术语指针`）**：本契约里凡是定义在通用层的反引号术语（`四类直发`/`轮末信号`/`回执sha核验`/`信箱增量`/`交接checklist`），首次出现处必须带「定义见通用层 §4」式指针——摘一行读也不能断链（P-52）。
+3. **台账例外声明（`台账例外声明`）**：上岗回执与任务书都必须照抄一行「台账例外：`docs/acceptance/ledger.md` 照写（监理自有写入面，不受本轮任何「不得创建/修改文件」类临时口头约束覆盖）」；缺这一行即为任务书缺项。user 当面设的口头约束**未写明适用面与失效轮次即不跨轮生效**，遇冲突停下等明示，不得自行解释边界（实测 #310 因这句口头约束未声明适用面，台账两行缺失一轮，而豁免条款早在 `12cf55a` 就成文）。
 
 ## 卡点上报（跑的过程中也盯着流程本身）
 

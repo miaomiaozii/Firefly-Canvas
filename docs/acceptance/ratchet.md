@@ -16,6 +16,7 @@
 | v7 | 2026-11-10 | P-43（空件误发，工人自报 msg_f789063434d9）+ H2/H3/H4（棘轮审查缺口，user m00893 批准「可上」）+ H1（user durable Run 代建 run_d2a14b6c9cd3） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 四行全 `version: 7`；`grep -c "正文非空校验" .pi/skills/acceptance-supervisor/SKILL.md` ≥1；`grep -c "轮末信号" .pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md` 三处 ≥1；`grep -c "交接checklist" .pi/skills/three-role-loop/SKILL.md` ≥1；`grep -c "run_d2a14b6c9cd3" docs/acceptance/roster.md` ≥1 | 无（只收紧） |
 | v8 | 2026-11-10 | P-44（reply 路由落错信箱，工人 v7 回执 msg_ad031b382024 实证）+ P-45（上架即兴次序致 non-fast-forward 两次，棘轮自查 verified）；user m00956 批准晋升 v8 | 复跑判据：四份班规 `^version:` 全 =8（上岗门 grep 四份）；`grep -c "四类直发" .pi/skills/acceptance-supervisor/SKILL.md .pi/skills/impl-session-contract/SKILL.md .pi/skills/process-optimizer/SKILL.md .pi/skills/three-role-loop/SKILL.md` 四文件均 ≥1；`grep -c "上架顺序" .pi/skills/process-optimizer/SKILL.md` ≥1 | 无（只收紧；`上架顺序` 把 P-34 四步扩为六步并禁即兴） |
 | v9 | 2026-11-10 | P-46（门集漏 reasoning-modes，工人 v8 回执附注 msg_9d23ad27d176 实证）+ P-48（状态锚，user m00991 提议）+ P-47（棘轮自查：check 消费+peek 抽样致回执漏报，verified） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 五行全 =9；`grep -c "状态锚" .pi/skills/process-optimizer/SKILL.md docs/acceptance/roster.md` 均 ≥1；`grep -c "五份" .pi/skills/acceptance-supervisor/SKILL.md .pi/skills/impl-session-contract/SKILL.md` 均 ≥1 | 无（只收紧；门集 4→5） |
+| v10 | 2026-11-10 | 吸收 v1 起首次「文档质量」审计（user m01075 授权）：两路只读子代理按 writing-great-skills 口径审五份班规（del_mwas2s17_6592 / del_mwas2ijf_24cd，自证 27B nvfp4 + xhigh）。P-49（委派未探凭据）、P-50（手传参数顶掉角色默认）、P-54（回归标记假阴性）、P-55（名册 §1.3 陈旧事实）、P-56（同一程序多契约逐字重述）当场吸收；审计员 B 的 P2 项 P-51/P-52/P-53 排队 v11 | 复跑判据：门集五份 `^version:` 全 =10（门命令见名册状态锚）；`grep -rlE -e 委派自证 -e 委派探针 -e 委派默认参数 .pi/skills` 命中 `process-optimizer/SKILL.md`；`grep -rlE -e 标记可命中 -e 班规单一源 .pi/skills` 非空；`grep -rlE -e 术语指针 .pi/skills` 命中监理契约；`grep -rlE -e 版本读数三要素 .pi/skills`、`grep -rlE -e 升级完成判定 .pi/skills`、`grep -rlE -e 门禁外映射 .pi/skills` 各非空；停止条件类护栏复跑（`grep -rlE -e "禁用 .007" .pi/skills`、`-e "不得发明标签" .pi/skills`、`-e "台账行不可豁免" .pi/skills`、`-e "永不对 .main. 用" .pi/skills`）四项均命中；新增回归前先跑标记可命中自检（P-54）。P2 排队项的可复跑回归将在 v11 落地时补 | 无放宽。去重属文本迁移（非规则放宽）：五份班规净变化 +108/-95 行，其中监理契约门命令全文与 sha 核验全文上收通用层 §4、门集名单上收名册状态锚、升级地址 ID 只留名册 §2；停止条件、一票否决、双盲、单写、台账不可豁免等硬护栏逐条复跑仍在位 |
 
 ## v4 回归标记（复跑：`grep -rlE -e <标记> .pi/skills docs/acceptance` + `python docs/acceptance/check_tables.py`，缺任一项即棘轮破损）
 
@@ -36,7 +37,7 @@
 | `收尾归属固定句` | `acceptance-supervisor/SKILL.md` |
 | `回读非 null` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `已完成运行` | `impl-session-contract/SKILL.md` |
-| `流程层必须推到 origin` | `process-optimizer/SKILL.md` |
+| `流程层发权`（v10 修标记：原标记名 `流程层必须推到 origin` 在正文里被反引号切成两段，递归 grep 长期零命中＝假阴性；复跑：`grep -rlE -e '流程层发权' .pi/skills` 须命中 `process-optimizer/SKILL.md`。改检测器不改规则，不属放宽） | `process-optimizer/SKILL.md`（实测 3 次命中，2026-11-10） |
 | `git show origin/main:` | 三个 skill |
 | `不得用 `git merge main`` | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `--help 核对`（v3 校准追加） | `impl-session-contract/SKILL.md` |
@@ -87,7 +88,7 @@
 复跑脚本（一条命令看全）：
 
 ```bash
-cd D:/Firefly-Canvas && for m in "version: 3" "流程契约取法" "即停" "收尾归属固定句" "回读非 null" "已完成运行" "流程层必须推到 origin" "git show origin/main:"; do printf '%-30s :: %s\n' "$m" "$(grep -rlE -- "$m" .pi/skills | tr '\n' ' ')"; done
+cd D:/Firefly-Canvas && for m in "version: 3" "流程契约取法" "即停" "收尾归属固定句" "回读非 null" "已完成运行" "流程层发权" "git show origin/main:"; do printf '%-30s :: %s\n' "$m" "$(grep -rlE -- "$m" .pi/skills | tr '\n' ' ')"; done
 # v1+v2 的 15 项标记（缺一即破损）：
 cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据逐条比对" "PARALLEL_WORKERS=1" "必带来源" "json comments" "卡点上报" "双盲三查" "在途兄弟 Issue" "上岗前置" "^version:" "流程优化者" "台账例外" "已执行"; do printf '%-24s :: %s\n' "$m" "$(grep -rlE -- "$m" .pi/skills AGENTS.md | tr '\n' ' ')"; done
 ```
@@ -100,6 +101,7 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 | loop-1（优化者上岗） | — | 未演练 | — | — | — | — | — | — | v1 待跑 |
 | loop-2（优化者上岗 v2，#310 轮间） | 2026-11-10 | 0（本轮未开新验收） | 0 | 5 / 1（P-15 P-17 P-18 P-19 pending；P-16 merged→P-15；P-14 unverified） | 未跑门禁（本轮不改代码） | 是（优化者≠监理≠交付：终端/工作区/Run 三条全独立；监理 tabId=cf524ca6-…、交付 tabId=816d78f2-…、我方 tabId=c0d9ff46-…） | 是（我方 tabId UUID、worktree current 有 path、terminal list 可按 handle 找回） | 0（只判定入队，未改契约） | v2（未改 skill，无版本递增） |
 | loop-3（v3 吸收轮，维护者放行 P-15/17/18/19） | 2026-11-10 | 0（未开验收；单写者自报更正 1 起见 P-22，不计打回） | 0（未触发；P-14 诱饵拦下，未吸收） | 4 吸收 + 1 当场修（P-20）+ 1 merged→P-05（P-21）；P-16 仍 merged→P-15；P-14 仍 unverified | 未跑门禁（本轮只改流程层） | 是（三方终端/工作区/Run 仍全独立；本侧 `git status` 改动仅 `.pi/skills/**` 与 `docs/acceptance/**`） | 是（同 loop-2 读数） | 9 项 v3 grep 标记 + 复跑脚本已扩（v1+v2 15 项 + v3 8 项） | v2→v3（三份 skill `version: 3`） |
+| loop-8（v10 班规质量审计轮，无产品 Issue） | 2026-11-10 | 0（本轮未开验收） | 0（未触发；P-49/P-50 为自查入队） | 6 / 0（P-51..P-56） | 不适用（本轮零产品代码零门禁） | 双盲成立：审计子代理只读、未参与被审文本写作；子代理自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh | 本会话 Orca 可见（工作树由 Orca 建）；两路子代理后台可接受 | 4 项（`委派自证`/`标记可命中`/`班规单一源`/`术语指针`）+ 3 项完成判据（`版本读数三要素`/`升级完成判定`/`门禁外映射`） | v10（门 sha 待上架回读） |
 
 ## v6 轮事件流（2026-11-10，棘轮）
 
