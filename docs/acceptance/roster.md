@@ -10,11 +10,14 @@
 | 规范名（正文只用这个） | 唯一别名 | 职责边界（一句话） | 不得做 |
 |---|---|---|---|
 | 流程优化者 | 棘轮 | 收卡点、判定入队、把教训固化成可复跑的检查或工具 | 不做验收判定、不改产品代码与测试、不落 triage 标签、不关 Issue、不推 main |
-| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e` | `run_12b3ab55bf53`（verified：对端自证 `run-current` + `run-show --id run_12b3ab55bf53 --full` 的 `coordinator_handle=term_6d6c2fb9…` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（回执读数；本地 main 会被他会话推进） | 从 `班规@origin` 取：文件存在但 **无 version 行**（`grep -n "^version:"` rc=1）——与棘轮自测一致，见 §3.2 | `docs/acceptance/ledger.md`；GitHub Issue 评论（裁定/记录文书）；证据目录 `D:/Firefly-Canvas-evidence/**`；`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、merge/push `main`、改被验工作树 git 状态、triage 标签以外的 Issue 状态关闭、代交付方写实现 | 回执 `msg_66beb330eb06`，2026-11-10，九项+A/B 齐 |
-| 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（terminal list 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --id run_79684022c565 --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | 从 `班规@origin` 取：**无 version 行**；对照 `班规@棘轮`（`git show origin/loop/ratchet:.pi/skills/impl-session-contract/SKILL.md`）→ `3:version: 3` | 票面白名单文件（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）；`git commit`（仅 `issue/310`）；Issue 收尾序列评论；证据目录 `D:/Firefly-Canvas-evidence/*`；编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；merge/rebase/push `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248`（三段），2026-11-10 |
+| 监理 | — | 验收与裁定，落台账与 Issue 评论 | 产品代码与测试、流程层文件、推 `main`（产品代码与测试）；台账不可豁免 |
+| 交付方 | — | 按票面白名单实现并自证证据 | 一票否决面、流程层文件、`ledger.md`、推 `main` |
 | 维护者 | 无别名 | 发任务书、裁定口径解释权、合并与发布 `main` | 不代写监理台账 |
 
 不得用的称呼：「优化会话」「监理会话」「交付会话」「那位」「你们这边」——这些词在归因时产生歧义（实测 P-06 归因两轮错记即源于此）。**认人只认 `HANDLE` 与 `SELF_RUN` 编号（`认人认编号`），不认称呼。**
+
+> 「不得做」里凡写「推 `main`」均特指**产品代码与测试**（含 merge 进 `main`）。流程层（`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`）由棘轮按 `流程层发权` 直推 `origin/main`；监理写 `docs/acceptance/ledger.md` 并按台账停止条件自推 `origin/main` 属其职权（本轮 `4b3305e` 实测已发生且合规）。措辞口径记入 pain.md **P-33**。
+
 
 ### 1.2 编号与 ID 的规范写法
 
@@ -40,17 +43,20 @@
 
 ### 1.4 版本基准
 
-- 棘轮侧读数：**v3**（三份 skill `version: 3`）。
-- 本轮基准值 = **待维护者宣布**（`即停` 判据的比对目标）。三方上岗回执的 `SKILL_VERSION` 必须写从 `班规@origin` 实际取到的读数或命令报错原文，**不得填 v3**。
+- 本轮基准值 = **4**（依维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4，见 `版本门读数=宣布值`）。
+- 棘轮自测（`origin/main@c53f877`，当场原文）：三份班规 `grep -n "^version:"` → `acceptance-supervisor 3:version: 4` / `impl-session-contract 3:version: 4` / `process-optimizer 4:version: 4`；`git rev-parse --short origin/main` = `c53f877`。
+- 监理独立复读：msg_71852e372417（同 sha、三份全 4）；交付方四步复读：msg_d52bb7e1a11b（同 sha、`3:version: 4`）。三方读数互证一致 → **版本门闭合**。
+- 上岗版本门判据：**读数等于维护者宣布值**，不得填自报值、不得填「读过就行」。
+- 注：本轮 3→4 **没有**维护者的新「宣布 5」指令；若下轮再改班规，必须先有维护者宣布的新值，否则版本门会自我打脸（`版本门读数=宣布值`）。
 
 ## 2. 身份登记册
 
 | ROLE | HANDLE | SELF_RUN | TAB_ID | WORKTREE+分支+HEAD | SKILL_VERSION | 自有写入面 | 禁止面 | 回执时间与来源 |
 |---|---|---|---|---|---|---|---|---|
-| 流程优化者（棘轮） | `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` | `run_c40189b45d94` | `c0d9ff46-eaf7-4959-a1ca-156c392b4850` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` @ `loop/ratchet` @ `e66f850` | 3（自己写的，非从 `班规@origin` 取） | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md` | 产品代码与测试、`ledger.md`、triage 标签、Issue 状态、`main` | 自报，2026-11-10 |
-| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（旧邮件读数，**待回执确认**） | `run_12b3ab55bf53`（同上） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（同上） | `D:/Firefly-Canvas` @ `main` @ 读数待回执 | 待回执（要求从 `班规@origin` 取） | `docs/acceptance/ledger.md` | 产品代码与测试、`pain.md`、`roster.md`、`main` | **待回执**（已发 msg_c7b171dfb7c9） |
-| 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（旧邮件读数，**待回执确认**） | `run_79684022c565`（同上） | `816d78f2-…`（同上） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a`（待回执） | 待回执 | 产品代码与测试、Issue 评论（按任务书） | `pain.md`、`ledger.md`、`roster.md`、`.pi/skills/**`、`main` | **待回执**（已发 msg_84e9ac23e3c2） |
-| 维护者 | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（pi chat 内嵌会话，无 tabId） | `run_b203fe4d1bef`（旧读数） | 不适用 | `D:/Firefly-Canvas` @ `main`（待确认） | 不适用（发布方） | `main`（合并与推送）、任务书 | `pain.md`、`roster.md`（走棘轮入册） | 待回执（msg_34d36831998f） |
+| 流程优化者（棘轮） | `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` | `run_c40189b45d94` | `c0d9ff46-eaf7-4959-a1ca-156c392b4850` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` @ `loop/ratchet` @ 见本文件最新 commit | 自写方（不作上岗门读数）；上架自测 = `origin/main@c53f877` → `version: 4` x3 | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`（流程层，可直推 `origin/main`，`流程层发权`） | 产品代码与测试（绝对禁推）、`ledger.md`、triage 标签、Issue 状态、推 `main`（产品代码与测试） | 自报 2026-11-10；上架回执带读数+sha |
+| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（verified） | `run_12b3ab55bf53`（verified：`run-show --full` 的 `coordinator_handle` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（本地读数；`origin/main` 已到 `4b3305e`） | `origin/main@c53f877` → `version: 4` x3（msg_71852e372417，**门过**） | `docs/acceptance/ledger.md`（含按停止条件自推 `origin/main`，实测 `4b3305e`）、Issue 评论、`D:/Firefly-Canvas-evidence/**`、`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、改被验工作树 git 状态、推 `main`（产品代码与测试）、代交付方写实现、关闭 Issue 以外的状态操作 | 回执 `msg_66beb330eb06` + 版本门 `msg_71852e372417` + 台账自落 `msg_b36245b65bb8` |
+| 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（verified，terminal 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | `origin/main@c53f877` → `3:version: 4`（msg_d52bb7e1a11b，**门过**） | 票面白名单（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）、`git commit`（仅 `issue/310`）、Issue 收尾评论、证据目录、编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；`ledger.md`；推/merge `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执三段 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248` + 版本门 `msg_d52bb7e1a11b` |
+| 维护者 | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（pi chat 内嵌会话，无 tabId） | `run_b203fe4d1bef` | 不适用 | `D:/Firefly-Canvas` @ `main` | 不适用（宣布方：本轮宣布值=4） | `main`（合并与发布）、`AGENTS.md`、任务书、流程版本号宣布与发权收权 | `pain.md`、`roster.md`、三份班规正文（走棘轮入册）、不代写监理台账 | 发权原话（m00568）：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」 |
 
 ### 采信规则
 
@@ -184,3 +190,24 @@ flowchart LR
 - 上架回执正文必须带两样：`grep "^version:"` 在 `origin/main` 上的读数原文 + 上架 sha。缺一视为未上架。
 - 本轮实测（v4 上架，棘轮回读）：`git rev-parse --short origin/main` = **`6c5e546`**；`MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md' | grep "^version:"` → 三行全 `version: 4`；`git ls-tree -r --name-only origin/main | grep docs/acceptance` → `ledger.md pain.md ratchet.md roster.md`。生效三判据全绿（P-32 结案）。
 
+## 6. v4 版本门闭合与台账自落（2026-11-10 loop-3）
+
+### 6.1 版本门闭合（`版本门读数=宣布值`）
+
+| 方 | 当场读数（原文摘要） | 所在 sha | 判定 |
+|---|---|---|---|
+| 监理 | 三份班规 `grep -n "^version:"` 全 = `version: 4` | `origin/main=c53f877` | 门过（msg_71852e372417） |
+| 交付方 | 四步复读：`git rev-parse --short origin/main` = `c53f877`；`grep -n '^version:'` → `3:version: 4`；`ls-tree` 四台账在册 | 同上 | 门过（msg_d52bb7e1a11b） |
+| 棘轮 | `git fetch origin main` → `c53f877`；三份分别 `3:version: 4`/`3:version: 4`/`4:version: 4` | 同上 | 上架方自测 |
+
+三方读数互证一致 → 即停解除，本轮版本基准 = **4**。
+
+### 6.2 台账停止条件解除（监理自落，合规）
+
+- 监理以 plumbing 直建 commit `4b3305e`（`c53f877..4b3305e` 已推 `origin/main`），**未动被验树工作区与 HEAD，不含任何产品文件**（棘轮复核：`git show --stat 4b3305e` → 仅 `docs/acceptance/ledger.md | 3 +++`）。
+- 行内容九列：`2026-11-10 | #310 | D:/ff-wt/w310 | 验收第二轮 | 0 | none | 0 | PASS_WITH_NOTES | D:/Firefly-Canvas-evidence/run_2026-11-10T09-10-15Z`；表下注记含「(v3) 为棘轮误标，v4 上架后更正」半句。
+- 结论：`ledger.md` 是监理自有写入面，schema 归监理定，棘轮不裁定不代笔；监理自推 `origin/main` 属台账停止条件要求的动作，不属「推 main」禁区（见 P-33）。
+
+### 6.3 P-33（禁止面措辞口径，已入 pain.md）
+
+「推 `main`」这种笼统写法把两种行为混成一件：产品代码与测试推 `main`（绝对禁止）与流程层/台账按各自职权推 `origin/main`（本轮已实测发生且合规）。名册 §1.1、§2 各行已改为「推 `main`（产品代码与测试）」。三份班规正文的同步改动必须 bump `version: 4 → 5`（`版本门读数=宣布值`），因此**不在本轮轮内推**：等维护者宣布新值后于轮间生效（轮内冻结）。
