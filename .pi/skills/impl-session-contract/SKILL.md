@@ -1,6 +1,6 @@
 ---
 name: impl-session-contract
-version: 6
+version: 7
 disable-model-invocation: true
 description: 工人（旧称交付方）与监理的交接协议。Use when 准备提交一次交付、收到 subject 含「验收打回」或「指示推送并关闭」的邮件、要关某个 Issue。
 ---
@@ -31,6 +31,10 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 5. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理完整 RunId（含 run_ 前缀）>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数），然后才等任务书。监理未收到回执不应发任务书。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
 
 5b. **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或版本读数≠名册登记值，该回执作废重读（实测 2026-11-10：v5 回执报 `origin/main@026038d`，该对象在仓库不存在，还引了不存在的「§4.1」）。上岗门读数四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
+
+5c. **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）。收到空件按作废处理，不猜对方意图。
+5d. **轮末信号（`轮末信号`，v7/H2）与升级地址（H1）**：本轮收尾完成（你：持指示令完成 push+关票，或本轮被叫停）时给棘轮发一行 `轮末 <issue> <sha>`；升级/停止条件上报统一信箱 = 名册 §2 user 行的 durable Run（`run_d2a14b6c9cd3`，实测不依赖终端在线），抄送棘轮。
+5e. **交接与退役（`交接checklist`，v7/H4）**：换会话/换档位/被退役前发一行 `交接 <issue> <branch> <sha> <在途邮件ID>` 给监理与棘轮；被退役会话不得删分支、不得清工作树（user 决定）。
 
 ## 上岗档位
 

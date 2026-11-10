@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 6
+version: 7
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -69,7 +69,15 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 
 认人认 handle，别认标题：`orca terminal rename` 会被 pi 自己的标题刷新覆盖（实测监理会话改名 `监理-310` 被改回 `π - Firefly-Canvas`）。
 
-- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或版本读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数必须四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
+- **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）；收到空件按「作废」登记，不猜意图。
+- **轮末信号（`轮末信号`，v7/H2）**：本轮收尾动作完成时（你：台账落行+裁定邮件已发），给棘轮发一行 `轮末 <issue> <sha>`；这是棘轮判断「轮间」、决定发生效通知的机器判据，不得省略。
+- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
+
+## 信箱与上下文卫生（v5，`信箱增量`）
+
+- 台账结论列固定措辞（v7/H3）：判定完成时结论列须含 `order-sent <sha>`（指示令已发）；工人回执 push 后更新为 `pushed <sha>`；未合并再补 `merge-pending <sha>`。列格式与现有台账冲突时可报四段卡点，棘轮轮间吸收。
+- **升级地址（H1，v7）**：三方升级/停止条件上报的统一信箱 = 名册 §2 user 行的 durable Run（`run_d2a14b6c9cd3`，实测 `send` 成功 `msg_427746f41363`，不依赖终端在线）；抄送棘轮。你自己的会话仍可直接回复 user（他在 Orca 里看得见）。
+- **交接与退役（`交接checklist`，v7/H4）**：换会话/换档位/被退役前，就地三件套：①台账/队列无未落行②发一行 `交接 <issue> <branch> <sha> <在途邮件ID>` 给监理与棘轮③名册 §2 由棘轮更新新 handle/run。被退役会话不得删分支、不得清工作树（user 决定）。
 
 ## 信箱与上下文卫生（v5，`信箱增量`）
 

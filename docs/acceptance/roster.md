@@ -43,7 +43,8 @@
 
 ### 1.4 版本基准
 
-- 本轮基准值 = **6**（v6：P-41 回执sha核验 + P-42 通用层进门，由棘轮宣布并登记于此）。
+- 本轮基准值 = **7**（v7：P-43 正文非空校验 + H2 轮末信号 + H3 台账指示令措辞 + H4 交接checklist + H1 升级信箱登记，由棘轮宣布并登记于此）。
+- 历史基准：v6=P-41/P-42（闭合回执 @ac6bc46：监理 msg_b47d904a38d3、工人 msg_4b95cbd70254）；
 - 历史基准：v5 = 边界令（m00719，维护者退役）；上架 `origin/main@e78a29d`，监理回执 `已读 version:5 @e78a29d`（msg_560fd955e257，`git cat-file -t e78a29d`=commit，**有效**）；工人 v5 回执 msg_551a1fda9aa9 报 `026038d`/`version:4`/`§4.1`——sha 不存在（`git cat-file -t` fatal），**作废待重读**（P-41）。
 - 历史基准（保留供追溯）：本轮之前 = **4**（依原维护者边界令第六条「版本号不是 4 即停」+ 监理即停 msg_b7922fec9543 执行 bump 3→4）；棘轮自测 `origin/main@c53f877` 三份全 `version: 4`；监理 msg_71852e372417、交付方 msg_d52bb7e1a11b 同 sha 互证 → v4 版本门闭合。
 - 上岗版本门判据（v5）：**读数等于本节登记的生效值**（宣布方=棘轮），不得填自报值、不得填「读过就行」；在途轮次按 `班规@origin` 当时读到的版本跑完（轮内冻结），新轮开工前必须先读到 5。
@@ -56,7 +57,7 @@
 | 流程优化者（棘轮） | `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` | `run_c40189b45d94` | `c0d9ff46-eaf7-4959-a1ca-156c392b4850` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` @ `loop/ratchet` @ 见本文件最新 commit | 自写方（不作上岗门读数）；上架自测 = `origin/main@c53f877` → `version: 4` x3 | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`（流程层，可直推 `origin/main`，`流程层发权`） | 产品代码与测试（绝对禁推）、`ledger.md`、triage 标签、Issue 状态、推 `main`（产品代码与测试） | 自报 2026-11-10；上架回执带读数+sha |
 | 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（verified） | `run_12b3ab55bf53`（verified：`run-show --full` 的 `coordinator_handle` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（本地读数；`origin/main` 已到 `4b3305e`） | `origin/main@c53f877` → `version: 4` x3（msg_71852e372417，**门过**） | `docs/acceptance/ledger.md`（含按停止条件自推 `origin/main`，实测 `4b3305e`）、Issue 评论、`D:/Firefly-Canvas-evidence/**`、`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、改被验工作树 git 状态、推 `main`（产品代码与测试）、代交付方写实现、关闭 Issue 以外的状态操作 | 回执 `msg_66beb330eb06` + 版本门 `msg_71852e372417` + 台账自落 `msg_b36245b65bb8` |
 | 交付方 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（verified，terminal 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | `origin/main@c53f877` → `3:version: 4`（msg_d52bb7e1a11b，**门过**） | 票面白名单（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）、`git commit`（仅 `issue/310`）、Issue 收尾评论、证据目录、编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；`ledger.md`；推/merge `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执三段 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248` + 版本门 `msg_d52bb7e1a11b` |
-| user（原维护者会话已退役 2026-11-10，职责合并进棘轮） | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（退役存档：pi chat 内嵌会话，无 tabId） | `run_b203fe4d1bef`（退役后不再寻址；上报改走本会话或棘轮） | 不适用 | 不适用 | 不适用（版本宣布方=棘轮，见 §1.4） | `main` 合并与发布、`AGENTS.md`、会话建立与退役、发权收权 | 三份班规正文与 pain/roster（走棘轮入册）、不代写监理台账 | 发权原话（m00568）+ 边界令（m00719） |
+| user（原维护者会话已退役 2026-11-10，职责合并进棘轮） | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（退役存档：pi chat 内嵌会话，无 tabId） | **`run_d2a14b6c9cd3`（durable 升级信箱，棘轮代建 2026-11-10，实测 `send` 成功 msg_427746f41363，不依赖终端在线）**；旧 `run_b203fe4d1bef` 退役存档不再寻址 | 不适用 | 不适用 | 不适用（版本宣布方=棘轮，见 §1.4） | `main` 合并与发布、`AGENTS.md`、会话建立与退役、发权收权 | 三份班规正文与 pain/roster（走棘轮入册）、不代写监理台账 | 发权原话（m00568）+ 边界令（m00719） |
 
 ### 采信规则
 
@@ -237,6 +238,6 @@ flowchart LR
 |---|---|
 | 三份契约 `version: 5` | **已被 v6 覆盖**：当前生效 `origin/main@2d9210e`，四份班规（含通用层）当场回读全 `version: 6`；v5 面（`f1a270f`/`e78a29d`）历史保留 |
 | 生效通知 | **已发（user 批准 m00809「1、2 按推荐」）**：监理 `msg_637dc8b6366d`、工人 `msg_c5e01278589b`（各一封，5 条动作 + 一行回执要求）。回执待落，到后记本表 | 
-| 生效通知 | v5 已发（监理 `msg_637dc8b6366d`、工人 `msg_c5e01278589b`）；**v6 已发**（监理 `msg_2efd7707f0e4`、工人 `msg_63e654401d79`=作废重读通知）。回执一行制 |
+| 生效通知 | v5、v6 已发（历史 msg 见上）；**v7 已发**（监理与工人各一封，正文=5 条动作内）。回执一行制 |
 | 回执 | **v6 门闭合**：监理 `已读 version:6 @ac6bc46`（msg_b47d904a38d3）；工人 `已读 version:6 @ac6bc46`（msg_4b95cbd70254，自证 `git cat-file -t 026038d`=fatal 并如实认领假 sha 成因=「照抄宣布值、未先当场自证」）。历史：监理 v5 回执 msg_560fd955e257 有效；工人 v5 回执 msg_551a1fda9aa9 作废（P-41） |
 | 监理/工人当前应按哪版跑 | 手头在途轮次按 `班规@origin` 读到的 version:4 跑完；新轮开工前先读 5 |

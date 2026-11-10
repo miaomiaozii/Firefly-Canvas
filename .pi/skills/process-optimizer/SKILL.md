@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮）：收监理与工人的卡点，改流程 skill，在 user 决断后上架，并只在轮间通知两边读新班规。Use when 收到 subject 含「卡点」的邮件、要上架流程层新版本、要判定一轮流程读数是否倒退。
-version: 6
+version: 7
 disable-model-invocation: true
 ---
 
@@ -69,6 +69,9 @@ disable-model-invocation: true
 - 回信用 `orca orchestration reply --id <msg_id> --body`（挂在原时间轴上，不复述上下文）。
 - 正文写**指针不写全文**：文件路径 + 行号 + sha + 邮件 ID；四段结构，通俗解释 ≤200 字。
 - **回执核验（`回执sha核验`，P-41）**：凡把对端回执里的 sha 登记进 `ROSTER` 前，必跑 `git cat-file -t <sha>` 存在性核验 + `git rev-parse --short origin/main` 对照；sha 不存在或读数≠登记生效值 → 该回执记「作废/待重读」并入 `PAIN_QUEUE`，不得入事实区（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d` 与不存在的「§4.1」，`git cat-file -t 026038d` = `fatal: Not a valid object name`）。
+- **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发；收到空件按「作废」登记名册，不猜意图。
+- **轮间判据（`轮末信号`，v7/H2）**：生效通知只在**齐两个 `轮末 <issue> <sha>` 信号**（监理：台账落行+裁定邮件已发；工人：持令完成 push+关票或被叫停）后发；缺信号不发，也不得用轮询终端去猜。
+- **升级信箱（H1）**：user 的 durable Run = `run_d2a14b6c9cd3`（名册 §2；实测 `send` 成功不依赖终端在线）。三方升级件落该信箱，你转一行给 user 会话；user 可随时改寻址或退役该 Run。
 - 你给两边的邮件只在轮间发（见 §7）；给 user 的邮件随时可发（user 是唯一裁决人，不受轮间限制）。
 
 ## 6. 流程层发权与上架（`流程层发权`）
