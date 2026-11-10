@@ -15,6 +15,8 @@ if [ ! -x "$TABBIT" ]; then echo "FATAL: tabbit-cli 不存在: $TABBIT"; exit 99
 PID=$(curl -s -m 5 "$BASE/api/healthz" | python -c 'import sys,json;d=json.load(sys.stdin);ids=d.get("open_project_ids") or [];print(ids[0] if ids else "")' 2>/dev/null)
 [ -z "$PID" ] && { echo "FATAL: $BASE 上没有打开的项目（先打开一个画布再跑 QA）"; exit 98; }
 URL="$BASE/static/smart-canvas.html?id=$PID&project=$PID&project_mode=1"
+# #296：每个场景跑完自动截图存证（场景结束态，非另开页重进）；基线对比见 tools/e2e_shot_diff.py
+EVID_DIR="$(cd "$(dirname "$0")/.." && pwd -W)/.pipeline/evidence/screenshots"
 
 run(){ # run <name> <场景 JS 从 stdin 进入>；tab 偶发 about:blank，失败自动重跑一次
   local name="$1" out i js
@@ -25,9 +27,15 @@ await page.goto("$URL", {waitUntil: "domcontentloaded"});
 if (!page.url().includes('smart-canvas')) throw new Error('NAV_FAIL: ' + page.url());
 await page.waitForSelector('.agent-tui-card, [class*="agent-tui"]', {timeout: 30000}).catch(()=>{});
 await page.waitForTimeout(4000);
+const __r = await (async () => {
 $js
+})();
+await page.screenshot();
+return __r;
 JS
 )
+    SHOT=$(echo "$out" | grep -o '"path":"[^"]*screenshot[^"]*\.png"' | tail -1 | sed 's/"path":"//;s/"$//;s/\\/\//g')
+    if [ -n "$SHOT" ] && [ -f "$SHOT" ]; then mkdir -p "$EVID_DIR"; cp -f "$SHOT" "$EVID_DIR/$name-attempt$i.png" 2>/dev/null || true; fi
     if echo "$out" | grep -q '"status":"ok"'; then echo "PASS  $name  $(echo "$out" | grep -o '"evidence":"[^"]*"' | head -1)"; return; fi
   done
   echo "FAIL  $name"; echo "$out" | tail -5; FAILS=$((FAILS+1))

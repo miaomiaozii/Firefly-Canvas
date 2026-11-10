@@ -28,6 +28,8 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 PID=$(curl -s -m 5 "$BASE/api/healthz" | python -c 'import sys,json;d=json.load(sys.stdin);ids=d.get("open_project_ids") or [];print(ids[0] if ids else "")' 2>/dev/null)
 [ -z "$PID" ] && { echo "FATAL: $BASE 上没有打开的项目"; exit 98; }
 URL="$BASE/static/smart-canvas.html?id=$PID&project=$PID&project_mode=1"
+# #296：场景结束态自动截图存证；基线对比 tools/e2e_shot_diff.py
+EVID_DIR="$(cd "$(dirname "$0")/../.." && pwd -W)/.pipeline/evidence/screenshots"
 FAILS=0
 
 run() {
@@ -40,9 +42,15 @@ if (!page.url().includes('smart-canvas')) throw new Error('NAV_FAIL: ' + page.ur
 await page.waitForSelector('.image-node', {timeout: 30000});
 await page.waitForTimeout(2500);
 
+const __r = await (async () => {
 $js
+})();
+await page.screenshot();
+return __r;
 JS
 )
+    SHOT=$(echo "$out" | grep -o '"path":"[^"]*screenshot[^"]*\.png"' | tail -1 | sed 's/"path":"//;s/"$//;s/\\/\//g')
+    if [ -n "$SHOT" ] && [ -f "$SHOT" ]; then mkdir -p "$EVID_DIR"; cp -f "$SHOT" "$EVID_DIR/$name-attempt$i.png" 2>/dev/null || true; fi
     if echo "$out" | grep -q '"status":"succeeded"'; then
       echo "PASS  $name  $(echo "$out" | grep -o '"evidence":"[^"]*"' | head -1)"
       return

@@ -59,3 +59,4 @@ node_modules/
 # worker 误用未展开的 --artifacts-dir ~/.cache/... 造出来的字面目录
 ~/
 tools/.vendor/
+.pipeline/evidence/
