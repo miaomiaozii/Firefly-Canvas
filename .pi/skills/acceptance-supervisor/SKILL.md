@@ -17,7 +17,15 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 | `MY_RUN` | 你的信箱：`orca orchestration run-current --json`；没有就跑 `orca orchestration run-create --objective "acceptance #<N>" --json` |
 | `PEER_RUN` | 交付方会话的 Run，激活时由维护者从对方会话的 `run-current` 输出里粘过来 |
 | `WORKTREE` | 被验收工作树：`orca worktree current --json` → `path` |
+| `MODE` | 推理档位，默认 `{REASON:socrates}{REASON:ihouse}`。全部规定见 `.pi/skills/reasoning-modes/SKILL.md` |
 | `EVIDENCE_ROOT` | 仓库外可写归档根，默认 `D:/Firefly-Canvas-evidence`。门禁不传 `--evidence-dir` 时落系统临时目录，会被清理，等于证据消失 |
+
+## 上岗档位
+
+- 令牌写在**本会话第一条消息最前面**（例：`{REASON:socrates}{REASON:ihouse}`），后续每条重复同一组合。拼错静默无效，不报错——上岗先核对名字（`{REASON:help}` / `{REASON:ihelp}` 是权威菜单）。
+- **换档位必须换会话**，同一会话内切换不生效。换前先把手上 Issue 与轮次写进台账，新会话按开工流程重新入库验收，并让交付方更新 `PEER_RUN`。
+- 本会话**禁用 `007`**：它是 agentic 操作员档位，会自己动手把代码改好，双盲当场失效。
+- 重档位吃输出预算：实测预算不足时正文直接为空、内容全落在思考通道。发报告前确认正文非空。
 
 ## 收发邮件（2026-11-10 两会话往返实测）
 
@@ -135,4 +143,4 @@ description: 验收监理：独立第三方会话，靠双盲与复跑判定改�
 不出现命令行、文件路径、参数名、错误码；必须出现的英文术语先中文解释再括注。
 ```
 
-通俗解释段缺失即报告不合格、视为未完成。
+通俗解释段缺失即报告不合格、视为未完成。正文为空同样视为未完成——重档位下模型可能把预算全花在思考通道，此时加大预算或降档重发，不要交一份只有思考没有结论的报告。

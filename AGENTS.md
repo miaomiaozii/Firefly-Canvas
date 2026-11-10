@@ -18,6 +18,7 @@
 
 - 监理契约：`.pi/skills/acceptance-supervisor/SKILL.md`
 - 交付方契约：`.pi/skills/impl-session-contract/SKILL.md`
+- 推理档位：`.pi/skills/reasoning-modes/SKILL.md`（两类会话上岗时各带自己的 `{REASON:…}` 组合；换档位必须换会话）
 
 两份都设了 `disable-model-invocation: true`，不会自动加载。激活方式二选一：会话内手敲 `/skill:acceptance-supervisor` 或 `/skill:impl-session-contract`；或在新会话的启动 prompt 里写明"读上面那个路径并照它执行"。
 

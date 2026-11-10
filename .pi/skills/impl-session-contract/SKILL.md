@@ -8,6 +8,10 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
 
 你（含你派出的子代理）是交付方。判定权在监理（`.pi/skills/acceptance-supervisor/SKILL.md`）：它自己复跑门禁，你的汇报是索引，不是证据。
 
+## 上岗档位
+
+首条消息最前面带 `{REASON:007}{REASON:icode}`（多步执行 + 技术精确），后续每条重复同一组合；档位选择与禁用项见 `.pi/skills/reasoning-modes/SKILL.md`。换档位必须重开会话，并把新 Run 告知监理。
+
 ## 提交一次交付
 
 1. **先提交**：改动提交到 issue 分支并记下 commit hash——未提交的改动监理验不了，也会被别的会话 `git clean`/`checkout` 清掉。
@@ -22,7 +26,7 @@ description: 交付方与验收监理的交接协议。Use when 准备关闭某�
    监理的 Run 由维护者在激活时给你。你自己这一侧：`orca orchestration run-current --json`，没有就 `orca orchestration run-create --objective "delivery #<N>" --json`——监理打回要靠这个 Run 找到你。邮件由 Orca 主动送达，不要写脚本轮询 `check`（它会消费邮件）。
 4. **关闭**：等监理签字。签字后由你按 `docs/agents/issue-tracker.md` 写结论评论并关闭 Issue，triage 标签由监理落。
 
-**完成判定**：改动已提交、四段齐全、证据落在 `EVIDENCE_ROOT`、Issue 状态与监理裁定一致。
+**完成判定**：改动已提交、四段齐全（含末尾通俗解释）、证据落在 `EVIDENCE_ROOT`、Issue 状态与监理裁定一致。汇报正文为空即未完成——重档位下模型可能把预算全花在思考通道，加大预算或降档重发。
 
 ## 收到打回
 
