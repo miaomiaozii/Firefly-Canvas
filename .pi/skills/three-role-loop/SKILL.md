@@ -1,6 +1,6 @@
 ---
 name: three-role-loop
-version: 8
+version: 9
 disable-model-invocation: true
 description: 三角色循环（工人 / 监理 / 流程优化者）的通用运行规则：角色边界、上岗前置与版本门、信箱增量协议、卡点队列、流程层发权、会话可见性与卫生。跨项目复用；具体项目的参数与例外看该项目 .pi/skills/ 下三份契约。
 ---
@@ -47,6 +47,7 @@ description: 三角色循环（工人 / 监理 / 流程优化者）的通用运�
 
 - `check` **消费**邮件且只回未读批次（本身就是增量）；**不得循环 `check` 当轮询**。等启用 `check --wait --timeout-ms <n>`，忽略 `_keepalive` 行。
 - 索引视图优先：`inbox --limit <n>`（200 字预览 + ID）→ 只点名 `--full` 需要全文的那几封；断档恢复 `inbox --terminal run:<run_id> --limit <n> --full`。
+- 门集与版本基准以项目名册的 `状态锚` 节为唯一入口（上岗先读它，不从旧邮件重建进度，`状态锚`）；门集=五份流程契约 `^version:` 同值。
 - 路由按 `四类直发`：回执、轮末、交接、卡点四类显式 `send --to run:<对方 Run>`（项目名册取号）；其余用 `reply --id` 挂原时间轴——`reply` 的投递跟随**原通知件的发件寻址**，会把必要应答送进第三方信箱。
 - 正文写**指针不写全文**：路径 + 行号 + commit sha + 邮件 ID。长内容落文件，正文给路径。
 - 发送前校验（`正文非空校验`）：`send`/`reply` 前 `test -s <正文文件>`，非 0 即不发；空件按作废登记。

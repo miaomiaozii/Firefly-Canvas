@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 8
+version: 9
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -71,7 +71,7 @@ orca terminal create --worktree path:<上面那个 path> --command "pi.cmd --thi
 
 - **发送前校验（`正文非空校验`，v7/P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）；收到空件按「作废」登记，不猜意图。
 - **轮末信号（`轮末信号`，v7/H2）**：本轮收尾动作完成时（你：台账落行+裁定邮件已发），给棘轮发一行 `轮末 <issue> <sha>`；这是棘轮判断「轮间」、决定发生效通知的机器判据，不得省略。
-- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数四份一起报：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`（通用层已进门，P-42）。
+- **回执与自证（`回执sha核验`，P-41/P-42）**：任何回执（含上岗门读数、生效通知回执）里引用的 sha，发出前自己跑 `git cat-file -t <sha>` 确认存在；棘轮登记前会复跑同一命令 + `git rev-parse --short origin/main` 对照——sha 不存在或读数≠名册登记值，该回执作废重读（实测 2026-11-10：工人 v5 回执报 `origin/main@026038d`，该对象在仓库不存在）。上岗门读数**五份**一起报（门集含 `reasoning-modes`，P-46）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done`；上岗第一件事是先读名册 `ROSTER` 的 `状态锚` 节（一行定位版本/sha/队列，不从旧邮件重建进度，P-48）（通用层已进门，P-42）。
 
 ## 信箱与上下文卫生（v5，`信箱增量`）
 

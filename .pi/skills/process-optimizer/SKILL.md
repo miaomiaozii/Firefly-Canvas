@@ -1,7 +1,7 @@
 ---
 name: process-optimizer
 description: 流程优化者（棘轮）：收监理与工人的卡点，改流程 skill，在 user 决断后上架，并只在轮间通知两边读新班规。Use when 收到 subject 含「卡点」的邮件、要上架流程层新版本、要判定一轮流程读数是否倒退。
-version: 8
+version: 9
 disable-model-invocation: true
 ---
 
@@ -78,6 +78,7 @@ disable-model-invocation: true
 
 - 范围（`发权范围`）：只有流程层。产品面（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`scripts/**`、`package*.json`、`uv.lock`、`pyproject.toml`）**绝对禁推**；`AGENTS.md` 归 user。
 - 上架六步（`上架顺序`，P-34+P-45，固定顺序不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③`git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` 必须为空 ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:loop/ratchet`（棘轮支是独享镜像，lease 强推安全；先推棘轮支再 rebase 必遇 non-fast-forward，实测两次） ⑥三指针 `git rev-parse --short origin/main origin/loop/ratchet HEAD` 互证。**永不对 `main` 用 `-f`**（监理会前移 main 落台账，强推会抹掉验收记录）。
+- **状态锚（`状态锚`，P-48）**：每次流程层 commit 必须重写 `ROSTER` 的 `状态锚` 节（生效版本+门 sha+队列计数+缺件，≤6 行，只放指针不叙过程）。它是三方上岗的第一读物；你不重写它，三方就得从旧邮件重建进度——那是每轮从头开始的根源。门集=五份流程契约（含 `reasoning-modes`，P-46；门命令写在状态锚里）。
 - `AGENTS.md`（`AGENTS写权`）：默认归 user；user 在消息里明确授权时棘轮可改（实测例：v5 边界令 m00719 后的角色节与发权段同步，2026-11-10），改动必须同 commit 上架并在 `RATCHET` 记行；未授权时只提议不改。
 - 推后必验：`git rev-parse --short origin/main` 写进 `ROSTER` §4；`grep "^version:"` 读数写进 `ROSTER` §1.4（`版本门读数=宣布值`：改班规必须同 commit bump）。
 - 收权（`收权`）：user 一句「流程层不许直推」即回到他合并；他可随时 revert。

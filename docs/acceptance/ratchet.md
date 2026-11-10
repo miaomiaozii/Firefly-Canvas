@@ -15,6 +15,7 @@
 | v6 | 2026-11-10 | P-41（假 sha 回执，工人 msg_551a1fda9aa9）、P-42（通用层无门区，监理 msg_b67a38a63b0c） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 四行全为 `version: 6`；`grep -c "回执sha核验" .pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md` 三处均 ≥ 1；`python docs/acceptance/check_tables.py` exit 0。新增 grep 标记：`回执sha核验`、`版本门四份` | 无（只收紧） |
 | v7 | 2026-11-10 | P-43（空件误发，工人自报 msg_f789063434d9）+ H2/H3/H4（棘轮审查缺口，user m00893 批准「可上」）+ H1（user durable Run 代建 run_d2a14b6c9cd3） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 四行全 `version: 7`；`grep -c "正文非空校验" .pi/skills/acceptance-supervisor/SKILL.md` ≥1；`grep -c "轮末信号" .pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer}/SKILL.md` 三处 ≥1；`grep -c "交接checklist" .pi/skills/three-role-loop/SKILL.md` ≥1；`grep -c "run_d2a14b6c9cd3" docs/acceptance/roster.md` ≥1 | 无（只收紧） |
 | v8 | 2026-11-10 | P-44（reply 路由落错信箱，工人 v7 回执 msg_ad031b382024 实证）+ P-45（上架即兴次序致 non-fast-forward 两次，棘轮自查 verified）；user m00956 批准晋升 v8 | 复跑判据：四份班规 `^version:` 全 =8（上岗门 grep 四份）；`grep -c "四类直发" .pi/skills/acceptance-supervisor/SKILL.md .pi/skills/impl-session-contract/SKILL.md .pi/skills/process-optimizer/SKILL.md .pi/skills/three-role-loop/SKILL.md` 四文件均 ≥1；`grep -c "上架顺序" .pi/skills/process-optimizer/SKILL.md` ≥1 | 无（只收紧；`上架顺序` 把 P-34 四步扩为六步并禁即兴） |
+| v9 | 2026-11-10 | P-46（门集漏 reasoning-modes，工人 v8 回执附注 msg_9d23ad27d176 实证）+ P-48（状态锚，user m00991 提议）+ P-47（棘轮自查：check 消费+peek 抽样致回执漏报，verified） | 复跑判据：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` 五行全 =9；`grep -c "状态锚" .pi/skills/process-optimizer/SKILL.md docs/acceptance/roster.md` 均 ≥1；`grep -c "五份" .pi/skills/acceptance-supervisor/SKILL.md .pi/skills/impl-session-contract/SKILL.md` 均 ≥1 | 无（只收紧；门集 4→5） |
 
 ## v4 回归标记（复跑：`grep -rlE -e <标记> .pi/skills docs/acceptance` + `python docs/acceptance/check_tables.py`，缺任一项即棘轮破损）
 
@@ -44,6 +45,7 @@
 | `适用面与失效轮次`（v3 追加，P-24） | `process-optimizer/SKILL.md` |
 | `台账例外声明`（v3 追加，P-24） | `acceptance-supervisor/SKILL.md` + `impl-session-contract/SKILL.md` |
 | `口径表`、`认人认编号`、`认人编号`、`班规@origin`（v3 追加，P-25） | 三份 skill + `docs/acceptance/roster.md` |
+| `状态锚`、`门集五份`（v9 追加，P-46+P-48） | 五份班规 version:9 + roster §0 |
 | `四类直发`、`上架顺序`（v8 追加，P-44+P-45） | 四份班规 version:8 |
 | `正文非空校验`、`轮末信号`、`交接checklist`、`order-sent`、`升级信箱`（v7 追加，P-43+H1..H4） | 四份班规 version:7 + roster §2 user 行 |
 | `回执sha核验`、`版本门四份`（v6 追加，P-41/P-42） | 三份角色契约 + 通用层 version:6 |

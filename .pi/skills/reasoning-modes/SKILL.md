@@ -2,6 +2,7 @@
 name: reasoning-modes
 description: 给验收监理会话和交付方会话挂推理模式令牌（{REASON:xxx}），并规定每个角色能用哪些、禁用哪些。当要上岗一个监理或交付方会话、要换模式、要决定某个 Issue 该用什么档位，或发现会话输出被撑爆没有正文时使用。
 disable-model-invocation: true
+version: 9
 ---
 
 # 推理模式令牌
