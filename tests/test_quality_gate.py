@@ -314,6 +314,22 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn(step, MODE_STEPS["release"])
         self.assertIn(step, BROWSER_EVIDENCE_STEP_NAMES)
 
+    def test_tabbit_e2e_evidence_runs_only_in_trial_and_release(self):
+        # #295：tabbit 端到端套件接入交付门禁（#296 已落地失败自动重跑与截图归档，
+        # 入口脚本只做编排）。按 #167/#185 先例接进 trial/release，不进并行浏览器
+        # 组（它经 tabbit 自己的浏览器跑，不走门的 Chrome runner，预算另计）。
+        step = "tabbit-e2e-evidence"
+        self.assertIn(step, STEP_DEFINITIONS)
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "tests/tabbit_e2e_evidence.py"],
+        )
+        self.assertNotIn(step, MODE_STEPS["fast"])
+        self.assertNotIn(step, MODE_STEPS["domain"])
+        self.assertIn(step, MODE_STEPS["trial"])
+        self.assertIn(step, MODE_STEPS["release"])
+        self.assertNotIn(step, BROWSER_EVIDENCE_STEP_NAMES)
+
     def test_all_browser_runners_resolve_their_repo_root(self):
         # 门在临时 workspace 里执行步骤（create_execution_workspace），runner 里硬编码的
         # 仓库根会读到工作区外的源码：证据看起来绿，测的却是另一份代码。
@@ -488,6 +504,9 @@ class QualityGateTests(unittest.TestCase):
             "node_flow_browser.py",
             "fly_fixes_browser.py",
             "layers_panel_browser.py",
+            # #295：tabbit 端到端入口同一套路（门只验接线；环境未就绪时真实入口
+            # 也会 exit 0 快速跳过，桩与真实行为一致）。
+            "tabbit_e2e_evidence.py",
         ):
             (self.fixture_root / "tests" / runner_name).write_text(
                 "import sys\n"
@@ -2576,7 +2595,7 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
             "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
@@ -2597,6 +2616,7 @@ class QualityGateTests(unittest.TestCase):
                     "video-failure-evidence",
                     "node-flow-cascade-evidence",
                     "fly-fixes-evidence",
+                    "tabbit-e2e-evidence",
                     "unit-contract-browser",
                     "browser-tracer",
                     "browser-harness-contract",
