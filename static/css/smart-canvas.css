@@ -668,7 +668,10 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .generation-failed-panel { display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px; text-align:center; }
 .generation-failed-icon { color:var(--danger, #ef4444); display:inline-flex; }
 .generation-failed-title { font-size:13px; font-weight:600; color:var(--danger, #ef4444); }
-.generation-failed-error { font-size:11px; color:var(--muted); max-width:220px; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.generation-failed-error { font-size:11px; color:var(--muted); max-width:220px; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; }
+/* #302: 失败态错误文案被 .node-body overflow:hidden 裁切——允许滚动并加高可见行数，不破坏 height:100% 布局规范 */
+.image-node.empty-node:has(.generation-failed) .node-body { overflow:auto; }
+.image-node.empty-node:has(.generation-failed) .generation-failed { min-height:100%; }
 .generation-failed-retry { display:inline-flex; align-items:center; gap:6px; margin-top:4px; padding:6px 14px; border-radius:8px; border:1px solid var(--line); background:var(--accent, #2563eb); color:#fff; font-size:12px; cursor:pointer; }
 .generation-failed-retry:hover { filter:brightness(1.08); }
 .generation-failed-retry:disabled { opacity:.55; cursor:default; }
