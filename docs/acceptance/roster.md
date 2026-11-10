@@ -93,3 +93,14 @@
 
 - 交付方补证（`msg_9afaeecb83d4`）：`run-show --id run_79684022c565 --full --json` → `coordinator_handle=term_b300bceb-cd82-4771-95c8-bb53ba836bca`（与回执 HANDLE 一致），另附 `created_at=2026-11-10T07:56:21Z`、`updated_at=2026-11-10T08:08:11Z`、`consumer_generation=2`、`legacy=0`。交付方行状态：**verified**。三方绑定全部持久互证完毕。
 - 读数口径（`check截断用inbox--full`，交付方自报）：`orca orchestration check` 的正文会被截断（`truncated; --full`），管道处理时易丢全文；**要全文一律 `orca orchestration inbox --full` 或 `check --full`**。`inbox --json` 在含中文正文时曾出现解析中断，解析失败时改用 `inbox --full` 纯文本 + 分段截取。
+
+### 3.8 版本宣布格式（`版本宣布带证据`，P-28）
+
+维护者「同意推流程层 + 同意宣布版本号」≠ 口径已生效。复测（棘轮 2026-11-10，批准当刻）：`git rev-parse --short origin/main` = `7e03237`；`git ls-tree -r --name-only origin/main | grep docs/acceptance` 只有 `ledger.md`；`MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/process-optimizer/SKILL.md' | grep -n "^version:"` → rc=1。合并面 = `origin/loop/ratchet@5820225`，与 `origin/main` 的差异只有 8 个文件：`.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,reasoning-modes}/SKILL.md`、`AGENTS.md`、`docs/acceptance/{pain,ratchet,roster}.md`（零产品代码）。
+
+**生效判据（三方上岗必须逐项核验，缺任一件即停）**：
+1. `git fetch origin main && git rev-parse --short origin/main` 读数 ≠ `7e03237`（即流程层已并入）；
+2. `MSYS_NO_PATHCONV=1 git show 'origin/main:.pi/skills/<自己契约名>/SKILL.md' | grep -n "^version:"` 有输出且 = 维护者宣布值；
+3. 维护者的版本宣布邮件里同时给出上述两条的命令原文与输出（只有「按 v3 干」这类无证据宣布 → 视为未生效，即停上报）。
+
+**名册自身的一致性**：本轮流程层版本号以「`origin/main` 上实际读到的 `version:` 行」为准，不以棘轮支头读数为准；`班规@棘轮@5820225` 现读数 `version: 3`。
