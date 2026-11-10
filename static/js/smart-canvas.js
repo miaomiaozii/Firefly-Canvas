@@ -8181,13 +8181,20 @@ function positionSmartCanvasShortcuts(){
 function openSmartCanvasShortcuts(){
     smartShortcutModal?.classList.add('open');
     shell?.classList.add('shortcut-panel-open');
+    document.getElementById('smartShortcutToggle')?.setAttribute('aria-expanded', 'true');
     refreshIcons();
     requestAnimationFrame(positionSmartCanvasShortcuts);
 }
 function closeSmartCanvasShortcuts(){
     smartShortcutModal?.classList.remove('open');
     shell?.classList.remove('shortcut-panel-open');
+    document.getElementById('smartShortcutToggle')?.setAttribute('aria-expanded', 'false');
     smartShortcutModal?.style.removeProperty('top');
+}
+// #303: 开关按钮此前写死 onclick=open——再次点击只重开不收起。补 toggle 入口。
+function toggleSmartCanvasShortcuts(){
+    if(shell?.classList.contains('shortcut-panel-open')) closeSmartCanvasShortcuts();
+    else openSmartCanvasShortcuts();
 }
 function conversationConnectedReferences(node){
     if(!node || !canvas) return [];
