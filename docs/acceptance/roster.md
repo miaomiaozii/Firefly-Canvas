@@ -7,9 +7,9 @@
 
 - 生效版本 = **11**；门 sha = `3a1f19a`（`git cat-file -t 3a1f19a`=commit；2026-11-11 上岗门命令回读：五份各恰好 1 行 `version: 11`。`origin/main` 现头会因名册自身行前移而变，不影响门集文件，照抄下行门命令即可复现）
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
-- 队列（复跑 `python docs/acceptance/check_queue.py`，2026-11-11 读数）：`pain_rows=60`；pending=2（P-59/P-60，拟 v12）、queued=0、unverified=1（P-14）、verified=2（P-41/P-47）、code-issue=2（P-12/P-13）、absorbed-vN=50、merged→P-xx=3。旧行写「pending/queued=0」与实跑不符，属误记，见 P-60。
+- 队列（复跑 `python docs/acceptance/check_queue.py`，2026-11-11 读数）：`pain_rows=61`；pending=3（P-59/P-60/P-61，拟 v12）、queued=0、unverified=1（P-14）、verified=2（P-41/P-47）、code-issue=2（P-12/P-13）、absorbed-vN=50、merged→P-xx=3。旧行写「pending/queued=0」与实跑不符，属误记，见 P-60。
 - 缺件：v11 双行回执已闭合（监理 msg_d492c2b4648f、工人 msg_3fb0d8d47fbf）；无在途轮次。待 user：①下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）；②重建监理与工人会话（2026-11-11 实测 `orca terminal list --json` 已无 `term_6d6c2fb9…`/`term_b300bceb…`，`orca worktree list --json` 已无 `D:/ff-wt/w310` 与旧棘轮树 `…/loop`）。
-- 本轮性质（loop2 棘轮轮间值班，2026-11-11）：零产品代码。已做队列销账（P-11→`absorbed-v7`、P-28→`absorbed-v4`、P-33→`merged→P-59`）+ 新立 P-59/P-60 + 新工具 `docs/acceptance/check_queue.py`（`队列状态计数`）。v12 提案（P-59 监理 `台账自推面`、P-60 §7 第 6 步计数条款）待 user 决断后才 bump 五份 `version:`。
+- 本轮性质（loop2 棘轮轮间值班，2026-11-11）：零产品代码。已做队列销账（P-11→`absorbed-v7`、P-28→`absorbed-v4`、P-33→`merged→P-59`）+ 新立 P-59/P-60/P-61 + 新工具 `docs/acceptance/check_queue.py`（`队列状态计数`）。v12 提案（P-59 监理 `台账自推面`、P-60 §7 第 6 步计数条款、P-61 §6 第 ⑥ 步三指针命令）待 user 决断后才 bump 五份 `version:`。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
 
 ## 1. 口径表（先统一这个，再谈别的）
@@ -53,7 +53,7 @@
 ### 1.4 版本基准
 
 - 本轮基准值 = **11**（v11：吸收审计 P2 三项 P-51/P-52/P-53 + P-57，由棘轮宣布并登记于此）。
-- v12 已提案未生效（2026-11-11：P-59 监理 `台账自推面`、P-60 `队列状态计数`）：user 决断前生效值仍 = **11**，三方上岗门读数按 11 判。
+- v12 已提案未生效（2026-11-11：P-59 监理 `台账自推面`、P-60 `队列状态计数`、P-61 上架第 ⑥ 步逐 ref 三指针）：user 决断前生效值仍 = **11**，三方上岗门读数按 11 判。
 - 历史基准：v10=班规文本质量审计（P-49/P-50/P-54/P-55/P-56；闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f，门 sha `456d752`，上架 `9d2d532`）。
 - 历史基准：v9=P-46 门集五份 + P-48 状态锚（闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4，门 sha `4e07c76`）。历史：v8=P-44/P-45（闭合：监理 msg_c7262bdc2017、工人 msg_9d23ad27d176，均 @5719fff 直达棘轮 Run——`四类直发` 首轮即闭合）。
 - 历史基准：v7=P-43+H1..H4（闭合：监理 msg_f471da860db4 @f0063f2；工人 msg_ad031b382024 经 user 信箱转读入账）。
