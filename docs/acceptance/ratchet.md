@@ -128,6 +128,9 @@ cd D:/Firefly-Canvas && for m in "回执（" "只读不消费" "与基线证据�
 - 观察（未定级）：发往 durable 信箱 `run_d2a14b6c9cd3` 的信，随后在 `check --run run_d2a14b6c9cd3` 里以「from run_c40189b45d94」出现在我自己视野（msg_d2c473ec44f7）。待对方回执出现后再判定是否记账（不在回执前下结论）。
 
 ## 已核实的事实（带来源，供下轮做差）
+- （loop2 上岗实测 2026-11-11）身份换代：棘轮新会话 `term_fa026d57-1a56-4835-a7c6-23855fac93d3` / `run_6808439b515b` / tabId `1acdef02-7255-45bc-a3f9-e653fe408ab1`（UUID）/ 工作树 `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop2-2` @ `loop/ratchet-2` @ `945d7ad`。旧棘轮树 `…/workspaces/Firefly-Canvas/loop` 与工人树 `D:/ff-wt/w310` 已不在 `orca worktree list --json`；监理 `term_6d6c2fb9…`、工人 `term_b300bceb…` 已不在 `orca terminal list --json` → 同名角色唯一性成立（每角色至多一行存活），监理与工人待 user 重建。
+- （loop2 自查实测 2026-11-11，P-60 棘轮自我更正）名册 §0 状态锚队列行旧写「pain 共 58 条；pending/queued=0」与实跑不符：`python docs/acceptance/check_queue.py`（新增工具）得 pending=1（P-11）、queued=1（P-33）、unverified=1（P-14）、verified=2、code-issue=2；且 P-28 状态列写 `proposed-v3`，落在契约 §4 状态词表外。已建工具 + 销账 P-11（→absorbed-v7，`merge-pending` 已落监理契约）/P-28（→absorbed-v4）/P-33（→merged→P-59）。
+- （loop2 自查实测 2026-11-11，P-59）条文互斥：`origin/main@945d7ad:.pi/skills/acceptance-supervisor/SKILL.md` 停止条件行写笼统「不得自己推 `main`」，而名册 §6.2 已判定监理 plumbing 自推 `4b3305e`（仅 `docs/acceptance/ledger.md`）合规；P-33 的载体分面口径从未同步到监理契约。
 - v10（2026-11-10，班规文本质量审计轮）：上架主 commit `9d2d532`（门命令回读五份 `version: 10`），名册自身行后续 commit `456d752`/`0f9b274` 不改门集；通知 msg_c0ae5ab63a45（监理）/msg_a8b74a2db804（工人）；回执双行闭合 msg_83155bb54a63（监理）/msg_e5397fca2f9f（工人）。事故：我发通知时用 `--body-file`（`orca orchestration send` 无此 flag，两次失败）→ P-57 pending。
 
 - 三轮 trial 各 **32 步**，均无 `tabbit-e2e-evidence` 与 `egress-attribution`：`D:/Firefly-Canvas-evidence/{310-baseline-b2b3399-trial,310-delivery-branch-trial,310-supervisor-20261110-092301-trial}/report.json`（`python` 读 `checks[].name`，`final_exit_code=1`）。

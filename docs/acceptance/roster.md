@@ -5,13 +5,11 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **11**；门 sha = `3a1f19a`（origin/main 现头，2026-11-10 门命令回读：五份各恰好 1 行 `version: 11`；v11 上架主 commit 见 §1.4；名册自身行后续前移不影响门集文件，照抄下行门命令即可复现）
+- 生效版本 = **11**；门 sha = `3a1f19a`（`git cat-file -t 3a1f19a`=commit；2026-11-11 上岗门命令回读：五份各恰好 1 行 `version: 11`。`origin/main` 现头会因名册自身行前移而变，不影响门集文件，照抄下行门命令即可复现）
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
-- 队列：pain 共 58 条（P-01..P-58）；pending/queued=0；v11 absorbed：P-51/P-52/P-53/P-57/P-58；v10 absorbed：P-49/P-50/P-54/P-55/P-56；P-11/P-12/P-13/P-20 等产品面条目按状态列归 user/监理。
-- 缺件：无——v11 双行已闭合（监理 msg_d492c2b4648f、工人 msg_3fb0d8d47fbf）；v10 双行已闭合（监理 msg_83155bb54a63、工人 msg_e5397fca2f9f）。P-53 已独立复核（`d97157c`：台账头部称呼改 user，残留 1 处为第 14 行历史补记原文）。待 user：下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）。
-- 本轮性质：v11=审计 P2 三项（渐进披露/术语指针/台账称呼）+ P-57 发信写法；非产品轮，零产品代码。监理下轮上岗第一件事：照 `台账称呼同径` 把 `docs/acceptance/ledger.md` 头部「维护者」改成 `user`（棘轮不写该文件）。
-- 本轮性质：班规文本质量审计（非产品轮）——两路只读子代理按 writing-great-skills 口径审五份班规，自证 AUDITED_BY=qwen3.8-27b-quasar-nvfp4 THINKING=xhigh（runId del_mwas2s17_6592 / del_mwas2ijf_24cd）；产品代码与测试零改动。
-- 下一轮开工前两件事（user 侧）：①指定新 Issue；②v10 已上架 `origin/main@9d2d532`（第二行已回写，无需 user 动手）。
+- 队列（复跑 `python docs/acceptance/check_queue.py`，2026-11-11 读数）：`pain_rows=60`；pending=2（P-59/P-60，拟 v12）、queued=0、unverified=1（P-14）、verified=2（P-41/P-47）、code-issue=2（P-12/P-13）、absorbed-vN=50、merged→P-xx=3。旧行写「pending/queued=0」与实跑不符，属误记，见 P-60。
+- 缺件：v11 双行回执已闭合（监理 msg_d492c2b4648f、工人 msg_3fb0d8d47fbf）；无在途轮次。待 user：①下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）；②重建监理与工人会话（2026-11-11 实测 `orca terminal list --json` 已无 `term_6d6c2fb9…`/`term_b300bceb…`，`orca worktree list --json` 已无 `D:/ff-wt/w310` 与旧棘轮树 `…/loop`）。
+- 本轮性质（loop2 棘轮轮间值班，2026-11-11）：零产品代码。已做队列销账（P-11→`absorbed-v7`、P-28→`absorbed-v4`、P-33→`merged→P-59`）+ 新立 P-59/P-60 + 新工具 `docs/acceptance/check_queue.py`（`队列状态计数`）。v12 提案（P-59 监理 `台账自推面`、P-60 §7 第 6 步计数条款）待 user 决断后才 bump 五份 `version:`。
 - 读序：状态锚 → §1 口径 → §2 身份 →（要历史再下翻 §3/§4/§7）；不要从旧邮件重建进度。
 
 ## 1. 口径表（先统一这个，再谈别的）
@@ -55,6 +53,7 @@
 ### 1.4 版本基准
 
 - 本轮基准值 = **11**（v11：吸收审计 P2 三项 P-51/P-52/P-53 + P-57，由棘轮宣布并登记于此）。
+- v12 已提案未生效（2026-11-11：P-59 监理 `台账自推面`、P-60 `队列状态计数`）：user 决断前生效值仍 = **11**，三方上岗门读数按 11 判。
 - 历史基准：v10=班规文本质量审计（P-49/P-50/P-54/P-55/P-56；闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f，门 sha `456d752`，上架 `9d2d532`）。
 - 历史基准：v9=P-46 门集五份 + P-48 状态锚（闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4，门 sha `4e07c76`）。历史：v8=P-44/P-45（闭合：监理 msg_c7262bdc2017、工人 msg_9d23ad27d176，均 @5719fff 直达棘轮 Run——`四类直发` 首轮即闭合）。
 - 历史基准：v7=P-43+H1..H4（闭合：监理 msg_f471da860db4 @f0063f2；工人 msg_ad031b382024 经 user 信箱转读入账）。
@@ -68,9 +67,9 @@
 
 | ROLE | HANDLE | SELF_RUN | TAB_ID | WORKTREE+分支+HEAD | SKILL_VERSION | 自有写入面 | 禁止面 | 回执时间与来源 |
 |---|---|---|---|---|---|---|---|---|
-| 流程优化者（棘轮） | `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` | `run_c40189b45d94` | `c0d9ff46-eaf7-4959-a1ca-156c392b4850` | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop` @ `loop/ratchet` @ 见本文件最新 commit | 自写方（不作上岗门读数）；上架自测 = `origin/main@c53f877` → `version: 4` x3 | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`（流程层，可直推 `origin/main`，`流程层发权`） | 产品代码与测试（绝对禁推）、`ledger.md`、triage 标签、Issue 状态、推 `main`（产品代码与测试） | 自报 2026-11-10；上架回执带读数+sha |
-| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（verified） | `run_12b3ab55bf53`（verified：`run-show --full` 的 `coordinator_handle` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（本地读数；`origin/main` 已到 `4b3305e`） | `origin/main@c53f877` → `version: 4` x3（msg_71852e372417，**门过**） | `docs/acceptance/ledger.md`（含按停止条件自推 `origin/main`，实测 `4b3305e`）、Issue 评论、`D:/Firefly-Canvas-evidence/**`、`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、改被验工作树 git 状态、推 `main`（产品代码与测试）、代交付方写实现、关闭 Issue 以外的状态操作 | 回执 `msg_66beb330eb06` + 版本门 `msg_71852e372417` + 台账自落 `msg_b36245b65bb8` |
-| 工人 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（verified，terminal 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | `origin/main@c53f877` → `3:version: 4`（msg_d52bb7e1a11b，**门过**） | 票面白名单（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）、`git commit`（仅 `issue/310`）、Issue 收尾评论、证据目录、编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；`ledger.md`；推/merge `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执三段 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248` + 版本门 `msg_d52bb7e1a11b` |
+| 流程优化者（棘轮） | `term_fa026d57-1a56-4835-a7c6-23855fac93d3`（2026-11-11 loop2 上岗；旧 `term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0` 随旧工作树退役存档） | `run_6808439b515b`（会话内 `run-create` 自绑；旧 `run_c40189b45d94` 存档，历史信箱仍在该 Run） | `1acdef02-7255-45bc-a3f9-e653fe408ab1`（UUID） | `C:/Users/Administrator/orca/workspaces/Firefly-Canvas/loop2-2` @ `loop/ratchet-2` @ `945d7ad`（旧树 `…/loop` @ `loop/ratchet` 已从 `orca worktree list --json` 消失） | 自写方（不作上岗门读数）；上岗门自测 2026-11-11：五份全 `version: 11`、门 sha `3a1f19a`（`cat-file`=commit） | `.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`（流程层，可直推 `origin/main`，`流程层发权`） | 产品代码与测试（绝对禁推）、`ledger.md`、triage 标签、Issue 状态、推 `main`（产品代码与测试） | 自报 2026-11-11（门读数+sha 见本行左三列）；上架回执带读数+sha |
+| 监理 | `term_6d6c2fb9-4ac0-4fca-a866-be67febbe86e`（verified） | `run_12b3ab55bf53`（verified：`run-show --full` 的 `coordinator_handle` 持久互证，msg_8602b4bdebcf） | `cf524ca6-5cdf-4f7c-8144-baf8c496d202`（UUID） | `D:/Firefly-Canvas` @ `main` @ `a0a8615`（本地读数；`origin/main` 已到 `4b3305e`） | `origin/main@c53f877` → `version: 4` x3（msg_71852e372417，**门过**） | `docs/acceptance/ledger.md`（含按停止条件自推 `origin/main`，实测 `4b3305e`）、Issue 评论、`D:/Firefly-Canvas-evidence/**`、`/tmp/**` | 产品代码与测试（`src/**`、`tests/**`、`tools/**`）、`.pi/skills/**`、`docs/acceptance/{pain,ratchet,roster}.md`、改被验工作树 git 状态、推 `main`（产品代码与测试）、代交付方写实现、关闭 Issue 以外的状态操作 | 回执 `msg_66beb330eb06` + 版本门 `msg_71852e372417` + 台账自落 `msg_b36245b65bb8`；**2026-11-11 实测 `orca terminal list --json` 已无该 handle → 会话不存活，本行读数为历史；user 重建后须重新回执** |
+| 工人 | `term_b300bceb-cd82-4771-95c8-bb53ba836bca`（verified，terminal 标题「π - w310」互证） | `run_79684022c565`（verified：`run-show --full --json` → `coordinator_handle=term_b300bceb…`，msg_9afaeecb83d4） | `816d78f2-ebdc-4fe7-b6e4-42da96fbf03e`（UUID） | `D:/ff-wt/w310` @ `issue/310` @ `16df89a` | `origin/main@c53f877` → `3:version: 4`（msg_d52bb7e1a11b，**门过**） | 票面白名单（#310：`tests/tabbit_e2e_evidence.py`、`tests/test_quality_gate.py`）、`git commit`（仅 `issue/310`）、Issue 收尾评论、证据目录、编排邮件 | 一票否决面（`tools/quality_gate.py`、`tools/e2e/**`、`.github/**`、`package*.json`、白名单外 `tests/**`）碰=先停等裁定；`.pi/skills/**`；`docs/acceptance/**`；`ledger.md`；推/merge `main`；删 `issue/310`；建 PR；triage 标签；验收判定 | 回执三段 `msg_e9194575efd3`/`msg_94832d53d48f`/`msg_905055031248` + 版本门 `msg_d52bb7e1a11b`；**2026-11-11 实测 `orca terminal list --json` 已无该 handle、`orca worktree list --json` 已无 `D:/ff-wt/w310` → 会话不存活，本行读数为历史；user 重建后须重新回执** |
 | user（原维护者会话已退役 2026-11-10，职责合并进棘轮） | `pi_4714c1cd_55fe_4d59_8b81_68ea12b8551b`（退役存档：pi chat 内嵌会话，无 tabId） | **`run_d2a14b6c9cd3`（durable 升级信箱，棘轮代建 2026-11-10，实测 `send` 成功 msg_427746f41363，不依赖终端在线）**；旧 `run_b203fe4d1bef` 退役存档不再寻址 | 不适用 | 不适用 | 不适用（版本宣布方=棘轮，见 §1.4） | `main` 合并与发布、`AGENTS.md`、会话建立与退役、发权收权 | 三份班规正文与 pain/roster（走棘轮入册）、不代写监理台账 | 发权原话（m00568）+ 边界令（m00719） |
 
 ### 采信规则
