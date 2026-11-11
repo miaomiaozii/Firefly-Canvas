@@ -3,9 +3,11 @@ name: acceptance-supervisor-ops-notes
 disable-model-invocation: true
 ---
 
-# 监理契约运维笔记（`渐进披露`，P-51）
+# 监理契约运维笔记（`渐进披露`）
 
 本文件只放**历史证据与演练实录**：事故经过、实测数值、复盘。约束与护栏一律在 `SKILL.md` 正文，本文件不立规矩、不得作为裁定依据（`历史证据上收`）。上收自 `SKILL.md` 的内容如下，SKILL.md 各节留指针。
+
+> 注（2026-11-12）：本文里的 `P-xx` 编号、「流程层 vN」、「生效通知」都属已废除的那套（卡点队列 / 名册 / 版本门 / 流程优化者角色）。原文只在 git 历史里：`git log --all -- docs/acceptance/`。引用它们只当历史证据，不当活口径。
 
 ## 会话可见性演练实录（2026-11-10 两会话演练）
 
@@ -31,7 +33,7 @@ disable-model-invocation: true
 ## 程序性裁定误判实录（对应 SKILL.md「程序性裁定必须先引原文」）
 
 - 监理在裁定评论里写「合并与关闭归维护者」，据此判工人「越权关闭」；实际契约与 `docs/agents/issue-tracker.md` 写明「监理签字后由工人写结论评论并关闭」。代价：2 条公开评论 + 3 封邮件 + 4 分钟返工，还差点改掉对方正确行为。
-- 教训：引用契约用节名，不用行号（行号随每次契约改动漂移，P-52）。
+- 教训：引用契约用节名，不用行号（行号随每次契约改动漂移）。
 
 ## flaky 实录（对应 SKILL.md「飘两轮制」）
 
@@ -43,5 +45,5 @@ disable-model-invocation: true
 
 ## 发信参数观察（未与契约结论对齐，待核）
 
-- 监理契约旧「收发邮件」节写「不要加 `--from` / `--from-session` / `--run`」；2026-11-10 棘轮发 v10/v11 生效通知时显式带 `--from run_c40189b45d94`，两次 `send` 均成功（msg_c0ae5ab63a45 / msg_a8b74a2db804）。两条证据未对齐：可能 `--from` 仅在发件 Run 已绑定当前终端时安全。契约口径未改（不放宽），待取证后再校准（`--help 核对`）。
+- 监理契约旧「收发邮件」节写「不要加 `--from` / `--from-session` / `--run`」；2026-11-10 当时的流程优化者发 v10/v11 生效通知时显式带 `--from run_c40189b45d94`，两次 `send` 均成功（msg_c0ae5ab63a45 / msg_a8b74a2db804）。两条证据未对齐：可能 `--from` 仅在发件 Run 已绑定当前终端时安全。契约口径未改（不放宽），待取证后再校准（`--help 核对`）。
 - 启动配方实录（user 执行）：`orca worktree create --name w<issue> --repo path:D:/Firefly-Canvas --base-branch main --branch issue/<issue> --issue <issue> --setup skip --json` → `orca terminal create --worktree path:<返回 path> --command "pi.cmd --thinking xhigh" --json`（返回 tabId=UUID 即可见）；监理侧 `--worktree path:D:/Firefly-Canvas ... --focus --json`；收尾 `orca terminal close --terminal <handle>` + `orca worktree rm --worktree path:<path> --force --delete-branch`。

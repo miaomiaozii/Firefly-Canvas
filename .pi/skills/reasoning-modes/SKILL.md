@@ -2,7 +2,6 @@
 name: reasoning-modes
 description: 推理模式档位契约：监理与工人两角色的固定组合、可用与禁用、换档流程与输出预算判据。
 disable-model-invocation: true
-version: 13
 ---
 
 # 推理模式令牌
@@ -28,7 +27,7 @@ version: 13
 
 会话按 `AGENTS.md` 的会话配方起（Orca 托管工作树 + 可见终端）。
 
-**种子带档位（`种子带档位`，P-65）**：令牌必须随**种子**进入首条消息，种子随建随投；不得先建空会话再靠手打或事后补投（投递判据见通用层 §3 `发送判据`）。
+**种子带档位（`种子带档位`）**：令牌必须随**种子**进入首条消息，种子随建随投；不得先建空会话再靠手打或事后补投（投递判据见通用层 §3 `发送判据`）。
 
 ```bash
 # 例：监理（专属树 review/<N>，首选种子随建随投）
@@ -54,7 +53,6 @@ pi.cmd --thinking xhigh "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/sk
 | 工人 | 定位疑难（复现失败、行为诡异） | `{REASON:house}{REASON:icode}` | 激进假设检验 + 第一性排除。警示：`house` 思考可超 7000 字并挤断正文，仅在输出预算 ≥4000 时用 |
 | 工人 | 性能 / 响应式（成本与延迟类约束） | `{REASON:musk}{REASON:icode}` | 物理优先 + 第一性原理，对成本与延迟类约束有效 |
 | 工人 | 架构 / 接口设计（跨模块契约） | `{REASON:stark}{REASON:icode}` | 卡片"架构设计 = stark + coder" |
-| 棘轮（流程优化者） | 默认（收卡点、改班规、写可复跑回归） | `{REASON:iteacher}{REASON:ihouse}` | 补空档：本节自 v1 起只给监理与工人定组合，`AGENTS.md` 却要求棘轮上岗带自己的组合（P-69）。选型依据＝风格位名单实测含 `iteacher`/`ihouse`（见「实测事实」）+ 棘轮硬要求「通俗解释」与「只认证据」；**未对棘轮做事到事评分**，属选型而非实测。棘轮不用 `007`（不改代码）也不用 `hyper`（不做验收）。种子已同步到名册 §1 上岗种子 |
 
 `末尾必须附通俗解释`是**结构要求，写死在汇报模板里**，不要靠风格位 `iteacher` 实现——风格位会同时改变整篇的精度，而结构要求不会。
 
@@ -118,6 +116,6 @@ pi.cmd --thinking xhigh "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/sk
 ## 换档流程
 
 1. 确认要换（例：监理连续两轮没找出问题，怀疑覆盖面不够）。
-2. **actor＝监理自己**：把当前 Issue 与轮次记进 `docs/acceptance/ledger.md`（换会话会丢掉会话内上下文；棘轮不写台账）。
+2. **actor＝监理自己**：把当前 Issue 与轮次记进 `docs/acceptance/ledger.md`（换会话会丢掉会话内上下文；台账归监理单写）。
 3. **actor＝user**：用新组合重开一个监理会话（`AGENTS.md` 会话配方：Orca 托管工作树 + 可见终端 + `pi.cmd --thinking xhigh`），新 Run 在该会话自己里 `run-create`；把 Issue 编号和台账路径交给它，让它按开工流程重新入库验收。
 4. 旧会话的信箱不要复用；工人参数表里的 `PEER_RUN` 要换成新 Run。

@@ -1,6 +1,5 @@
 ---
 name: impl-session-contract
-version: 13
 disable-model-invocation: true
 description: 工人（旧称交付方）与监理的交接协议。Use when 准备提交一次交付、收到 subject 含「验收打回」或「指示推送并关闭」的邮件、要关某个 Issue。
 ---
@@ -9,32 +8,32 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 
 你（含你派出的子代理）是**工人**（旧称：交付方；契约文件名仍名 `impl-session-contract`）。判定权在监理（`.pi/skills/acceptance-supervisor/SKILL.md`）：它自己复跑门禁，你的汇报是索引，不是证据。
 
-通用（跨项目）规则见 `班规@origin:.pi/skills/three-role-loop/SKILL.md`；本文件是本项目的参数与例外。
+通用（跨项目）规则见 `班规@origin:.pi/skills/two-role-loop/SKILL.md`；本文件是本项目的参数与例外。
 
-## v5 角色边界（user 2026-11-10 边界令，名册 §7）
+## 角色边界（user 2026-11-10 边界令；2026-11-12 起两角色）
 
 - **你只干活**：实现、跑门禁、交证据；被监理监管。干活的子代理由你派发（`/implement`、`/tdd`、`/diagnosing-bugs`、`/qa` 等技能自选）；子代理看不见可以接受，你自己的会话必须 Orca 可见。
-- **你不改流程**：不改 `.pi/skills/**` 与 `docs/acceptance/{pain,ratchet,roster}.md`；卡点四段发棘轮（`RATCHET_RUN`）后继续干活。**技能自选：契约只保证硬口径不被跳过。**
+- **你不改流程**：不改 `.pi/skills/**` 与 `AGENTS.md`；踩到流程问题就在本会话直接对 user 说一句话（程序见通用层 §5），说完继续干活。**技能自选：契约只保证硬口径不被跳过。**
 - **关票要指示令**：只有收到监理的「验收通过·指示推送并关闭」邮件后，才 push + 写结论评论 + 关票；**merge 归 user**，你不得 merge、不得删 `issue/<N>` 分支。
 - 一个项目工作区同时只允许**一个**工人会话；发现同一角色两个存活会话 → 停，上报 user。
-- **消息卫生（`信箱增量`，定义见通用层 §4）**：不轮询 `check`；`inbox --limit <n>` 当索引、点名再 `--full`；回信用 `reply --id`；正文只写指针。棘轮的生效通知只回一行 `已读 version:<n> @<sha>`。
+- **消息卫生（`信箱增量`，定义见通用层 §4）**：不轮询 `check`；`inbox --limit <n>` 当索引、点名再 `--full`；回信用 `reply --id`；正文只写指针。
 
 ## 上岗前置（先验，缺就停）
 
-1. **工作树与会话自举（`自举`；代号 `同层三树`、`自举顺序`、`种子自举`、`发送判据`，口径全文见通用层 §3 第 2～5 条）**：你的专属树 `issue/<N>` 用 `orca worktree create` 建（带 `--branch issue/<N> --issue <N>`）。**你是根会话，另两方由你建**：按名册「上岗种子」模板逐字取种子，在各自的专属树里 `orca agent launch --agent pi --worktree path:<树> --surface terminal --prompt "<种子>" --json` 起监理与棘轮（监理 `review/<N>`、棘轮 `loop/<轮>`），三方都必须在 Orca 侧栏可见（`tabId` 是 UUID）。建完把三条 `term_<handle>` + 各自 Run 登记进名册（回执）后停在「等派活」。**不得向 user 索取 Issue 内容、不得自己选 Issue 开工**；Issue 由 user 派发。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），user 在界面里找不到你——监理轮当场失效。
+1. **工作树与会话自举（`自举`；代号 `同层两树`、`自举顺序`、`种子自举`、`种子公式`、`发送判据`，口径全文见通用层 §3 第 2～4 条）**：你的专属树 `issue/<N>` 用 `orca worktree create` 建（带 `--branch issue/<N> --issue <N>`）。**你是根会话，监理由你建**：照通用层 §3 的 `种子公式` 拼种子，在监理的专属树 `review/<N>` 里 `orca terminal create --worktree path:<树> --command "pi.cmd --thinking xhigh \"<种子>\"" --json` 起它，两个会话都必须在 Orca 侧栏可见（`tabId` 是 UUID）。建完把两条 `term_<handle>` + 各自 Run 写进台账 `docs/acceptance/ledger.md` 头部，然后停在「等派活」。**不得向 user 索取 Issue 内容、不得自己选 Issue 开工**；Issue 由 user 派发。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），user 在界面里找不到你——监理轮当场失效。
 2. 自检两条，缺一就上报 user、不要开工：`orca worktree current --json` 不报 `selector_not_found`；`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID。
-3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（别人预建再转交会把邮件注入到他的会话）。监理与棘轮的 Run 从 `docs/acceptance/roster.md` §2 取（`ROSTER`，棘轮单写你只读；上岗先对册，名册里没你这一行就先补回执）；**你是根会话时他们是你在建的**，他们的 Run 由各自 `run-create` 后自行登记，你只登记 handle 与工作树。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
-4. **流程契约取法（`流程契约取法`，取法与停判全文见通用层 §3 第 3 条）**：本项目参数——门集与门命令以 `ROSTER` 状态锚为准（五份，v9 起含 `reasoning-modes`），读数必须等于 `ROSTER` §1.4 登记值（宣布方=棘轮）；读不到或读数不符 → **即停**上报棘轮先推流程层，你不得自己改班规。角色特化后果：`merge/rebase main` 进 `issue/<N>` 的无关改动会被监理 `git diff --stat origin/main...HEAD` 算成你干的活（实测 `issue/310`@`16df89a` 上 v1/v2 收紧全部不可见，该会话全程按旧口径跑）。你引用任何契约条文的行号与原文，都按 `班规@origin` 取法。
-5. **核对任务书的「台账例外声明（`台账例外声明`）」**：任务书须含一行「台账例外：`docs/acceptance/ledger.md` 照写」——那是监理的自有写入面，不含即上报监理补一行，**补线到达前不开工**。你自己不写该文件（`单写`：`pain.md` 归流程优化者、`ledger.md` 归监理）。user 当面设的临时口头约束若与成文契约冲突，照停止条件上报等明示，不得自行解释边界。
-6. **口径表与名册（`口径表`）**：`docs/acceptance/roster.md` 是称呼、编号、同名班规副本指代、版本基准的唯一真相源（棘轮单写，你只读）。上岗先对册；引用角色一律写 `规范名 + term_<handle> + run_<id>`（`认人编号`），引用流程文件必须写代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径——你在 `issue/<N>` 工作树里看到的那份班规叫 `班规@被验树`，不作数。
-7. **信箱与上下文卫生（`信箱增量`，协议全文见通用层 §4）**：本项目参数——`check` 会消费邮件，**不得循环 `check` 当轮询**；看信用 `inbox --limit <n>`（索引视图），只点名 `--full`；断档恢复 `inbox --terminal run:<SELF_RUN> --limit <n> --full`；路由按 `四类直发`（定义见通用层 §4），四类目的端 = 棘轮 Run（`ROSTER` §2 取号）；其余用 `reply --id` 挂原时间轴（`reply` 跟随原通知件的发件寻址，会落错信箱）。棘轮只在轮间发生效通知，你只回一行 `已读 version:<n> @<sha>`。
-8. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理完整 RunId（含 run_ 前缀）>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit、`run-current` 回读非 null、`origin/main` 侧流程版本读数），然后才等任务书。任务书以你的回执到达为前置（该义务见监理契约「握手」节）。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
+3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（别人预建再转交会把邮件注入到他的会话）。监理的 Run 由它自己 `run-create`、经握手回执交给你，你把它写进台账头部；**你是根会话时监理是你在建的**，你只登记它的 handle 与工作树。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
+4. **流程契约取法（`流程契约取法`）**：班规一律从 `origin/main` 取原文（`git show "origin/main:.pi/skills/two-role-loop/SKILL.md"`；git-bash 要 `MSYS_NO_PATHCONV=1` + 引号）；你在 `issue/<N>` 工作树里看到的那份叫 `班规@被验树`，不作数。没有版本号也没有版本门：引用任何条文都要当场报出「文件 + 节名 + 取法命令」。你不得自己改班规。角色特化后果：`merge/rebase main` 进 `issue/<N>` 的无关改动会被监理 `git diff --stat origin/main...HEAD` 算成你干的活（实测 `issue/310`@`16df89a` 上收紧条款全部不可见，该会话全程按旧口径跑）。
+5. **核对任务书的「台账例外声明（`台账例外声明`）」**：任务书须含一行「台账例外：`docs/acceptance/ledger.md` 照写」——那是监理的自有写入面，不含即上报监理补一行，**补线到达前不开工**。你自己不写该文件（`ledger.md` 归监理单写）。user 当面设的临时口头约束若与成文契约冲突，照停止条件上报等明示，不得自行解释边界。
+6. **认人编号（`认人编号`，全文见通用层 §3 第 7 条）**：规范名只有「工人」「监理」两个（旧称「交付方」「交付者」＝工人，不另建会话）；引用会话一律写 `规范名 + term_<handle> + run_<id>`；引用流程文件写代号（`班规@origin` / `班规@本地main` / `班规@被验树`）或完整路径。双方身份与 Run 的登记表就是台账 `docs/acceptance/ledger.md` 头部（监理单写），上岗先对上号；没拿到对方回执时，涉及它的说法一律记「未核实」。
+7. **信箱与上下文卫生（`信箱增量`，协议全文见通用层 §4）**：本项目参数——`check` 会消费邮件，**不得循环 `check` 当轮询**；看信用 `inbox --limit <n>`（索引视图），只点名 `--full`；断档恢复 `inbox --terminal run:<SELF_RUN> --limit <n> --full`；要监理行动的（回执、交付汇报、申辩、交接）显式 `send --to run:<监理 Run>`，同一件事的往返用 `reply --id` 挂原时间轴（`reply` 跟随原通知件的发件寻址，会落错信箱）。
+8. **握手**：绑完 Run 立即给监理发一封在线回执（`send --to run:<监理完整 RunId（含 run_ 前缀）>`，正文：SELF_RUN、`orca terminal list` 里自己的 tabId、`orca worktree current --json` 的 path、HEAD commit、`run-current` 回读非 null），然后才等任务书。任务书以你的回执到达为前置（该义务见监理契约「握手」节）。觉得“有信但没醒”先用 `orca orchestration inbox --json`（只读不消费）查，不要轮询 `check`（它会消费邮件）。
 
-9. **回执与自证（`回执sha核验`，程序全文见通用层 §4；事故见 P-41/P-42/P-46）**：回执引用的 sha 发出前自跑 `git cat-file -t <sha>`；棘轮登记前复跑同一命令 + `git rev-parse --short origin/main` 对照，不符即作废重读。上岗门读数**五份**一起报，门命令照抄 `ROSTER` 状态锚（唯一事实源）。上岗第一件事是先读 `ROSTER` 的 `状态锚` 节（一行定位版本/sha/队列，不从旧邮件重建进度，P-48）。
+9. **回执与自证（`回执sha核验`，程序全文见通用层 §4）**：回执引用的 sha 发出前自跑 `git cat-file -t <sha>` 确认存在；监理复核时复跑同一命令 + `git rev-parse --short origin/main` 对照，不符即作废重读。上岗回执一次性列齐（SELF_RUN、tabId、工作树 path@branch@sha、信箱绑定状态），≤30 行，不提问。
 
-10. **发送前校验（`正文非空校验`，定义见通用层 §4；事故见 P-43）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）。收到空件按作废处理，不猜对方意图。
-11. **轮末信号（`轮末信号`，信号规则见通用层 §4；v7/H2）与升级地址（H1）**：本角色的收尾动作 = 持指示令完成 push+关票，或本轮被叫停；完成后发一行 `轮末 <issue> <sha>` 给棘轮。升级/停止条件上报信箱 = `ROSTER` §2 user 行的 durable Run（实测不依赖终端在线），抄送棘轮。
-12. **交接与退役（`交接checklist`，通用层 §4 定义；v7/H4）**：换会话/换档位/被退役前发一行 `交接 <issue> <branch> <sha> <在途邮件ID>` 给监理与棘轮；被退役会话不得删分支、不得清工作树（user 决定）。
+10. **发送前校验（`正文非空校验`，定义见通用层 §4）**：任何 `send`/`reply` 前跑 `test -s <正文文件>`，非 0 即不发（实测：`cat 不存在的文件` 不阻塞 send，发出空件 msg_2fa4a81b84ab）。收到空件按作废处理，不猜对方意图。
+11. **升级地址**：升级/停止条件上报信箱 = 监理契约参数表里的 `USER_RUN`（user 的常驻 Run，实测不依赖终端在线）；未登记时就在本会话直接回话给 user。
+12. **交接与退役（`交接checklist`，通用层 §4 定义）**：换会话/换档位/被退役前发一行 `交接 <issue> <branch> <sha> <在途邮件ID>` 给监理；被退役会话不得删分支、不得清工作树（user 决定）。
 
 ## 上岗档位
 
@@ -58,7 +57,7 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
      --subject "#<issue> 待验收" --body <正文>
    ```
 
-   监理的 Run 从 `ROSTER` §2 取。你自己这一侧：`orca orchestration run-current --json`，没有就 `orca orchestration run-create --objective "delivery #<N>" --json`——监理打回要靠这个 Run 找到你。邮件由 Orca 主动送达，不要写脚本轮询 `check`（它会消费邮件）。
+   监理的 Run 从握手回执取（登记在台账头部）。你自己这一侧：`orca orchestration run-current --json`，没有就 `orca orchestration run-create --objective "delivery #<N>" --json`——监理打回要靠这个 Run 找到你。邮件由 Orca 主动送达，不要写脚本轮询 `check`（它会消费邮件）。
 7. **关闭**：等监理签字。v5 口径：监理判定 Issue 完成后会发一封 subject 含「验收通过·指示推送并关闭」的指示令邮件（内含 `commit=<sha> 分支=issue/<N>`）；**持该指示令**你才按 `docs/agents/issue-tracker.md` push `issue/<N>` → 写结论评论 → 关闭 Issue，triage 标签由监理落。**关闭不等于合并**：merge 归 **user**，代码在合并前可能还在 `issue/<N>` 上没进 main，`issue/<N>` 分支在合并前不得删。没收到指示令就交工 = 未完结，先发一封「请裁定是否指示推送并关闭」。
 
 **汇报里每个数字必带来源，且必须来自已完成运行（`已完成运行`）**：时间、退出码、场景 PASS/FAIL、计数都要标上日志文件或证据目录路径；跑完的才叫数字，没跑完的写「待实测」占位——无来源的数字当作未验证宁可不写，把未跑完的项写成完成结果同样禁止（实测交付方在门禁外 E2E 跑完前就把暂定耗时/成败发进 #310 评论，内含不存在的“修复后重跑全 PASS”：1 条公开更正评论 + `scenario_mouse.sh` 重跑约 10 min + 监理首轮若采信即被污染）。发 Issue 评论用 `gh issue comment <N> --repo <REPO> --body-file <文件>`，引用评论 ID 前先 `gh issue view <N> --repo <REPO> --json comments --jq '.comments[]|{id:.databaseId,created:.created_at}'` 拿真 ID，别凭记忆写；关闭用 `gh issue close <N> --repo <REPO> --comment "..."`（`--help` 实测：`-c/--comment <文本>`，另有 `-r/--reason`、`--duplicate-of`；**没有** `-F/--body-file`，长文本先 `gh issue comment` 再 close）。自造 flag 前先 `--help` 核对（`--help 核对`），`docs/agents/issue-tracker.md` 里已有的写法照用，不要绕开。
@@ -67,15 +66,11 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 
 **完成判定**：改动已提交、四段齐全（含末尾通俗解释）、证据落在 `EVIDENCE_ROOT`、Issue 状态与监理裁定一致。汇报正文为空即未完成——重档位下模型可能把预算全花在思考通道，加大预算或降档重发。
 
-## 卡点上报（干活时也盯着流程本身）
+## 流程摩擦（干活时也盯着流程本身）
 
-遇到「不是代码问题，是流程没覆盖、或流程与实际不符」，当场报流程优化者，不要自己绕过就算完，**也不要自己动手改流程文件**（v5 边界令；你踩到的坑最多，不报就是下轮再踩一次）：
+遇到「不是代码问题，是流程没覆盖、或流程与实际不符」，**就在本会话直接对 user 说一句**，四段能说到就说到：**现象**（命令原文 + 退出码/错误原文 + 时间戳或邮件 ID）/ **现行流程**（哪个文件哪节怎么说）/ **代价** / **想怎么改**。程序见通用层 §5：不建队列、不等轮间、不抄送、不排期。
 
-```bash
-orca orchestration send --to run:<流程优化者 Run> --subject "#<issue> 卡点 <短标题>" --body "<四段>"
-```
-
-四段（缺一不排进本轮）：**现象**（命令原文 + 退出码/错误原文 + 时间戳或邮件 ID）/ **现行流程**（`<文件:行号>` 怎么说）/ **代价** / **最小改法**（加一条什么机器可判的条件）。**不要自己往 `docs/acceptance/pain.md` 写**——队列只由流程优化者**单写**（三个会话写同一个文件会互相覆盖，台账已被回滚过一次）；邮件正文就是这条卡点的真相，优化者收到后落一行并把邮件 ID 当来源。上报后**继续干活不等回复**；只有触发停止条件的卡点才停。轮中不改流程文件，改动在轮间生效。
+**不要自己动手改流程文件**（边界令）。也不要绕过就算完——你踩到的坑最多，不说就是下轮再踩一次。说完继续干活不等回复；只有触发停止条件的才停。
 
 ## 什么时候停下来问
 
