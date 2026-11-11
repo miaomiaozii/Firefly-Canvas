@@ -5,7 +5,7 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **12**；门 sha = `1b4db3d`（`git cat-file -t 1b4db3d`=commit；2026-11-11 上架当场回读：门集五份各恰好 1 行 `version: 12`。`origin/main` 现头会因名册自身行前移而变，不影响门集文件，照抄下行门命令即可复现）
+- 生效版本 = **13**；门 sha 见 §1.4 v13 行（回写）；上岗当场必须回读：门集五份各恰好 1 行 `version: 13`（`python docs/acceptance/check_terms.py` exit 0 一并校代号与 `AGENTS门集一致`）。`origin/main` 现头会因名册自身行前移而变，不影响门集文件
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
 - 队列（`队列状态计数`，复跑 `python docs/acceptance/check_queue.py`，2026-11-11 读数）：`pain_rows=67`；pending=1（P-59 监理台账自推面，放宽面待 user）、unverified=1（P-14）、verified=2（P-41/P-47）、code-issue=2（P-12/P-13）、absorbed-v12=8（P-60..P-67）、absorbed-vN(≤v11)=50、merged→P-xx=3。
 - 缺件：三方会话与信箱均不存活（2026-11-11 实测：`orca terminal list --json` 无监理/工人登记 handle；`run_d2a14b6c9cd3` 报 `terminal_not_found`，P-62；v12 起上岗须跑 `信箱可达性自检`，失败即改在会话内汇报）。v12 起不需 user 手建三个会话：user 只起根会话（`agent launch --agent pi --worktree path:<issue 树> --surface terminal --prompt "<工人种子>"`），另两方由根会话按 `自举顺序` 建（P-67）。待 user：①下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）；②确认 v12 已生效（上岗门读数按 12 判）。
@@ -52,7 +52,7 @@
 
 ### 1.4 版本基准
 
-- 本轮基准值 = **12**（v12：吸收 P-60..P-67，会话自举/种子投递/同层三树/旧称与存活列/队列计数等，由棘轮宣布并登记于此）。
+- 本轮基准值 = **13**（v13：吸收 P-59（user 批准）/P-68/P-69 + `AGENTS.md` 配方 v13 化（user 授权代改）+ `AGENTS门集一致` 断言 + `上架回读对账`，由棘轮宣布并登记于此）。
 - v12 门 sha = **`1b4db3d`**（上架当场回读：`git push origin HEAD:main` → `25db8b3..1b4db3d`；`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" | grep "^version:"; done` → 五行全 `version: 12`；`python docs/acceptance/check_terms.py` exit 0；产品面 grep exit 1）。名册自身行后续前移不动门集文件。
 - P-59（监理 `台账自推面`）含放宽面（扩大监理可自推 `origin/main` 的文件面），**未吸收**、仍 pending；生效前监理契约停止条件按原文执行。
 - 历史基准：v10=班规文本质量审计（P-49/P-50/P-54/P-55/P-56；闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f，门 sha `456d752`，上架 `9d2d532`）。
@@ -87,7 +87,7 @@
 
 - 监理种子：`{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行，先跑上岗前置自检并把 handle/Run/工作树登记进 docs/acceptance/roster.md §2。`
 - 工人种子：`{REASON:007}{REASON:icode} 上岗交付：读 .pi/skills/impl-session-contract/SKILL.md 照它执行，先跑上岗前置自检（含建同层监理与棘轮会话），登记名册 §2 后停在等派活。`
-- 棘轮种子：`{REASON:iteacher} 上岗：读 .pi/skills/process-optimizer/SKILL.md 照它执行，先跑上岗前置自检（含队列/代号/信箱自检），登记名册 §2。`
+- 棘轮种子：`{REASON:iteacher}{REASON:ihouse} 上岗：读 .pi/skills/process-optimizer/SKILL.md 照它执行，先跑上岗前置自检（含队列/代号/信箱自检），登记名册 §2。`（组合选型见 `.pi/skills/reasoning-modes/SKILL.md` 棘轮行，P-69）
 
 建会话命令（`种子自举`，全路径见通用层 §3 第 3 条）：`orca agent launch --agent pi --worktree path:<专属树> --surface terminal --prompt "<种子>" --json`。专属树按 `同层三树`（工人 `issue/<N>`、监理 `review/<N>`、棘轮 `loop/<轮>`，均不得落在主仓根）；建成后要补投消息只能按 `发送判据` 判据执行。
 
@@ -242,6 +242,14 @@ flowchart LR
 ### 6.3 P-33（禁止面措辞口径，已入 pain.md）
 
 「推 `main`」这种笼统写法把两种行为混成一件：产品代码与测试推 `main`（绝对禁止）与流程层/台账按各自职权推 `origin/main`（本轮已实测发生且合规）。名册 §1.1、§2 各行已改为「推 `main`（产品代码与测试）」。三份班规正文的同步改动必须 bump `version: 4 → 5`（`版本门读数=宣布值`），因此**不在本轮轮内推**：等维护者宣布新值后于轮间生效（轮内冻结）。
+
+### 6.4 授权与批准记录（`授权记录`，v13；2026-11-11 loop2 棘轮）
+
+| 事项 | user 原话（消息 ref） | 棘轮动作 |
+|---|---|---|
+| 代改 `AGENTS.md`（P-68） | 「授权」（m00286） | 按 v13 重写门集配方段（只 user 起根会话、三棵专属树、种子随建随投）、补「版本：门集五份 `version: 13`」行、补棘轮档位注释。`AGENTS写权` 仍归 user，本次为一次性授权 |
+| P-59 放宽面批准 | 「批」（m00286） | 监理可自推 `origin/main` 的唯一面＝`git show --stat HEAD` 只含 `docs/acceptance/ledger.md`；已写进监理契约停止条件行与监理契约 §台账 |
+| 会话自举（P-67） | 「当我建立工人会话，它应该自行建立两个同层会话，而不是直接问我要 is 等」（m00137） | v12 已落 `自举顺序`；本轮起 user 只建工人根会话 |
 
 ## 7. v5 边界令（user 2026-11-10，维护者角色退役）
 

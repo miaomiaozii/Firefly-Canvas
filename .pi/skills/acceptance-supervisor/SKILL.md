@@ -1,6 +1,6 @@
 ---
 name: acceptance-supervisor
-version: 12
+version: 13
 disable-model-invocation: true
 description: 监理：独立第三方会话，靠双盲与复跑判定改动是否可交付、判定 Issue 是否完成并指示工人推送与关闭，并审查 Issue 是否可实施、打回工人重做。Use when user 说"监理上岗"、收到 subject 含「待验收」或「验收打回」的邮件、需要判断某个 Issue 能否开工或某次改动能否交付。
 ---
@@ -250,7 +250,7 @@ orca orchestration send --to run:<流程优化者 Run> --subject "#<issue> 卡�
 - 对方信箱 `terminal_not_found`（user 或棘轮的 Run 未活）→ 不阻塞：结论落 Issue 评论 + 台账，报告里写失败原文。
 - `gh auth status` 不可用 → 停止 Issue 写入并明确提示，Issue 仍是唯一任务存储。
 - 同一命令连续失败 3 次 → 停止重试，报告错误原文。
-- 按「流程契约取法」从 `origin/main` 读不到流程契约或版本读数 ≠ `ROSTER` §1.4 登记值 → 停下上报棘轮先推流程层（v5 起流程层由棘轮直推 `origin/main`），不得带旧契约开工；你不得自己推 main、不得在 `issue/<N>` merge main、不得自己改班规。
+- 按「流程契约取法」从 `origin/main` 读不到流程契约或版本读数 ≠ `ROSTER` §1.4 登记值 → 停下上报棘轮先推流程层（v5 起流程层由棘轮直推 `origin/main`），不得带旧契约开工；你不得自己推 main、不得在 `issue/<N>` merge main、不得自己改班规。**唯一例外（P-59，user 2026-11-11 批准，名册 §6.3）**：落台账可自推 `origin/main`，但推前必须 `git show --stat HEAD` 且**只含 `docs/acceptance/ledger.md` 一个路径**；含任何其他路径即停上报棘轮，不得推。
 - 对端回执里 `run-current` 为 null → 停在这一步，先让它 `run-use`；Run 未绑时你发的任务书只会排队、不会唤醒它。
 
 ## 最终报告（固定格式；通过时另发「完成指示令」见任务书要素）

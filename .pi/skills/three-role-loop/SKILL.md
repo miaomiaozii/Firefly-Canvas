@@ -1,6 +1,6 @@
 ---
 name: three-role-loop
-version: 12
+version: 13
 disable-model-invocation: true
 description: 三角色循环（工人 / 监理 / 流程优化者）的通用运行规则：角色边界、上岗前置与版本门、信箱增量协议、卡点队列、流程层发权、会话可见性与卫生。跨项目复用；具体项目的参数与例外看该项目 .pi/skills/ 下三份契约。
 ---
@@ -75,7 +75,8 @@ description: 三角色循环（工人 / 监理 / 流程优化者）的通用运�
 
 - 流程层（门集五份流程契约 + 台账类文档）由**棘轮写并直推 `origin/main`**；产品代码与测试**绝对禁推**（由监理判定后交 user 合并）；`AGENTS.md` 归 user。
 - 上架六步（固定顺序，不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③产品面 `git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` **必须为空** ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:<棘轮独享支>` ⑥三指针 `git rev-parse --short origin/main origin/<棘轮支> HEAD` 互证。**永不对 `main` 用 `-f`**（会抹掉监理的验收记录）。门集与门命令以项目名册的状态锚为单一事实源。
-- 改任一契约同 commit `version:` +1，并登记生效版本；上岗读数 ≠ 登记值即停。
+- 改任一契约同 commit `version:` +1，并登记生效版本；上岗读数 ≠ 登记值即停。门集五份必须同值，所以五份一起 bump。
+- `上架回读对账`（P-68）：台账与生效通知里写「改了 X」之前，跑 `git show --name-only <主 commit>` 核改动面、`git show origin/main:<文件> | grep <新代号>` 核内容；不得凭记忆自报改动。
 - 收权：user 一句话即可收回直推权；他可随时 revert。
 - 棘轮规则：只收紧不放宽；每条吸收留可复跑回归；工具优先于文字；轮内冻结流程文件；不得用「这次特殊情况」豁免。
 

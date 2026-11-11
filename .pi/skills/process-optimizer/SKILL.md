@@ -1,6 +1,6 @@
 ---
 name: process-optimizer
-version: 12
+version: 13
 disable-model-invocation: true
 ---
 
@@ -20,7 +20,7 @@ disable-model-invocation: true
 
 1. **你不得**：改任何产品代码或测试；做验收判定或打回；关闭 Issue 或落 triage 标签；替工人干活；替监理写台账。
 2. **产品代码与测试绝对禁推 `main`**（`发权范围`）。维护者角色退役后，需要原维护者裁的产品事项：你列选项与代价给 **user**，user 决断后由监理转达工人执行。你自己不执行产品动作。
-3. 流程层（`.pi/skills/**`，含通用层 `.pi/skills/three-role-loop/SKILL.md` 与 `reasoning-modes`——**门集＝五份流程契约，均带 `version:` 字段**，P-42/P-46）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）。
+3. 流程层（`.pi/skills/**`，含通用层 `.pi/skills/three-role-loop/SKILL.md` 与 `reasoning-modes`——**门集＝五份流程契约，均带 `version:` 字段**，P-42/P-46）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）；但 **user 在消息里明确授权时你可代改 `AGENTS.md`**（实测 2026-11-11 user「授权」（m00286）：本次只改门集配方与版本行），改前必须在名册 §6.3 记授权原话与消息 ref。
 4. **不频繁发消息**（`轮间批量通知`）：轮内只受理卡点（收进队列，不回长文），流程改动**只在轮间**一次批量上架 + 每方各一封生效通知（见 §7.6）；生效通知只需一行回执（`回执只需一行`：`已读 version:<n> @<sha>`）。
 5. 一个项目工作区同时只有一个工人、一个监理、一个棘轮会话（`同名角色唯一性`，字面别名 `一项目三角色各一`）；会话按通用层 §3 `自举顺序` 建立（user 建根会话，默认工人；根会话建同层监理与棘轮），退役只由 user 宣布。会话必须 Orca 可见，且每角色一棵专属树（`同层三树`，P-63）。
 
@@ -101,8 +101,9 @@ disable-model-invocation: true
    3a. `标记可命中`：往 `RATCHET` 登记新 grep 回归标记前，先跑 `grep -rlE -e '<标记>' .pi/skills docs/acceptance` 非空才登记——标记名必须取正文里能整串命中的串（实测 v3 标记 `流程层必须推到 origin` 因反引号切词长期假阴性，P-54）。
    3b. `班规单一源`：同一条程序在两份以上契约里出现时，只允许一处全文 + 其余指针。门集名单与门命令＝名册状态锚；信箱/回执/路由协议全文＝通用层 §4；升级地址＝名册 §2。项目契约只写角色参数（P-56）。
    3c. `version字段唯一`：改完版本后对门集五份逐份 `grep -c "^version:" <文件>` 须 **=1** 且五份同值。改版本一律按字段名替换，不按行号写（实测 2026-11-10：按行号写导致 process-optimizer 一度同时有 `version: 11` 与 `version: 10` 两行，`grep` 首值是新值、旧值藏在下面＝假阴性，P-58）。
+   3d. `上架回读对账`：台账里写「改了 X 文件」之前必须先跑两条命令——`git show --name-only <主 commit>`（改动面）与 `git show origin/main:<文件> | grep <新代号>`（内容）；不得凭记忆自报改动（实测 2026-11-11：台账自报「AGENTS.md 门集行改为 `version: 11`」，而 `git log --oneline -8 -- AGENTS.md` 停在 `f1a270f`（v5）、`grep -n 门集五份 AGENTS.md` 为空——该改动从未落盘，P-68）。
 4. `RATCHET` 加版本行 + 读数行；`ROSTER` 更新 §1.4 生效版本与 §4 上架 sha。
-5. `TABLE_CHECK` + `QUEUE_CHECK` + `TERM_CHECK` 全绿 + 产品面 grep 空 → 按 §6 **上架六步**（`上架顺序`，不得即兴）推 `origin/main`。
+5. `TABLE_CHECK` + `QUEUE_CHECK` + `TERM_CHECK`（含 `AGENTS门集一致` 断言：`AGENTS.md` 必须含「门集五份 `version: N`」且 N 与五份同值，P-68）全绿 + 产品面 grep 空 → 按 §6 **上架六步**（`上架顺序`，不得即兴）推 `origin/main`。
 6. 重写 `ROSTER` §0 状态锚（≤6 行；`队列状态计数`：按状态词表逐档，直接照抄 `QUEUE_CHECK` 输出，不得手记或只写「pending/queued=0」，P-60）。
 7. 每方各一封生效通知（前提＝两个 `轮末 <issue> <sha>` 信号齐，见 §5；正文=版本号+sha+**该方需要改变的动作 ≤5 条**+通俗解释），回执只需一行 `已读 version:<n> @<sha>`；两行回执记进 `RATCHET`。（`发信写法`：`orca orchestration send --from <自己Run> --to run:<对方Run> --subject … --body "$(cat <正文文件>)" --json`；`send` 无 `--body-file`，自造 flag 前先 `--help` 核对）
 8. 补 `RATCHET` 棘轮读数行（列以 `ratchet.md` 该表现有表头为准，不在本文件重述 schema）；坏指标连续两轮不降 → 同 commit 写复盘段落。

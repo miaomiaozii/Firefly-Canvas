@@ -1,6 +1,6 @@
 ---
 name: impl-session-contract
-version: 12
+version: 13
 disable-model-invocation: true
 description: 工人（旧称交付方）与监理的交接协议。Use when 准备提交一次交付、收到 subject 含「验收打回」或「指示推送并关闭」的邮件、要关某个 Issue。
 ---

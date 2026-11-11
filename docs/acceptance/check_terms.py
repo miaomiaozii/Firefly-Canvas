@@ -37,7 +37,12 @@ REQUIRED = {
     "身份册存活列": ["ratchet", ROSTER],
     "队列状态计数": ["ratchet", ROSTER],
     "信箱可达性自检": ["ratchet", ROSTER],
+    "上架回读对账": ["common", "ratchet", "pain"],
+    "AGENTS门集一致": ["ratchet", "pain"],
 }
+
+# AGENTS.md 入检查面（P-68）
+AGENTS = "AGENTS.md"
 
 # 门集五份必须同版本（P-58 复跑回归：按字段名读，不按行号）
 def versions():
@@ -65,7 +70,7 @@ def main():
     print("gate_version =", ver)
 
     texts = {}
-    for key, rel in list(GATE.items()) + [(ROSTER, ROSTER)]:
+    for key, rel in list(GATE.items()) + [(ROSTER, ROSTER), ("pain", "docs/acceptance/pain.md")]:
         path = os.path.join(ROOT, rel.replace("/", os.sep))
         texts[key] = io.open(path, encoding="utf-8", newline="\n").read()
 
@@ -78,6 +83,18 @@ def main():
     if bad:
         print("TERM_CHECK_FAILED terms_checked=%d failures=%d" % (len(REQUIRED), bad))
         return 1
+
+    # AGENTS门集一致（P-68）：AGENTS.md 必须带「门集五份 `version: N`」且 N 与门集同值
+    agents = io.open(os.path.join(ROOT, AGENTS), encoding="utf-8", newline="\n").read()
+    import re
+    m = re.search(r"门集五份 `version: (\d+)`", agents)
+    if not m:
+        print("AGENTS_CHECK_MISSING AGENTS.md 里没有「门集五份 `version: N`」行")
+        return 1
+    if m.group(1) != ver:
+        print("AGENTS_CHECK_MISMATCH AGENTS.md=%s 门集=%s" % (m.group(1), ver))
+        return 1
+    print("AGENTS_CHECK_OK agents_version=%s" % ver)
     print("TERM_CHECK_OK terms_checked=%d gate_version=%s" % (len(REQUIRED), ver))
     return 0
 
