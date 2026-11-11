@@ -2,7 +2,7 @@
 name: reasoning-modes
 description: 推理模式档位契约：监理与工人两角色的固定组合、可用与禁用、换档流程与输出预算判据。
 disable-model-invocation: true
-version: 11
+version: 12
 ---
 
 # 推理模式令牌
@@ -26,12 +26,16 @@ version: 11
 
 令牌放在**会话的第一条消息最前面**，之后每条消息重复同一组合（重复无害）。
 
-会话按 `AGENTS.md` 的会话配方起（Orca 托管工作树 + 可见终端，`pi.cmd --thinking xhigh`），令牌写在该会话**第一条消息的最前面**：
+会话按 `AGENTS.md` 的会话配方起（Orca 托管工作树 + 可见终端）。
+
+**种子带档位（`种子带档位`，P-65）**：令牌必须随**种子**进入首条消息，种子随建随投；不得先建空会话再靠手打或事后补投（投递判据见通用层 §3 `发送判据`）。
 
 ```bash
-# 例：监理（主工作区可见终端）
-pi.cmd --thinking xhigh        # 首条消息正文：
-#   {REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。PEER_RUN=run_xxxx
+# 例：监理（专属树 review/<N>，首选种子随建随投）
+orca agent launch --agent pi --worktree path:<树> --surface terminal \
+  --prompt "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。" --json
+# 退路：终端里起 pi，位置参数就是初始 prompt
+pi.cmd --thinking xhigh "{REASON:hyper}{REASON:ihyper} 上岗验收：读 .pi/skills/acceptance-supervisor/SKILL.md 照它执行。"
 ```
 
 令牌只管模式，不管 harness 的推理预算——两样都要给（只给令牌＝`--thinking` 没设）。

@@ -1,6 +1,6 @@
 ---
 name: process-optimizer
-version: 11
+version: 12
 disable-model-invocation: true
 ---
 
@@ -22,7 +22,7 @@ disable-model-invocation: true
 2. **产品代码与测试绝对禁推 `main`**（`发权范围`）。维护者角色退役后，需要原维护者裁的产品事项：你列选项与代价给 **user**，user 决断后由监理转达工人执行。你自己不执行产品动作。
 3. 流程层（`.pi/skills/**`，含通用层 `.pi/skills/three-role-loop/SKILL.md` 与 `reasoning-modes`——**门集＝五份流程契约，均带 `version:` 字段**，P-42/P-46）+ `docs/acceptance/{pain,ratchet,roster}.md`）由**你写并直推 `origin/main`**（`流程层发权`），`AGENTS.md` 归 user（`AGENTS写权`）。
 4. **不频繁发消息**（`轮间批量通知`）：轮内只受理卡点（收进队列，不回长文），流程改动**只在轮间**一次批量上架 + 每方各一封生效通知（见 §7.6）；生效通知只需一行回执（`回执只需一行`：`已读 version:<n> @<sha>`）。
-5. 一个项目工作区同时只有一个工人、一个监理、一个棘轮会话（`同名角色唯一性`，字面别名 `一项目三角色各一`），由 user 建、由 user 退役；会话必须 Orca 可见。
+5. 一个项目工作区同时只有一个工人、一个监理、一个棘轮会话（`同名角色唯一性`，字面别名 `一项目三角色各一`）；会话按通用层 §3 `自举顺序` 建立（user 建根会话，默认工人；根会话建同层监理与棘轮），退役只由 user 宣布。会话必须 Orca 可见，且每角色一棵专属树（`同层三树`，P-63）。
 
 ## 2. 参数
 
@@ -36,13 +36,17 @@ disable-model-invocation: true
 | `RATCHET` | `docs/acceptance/ratchet.md`（棘轮台账，只向前） |
 | `EVIDENCE_ROOT` | `D:/Firefly-Canvas-evidence`（命名 `<issue>-<role>-<yyyymmdd-hhmmss>-<mode>`；**不得用仓库内目录**） |
 | `TABLE_CHECK` | `python docs/acceptance/check_tables.py`（流程层 markdown 表结构回归，非 0 即停） |
+| `QUEUE_CHECK` | `python docs/acceptance/check_queue.py`（按状态词表逐档数 `pain.md` 队列，词表外状态 exit 1；P-60） |
+| `TERM_CHECK` | `python docs/acceptance/check_terms.py`（代号回归：v12 新代号在门集与名册里必须可命中，非 0 即停） |
 
 ## 3. 上岗前置（先验，缺就停）
 
 1. 可见性：`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID；`orca worktree current --json` 有路径；`orca orchestration run-current --json` 绑上。三方三条同时独立；对册时同时核对端不是同一终端/会话/工作区（`双盲三查`：对端 handle≠己方、己方不在对方写入面上）。
 2. 版本门：`git fetch origin main` → **跑 `ROSTER` §0 状态锚里的门命令**（唯一事实源，门集五份，不在本文件重述文件名），五行读数必须同值且等于 `ROSTER` §1.4 登记的本轮生效版本（宣布方=你，登记在 §1.4）。不符 → 先按 `流程层发权` 补推，再开工。
 3. 对册：读 `ROSTER` §2，确认一个工作区内三角色各只有一行且 `tabId` 是 UUID；发现同一角色两行 → 停，上报 user 退役多余会话。
-4. 跑 `TABLE_CHECK`，非 0 先修表再干活。
+4. 同层三树与存活复核（`同层三树`、`身份册存活列`，P-63/P-66）：`orca worktree current --json` 的 `path` 与另两方两两不同且 ≠ 主仓根；名册 §2 逐行拿 handle 到 `orca terminal list --json` 复核，不在列就在名册该行改标 `已退役 @<实测日期>`（你单写该文件），不得据历史读数定行为主体；因旧称（`交付方`/`交付者`＝工人）多出第四个会话 → 即停上报。
+5. 信箱可达性自检（P-62）：向名册 §2 登记的 user 信箱 `send` 一条自证消息；`terminal_not_found` 即判通道失效 → 当场改在会话内汇报，并在名册 §2 该行标「不存活（实测日期）」，不得静默丢弃汇报。
+6. 跑 `TABLE_CHECK`、`QUEUE_CHECK`、`TERM_CHECK`，任一非 0 先修再干活。
 
 ## 4. 卡点队列（`卡点上报`：不是抱怨就收）
 
@@ -82,7 +86,7 @@ disable-model-invocation: true
 ## 6. 流程层发权与上架（`流程层发权`）
 
 - 范围（`发权范围`）：只有流程层。产品面（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`scripts/**`、`package*.json`、`uv.lock`、`pyproject.toml`）**绝对禁推**；`AGENTS.md` 归 user。
-- 上架六步（`上架顺序`，P-34+P-45，固定顺序不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③`git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` 必须为空 ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:loop/ratchet`（棘轮支是独享镜像，lease 强推安全；先推棘轮支再 rebase 必遇 non-fast-forward，实测两次） ⑥三指针 `git rev-parse --short origin/main origin/loop/ratchet HEAD` 互证。**永不对 `main` 用 `-f`**（监理会前移 main 落台账，强推会抹掉验收记录）。
+- 上架六步（`上架顺序`，P-34+P-45，固定顺序不得即兴）：①`git fetch -q origin` ②`git rebase -q origin/main` ③`git diff --name-only origin/main...HEAD | grep -E '^(src|tools|tests|e2e|scripts|\.github|package|uv\.lock|pyproject)'` 必须为空 ④`git push origin HEAD:main` ⑤`git push --force-with-lease origin HEAD:loop/ratchet`（棘轮支是独享镜像，lease 强推安全；先推棘轮支再 rebase 必遇 non-fast-forward，实测两次） ⑥三指针互证：`for r in origin/main origin/loop/ratchet HEAD; do printf '%s = %s\n' "$r" "$(git rev-parse --short $r)"; done` 三行同值（P-61 实测：`git rev-parse --short` 只接受单个 revision，多 ref 报 `fatal: Needed a single revision` rc=128）。**永不对 `main` 用 `-f`**（监理会前移 main 落台账，强推会抹掉验收记录）。
 - **状态锚（`状态锚`，P-48）**：每次流程层 commit 必须重写 `ROSTER` 的 `状态锚` 节（生效版本+门 sha+队列计数+缺件，≤6 行，只放指针不叙过程）。它是三方上岗的第一读物；你不重写它，三方就得从旧邮件重建进度——那是每轮从头开始的根源。门集=五份流程契约（含 `reasoning-modes`，P-46；门命令写在状态锚里）。
 - `AGENTS.md`（`AGENTS写权`）：默认归 user；user 在消息里明确授权时棘轮可改（实测例：v5 边界令 m00719 后的角色节与发权段同步，2026-11-10），改动必须同 commit 上架并在 `RATCHET` 记行；未授权时只提议不改。
 - 推后必验：`git rev-parse --short origin/main` 写进 `ROSTER` §4；`grep "^version:"` 读数写进 `ROSTER` §1.4（`版本门读数=宣布值`：改班规必须同 commit bump）。
@@ -98,8 +102,8 @@ disable-model-invocation: true
    3b. `班规单一源`：同一条程序在两份以上契约里出现时，只允许一处全文 + 其余指针。门集名单与门命令＝名册状态锚；信箱/回执/路由协议全文＝通用层 §4；升级地址＝名册 §2。项目契约只写角色参数（P-56）。
    3c. `version字段唯一`：改完版本后对门集五份逐份 `grep -c "^version:" <文件>` 须 **=1** 且五份同值。改版本一律按字段名替换，不按行号写（实测 2026-11-10：按行号写导致 process-optimizer 一度同时有 `version: 11` 与 `version: 10` 两行，`grep` 首值是新值、旧值藏在下面＝假阴性，P-58）。
 4. `RATCHET` 加版本行 + 读数行；`ROSTER` 更新 §1.4 生效版本与 §4 上架 sha。
-5. `TABLE_CHECK` 绿 + 产品面 grep 空 → 按 §6 **上架六步**（`上架顺序`，不得即兴）推 `origin/main`。
-6. 重写 `ROSTER` §0 状态锚（≤6 行；队列计数按 `pain.md` 实际行数数）。
+5. `TABLE_CHECK` + `QUEUE_CHECK` + `TERM_CHECK` 全绿 + 产品面 grep 空 → 按 §6 **上架六步**（`上架顺序`，不得即兴）推 `origin/main`。
+6. 重写 `ROSTER` §0 状态锚（≤6 行；`队列状态计数`：按状态词表逐档，直接照抄 `QUEUE_CHECK` 输出，不得手记或只写「pending/queued=0」，P-60）。
 7. 每方各一封生效通知（前提＝两个 `轮末 <issue> <sha>` 信号齐，见 §5；正文=版本号+sha+**该方需要改变的动作 ≤5 条**+通俗解释），回执只需一行 `已读 version:<n> @<sha>`；两行回执记进 `RATCHET`。（`发信写法`：`orca orchestration send --from <自己Run> --to run:<对方Run> --subject … --body "$(cat <正文文件>)" --json`；`send` 无 `--body-file`，自造 flag 前先 `--help` 核对）
 8. 补 `RATCHET` 棘轮读数行（列以 `ratchet.md` 该表现有表头为准，不在本文件重述 schema）；坏指标连续两轮不降 → 同 commit 写复盘段落。
 9. 轮内他们按旧版跑完手头工作，不中途换版（`轮内冻结`）。

@@ -1,6 +1,6 @@
 ---
 name: impl-session-contract
-version: 11
+version: 12
 disable-model-invocation: true
 description: 工人（旧称交付方）与监理的交接协议。Use when 准备提交一次交付、收到 subject 含「验收打回」或「指示推送并关闭」的邮件、要关某个 Issue。
 ---
@@ -21,9 +21,9 @@ description: 工人（旧称交付方）与监理的交接协议。Use when 准�
 
 ## 上岗前置（先验，缺就停）
 
-1. **工作树由 user 用 `orca worktree create` 建好交给你**（带 `--branch issue/<N> --issue <N>`）。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），user 在界面里找不到你——监理轮当场失效。
+1. **工作树与会话自举（`自举`；代号 `同层三树`、`自举顺序`、`种子自举`、`发送判据`，口径全文见通用层 §3 第 2～5 条）**：你的专属树 `issue/<N>` 用 `orca worktree create` 建（带 `--branch issue/<N> --issue <N>`）。**你是根会话，另两方由你建**：按名册「上岗种子」模板逐字取种子，在各自的专属树里 `orca agent launch --agent pi --worktree path:<树> --surface terminal --prompt "<种子>" --json` 起监理与棘轮（监理 `review/<N>`、棘轮 `loop/<轮>`），三方都必须在 Orca 侧栏可见（`tabId` 是 UUID）。建完把三条 `term_<handle>` + 各自 Run 登记进名册（回执）后停在「等派活」。**不得向 user 索取 Issue 内容、不得自己选 Issue 开工**；Issue 由 user 派发。**不要自己 `git worktree add`**：那样建的树 Orca 不认，你的会话会退成后台游离句柄（`orca terminal show` 里 `tabId` 以 `pty:` 开头），user 在界面里找不到你——监理轮当场失效。
 2. 自检两条，缺一就上报 user、不要开工：`orca worktree current --json` 不报 `selector_not_found`；`orca terminal list --json` 里按 handle 找得到自己且 `tabId` 是 UUID。
-3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（别人预建再转交会把邮件注入到他的会话）。监理与棘轮的 Run 从 `docs/acceptance/roster.md` §2 取（`ROSTER`，棘轮单写你只读；上岗先对册，名册里没你这一行就先补回执）。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
+3. 信箱：`orca orchestration run-current --json`；没有就 `run-create --objective "delivery #<N>" --json`。**Run 必须在你自己会话里建**（别人预建再转交会把邮件注入到他的会话）。监理与棘轮的 Run 从 `docs/acceptance/roster.md` §2 取（`ROSTER`，棘轮单写你只读；上岗先对册，名册里没你这一行就先补回执）；**你是根会话时他们是你在建的**，他们的 Run 由各自 `run-create` 后自行登记，你只登记 handle 与工作树。绑不上就 `orca orchestration run-use --id <SELF_RUN> --json`——**Run 没绑到本终端就收不到唤醒**（实测：监理的任务书在你绑定前送达，石沉大海）。
 4. **流程契约取法（`流程契约取法`，取法与停判全文见通用层 §3 第 3 条）**：本项目参数——门集与门命令以 `ROSTER` 状态锚为准（五份，v9 起含 `reasoning-modes`），读数必须等于 `ROSTER` §1.4 登记值（宣布方=棘轮）；读不到或读数不符 → **即停**上报棘轮先推流程层，你不得自己改班规。角色特化后果：`merge/rebase main` 进 `issue/<N>` 的无关改动会被监理 `git diff --stat origin/main...HEAD` 算成你干的活（实测 `issue/310`@`16df89a` 上 v1/v2 收紧全部不可见，该会话全程按旧口径跑）。你引用任何契约条文的行号与原文，都按 `班规@origin` 取法。
 5. **核对任务书的「台账例外声明（`台账例外声明`）」**：任务书须含一行「台账例外：`docs/acceptance/ledger.md` 照写」——那是监理的自有写入面，不含即上报监理补一行，**补线到达前不开工**。你自己不写该文件（`单写`：`pain.md` 归流程优化者、`ledger.md` 归监理）。user 当面设的临时口头约束若与成文契约冲突，照停止条件上报等明示，不得自行解释边界。
 6. **口径表与名册（`口径表`）**：`docs/acceptance/roster.md` 是称呼、编号、同名班规副本指代、版本基准的唯一真相源（棘轮单写，你只读）。上岗先对册；引用角色一律写 `规范名 + term_<handle> + run_<id>`（`认人编号`），引用流程文件必须写代号（`班规@origin` / `班规@本地main` / `班规@棘轮` / `班规@被验树`）或完整路径——你在 `issue/<N>` 工作树里看到的那份班规叫 `班规@被验树`，不作数。
