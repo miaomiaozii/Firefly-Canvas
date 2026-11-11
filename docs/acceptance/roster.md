@@ -5,7 +5,7 @@
 
 ## 0. 状态锚（`状态锚`，P-48；三方上岗第一读物；棘轮每次流程层 commit 重写）
 
-- 生效版本 = **12**；门 sha = 见 §1.4（v12 上架主 commit，上架当场回写；本轮实测 `origin/main` 门集五份全 `version: 12`）（`git cat-file -t 3a1f19a`=commit；2026-11-11 上岗门命令回读：五份各恰好 1 行 `version: 11`。`origin/main` 现头会因名册自身行前移而变，不影响门集文件，照抄下行门命令即可复现）
+- 生效版本 = **12**；门 sha = `1b4db3d`（`git cat-file -t 1b4db3d`=commit；2026-11-11 上架当场回读：门集五份各恰好 1 行 `version: 12`。`origin/main` 现头会因名册自身行前移而变，不影响门集文件，照抄下行门命令即可复现）
 - 门命令（唯一事实源，`状态锚`；三方照抄本行，不要在契约里重述）：`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" \| grep "^version:"; done` → 五行同值。
 - 队列（`队列状态计数`，复跑 `python docs/acceptance/check_queue.py`，2026-11-11 读数）：`pain_rows=67`；pending=1（P-59 监理台账自推面，放宽面待 user）、unverified=1（P-14）、verified=2（P-41/P-47）、code-issue=2（P-12/P-13）、absorbed-v12=8（P-60..P-67）、absorbed-vN(≤v11)=50、merged→P-xx=3。
 - 缺件：三方会话与信箱均不存活（2026-11-11 实测：`orca terminal list --json` 无监理/工人登记 handle；`run_d2a14b6c9cd3` 报 `terminal_not_found`，P-62；v12 起上岗须跑 `信箱可达性自检`，失败即改在会话内汇报）。v12 起不需 user 手建三个会话：user 只起根会话（`agent launch --agent pi --worktree path:<issue 树> --surface terminal --prompt "<工人种子>"`），另两方由根会话按 `自举顺序` 建（P-67）。待 user：①下一轮产品 Issue 编号（汇报 msg_d2c473ec44f7）；②确认 v12 已生效（上岗门读数按 12 判）。
@@ -53,7 +53,7 @@
 ### 1.4 版本基准
 
 - 本轮基准值 = **12**（v12：吸收 P-60..P-67，会话自举/种子投递/同层三树/旧称与存活列/队列计数等，由棘轮宣布并登记于此）。
-- v12 门 sha = 待上架回写（本 commit 推完当场把 `git rev-parse --short origin/main` 写进本节，P-45 口径）。
+- v12 门 sha = **`1b4db3d`**（上架当场回读：`git push origin HEAD:main` → `25db8b3..1b4db3d`；`for f in acceptance-supervisor impl-session-contract process-optimizer three-role-loop reasoning-modes; do MSYS_NO_PATHCONV=1 git show "origin/main:.pi/skills/$f/SKILL.md" | grep "^version:"; done` → 五行全 `version: 12`；`python docs/acceptance/check_terms.py` exit 0；产品面 grep exit 1）。名册自身行后续前移不动门集文件。
 - P-59（监理 `台账自推面`）含放宽面（扩大监理可自推 `origin/main` 的文件面），**未吸收**、仍 pending；生效前监理契约停止条件按原文执行。
 - 历史基准：v10=班规文本质量审计（P-49/P-50/P-54/P-55/P-56；闭合：监理 msg_83155bb54a63、工人 msg_e5397fca2f9f，门 sha `456d752`，上架 `9d2d532`）。
 - 历史基准：v9=P-46 门集五份 + P-48 状态锚（闭合：监理 msg_3e1b9c044635、工人 msg_a4110b6924e4，门 sha `4e07c76`）。历史：v8=P-44/P-45（闭合：监理 msg_c7262bdc2017、工人 msg_9d23ad27d176，均 @5719fff 直达棘轮 Run——`四类直发` 首轮即闭合）。
@@ -163,6 +163,7 @@
 
 ## 4. 流程层发权与上架状态（`流程层发权`）
 
+- **最新已上架 = `origin/main@1b4db3d`（v12，2026-11-11 loop2 棘轮）**：上架面 `.pi/skills/{acceptance-supervisor,impl-session-contract,process-optimizer,three-role-loop,reasoning-modes}/SKILL.md` + `docs/acceptance/{pain,ratchet,roster}.md` + `docs/acceptance/check_queue.py`、`check_terms.py`；推后回读五行 `version: 12`、`check_terms` exit 0、产品面 grep exit 1。上一版：`origin/main@25db8b3`（P-62 登记）。
 - **谁写谁推**：流程层 = 四份班规（三份角色契约 + 通用层 `.pi/skills/three-role-loop/SKILL.md`，代号 `班规@通用`；**通用层带 `version:` 字段，版本门 grep 命中四份**，P-42）+ `docs/acceptance/{pain,ratchet,roster}.md`。**写入与直推 `origin/main` 由棘轮执行**（流程优化者（棘轮）=term_e7ba05f8-bf24-49f2-8fdf-ac7edc9ce0f0=run_c40189b45d94），维护者只确认（实测口径：「流程的相关的就是你编辑你推送啊，只需要我确认就可以了」）。监理与交付方**不得改班规**，异议走 `pain.md`（邮件上报，不写文件）。
 - **发权范围（`发权范围`）**：只有上述流程层文件。产品代码与测试（`src/**`、`tools/**`、`tests/**`、`e2e/**`、`.github/**`、`package*.json`、`uv.lock`、`pyproject.toml`）绝对禁推；`AGENTS.md` 归 user，棘轮持 user 授权时可改并同 commit 上架（`AGENTS写权`，实测：v5 边界令 m00719 后的同步）。
 - **收权（`收权`）**：user 一句「流程层不许直推」即回到他合并；他可随时 revert 棘轮提交。
