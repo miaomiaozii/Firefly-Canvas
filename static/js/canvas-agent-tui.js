@@ -970,6 +970,18 @@ function agentProjectId(){ return canvas?.project_id || canvas?.project || sourc
 // #301：「Enter 发送」与「发送」按钮共用的提交逻辑（空输入 no-op）：
 // busy → 排队 follow_up（#268：该通道无 images 参数，附件留在队列随下一条 prompt 发出）；
 // 否则发 prompt 并带上待发附件（图片/视频 contact sheet/音频波形卡）。
+// #313：输入框随内容自动增高，上限 140px（与 CSS max-height 一致）后出内部滚动
+const AGENT_TUI_INPUT_MAX_H = 140;
+function agentTuiAutoGrow(inputEl){
+    if (!inputEl) return;
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, AGENT_TUI_INPUT_MAX_H) + 'px';
+}
+function agentTuiResetGrow(inputEl){
+    if (!inputEl) return;
+    inputEl.style.height = '';
+}
+
 function agentTuiSendInput(inputEl, nodeId, projectId) {
     const message = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     if (!message) return;
@@ -982,6 +994,7 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
         sendAgentPrompt(nodeId, projectId, message, pending);
     }
     inputEl.value = '';
+    agentTuiResetGrow(inputEl); // #313
 }
 
 function bindAgentNodeControls(el, node){
@@ -1025,6 +1038,7 @@ function bindAgentNodeControls(el, node){
     const inputEl = el.querySelector('[data-agent-tui-input]');
     if (inputEl) {
         inputEl.addEventListener('mousedown', event => event.stopPropagation());
+        inputEl.addEventListener('input', () => agentTuiAutoGrow(inputEl)); // #313：随内容增高
         inputEl.addEventListener('keydown', event => {
             event.stopPropagation();
             if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { // #252：IME 候选确认回车不触发发送
@@ -1069,6 +1083,7 @@ function bindAgentNodeControls(el, node){
             if (message) {
                 sendAgentSteer(nodeId, projectId, message);
                 inputEl.value = '';
+                agentTuiResetGrow(inputEl); // #313
             }
         });
     }
@@ -1084,6 +1099,7 @@ function bindAgentNodeControls(el, node){
             if (message) {
                 sendAgentFollowUp(nodeId, projectId, message);
                 inputEl.value = '';
+                agentTuiResetGrow(inputEl); // #313
             }
         });
     }

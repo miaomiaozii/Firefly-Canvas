@@ -4095,16 +4095,7 @@ button.prompt-flow-context-image { cursor:pointer; }
     font-size: 13px;
 }
 
-.agent-tui-input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: #c0caf5;
-    font-family: inherit;
-    font-size: 12px;
-    padding: 2px 0;
-}
+/* #313：同名死规则已删（长期被下方生效块覆盖，误导维护） */
 
 .agent-tui-input::placeholder {
     color: #565f89;
@@ -4317,6 +4308,7 @@ button.prompt-flow-context-image { cursor:pointer; }
 }
 
 /* Textarea input for TUI */
+/* #313：随内容自动增高（JS agentTuiAutoGrow 驱动），上限 140px（原 80px 会卡死增高）后内部滚动 */
 .agent-tui-input {
     flex: 1;
     min-width: 0;
@@ -4329,7 +4321,7 @@ button.prompt-flow-context-image { cursor:pointer; }
     padding: 6px 10px;
     resize: none;
     overflow-y: auto;
-    max-height: 80px;
+    max-height: 140px;
     line-height: 1.4;
 }
 .agent-tui-input:focus {
