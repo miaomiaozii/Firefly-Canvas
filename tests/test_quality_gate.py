@@ -330,6 +330,26 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn(step, MODE_STEPS["release"])
         self.assertNotIn(step, BROWSER_EVIDENCE_STEP_NAMES)
 
+    def test_tabbit_e2e_suite_wires_mouse_scenario(self):
+        # #310：#295 只接了三个套件，scenario_mouse.sh（#299 的鼠标维，m1–m6）
+        # 不在 SCENARIO_SCRIPTS 里，任何档位都不会被跑到。这里锁套件清单：
+        # 四套件缺一不可，且脚本文件必须在册——防止再接线遗漏。
+        # 门内该步恒为环境跳过（合成临时 home 看不见 tabbit-cli，#310 承认的
+        # 空步），真实留证走门外执行入口脚本，路径取舍见 #310 评论。
+        from tests import tabbit_e2e_evidence
+        self.assertEqual(
+            set(tabbit_e2e_evidence.SCENARIO_SCRIPTS),
+            {
+                "tools/e2e/scenario_keys.sh",
+                "tools/e2e/scenario_delete_undo.sh",
+                "tools/e2e/scenario_ux_rules.sh",
+                "tools/e2e/scenario_mouse.sh",
+            },
+        )
+        root = Path(__file__).resolve().parents[1]
+        for script in tabbit_e2e_evidence.SCENARIO_SCRIPTS:
+            self.assertTrue((root / script).is_file(), f"套件脚本缺失: {script}")
+
     def test_all_browser_runners_resolve_their_repo_root(self):
         # 门在临时 workspace 里执行步骤（create_execution_workspace），runner 里硬编码的
         # 仓库根会读到工作区外的源码：证据看起来绿，测的却是另一份代码。
