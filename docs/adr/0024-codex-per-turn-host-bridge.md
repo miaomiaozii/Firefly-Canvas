@@ -64,3 +64,7 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 
 - 正面：codex 会话 Firefly/外部 CLI 双向接续（同 `~/.codex/sessions/` 库）；per-turn 天然无「刷新丢历史」；配合票C events.jsonl 完整回放。
 - 代价：每轮 spawn（秒级）；reasoning 非流式；usage 记账需差分。
+
+## 勘误（2026-11-13，WS E2E 实测）
+
+- 正文 §1 中「message_update(ames)」为笔误：WS 线上 payload 键为 `assistantMessageEvent`，形如 `{type: text_delta|thinking_delta|thinking_start|…, delta}`（前端 `canvas-agent-tui.js:249-268` 读 `event.assistantMessageEvent.{type,delta}`；2026-11-13 定稿 main 实跑钉死，见 IMPL-NOTES #317 复验节）。映射语义不变，仅键名更正。
