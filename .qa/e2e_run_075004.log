@@ -1,0 +1,7 @@
+== Firefly E2E QA @ http://127.0.0.1:3000/static/smart-canvas.html?id=28f95417ff914c8d9c77d913d750d7d3&project=28f95417ff914c8d9c77d913d750d7d3&project_mode=1 ==
+PASS  s1-agent-connected  "evidence":"healthz {\"
+PASS  s2-model-pool  "evidence":"llama-cpp-local/qwen38-gsq-iq3s|strata-remote/flash-next-iq3s-gpu23|strata-remote/flash-next-turbo-iq3s"
+PASS  s3-real-reply  "evidence":"llama-cpp-local/qwen38-gsq-iq3s"
+PASS  s4-error-visible  "evidence":"hi e2e"
+PASS  s5-stall-watchdog(source)
+== 失败数: 0 ==
