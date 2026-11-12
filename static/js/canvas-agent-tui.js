@@ -31,6 +31,10 @@ function getAgentTuiState(nodeId) {
             reconnectStopped: false, // 触顶后停止自动重连，等待手动「重试连接」
             lastError: '',           // 后端失败原因（error 事件 message），供横幅展示
             closing: false,          // cleanupAgentTuiState 关闭前置位，onclose 据此不安排重连
+            draft: '',               // #314：输入草稿（任何重建后恢复；发送/steer/followup 清空）
+            composing: false,        // #314：IME 组合态标记——组合期间推迟节点重建，避免中文输入被杀
+            pendingRerender: false,  // #314：组合期间被推迟的重建标记
+            scrollState: null,       // #314：{scrollTop, atBottom} 阅读位置保留
         });
     }
     return agentTuiState.get(nodeId);
@@ -920,7 +924,7 @@ function agentNodeBodyHtml(node) {
         <div class="agent-tui-input-row">
             <div class="agent-tui-input-line">
                 <span class="agent-tui-prompt" aria-hidden="true">&gt;</span>
-                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="1"></textarea>
+                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="1">${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
             </div>
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
@@ -994,6 +998,7 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
         sendAgentPrompt(nodeId, projectId, message, pending);
     }
     inputEl.value = '';
+    const st = getAgentTuiState(nodeId); if (st) st.draft = ''; // #314：发送后草稿状态同步清空
     agentTuiResetGrow(inputEl); // #313
 }
 
@@ -1036,9 +1041,24 @@ function bindAgentNodeControls(el, node){
 
     // Bind input
     const inputEl = el.querySelector('[data-agent-tui-input]');
+    const state0 = getAgentTuiState(nodeId); // #314：草稿/IME/重渲染状态
     if (inputEl) {
         inputEl.addEventListener('mousedown', event => event.stopPropagation());
-        inputEl.addEventListener('input', () => agentTuiAutoGrow(inputEl)); // #313：随内容增高
+        inputEl.addEventListener('input', () => { // #313/#314：随内容增高 + 草稿入状态
+            state0.draft = inputEl.value;
+            agentTuiAutoGrow(inputEl);
+        });
+        inputEl.addEventListener('compositionstart', () => { state0.composing = true; }); // #314：IME 保护
+        inputEl.addEventListener('compositionend', () => {
+            state0.composing = false;
+            state0.draft = inputEl.value;
+            if (state0.pendingRerender) {
+                state0.pendingRerender = false;
+                renderAgentNode(nodeId);
+                const re = el.querySelector('[data-agent-tui-input]'); // 重建后恢复焦点/光标
+                if (re) { re.focus(); const pos = re.value.length; re.setSelectionRange(pos, pos); }
+            }
+        });
         inputEl.addEventListener('keydown', event => {
             event.stopPropagation();
             if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { // #252：IME 候选确认回车不触发发送
@@ -1083,6 +1103,7 @@ function bindAgentNodeControls(el, node){
             if (message) {
                 sendAgentSteer(nodeId, projectId, message);
                 inputEl.value = '';
+                { const st = getAgentTuiState(nodeId); if (st) st.draft = ''; } // #314
                 agentTuiResetGrow(inputEl); // #313
             }
         });
@@ -1099,6 +1120,7 @@ function bindAgentNodeControls(el, node){
             if (message) {
                 sendAgentFollowUp(nodeId, projectId, message);
                 inputEl.value = '';
+                { const st = getAgentTuiState(nodeId); if (st) st.draft = ''; } // #314
                 agentTuiResetGrow(inputEl); // #313
             }
         });
@@ -1213,9 +1235,23 @@ function bindAgentNodeControls(el, node){
 }
 
 function renderAgentNode(nodeId) {
+    // #314：IME 组合进行中——推迟重建，compositionend 后补渲染（中文输入不被杀）
+    const st314 = agentTuiState.get(nodeId);
+    if (st314 && st314.composing) { st314.pendingRerender = true; return; }
+
     // Find the rendered element for this node and re-render its body
     const el = document.querySelector(`[data-id="${nodeId}"]`);
     if (!el) return;
+
+    // #314：重建前捕获阅读位置与输入焦点/光标，重建后恢复
+    const prevBody = el.querySelector('[data-agent-tui-body]');
+    const prevInput = el.querySelector('[data-agent-tui-input]');
+    const hadFocus = prevInput && document.activeElement === prevInput;
+    const selStart = prevInput ? prevInput.selectionStart : 0;
+    const selEnd = prevInput ? prevInput.selectionEnd : 0;
+    if (prevBody && st314) {
+        st314.scrollState = { scrollTop: prevBody.scrollTop, atBottom: prevBody.scrollHeight - prevBody.scrollTop - prevBody.clientHeight < 40 };
+    }
 
     // Find the node data
     const node = canvasState.nodes.find(n => n.id === nodeId);
@@ -1234,10 +1270,20 @@ function renderAgentNode(nodeId) {
         bodyContainer.innerHTML = body;
         // Re-bind controls
         bindAgentNodeControls(bodyContainer, node);
-        // Scroll to bottom
-        const messagesEl = bodyContainer.querySelector('[data-agent-tui-messages]');
-        if (messagesEl) {
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+        // Scroll to bottom（#314：目标改为真滚动容器 .agent-tui-body；阅读位置非底部时恢复原位）
+        const bodyScrollEl = bodyContainer.querySelector('[data-agent-tui-body]');
+        if (bodyScrollEl) {
+            const ss = st314 && st314.scrollState;
+            if (ss && !ss.atBottom) { bodyScrollEl.scrollTop = ss.scrollTop; }
+            else { bodyScrollEl.scrollTop = bodyScrollEl.scrollHeight; }
+        }
+        // #314：焦点在输入框时重建——恢复焦点与光标（草稿已由模板注入）
+        if (hadFocus) {
+            const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
+            if (newInput) {
+                newInput.focus();
+                try { newInput.setSelectionRange(selStart, selEnd); } catch (e) { /* noop */ }
+            }
         }
     }
 

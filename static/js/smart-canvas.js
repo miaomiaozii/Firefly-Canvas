@@ -15121,6 +15121,7 @@ function canvasWheelIsReserved(target){
         '.prompt-node-segments',
         '.prompt-node-text',
         '.prompt-node-llm',
+        '.agent-tui-body', // #314：Agent 消息区——滚轮应滚动消息而非缩放画布
         '.smart-group-list',
         '[data-thumb-scroll]'
     ].join(',')));
