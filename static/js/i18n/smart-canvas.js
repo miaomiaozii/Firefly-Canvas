@@ -432,6 +432,7 @@
         "smart.assetDeleteNoRefConfirm": { zh: "确定永久删除该图片？当前没有其他节点引用它。不进回收区，无法恢复。", en: "Permanently delete this image? No other node references it. It will not go to the trash and cannot be recovered." },
         "smart.localAssetDeleteConfirm": { zh: "确定永久删除该本地素材文件？文件将直接从磁盘删除，无法恢复。", en: "Permanently delete this local asset file? It will be removed from disk and cannot be recovered." },
         "smart.nodeDeleteBusy": { zh: "该节点正在生成中，请先取消任务再删除。", en: "This node is still generating. Cancel the task before deleting it." },
+        "smart.agentDeleteConfirm": { zh: "删除 Agent 节点将同时删除其全部对话历史。确定删除？（可用 Ctrl+Z 撤销）", en: "Deleting the Agent node also removes its entire conversation history. Delete? (Ctrl+Z can undo)" },
         "smart.connectLocalEditNoRole": { zh: "局部编辑节点未选择输入角色，请先选择（原图/参考/提示词）再连线。", en: "Local edit node has no input role selected. Choose one (original/reference/prompt) before connecting." },
         "smart.connectLoopNoInput": { zh: "循环节点未开启图片/提示词输入，请先在节点内开启再连线。", en: "Loop node has no image/prompt input enabled. Enable it in the node before connecting." },
         "smart.connectRejected": { zh: "该节点当前不可连入。", en: "This node cannot accept a connection right now." },

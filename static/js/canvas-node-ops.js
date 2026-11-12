@@ -314,6 +314,8 @@ function deleteNodeFromButton(id){
     // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
     const buttonNode = canvasState.nodes.find(n => n.id === id);
     if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
+    // #315：Agent 节点承载完整对话历史——删除前确认（#149 B5 一步直删仅保留给普通节点）
+    if(buttonNode && window.isSmartAgentNode?.(buttonNode) && !window.confirm(tr('smart.agentDeleteConfirm'))) return;
     // #149 B5: 统一为一步直接删节点（与 Delete 键行为一致），不再对有图节点两步清图
     deleteNode(id);
 }

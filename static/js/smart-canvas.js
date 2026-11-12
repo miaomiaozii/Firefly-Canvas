@@ -15303,8 +15303,12 @@ window.addEventListener('keydown', e => {
         return;
     }
     if((e.key === 'Delete' || e.key === 'Backspace') && (canvasState.selectedId || canvasState.selectedIds.length) && !isEditableTarget(e.target)){
+        // #315：焦点在节点卡片内部的按钮上时，Delete 不删节点（键盘破坏性操作泄漏修复）
+        if(e.target?.closest?.('[data-id] button, [data-id] .node-actions')){ return; }
         e.preventDefault();
         const ids = canvasState.selectedIds.length ? canvasState.selectedIds.slice() : [canvasState.selectedId];
+        // #315：选中项含 Agent 节点——先确认（与 × 删除钮同一文案）
+        if(ids.some(id => { const n = canvasState.nodes.find(x => x.id === id); return n && isSmartAgentNode(n); }) && !confirm(tr('smart.agentDeleteConfirm'))){ return; }
         // #65: 选中项里有生成中的节点时禁止删除（先取消任务）。
         if(ids.map(id => canvasState.nodes.find(n => n.id === id)).some(node => node && smartNodeInFlight(node))){
             toast(tr('smart.nodeDeleteBusy'));
