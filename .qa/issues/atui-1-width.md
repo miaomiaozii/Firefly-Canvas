@@ -13,10 +13,9 @@ Agent 节点的卡片只占节点外框宽度的约 56%（实测外框 806px、�
 2. 拖右下角手柄把节点拉大
 3. 观察：卡片高度跟随，宽度不跟随；右侧空出一条空白带
 
-实际结果截图：`.qa/shots/03_agent_node_gap_full.png`（QA 本地存档，提交时作为附件上传）
+实际结果截图：`.qa/shots/03_agent_node_gap_full.png`（已随 commit 3c38bb6 入库，push 后可直接访问）
 
 ## 补充信息
 - 根因：卡片样式只有 `height:100%` 没有宽度规则（static/css/smart-canvas.css:3708 `.agent-tui-card`），而节点主体是 flex 布局（css:198/486），卡片按内容最大宽收缩。
-- 修复方向：给 `.agent-tui-card` 加 `width:100%`——同画布的提示词节点/会话节点卡片已是此写法（css:167-168 `.prompt-node-card`/`.conversation-node-card`）。
+- 修复方向：给 `.agent-tui-card` 加 `width:100%`——同画布的提示词节点/会话节点卡片已是此写法（css:170-171 `.prompt-node-card`/`.conversation-node-card`）。
 - 节点框尺寸持久化在 node.w/h（手柄写入 static/js/smart-canvas.js:14764-14765；最小 330x270 在 :14705-14707；agent 分支 static/js/smart-canvas.js:1615-1629），框本身没问题。
-- 顺带：css:199-244 `.agent-node-card` 一代样式 JS 零引用（死样式层），与 ④ 票「两代样式共存」同症状，可在本票或 ④ 票清理。

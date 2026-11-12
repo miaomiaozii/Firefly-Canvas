@@ -24,7 +24,7 @@
    - `.agent-tui-card { display:flex; flex-direction:column; height:100%; ... }`——**只有 height:100%，无 width / flex 主轴规则**：`smart-canvas.css:3708-3721`
    - 结果：`.node-body` 是 flex row，`align-items:stretch` 只撑交叉轴（高→铺满），主轴（宽）取 max-content → 实测 451px（由 header 行两个 130px 上限的 select + 按钮行内容决定），右侧 780-451≈329px 空白。与截图完全一致。
 4. 全代码没有任何「按 node.w/h 重设卡片内容尺寸」的逻辑：卡片是纯 CSS 容器，唯一消费 `node.w/h` 的地方是 `imageLayout`（框尺寸）。即：**框可以被拖大，卡片内容永远不会跟着变宽**。
-5. 对照组：兄弟卡片都有 `width:100%; height:100%`——`.prompt-node-card`（`smart-canvas.css:167`）、`.conversation-node-card`（`smart-canvas.css:168`）、`.agent-task-card`（`smart-canvas.css:246` 附近，`width:100%; height:100%`）。agent 卡片缺 width 是孤例。
+5. 对照组：兄弟卡片都有 `width:100%; height:100%`——`.prompt-node-card`（`smart-canvas.css:170`）、`.conversation-node-card`（`smart-canvas.css:171`）、`.agent-task-card`（`smart-canvas.css:247` 附近，`width:100%; height:100%`）。agent 卡片缺 width 是孤例。
 6. 死样式层 `.agent-node-card` / `.agent-node-heading` 等（`smart-canvas.css:199-244`）：JS 零引用（grep `agent-node-card|agent-node-heading|agent-node-goal|agent-node-controls|agent-node-draft` 无匹配），是第一代卡片遗留，**与本次宽度 bug 无因果**，属清理项（见 D 节）。
 
 **最小修复候选：**
@@ -164,7 +164,7 @@
 | 1 | S1 严重 | 单击/键盘无确认删除整个 agent 节点 | 误点右上角 hover 删除钮（或点过按钮后按 Delete）节点即被删，无确认 | 删除链路一步直删、无确认（`canvas-node-ops.js:313-319`、`smart-canvas.js:15304`；#149 B5 有意为之） | agent 节点两步确认/删除保护 + hover 删除钮与卡片功能键视觉分离 |
 | 2 | S2 高 | 任何重渲染静默吞掉进行中输入（含焦点与 IME） | 打字过程中选/取消节点、或 agent 流式输出时，输入内容凭空消失；输入框焦点被抢 | `renderAgentNode`/`render()` innerHTML 全量重建 textarea 且无草稿持久化（`canvas-agent-tui.js:1218`；状态无 draft 字段 `:17-39`） | `agentTuiState.inputDraft` + input/blur 捕获 + 绑定后恢复 value/焦点/光标（聚焦且非合成中时） |
 | 3 | S3 高 | 长对话不可用：自动滚动空操作 + 滚动归零 + 滚轮变缩放 | 流式输出追不上最新消息；消息历史滚不动（滚轮在缩放画布） | 自动滚动写错元素（`:1222-1225` 写 `.agent-tui-messages`，实际滚动容器是 `.agent-tui-body` `css:3871`）；`canvasWheelIsReserved` 白名单缺 `.agent-tui-body`（`smart-canvas.js:15098-15126`） | 滚动改到 `.agent-tui-body`；把 `.agent-tui-body` 加入 wheel 白名单 |
-| 4 | S4 高 | 卡片宽度不跟随节点框（Bug1） | 框被拖宽后右侧大片空白（实测 780px 内容区里卡片仅 451px） | `.agent-tui-card` 只有 `height:100%` 无 width（`smart-canvas.css:3708-3721`），flex row 主轴取 max-content | 加 `width:100%`（对齐 `css:167-168` 兄弟卡片模式）或 `flex:1; min-width:0` |
+| 4 | S4 高 | 卡片宽度不跟随节点框（Bug1） | 框被拖宽后右侧大片空白（实测 780px 内容区里卡片仅 451px） | `.agent-tui-card` 只有 `height:100%` 无 width（`smart-canvas.css:3708-3721`），flex row 主轴取 max-content | 加 `width:100%`（对齐 `css:170-171` 兄弟卡片模式）或 `flex:1; min-width:0` |
 | 5 | S5 中 | 输入框不 auto-grow + 双 CSS 规则 + 80px 硬顶（Bug2） | 多行指令被藏进 29px 单行框内部滚动，必须手动滚才能看全 | 无 `input` 监听/无高度计算（`canvas-agent-tui.js:1025-1035`）；`max-height:80px; resize:none` 生效（`css:4327-4329`） | 去重 `css:4095-4108`；实现 auto-grow 并重定义 max-height |
 | 6 | S6 中 | 裸 emoji 图标与画布 lucide 语言割裂；thinking 激活态样式失效（Bug4） | 按钮图标平台渲染不一致、显「简陋」；思考开关点亮后无视觉反馈 | 按钮用原始 emoji（`canvas-agent-tui.js:927-931, 877, 807-818`）；`:928` 输出裸属性而 CSS 用 class 选择器（`css:4141`） | 换 lucide `data-lucide` 图标；改 `class=`/`[attr]` 选择器 + 加 `aria-pressed` |
 | 7 | S7 中 | 刷新后 TUI 会话历史全丢 | 刷新页面后历史消息/思考/待发附件全空，后端会话却可能仍在跑 | 状态仅内存 Map（`canvas-agent-tui.js:17`）；后端 stream 不回放历史、无历史端点（`api_agent_nodes.py:453-497`） | stream 连接时回放历史，或新增 GET history 端点 + 前端 hydrate |
