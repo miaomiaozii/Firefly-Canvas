@@ -25,6 +25,11 @@ class SpawnParams:
     node_id: str
     model: str = ""                  # 显式模型（provider/id 或裸名）
     continue_session: bool = False   # 续接上一会话
+    startup_timeout_s: float = 60.0  # get_session_state 就绪等待（#239 语义，pi 用）
+    # #318 票 B：宿主路由与会话续接/画布 MCP 注入
+    agent_cli: str = "pi"
+    ext_session_id: Optional[str] = None  # 宿主自有会话 id（codex thread_id）
+    mcp_url: Optional[str] = None  # /mcp?project=…&node=…（codex 经 -c 注入）
 
 
 class HostAdapter:

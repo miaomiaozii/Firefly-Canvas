@@ -210,6 +210,9 @@ class AgentSession:
     _stall_notified: bool = False  # #286：本 turn 是否已发过停顿提醒
     # --- #239：超时必杀 / 退出树杀 / 错误五元组 ---
     _stopping: bool = False  # 手动 stop 进行中：reader finally 不得自动 respawn
+    # #318 票 B：codex 单轮态旗。busy 判定用它而非 process——agent_end 已发但进程
+    # 退出收尾未完成的窗口内，新 prompt 必须可接（E2E 实抓竞态）。
+    _turn_open: bool = False
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
     result: dict = field(default_factory=lambda: normalize_result(RESULT_DONE, ""))
     # #318 票 A：宿主选择（默认 pi，行为不变）；ext_session_id 为宿主自有会话 id
@@ -244,8 +247,8 @@ class AgentHostManager:
         self._lock = asyncio.Lock()
         self._idle_watchdog_task: Optional[asyncio.Task] = None
         # #318 票 A：宿主 adapter 注册表（默认只有 pi；行为零变化）
-        from .agent_adapters import PiAdapter
-        self._adapters = {"pi": PiAdapter()}
+        from .agent_adapters import CodexAdapter, PiAdapter
+        self._adapters = {"pi": PiAdapter(), "codex": CodexAdapter()}
 
     def _adapter_for(self, session: AgentSession):
         """按 session.agent_cli 选 adapter；未知宿主回退 pi（票 A 保守）。"""
@@ -283,6 +286,12 @@ class AgentHostManager:
         if session.is_running:
             return True
 
+        # #318 票 B：codex = per-turn 进程模型（ADR 0024）——「spawn」仅验证 CLI
+        # 可用性并标为宿主会话；进程由 send_prompt 每轮拉起、轮末退出。
+        # 无常驻进程、无 pi RPC get_state；不污染 pi 常驻路径一行。
+        if session.agent_cli == "codex":
+            return self._codex_validate(session)
+
         try:
             # Determine session directory
             project_dir = self._get_project_dir(session.project_id)
@@ -304,6 +313,13 @@ class AgentHostManager:
             # 本模块（测试 monkey-patch 面不变），PiAdapter 运行时延迟导入本模块取用。
             from .agent_adapters import SpawnParams
             adapter = self._adapter_for(session)
+            # #318 票 B：codex 宿主经 MCP 端点操作画布（ADR 0022/0024）；
+            # 端口/基址动态取（resolve_agent_api_base，L-1 禁硬编码），&node= 只改归属。
+            api_base = resolve_agent_api_base(os.environ)
+            mcp_url = (
+                f"{api_base}/mcp?project={session.project_id}"
+                f"&node={session.node_id}"
+            )
             params = SpawnParams(
                 resolved_cli=resolve_pi_cli(),
                 session_dir=session_dir,
@@ -312,14 +328,23 @@ class AgentHostManager:
                 node_id=session.node_id,
                 model=model or session.model,
                 continue_session=continue_session,
+                agent_cli=session.agent_cli,
+                ext_session_id=session.ext_session_id,
+                mcp_url=mcp_url,
             )
             cmd = adapter.build_argv(params)
             if cmd is None:
-                error = (
-                    "未找到 pi 可执行文件：PATH 中没有 'pi'，且未设置 FIREFLY_PI_CLI。"
-                    "请先安装 pi（npm i -g @earendil-works/pi）或设置 FIREFLY_PI_CLI "
-                    "环境变量指向 pi 可执行文件"
-                )
+                if session.agent_cli != "pi":
+                    error = (
+                        f"未找到 {session.agent_cli} 可执行文件：PATH 中没有 '{adapter.cli}'。"
+                        f"请先安装 {session.agent_cli} CLI"
+                    )
+                else:
+                    error = (
+                        "未找到 pi 可执行文件：PATH 中没有 'pi'，且未设置 FIREFLY_PI_CLI。"
+                        "请先安装 pi（npm i -g @earendil-works/pi）或设置 FIREFLY_PI_CLI "
+                        "环境变量指向 pi 可执行文件"
+                    )
                 logger.error(f"Failed to spawn agent session {session.node_id}: {error}")
                 session.status = "crashed"
                 session.last_error = error
@@ -576,6 +601,10 @@ class AgentHostManager:
 
     async def send_prompt(self, session: AgentSession, message: str, images: list = None) -> None:
         """Send a prompt to the agent."""
+        # #318 票 B：codex 宿主不经 pi RPC——每轮一个 `codex exec --json` 进程。
+        if session.agent_cli == "codex":
+            await self._codex_turn(session, message)
+            return
         command = {"type": "prompt", "message": message}
         if images:
             command["images"] = images
@@ -590,8 +619,262 @@ class AgentHostManager:
         """Send a follow-up (queue for after current turn)."""
         await self.send_command(session, {"type": "follow_up", "message": message})
 
+    # ------------------------------------------------------------------
+    # #318 票 B：codex 宿主——per-turn 进程模型（ADR 0024）。
+    # 会话态（ext_session_id/busy）驻 AgentSession；adapter 无状态只产 argv/事件。
+    # ------------------------------------------------------------------
+
+    def _codex_validate(self, session: AgentSession) -> bool:
+        """codex 的「启动」= 仅验 CLI 可用性（无进程、无 RPC get_state）。"""
+        adapter = self._adapters.get("codex")
+        if adapter is None or shutil.which(adapter.cli) is None:
+            error = "未找到 codex 可执行文件：PATH 中没有 'codex'。请先安装（npm i -g @openai/codex）"
+            logger.error(f"Failed to validate codex session {session.node_id}: {error}")
+            session.status = "crashed"
+            session.last_error = error
+            return False
+        session.last_error = ""
+        session.status = "running"  # idle_stored 语义：会话可用、当前无进程
+        return True
+
+    async def _codex_turn(
+        self,
+        session: AgentSession,
+        message: str,
+        allow_resume: bool = True,
+        degrade_budget: bool = True,
+    ) -> None:
+        """一轮 = 一个 `codex exec --json` 进程（ADR 0024 状态机）。
+
+        首轮无 resume；有 ext_session_id 则 `resume <thread_id>`（实测 options 必在
+        子命令前，已由 build_resume_argv 保证）。prompt 走 stdin（实测坑：参数位不可靠）。
+        resume 失败降级：error 事件 UI 可见 + 新会话重发一次（重放上下文属票 C，票 B
+        只保证「不静默死」）。
+        """
+        if session._turn_open:
+            raise RuntimeError(f"Agent {session.node_id} busy：codex 拒收并发 prompt（ADR 0024 不变量）")
+        from .agent_adapters import SpawnParams
+        from .agent_adapters.codex_adapter import CodexAdapter
+
+        adapter = self._adapters.get("codex") or CodexAdapter()
+        effective_autonomy = session.autonomy or "cautious"
+        if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
+            effective_autonomy = "cautious"
+        system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
+        project_dir = self._get_project_dir(session.project_id)
+        session_dir = os.path.join(project_dir, session.session_dir)
+        os.makedirs(session_dir, exist_ok=True)
+        mcp_url = (
+            f"{resolve_agent_api_base(os.environ)}/mcp?project={session.project_id}"
+            f"&node={session.node_id}"
+        )
+        params = SpawnParams(
+            resolved_cli=shutil.which("codex"),
+            session_dir=session_dir,
+            system_prompt=system_prompt,
+            tools_path=self._get_canvas_tools_path(),
+            node_id=session.node_id,
+            model=session.model,
+            continue_session=False,
+            agent_cli="codex",
+            ext_session_id=session.ext_session_id if allow_resume else None,
+            mcp_url=mcp_url,
+        )
+        resumed = bool(allow_resume and session.ext_session_id)
+        if resumed:
+            cmd = adapter.build_resume_argv(params, session.ext_session_id)
+        else:
+            cmd = adapter.build_argv(params)
+        if cmd is None:
+            raise RuntimeError("未找到 codex 可执行文件：PATH 中没有 'codex'")
+
+        session.last_error = ""
+        session._turn_started_at = time.time()
+        session._turn_open = True
+        try:
+            process = await asyncio.to_thread(
+                subprocess.Popen,
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # #292 同源教训：显式 UTF-8，杜绝 GBK 环境编码误杀。
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                # 沙盒即边界（审批实测）：cwd = per-node 临时目录，-s read-only 下
+                # 写画布一律经 MCP 端点确认闸。
+                cwd=session_dir,
+                env=os.environ.copy(),
+            )
+        except OSError as e:
+            session._turn_open = False
+            raise RuntimeError(f"codex 拉起失败：{e}")
+        session.process = process
+        session._stopping = False
+        session._started_at = time.time()
+        session._last_activity = time.time()
+        session._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(session,),
+            name=f"agent-stderr-{session.node_id[:8]}",
+            daemon=True,
+        )
+        session._stderr_thread.start()
+
+        def _feed_stdin() -> None:
+            try:
+                process.stdin.write(message)
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        await asyncio.to_thread(_feed_stdin)
+        session._reader_task = asyncio.create_task(
+            self._read_codex_turn(session, process, resumed, message, degrade_budget)
+        )
+
+    async def _read_codex_turn(
+        self,
+        session: AgentSession,
+        process: subprocess.Popen,
+        resumed: bool,
+        message: str,
+        degrade_budget: bool,
+    ) -> None:
+        """codex 单轮 reader：JSONL → 内部词汇（ADR 0024 §1），轮末清进程槽。"""
+        from .agent_adapters.codex_adapter import map_codex_event
+
+        saw_thread_id = False
+        saw_turn_completed = False
+        try:
+            while True:
+                line = await asyncio.to_thread(process.stdout.readline)
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning(f"codex {session.node_id}: non-JSONL line: {line[:120]!r}")
+                    continue
+                if raw.get("type") == "thread.started":
+                    saw_thread_id = True
+                    thread_id = str(raw.get("thread_id") or "")
+                    if thread_id and thread_id != session.ext_session_id:
+                        session.ext_session_id = thread_id
+                        self._persist_ext_session_id(session)
+                if raw.get("type") == "turn.completed":
+                    saw_turn_completed = True
+                    session._turn_open = False  # 轮已逻辑结束：新 prompt 可排队下一轮
+                if raw.get("type") == "turn_aborted":
+                    session._turn_open = False
+                for event in map_codex_event(raw):
+                    etype = event.get("type")
+                    if etype == "usage" and not event.get("cumulative"):
+                        await self._record_codex_usage(session, event.get("usage") or {})
+                    await self._dispatch_event(session, event)
+        except Exception as e:
+            logger.error(f"codex reader died for {session.node_id}: {e}")
+        finally:
+            session._turn_open = False
+            try:
+                await asyncio.to_thread(process.wait)
+            except Exception:
+                pass
+            if session.process is process:
+                session.process = None
+            if session._reader_task is asyncio.current_task():
+                session._reader_task = None
+            exit_code = process.returncode
+            session._last_activity = time.time()
+            if resumed and not saw_thread_id and exit_code not in (0, None) and degrade_budget:
+                # ADR 0024 §2 降级：resume 认不出旧会话 → UI 可见 + 新会话重发一次。
+                # （上下文重放属票 C；票 B 保证不静默死。）
+                session.ext_session_id = None
+                await self._dispatch_event(session, {
+                    "type": "error",
+                    "message": "会话续接失败，已降级重建（新会话不含历史；历史回放待票 C）",
+                })
+                try:
+                    await self._codex_turn(session, message, allow_resume=False, degrade_budget=False)
+                except Exception as e:
+                    logger.error(f"codex degrade retry failed for {session.node_id}: {e}")
+                return
+            if exit_code not in (0, None) and not saw_turn_completed:
+                # 实测坑：codex 出错也可能 exit=0——真非零且无 turn.completed 才是硬崩。
+                session.last_error = f"codex 进程异常退出（exit={exit_code}）"
+                await self._dispatch_event(session, {
+                    "type": "error", "message": session.last_error})
+            # idle_stored：会话仍可用（下轮 resume），不标 crashed（除非上面已 crashed）。
+            if session.status != "crashed":
+                session.status = "running"
+
+    def _persist_ext_session_id(self, session: AgentSession) -> None:
+        """ext_session_id → 节点属性 extSessionId（重启后 resume 链存活；
+        ADR 0024 不变量：落盘先于下次 spawn）。best-effort，失败只记日志。"""
+        try:
+            store_call = getattr(_app_main, "project_store_call", None)
+            if store_call is None or not session.ext_session_id:
+                return
+            opened = store_call("open_project", session.project_id)
+            canvas = opened.get("canvas") or {}
+            nodes = canvas.get("nodes") or []
+            node = next(
+                (n for n in nodes if str(n.get("id") or "") == session.node_id), None)
+            if not isinstance(node, dict):
+                return
+            updated = dict(node)
+            updated["extSessionId"] = session.ext_session_id
+            store_call(
+                "apply_mutations",
+                session.project_id,
+                [{"op": "upsert_node", "node": updated}],
+                base_revision=int(canvas.get("revision") or 0),
+            )
+            store_call("flush", session.project_id)
+        except Exception as e:
+            logger.warning(f"Failed to persist extSessionId for {session.node_id}: {e}")
+
+    async def _record_codex_usage(self, session: AgentSession, usage: dict) -> None:
+        """codex turn.completed usage → ops.db（与 #258 pi 采集点同表同语义；
+        键归一交给 firefly_usage 别名表）。遥测 best-effort。"""
+        try:
+            if not usage_has_data(usage):
+                return
+            duration = time.time() - session._turn_started_at if session._turn_started_at else None
+            model = str(session.model or "")
+            store_call = getattr(_app_main, "project_store_call", None)
+            if store_call is None:
+                return
+            await asyncio.to_thread(
+                store_call,
+                "record_usage_turn",
+                session.project_id,
+                provider="codex",
+                model=model,
+                node_id=session.node_id,
+                usage=usage,
+                duration_seconds=duration,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record codex usage for {session.node_id}: {e}")
+
     async def send_abort(self, session: AgentSession) -> None:
         """Abort the current turn."""
+        if session.agent_cli == "codex":
+            # ADR 0024：abort=SIGINT 单轮（实测 rollout 实时落盘、可 resume）。
+            # Windows 无 SIGINT：terminate() 终止当前轮进程（不毁 sessionId）。
+            proc = session.process
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            return
         await self.send_command(session, {"type": "abort"})
 
     async def set_model(self, session: AgentSession, model: str) -> None:
@@ -606,6 +889,10 @@ class AgentHostManager:
             command = {"type": "set_model", "provider": provider, "modelId": model_id}
         else:
             command = {"type": "set_model", "modelId": model}
+        if session.agent_cli == "codex":
+            # codex 无 RPC：新模型经下轮 `-m` argv 生效（ADR 0024 per-turn）。
+            session.model = model
+            return
         await self.send_command(session, command)
         session.model = model
 
@@ -614,6 +901,10 @@ class AgentHostManager:
 
         Returns a list of {entryId, text} dicts.
         """
+        if session.agent_cli == "codex":
+            # #318 票 B：codex 无 pi fork 语义（续接靠 resume，ADR 0024）；
+            # 防御性空列表，前端禁用面属票 D。
+            return []
         command_id = f"fork-msgs-{uuid.uuid4().hex[:8]}"
         # #239: wait_for 硬超时；超时后 run_command 的 finally 必杀整树并自愈 respawn
         response = await self.run_command(session, {"id": command_id, "type": "get_fork_messages"}, timeout=timeout)
@@ -632,6 +923,8 @@ class AgentHostManager:
 
         Returns {session_id, session_file, cancelled}.
         """
+        if session.agent_cli == "codex":
+            raise RuntimeError("codex 宿主不支持 pi fork 语义（会话续接靠 resume，见 ADR 0024）")
         command_id = f"fork-{uuid.uuid4().hex[:8]}"
         # #239: wait_for 硬超时；超时后 run_command 的 finally 必杀整树并自愈 respawn
         response = await self.run_command(session, {"id": command_id, "type": "fork", "entryId": entry_id}, timeout=timeout)

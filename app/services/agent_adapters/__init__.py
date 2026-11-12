@@ -4,6 +4,7 @@
 怎么喂参数」；RPC 管道/广播/确认闸/进程树治理仍由 agent_host 主干持有。
 """
 from .base import HostAdapter, SpawnParams
+from .codex_adapter import CodexAdapter, map_codex_event
 from .pi_adapter import PiAdapter
 
-__all__ = ["HostAdapter", "SpawnParams", "PiAdapter"]
+__all__ = ["HostAdapter", "SpawnParams", "PiAdapter", "CodexAdapter", "map_codex_event"]

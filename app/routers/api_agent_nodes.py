@@ -20,6 +20,28 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
 
 
+def _apply_node_host(project_id: str, node_id: str, session) -> None:
+    """#318 票 B：宿主选择 = 节点属性 agentCli（"pi" 默认 / "codex"），并恢复
+    extSessionId（resume 链跨重启存活，ADR 0024 不变量）。当前轮进行中的进程
+    不切宿主；未知值回退 pi。best-effort：节点不存在/非 agent 型不改会话。"""
+    if session.is_running:
+        return
+    try:
+        node = _find_node(project_id, node_id)
+    except HTTPException:
+        return
+    if not isinstance(node, dict):
+        return
+    agent_cli = str(node.get("agentCli") or "").strip() or "pi"
+    if agent_cli not in ("pi", "codex"):
+        agent_cli = "pi"
+    session.agent_cli = agent_cli
+    if not session.ext_session_id:
+        ext = str(node.get("extSessionId") or "").strip()
+        if ext:
+            session.ext_session_id = ext
+
+
 async def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
     """Update a single field on a node and persist (reuses retry-on-conflict helper)."""
     node = _find_node(project_id, node_id)
@@ -63,6 +85,7 @@ async def create_agent_node(
         session.model = model
     if autonomy and session.autonomy == "cautious" and autonomy != "cautious":
         session.autonomy = autonomy
+    _apply_node_host(project_id, node_id, session)
 
     # If not running, spawn it
     if not session.is_running:
@@ -240,6 +263,7 @@ async def send_agent_prompt(
 ):
     """Send a prompt to the agent."""
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    _apply_node_host(project_id, node_id, session)
     if not session.is_running:
         success = await agent_host_manager.spawn_session(session)
         if not success:
@@ -460,6 +484,9 @@ async def agent_event_stream(
     await websocket.accept()
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    # #318 票 B：宿主选择读节点属性 agentCli（默认 pi）；session 事件带宿主标签
+    # 供前端渲染（票 D 设置面板的只读展示面）。
+    _apply_node_host(project_id, node_id, session)
 
     # #317：浏览画布不再自动拉起 pi 进程——stream 只监听；进程在用户首次发送（REST /prompt，
     # 或 WS prompt 指令兜底路径）时按需 spawn。此前每次渲染→连 WS→spawn，纯浏览也会烧资源/费用。
@@ -486,6 +513,8 @@ async def agent_event_stream(
         "status": session.status,
         "model": session.model,
         "autonomy": session.autonomy,
+        "agentCli": session.agent_cli,
+        "extSessionId": session.ext_session_id,
     })
 
     try:
