@@ -19,7 +19,7 @@
 QA 实测数值（两轮对照实验，均复现）：
 - 实验 A：草稿→点节点标题（选中）→输入框值保留；→点画布空白（取消）→输入框值变空字符串。
 - 实验 B：`fill` 6 行草稿→取消选择→`el.value` 从 `QA draft...` 变为 `""`（evaluate 直读 DOM 确认）。
-实拍补充：输入态见 `.qa/shots/04_agent_input_overflow.png`；草稿清空瞬间实拍因截图通道超时未拍到（数值证据已留存，关票前需补实拍）。
+实拍补充：输入态见 [`.qa/shots/04_agent_input_overflow.png`](https://github.com/miaomiaozii/Firefly-Canvas/blob/main/.qa/shots/04_agent_input_overflow.png)；草稿清空瞬间实拍因截图通道超时未拍到（数值证据已留存，关票前需补实拍）。
 
 ## 补充信息
 - 根因链：取消选择 → static/js/smart-canvas.js:14430-14437 `shell.onclick` → `clearSelection()` + `render()` 整节点模板重建 → 输入框重建为空。重复选中已选节点只 `syncSelectionUi()` 不重建（与实测吻合）。

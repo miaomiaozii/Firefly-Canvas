@@ -13,7 +13,7 @@ Agent 节点的卡片只占节点外框宽度的约 56%（实测外框 806px、�
 2. 拖右下角手柄把节点拉大
 3. 观察：卡片高度跟随，宽度不跟随；右侧空出一条空白带
 
-实际结果截图：`.qa/shots/03_agent_node_gap_full.png`（已随 commit 3c38bb6 入库，push 后可直接访问）
+实际结果截图：[`.qa/shots/03_agent_node_gap_full.png`](https://github.com/miaomiaozii/Firefly-Canvas/blob/main/.qa/shots/03_agent_node_gap_full.png)（已随 commit 3c38bb6 入库，push 后可直接访问）
 
 ## 补充信息
 - 根因：卡片样式只有 `height:100%` 没有宽度规则（static/css/smart-canvas.css:3708 `.agent-tui-card`），而节点主体是 flex 布局（css:198/486），卡片按内容最大宽收缩。

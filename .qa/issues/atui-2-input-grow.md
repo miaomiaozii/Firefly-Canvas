@@ -12,7 +12,7 @@
 1. 选中 Agent 节点
 2. 在底部输入框粘贴多行长文本（≥6 行）
 3. 实际结果：输入框高度不变，只能滚动查看
-QA 截图：`.qa/shots/04_agent_input_overflow.png`（输入 6 行后框仍固定高度、内容滚动至 line5/6）、`.qa/shots/02_textarea_no_grow.png`（均已随 commit 3c38bb6 入库，push 后可直接访问）
+QA 截图：[`.qa/shots/04_agent_input_overflow.png`](https://github.com/miaomiaozii/Firefly-Canvas/blob/main/.qa/shots/04_agent_input_overflow.png)（输入 6 行后框仍固定高度、内容滚动至 line5/6）、[`.qa/shots/02_textarea_no_grow.png`](https://github.com/miaomiaozii/Firefly-Canvas/blob/main/.qa/shots/02_textarea_no_grow.png)（均已随 commit 3c38bb6 入库，push 后可直接访问）
 
 ## 补充信息
 - 代码无任何自动增高逻辑：输入框只绑了 mousedown/keydown（static/js/canvas-agent-tui.js:1025-1035）。
