@@ -7,6 +7,9 @@ function isSmartAgentNode(node){
     return Boolean(node && node.type === NODE_TYPE_AGENT);
 }
 
+// #316：Agent 卡内图标统一 lucide SVG（与画布其它节点同一视觉语言，emoji 跨系统渲染不一致）
+function agentIco(name){ return `<i data-lucide="${name}"></i>`; }
+
 function isSmartAgentTaskNode(node){
     return Boolean(node && node.type === NODE_TYPE_TASK);
 }
@@ -784,7 +787,7 @@ function agentNodeBodyHtml(node) {
     if (state.thinkingVisible && state.thinking && state.thinking.length > 0) {
         const thinkingText = state.thinking.map(t => t.text || '').join('');
         if (thinkingText) {
-            thinkingHtml = `<div class="agent-tui-thinking"><span class="agent-tui-thinking-label">💭 thinking</span><div class="agent-tui-thinking-text">${escapeHtml(thinkingText)}</div></div>`;
+            thinkingHtml = `<div class="agent-tui-thinking"><span class="agent-tui-thinking-label">${agentIco('brain')} thinking</span><div class="agent-tui-thinking-text">${escapeHtml(thinkingText)}</div></div>`;
         }
     }
 
@@ -795,7 +798,7 @@ function agentNodeBodyHtml(node) {
             // #268：附件名列表（小字跟在消息下方）
             const attachNames = (msg.attachments || []).filter(Boolean);
             const attachHtml = attachNames.length
-                ? `<div class="agent-tui-msg-attach">📎 ${attachNames.map(escapeHtml).join(' · ')}</div>` : '';
+                ? `<div class="agent-tui-msg-attach">${agentIco('paperclip')} ${attachNames.map(escapeHtml).join(' · ')}</div>` : '';
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
@@ -808,10 +811,10 @@ function agentNodeBodyHtml(node) {
     // Render tool activities (collapsible)
     let toolsHtml = '';
     for (const [toolCallId, activity] of state.toolActivities) {
-        let icon = '⚙';
-        if (activity.status === 'done') icon = '✅';
-        else if (activity.status === 'error') icon = '❌';
-        else if (activity.status === 'running') icon = '⏳';
+        let icon = agentIco('settings');
+        if (activity.status === 'done') icon = agentIco('check');
+        else if (activity.status === 'error') icon = agentIco('x');
+        else if (activity.status === 'running') icon = agentIco('hourglass');
 
         const argsPreview = activity.args ? JSON.stringify(activity.args).slice(0, 80) : '';
         const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
@@ -819,7 +822,7 @@ function agentNodeBodyHtml(node) {
         const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
         toolsHtml += `<div class="agent-tui-tool${expandedClass}" data-tool-call-id="${escapeAttr(toolCallId)}">
             <div class="agent-tui-tool-header">
-                <span class="agent-tui-tool-toggle">${activity.expanded ? '▾' : '▸'}</span>
+                <span class="agent-tui-tool-toggle">${agentIco(activity.expanded ? 'chevron-down' : 'chevron-right')}</span>
                 <span class="agent-tui-tool-icon">${icon}</span>
                 <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
             </div>
@@ -835,7 +838,7 @@ function agentNodeBodyHtml(node) {
     if (state.confirm) {
         const c = state.confirm;
         confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
-            <div class="agent-tui-confirm-message">⚠️ ${escapeHtml(c.message || '请确认操作')}</div>
+            <div class="agent-tui-confirm-message">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
             <div class="agent-tui-confirm-buttons">
                 <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
                 <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}">取消</button>
@@ -878,7 +881,7 @@ function agentNodeBodyHtml(node) {
     }
 
     // Fork button
-    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉" aria-label="从历史轮次分叉">🌿</button>`;
+    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉" aria-label="从历史轮次分叉">${agentIco('git-branch')}</button>`;
 
     // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
@@ -928,11 +931,11 @@ function agentNodeBodyHtml(node) {
             </div>
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
-                    <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">📎</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}>💭</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>↪</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>⏳</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>⏹</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">${agentIco('paperclip')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中） -->
+                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('hourglass')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('square')}</button>
                 </div>
                 <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令">发送</button>
             </div>
@@ -1268,6 +1271,7 @@ function renderAgentNode(nodeId) {
     const bodyContainer = el.querySelector('.node-body');
     if (bodyContainer) {
         bodyContainer.innerHTML = body;
+        if (window.lucide) lucide.createIcons(); // #316：本路径不经 render() 的全局补水，需自行 hydrate 卡内 lucide 图标
         // Re-bind controls
         bindAgentNodeControls(bodyContainer, node);
         // Scroll to bottom（#314：目标改为真滚动容器 .agent-tui-body；阅读位置非底部时恢复原位）
