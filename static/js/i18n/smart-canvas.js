@@ -868,7 +868,9 @@
         "smart.agentAttachVideoReady": { zh: "视频 {name} → contact sheet（{frames} 帧，{range}）", en: "Video {name} → contact sheet ({frames} frames, {range})" },
         "smart.agentAttachAudioReady": { zh: "音频 {name} → 波形卡（未转写）", en: "Audio {name} → waveform card (not transcribed)" },
         "smart.agentAttachUnsupported": { zh: "附件 {name}：类型暂不支持（图片/视频/音频）", en: "Attachment {name}: unsupported type (image/video/audio)" },
-        "smart.agentAttachFailed": { zh: "附件 {name} 处理失败：{err}", en: "Failed to process attachment {name}: {err}" }
+        "smart.agentAttachFailed": { zh: "附件 {name} 处理失败：{err}", en: "Failed to process attachment {name}: {err}" },
+        "smart.agentAttachTooBig": { zh: "附件 {name} 过大（{size}MB，上限 {max}MB），已拒收", en: "Attachment {name} too large ({size}MB, limit {max}MB), rejected" },
+        "smart.agentAttachWorking": { zh: "正在处理附件：{name}…", en: "Processing attachment: {name}…" }
     });
 
     // #272 画布批注层（钉/气泡/编辑器）

@@ -461,13 +461,8 @@ async def agent_event_stream(
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
 
-    # If session is not running, try to start it
-    if not session.is_running:
-        success = await agent_host_manager.spawn_session(session)
-        if not success:
-            await websocket.send_json({"type": "error", "message": "Failed to start agent session"})
-            await websocket.close()
-            return
+    # #317：浏览画布不再自动拉起 pi 进程——stream 只监听；进程在用户首次发送（REST /prompt，
+    # 或 WS prompt 指令兜底路径）时按需 spawn。此前每次渲染→连 WS→spawn，纯浏览也会烧资源/费用。
 
     # Register event handler for this WebSocket connection
     async def ws_event_handler(sess, event):
@@ -508,6 +503,10 @@ async def agent_event_stream(
                 message = command.get("message", "")
                 images = command.get("images", [])
                 if message:
+                    if not session.is_running: # #317：WS 兜底路径也按需拉起（主路径是 REST /prompt）
+                        if not await agent_host_manager.spawn_session(session):
+                            await websocket.send_json({"type": "error", "message": "Failed to start agent session"})
+                            continue
                     await agent_host_manager.send_prompt(session, message, images)
 
             elif cmd_type == "steer":

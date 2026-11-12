@@ -81,9 +81,10 @@ class TestAgentHostManager(unittest.TestCase):
     def test_get_or_create_session(self):
         """Test session creation and retrieval."""
         session1 = run_async(self.manager.get_or_create_session("proj-1", "node-1"))
-        # Second call creates a new session because the first is not running
+        # #317：空闲对象复用不替换（旧契约：not running 就新建——会让 stream 监听器挂在
+        # 被替换掉的旧对象上，后续 spawn 的事件永久丢失）。现钉住：同 key 返回同一对象。
         session2 = run_async(self.manager.get_or_create_session("proj-1", "node-1"))
-        self.assertIsNot(session1, session2)
+        self.assertIs(session1, session2)
 
         # Different node should get different session
         session3 = run_async(self.manager.get_or_create_session("proj-1", "node-2"))
@@ -783,7 +784,10 @@ class TestAgentStreamSpawnFailure(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
 
-    def test_stream_sends_error_event_then_closes_when_spawn_fails(self):
+    def test_stream_does_not_spawn_on_connect_and_ws_prompt_spawns(self):
+        """#317：浏览画布不再自动拉起进程——stream 连上只收 session 确认（status=stopped），
+        spawn_session 必须零调用；用户经 WS 发 prompt 时才尝试拉起（失败则发 error 事件，
+        #280 失败可见契约在新路径上保留）。"""
         project = self.store.create_project("Stream Spawn Failure")
         project_id = project["id"]
         node_id = "node-spawn-fail"
@@ -794,13 +798,21 @@ class TestAgentStreamSpawnFailure(unittest.TestCase):
         ) as ws:
             msg = ws.receive_json()
             self.assertEqual(
-                msg.get("type"), "error",
-                f"spawn 失败时首个事件必须是 error（前端据此呈现「启动失败」），实际：{msg}",
+                msg.get("type"), "session",
+                f"纯连接不得拉起/报错，首个事件应是 session 确认，实际：{msg}",
             )
-            self.assertTrue(msg.get("message"), "error 事件必须带原因文案")
-            # error 事件之后服务端主动断开，前端 onclose 进入退避重连。
-            with self.assertRaises(WebSocketDisconnect):
-                ws.receive_json()
+            self.assertEqual(msg.get("status"), "stopped")
+            self.assertEqual(self._patcher.target.spawn_session.call_count, 0,
+                             "#317：stream 连接绝不可调 spawn_session")
+            ws.send_json({"type": "prompt", "message": "hello"})
+            msg2 = ws.receive_json()
+            self.assertEqual(msg2.get("type"), "error",
+                             f"WS prompt 兜底路径 spawn 失败必须发 error，实际：{msg2}")
+            self.assertTrue(msg2.get("message"), "error 事件必须带原因文案")
+            self.assertGreaterEqual(self._patcher.target.spawn_session.call_count, 1,
+                                    "WS prompt 兜底路径应尝试 spawn")
+            # #317：spawn 失败不再撕断连接（continue）——监听器保留，下次发送可再试；
+            # 旧契约（error 后服务端关闭→前端退避重连）随自动拉起一同废除。
 
 
 class TestAgentConfirmation(unittest.TestCase):

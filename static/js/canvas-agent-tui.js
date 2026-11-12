@@ -28,6 +28,7 @@ function getAgentTuiState(nodeId) {
             toolActivities: new Map(),
             thinkingVisible: false,
             pendingImages: [], // #268：待随下一条 prompt 发出的附件（图片/视频 contact sheet/音频波形卡 dataURL）
+            attachWorking: '', // #317：当前正在处理中的附件名（卡片进度提示）
             // #280：重连退避状态（指数退避 + 连续失败上限，见 connectAgentWebSocket）
             retryCount: 0,           // 连续连接失败次数
             reconnectTimer: null,    // 待执行的退避定时器（setTimeout 返回值）
@@ -420,10 +421,18 @@ async function convertAgentMediaAttachment(file) {
 async function handleAgentAttachments(nodeId, projectId, files) {
     const state = getAgentTuiState(nodeId);
     if (!Array.isArray(state.pendingImages)) state.pendingImages = [];
+    const ATTACH_MAX_BYTES = 8 * 1024 * 1024; // #317：图片 dataURL 直发无上限→大文件卡死/撞请求体上限；统一 8MB 拒收线（dataURL 膨胀后≈11MB）
     for (const file of files) {
         const name = file.name || 'attachment';
         try {
             const mime = (file.type || '').toLowerCase();
+            if (Number(file.size) > ATTACH_MAX_BYTES) {
+                state.messages.push({ role: 'system',
+                    text: tr('smart.agentAttachTooBig').replace('{name}', name).replace('{size}', (file.size / 1048576).toFixed(1)).replace('{max}', '8') });
+                continue;
+            }
+            state.attachWorking = name; // #317：转码/读取期间卡片可见进度
+            renderAgentNode(nodeId);
             if (mime.startsWith('image/')) {
                 const dataUrl = await readAsDataURL(file);
                 state.pendingImages.push({ dataUrl, name, caption: '' });
@@ -446,6 +455,8 @@ async function handleAgentAttachments(nodeId, projectId, files) {
             console.error('Failed to prepare attachment:', name, e);
             state.messages.push({ role: 'system',
                 text: tr('smart.agentAttachFailed').replace('{name}', name).replace('{err}', String(e.message || e)) });
+        } finally {
+            if (state.attachWorking === name) state.attachWorking = ''; // #317：无论成败清除进度
         }
     }
     renderAgentNode(nodeId);
@@ -586,6 +597,35 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
     }
 }
 
+// #317：fork 选择器从两次 prompt() 换为画布自有 <dialog>（与 project-list.js showModal 同一体系）
+function agentForkPickerDialog(messages) {
+    return new Promise(resolve => {
+        const dlg = document.createElement('dialog');
+        dlg.className = 'agent-fork-dialog';
+        const items = messages.map((m, i) => {
+            const text = String(m.text || '').replace(/\s+/g, ' ').slice(0, 120);
+            return `<label><input type="radio" name="forkidx" value="${i}" ${i === messages.length - 1 ? 'checked' : ''}><span class="agent-fork-idx">${i + 1}.</span><span>${escapeHtml(text)}</span></label>`;
+        }).join('');
+        const defaultName = escapeHtml(String(messages[messages.length - 1]?.text || '').replace(/\s+/g, ' ').slice(0, 30));
+        dlg.innerHTML = `<h3>从哪轮分叉？</h3>
+            <div class="agent-fork-list">${items}</div>
+            <input class="agent-fork-name" name="branchname" placeholder="分支名称（留空自动）" value="${defaultName}">
+            <form method="dialog" class="agent-fork-actions">
+                <button value="cancel" formnovalidate>取消</button>
+                <button value="ok" class="primary">分叉</button>
+            </form>`;
+        dlg.addEventListener('close', () => {
+            const ok = dlg.returnValue === 'ok';
+            const checked = dlg.querySelector('input[name="forkidx"]:checked');
+            const name = (dlg.querySelector('input[name="branchname"]')?.value || '').trim();
+            dlg.remove();
+            resolve(ok && checked ? { index: Number(checked.value), name } : null);
+        });
+        document.body.appendChild(dlg);
+        dlg.showModal();
+    });
+}
+
 async function showForkPicker(nodeId, projectId) {
     const state = getAgentTuiState(nodeId);
     try {
@@ -597,16 +637,10 @@ async function showForkPicker(nodeId, projectId) {
             // No forkable messages
             return;
         }
-        // Show a simple prompt to select which message to fork from
-        // (In a full implementation, this would be a UI picker)
-        const messageTexts = messages.map((m, i) => `${i + 1}. ${m.text}`).join('\n');
-        const choice = prompt(`从哪轮分叉？\n${messageTexts}\n\n输入序号：`);
-        if (!choice) return;
-        const index = parseInt(choice, 10) - 1;
-        if (index < 0 || index >= messages.length) return;
-        const message = messages[index];
-        const branchName = prompt('分支名称：', message.text.slice(0, 30));
-        await forkAgentSession(nodeId, projectId, message.entryId, branchName || '');
+        const picked = await agentForkPickerDialog(messages);
+        if (!picked) return;
+        const message = messages[picked.index];
+        await forkAgentSession(nodeId, projectId, message.entryId, picked.name || '');
     } catch (e) {
         console.error('Failed to show fork picker:', e);
     }
@@ -724,7 +758,7 @@ function renderAgentAssistantHtml(text){
 function agentCardStatusHtml(nodeId) {
     const state = agentTuiState.get(nodeId);
     if (!state) {
-        return '<span class="agent-card-status agent-tui-status-idle">空闲</span>';
+        return '<span class="agent-card-status agent-tui-status-idle" role="status">空闲</span>';
     }
     
     // Determine status class and text
@@ -750,7 +784,7 @@ function agentCardStatusHtml(nodeId) {
     }
     
     const previewHtml = lastLine ? `<span class="agent-card-preview">${escapeHtml(lastLine)}</span>` : '';
-    return `<span class="agent-card-status ${statusClass}">${statusText}</span>${previewHtml}`;
+    return `<span class="agent-card-status ${statusClass}" role="status">${statusText}</span>${previewHtml}`;
 }
 
 // #280：失败/重连横幅——此前 spawn 失败在画布上完全静默（节点一直「空闲」）。
@@ -886,6 +920,9 @@ function agentNodeBodyHtml(node) {
     // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
     let pendingHtml = '';
+    if (state.attachWorking) { // #317：附件处理进度提示（长转码不再静默）
+        pendingHtml += `<div class="agent-tui-attach-working">${agentIco('hourglass')} ${escapeHtml(tr('smart.agentAttachWorking').replace('{name}', state.attachWorking))}</div>`;
+    }
     if (pendingImages.length) {
         const chips = pendingImages.map((img, idx) => `
             <div class="agent-tui-attach">
@@ -916,7 +953,7 @@ function agentNodeBodyHtml(node) {
         </div>
         ${agentReconnectBannerHtml(state)}
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
-            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}">
+            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false"> <!-- #317：流式输出对读屏可见 -->
                 ${thinkingHtml}
                 ${messagesHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
                 ${toolsHtml}
@@ -932,7 +969,7 @@ function agentNodeBodyHtml(node) {
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
                     <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">${agentIco('paperclip')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中） -->
+                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" aria-pressed="${state.thinkingVisible ? 'true' : 'false'}">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中）；#317：aria-pressed -->
                     <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
                     <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('hourglass')}</button>
                     <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('square')}</button>
@@ -1233,7 +1270,8 @@ function bindAgentNodeControls(el, node){
     // Bind body scroll to bottom on new messages
     const bodyEl = el.querySelector('[data-agent-tui-body]');
     if (bodyEl) {
-        bodyEl.addEventListener('mousedown', event => event.stopPropagation());
+        // #314/#317：左键仍阻止冒泡（防误拖节点/选区）；中键放行——从消息区起手即可平移画布（shell pan 支持 button 0/1）
+        bodyEl.addEventListener('mousedown', event => { if (event.button === 0) event.stopPropagation(); });
     }
 }
 

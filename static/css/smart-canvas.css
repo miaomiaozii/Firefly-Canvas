@@ -3685,6 +3685,23 @@ button.prompt-flow-context-image { cursor:pointer; }
 .image-node.agent-smart-node .node-head { display: flex; }
 .image-node.agent-smart-node .node-title { display: block; }
 .image-node.agent-smart-node .node-body { height: calc(100% - 38px); }
+/* #317：附件处理进度行 */
+.agent-tui-attach-working { display: flex; align-items: center; gap: 6px; padding: 4px 10px; color: #7aa2f7; font-size: 11px; }
+.agent-tui-attach-working svg { width: 12px; height: 12px; animation: agent-attach-pulse 1.2s ease-in-out infinite; }
+@keyframes agent-attach-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+/* #317：fork 选择器——原生 prompt() 换为画布自有 <dialog> 体系（对齐 project-list.js showModal 模式） */
+.agent-fork-dialog { border: 1px solid #3b4261; background: #1a1b26; color: #c0caf5; border-radius: 10px; padding: 16px 18px; min-width: 340px; max-width: 460px; font-family: inherit; }
+.agent-fork-dialog::backdrop { background: rgba(10, 12, 22, .55); }
+.agent-fork-dialog h3 { margin: 0 0 10px; font-size: 14px; color: #a9b1d6; font-weight: 600; }
+.agent-fork-dialog .agent-fork-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.agent-fork-dialog label { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1.4; }
+.agent-fork-dialog label:hover { background: #24283b; }
+.agent-fork-dialog label .agent-fork-idx { color: #565f89; flex: none; }
+.agent-fork-dialog input.agent-fork-name { width: 100%; box-sizing: border-box; background: #24283b; border: 1px solid #3b4261; color: #c0caf5; border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-bottom: 12px; }
+.agent-fork-dialog .agent-fork-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.agent-fork-dialog button { background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+.agent-fork-dialog button.primary { background: #3d59a1; border-color: #565f89; color: #c0caf5; }
+.agent-fork-dialog button:hover { filter: brightness(1.15); }
 
 .agent-tui-header {
     display: flex;

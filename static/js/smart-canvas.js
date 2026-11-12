@@ -9282,46 +9282,7 @@ function render(){
     refreshRunTimerPills();
     // #272：画布批注层重绘（钉/气泡；逻辑全在 canvas-annotations.js，这里只接线）
     renderAnnotationLayer();
-    return;
-    world.innerHTML = '';
-    if(composerEl) world.appendChild(composerEl);
-    world.insertAdjacentHTML('beforeend', renderConnections());
-    const nodesHtml = canvasState.nodes.map(node => {
-        const imgs = node.images || [];
-        const title = node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : 'Image');
-        const scale = nodeScale(node);
-        const layout = imageLayout(imgs, scale, node);
-        const isPrompt = node.type === NODE_TYPE_PROMPT;
-        const isLoop = node.type === NODE_TYPE_LOOP;
-        const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
-        const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
-        const isEmpty = isImageNode && imgs.length === 0 && !node.pending && !isQueued;
-        const isGroup = isImageNode && imgs.length > 1;
-        const isPending = (node.pending || isQueued) && imgs.length === 0;
-        const body = nodeBodyHtml(node, layout);
-        const deleteBtn = isGroup ? '' : `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
-        return `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
-            <div class="node-head"><div class="node-title">${title}</div><div class="node-actions">${deleteBtn}</div></div>
-            ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
-            ${smartNodeToolbarHtml(node)}
-            ${runTimePillHtml(node)}
-            <div class="node-body">${body}</div>
-            <div class="node-hint">${isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')))}</div>
-            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
-            <div class="node-port port-in" data-port="in" title="${escapeHtml(tr('smart.portIn'))}"></div>
-            <div class="node-port port-out" data-port="out" title="${escapeHtml(tr('smart.portOut'))}"></div>
-        </div>`;
-    }).join('');
-    world.insertAdjacentHTML('beforeend', nodesHtml);
-    bindNodeEvents();
-    bindConnectionEvents();
-    updateComposer();
-    renderMinimap();
-    refreshIcons();
-    measureSmartNodeImages();
-    scheduleSmartNodeFloatingMenuPosition();
-    refreshRunTimerPills();
-    updateSmartMarkedBadge();
+    // #317：此处曾有 40 行 `return;` 后永不可达的旧版全量重建逻辑（至 updateSmartMarkedBadge），已删除。
 }
 function measureSmartNodeImages(){
     world.querySelectorAll('.image-node img,.image-node video').forEach(imgEl => {
@@ -14357,7 +14318,12 @@ shell.addEventListener('click', e => {
 }, true);
 shell.onmousedown = e => {
     if(zoomPreviewState && e.button === 0 && !e.target.closest('.composer,.smart-settings-modal,.smart-settings,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.log-modal,.shortcut-modal,.image-edit-modal,.create-menu,.smart-minimap')) return;
-    if(e.target.closest('.image-node,.composer,.smart-settings-modal,.smart-settings,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.log-modal,.shortcut-modal,.create-menu,.smart-minimap')) return;
+    // #317：中键平移对节点内部也生效（消息区起手 pan）；左键维持原逻辑：节点内不触发背景平移
+    const inChrome = e.target.closest('.image-node,.composer,.smart-settings-modal,.smart-settings,.smart-back,.asset-panel,.asset-toggle,.smart-log-toggle,.smart-shortcut-toggle,.log-modal,.shortcut-modal,.create-menu,.smart-minimap');
+    if(inChrome){
+        if(e.button !== 1) return;
+        if(e.target.closest('select,input,textarea,button,.node-resize-handle,.node-port,.mini-x,.thumb-item')) return;
+    }
     closeCreateMenu();
     if(e.button === 0 && e.shiftKey){
         e.preventDefault();

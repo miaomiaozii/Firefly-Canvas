@@ -250,6 +250,10 @@ class AgentHostManager:
             session = self.sessions.get(key)
             if session and session.is_running:
                 return session
+            if session:
+                # #317：空闲对象复用不替换——否则 stream 连接（不拉起）与后续 /prompt spawn 各自拿到
+                # 不同对象，WS 监听器挂在旧对象上会永久丢事件；复用后同对象晚 spawn 也能广播。
+                return session
 
             # Create new session
             session = AgentSession(project_id=project_id, node_id=node_id, model=model, autonomy=autonomy)
