@@ -3705,9 +3705,12 @@ button.prompt-flow-context-image { cursor:pointer; }
 
 /* Agent TUI (terminal-style) styles */
 /* #301：圆角与内部控件统一（卡片 8px / 控件 6px），与画布节点语言一致 */
+/* #312：补 width:100%——此前仅有 height:100%，flex 主轴下卡片按内容宽收缩，
+   拉大节点后右侧空白（对齐 .prompt-node-card/.conversation-node-card 写法 css:170-171/247） */
 .agent-tui-card {
     display: flex;
     flex-direction: column;
+    width: 100%;
     height: 100%;
     background: #1a1b26;
     color: #c0caf5;
