@@ -68,3 +68,8 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 ## 勘误（2026-11-13，WS E2E 实测）
 
 - 正文 §1 中「message_update(ames)」为笔误：WS 线上 payload 键为 `assistantMessageEvent`，形如 `{type: text_delta|thinking_delta|thinking_start|…, delta}`（前端 `canvas-agent-tui.js:249-268` 读 `event.assistantMessageEvent.{type,delta}`；2026-11-13 定稿 main 实跑钉死，见 IMPL-NOTES #317 复验节）。映射语义不变，仅键名更正。
+
+## 勘误（2026-11-13，票 B/C 实施实测）
+1. §3 端点路径：MCP 端点实路径为 **/api/mcp**（api_mcp.py:603），正文 `/mcp` 系笔误；`&node=` 绑定语义不变。
+2. §4 补充（审批策略）：codex 侧 MCP 工具默认审批模式与 exec 非交互语义组合会**自动拒绝** MCP 调用（实测 error: "requires approval, but approval policy is never"）——适配器必须注入 `-c 'mcp_servers.firefly.default_tools_approval_mode="approve"'`。这不削弱安全：画布写类工具的确认闸（ADR 0022）在 Firefly 端点侧执行，与宿主沙盒正交。正确键名是 `default_tools_approval_mode`（值 auto|prompt|writes|approve）；`default_tools_approval_policy` 为无效键（实测被 ignore）。
+3. §1 映射表补充（实测）：`item{mcp_tool_call}` 终态结果在 `item.result.content[]`（非 aggregated_output），错误在 `item.error`；映射器已按此提取。

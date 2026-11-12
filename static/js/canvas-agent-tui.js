@@ -82,6 +82,8 @@ function recordAgentConnectFailure(state, nodeId, projectId) {
 
 function connectAgentWebSocket(nodeId, projectId, options = {}) {
     const state = getAgentTuiState(nodeId);
+    // #318 票 C：存 projectId——session 事件触发的 events 回放需要拼 GET URL。
+    state.projectId = projectId;
     // #285：首次连接时异步拉取会话模型池，到位后重渲染以替换回退池。
     if (!state.chatModelsFetched) {
         state.chatModelsFetched = true;
@@ -188,11 +190,70 @@ function finalizeAgentStreamingTurn(state){
     if (lastThinking && lastThinking.streaming) delete lastThinking.streaming;
 }
 
+// #318 票 C：事件回放。WS session 确认事件后拉 GET events?since=lastSeq 重建：
+// 页面刷新=全量（lastSeq 0）；断线重连=补缺口。竞态：回放在途时 live 事件先进
+// 缓冲，批处理完再按 seq 刷（去重统一由 seq 承担）。
+function replayAgentEvents(nodeId, state) {
+    const projectId = state.projectId;
+    if (!projectId || state._replayInFlight) return;
+    state._replayInFlight = true;
+    state._replayBuffer = state._replayBuffer || [];
+    const since = state.lastSeq || 0;
+    fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events?since=${since}`)
+        .then(r => (r && r.ok) ? r.json() : { events: [] })
+        .then(d => {
+            for (const rec of (d.events || [])) {
+                const ev = rec && rec.event;
+                if (!ev) continue;
+                const s = Number(rec.seq || ev.seq || 0);
+                if (s && s > (state.lastSeq || 0)) {
+                    state.lastSeq = s;
+                    applyAgentEventBody(nodeId, ev);
+                }
+            }
+        })
+        .catch(() => {})
+        .finally(() => {
+            state._replayInFlight = false;
+            const buf = state._replayBuffer || [];
+            state._replayBuffer = [];
+            buf.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
+            for (const ev of buf) {
+                const s = Number(ev.seq) || 0;
+                if (s && s <= (state.lastSeq || 0)) continue;
+                if (s) state.lastSeq = s;
+                applyAgentEventBody(nodeId, ev);
+            }
+        });
+}
+
 function handleAgentEvent(nodeId, event) {
     const state = getAgentTuiState(nodeId);
     const eventType = event.type;
 
+    // #318 票 C：seq 去重（live/回放共用一条链）；回放在途先缓冲防丢缺口。
+    const seq = Number(event.seq);
+    if (Number.isFinite(seq)) {
+        if (state._replayInFlight) {
+            state._replayBuffer = state._replayBuffer || [];
+            state._replayBuffer.push(event);
+            return;
+        }
+        if (seq <= (state.lastSeq || 0)) return;
+        state.lastSeq = seq;
+    }
+    applyAgentEventBody(nodeId, event);
+}
+
+function applyAgentEventBody(nodeId, event) {
+    const state = getAgentTuiState(nodeId);
+    const eventType = event.type;
+
     switch (eventType) {
+        case 'user_prompt':
+            // #318 票 C：回放里的 user 侧（live 不广播此事件，无回声双气泡风险）。
+            state.messages.push({ role: 'user', text: String(event.text || '') });
+            break;
         case 'session':
             state.status = 'idle';
             // #280：后端确认会话就绪 = 连接成功，清退避状态（失败计数/触顶标志/失败原因）。
@@ -203,6 +264,8 @@ function handleAgentEvent(nodeId, event) {
                 clearTimeout(state.reconnectTimer);
                 state.reconnectTimer = null;
             }
+            // #318 票 C：会话确认=拉历史回放（刷新/断线后消息区重建）。
+            replayAgentEvents(nodeId, state);
             break;
         case 'agent_start':
             state.status = 'busy';

@@ -369,6 +369,18 @@ async def get_fork_messages(
     return {"success": True, "node_id": node_id, "messages": messages}
 
 
+@router.get("/{node_id}/events")
+async def get_agent_node_events(
+    project_id: str, node_id: str, since: int = Query(0, ge=0)
+):
+    """#318 票 C：事件回放日志（seq>since 升序）。刷新/重连重建用；
+    前端先挂缓冲→GET→按 seq 去重续 live 流（竞态在客户端消解）。"""
+    try:
+        return agent_host_manager.load_events(project_id, node_id, since)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"events log read failed: {e}")
+
+
 @router.post("/{node_id}/fork")
 async def fork_session(
     project_id: str,

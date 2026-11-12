@@ -45,6 +45,12 @@ class CodexAdapter(HostAdapter):
         # MCP 注入主方案（外层 -c 元素内含 内层双引号；list-form Popen 无 shell 引号问题）
         if params.mcp_url:
             cmd += ["-c", "mcp_servers.firefly.url=" + _toml_value(params.mcp_url)]
+            # 实测坑（0.162）：MCP 工具默认要审批，exec 的 approval_policy=never 会
+            # 自动拒绝（error: requires approval, but approval policy is never）。
+            # 画布危险操作的真闸门在 Firefly 确认闸（ADR 0022），codex 侧必须放行。
+            # 正确键名是 default_tools_approval_mode（auto|prompt|writes|approve）；
+            # default_tools_approval_policy 是无效键（实测被 ignore 报错）。
+            cmd += ["-c", 'mcp_servers.firefly.default_tools_approval_mode="approve"']
         if params.model:
             cmd += ["-m", params.model]
         cmd += ["--skip-git-repo-check", "--json", "-"]  # `-` = prompt 走 stdin
@@ -129,10 +135,29 @@ def map_codex_event(raw: dict) -> List[dict]:
                 events.append({"type": "tool_execution_update", "toolCallId": item_id,
                                "update": item})
             else:  # completed
+                result = item.get("aggregated_output") or item.get("output") or item.get("text")
+                if result is None:
+                    # mcp_tool_call 终态：result 在 item.result（content[]），错误在 item.error
+                    # （实测坑：早期映射只读 aggregated_output → 画布工具结果丢失）。
+                    raw_res = item.get("result")
+                    if isinstance(raw_res, dict) and raw_res.get("content"):
+                        result = "\n".join(
+                            str(c.get("text") or "") for c in raw_res["content"]
+                            if isinstance(c, dict))
+                        if raw_res.get("isError"):
+                            return [{"type": "tool_execution_end", "toolCallId": item_id,
+                                     "toolName": name, "result": result, "isError": True}]
+                    else:
+                        result = raw_res if raw_res is not None else {}
+                err = item.get("error")
                 events.append({"type": "tool_execution_end", "toolCallId": item_id,
                                "toolName": name,
-                               "result": item.get("aggregated_output") or item.get("output") or item.get("text") or {},
-                               "isError": bool(item.get("is_error")) or item.get("status") == "failed"})
+                               "result": result,
+                               "isError": bool(item.get("is_error")) or item.get("status") == "failed"
+                                         or bool(err)})
+                if err:
+                    events.append({"type": "error",
+                                   "message": str(err.get("message") if isinstance(err, dict) else err)})
             return events
 
         if it == "error":

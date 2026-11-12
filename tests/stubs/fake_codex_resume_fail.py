@@ -21,6 +21,13 @@ def main() -> int:
         return 2
     if "PROMPT_SLEEP" in prompt:
         time.sleep(3)
+    if "ECHO_MODE" in prompt:  # #318 票 C：回显 prompt（降级重放上下文断言用）
+        print(json.dumps({"type": "thread.started", "thread_id": "fake-first"}))
+        print(json.dumps({"type": "item.completed", "item": {"id": "i1", "type": "agent_message",
+                                                            "text": "ECHO:" + prompt}}))
+        print(json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 10, "output_tokens": 2, "cached_input_tokens": 1}}))
+        return 0
     print(json.dumps({"type": "thread.started", "thread_id": "fake-first"}))
     print(json.dumps({"type": "item.completed", "item": {"id": "i1", "type": "agent_message", "text": "FAKE SECOND"}}))
     print(json.dumps({"type": "turn.completed", "usage": {

@@ -550,7 +550,12 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     if not isinstance(params, dict):
         params = {}
     name = str(params.get("name") or "")
-    args = params.get("args")
+    # MCP 标准字段是 params.arguments；旧实现只读 params.args → 带参工具对
+    # 标准客户端（claude/codex/SDK）一直静默收空 args（e2e 实抓：get_node
+    # 永远「Node not found: 」空名）。兼容读两者，标准优先。
+    args = params.get("arguments")
+    if not isinstance(args, dict):
+        args = params.get("args")
     if not isinstance(args, dict):
         args = {}
     if name not in TOOL_IMPLS:

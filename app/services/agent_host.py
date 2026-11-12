@@ -32,6 +32,10 @@ STOP_GRACE_SECONDS = 3.0
 KILL_WAIT_SECONDS = 5.0
 # spawn 就绪等待（get_state）超时：Node 冷启动慢，给足余量；超时后 run_command 必杀整树。
 RPC_SPAWN_TIMEOUT_SECONDS = 60.0
+# #318 票 C：节点级事件回放日志（events.jsonl）与降级重放参数（监理 03:28 裁定）。
+EVENTS_LOG_MAX_LINES = 2000      # 每节点保留尾 N 行（截头不清 seq）
+EVENTS_REPLAY_TURNS = 20         # 降级重建重放最近 N 轮（不足按实际全量，含 user 侧）
+EVENTS_REPLAY_MAX_CHARS = 12000  # 重放文本块字符预算（保最近轮）
 # 单条 RPC 命令响应超时（wait_for 硬超时 → finally 必杀）。
 RPC_TIMEOUT_SECONDS = 10.0
 # busy 会话空闲 reap 阈值：15 分钟无活动视为挂死（对照 ComfyArt bot.py 15min reap）。
@@ -213,6 +217,9 @@ class AgentSession:
     # #318 票 B：codex 单轮态旗。busy 判定用它而非 process——agent_end 已发但进程
     # 退出收尾未完成的窗口内，新 prompt 必须可接（E2E 实抓竞态）。
     _turn_open: bool = False
+    # #318 票 C：事件回放日志 seq 计数（-1=未初始化，首用时从文件尾恢复）
+    _event_seq: int = -1
+    _events_log_count: int = 0
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
     result: dict = field(default_factory=lambda: normalize_result(RESULT_DONE, ""))
     # #318 票 A：宿主选择（默认 pi，行为不变）；ext_session_id 为宿主自有会话 id
@@ -317,7 +324,7 @@ class AgentHostManager:
             # 端口/基址动态取（resolve_agent_api_base，L-1 禁硬编码），&node= 只改归属。
             api_base = resolve_agent_api_base(os.environ)
             mcp_url = (
-                f"{api_base}/mcp?project={session.project_id}"
+                f"{api_base}/api/mcp?project={session.project_id}"
                 f"&node={session.node_id}"
             )
             params = SpawnParams(
@@ -466,9 +473,11 @@ class AgentHostManager:
                     )
             logger.warning(f"Agent process {session.node_id} exited with code {exit_code}")
             # Notify handlers
+            exit_event = {"type": "process_exited", "exit_code": exit_code, "result": dict(session.result)}
+            self._persist_event(session, exit_event)  # #318 票 C：崩溃/退出也入回放日志
             for handler in session.event_handlers:
                 try:
-                    out = handler(session, {"type": "process_exited", "exit_code": exit_code, "result": dict(session.result)})
+                    out = handler(session, exit_event)
                     if inspect.isawaitable(out):  # #281：同步处理器（capture_response 等）直接调用
                         await out
                 except Exception:
@@ -486,6 +495,9 @@ class AgentHostManager:
 
     async def _dispatch_event(self, session: AgentSession, event: dict):
         """Dispatch an event to all registered handlers."""
+        # #318 票 C：单一 fan-out——先持久化（就地注入 seq，WS 广播 payload 自动带
+        # seq，前端去重/续拉按 seq），再分发。best-effort，永不阻断实时流。
+        self._persist_event(session, event)
         event_type = event.get("type", "")
 
         # Update session status based on event
@@ -601,6 +613,9 @@ class AgentHostManager:
 
     async def send_prompt(self, session: AgentSession, message: str, images: list = None) -> None:
         """Send a prompt to the agent."""
+        # #318 票 C：user 侧入回放日志（仅落盘不广播——前端实时侧用本地回声，
+        # 避免双气泡；降级重放/刷新回放读此数据）。
+        self._persist_event(session, {"type": "user_prompt", "text": message})
         # #318 票 B：codex 宿主不经 pi RPC——每轮一个 `codex exec --json` 进程。
         if session.agent_cli == "codex":
             await self._codex_turn(session, message)
@@ -665,7 +680,7 @@ class AgentHostManager:
         session_dir = os.path.join(project_dir, session.session_dir)
         os.makedirs(session_dir, exist_ok=True)
         mcp_url = (
-            f"{resolve_agent_api_base(os.environ)}/mcp?project={session.project_id}"
+            f"{resolve_agent_api_base(os.environ)}/api/mcp?project={session.project_id}"
             f"&node={session.node_id}"
         )
         params = SpawnParams(
@@ -774,6 +789,10 @@ class AgentHostManager:
                     session._turn_open = False
                 for event in map_codex_event(raw):
                     etype = event.get("type")
+                    if etype == "raw_item":
+                        # 监理裁定：未知 item 取证仅入库，不广播 live（回放消费方忽略）。
+                        self._persist_event(session, event)
+                        continue
                     if etype == "usage" and not event.get("cumulative"):
                         await self._record_codex_usage(session, event.get("usage") or {})
                     await self._dispatch_event(session, event)
@@ -793,14 +812,20 @@ class AgentHostManager:
             session._last_activity = time.time()
             if resumed and not saw_thread_id and exit_code not in (0, None) and degrade_budget:
                 # ADR 0024 §2 降级：resume 认不出旧会话 → UI 可见 + 新会话重发一次。
-                # （上下文重放属票 C；票 B 保证不静默死。）
+                # 票 C：重放上下文 = 回放日志最近 EVENTS_REPLAY_TURNS 轮（含 user 侧，
+                # 不足按实际全量）前置注入。
                 session.ext_session_id = None
+                context_block, turns_used = self._build_replay_context(session)
                 await self._dispatch_event(session, {
                     "type": "error",
-                    "message": "会话续接失败，已降级重建（新会话不含历史；历史回放待票 C）",
+                    "message": (f"会话续接失败，已降级重建（已重放最近 {turns_used} 轮上下文）"
+                                if turns_used else "会话续接失败，已降级重建（无可重放历史）"),
                 })
+                retry_message = (
+                    f"{context_block}\n\n（以上是画布历史重放，请接着继续）\n{message}"
+                    if context_block else message)
                 try:
-                    await self._codex_turn(session, message, allow_resume=False, degrade_budget=False)
+                    await self._codex_turn(session, retry_message, allow_resume=False, degrade_budget=False)
                 except Exception as e:
                     logger.error(f"codex degrade retry failed for {session.node_id}: {e}")
                 return
@@ -1094,6 +1119,151 @@ class AgentHostManager:
         """Respawn a crashed session with --continue."""
         logger.info(f"Respawning crashed agent session {session.node_id}")
         return await self.spawn_session(session)
+
+    # ------------------------------------------------------------------
+    # #318 票 C：节点级事件回放日志 events.jsonl（归一化事件，双宿主同词汇；
+    # codex 未知 item 以 raw_item 入库=取证，回放消费方忽略；不广播 live WS）。
+    # 路径：<project_dir>/agent-events/<node_id>.jsonl（跟项目走）。
+    # 行：{seq, ts, host, event:{…归一化事件（已注入 seq）}}
+    # ------------------------------------------------------------------
+
+    def _events_log_path(self, session: AgentSession) -> str:
+        return os.path.join(
+            self._get_project_dir(session.project_id),
+            "agent-events", f"{session.node_id}.jsonl")
+
+    def _init_event_seq(self, session: AgentSession, path: str) -> None:
+        """从文件尾恢复 seq 与行数（跨重启/跨会话单调）。"""
+        if session._event_seq >= 0:
+            return
+        seq, count = 0, 0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    count += 1
+                    try:
+                        s = int(json.loads(line).get("seq") or 0)
+                        if s > seq:
+                            seq = s
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning(f"events log init {session.node_id}: {e}")
+        session._event_seq = seq
+        session._events_log_count = count
+
+    def _persist_event(self, session: AgentSession, event: dict) -> None:
+        """追加归一化事件（就地注入 seq）。永不抛——失败只降级为无回放。"""
+        try:
+            path = self._events_log_path(session)
+            self._init_event_seq(session, path)
+            session._event_seq += 1
+            session._events_log_count += 1
+            event["seq"] = session._event_seq
+            record = {
+                "seq": session._event_seq,
+                "ts": time.time(),
+                "host": session.agent_cli,
+                "project_id": session.project_id,
+                "node_id": session.node_id,
+                "event": event,
+            }
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if session._events_log_count > EVENTS_LOG_MAX_LINES:
+                self._truncate_events_log(session, path)
+        except Exception as e:
+            logger.warning(f"events log persist failed {session.node_id}: {e}")
+
+    def _truncate_events_log(self, session: AgentSession, path: str) -> None:
+        """截头保尾 N 行；seq 单调跨截断（不改写幸存行）。temp+replace 原子。"""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            tail = lines[-EVENTS_LOG_MAX_LINES:]
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.writelines(tail)
+            os.replace(tmp, path)
+            session._events_log_count = len(tail)
+        except OSError as e:
+            logger.warning(f"events log truncate failed {session.node_id}: {e}")
+
+    def load_events(self, project_id: str, node_id: str, since: int = 0) -> dict:
+        """GET events：返回 seq>since 行（升序）。文件不存在=空。"""
+        path = os.path.join(
+            self._get_project_dir(project_id), "agent-events", f"{node_id}.jsonl")
+        out = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if int(rec.get("seq") or 0) > since:
+                        out.append(rec)
+        except FileNotFoundError:
+            return {"events": [], "last_seq": since}
+        # OSError 上抛——HTTP 语义归路由层（service 层不依赖 fastapi）
+        last_seq = out[-1]["seq"] if out else since
+        return {"events": out, "last_seq": last_seq}
+
+    def _build_replay_context(self, session: AgentSession) -> tuple:
+        """从回放日志派生最近 EVENTS_REPLAY_TURNS 轮文本（含 user 侧，host 无关：
+        归一化词汇）。返回 (text_block, turns_used)。不足 N 轮按实际全量（监理裁定）。
+        轮界定：user_prompt 开轮，agent_end 收轮（未收尾尾轮也收）。"""
+        records = []
+        path = self._events_log_path(session)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except FileNotFoundError:
+            return "", 0
+        turns = []  # [{"user": str, "assistant": str}]
+        cur = None
+        for rec in records:
+            ev = rec.get("event") or {}
+            et = ev.get("type")
+            if et == "user_prompt":
+                cur = {"user": str(ev.get("text") or ""), "assistant": ""}
+                turns.append(cur)
+            elif et == "agent_end":
+                cur = None
+            elif et == "message_update":
+                ame = ev.get("assistantMessageEvent") or {}
+                if ame.get("type") == "text_delta" and cur is not None:
+                    cur["assistant"] += str(ame.get("delta") or "")
+        recent = turns[-EVENTS_REPLAY_TURNS:]
+        # 预算内保留最近轮（从尾向前积）
+        keep = []
+        budget = EVENTS_REPLAY_MAX_CHARS
+        for t in reversed(recent):
+            block = f"user: {t['user']}\nassistant: {t['assistant']}\n"
+            if budget - len(block) < 0 and keep:
+                break
+            keep.append(block)
+            budget -= len(block)
+        keep.reverse()
+        if not keep:
+            return "", 0
+        body = "<canvas-history-replay host-session-lost rebuilt-by-firefly>\n" + "".join(keep) + "</canvas-history-replay>"
+        return body, len(keep)
 
     def on_event(self, session: AgentSession, handler: Callable):
         """Register an event handler for a session."""

@@ -74,6 +74,9 @@ class AdapterArgvTests(unittest.TestCase):
         injects = [a for a in argv if a.startswith("mcp_servers.firefly.url=") or "mcp_servers.firefly.url=" in a]
         assert injects, argv
         assert injects[0] == 'mcp_servers.firefly.url="http://127.0.0.1:9999/mcp?project=p&node=n"'
+        # 实测坑：MCP 工具默认审批 + exec never = 自动拒；必须 approve（真闸门在 Firefly）
+        amode = [a for a in argv if "default_tools_approval_mode=" in a]
+        assert amode and amode[0] == 'mcp_servers.firefly.default_tools_approval_mode="approve"', argv
         dev = [a for a in argv if "developer_instructions=" in a]
         assert dev and dev[0].endswith('"SYS PROMPT TEXT"')
 
@@ -125,6 +128,21 @@ class EventMappingTests(unittest.TestCase):
         assert s[0]["type"] == "tool_execution_start" and s[0]["toolCallId"] == "c1"
         assert e[0]["type"] == "tool_execution_end" and e[0]["result"] == "ok"
         assert e[0]["isError"] is False
+
+    def test_mcp_tool_call_result_extracted(self):
+        # 实测坑：mcp_tool_call 结果在 item.result.content[]，非 aggregated_output
+        e = map_codex_event({"type": "item.completed",
+                             "item": {"id": "m1", "type": "mcp_tool_call", "server": "firefly",
+                                      "tool": "canvas.list_nodes",
+                                      "result": {"content": [{"type": "text", "text": "NODES"}],
+                                                 "isError": False},
+                                      "status": "completed"}})
+        assert e[0]["result"] == "NODES" and e[0]["isError"] is False
+        f = map_codex_event({"type": "item.completed",
+                             "item": {"id": "m2", "type": "mcp_tool_call",
+                                      "error": {"message": "requires approval"}, "status": "failed"}})
+        assert f[0]["isError"] is True
+        assert any(x["type"] == "error" and "approval" in x["message"] for x in f)
 
     def test_item_error_is_error_event(self):
         evs = map_codex_event({"type": "item.completed",
