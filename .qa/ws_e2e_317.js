@@ -29,7 +29,7 @@ ws.onmessage = (e) => {
   }
   if (ev.type === 'message_update') {
     const am = [ev.assistantMessageEvent].filter(Boolean);
-    for (const a of am) if (a.type === "text_delta" && a.delta) process.stdout.write(`  text: ${JSON.stringify(a.text).slice(0, 80)}\n`);
+    for (const a of am) if (a.type === "text_delta" && a.delta) process.stdout.write(`  text: ${JSON.stringify(a.delta).slice(0, 80)}\n`);
   }
   if (ev.type === 'error') console.log(`[${ts()}ms] ERROR ${JSON.stringify(ev).slice(0, 200)}`);
 };

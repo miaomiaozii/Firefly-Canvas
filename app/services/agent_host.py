@@ -212,6 +212,10 @@ class AgentSession:
     _stopping: bool = False  # 手动 stop 进行中：reader finally 不得自动 respawn
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
     result: dict = field(default_factory=lambda: normalize_result(RESULT_DONE, ""))
+    # #318 票 A：宿主选择（默认 pi，行为不变）；ext_session_id 为宿主自有会话 id
+    # （codex thread_id 等），票 B 接线；票 A 仅落字段。
+    agent_cli: str = "pi"
+    ext_session_id: Optional[str] = None
     # #278：最近一次可操作错误（如 pi 未找到），供会话状态可见（#280 使用）
     last_error: str = ""
     _stderr_chunks: deque = field(default_factory=lambda: deque(maxlen=STDERR_MAX_CHUNKS), repr=False)
@@ -239,6 +243,13 @@ class AgentHostManager:
         self.sessions: Dict[str, AgentSession] = {}  # key: f"{project_id}:{node_id}"
         self._lock = asyncio.Lock()
         self._idle_watchdog_task: Optional[asyncio.Task] = None
+        # #318 票 A：宿主 adapter 注册表（默认只有 pi；行为零变化）
+        from .agent_adapters import PiAdapter
+        self._adapters = {"pi": PiAdapter()}
+
+    def _adapter_for(self, session: AgentSession):
+        """按 session.agent_cli 选 adapter；未知宿主回退 pi（票 A 保守）。"""
+        return self._adapters.get(session.agent_cli, self._adapters["pi"])
 
     def _session_key(self, project_id: str, node_id: str) -> str:
         return f"{project_id}:{node_id}"
@@ -288,19 +299,21 @@ class AgentHostManager:
 
             # Build command（#278：先解析可执行入口——Windows 上 pi 只有 pi.cmd
             # 包装器，直接 Popen(["pi", ...]) 会 WinError 2；解析失败记可操作错误，不启动进程）
-            cmd = build_pi_launch_command(
-                resolve_pi_cli(),
-                [
-                    "--mode", "rpc",
-                    "--no-extensions",
-                    "-e", self._get_canvas_tools_path(),
-                    "--no-builtin-tools",
-                    "--tools", "canvas.*,generate.*,media.*,viewport.*",
-                    "--session-dir", session_dir,
-                    "--name", f"firefly-agent-{session.node_id[:8]}",
-                    "--system-prompt", system_prompt,
-                ],
+            # #318 票 A：argv 拼法迁入 PiAdapter.build_argv（flag 列表/--continue 探测/
+            # 模型 flag 逐行等价）；resolve_pi_cli/build_pi_launch_command/PI_CLI 仍驻
+            # 本模块（测试 monkey-patch 面不变），PiAdapter 运行时延迟导入本模块取用。
+            from .agent_adapters import SpawnParams
+            adapter = self._adapter_for(session)
+            params = SpawnParams(
+                resolved_cli=resolve_pi_cli(),
+                session_dir=session_dir,
+                system_prompt=system_prompt,
+                tools_path=self._get_canvas_tools_path(),
+                node_id=session.node_id,
+                model=model or session.model,
+                continue_session=continue_session,
             )
+            cmd = adapter.build_argv(params)
             if cmd is None:
                 error = (
                     "未找到 pi 可执行文件：PATH 中没有 'pi'，且未设置 FIREFLY_PI_CLI。"
@@ -312,22 +325,7 @@ class AgentHostManager:
                 session.last_error = error
                 return False
 
-            # If continuing an existing session, add --continue flag
-            # Auto-detect: if session_dir has existing session files, continue
-            if continue_session:
-                cmd.append("--continue")
-            elif os.listdir(session_dir):
-                # Existing session found, continue it
-                cmd.append("--continue")
-
-            # Add model if specified
-            if model or session.model:
-                use_model = model or session.model
-                if "/" in use_model:
-                    provider, model_id = use_model.split("/", 1)
-                    cmd.extend(["--provider", provider, "--model", model_id])
-                else:
-                    cmd.extend(["--model", use_model])
+            # （原「--continue 探测」与「model flag」两段已迁入 PiAdapter.build_argv，#318 票 A）
 
             # Set environment for the canvas-tools extension
             env = os.environ.copy()
@@ -371,7 +369,7 @@ class AgentHostManager:
 
             # Wait for session to be ready (get_state)。Node 冷启动慢给足余量；
             # #239: 超时后 run_command 的 finally 必杀整棵进程树，不留僵尸 sidecar。
-            state = await self.get_session_state(session, timeout=RPC_SPAWN_TIMEOUT_SECONDS)
+            state = await self.get_session_state(session, timeout=adapter.startup_timeout_s)
             if state:
                 session.session_id = state.get("sessionId")
                 session.session_file = state.get("sessionFile")
