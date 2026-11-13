@@ -383,6 +383,21 @@ async def comfyui_cancel_prompt(client, root: str, prompt_id: str) -> None:
             pass
 
 
+class ComfyuiOutOfMemoryError(HTTPException):
+    """ComfyUI 显存不足。这不是参数错，也不是随机失败：调用方释放显存后可以且应该重跑一次。"""
+
+    def __init__(self, detail: str = '', status_code: int = 502):
+        super().__init__(status_code=status_code, detail=detail)
+
+
+async def comfyui_free_memory(client, root: str) -> None:
+    """让 ComfyUI 卸载模型并释放缓存显存（POST /free）。失败无所谓，只是尽力。"""
+    try:
+        await client.post(f'{root}/free', json={'unload_models': True, 'free_memory': True})
+    except Exception:
+        pass
+
+
 async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, width, height, references):
     """轮询 /history 直到拿到产物。任何非正常退出（超时/报错/取消）都把任务从队列里撤掉。"""
     deadline = started + COMFYUI_IMAGE_TASK_TIMEOUT
@@ -413,10 +428,17 @@ async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, w
                 status = entry.get('status') or {}
                 if str(status.get('status_str') or '').strip().lower() == 'error':
                     raw_error = comfyui_execution_error_text(status)
-                    hint = ''
-                    if 'exceed allowed memory' in raw_error or 'out of memory' in raw_error.lower():
-                        hint = '（显存不够：把画布的面积档调低一档，或关掉参考图重试）'
-                    raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{raw_error}{hint}')
+                    out_of_memory = 'exceed allowed memory' in raw_error or 'out of memory' in raw_error.lower()
+                    if out_of_memory:
+                        # 显存不足单独归类：上游会释放缓存后重跑一次，而不是直接报错给画布。
+                        raise ComfyuiOutOfMemoryError(
+                            detail=(
+                                f'ComfyUI 执行失败：{raw_error}'
+                                '（显存不够：已让 ComfyUI 卸载模型腾出显存重跑一次仍失败，'
+                                '请把画布的面积档调低一档，或去掉参考图）'
+                            ),
+                        )
+                    raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{raw_error}')
                 images = [
                     image
                     for node in (entry.get('outputs') or {}).values()
@@ -547,29 +569,45 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             submitted_prompt = f'Edit <Picture 1>. {clean_prompt}'
         graph = comfyui_h3_workflow(submitted_prompt, width, height, reference_names=names)
         report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
-        try:
-            submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
-        except httpx.ConnectError as exc:
-            raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc
-        except httpx.TimeoutException as exc:
-            raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc
-        if submit.status_code != 200:
+
+        async def submit_graph() -> str:
             try:
-                error_raw = submit.json() or {}
+                submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
+            except httpx.ConnectError as exc:
+                raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc
+            except httpx.TimeoutException as exc:
+                raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc
+            if submit.status_code != 200:
+                try:
+                    error_raw = submit.json() or {}
+                except Exception:
+                    error_raw = {}
+                detail = comfyui_node_errors_text(error_raw) or str(error_raw.get('error') or submit.text[:300])
+                raise HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}')
+            try:
+                submitted = submit.json() or {}
             except Exception:
-                error_raw = {}
-            detail = comfyui_node_errors_text(error_raw) or str(error_raw.get('error') or submit.text[:300])
-            raise HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}')
+                submitted = {}
+            submitted_id = str(submitted.get('prompt_id') or '').strip()
+            if not submitted_id:
+                raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')
+            return submitted_id
+
+        async def run_once():
+            submitted_id = await submit_graph()
+            result = await comfyui_wait_for_images(
+                client, root, submitted_id, started, report, width=width, height=height, references=len(names),
+            )
+            return submitted_id, result
+
         try:
-            submitted = submit.json() or {}
-        except Exception:
-            submitted = {}
-        prompt_id = str(submitted.get('prompt_id') or '').strip()
-        if not prompt_id:
-            raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')
-        images, queue_position = await comfyui_wait_for_images(
-            client, root, prompt_id, started, report, width=width, height=height, references=len(names),
-        )
+            prompt_id, (images, queue_position) = await run_once()
+        except ComfyuiOutOfMemoryError:
+            # 显存不够多半是前面的任务把缓存吃成碎片，不是这张图本身跑不动。
+            # 让 ComfyUI 卸掉模型、释放缓存，然后同图重跑一次——只重试这一次，第二次还不行就把错抛出去。
+            await comfyui_free_memory(client, root)
+            report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
+            prompt_id, (images, queue_position) = await run_once()
         image = images[0]
         # ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），
         # 用产物元数据里的真实尺寸回填，别把节点的对齐差值报给画布。

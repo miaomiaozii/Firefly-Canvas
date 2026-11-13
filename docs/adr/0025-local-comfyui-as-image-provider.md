@@ -69,3 +69,21 @@ LoadImage(image_1)
 另一条官方事实：模板里的 t2i 用 `ResolutionSelector('1:1 (Square)', 4, 32)`（4 MP / 边长 32），并附注「doesn't work well in low resolution ... Raise ... 16MP」；画布的面积档命名（1K/2K/4K = 4/8/16 MP）与之一致。
 
 另：官方 edit 模板还串了一个提示词增强子图（`qwen3.5_9b` + `TextGenerateV2` + `JsonExtractString('expanded_caption')` + `ComfySwitchNode` 开关），默认开。本地适配器**没有**接这层：它需要额外 9B 文本模型和一次 LLM 推理，属另一个决策范围；需要时用 `Generate Text` 节点自己跑。
+
+## 追加（2026-11-14 深夜，维护者实测反馈后）
+
+### 参考图必须写成扁平键 `images.image_0`
+节点 4 的 `images` 是 `COMFY_AUTOGROW_V3`。API 图里**必须**把它写成扁平键：
+
+```json
+"4": {"inputs": {"images.image_0": ["ref0", 0], "prompt": "...", "width": 2728, "height": 1536}}
+```
+
+写成嵌套的 `"images": {"image_0": [...]}` 会被后端**静默丢弃**：不报错、不警告，节点拿到的 `images` 是空的，输出尺寸回落到默认 2048，整单退化成文生图。第一版适配器就是嵌套写法，导致画布上"参考图传不过去"——图能出，但跟参考图毫无关系。
+
+判定方法（不留悬念）：把节点 `width`/`height` 设成 0，参考图被消费时输出尺寸等于参考图缩放后的尺寸（4:3 → 2336×1760），被忽略时是 2048×2048。
+
+序号从 **0** 开始，与前端 `autogrowOrdinalToName`（`comfyui_frontend`：`${group}.${prefix}${ordinal}`）一致，所以提示词里的 `<Picture 1>` 对应 `images.image_0`。UI 工作流文件里也是这个键名——写成 `images.image_1` 会导致打开工作流时那条连线丢失（面板上只剩一个空的 `image_0` 插槽）。
+
+### 显存不足自动腾一次
+显存碎片导致 OOM 很常见（同一张图前一次能跑、后一次 OOM）。适配器把 OOM 单独归类：收到 `out of memory` / `exceed allowed memory` 时先 `POST /free {"unload_models": true, "free_memory": true}`，再同图重跑**一次**；第二次仍 OOM 才把错误抛给画布（并提示降档）。这不是"自动重试"——只针对显存这一种确定性可恢复的失败，且上限一次。

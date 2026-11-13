@@ -4,7 +4,7 @@
 关键契约（都不在常见文档里，改代码前先读这里）：
 - /prompt 收 API 格式图，返回 prompt_id；/history/{id} 轮询；/view 取图。
 - 参考图必须先 /upload/image 拿到 input 目录里的名字，再挂到节点 4 的
-  `images: {'image_1': ['ref1', 0]}`（autogrow 输入，实测出来的形状）。
+  `images.image_0: ['ref0', 0]`（扁平键；嵌套写成 {"images": {...}} 会被后端静默丢弃）。
 - 节点 4（MiniMaxH3ImageConditioning）自己编码 latent，并同时输出 LATENT；
   negative 用 ConditioningZeroOut 零掉同一条 conditioning。
 - 尺寸步长 8（作者 ResolutionSelector 习惯），1k/2k/4k 档 = 4/8/16 MP。
@@ -102,6 +102,8 @@ class FakeComfy:
             return httpx.Response(200, content=self.image_bytes, headers={'content-type': 'image/png'})
         if request.method == 'POST' and path == '/upload/image':
             return httpx.Response(200, json={'name': 'canvas_ref_1.png', 'subfolder': '', 'type': 'input'})
+        if request.method == 'POST' and path == '/free':
+            return httpx.Response(200, json={})
         if request.method == 'GET' and path == '/queue':
             return httpx.Response(200, json={'queue_running': [], 'queue_pending': []})
         return httpx.Response(404, json={'error': f'unknown endpoint: {path}'})
@@ -278,11 +280,15 @@ class ComfyWorkflowTests(unittest.TestCase):
     def test_reference_images_wire_autogrow_input(self):
         from app.services.comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_h3_workflow
         graph = comfyui_h3_workflow('改成油画', 2048, 2048, reference_names=['a.png', 'b.png'])
-        self.assertEqual(graph['4']['inputs']['images'], {'image_1': ['ref1', 0], 'image_2': ['ref2', 0]})
-        self.assertEqual(graph['ref1']['class_type'], 'LoadImage')
-        self.assertEqual(graph['ref1']['inputs']['image'], 'a.png')
+        self.assertEqual(graph['4']['inputs']['images.image_0'], ['ref0', 0])
+        self.assertEqual(graph['4']['inputs']['images.image_1'], ['ref1', 0])
+        self.assertNotIn('images', graph['4']['inputs'])
+        self.assertEqual(graph['ref0']['class_type'], 'LoadImage')
+        self.assertEqual(graph['ref0']['inputs']['image'], 'a.png')
+        self.assertEqual(graph['ref1']['inputs']['image'], 'b.png')
         many = comfyui_h3_workflow('x', 2048, 2048, reference_names=[f'{i}.png' for i in range(40)])
-        self.assertEqual(len(many['4']['inputs']['images']), COMFYUI_MAX_REFERENCES)
+        wired = [k for k in many['4']['inputs'] if k.startswith('images.image_')]
+        self.assertEqual(len(wired), COMFYUI_MAX_REFERENCES)
 
     def test_blank_reference_names_ignored(self):
         from app.services.comfyui_workflows import comfyui_h3_workflow
@@ -339,8 +345,9 @@ class ComfyEndToEndTests(ComfyBase):
         uploads = fake.requests_to('/upload/image', 'POST')
         self.assertEqual(len(uploads), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
-        self.assertEqual(body['prompt']['ref1']['inputs']['image'], 'canvas_ref_1.png')
+        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['ref0', 0])
+        self.assertNotIn('images', body['prompt']['4']['inputs'])
+        self.assertEqual(body['prompt']['ref0']['inputs']['image'], 'canvas_ref_1.png')
         # 选了具体比例就必须听画布的：本地节点不要求参考图与画布同比例
         # （实测方形参考图 + 16:9 画布能正常出 2720×1536，主体无拉伸）
         node4 = body['prompt']['4']['inputs']
@@ -439,6 +446,38 @@ class ComfyEndToEndTests(ComfyBase):
         self.assertIn('ComfyUI', ctx.exception.detail)
 
 
+class ComfyOutOfMemoryTests(ComfyBase):
+    """显存不足不是随机失败：卸掉模型腾显存后同图重跑一次，只重试这一次。"""
+
+    def test_out_of_memory_frees_cache_and_retries_once(self):
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy(history_steps=['error', 'done'])
+
+        image, raw = self.run_with(fake, lambda: generate_ai_image(
+            '一张沙发', '1024x1024', 'medium', COMFYUI_MODEL,
+            reference_images=None, provider_id=PROVIDER_ID, preserve_model=True,
+            image_parameters={'aspect_ratio': '16:9', 'resolution': '1K'},
+        ))
+        self.assertEqual(image['type'], 'url')
+        self.assertEqual(len(fake.requests_to('/free', 'POST')), 1, 'OOM 之后必须先让 ComfyUI 卸模型释放显存')
+        self.assertEqual(len(fake.requests_to('/prompt', 'POST')), 2, '重跑一次就够，不允许无限重试')
+
+    def test_out_of_memory_twice_surfaces_original_error(self):
+        from fastapi import HTTPException
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy(history_steps=['error', 'error'])
+
+        with self.assertRaises(HTTPException) as ctx:
+            self.run_with(fake, lambda: generate_ai_image(
+                '一张沙发', '1024x1024', 'medium', COMFYUI_MODEL,
+                reference_images=None, provider_id=PROVIDER_ID, preserve_model=True,
+                image_parameters={'aspect_ratio': '16:9', 'resolution': '1K'},
+            ))
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn('显存', ctx.exception.detail)
+        self.assertEqual(len(fake.requests_to('/prompt', 'POST')), 2, '两次都 OOM 就必须停手，别再接着烧算力')
+
+
 class ComfyReferenceResolutionTests(ComfyBase):
     """参考图来源解析：画布给的真实形态是项目媒体相对 URL。"""
 
@@ -475,7 +514,8 @@ class ComfyReferenceResolutionTests(ComfyBase):
         self.assertEqual(calls[0][0], 'media_record')
         self.assertEqual(len(fake.requests_to('/upload/image', 'POST')), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
+        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['ref0', 0])
+        self.assertNotIn('images', body['prompt']['4']['inputs'])
         self.assertEqual(raw['references'], 1)
         self.assertEqual(image['type'], 'url')
 

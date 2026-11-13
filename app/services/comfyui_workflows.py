@@ -278,8 +278,13 @@ def comfyui_h3_workflow(
 ):
     """在 9 节点模板上注入参数；给了参考图就挂 LoadImage 并接节点 4 的 images。
 
-    参考图走节点 4 的 autogrow 输入：`"images": {"image_1": [<节点>, 0], ...}`。
-    这个形状是实测出来的（文档没写），LoadImage 的 image 用 /upload/image 返回的 name。
+    参考图必须写成**扁平键** `images.image_0` / `images.image_1` ……：
+    - 嵌套写法 `{"images": {"image_1": [...]}}` 会被后端**静默丢弃**（实测：节点收到空 images，
+      宽度高度都退回 2048，等于默默变成纯文生图，不报任何错）。
+    - 序号从 0 开始，和前端 autogrow 一致（`comfyui_frontend` 的
+      `autogrowOrdinalToName` → `${group}.${prefix}${ordinal}`，ordinal 从 0 数）。
+      所以 `<Picture 1>` 对应 `images.image_0`。
+    LoadImage 的 image 用 /upload/image 返回的 name。
     """
     graph = copy.deepcopy(COMFYUI_H3_T2I_WORKFLOW)
     graph['4']['inputs'].update(
@@ -302,14 +307,12 @@ def comfyui_h3_workflow(
         graph['9']['inputs']['filename_prefix'] = str(filename_prefix)
     names = [str(name or '').strip() for name in (reference_names or []) if str(name or '').strip()]
     if names:
-        wired = {}
-        for index, name in enumerate(names[:COMFYUI_MAX_REFERENCES], start=1):
+        for index, name in enumerate(names[:COMFYUI_MAX_REFERENCES]):
             node_id = f'ref{index}'
             graph[node_id] = {
                 'class_type': 'LoadImage',
                 'inputs': {'image': name},
-                '_meta': {'title': f'reference {index}'},
+                '_meta': {'title': f'reference {index + 1}'},
             }
-            wired[f'image_{index}'] = [node_id, 0]
-        graph['4']['inputs']['images'] = wired
+            graph['4']['inputs'][f'images.image_{index}'] = [node_id, 0]
     return graph
