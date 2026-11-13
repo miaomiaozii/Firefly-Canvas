@@ -2026,7 +2026,9 @@ function screenToWorld(event){
 function canvasWheelZoomFactor(event, pageSize){
     const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? pageSize : 1;
     const isMac = /^Mac/.test(navigator.platform || '');
-    const sensitivity = 0.0008;
+    // #336：灵敏度 0.0008 → 0.0005（每格滚轮 zoom 因子 exp(0.08)=1.083 → exp(0.05)=1.051，
+    // 约降 37%）；两指平移/滚轮语义不变（#328 裁决保持）。
+    const sensitivity = 0.0005;
     const macMultiplier = isMac ? 1.15 : 1;
     return Math.exp(-event.deltaY * unit * sensitivity * macMultiplier);
 }
