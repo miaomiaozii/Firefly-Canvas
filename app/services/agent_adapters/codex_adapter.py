@@ -152,7 +152,9 @@ def map_codex_event(raw: dict) -> List[dict]:
                 err = item.get("error")
                 events.append({"type": "tool_execution_end", "toolCallId": item_id,
                                "toolName": name,
-                               "args": item,  # #322：终态 args（todo_list 打勾列表就地更新）
+                               # #322 监理钉①：args≠整个 item（双份 result/语义错位）；
+                               # 前端消费面只有 checklist 的 todos/updates（canvas-agent-tui.js:929）。
+                               "args": {k: item[k] for k in ("todos", "updates") if k in item},
                                "result": result,
                                "isError": bool(item.get("is_error")) or item.get("status") == "failed"
                                          or bool(err)})

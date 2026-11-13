@@ -128,6 +128,9 @@ class EventMappingTests(unittest.TestCase):
         assert s[0]["type"] == "tool_execution_start" and s[0]["toolCallId"] == "c1"
         assert e[0]["type"] == "tool_execution_end" and e[0]["result"] == "ok"
         assert e[0]["isError"] is False
+        # 监理钉①（#322）：end.args 不再塞整个 item——无 result 双份/语义错位；
+        # 前端消费面只有 checklist 的 todos/updates（canvas-agent-tui.js:929）。
+        assert "result" not in e[0]["args"] and "aggregated_output" not in e[0]["args"]
 
     def test_mcp_tool_call_result_extracted(self):
         # 实测坑：mcp_tool_call 结果在 item.result.content[]，非 aggregated_output
