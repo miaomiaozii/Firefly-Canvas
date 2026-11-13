@@ -20,7 +20,7 @@ class SpawnParams:
 
     resolved_cli: Optional[str]      # 已解析的可执行入口（None=未找到，由主干报错）
     session_dir: str                 # 宿主会话目录（画布项目内）
-    system_prompt: str               # 画布系统提示（含自治后缀）
+    system_prompt: str               # 画布系统提示（含自治后缀）；内存真源（#334 钉③双保险）
     tools_path: str                  # canvas-tools.js 绝对路径（pi -e）
     node_id: str
     model: str = ""                  # 显式模型（provider/id 或裸名）
@@ -30,6 +30,7 @@ class SpawnParams:
     agent_cli: str = "pi"
     ext_session_id: Optional[str] = None  # 宿主自有会话 id（codex thread_id）
     mcp_url: Optional[str] = None  # /mcp?project=…&node=…（codex 经 -c 注入）
+    system_prompt_file: str = ""   # #334：提示词落盘路径——pi 走 `--system-prompt <path>`（cmd /c 下内联多行必丢参）
 
 
 class HostAdapter:

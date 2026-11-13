@@ -102,6 +102,23 @@ def _is_batch_wrapper(path: str) -> bool:
     return name.endswith(".cmd") or name.endswith(".bat")
 
 
+def write_system_prompt_file(session_dir: str, prompt: str) -> str:
+    """#334：把完整系统提示词原子落盘 <session_dir>/system-prompt.txt，返回路径。
+
+    根因：cmd /c 包装器下含字面换行的引号参数会把后续全部参数吐掉
+    （现物：宿主 argv 429B 止于提示词首行，--continue/model 全丢；且历史上
+    每次 spawn 提示词只送达第一行）。pi 原生支持 `--system-prompt <path>`。
+    每节点单文件（session_dir 即节点级），覆盖写不追加。内存真源仍是
+    system_prompt（SpawnParams 双保险，监理钉③）。
+    """
+    path = os.path.join(session_dir, SYSTEM_PROMPT_FILE_NAME)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(prompt)
+    os.replace(tmp, path)
+    return path
+
+
 def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Optional[List[str]]:
     """构造 pi 启动 argv（解析失败返回 None）。
 
@@ -120,6 +137,8 @@ def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Opt
 
 
 # #279：画布工具回连基址的默认端口（与 main.py uvicorn 默认监听端口一致）。
+# #334：pi 系统提示词落盘文件名（session_dir 即节点级，单文件覆盖写）。
+SYSTEM_PROMPT_FILE_NAME = "system-prompt.txt"
 DEFAULT_AGENT_API_PORT = "3000"
 DEFAULT_AGENT_API_BASE = f"http://127.0.0.1:{DEFAULT_AGENT_API_PORT}"
 
@@ -331,6 +350,11 @@ class AgentHostManager:
                 resolved_cli=resolve_pi_cli(),
                 session_dir=session_dir,
                 system_prompt=system_prompt,
+                # #334：pi 宿主提示词走文件（cmd /c 下内联多行必丢参）；codex 不经 cmd 包装器维持内联。
+                system_prompt_file=(
+                    write_system_prompt_file(session_dir, system_prompt)
+                    if session.agent_cli == "pi" else ""
+                ),
                 tools_path=self._get_canvas_tools_path(),
                 node_id=session.node_id,
                 model=model or session.model,
