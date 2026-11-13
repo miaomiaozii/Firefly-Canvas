@@ -75,9 +75,9 @@ LoadImage(image_1)
 - `max_length`：官方 8196 → 我们 1536（`COMFYUI_PE_MAX_LENGTH`）。PE 只需要扩写一句画面描述，8196 的上限给了它跑到 15 分钟的空间。
 - `thinking`：官方 true → 我们 false（`COMFYUI_PE_THINKING`）。链式推理会先吐几千个推理 token，小卡上 3 token/s，这是 15~23 分钟的真正来源。
 
-实测（2048²，同一提示词）：max_length 8196 + thinking → 93s（顺利时）/ 958s、1413s（跑飞时）；1536 + 无 thinking → 38s（t2i）/ 84s（i2i 带参考图），PE 输出仍是合格的 `expanded_caption`（含 `<Picture 1>` 指代）。
+实测（2048²，同一提示词）：max_length 8196 + thinking → 93s（顺利时）/ 958s、1413s（跑飞时）；1536 + 无 thinking → 38s（t2i）/ 84s（i2i 带参考图），PE 输出仍是合格的 `expanded_caption`（含 `<Picture 1>` 指代），token 生成本身只要 2~3 秒（日志：`128/1536 [00:02<00:22, 62it/s]`）。
 
-还有一格保险：`COMFYUI_PE_MAX_MEGAPIXELS`（默认 0 = 不自动关）可以按面积自动跳过 PE。
+还有一格保险：`COMFYUI_PE_MAX_MEGAPIXELS`（默认 8）——超过 8MP（即 4K 档）自动跳过 PE。因为 4K 时真正的代价不是 PE 的 token，而是它那个 7GB 编码器把 11GB 主模型挤出显存，两边来回读盘：实测 5472×3072 图生图 PE 开 516s / PE 关 138s（热）。1K/2K 档 PE 代价可控（1K 图生图 84s），所以只在 4K 关。
 
 ## 追加（2026-11-14 深夜，维护者实测反馈后）
 

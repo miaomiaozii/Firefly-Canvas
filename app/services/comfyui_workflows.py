@@ -64,8 +64,11 @@ COMFYUI_PE_ENCODER = 'qwen3.5_9b_w4a8_gptq.safetensors'
 # 提示词增强（PE）默认开，但它每张固定多吃一次 9B LLM 前向（实测 1K 图 93s → 关掉 30s，约 60s/张），
 # 且 16GB 卡上会让 H3 / Qwen3VL-32B / Qwen3.5-9B 三个模型反复换进换出（历史上那两条 16~23 分钟的
 # 任务就是换型换出来的）。所以给一个面积阈值：请求像素量超过阈值就不跑 PE。
-# 0 = 不自动关（任何档位都跑 PE）；想省时间就设 8（= 4K 档不增强）。
-COMFYUI_PE_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_PE_MAX_MEGAPIXELS', '0'))
+# 0 = 不自动关（任何档位都跑 PE）；默认 8 = 4K 档不跑 PE。
+# 实测（5472×3072 图生图，同一提示词）：PE 开 516s / PE 关 138s（热）、213s（需重新加载）。
+# 原因不是 PE 自己慢（token 已压到 3 秒级），而是那个 7GB 编码器一加载就把 11GB 主模型挤出去，
+# 两边来回读盘。1K/2K 档 PE 代价可控（1K 图生图 84s），所以默认只在超过 8MP 时关。
+COMFYUI_PE_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_PE_MAX_MEGAPIXELS', '8'))
 
 
 def comfyui_pe_enabled(width, height, resolution='', max_megapixels=None):
