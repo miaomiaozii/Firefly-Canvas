@@ -276,6 +276,15 @@ class ComfyEditSizingTests(unittest.TestCase):
         # 没超过上限就一个像素都不动
         self.assertEqual(comfyui_cap_longest_edge(2048, 1536, 32, 4096), (2048, 1536))
 
+    def test_pe_token_budget_is_bounded(self):
+        from app.services.comfyui_workflows import COMFYUI_PE_MAX_LENGTH, COMFYUI_PE_THINKING, comfyui_h3_workflow
+        graph = comfyui_h3_workflow('x', 2048, 2048)
+        # 官方默认 max_length=8196 + thinking，实测能跑成 3 token/s、单张 15~23 分钟
+        self.assertLessEqual(graph['34']['inputs']['max_length'], 2048)
+        self.assertFalse(graph['34']['inputs']['thinking'])
+        self.assertEqual(graph['34']['inputs']['max_length'], COMFYUI_PE_MAX_LENGTH)
+        self.assertEqual(graph['34']['inputs']['thinking'], COMFYUI_PE_THINKING)
+
     def test_pe_threshold(self):
         from app.services.comfyui_workflows import comfyui_pe_enabled
         self.assertTrue(comfyui_pe_enabled(5472, 3072, '4K', 0))  # 0 = 永不自动关

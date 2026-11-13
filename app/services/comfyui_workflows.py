@@ -54,6 +54,11 @@ COMFYUI_DEFAULT_MP_TIER = '2k'
 # 边长步长 = 8：作者 ResolutionSelector 就是用 8 的倍数（节点 object_info 的 step 提示写的是 32，
 # 但实测作者那套 8 倍数尺寸（如 5016×3344、2512×1672）能直接提交）。改成 32 就对不上公开尺寸表了。
 COMFYUI_SIZE_STEP = 32   # 节点 4 的 width/height 步长是 32，不按 32 取整会被静默向下取整（2728 -> 2720）
+COMFYUI_PE_MAX_LENGTH = int(os.getenv('COMFYUI_PE_MAX_LENGTH', '1536'))
+# thinking（链式推理）官方默认开，但它会先把几千个推理 token 吐完再给 JSON，在小卡上
+# 实测跑成 3 token/s、单张能耗掉 15~23 分钟（ComfyUI 日志：8196 上限跑到 43% 就 19 分钟）。
+# 这条链路只需要“扩写一句画面描述”，不需要推理；关掉后同一张图 93s -> 38s。
+COMFYUI_PE_THINKING = str(os.getenv('COMFYUI_PE_THINKING', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
 COMFYUI_PE_ENCODER = 'qwen3.5_9b_w4a8_gptq.safetensors'
 
 # 提示词增强（PE）默认开，但它每张固定多吃一次 9B LLM 前向（实测 1K 图 93s → 关掉 30s，约 60s/张），
@@ -139,7 +144,7 @@ COMFYUI_H3_T2I_WORKFLOW = {
         'inputs': {
             'clip': ['35', 0],
             'prompt': ['40', 0],
-            'max_length': 8196,
+            'max_length': COMFYUI_PE_MAX_LENGTH,
             'sampling_mode': 'on',
             'sampling_mode.temperature': 1.0,
             'sampling_mode.top_k': 20,
@@ -148,7 +153,7 @@ COMFYUI_H3_T2I_WORKFLOW = {
             'sampling_mode.repetition_penalty': 1.0,
             'sampling_mode.presence_penalty': 0.0,
             'sampling_mode.seed': 0,
-            'thinking': True,
+            'thinking': COMFYUI_PE_THINKING,
             'use_default_template': True,
             'mtp': 'auto',
             'system_prompt': ['36', 0],
