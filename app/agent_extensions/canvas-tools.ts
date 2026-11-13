@@ -238,6 +238,25 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
+    pi.registerTool({
+        name: "canvas.search_projects",
+        description: "跨项目搜索（只读）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中；不搜 agent 会话内容",
+        parameters: Type.Object({
+            query: Type.String({ description: "搜索关键词（大小写不敏感）" }),
+            limit: Type.Number({ description: "命中总数上限（1..200，默认 50）", optional: true }),
+        }),
+        async execute(toolCallId, params) {
+            const data = await callApi(
+                `/api/search/projects?q=${encodeURIComponent(params.query)}`,
+                "GET"
+            );
+            return {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+                details: {},
+            };
+        },
+    });
+
     // #266 只读视图工具（ComfyArt §59.4 语义；慢操作独立 90s 超时契约，服务端施加）
     pi.registerTool({
         name: "canvas.view",

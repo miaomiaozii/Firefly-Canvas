@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.core import ensure_same_origin_request
+from app.core import ensure_agent_same_origin
 from firefly_search import MAX_RESULTS, CrossProjectSearch
 
 router = APIRouter()
@@ -20,10 +20,8 @@ router = APIRouter()
 _search_state: dict = {}
 
 
-def _searcher() -> CrossProjectSearch:
-    store = getattr(_app_main, "FIREFLY_PROJECT_STORE", None)
-    if store is None:
-        raise HTTPException(status_code=503, detail="project store unavailable")
+def get_searcher(store) -> CrossProjectSearch:
+    """按 (store 身份, root) 复用搜索实例；项目库切换会替换 store 实例→重建。"""
     root = Path(store.root)
     key = (id(store), str(root))
     if _search_state.get("key") != key:
@@ -39,5 +37,9 @@ async def search_projects(
     q: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(50, ge=1, le=MAX_RESULTS),
 ):
-    ensure_same_origin_request(request)
-    return await asyncio.to_thread(_searcher().search, q, limit=limit)
+    # agent 守卫：浏览器带 Origin 照旧严格匹配；pi sidecar（无 Origin 回环+X-Agent-Project）放行。
+    ensure_agent_same_origin(request)
+    store = getattr(_app_main, "FIREFLY_PROJECT_STORE", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="project store unavailable")
+    return await asyncio.to_thread(get_searcher(store).search, q, limit=limit)

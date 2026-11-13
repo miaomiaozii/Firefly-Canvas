@@ -223,12 +223,12 @@ class WireLocalEditAdapterTests(unittest.TestCase):
 
 
 class EditEraseSurfaceTests(McpTestBase):
-    """声明表机制：edit_erase 已注册（24 项）、严格 schema、确认门 + impl 接线（同 289 先例）。"""
+    """声明表机制：edit_erase 已注册（25 项，票F 后）、严格 schema、确认门 + impl 接线（同 289 先例）。"""
 
     def test_tool_registered_gated_and_wired(self):
         resp = self.mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         tools = {t["name"]: t for t in resp.json()["result"]["tools"]}
-        self.assertEqual(len(tools), 24)
+        self.assertEqual(len(tools), 25)
         self.assertIn("canvas.edit_erase", tools)
         schema = tools["canvas.edit_erase"]["inputSchema"]
         self.assertEqual(schema["type"], "object")

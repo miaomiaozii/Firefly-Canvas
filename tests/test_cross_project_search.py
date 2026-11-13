@@ -161,5 +161,49 @@ class TestSearchEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
 
 
+class TestSearchProjectsAgentTool(unittest.TestCase):
+    """票 F：agent 工具 canvas.search_projects 接线与同面（MCP 声明/impl/TS 扩展）。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="firefly-search-tool-")
+        self.store = ProjectStore(Path(self.temp.name) / "projects", snapshot_delay=0)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        pid = self.store.create_project("工具搜索甲")["id"]
+        self.store.apply_mutations(pid, [{
+            "op": "upsert_node",
+            "node": {"id": "ta-1", "type": "smart-text", "title": "柠檬工具节点", "x": 0, "y": 0},
+        }], base_revision=0)
+        self.store.flush(pid)
+
+    def tearDown(self):
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp.cleanup()
+
+    def test_surface_impl_and_ts_parity(self):
+        from app.routers import api_mcp
+        names = {tool["name"] for tool in api_mcp.TOOLS}
+        self.assertIn("canvas.search_projects", names)
+        self.assertIn("canvas.search_projects", api_mcp.TOOL_IMPLS)
+        ts = (ROOT / "app" / "agent_extensions" / "canvas-tools.ts").read_text(encoding="utf-8")
+        self.assertIn('name: "canvas.search_projects"', ts)
+
+    def test_impl_returns_hits(self):
+        import asyncio
+        from app.routers import api_mcp
+        result = asyncio.run(api_mcp._impl_search_projects("any", "", {"query": "柠檬"}))
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["projects"][0]["hits"][0]["node_id"], "ta-1")
+
+    def test_impl_empty_query_400(self):
+        import asyncio
+        from fastapi import HTTPException
+        from app.routers import api_mcp
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(api_mcp._impl_search_projects("any", "", {"query": "  "}))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

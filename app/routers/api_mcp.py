@@ -312,6 +312,7 @@ TOOLS = [
     {"name": "canvas.delete_node", "description": "删除节点（破坏性：需画布确认门批准，阻塞最长 60s）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
     {"name": "canvas.connect", "description": "创建节点连线（edge 对象需含 from/to）", "inputSchema": {"type": "object", "properties": {"edge": {"type": "object"}}, "required": ["edge"]}},
     {"name": "canvas.disconnect", "description": "删除节点连线", "inputSchema": {"type": "object", "properties": {"from_node": {"type": "string"}, "to_node": {"type": "string"}}, "required": ["from_node", "to_node"]}},
+    {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"]}},
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
     {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，base64 PNG）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
     {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
@@ -366,6 +367,16 @@ async def _impl_connect(project_id, agent_node_id, args):
 
 async def _impl_disconnect(project_id, agent_node_id, args):
     return await delete_edge(project_id, str(args.get("from_node") or ""), str(args.get("to_node") or ""))
+
+
+async def _impl_search_projects(project_id, agent_node_id, args):
+    from app.routers.api_search import get_searcher
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    limit = int(args.get("limit") or 50)
+    store = _app_main.FIREFLY_PROJECT_STORE
+    return await asyncio.to_thread(get_searcher(store).search, query, limit=limit)
 
 
 async def _impl_trigger(project_id, agent_node_id, args):
@@ -492,6 +503,7 @@ TOOL_IMPLS = {
     "canvas.delete_node": _impl_delete_node,
     "canvas.connect": _impl_connect,
     "canvas.disconnect": _impl_disconnect,
+    "canvas.search_projects": _impl_search_projects,
     "generate.trigger": _impl_trigger,
     "generate.status": _impl_status,
     "generate.wait": _impl_wait,
