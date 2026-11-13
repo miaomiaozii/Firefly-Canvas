@@ -1,0 +1,76 @@
+/* 跨项目搜索面板（票 F / #324） */
+.canvas-search-panel {
+    position: fixed;
+    top: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(560px, calc(100vw - 32px));
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--studio-panel-bg, #1d1f24);
+    border: 1px solid var(--studio-panel-border, #33363d);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    z-index: 1200;
+}
+.canvas-search-head {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--studio-panel-border, #33363d);
+}
+.canvas-search-head input {
+    flex: 1;
+    background: var(--studio-input-bg, #14161a);
+    color: var(--studio-text, #e8e8ea);
+    border: 1px solid var(--studio-panel-border, #33363d);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+.canvas-search-head button {
+    background: transparent;
+    color: var(--studio-text, #e8e8ea);
+    border: none;
+    cursor: pointer;
+}
+.canvas-search-results {
+    overflow-y: auto;
+    padding: 6px 12px;
+}
+.canvas-search-project { margin: 8px 0; }
+.canvas-search-project-name {
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--studio-accent, #7fb2ff);
+    margin-bottom: 4px;
+}
+.canvas-search-project-name em { font-weight: 400; font-style: normal; opacity: 0.7; }
+.canvas-search-hit {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 0;
+    border-top: 1px dashed rgba(128, 128, 128, 0.2);
+}
+.canvas-search-hit-kind {
+    font-size: 12px;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+.canvas-search-hit-snippet { flex: 1; word-break: break-word; }
+.canvas-search-hit-open {
+    font-size: 12px;
+    color: var(--studio-accent, #7fb2ff);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+}
+a.canvas-search-hit-open { text-decoration: none; }
+.canvas-search-empty, .canvas-search-meta {
+    opacity: 0.7;
+    padding: 8px 0;
+    font-size: 13px;
+}
+.canvas-search-meta { border-top: 1px solid var(--studio-panel-border, #33363d); padding: 8px 12px; }

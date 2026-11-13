@@ -470,6 +470,7 @@
         "smart.unmarkImage": { zh: "取消标记", en: "Unmark this image" },
         "smart.markedEmpty": { zh: "还没有标记图片。把鼠标移到画布图片上，点右上角的星形即可标记。", en: "No marked images yet. Hover an image on the canvas and click the star in its top-right corner." },
         "smart.markedDownloadAll": { zh: "全部下载", en: "Download all" },
+        "smart.search": { zh: "跨项目搜索", en: "Search projects" },
         "smart.downloadRecords": { zh: "下载记录", en: "Download log" },
         "smart.downloadRecordsEmpty": { zh: "还没有下载记录", en: "No downloads yet" },
         "smart.downloadRecordsRequested": { zh: "请求 {n} 项", en: "requested {n}" },

@@ -1290,6 +1290,8 @@ from app.routers import api_project_usage as _r_api_project_usage
 app.include_router(_r_api_project_usage.router)
 from app.routers import api_projects as _r_api_projects
 app.include_router(_r_api_projects.router)
+from app.routers import api_search as _r_api_search
+app.include_router(_r_api_search.router)
 from app.routers import api_prompt_libraries as _r_api_prompt_libraries
 app.include_router(_r_api_prompt_libraries.router)
 from app.routers import api_providers as _r_api_providers
