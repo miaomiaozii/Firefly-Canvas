@@ -341,12 +341,26 @@ class ComfyEndToEndTests(ComfyBase):
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
         self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
         self.assertEqual(body['prompt']['ref1']['inputs']['image'], 'canvas_ref_1.png')
-        # 图生图尺寸跟参考图走（官方 GetImageSize 回填），不跟画布比例走；1×1 参考图在 2K 档被放到 ~2896² 且齐 32
+        # 选了具体比例就必须听画布的：本地节点不要求参考图与画布同比例
+        # （实测方形参考图 + 16:9 画布能正常出 2720×1536，主体无拉伸）
         node4 = body['prompt']['4']['inputs']
-        self.assertEqual(node4['width'] % 32, 0)
-        self.assertEqual(node4['height'] % 32, 0)
+        self.assertEqual((node4['width'], node4['height']), (3864, 2176))
+
+    def test_auto_ratio_follows_reference_shape(self):
+        """画布没选比例（auto）时才跟参考图走——对应官方 edit 模板的 GetImageSize 写法。"""
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        reference = {'url': 'data:image/png;base64,' + base64.b64encode(_build_png()).decode('ascii')}
+
+        _, raw = self.run_with(fake, lambda: generate_ai_image(
+            '把它改成油画', '1024x1024', 'medium', COMFYUI_MODEL,
+            reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+            image_parameters={'aspect_ratio': 'auto', 'resolution': '2K'},
+        ))
+        body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
+        node4 = body['prompt']['4']['inputs']
+        self.assertEqual(node4['width'], node4['height'])
         self.assertEqual((node4['width'], node4['height']), (raw['requested_width'], raw['requested_height']))
-        self.assertNotEqual((node4['width'], node4['height']), (3864, 2176))
 
     def test_reference_prompt_gets_picture_prefix(self):
         """没有 <Picture n> 时自动加 `Edit <Picture 1>. `：节点约定参考图要在提示词里点名。"""

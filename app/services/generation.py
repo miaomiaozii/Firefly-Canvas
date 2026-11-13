@@ -7,7 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
-from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow  # noqa: E402
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -532,9 +532,9 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
                     '如果这张图刚在画布上传，请确认它在项目媒体库里仍然存在。'
                 ),
             )
-        if names and reference_size[0] and reference_size[1]:
-            # 官方图生图工作流的输出尺寸跟着参考图走（GetImageSize 回填节点 4），
-            # 不跟画布比例走；面积档已经体现在参考图的缩放量上。
+        if names and comfyui_ratio_is_auto(explicit.get('aspect_ratio')) and reference_size[0] and reference_size[1]:
+            # 只有“没选比例/选跟随参考图”时才跟参考图走（官方 edit 模板的 GetImageSize 行为）。
+            # 选了具体比例就必须听画布的：方圆参考图 + 16:9 画布实测能正常出图（63 秒 / 2720×1536，主体无拉伸）。
             width, height = reference_size
         submitted_prompt = clean_prompt
         if names and '<Picture' not in clean_prompt:

@@ -35,6 +35,8 @@ COMFYUI_DEFAULT_MP_TIER = '2k'
 COMFYUI_SIZE_STEP = 8
 # 参考图上限：节点 images 允许到 100，但画布一次传 16 张已经超出模型的有效参考能力。
 COMFYUI_MAX_REFERENCES = 16
+# 画布传这些值（或不传）时视为“跟随参考图”
+COMFYUI_AUTO_RATIO_VALUES = {'', 'auto', 'reference', 'keep', 'keep_ratio', 'follow', '跟随参考图'}
 
 COMFYUI_H3_T2I_WORKFLOW = {
     '1': {
@@ -198,6 +200,14 @@ def _comfyui_ratio_from_size(size):
     if width <= 0 or height <= 0:
         return (1.0, 1.0)
     return (width, height)
+
+
+def comfyui_ratio_is_auto(value) -> bool:
+    """画布没选比例（或显式要“跟随参考图”）时返回 True。
+    确认过的事实：本地节点不要求参考图与画布同比例——方形参考图 + 16:9 画布实测 63秒出 2720×1536，
+    主体（毯子）完整保留、无拉伸。所以“参考图就锁死输出比例”不是模型限制，只是官方 edit 模板
+    用 GetImageSize 回填 width/height 的便利写法。适配器默认听画布的。"""
+    return str(value or '').strip().lower() in COMFYUI_AUTO_RATIO_VALUES
 
 
 def comfyui_h3_seed(seed=None):
