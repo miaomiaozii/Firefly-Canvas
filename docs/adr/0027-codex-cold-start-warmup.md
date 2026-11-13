@@ -15,12 +15,13 @@
 
 ## 决策
 
-1. **采纳「轮后缓存预热」（已实施）**：每轮 codex 进程退出后，后台 fire-and-forget 跑一次 `codex --version`（全局冷却 30s，失败不重试，不入事件流），把下一轮 spawn 的固定开销压到热态。实现=`agent_host.maybe_warm_codex()`，挂载点 `_codex_turn` finally（降级重试行除外）。
+1. **采纳「轮后缓存预热」（已实施）**：每轮 codex 进程退出后，后台 fire-and-forget 跑一次 `codex --version`（**每节点**冷却 30s，失败不重试，不入事件流），把下一轮 spawn 的固定开销压到热态。实现=`agent_host.maybe_warm_codex(node_id)`，挂载点=`_read_codex_turn` 的 finally（降级重试行除外）。
 2. **否决常驻进程 / 常驻 spawn**：ADR 0024 的 kill-able、无共享状态、崩溃即轮终语义是票 B/#334 续接链的地基；为省 ~6s（其中大部分是外部网络面）拆可靠性地基，不成比例。
-3. **上界声明（验收口径）**：本机同代硬件/网络下 warm 态 turn ≈ 7s 量级为可接受上界；冷态 ≈ 冷惩罚+上界。超出即按 bug 排查（网络/模型侧），不再回到进程模型争论。
+3. **上界声明（验收口径）**：本机同代硬件/网络下**首 turn（冷）上界 ≈ 15s**（现测冷 8.2–13.0s + 冷惩罚上包络），warm 态 turn ≈ 7s 量级；超出即按 bug 排查（网络/模型侧），不再回到进程模型争论。
 
 ## 后果
 
-- 每节点每 30s 至多多一个 1s 级 CLI 进程，成本可忽略；测试=`tests/test_codex_coldstart_326.py`（冷却/无 CLI/argv 三面）。
+- 每节点每 30s 至多多一个 1s 级 CLI 进程，成本可忽略；测试=`tests/test_codex_coldstart_326.py`（按节点冷却/无 CLI/argv 三面）。
+- **诚实申报（null result）**：复跑对照 turn2 6.86→7.04s，预热机制收益在噪声内（复跑时 OS 缓存已被前轮预热）；机制上限=CLI 基线 ~1.2s，只在真冷环境（首启/缓存驱逐后）可兑现。若监理要求可回退，但无反向代价证据。
 - 「spawn 提前到 session init 预热」不采：session init 到首轮 prompt 间隔不可知，预热会陈旧化；轮后预热与真实节奏对齐。
 - 若未来 thread 复用出现硬需求（如批量任务），需新 ADR 重新开 0024 张力讨论，本票不预支。

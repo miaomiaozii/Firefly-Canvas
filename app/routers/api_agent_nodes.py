@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from app.core import ensure_agent_same_origin
+from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
-from app.routers.api_agent_tools import _find_node, _apply_mutations
+from app.routers.api_agent_tools import _find_node, _apply_mutations, _open_canvas
 
 # Resolve the main module without re-importing it (isolated-module test design).
 import sys as _sys
@@ -76,21 +77,23 @@ async def _update_node_field(project_id: str, node_id: str, field: str, value: A
 async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: str) -> None:
     """#332: agent-nodes create must persist the node into canvas.json——此前
     API 建的节点只存在于运行内存，进程重启整体蒸发、agent-events 成孤儿。
-    已存在的节点绝不动（位置/字段以画布为准）；缺失时写入最小形状
-    （type=smart-agent，前端可渲染），走既有 canvas 变更通道带 revision+broadcast。"""
-    try:
-        _find_node(project_id, node_id)
+    已存在的节点绝不动（位置/字段以画布为准）；缺失时写入最小形状，走既有
+    canvas 变更通道带 revision+broadcast。
+    评审修正：项目不存在必须 404 原样上报（不得被吞成 409）；幻影节点错位
+    网格摆放（不再全部堆原点）；spawn 失败时节点保留属预期——卡片可再启动，
+    丢节点才是 #332 的病根。"""
+    canvas = _open_canvas(project_id)
+    if any(isinstance(n, dict) and str(n.get("id", "")) == node_id for n in canvas.get("nodes", [])):
         return
-    except HTTPException:
-        pass
+    slot = len(canvas.get("nodes", []))
     now = _app_main.now_ms()
     await _apply_mutations(project_id, [{"op": "upsert_node", "node": {
         "id": node_id,
-        "type": "smart-agent",
+        "type": NODE_TYPE_AGENT,
         "kind": "agent",
         "title": f"Agent {node_id}",
-        "x": 0,
-        "y": 0,
+        "x": 80 + (slot % 10) * 80,
+        "y": 80 + (slot // 10) * 80,
         "agentCli": agent_cli,
         "created_at": now,
         "updated_at": now,
@@ -127,6 +130,7 @@ async def create_agent_node(
 
     # #335: 节点显式声明了未知 agentCli → 400，先于任何会话/spawn。
     # #332: body 可直接带 agentCli（幻影节点无 canvas 属性可读）；同样先验后落。
+    # 评审修正：已有节点与 body agentCli 冲突→400（不得静默无视）；宿主权威=canvas 节点属性。
     host_node = None
     try:
         host_node = _find_node(project_id, node_id)
@@ -136,11 +140,18 @@ async def create_agent_node(
     if requested_cli:
         _validated_agent_cli({"agentCli": requested_cli})
     if isinstance(host_node, dict):
-        _validated_agent_cli(host_node)
-
-    resolved_cli = requested_cli or (host_node.get("agentCli") if isinstance(host_node, dict) else "") or "pi"
-    # #332: 节点不在 canvas 时先落盘（先于 spawn），重启不蒸发。
-    if host_node is None:
+        node_cli = _validated_agent_cli(host_node)
+        if requested_cli and requested_cli != node_cli:
+            raise HTTPException(status_code=400, detail={
+                "error": "agentCli conflicts with existing node attribute",
+                "node_agent_cli": node_cli,
+                "body_agent_cli": requested_cli,
+                "hint": "PATCH the canvas node to change host, or omit agentCli",
+            })
+        resolved_cli = node_cli
+    else:
+        resolved_cli = requested_cli or "pi"
+        # #332: 节点不在 canvas 时先落盘（先于 spawn），重启不蒸发。
         await _upsert_agent_canvas_node(project_id, node_id, resolved_cli)
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id, model, autonomy)
@@ -165,7 +176,8 @@ async def create_agent_node(
         "status": session.status,
         "model": session.model or model,
         "autonomy": session.autonomy or autonomy,
-        "agentCli": resolved_cli,
+        # 评审修正：回显=会话实际宿主（_apply_node_host 后的真值），不是请求值。
+        "agentCli": getattr(session, "agent_cli", None) or resolved_cli,
     }
 
 

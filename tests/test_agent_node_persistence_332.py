@@ -78,6 +78,45 @@ class TestAgentNodePersistence(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json().get("agentCli"), "pi")
 
+    def test_body_agent_cli_conflicts_with_node_attr_400(self):
+        # 评审修正：已有节点属性=pi，body 带 codex → 400，不得静默无视/谎回显。
+        self.store.apply_mutations(self.project_id, [{
+            "op": "upsert_node",
+            "node": {"id": "cx-conf", "type": "smart-agent", "kind": "agent", "x": 0, "y": 0, "agentCli": "pi"},
+        }], base_revision=0)
+        with patch.object(api_agent_nodes.agent_host_manager, "spawn_session", staticmethod(self._fake_spawn)):
+            r = self._post("cx-conf", agentCli="codex")
+        self.assertEqual(r.status_code, 400, r.text)
+        detail = (r.json().get("detail") or {})
+        self.assertEqual(detail.get("node_agent_cli"), "pi")
+        self.assertEqual(detail.get("body_agent_cli"), "codex")
+
+    def test_unknown_project_404_not_masked(self):
+        # 评审修正：项目不存在必须 404 原样上报（不得被 upsert 通道吞成 409）。
+        with patch.object(api_agent_nodes.agent_host_manager, "spawn_session", staticmethod(self._fake_spawn)):
+            r = self.client.post("/api/projects/no-such-proj/agent-nodes", json={"node_id": "x-1"})
+        self.assertIn(r.status_code, (404, 422), r.text)
+        self.assertNotEqual(r.status_code, 409)
+
+    def test_echo_reflects_actual_session_host(self):
+        # 评审修正：回显=会话实际宿主，不是请求值。
+        self.store.apply_mutations(self.project_id, [{
+            "op": "upsert_node",
+            "node": {"id": "echo-host", "type": "smart-agent", "kind": "agent", "x": 0, "y": 0, "agentCli": "pi"},
+        }], base_revision=0)
+        with patch.object(api_agent_nodes.agent_host_manager, "spawn_session", staticmethod(self._fake_spawn)):
+            r = self._post("echo-host")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json().get("agentCli"), "pi")
+
+    def test_phantom_nodes_grid_placement_not_stacked(self):
+        with patch.object(api_agent_nodes.agent_host_manager, "spawn_session", staticmethod(self._fake_spawn)):
+            self._post("grid-1")
+            self._post("grid-2")
+        canvas = self.store.open_project(self.project_id)["canvas"]
+        pos = [(n.get("x"), n.get("y")) for n in canvas["nodes"]]
+        self.assertEqual(len(set(pos)), len(pos), "phantom 节点必须错位摆放")
+
     def test_body_agent_cli_codex_persisted_and_unknown_400(self):
         with patch.object(api_agent_nodes.agent_host_manager, "spawn_session", staticmethod(self._fake_spawn)):
             r = self._post("cx-1", agentCli="codex")
