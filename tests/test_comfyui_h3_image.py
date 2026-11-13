@@ -276,6 +276,13 @@ class ComfyEditSizingTests(unittest.TestCase):
         # 没超过上限就一个像素都不动
         self.assertEqual(comfyui_cap_longest_edge(2048, 1536, 32, 4096), (2048, 1536))
 
+    def test_pe_threshold(self):
+        from app.services.comfyui_workflows import comfyui_pe_enabled
+        self.assertTrue(comfyui_pe_enabled(5472, 3072, '4K', 0))  # 0 = 永不自动关
+        self.assertFalse(comfyui_pe_enabled(5472, 3072, '4K', 8))  # 4K 16.8MP > 8MP 阈值
+        self.assertTrue(comfyui_pe_enabled(4000, 2000, '2K', 8))  # 正好 8MP 不超
+        self.assertTrue(comfyui_pe_enabled(0, 0, '1K', 8))  # 没传宽高时按面积档判断
+
     def test_png_reference_stays_lossless(self):
         from PIL import Image
         from app.services.generation import comfyui_reference_image_bytes

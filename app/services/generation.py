@@ -7,7 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
-from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_pe_enabled, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -582,7 +582,17 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             # 实测：不点名时模型很容易丢掉参考图另起一张（实测过“把主体放进客厅”变成凭空画个沙发）；
             # 点名后同一张参考图能稳定保住主体（房景只换天空，其余像素级延续）。
             submitted_prompt = f'Edit <Picture 1>. {clean_prompt}'
-        graph = comfyui_h3_workflow(submitted_prompt, width, height, reference_names=names)
+        graph = comfyui_h3_workflow(
+            submitted_prompt,
+            width,
+            height,
+            reference_names=names,
+            pe_enabled=comfyui_pe_enabled(width, height, resolution),
+        )
+        logger.info(
+            'comfyui submit: %sx%s refs=%s pe=%s prompt_chars=%s',
+            width, height, len(names), graph['61']['inputs']['value'], len(submitted_prompt),
+        )
         report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
 
         async def submit_graph() -> str:
@@ -624,6 +634,10 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
             prompt_id, (images, queue_position) = await run_once()
         image = images[0]
+        logger.info(
+            'comfyui done: prompt_id=%s elapsed=%.1fs size=%sx%s',
+            prompt_id, time.monotonic() - started, width, height,
+        )
         # ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），
         # 用产物元数据里的真实尺寸回填，别把节点的对齐差值报给画布。
         metadata = image.get('metadata') or {}

@@ -56,6 +56,23 @@ COMFYUI_DEFAULT_MP_TIER = '2k'
 COMFYUI_SIZE_STEP = 32   # 节点 4 的 width/height 步长是 32，不按 32 取整会被静默向下取整（2728 -> 2720）
 COMFYUI_PE_ENCODER = 'qwen3.5_9b_w4a8_gptq.safetensors'
 
+# 提示词增强（PE）默认开，但它每张固定多吃一次 9B LLM 前向（实测 1K 图 93s → 关掉 30s，约 60s/张），
+# 且 16GB 卡上会让 H3 / Qwen3VL-32B / Qwen3.5-9B 三个模型反复换进换出（历史上那两条 16~23 分钟的
+# 任务就是换型换出来的）。所以给一个面积阈值：请求像素量超过阈值就不跑 PE。
+# 0 = 不自动关（任何档位都跑 PE）；想省时间就设 8（= 4K 档不增强）。
+COMFYUI_PE_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_PE_MAX_MEGAPIXELS', '0'))
+
+
+def comfyui_pe_enabled(width, height, resolution='', max_megapixels=None):
+    """按面积阈值决定这一次跑不跑提示词增强。"""
+    limit = COMFYUI_PE_MAX_MEGAPIXELS if max_megapixels is None else float(max_megapixels or 0)
+    if limit <= 0:
+        return True
+    pixels = int(width or 0) * int(height or 0)
+    if pixels <= 0:
+        pixels = int(comfyui_edit_megapixels(resolution) * 1_000_000)
+    return (pixels / 1_000_000.0) <= limit
+
 # 参考图上限：节点 images 允许到 100，但画布一次传 16 张已经超出模型的有效参考能力。
 COMFYUI_MAX_REFERENCES = 16
 # 画布传这些值（或不传）时视为“跟随参考图”
