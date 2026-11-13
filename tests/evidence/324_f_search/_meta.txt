@@ -1,0 +1,8 @@
+#324 票F 跨项目搜索 真机验收证据
+时间: 2026-11-13 17:1x  服务器: :8791 @ HEAD 2b69ced（FIREFLY_PROJECTS_ROOT=D:/tmp/fly_f/data）
+脚本: .qa/e2e_324_f.js（playwright headless）
+数据: 两 scratch 项目「F验收甲」(smart-image title 含关键词)、「F验收乙」(smart-image runPrompt 含关键词)
+结果: EVIDENCE-GREEN —— 顶栏搜索面板 hits=2 projects=2（跨项目命中+「当前项目」标注+打开/定位按钮）；
+      MCP canvas.search_projects 页内 JSON-RPC 调用 isError=false 返回同两命中（25 工具面含 search）；
+      pageerrors=0。
+截图: 324_f_search_panel.png（面板可见两项目分组+snippet）
