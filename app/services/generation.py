@@ -7,7 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
-from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_h3_resolution, comfyui_h3_workflow  # noqa: E402
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -281,29 +281,48 @@ def comfyui_reference_source_path(ref) -> str:
     return ''
 
 
-def comfyui_reference_image_bytes(path):
-    """读参考图并缩到最长边 `COMFYUI_REFERENCE_MAX_SIZE`。
+def comfyui_resize_to_edit_target(img, resolution=''):
+    """参考图 → 官方图生图工作流的尺寸策略（image_minimax_h3_image_edit.json）。
 
-    不缩直接传的后果（实测）：3166×3173 的 JPEG 在 2048² 工作流上会 OOM
-    （`节点 4: Allocation on device 0 would exceed allowed memory`）。
+    官方链路是 `ResizeImageMaskNode('scale total pixels', 4MP)` →
+    `ResizeImageMaskNode('scale to multiple', 32)` → 节点 4 的 images.image_1，
+    同时把缩完的尺寸经 GetImageSize 回填到节点 4 的 width/height。
+    我们把这层预处理搬到客户端做：张量一模一样，但不用依赖 DynamicCombo 节点的序列化形状。
+    关键点：参考图是“缩到”目标像素量，不是笼统缩到 1536——后者与 latent 尺寸对不上，
+    出图会跑出画外/变形（这就是“生的图都不对”的根因）。
     """
+    target_width, target_height = comfyui_edit_target_size(img.width, img.height, resolution)
+    if (img.width, img.height) != (target_width, target_height):
+        img = img.resize((target_width, target_height), Image.LANCZOS)
+    return img, (target_width, target_height)
+
+
+def comfyui_encode_reference(img):
+    if img.mode not in ('RGB', 'RGBA'):
+        img = img.convert('RGB')
+    buf = BytesIO()
+    if img.mode == 'RGBA':
+        img.save(buf, format='PNG')
+        return buf.getvalue(), 'image/png'
+    img.save(buf, format='JPEG', quality=95)
+    return buf.getvalue(), 'image/jpeg'
+
+
+def comfyui_reference_image_bytes(path, resolution=''):
+    """读参考图并按官方策略缩到面积档 + 对齐 32，返回 (bytes, mime, (w, h))。"""
     try:
         with Image.open(path) as img:
             img.load()
-            if max(img.size) > COMFYUI_REFERENCE_MAX_SIZE:
-                img.thumbnail((COMFYUI_REFERENCE_MAX_SIZE, COMFYUI_REFERENCE_MAX_SIZE), Image.LANCZOS)
-            if img.mode not in ('RGB', 'RGBA'):
-                img = img.convert('RGB')
-            buf = BytesIO()
-            fmt = 'PNG' if img.mode == 'RGBA' else 'JPEG'
-            img.save(buf, format=fmt, quality=92 if fmt == 'JPEG' else None)
-            return buf.getvalue(), ('image/png' if fmt == 'PNG' else 'image/jpeg')
+            resized, size = comfyui_resize_to_edit_target(img, resolution)
+            raw, mime = comfyui_encode_reference(resized)
+            return raw, mime, size
     except Exception:
         with open(path, 'rb') as handle:
-            return handle.read(), 'image/png'
+            return handle.read(), 'image/png', (0, 0)
 
 
-def comfyui_reference_payload(ref):
+def comfyui_reference_payload(ref, resolution=''):
+    """参考图 → ComfyUI 上传载荷。返回 (payload, (w, h))；payload 为 None 时 w/h 为 (0, 0)。"""
     item = ref if isinstance(ref, dict) else {'url': ref}
     value = str(item.get('url') or '').strip()
     if value.startswith('data:') and ';base64,' in value:
@@ -312,31 +331,33 @@ def comfyui_reference_payload(ref):
         try:
             raw = base64.b64decode(encoded)
         except Exception:
-            return None
-        # data URL 也走一遍缩图，避免内联大图直接撑炸显存
+            return None, (0, 0)
         try:
             with Image.open(BytesIO(raw)) as img:
                 img.load()
-                if max(img.size) > COMFYUI_REFERENCE_MAX_SIZE:
-                    tmp = os.path.join(str(_svc._main('RUNTIME_ROOT') or ''), f'.comfyui-ref-{uuid.uuid4().hex[:8]}.png')
-                    img.thumbnail((COMFYUI_REFERENCE_MAX_SIZE, COMFYUI_REFERENCE_MAX_SIZE), Image.LANCZOS)
-                    img.save(tmp)
-                    try:
-                        shrunk, shrunk_mime = comfyui_reference_image_bytes(tmp)
-                    finally:
-                        try:
-                            os.remove(tmp)
-                        except OSError:
-                            pass
-                    return apimart_upload_payload_from_bytes(shrunk, shrunk_mime, name_hint='canvas_ref')
+                resized, size = comfyui_resize_to_edit_target(img, resolution)
+                shrunk, shrunk_mime = comfyui_encode_reference(resized)
         except Exception:
-            pass
-        return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
+            return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref'), (0, 0)
+        return apimart_upload_payload_from_bytes(shrunk, shrunk_mime, name_hint='canvas_ref'), size
     path = comfyui_reference_source_path(item)
     if path:
-        raw, mime = comfyui_reference_image_bytes(path)
-        return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
-    return None
+        raw, mime, size = comfyui_reference_image_bytes(path, resolution)
+        return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref'), size
+    return None, (0, 0)
+
+
+def comfyui_reference_local_size(ref, resolution=''):
+    """只看尺寸不落字节：给多参考图定主尺寸用（官方取 image_1 的几何）。"""
+    item = ref if isinstance(ref, dict) else {'url': ref}
+    path = comfyui_reference_source_path(item)
+    if not path:
+        return (0, 0)
+    try:
+        with Image.open(path) as img:
+            return comfyui_edit_target_size(img.width, img.height, resolution)
+    except Exception:
+        return (0, 0)
 
 
 async def comfyui_cancel_prompt(client, root: str, prompt_id: str) -> None:
@@ -423,9 +444,9 @@ async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, w
             await comfyui_cancel_prompt(client, root, prompt_id)
 
 
-async def comfyui_upload_reference(client, root: str, ref) -> str:
-    """把画布参考图送进 ComfyUI 的 input 目录，返回 LoadImage 能用的名字。解析不到返回空串。"""
-    payload = comfyui_reference_payload(ref)
+async def comfyui_upload_reference(client, root: str, ref, resolution=''):
+    """把画布参考图送进 ComfyUI 的 input 目录，返回 (名字, 缩放后尺寸)。解析不到返回 ('', (0, 0))。"""
+    payload, size = comfyui_reference_payload(ref, resolution)
     if not payload:
         # 本地解析不到的才考虑外部外链。本地回环地址一律不走网：那是没解析成功的项目媒体句柄，
         # 再打一遍必被适配器作用域挡成 403。
@@ -437,11 +458,16 @@ async def comfyui_upload_reference(client, root: str, ref) -> str:
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise HTTPException(status_code=400, detail=f'下载外部参考图失败：{external}（{exc}）') from exc
-            payload = apimart_upload_payload_from_bytes(
-                response.content, response.headers.get('content-type', 'image/png'), name_hint='canvas_ref',
-            )
+            try:
+                with Image.open(BytesIO(response.content)) as img:
+                    img.load()
+                    resized, size = comfyui_resize_to_edit_target(img, resolution)
+                    content, content_type = comfyui_encode_reference(resized)
+            except Exception:
+                content, content_type, size = response.content, response.headers.get('content-type', 'image/png'), (0, 0)
+            payload = apimart_upload_payload_from_bytes(content, content_type, name_hint='canvas_ref')
         if not payload:
-            return ''
+            return '', (0, 0)
     filename, content, content_type = payload
     upload = await client.post(
         f'{root}/upload/image',
@@ -458,7 +484,7 @@ async def comfyui_upload_reference(client, root: str, ref) -> str:
     if not name:
         raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传未返回文件名：{str(raw)[:200]}')
     subfolder = str(raw.get('subfolder') or '').strip().strip('/')
-    return f'{subfolder}/{name}' if subfolder else name
+    return (f'{subfolder}/{name}' if subfolder else name), size
 
 
 async def generate_comfyui_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None, progress_callback=None):
@@ -478,7 +504,8 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
     if not clean_prompt:
         raise HTTPException(status_code=400, detail='提示词不能为空。')
     explicit = dict(image_parameters or {})
-    width, height = comfyui_h3_resolution(explicit.get('aspect_ratio'), explicit.get('resolution'), size)
+    resolution = explicit.get('resolution')
+    width, height = comfyui_h3_resolution(explicit.get('aspect_ratio'), resolution, size)
     refs = [
         ref
         for ref in (reference_images or [])
@@ -489,11 +516,14 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
     timeout = httpx.Timeout(connect=10.0, read=max(COMFYUI_IMAGE_TASK_TIMEOUT, 60.0), write=COMFYUI_UPLOAD_TIMEOUT, pool=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         names = []
+        reference_size = (0, 0)
         for index, ref in enumerate(refs, start=1):
             report('uploading', bytes_done=index - 1, bytes_total=len(refs))
-            name = await comfyui_upload_reference(client, root, ref)
+            name, ref_size = await comfyui_upload_reference(client, root, ref, resolution)
             if name:
                 names.append(name)
+                if index == 1:
+                    reference_size = ref_size
         if refs and not names:
             raise HTTPException(
                 status_code=400,
@@ -502,7 +532,18 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
                     '如果这张图刚在画布上传，请确认它在项目媒体库里仍然存在。'
                 ),
             )
-        graph = comfyui_h3_workflow(clean_prompt, width, height, reference_names=names)
+        if names and reference_size[0] and reference_size[1]:
+            # 官方图生图工作流的输出尺寸跟着参考图走（GetImageSize 回填节点 4），
+            # 不跟画布比例走；面积档已经体现在参考图的缩放量上。
+            width, height = reference_size
+        submitted_prompt = clean_prompt
+        if names and '<Picture' not in clean_prompt:
+            # 节点约定：参考图在提示词里叫 <Picture 1>（节点 description 原文
+            # "The prompt refers to them as <Picture 1>, <Picture 2>, ..."）。
+            # 实测：不点名时模型很容易丢掉参考图另起一张（实测过“把主体放进客厅”变成凭空画个沙发）；
+            # 点名后同一张参考图能稳定保住主体（房景只换天空，其余像素级延续）。
+            submitted_prompt = f'Edit <Picture 1>. {clean_prompt}'
+        graph = comfyui_h3_workflow(submitted_prompt, width, height, reference_names=names)
         report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
         try:
             submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
@@ -561,6 +602,7 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             'elapsed_ms': int((time.monotonic() - started) * 1000),
             'queue_position': queue_position,
             'references': len(names),
+            'prompt_prefixed': submitted_prompt != clean_prompt,
             'status': 'success',
         }
         # 4K PNG 常常 20MB+，再 base64 一轮就是 27MB 的 JSON——画布卡死/超时多半在这里。

@@ -36,9 +36,36 @@
 
 ## 上线后的四项修正（用户报「取不回来 / 参考图传不过去 / 图都不对」后实测得出）
 
+> 其中「参考图缩到 1536」已被官方工作流推翻，见下一节；本节的第 2 条保留仅作历史记录。
+
 1. **参考图必须进程内解析**：画布给适配器的参考图是 `/api/project-library/{pid}/media/{aid}`。旧实现对它发 HTTP GET，而项目媒体接口有 `require_project_media_adapter_scope` 适配器作用域网关，进程内直连必定 403，`raise_for_status()` 又把 httpx 异常直接抛出——于是整单崩掉。现在解析顺序是 `path`/`source_path` 字段 → 项目媒体 store 反查 → `/output/`、`/assets/` 本地映射，只有真正的外部外链才下网；解析不到抛 400 一句人话。
 2. **参考图必须先缩图**：3166×3173 的原图交给节点 4 的 VAE 编码，在 2048² 工作流上直接 `Allocation on device 0 would exceed allowed memory`（16GB 卡）。现在统一用 PIL 缩到最长边 `COMFYUI_REFERENCE_MAX_SIZE`（默认 1536，env 可调）再上传，data URL 也走同一条缩图路径。
 3. **超时/失败必须撤单**：ComfyUI 是单队列，一张卡死的图会把后面所有任务堵住（实测：一单 5472×3072 跑着时，后续任务全部 `queue_position: 1`）。现在 `comfyui_wait_for_images` 在超时、报错、被取消时都会 `POST /queue {"delete": [prompt_id]}`；只有该 prompt 确实在 `queue_running` 里才补一次 `/interrupt`，避免打断用户别的任务。
 4. **结果落盘回 URL**：4K PNG 常有 20MB+，base64 再胀 33%，塞进 JSON 就是 27MB，画布端卡死/超时多半来自这里。现在写成 `assets/output/comfyui-<时间戳>-<随机>.png` 并回 `{'type': 'url'}`，与 codex / gemini-cli 这些本地提供方一致；落盘失败才退回 base64。
 
-另一个实测事实：参考图与提示词的绑定方式是在提示词里写 `<Picture 1>`（节点描述："The prompt refers to them as <Picture 1>, <Picture 2>")。实测不写也能用，但写了更稳；画布不代用户改提示词。
+另一个实测事实：参考图与提示词的绑定方式是在提示词里写 `<Picture 1>`（节点描述："The prompt refers to them as <Picture 1>, <Picture 2>"）。实测不写也能用，但写了更稳；画布不代用户改提示词。
+
+## 图生图改为对齐官方工作流（推翻上面的缩图策略）
+
+用户指出应按官方模板（`Comfy-Org/MiniMax-H3-Image` → `image_minimax_h3_image_edit.json`）。读官方 UI 格式模板后，图生图的正确链路是：
+
+```
+LoadImage(image_1)
+  → ResizeImageMaskNode('scale total pixels', 4 MP, 'area')   # 节点 56：先把参考图缩/放到 4MP
+  → ResizeImageMaskNode('scale to multiple', 32, 'area')       # 节点 48：边长对齐 32
+  → MiniMaxH3ImageConditioning.images.image_1                  # 节点 32
+  → 同一张图接 GetImageSize → MiniMaxH3ImageConditioning.width/height   # 输出尺寸 = 参考图缩放后的尺寸
+```
+
+三条与旧实现的差别（都是实质性的）：
+
+1. **参考图是「缩放到目标像素量」，不是「缩到 1536」**。旧策略 1536 与 latent 尺寸（2048²）对不上，VAE 参考 latent 与画布 latent 不同尺度，模型对参考图的锚定基本失效——这才是「生的图都不对」的真正原因，OOM 只是它的副作用。现在按画布面积档（1K/2K/4K = 4/8/16 MP）缩放，两边齐 32（`comfyui_edit_target_size`，上限 `COMFYUI_EDIT_MAX_MEGAPIXELS`）。
+2. **图生图的输出尺寸跟参考图走**，不跟画布比例选择走（官方用 GetImageSize 回填）。画布选的比例只对文生图生效；这一点在 UI 文案里没有暴露，但比“按画布比例强行拉参考图”更接近模型训练分布。
+3. **提示词里要点名 `<Picture 1>`**。节点描述写了这个约定，但没强制执行。实测同一张房景图：
+   - 不点名 + 模糊指令（「把主体放进客厅场景」）→ 模型直接丢掉参考图，凭空画了个沙发场景；
+   - 点名（`Edit <Picture 1>: keep the house ... only change the sky`）→ 构图、窗户、灯串全部延续，只改了天空。
+   因此参考图存在且提示词里没有 `<Picture` 时，适配器自动加前缀 `Edit <Picture 1>. `，并在任务数据里标 `prompt_prefixed: true`，不静默改写。
+
+另一条官方事实：模板里的 t2i 用 `ResolutionSelector('1:1 (Square)', 4, 32)`（4 MP / 边长 32），并附注「doesn't work well in low resolution ... Raise ... 16MP」；画布的面积档命名（1K/2K/4K = 4/8/16 MP）与之一致。
+
+另：官方 edit 模板还串了一个提示词增强子图（`qwen3.5_9b` + `TextGenerateV2` + `JsonExtractString('expanded_caption')` + `ComfySwitchNode` 开关），默认开。本地适配器**没有**接这层：它需要额外 9B 文本模型和一次 LLM 推理，属另一个决策范围；需要时用 `Generate Text` 节点自己跑。

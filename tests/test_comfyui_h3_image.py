@@ -27,10 +27,16 @@ import main
 PROVIDER_ID = 'comfyui'
 COMFYUI_MODEL = 'comfyui-h3-image'
 BASE = 'http://127.0.0.1:8188'
-# 1x1 PNG
-TINY_PNG = base64.b64decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
-)
+# 真实可解码的 PNG（假服务器的 /view 响应体，也是图生图的参考图）。
+def _build_png(size=(64, 64), color=(210, 140, 90)):
+    from io import BytesIO as _BytesIO
+    from PIL import Image as _Image
+    buf = _BytesIO()
+    _Image.new('RGB', size, color).save(buf, format='PNG')
+    return buf.getvalue()
+
+
+TINY_PNG = _build_png()
 
 
 def comfyui_record():
@@ -227,6 +233,31 @@ class ComfyResolutionTests(unittest.TestCase):
         self.assertEqual(comfyui_parse_aspect('abc'), (0.0, 0.0))
 
 
+class ComfyEditSizingTests(unittest.TestCase):
+    """图生图尺寸策略必须跟官方 edit 工作流：参考图 scale total pixels 到面积档，再对齐 32。"""
+
+    def test_reference_is_resized_to_tier_not_to_1536(self):
+        from app.services.comfyui_workflows import comfyui_edit_target_size
+        # 用户实际素材 3166×3173，1K 档 = 4 MP → 两边应落在 2048 附近且齐 32
+        width, height = comfyui_edit_target_size(3166, 3173, '1K')
+        self.assertEqual((width, height), (2048, 2048))
+        self.assertAlmostEqual(width * height / (4 * 1024 * 1024), 1.0, places=1)
+
+    def test_output_size_follows_reference_aspect(self):
+        from app.services.comfyui_workflows import comfyui_edit_target_size
+        width, height = comfyui_edit_target_size(4000, 2000, '2K')
+        self.assertEqual(width % 32, 0)
+        self.assertEqual(height % 32, 0)
+        self.assertAlmostEqual(width / height, 2.0, places=1)
+        self.assertAlmostEqual(width * height / (8 * 1024 * 1024), 1.0, places=1)
+
+    def test_megapixels_tiered(self):
+        from app.services.comfyui_workflows import comfyui_edit_megapixels
+        self.assertEqual(comfyui_edit_megapixels('1K'), 4.0)
+        self.assertEqual(comfyui_edit_megapixels('2K'), 8.0)
+        self.assertEqual(comfyui_edit_megapixels('4K'), 16.0)
+
+
 class ComfyWorkflowTests(unittest.TestCase):
     def test_text_to_image_graph(self):
         from app.services.comfyui_workflows import COMFYUI_H3_T2I_WORKFLOW, comfyui_h3_workflow
@@ -310,7 +341,39 @@ class ComfyEndToEndTests(ComfyBase):
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
         self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
         self.assertEqual(body['prompt']['ref1']['inputs']['image'], 'canvas_ref_1.png')
-        self.assertEqual((raw['requested_width'], raw['requested_height']), (3864, 2176))
+        # 图生图尺寸跟参考图走（官方 GetImageSize 回填），不跟画布比例走；1×1 参考图在 2K 档被放到 ~2896² 且齐 32
+        node4 = body['prompt']['4']['inputs']
+        self.assertEqual(node4['width'] % 32, 0)
+        self.assertEqual(node4['height'] % 32, 0)
+        self.assertEqual((node4['width'], node4['height']), (raw['requested_width'], raw['requested_height']))
+        self.assertNotEqual((node4['width'], node4['height']), (3864, 2176))
+
+    def test_reference_prompt_gets_picture_prefix(self):
+        """没有 <Picture n> 时自动加 `Edit <Picture 1>. `：节点约定参考图要在提示词里点名。"""
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        reference = {'url': 'data:image/png;base64,' + base64.b64encode(TINY_PNG).decode('ascii')}
+        _, raw = self.run_with(fake, lambda: generate_ai_image(
+            '让它变成白天', '1024x1024', 'medium', COMFYUI_MODEL,
+            reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+            image_parameters={'aspect_ratio': '1:1', 'resolution': '1K'},
+        ))
+        self.assertTrue(raw['prompt_prefixed'])
+        body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
+        self.assertEqual(body['prompt']['4']['inputs']['prompt'], 'Edit <Picture 1>. 让它变成白天')
+
+    def test_prompt_with_picture_token_is_left_alone(self):
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        reference = {'url': 'data:image/png;base64,' + base64.b64encode(TINY_PNG).decode('ascii')}
+        _, raw = self.run_with(fake, lambda: generate_ai_image(
+            'Swap the sky in <Picture 1> to daylight', '1024x1024', 'medium', COMFYUI_MODEL,
+            reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+            image_parameters={'aspect_ratio': '1:1', 'resolution': '1K'},
+        ))
+        self.assertFalse(raw['prompt_prefixed'])
+        body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
+        self.assertEqual(body['prompt']['4']['inputs']['prompt'], 'Swap the sky in <Picture 1> to daylight')
 
     def test_validation_error_surfaces_node_message(self):
         from fastapi import HTTPException

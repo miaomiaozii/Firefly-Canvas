@@ -14,6 +14,7 @@
 """
 import copy
 import math
+import os
 import random
 
 # 作者值：32B 蒸馏模型 6 步 / cfg 1.0 / euler+simple。别随手加到 20 步或抬 cfg。
@@ -25,6 +26,9 @@ COMFYUI_H3_FILENAME_PREFIX = 'MiniMax-H3-Image/canvas'
 
 # 画布分辨率档 → 目标面积（MP）。1k 档就是模型地板 2048²（4 MP），再低会明显崩。
 COMFYUI_MP_TIERS = {'1k': 4.0, '2k': 8.0, '4k': 16.0}
+# 图生图把参考图缩放到的那一档像素量；官方 edit 模板用 4 MP（= 1K 档）。
+# 上限只是防手滑，不是模型限制：超过 16 MP 在 16GB 卡上会 OOM。
+COMFYUI_EDIT_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_EDIT_MAX_MEGAPIXELS', '16'))
 COMFYUI_DEFAULT_MP_TIER = '2k'
 # 边长步长 = 8：作者 ResolutionSelector 就是用 8 的倍数（节点 object_info 的 step 提示写的是 32，
 # 但实测作者那套 8 倍数尺寸（如 5016×3344、2512×1672）能直接提交）。改成 32 就对不上公开尺寸表了。
@@ -137,6 +141,51 @@ def comfyui_h3_resolution(aspect_ratio='', resolution='', size=''):
     width = _comfyui_snap(math.sqrt(area * ratio_a / ratio_b))
     height = _comfyui_snap(width * ratio_b / ratio_a)
     return (width, height)
+
+
+COMFYUI_EDIT_SIZE_STEP = 32
+
+
+def comfyui_edit_megapixels(resolution=''):
+    """图生图的目标像素量（对应官方工作流的 `scale total pixels`）。
+
+    官方 edit 模板默认 4 MP（节点 56），与画布 1K 档一致；画布选 2K/4K 就抬到 8/16 MP。
+    官方 note 原话：「MiniMax H3 Image doesn't work well in low resolution, so this workflow
+    upscale the input image to 4MP at first.」——图生图不能拿小图直接跑。
+    """
+    tier = str(resolution or '').strip().lower()
+    megapixels = COMFYUI_MP_TIERS.get(tier) or COMFYUI_MP_TIERS[COMFYUI_DEFAULT_MP_TIER]
+    return min(float(megapixels), float(COMFYUI_EDIT_MAX_MEGAPIXELS))
+
+
+def comfyui_align_size(width, height, step=COMFYUI_EDIT_SIZE_STEP):
+    """把宽高各自对齐到 step 的倍数（官方模板 node 48：`scale to multiple`, 32）。
+
+    ComfyUI 内部的 latent 对齐是 16，官方模板多对齐到 32 是为了让 VAE 每边张量能被
+    更多并行维度整除；两边都对齐 32 则内部那层对齐一定不会反向改变尺寸。
+    """
+    step = max(1, int(step or 1))
+    return (_comfyui_snap(width, step), _comfyui_snap(height, step))
+
+
+def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZE_STEP):
+    """参考图 → 工作流尺寸：先 scale total pixels 到面积档，再对齐 step。
+
+    返回值就是节点 4 的 width/height，也就是输出图的实际尺寸。
+    图生图的尺寸跟着参考图走（官方工作流用 GetImageSize 回填），不跟画布比例走。
+    """
+    try:
+        source_width = float(width or 0)
+        source_height = float(height or 0)
+    except (TypeError, ValueError):
+        source_width, source_height = 0.0, 0.0
+    if source_width <= 0 or source_height <= 0:
+        return comfyui_h3_resolution('', resolution, '')
+    area = comfyui_edit_megapixels(resolution) * 1024 * 1024
+    ratio = source_width / source_height
+    target_height = math.sqrt(area / ratio)
+    target_width = target_height * ratio
+    return comfyui_align_size(round(target_width), round(target_height), step)
 
 
 def _comfyui_ratio_from_size(size):
