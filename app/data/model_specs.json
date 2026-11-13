@@ -1677,6 +1677,82 @@
         "size_multiple": 1
       },
       "source": "百炼实测探针 2026-11-02（维护者提供端点/key；D:/tmp/mosi-smoke/ 存档）"
+    },
+    "MiniMax-H3-Image": {
+      "display_name": "MiniMax H3 Image（海螺，国内站）",
+      "api_type": "minimax_images",
+      "supports_vision": true,
+      "async_mode": false,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21"],
+          "default": "1:1",
+          "description": "整数 1–300，比例 1:3–3:1；画布标准 11 比例全部落在范围内"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": ["1K", "2K", "4K"],
+          "default": "4K",
+          "description": "H3 的 area 面积档名；画布传 1k/2k/4k 档位，适配器映射为 1K/2K/4K"
+        },
+        "output_format": {
+          "type": "enum",
+          "options": ["png", "jpeg", "webp"],
+          "default": "png",
+          "description": "输出格式；画布当前未暴露该控件，适配器固定 png（H3 缺省 jpeg，画布优先无损）"
+        }
+      },
+      "limits": {
+        "n": 1,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 16,
+        "size_rule": "size 固定 auto：面积 655360–20000000、比例 1:3–3:1 由 aspect_ratio+area 控制；size 传 WxH 时不得同传 aspect_ratio/area",
+        "unsupported_params": [
+          "quality"
+        ]
+      },
+      "source": "MiniMax 国内站 H3 Image API（platform.minimaxi.com），维护者实测 2026-11-13：端点/错误码/非幂等计费见 issue #330"
+    },
+    "MiniMax-H3-Image-Highspeed": {
+      "display_name": "MiniMax H3 Image 高速版（海螺，国内站）",
+      "api_type": "minimax_images",
+      "supports_vision": true,
+      "async_mode": false,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": ["1:1", "16:9", "9:16", "4:3", "3:4", "4:5", "5:4", "3:2", "2:3", "21:9", "9:21"],
+          "default": "1:1",
+          "description": "整数 1–300，比例 1:3–3:1；画布标准 11 比例全部落在范围内"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": ["1K", "2K", "4K"],
+          "default": "4K",
+          "description": "H3 的 area 面积档名；画布传 1k/2k/4k 档位，适配器映射为 1K/2K/4K"
+        },
+        "output_format": {
+          "type": "enum",
+          "options": ["png", "jpeg", "webp"],
+          "default": "png",
+          "description": "输出格式；画布当前未暴露该控件，适配器固定 png（H3 缺省 jpeg，画布优先无损）"
+        }
+      },
+      "limits": {
+        "n": 1,
+        "response_format": [
+          "url"
+        ],
+        "max_reference_images": 16,
+        "size_rule": "size 固定 auto：面积 655360–20000000、比例 1:3–3:1 由 aspect_ratio+area 控制；size 传 WxH 时不得同传 aspect_ratio/area",
+        "unsupported_params": [
+          "quality"
+        ]
+      },
+      "source": "MiniMax 国内站 H3 Image 高速版 API（platform.minimaxi.com），维护者实测 2026-11-13：端点/错误码/非幂等计费见 issue #330"
     }
   },
   "video_models": {

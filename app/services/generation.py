@@ -1235,6 +1235,206 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
         raw = response.json()
         return (extract_image(raw), raw)
 
+# #330: MiniMax H3 Image（国内站 api.minimax.cn，独立协议 'minimax'）。
+# 该接口非幂等：请求发出后即使客户端超时/断连，上游仍会完成生成并计费（按 n 张计）。
+# 因此本协议不得套任何自动重试/重发封装（httpx_request_with_transient_retries、
+# run_provider_generation_with_backoff 的 429 退避均不得作用于此路径）：
+# 失败/超时/429 一律只报错，文案提示「重发前先看用量，避免重复扣费」。
+MINIMAX_REFERENCE_MAX = 16
+# 服务端最长等 600 秒——客户端 read 超时不得低于该上限（默认跟随 REQUEST_TIMEOUT，下限 600s）。
+MINIMAX_IMAGE_READ_TIMEOUT = max(float(AI_REQUEST_TIMEOUT), 600.0)
+# 错误码表（国内站实测 + 文档）：401/402/429 语义必须分开，不能共用一句「限流/余额」。
+MINIMAX_HTTP_ERROR_MESSAGES = {
+    (401, '2049'): 'MiniMax API Key 无效。请检查 Key 是否正确；注意 MiniMax 国内站与国际站账号体系独立，Key 不通用。',
+    (402, '1008'): 'MiniMax 账号余额不足，请充值后再试。',
+    (402, '2053'): 'MiniMax 账号 credit 余额不足，请充值或开启自动扣 credit。',
+    (402, '2067'): 'MiniMax 账号已到达用量上限且未开启自动扣 credit，请提高用量上限或为账号开启自动扣 credit。',
+    (402, '2068'): '当前 MiniMax 订阅档位不含该模型，请切换到包含该模型的档位，或改用按量计费。',
+    (429, '1002'): 'MiniMax 按每分钟请求数限流（每次请求按 n 张计）。请等待片刻再试；本请求未自动重发，避免重复扣费。',
+    (429, '2056'): '当前 MiniMax M Plan 订阅已到达用量上限，请在下个计费周期再试。',
+    (500, '1000'): 'MiniMax 服务端内部错误，请稍后重试。',
+}
+_MINIMAX_ASPECT_RE = re.compile(r'^(\d{1,3}):(\d{1,3})$')
+_MINIMAX_AREAS = {'1K', '2K', '4K'}
+_MINIMAX_OUTPUT_FORMATS = {'png', 'jpeg', 'jpg', 'webp'}
+
+def _minimax_aspect_ratio(value):
+    """校验 H3 的 aspect_ratio：整数 1–300，比例 1:3–3:1。
+
+    合法返回原值；缺失/不可解析返回 None（退回纯 auto，不硬塞）；
+    可解析但超范围直接 400 报错——不静默换比例，避免用户预期 1:4 却拿到 auto。
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    match = _MINIMAX_ASPECT_RE.match(text)
+    if not match:
+        logger.warning(f'MiniMax 比例不可解析，忽略：{text}')
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    if not (1 <= width <= 300 and 1 <= height <= 300) or not (width / height >= 1 / 3 and width / height <= 3):
+        raise HTTPException(status_code=400, detail=f'MiniMax H3 不支持宽高比 {text}（平台仅支持 1:3–3:1 之间、整数 1–300）')
+    return text
+
+def _minimax_area(value):
+    """画布档位 1k/2k/4k → H3 的 area；未知值回落 4K（H3 缺省档）。"""
+    text = str(value or '').strip().upper()
+    return text if text in _MINIMAX_AREAS else '4K'
+
+def _minimax_output_format(value):
+    text = str(value or '').strip().lower()
+    return text if text in _MINIMAX_OUTPUT_FORMATS else 'png'
+
+def _minimax_upstream_error(response):
+    """从 MiniMax 错误响应提取 (code, message)，兼容顶层 code / base_resp / error 对象三种形态。"""
+    try:
+        body = response.json()
+    except Exception:
+        return ('', '')
+    if not isinstance(body, dict):
+        return ('', '')
+    base_resp = body.get('base_resp') if isinstance(body.get('base_resp'), dict) else {}
+    error = body.get('error') if isinstance(body.get('error'), dict) else {}
+    code = ''
+    for candidate in (body.get('code'), base_resp.get('status_code'), error.get('code'), body.get('status_code')):
+        if candidate not in (None, ''):
+            code = str(candidate)
+            break
+    message = ''
+    for candidate in (body.get('message'), base_resp.get('status_msg'), error.get('message'), error.get('msg'), body.get('msg')):
+        if candidate not in (None, ''):
+            message = str(candidate)
+            break
+    return (code, message)
+
+def _minimax_http_error_detail(provider_name, response):
+    status = int(getattr(response, 'status_code', 0) or 0)
+    code, message = _minimax_upstream_error(response)
+    text = MINIMAX_HTTP_ERROR_MESSAGES.get((status, code))
+    if text:
+        detail = f'{provider_name}：{text}'
+        if code:
+            detail = f'{detail}（code {code}）'
+    elif status == 422:
+        detail = f'{provider_name} 参数校验失败（422），请检查提示词长度/比例/档位等参数'
+    else:
+        detail = f'{provider_name} 图片接口错误（HTTP {status}，code {code or "未知"}）'
+    if message and message not in detail:
+        detail = f'{detail}（上游：{message[:200]}）'
+    return detail
+
+def _minimax_item_error(provider_name, error):
+    """data[].error 失败项人话化；1027 = 输出图未过内容安全（只出现在 data[].error）。"""
+    code = str(error.get('code') or '')
+    message = str(error.get('message') or '')
+    if code == '1027':
+        return f'{provider_name} 内容安全：生成图未通过平台内容审核（1027: {message or "无说明"}），请调整提示词或参考图后重试'
+    return f'{provider_name} 图片项失败（code {code or "未知"}: {message or "无说明"}）'
+
+def _minimax_collect_result(provider_name, raw):
+    """逐项解析 ImagesResponse，返回 (image_data, errors)。
+
+    data 长度恒为 n，只要 1 张成功 HTTP 就是 200——不能只看状态码：
+    成功项按其他协议惯例返回 {'type': 'url'/'b64', ...}，交给现有落盘流程
+    （save_ai_image_to_output / output_path_for，产物即项目媒体原件）；
+    失败项只带 error（如 1027 内容安全），汇总进人类可读错误列表。
+    """
+    items = raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else []
+    image_data = None
+    errors = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        error = item.get('error')
+        if isinstance(error, dict) and (error.get('code') not in (None, '') or error.get('message') not in (None, '')):
+            errors.append(_minimax_item_error(provider_name, error))
+            continue
+        url = item.get('url')
+        if isinstance(url, str) and url.strip():
+            if image_data is None:
+                image_data = {'type': 'url', 'value': url.strip()}
+            continue
+        b64 = item.get('b64_json')
+        if isinstance(b64, str) and b64.strip():
+            if image_data is None:
+                output_format = str(raw.get('output_format') or '').strip().lower() if isinstance(raw, dict) else ''
+                mime_type = {'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'webp': 'image/webp'}.get(output_format, 'image/png')
+                image_data = {'type': 'b64', 'value': b64.strip(), 'mime_type': mime_type}
+    return (image_data, errors)
+
+async def generate_minimax_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None, progress_callback=None):
+    """#330 MiniMax H3 Image：有参考图 → /images/edits（图生图），否则 → /images/generations（文生图）。
+
+    请求体契约（已实测，不要改）：n 固定 1；size 固定 'auto'（aspect_ratio/area 只与 auto 生效，
+    WxH 与二者同传直接 400）；不传 disable_prompt_enhanced（不传即提示词增强恒开）；不传 stream（不做 SSE）。
+    图生图的增强结果在 data[].revised_prompt。超时 ≥600s、无自动重试（见文件头注释）。
+    """
+    params = image_parameters or {}
+    provider_name = str((provider or {}).get('name') or (provider or {}).get('id') or 'MiniMax')
+    refs = [ref for ref in (reference_images or []) if isinstance(ref, dict) and str(ref.get('url') or '').strip()]
+    mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
+    image_refs = [ref for ref in refs if ref not in mask_refs]
+    use_edits = bool(image_refs)
+    body = {
+        'model': model,
+        'prompt': str(prompt or '').strip(),
+        'n': 1,
+        'size': 'auto',
+        'area': _minimax_area(params.get('resolution')),
+        'output_format': _minimax_output_format(params.get('output_format')),
+        'response_format': 'url',
+    }
+    aspect_ratio = _minimax_aspect_ratio(params.get('aspect_ratio'))
+    if aspect_ratio:
+        body['aspect_ratio'] = aspect_ratio
+    if use_edits:
+        # 参考图：本地项目媒体复用画布现有压缩辅助转 data URI（最长边 1536，远低于 H3
+        # 单文件 64MiB / 宽高 [128,8192] 的限制）；公网 URL 原样透传（H3 也支持）。
+        body['images'] = [
+            {'image_url': _svc._main('reference_to_data_url')(ref, max_size=1536)}
+            for ref in image_refs[:MINIMAX_REFERENCE_MAX]
+        ]
+    base_url = str((provider or {}).get('base_url') or _svc._main('AI_BASE_URL') or '').strip().rstrip('/')
+    if not base_url:
+        raise HTTPException(status_code=400, detail=f'{provider_name} 未配置 Base URL（国内站默认 https://api.minimax.cn，也可用 https://api.minimaxi.com）')
+    # 端点走 provider 端点覆盖机制（image_generation_endpoint / image_edit_endpoint，
+    # 见 provider_endpoint_url）——未来本地部署只需把 base_url 指向本地服务，不改代码。
+    endpoint = _svc.provider_endpoint_url(provider, 'image_edit_endpoint', '/v1/images/edits') if use_edits else _svc.provider_endpoint_url(provider, 'image_generation_endpoint', '/v1/images/generations')
+    timeout = httpx.Timeout(connect=20.0, read=MINIMAX_IMAGE_READ_TIMEOUT, write=120.0, pool=20.0)
+    if callable(progress_callback):
+        try:
+            progress_callback('provider_generating')
+        except Exception:
+            pass
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
+        except httpx.TimeoutException as exc:
+            # 非幂等：超时 ≠ 取消——上游可能仍在生成并计费，严禁自动重发。
+            raise HTTPException(status_code=504, detail=f'{provider_name} 图片接口超时（等待 {int(MINIMAX_IMAGE_READ_TIMEOUT)} 秒）。该接口非幂等：请求超时后上游仍可能完成生成并计费，重试前请先确认账号用量，避免重复扣费。') from exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # 非幂等：失败请求直接报错（429 只做文案提示，不退避重发）。
+            raise HTTPException(status_code=exc.response.status_code, detail=_minimax_http_error_detail(provider_name, exc.response)) from exc
+        try:
+            raw = response.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail=f'{provider_name} 图片接口返回非 JSON 响应（状态 {response.status_code}）：{(response.text or "")[:300]}')
+    image_data, errors = _minimax_collect_result(provider_name, raw)
+    if image_data is None:
+        # 全失败（含 HTTP 200 但 data[].error 的场景）：按其他协议分支惯例抛错，逐项错误汇总进文案。
+        detail = f'{provider_name} 没有返回任何图片'
+        if errors:
+            detail = f'{detail}：{"；".join(errors)}'
+        else:
+            detail = f'{detail}（响应：{json.dumps(raw, ensure_ascii=False)[:300]}）'
+        raise HTTPException(status_code=502, detail=detail)
+    if errors:
+        # 成功/失败混合（n>1 才可能出现）：成功图照常返回，失败项不吞掉。
+        logger.warning(f'{provider_name} 部分图片项失败，成功项照常返回：{"；".join(errors)}')
+    return (image_data, raw)
+
 @functools.lru_cache(maxsize=8)
 def _lossless_webp_reference_upload(path, mtime_ns, source_size):
     source_path = Path(path)
@@ -1416,6 +1616,20 @@ def _retry_after_seconds(response) -> 'Optional[float]':
     return None
 
 
+def _provider_generation_no_retry(provider_id: str) -> bool:
+    """#330: 该 provider 的生图协议是否非幂等、必须整体排除自动重试。
+
+    MiniMax H3：请求发出后即使客户端超时/断连，上游仍会完成生成并计费（按 n 张计），
+    重试 = 再扣一次——429 也只能报错提示，不得退避重发（见 generate_minimax_provider_image）。
+    """
+    try:
+        target = str(provider_id or '').strip().lower()
+        providers = _svc._main('load_api_providers')()
+        provider = next((item for item in providers if str((item or {}).get('id') or '').strip().lower() == target), None)
+    except Exception:
+        return False
+    return bool(provider) and is_minimax_provider(provider)
+
 async def run_provider_generation_with_backoff(provider_id: str, generate_callable, *args, **kwargs):
     """受控并发 + 429 有限退避地执行一次 provider 生图调用。
 
@@ -1427,8 +1641,14 @@ async def run_provider_generation_with_backoff(provider_id: str, generate_callab
       provider 携带 Retry-After 时优先按其等待，否则线性递增 ×±20% 抖动避免锁步互撞，
       env FIREFLY_PROVIDER_429_BACKOFF_SECONDS 可调基础退避）。
     其余异常原样上抛。
+
+    #330 例外：非幂等协议（MiniMax H3，超时/断连后上游仍会计费）显式排除在本 helper 的
+    429 退避重试之外——只执行一次，429 直接上抛由错误文案提示。
     """
     semaphore = _provider_generation_semaphore(str(provider_id or 'default'))
+    if _provider_generation_no_retry(str(provider_id or '')):
+        async with semaphore:
+            return await generate_callable(*args, **kwargs)
     try:
         attempts = max(1, int(os.environ.get('FIREFLY_PROVIDER_429_RETRY_ATTEMPTS', '5') or '5'))
     except (TypeError, ValueError):
@@ -1714,6 +1934,9 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider, image_parameters)
     if is_volcengine_provider(provider):
         return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider, preserve_model)
+    if is_minimax_provider(provider):
+        # #330: MiniMax H3（国内站）——非幂等计费，严禁自动重试；按是否连接参考图自动切换 edits/generations 端点。
+        return await generate_minimax_provider_image(prompt, size, model, reference_images, provider, image_parameters=image_parameters, progress_callback=progress_callback)
     is_comfly_provider = 'comfly' in str((provider.get('base_url') or _svc._main('AI_BASE_URL') or '')).strip().lower() or 'comfly' in str(provider.get('id') or '').strip().lower()
     inline_base64 = is_comfly_provider
     if preserve_model:

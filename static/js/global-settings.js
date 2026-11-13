@@ -24,6 +24,18 @@
   const modelFields = ['image_models', 'chat_models', 'video_models'];
   const modelKinds = {image_models:'image', chat_models:'chat', video_models:'video'};
   const makeId = () => `provider-${Date.now().toString(36)}`;
+  // #330: 各协议的 Base URL 默认值/占位提示。MiniMax 国内站默认 api.minimax.cn
+  // （官方文档值；实测 api.minimaxi.com 也能认证，作备选提示）。
+  const PROTOCOL_BASE_URL_DEFAULTS = {minimax:'https://api.minimax.cn'};
+  const PROTOCOL_BASE_URL_HINTS = {minimax:'https://api.minimax.cn（国内站默认；https://api.minimaxi.com 也可用）'};
+  function syncProtocolBaseUrl(card){
+    const protocolSelect = card.querySelector('[data-field="protocol"]');
+    const baseInput = card.querySelector('[data-field="base_url"]');
+    if(!protocolSelect || !baseInput) return;
+    baseInput.placeholder = PROTOCOL_BASE_URL_HINTS[protocolSelect.value] || '';
+    const defaultUrl = PROTOCOL_BASE_URL_DEFAULTS[protocolSelect.value];
+    if(defaultUrl && !String(baseInput.value || '').trim()) baseInput.value = defaultUrl;
+  }
 
   function preferredModelForKind(kind, models, recommended=''){
     const available = uniqueModels(models);
@@ -162,7 +174,7 @@
       <div class="provider-fields">
         <label>${tr('globalSettings.providerName')}<input data-field="name" maxlength="80"></label>
         <label>${tr('globalSettings.endpoint')}<input data-field="base_url" autocomplete="off"></label>
-        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option><option value="comfyui">ComfyUI（本地）</option></select></label>
+        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="minimax">MiniMax</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option><option value="comfyui">ComfyUI（本地）</option></select></label>
         <label class="wide">${tr('globalSettings.apiKey')}<input data-field="api_key" type="password" autocomplete="new-password"></label>
       </div>
       <div class="model-grid">
@@ -190,6 +202,9 @@
     ['name', 'base_url', 'protocol'].forEach(field => {
       card.querySelector(`[data-field="${field}"]`).value = provider[field] || (field === 'protocol' ? 'openai' : '');
     });
+    // #330: 协议切换时同步 Base URL 占位提示，空值自动填默认（如 MiniMax 国内站）。
+    syncProtocolBaseUrl(card);
+    card.querySelector('[data-field="protocol"]').addEventListener('change', () => syncProtocolBaseUrl(card));
     const keyInput = card.querySelector('[data-field="api_key"]');
     keyInput.placeholder = provider.key_preview || tr('globalSettings.notConfigured');
     card.querySelector('[data-field="enabled"]').checked = provider.enabled !== false;
