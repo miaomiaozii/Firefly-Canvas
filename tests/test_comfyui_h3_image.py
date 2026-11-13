@@ -7,7 +7,9 @@
   `images.image_0: ['ref0', 0]`（扁平键；嵌套写成 {"images": {...}} 会被后端静默丢弃）。
 - 节点 4（MiniMaxH3ImageConditioning）自己编码 latent，并同时输出 LATENT；
   negative 用 ConditioningZeroOut 零掉同一条 conditioning。
-- 尺寸步长 8（作者 ResolutionSelector 习惯），1k/2k/4k 档 = 4/8/16 MP。
+- 尺寸步长 32（官方 node 48 `scale to multiple` = 32；节点 width/height 也是 32 的倍数）；1k/2k/4k 档 = 4/8/16 MP。
+- 参考图最长边超过 4096（`COMFYUI_REFERENCE_MAX_EDGE`）先等比压到 4096 以内再送模型；
+  源图是 PNG 就保持无损 PNG，不额外过一道 JPEG（`comfyui_encode_reference`）。
 - 该接口不幂等（超时也算跑了一轮算力），适配器不重试、不自动重提。
 
 假服务器 httpx.MockTransport，零真实外连。
@@ -258,6 +260,35 @@ class ComfyEditSizingTests(unittest.TestCase):
         self.assertEqual(comfyui_edit_megapixels('1K'), 4.0)
         self.assertEqual(comfyui_edit_megapixels('2K'), 8.0)
         self.assertEqual(comfyui_edit_megapixels('4K'), 16.0)
+
+    def test_longest_edge_capped_at_4096(self):
+        from app.services.comfyui_workflows import comfyui_edit_target_size
+        # 6000×3000 @4K 档原本要 5792×2896，最长边必须压到 4096 以内
+        width, height = comfyui_edit_target_size(6000, 3000, '4K')
+        self.assertLessEqual(max(width, height), 4096)
+        self.assertEqual(width % 32, 0)
+        self.assertEqual(height % 32, 0)
+        self.assertAlmostEqual(width / height, 2.0, places=1)
+
+    def test_longest_edge_cap_is_configurable(self):
+        from app.services.comfyui_workflows import comfyui_cap_longest_edge
+        self.assertEqual(comfyui_cap_longest_edge(8000, 4000, 32, 2048), (2048, 1024))
+        # 没超过上限就一个像素都不动
+        self.assertEqual(comfyui_cap_longest_edge(2048, 1536, 32, 4096), (2048, 1536))
+
+    def test_png_reference_stays_lossless(self):
+        from PIL import Image
+        from app.services.generation import comfyui_reference_image_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            png_path = os.path.join(tmp, 'ref.png')
+            Image.new('RGB', (4000, 3000), (200, 40, 40)).save(png_path, format='PNG')
+            _, png_mime, png_size = comfyui_reference_image_bytes(png_path, '1K')
+            jpg_path = os.path.join(tmp, 'ref.jpg')
+            Image.new('RGB', (4000, 3000), (200, 40, 40)).save(jpg_path, format='JPEG', quality=90)
+            _, jpg_mime, jpg_size = comfyui_reference_image_bytes(jpg_path, '1K')
+        self.assertEqual(png_mime, 'image/png')  # 源图无损就不要再压一道 JPEG
+        self.assertEqual(jpg_mime, 'image/jpeg')
+        self.assertEqual(png_size, jpg_size)  # 尺寸策略一致，只有编码格式不同
 
 
 class ComfyWorkflowTests(unittest.TestCase):

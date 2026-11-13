@@ -7,7 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
-from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -297,15 +297,28 @@ def comfyui_resize_to_edit_target(img, resolution=''):
     return img, (target_width, target_height)
 
 
-def comfyui_encode_reference(img):
+def comfyui_encode_reference(img, lossless=False):
+    """参考图编码。源图是 PNG（截图/透明图/无损原图）时保持无损，不额外压一道 JPEG。
+
+    走 JPEG 只在源图本来就是有损格式时；质量默认 95（`COMFYUI_REFERENCE_JPEG_QUALITY`）。
+    """
     if img.mode not in ('RGB', 'RGBA'):
         img = img.convert('RGB')
     buf = BytesIO()
-    if img.mode == 'RGBA':
-        img.save(buf, format='PNG')
+    if img.mode == 'RGBA' or lossless:
+        img.save(buf, format='PNG', optimize=True)
         return buf.getvalue(), 'image/png'
-    img.save(buf, format='JPEG', quality=95)
+    img.save(buf, format='JPEG', quality=COMFYUI_REFERENCE_JPEG_QUALITY, optimize=True)
     return buf.getvalue(), 'image/jpeg'
+
+
+def comfyui_source_is_png(path):
+    """看文件头判断源图是不是 PNG（比看扩展名靠谱：画布导出的临时图、项目媒体都没有扩展名）。"""
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read(8) == b'\x89PNG\r\n\x1a\n'
+    except OSError:
+        return False
 
 
 def comfyui_reference_image_bytes(path, resolution=''):
@@ -314,7 +327,7 @@ def comfyui_reference_image_bytes(path, resolution=''):
         with Image.open(path) as img:
             img.load()
             resized, size = comfyui_resize_to_edit_target(img, resolution)
-            raw, mime = comfyui_encode_reference(resized)
+            raw, mime = comfyui_encode_reference(resized, lossless=comfyui_source_is_png(path))
             return raw, mime, size
     except Exception:
         with open(path, 'rb') as handle:
@@ -336,7 +349,7 @@ def comfyui_reference_payload(ref, resolution=''):
             with Image.open(BytesIO(raw)) as img:
                 img.load()
                 resized, size = comfyui_resize_to_edit_target(img, resolution)
-                shrunk, shrunk_mime = comfyui_encode_reference(resized)
+                shrunk, shrunk_mime = comfyui_encode_reference(resized, lossless=mime in ('image/png', 'image/webp'))
         except Exception:
             return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref'), (0, 0)
         return apimart_upload_payload_from_bytes(shrunk, shrunk_mime, name_hint='canvas_ref'), size
@@ -484,7 +497,9 @@ async def comfyui_upload_reference(client, root: str, ref, resolution=''):
                 with Image.open(BytesIO(response.content)) as img:
                     img.load()
                     resized, size = comfyui_resize_to_edit_target(img, resolution)
-                    content, content_type = comfyui_encode_reference(resized)
+                    content, content_type = comfyui_encode_reference(
+                        resized, lossless=str(response.headers.get('content-type') or '').split(';')[0].strip() in ('image/png', 'image/webp'),
+                    )
             except Exception:
                 content, content_type, size = response.content, response.headers.get('content-type', 'image/png'), (0, 0)
             payload = apimart_upload_payload_from_bytes(content, content_type, name_hint='canvas_ref')

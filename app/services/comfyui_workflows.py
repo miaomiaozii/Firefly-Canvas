@@ -24,6 +24,13 @@ from .comfyui_pe_prompts import H3_PE_SYSTEM_PROMPT, H3_PE_TASK_PROMPT
 # 参考图在进模型前先按官方两段缩放（scale total pixels → scale to multiple 32）。
 COMFYUI_REFERENCE_PIXEL_MULTIPLE = 32
 
+# 参考图最长边上限。超过这个边长对模型没有任何好处：官方链路本来就会把参考图重采样到
+# 面积档（1k/2k/4k = 4/8/16 MP），而超大图要先整张解码再缩，上传、预处理、显存都白白多吃一口。
+COMFYUI_REFERENCE_MAX_EDGE = int(str(os.environ.get('COMFYUI_REFERENCE_MAX_EDGE') or '4096').strip() or 4096)
+
+# 参考图转 JPEG 时的质量。源图是 PNG（截图/无损原图）时压根不转 JPEG，走无损支路。
+COMFYUI_REFERENCE_JPEG_QUALITY = int(str(os.environ.get('COMFYUI_REFERENCE_JPEG_QUALITY') or '95').strip() or 95)
+
 COMFYUI_H3_DEFAULT_STEPS = 6
 COMFYUI_H3_DEFAULT_CFG = 1.0
 COMFYUI_H3_DEFAULT_SAMPLER = 'euler'
@@ -301,6 +308,20 @@ def comfyui_align_size(width, height, step=COMFYUI_EDIT_SIZE_STEP):
     return (_comfyui_snap(width, step), _comfyui_snap(height, step))
 
 
+def comfyui_cap_longest_edge(width, height, step=COMFYUI_EDIT_SIZE_STEP, max_edge=COMFYUI_REFERENCE_MAX_EDGE):
+    """最长边压到 max_edge（默认 4096）以内，再对齐 step。
+
+    超过 4K 的参考图交给模型没有任何收益：参考图反正要重采样到面积档，先整张解码再缩
+    只是白花时间与内存；SA 编码超大图也更容易顶爆显存。缩放保持比例，向下取整到 step。
+    """
+    max_edge = int(max_edge or 0)
+    longest = max(int(width or 0), int(height or 0))
+    if max_edge <= 0 or longest <= max_edge or longest <= 0:
+        return width, height
+    ratio = max_edge / float(longest)
+    return comfyui_align_size(round(width * ratio), round(height * ratio), step)
+
+
 def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZE_STEP, size=''):
     """参考图 → 工作流尺寸：先 scale total pixels 到面积档，再对齐 step。
 
@@ -318,7 +339,8 @@ def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZ
     ratio = source_width / source_height
     target_height = math.sqrt(area / ratio)
     target_width = target_height * ratio
-    return comfyui_align_size(round(target_width), round(target_height), step)
+    capped = comfyui_cap_longest_edge(round(target_width), round(target_height), step)
+    return comfyui_align_size(capped[0], capped[1], step)
 
 
 def _comfyui_ratio_from_size(size):
