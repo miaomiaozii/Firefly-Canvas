@@ -1,0 +1,22 @@
+# #323 票 E 证据：会话 frame（E1）+ reference frame（E2）
+
+## 323_e1_frames.png —— E1 会话 frame 自动落位（真机 MCP 链）
+- 生成：`.qa/e2e_323_frames.js`（playwright 开画布桥 + 纯 MCP HTTP），:8791 隔离实例（双 env），项目 605404a6cc2846ec970c39109ec2271e。
+- 过程：外部 MCP client 经 `ensure_external_agent_node` 物化 agent（mcp-agent-*）→ 绑 chatFrameId=「E2E 会话框」（smart-group @400,400 w800 h360）→ 连续 4 次 `canvas.create_node`（不带 x/y）。
+- 结果：pos=[[420,460],[676,460],[932,460],[420,616]]（一行 3 个，第 4 个换行），frame.items=4，frame.h=360→376（按行长高，监理钉②）。
+- 对照（非截图）：同帧显式 x/y 的 seed 节点保持 (10,10) 不动——尊重调用方断言在 tests/test_agent_frame.py。
+- md5: 7f70e705c3b46ed3512febb694c02afd
+
+## 323_e2_ref.png —— E2 参考框注入（codex 真轮，像素+文本双证）
+- 生成：`.qa/e2e_323_ref.js`。特征图=PIL 合成（紫底、白圆、黑三角、黄字 ZEBRA-42，640×480）经真媒体导入链 `POST /api/project-library/{pid}/media/import`（asset 4dac27e9…）。
+- 过程：smart-group 设 refFrame:true（items 含 smart-image 节点）→ agent 节点（agentCli=codex）绑 refFrameId → REST prompt「描述注入的参考素材」。
+- 结果（codex 回复原文）：「图片以紫色为背景，白色圆形与黑色三角形相互叠压，左下方有黄色文字“ZEBRA-42”。」——四项特征全中，证明 `-i` 注入链生效。
+- 监理钉①现物：events.jsonl user_prompt 事件带 `"refs":[{"node_id":"img-ref-*","name":"zebra42"}]`（内容不进、元数据进；素材注入不进回放正文）。
+- md5: 95476896c922da083149e752b1ab30f2
+
+## 回归基线对照（提交前跑）
+- py：tests/test_agent_frame.py(9 新)+test_agent_tui+test_agent_events = 60 passed。
+- mjs：test-canvas-agent-tui.mjs 86✔/4✖——4 红=基线既有（agentCardStatusHtml×2 #220、showForkPicker、bindAgentNodeControls fork），与 HEAD 干净树完全同集合，未新增红。
+- tests/test_canvas_module_units.py：仅 test_units_canvas_agent_tui 红（断言 mjs exit 0，根因=上述基线既有红，基线即红）。
+- tests/test_ui_integrity_contract.py：13 passed。
+- 未验证（申报）：core_surface/dual_tab_sync 等重型浏览器套件未跑（新菜单卡 `data-create-type="ref-frame"` 默认 hidden、按 groupId 才显示，理论上不影响按条目断言的既有用例）。
