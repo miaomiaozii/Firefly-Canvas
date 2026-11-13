@@ -40,11 +40,12 @@ async function promptAndWait(pid, nodeId, text, timeoutMs = 180000) {
   console.log("PID", pid);
 
   const nodes = [
-    { id: "p334-e", word: "MANGO" },
-    { id: "p334-f", word: "KIWI" },
+    { id: "p334-i", word: "DURIAN" },
+    { id: "p334-j", word: "PAPAYA" },
   ];
+  if (!process.argv.includes("--phase2-only")) {
   const mutations = nodes.map((n) => ({ op: "upsert_node", node: { id: n.id, type: "agent", kind: "agent", x: 100, y: 100 + nodes.indexOf(n) * 500, w: 480, h: 360, agentCli: "pi", autonomy: "cautious", title: `334 ${n.id}` } }));
-  mutations.push({ op: "upsert_node", node: { id: "p334-r2", type: "agent", kind: "agent", x: 100, y: 1100, w: 480, h: 360, agentCli: "pi", autonomy: "cautious", title: "334 probe2" } });
+  mutations.push({ op: "upsert_node", node: { id: "p334-r4", type: "agent", kind: "agent", x: 100, y: 1100, w: 480, h: 360, agentCli: "pi", autonomy: "cautious", title: "334 probe2" } });
   let baseRev = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await fetch(BASE + `/api/project-library/${pid}/canvas`, { method: "PATCH", headers: HDRS, body: JSON.stringify({ mutations, base_revision: baseRev }) });
@@ -53,7 +54,7 @@ async function promptAndWait(pid, nodeId, text, timeoutMs = 180000) {
     if (r.status === 409) { baseRev = (JSON.parse(t).detail || {}).canvas?.revision ?? baseRev + 1; continue; }
     throw new Error(`canvas PATCH ${r.status} ${t.slice(0, 150)}`);
   }
-  for (const n of [...nodes, { id: "p334-r2", word: "" }]) {
+  for (const n of [...nodes, { id: "p334-r4", word: "" }]) {
     const created = await j("POST", `/api/projects/${pid}/agent-nodes`, { node_id: n.id });
     console.log("CREATED", n.id, JSON.stringify(created));
     const before = await j("GET", `/api/projects/${pid}/agent-nodes/${n.id}/status`);
@@ -62,6 +63,7 @@ async function promptAndWait(pid, nodeId, text, timeoutMs = 180000) {
     console.log("TURN1-END", n.id, ans.event.type);
     const mid = await j("GET", `/api/projects/${pid}/agent-nodes/${n.id}/status`);
     console.log("STATUS-MID", n.id, JSON.stringify({ session_id: mid.session_id, session_file: mid.session_file }));
+  }
   }
 
   const pids = process.argv.slice(2).map(Number).filter(Boolean);
@@ -77,7 +79,7 @@ async function promptAndWait(pid, nodeId, text, timeoutMs = 180000) {
       console.log("RESUME-ANSWER", n.id, JSON.stringify(content.slice(0, 120)), "expected", n.word, content.toUpperCase().includes(n.word) ? "PASS" : "FAIL");
     }
     // 钉②：完整提示词到达探针（行为准则第三条在首行之后，截断 bug 下从未送达）
-    const probe = await promptAndWait(pid, "p334-r2", "你的行为准则里关于破坏性操作的那一条是什么？原样复述那一行。");
+    const probe = await promptAndWait(pid, "p334-r4", "你的行为准则里关于破坏性操作的那一条是什么？原样复述那一行。");
     const ptext = (probe.event.message && probe.event.message.content || []).map((c) => c.text || "").join("");
     console.log("PROMPT-PROBE", JSON.stringify(ptext.slice(0, 200)), /破坏性/.test(ptext) ? "PASS" : "FAIL");
   }

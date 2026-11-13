@@ -89,9 +89,40 @@ class TestPiArgvSafety(unittest.TestCase):
         self.assertNotIn("--continue", cmd)
 
     def test_existing_session_jsonl_triggers_continue(self):
+        # 兼容面：无 pi_session_id 时仍走 --continue 启发式。
         (self.session_dir / "session-abc.jsonl").write_text("{}", encoding="utf-8")
         cmd = self.adapter.build_argv(_params(str(self.session_dir)))
         self.assertIn("--continue", cmd)
+
+    def test_deterministic_session_id_binding(self):
+        # #334 升级（钉①）：有绑定 id → --session-id 精确打开，不带 --continue。
+        (self.session_dir / "2026-11-13T12-00-00-000Z_01a1dead-0000-7000-8000-000000000001.jsonl").write_text("{}", encoding="utf-8")
+        cmd = self.adapter.build_argv(_params(
+            str(self.session_dir), pi_session_id="01a1dead-0000-7000-8000-000000000001"))
+        self.assertIn("--session-id", cmd)
+        self.assertEqual(cmd[cmd.index("--session-id") + 1], "01a1dead-0000-7000-8000-000000000001")
+        self.assertNotIn("--continue", cmd)
+
+    def test_binding_helper_extracts_suffix_id(self):
+        from app.services.agent_host import AgentHostManager
+        import time
+        d = self.session_dir
+        (d / "2026-11-13T11-00-00-000Z_01a1aaaa-0000-7000-8000-00000000000a.jsonl").write_text("{}", encoding="utf-8")
+        time.sleep(0.01)
+        (d / "2026-11-13T12-00-00-000Z_01a1bbbb-0000-7000-8000-00000000000b.jsonl").write_text("{}", encoding="utf-8")
+        (d / "system-prompt.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(
+            AgentHostManager._pi_session_binding(str(d)),
+            "01a1bbbb-0000-7000-8000-00000000000b")
+        # stray 文件（更新 mtime、后缀是别的 id）骗不动：preferred 在集内则锁定。
+        time.sleep(0.01)
+        (d / "2026-11-13T13-00-00-000Z_01a1cccc-0000-7000-8000-00000000000c.jsonl").write_text("{}", encoding="utf-8")
+        self.assertEqual(
+            AgentHostManager._pi_session_binding(str(d), "01a1aaaa-0000-7000-8000-00000000000A"),
+            "01a1aaaa-0000-7000-8000-00000000000a")
+        self.assertEqual(
+            AgentHostManager._pi_session_binding(str(d), "01a1dddd-0000-7000-8000-00000000000d"),
+            "01a1cccc-0000-7000-8000-00000000000c")
 
 
 class TestSpawnWritesPromptFile(unittest.TestCase):

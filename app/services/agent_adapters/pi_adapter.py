@@ -40,12 +40,17 @@ class PiAdapter(HostAdapter):
             "--name", f"firefly-agent-{params.node_id[:8]}",
         ]
 
-        # 续接语义（原行为不变）：显式 continue 或 session_dir 已有**会话文件**则自动 --continue。
-        # #334 注意：探测只认 *.jsonl 会话文件——system-prompt.txt 不是会话，
-        # 否则目录永不为空，新建节点的首 spawn 也会 --continue（丢「重建即新会话」语义）。
-        if params.continue_session or any(
-            name.endswith(".jsonl") for name in os.listdir(params.session_dir)
-        ):
+        # 续接绑定（#334 升级，监理钉①）：有 pi_session_id → `--session-id <id>` 确定性绑定：
+        # pi 按**文件 header id 精确扫描**（SessionManager.findById），无交互确认/无 cwd 门，
+        # 不依赖「最新文件」启发式——多文件歧义归零；id 取会话文件名后缀（pi 命名
+        # =<启动时间>_<原始id>.jsonl，header id 永远=原始 id，会话内 id 变更也能开回原文件）。
+        # 首 spawn 也带 id=后端 session_id → 文件名后缀同步确定，后续绑定有据。
+        # 无 id 可绑（兼容面：旧数据/测试）退回原 --continue 启发式；探测只认 *.jsonl
+        # （system-prompt.txt 不是会话，否则新建节点首 spawn 也续接，丢「重建即新会话」）。
+        session_files = [n for n in os.listdir(params.session_dir) if n.endswith(".jsonl")]
+        if params.pi_session_id:
+            args.extend(["--session-id", params.pi_session_id])
+        elif params.continue_session or session_files:
             args.append("--continue")
 
         # 模型 flag（provider/id 拆分与原实现一致）

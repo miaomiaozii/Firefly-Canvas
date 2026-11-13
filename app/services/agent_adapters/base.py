@@ -31,6 +31,7 @@ class SpawnParams:
     ext_session_id: Optional[str] = None  # 宿主自有会话 id（codex thread_id）
     mcp_url: Optional[str] = None  # /mcp?project=…&node=…（codex 经 -c 注入）
     system_prompt_file: str = ""   # #334：提示词落盘路径——pi 走 `--system-prompt <path>`（cmd /c 下内联多行必丢参）
+    pi_session_id: str = ""        # #334 升级：pi 宿主确定性会话绑定（--session-id <id>，零探测歧义）
 
 
 class HostAdapter:

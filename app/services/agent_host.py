@@ -362,6 +362,13 @@ class AgentHostManager:
                 agent_cli=session.agent_cli,
                 ext_session_id=session.ext_session_id,
                 mcp_url=mcp_url,
+                # #334 升级（钉①）：pi 宿主确定性会话绑定——id=会话文件名后缀（pi 命名
+                # =<启动时间>_<原始id>.jsonl，header id 恒等于后缀），pi 按 header id 精确打开，
+                # 零「最新文件」歧义；无会话文件（首 spawn）不传，由 pi 自选后落盘可拾。
+                pi_session_id=(
+                    self._pi_session_binding(session_dir, session.ext_session_id or session.session_id)
+                    if session.agent_cli == "pi" else ""
+                ),
             )
             cmd = adapter.build_argv(params)
             if cmd is None:
@@ -430,6 +437,11 @@ class AgentHostManager:
                 session.session_id = state.get("sessionId")
                 session.session_file = state.get("sessionFile")
                 session.status = "running"
+                # #334 升级（钉①）：pi 宿主把 pi 会话 id 存入 extSessionId——重启/
+                # 重_materialize 后绑定首选仍可确定拾回（不靠 mtime 启发式）。
+                if session.agent_cli == "pi" and session.session_id and not session.ext_session_id:
+                    session.ext_session_id = session.session_id
+                    self._persist_ext_session_id(session)
                 logger.info(f"Agent session ready: {session.session_id}")
                 return True
             else:
@@ -1414,6 +1426,31 @@ class AgentHostManager:
             raise RuntimeError("Project store not initialized")
         # ProjectStore has a root attribute
         return str(store.root / project_id)
+
+    @staticmethod
+    def _pi_session_binding(session_dir: str, preferred_id: Optional[str] = None) -> str:
+        """#334：会话文件集内确定性选绑 id。
+        优先级：后端在追的 preferred_id（目录里确有该后缀会话文件时——stray 文件
+        后缀是别的 id，骗不动）> 最新 mtime 文件后缀。提不出回空。"""
+        import re
+        suffixes = set()
+        candidates = []
+        try:
+            for name in os.listdir(session_dir):
+                if not name.endswith(".jsonl"):
+                    continue
+                m = re.search(r"_([0-9a-fA-F-]{36})\.jsonl$", name)
+                if m:
+                    sid = m.group(1).lower()
+                    suffixes.add(sid)
+                    candidates.append((os.path.getmtime(os.path.join(session_dir, name)), sid))
+        except OSError:
+            return ""
+        if preferred_id and preferred_id.lower() in suffixes:
+            return preferred_id.lower()
+        if not candidates:
+            return ""
+        return max(candidates)[1]
 
     def _get_canvas_tools_path(self) -> str:
         """Get the path to the canvas-tools.ts extension."""
