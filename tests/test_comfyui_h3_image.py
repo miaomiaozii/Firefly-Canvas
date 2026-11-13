@@ -108,20 +108,29 @@ class ComfyBase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.providers_file = os.path.join(self.temp_dir.name, 'api_providers.json')
+        # 产物洛盘目录：适配器把 4K PNG 写成文件并回 /output/ URL，不再塞 base64 进 JSON
+        self.output_dir = os.path.join(self.temp_dir.name, 'output')
+        os.makedirs(self.output_dir, exist_ok=True)
         with open(self.providers_file, 'w', encoding='utf-8') as f:
             json.dump([comfyui_record()], f, ensure_ascii=False)
         self._patches = [
             patch.object(main, 'API_PROVIDERS_FILE', self.providers_file),
+            patch.object(main, 'OUTPUT_OUTPUT_DIR', self.output_dir),
         ]
         for p in self._patches:
             p.start()
 
-    def tearDown(self):
-        for p in reversed(self._patches):
-            p.stop()
-        self.temp_dir.cleanup()
+    def run_with_project_scope(self, project_id, fake, coro_factory, **module_patches):
+        """项目媒体参考图只能由“所属项目任务”使用（`require_project_media_values_scope`），
+        生产路径由请求层设这个上下文变量；单测里要自己设，否则会 400。"""
+        from app.core import PROJECT_MEDIA_ADAPTER_PROJECT
+        token = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)
+        try:
+            return self.run_with(fake, coro_factory, **module_patches)
+        finally:
+            PROJECT_MEDIA_ADAPTER_PROJECT.reset(token)
 
-    def run_with(self, fake, coro_factory):
+    def run_with(self, fake, coro_factory, **module_patches):
         """把 httpx.AsyncClient 换成走假服务器的客户端，并把轮询压到 0 秒。"""
         class FakeClient(httpx.AsyncClient):
             def __init__(self, *args, **kwargs):
@@ -130,10 +139,18 @@ class ComfyBase(unittest.TestCase):
                 super().__init__(*args, **kwargs)
 
         from app.services import generation
-        with patch('httpx.AsyncClient', FakeClient), \
-             patch.object(generation, 'COMFYUI_IMAGE_POLL_INTERVAL', 0), \
-             patch.object(generation, 'COMFYUI_IMAGE_QUEUE_INTERVAL', 0):
+        patches = [
+            patch('httpx.AsyncClient', FakeClient),
+            patch.object(generation, 'COMFYUI_IMAGE_POLL_INTERVAL', 0),
+            patch.object(generation, 'COMFYUI_IMAGE_QUEUE_INTERVAL', 0),
+        ]
+        patches.extend(patch.object(generation, name, value) for name, value in module_patches.items())
+        started = [p.start() for p in patches]
+        try:
             return asyncio.run(coro_factory())
+        finally:
+            for p in reversed(patches):
+                p.stop()
 
 
 class ComfyRegistrationTests(ComfyBase):
@@ -253,7 +270,13 @@ class ComfyEndToEndTests(ComfyBase):
             image_parameters={'aspect_ratio': '1:1', 'resolution': '1K'},
         ))
         # 8MP 档默认 -> 1K 档 2048²；宽高以 ComfyUI 产物元数据为准（节点会对齐到自己的步长）
-        self.assertEqual(image, {'type': 'b64', 'value': base64.b64encode(TINY_PNG).decode('ascii')})
+        self.assertEqual(image['type'], 'url', '4K PNG 动辄 20MB+，必须洛盘回 URL 而不是 base64')
+        self.assertTrue(image['value'].startswith('/'), image['value'])
+        self.assertTrue(image['value'].endswith('.png'), image['value'])
+        written = raw['output_path']
+        self.assertTrue(os.path.isfile(written), written)
+        with open(written, 'rb') as handle:
+            self.assertEqual(handle.read(), TINY_PNG)
         self.assertEqual((raw['width'], raw['height']), (2720, 1536))
         self.assertEqual((raw['requested_width'], raw['requested_height']), (2048, 2048))
         # 只提交一次，绝不自动重试
@@ -280,6 +303,7 @@ class ComfyEndToEndTests(ComfyBase):
             image_parameters={'aspect_ratio': '16:9', 'resolution': '2K'},
         ))
         self.assertTrue(image['value'])
+        self.assertEqual(image['type'], 'url')
         self.assertEqual(raw['references'], 1)
         uploads = fake.requests_to('/upload/image', 'POST')
         self.assertEqual(len(uploads), 1)
@@ -336,6 +360,104 @@ class ComfyEndToEndTests(ComfyBase):
                 ))
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn('ComfyUI', ctx.exception.detail)
+
+
+class ComfyReferenceResolutionTests(ComfyBase):
+    """参考图来源解析：画布给的真实形态是项目媒体相对 URL。"""
+
+    def make_ref_file(self):
+        path = os.path.join(self.temp_dir.name, '6.jpg')
+        with open(path, 'wb') as handle:
+            handle.write(TINY_PNG)
+        return path
+
+    def test_project_media_url_resolves_in_process_without_http(self):
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        ref_path = self.make_ref_file()
+        calls = []
+
+        def fake_store_call(name, project_id, asset_id):
+            calls.append((name, project_id, asset_id))
+            return {'path': ref_path, 'kind': 'image', 'name': '6.jpg', 'mime_type': 'image/jpeg'}
+
+        reference = {'url': '/api/project-library/2c92ddd4e4345a8560e389d41b580/media/e416d06420', 'kind': 'image', 'name': '6.jpg'}
+        with patch.object(main, 'project_store_call', fake_store_call):
+            image, raw = self.run_with_project_scope(
+                '2c92ddd4e4345a8560e389d41b580',
+                fake,
+                lambda: generate_ai_image(
+                    '把产品放进客厅', '1024x1024', 'medium', COMFYUI_MODEL,
+                    reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+                    image_parameters={'aspect_ratio': '1:1', 'resolution': '1K'},
+                ),
+            )
+        # 关键：不再回打自己的 HTTP（以前这里会拿 403 直接把任务弄挂）
+        self.assertEqual(fake.requests_to('/api/project-library/2c92ddd4e4345a8560e389d41b580/media/e416d06420'), [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], 'media_record')
+        self.assertEqual(len(fake.requests_to('/upload/image', 'POST')), 1)
+        body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
+        self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
+        self.assertEqual(raw['references'], 1)
+        self.assertEqual(image['type'], 'url')
+
+    def test_reference_dict_path_field_wins(self):
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        ref_path = self.make_ref_file()
+        reference = {'url': '/api/project-library/p/media/a', 'path': ref_path}
+        image, raw = self.run_with_project_scope('p', fake, lambda: generate_ai_image(
+            'x', '1024x1024', 'medium', COMFYUI_MODEL,
+            reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+        ))
+        self.assertEqual(raw['references'], 1)
+        self.assertTrue(image['value'])
+
+    def test_unresolvable_reference_is_400_not_httpx_error(self):
+        """解析不到就给一句人话，不能把 httpx 异常抛到画布上。"""
+        from fastapi import HTTPException
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy()
+        reference = {'url': '/api/project-library/p/media/missing', 'kind': 'image'}
+
+        def missing_store_call(name, project_id, asset_id):
+            raise RuntimeError('项目媒体不存在')
+
+        with patch.object(main, 'project_store_call', missing_store_call):
+            with self.assertRaises(HTTPException) as ctx:
+                self.run_with_project_scope('p', fake, lambda: generate_ai_image(
+                    'x', '1024x1024', 'medium', COMFYUI_MODEL,
+                    reference_images=[reference], provider_id=PROVIDER_ID, preserve_model=True,
+                ))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn('参考图无法交给本地 ComfyUI', ctx.exception.detail)
+        # 未提交任何工作流
+        self.assertEqual(fake.requests_to('/prompt', 'POST'), [])
+
+
+class ComfyQueueHygieneTests(ComfyBase):
+    """超时/取消必须撤单：ComfyUI 是单队列，一张卡死的图会堵住用户后面所有任务。"""
+
+    def test_timeout_cancels_queue_item(self):
+        from fastapi import HTTPException
+        from app.services.generation import generate_ai_image
+        fake = FakeComfy(history_steps=[{}])
+
+        with self.assertRaises(HTTPException) as ctx:
+            self.run_with(
+                fake,
+                lambda: generate_ai_image(
+                    'x', '1024x1024', 'medium', COMFYUI_MODEL,
+                    reference_images=None, provider_id=PROVIDER_ID, preserve_model=True,
+                ),
+                COMFYUI_IMAGE_TASK_TIMEOUT=0,
+            )
+        self.assertEqual(ctx.exception.status_code, 504)
+        self.assertIn('已从队列撤单', ctx.exception.detail)
+        deletes = [r for r in fake.requests_to('/queue', 'POST')]
+        self.assertEqual(len(deletes), 1, '超时后必须把任务从 ComfyUI 队列里删掉')
+        self.assertEqual(json.loads(deletes[0].content.decode('utf-8')), {'delete': [fake.prompt_id]})
 
 
 if __name__ == '__main__':

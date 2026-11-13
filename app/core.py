@@ -199,6 +199,9 @@ COMFYUI_IMAGE_TASK_TIMEOUT = float(os.getenv('COMFYUI_IMAGE_TASK_TIMEOUT', '1800
 COMFYUI_IMAGE_POLL_INTERVAL = float(os.getenv('COMFYUI_IMAGE_POLL_INTERVAL', '2'))
 COMFYUI_IMAGE_QUEUE_INTERVAL = float(os.getenv('COMFYUI_IMAGE_QUEUE_INTERVAL', '6'))
 COMFYUI_UPLOAD_TIMEOUT = float(os.getenv('COMFYUI_UPLOAD_TIMEOUT', '120'))
+# 参考图先缩到最长边 1536 再送进 ComfyUI：原图动辄 3000px，节点会按原尺寸做 VAE 编码，
+# 16GB 卡跑 2048² 工作流时会直接 `Allocation on device 0 would exceed allowed memory`。
+COMFYUI_REFERENCE_MAX_SIZE = int(os.getenv('COMFYUI_REFERENCE_MAX_SIZE', '1536'))
 COMFYUI_DOWNLOAD_TIMEOUT = float(os.getenv('COMFYUI_DOWNLOAD_TIMEOUT', '300'))
 # 该模型名与 model_specs.json 里的条目同名，画布据此渲染 比例/面积档 参数。
 COMFYUI_H3_MODEL_ID = 'comfyui-h3-image'

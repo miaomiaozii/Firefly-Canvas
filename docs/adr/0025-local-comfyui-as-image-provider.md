@@ -33,3 +33,12 @@
 - 本机 ComfyUI 未启动时任务以 503 快速失败并提示改 `base_url`，不占用重试预算。
 - 尺寸表以节点 `ResolutionSelector` 的实测表为准（1k/2k/4k = 4/8/16 MP，边长 8 的倍数）；`docs/MODEL_PARAMETERS.md` 记录的云 API 表与此差值在 1 个步长内，两套各自独立维护。
 - 将来要接「远程 ComfyUI 容器」时只需改 `base_url` 并补鉴权头，不需要动工作流与协议。
+
+## 上线后的四项修正（用户报「取不回来 / 参考图传不过去 / 图都不对」后实测得出）
+
+1. **参考图必须进程内解析**：画布给适配器的参考图是 `/api/project-library/{pid}/media/{aid}`。旧实现对它发 HTTP GET，而项目媒体接口有 `require_project_media_adapter_scope` 适配器作用域网关，进程内直连必定 403，`raise_for_status()` 又把 httpx 异常直接抛出——于是整单崩掉。现在解析顺序是 `path`/`source_path` 字段 → 项目媒体 store 反查 → `/output/`、`/assets/` 本地映射，只有真正的外部外链才下网；解析不到抛 400 一句人话。
+2. **参考图必须先缩图**：3166×3173 的原图交给节点 4 的 VAE 编码，在 2048² 工作流上直接 `Allocation on device 0 would exceed allowed memory`（16GB 卡）。现在统一用 PIL 缩到最长边 `COMFYUI_REFERENCE_MAX_SIZE`（默认 1536，env 可调）再上传，data URL 也走同一条缩图路径。
+3. **超时/失败必须撤单**：ComfyUI 是单队列，一张卡死的图会把后面所有任务堵住（实测：一单 5472×3072 跑着时，后续任务全部 `queue_position: 1`）。现在 `comfyui_wait_for_images` 在超时、报错、被取消时都会 `POST /queue {"delete": [prompt_id]}`；只有该 prompt 确实在 `queue_running` 里才补一次 `/interrupt`，避免打断用户别的任务。
+4. **结果落盘回 URL**：4K PNG 常有 20MB+，base64 再胀 33%，塞进 JSON 就是 27MB，画布端卡死/超时多半来自这里。现在写成 `assets/output/comfyui-<时间戳>-<随机>.png` 并回 `{'type': 'url'}`，与 codex / gemini-cli 这些本地提供方一致；落盘失败才退回 base64。
+
+另一个实测事实：参考图与提示词的绑定方式是在提示词里写 `<Picture 1>`（节点描述："The prompt refers to them as <Picture 1>, <Picture 2>")。实测不写也能用，但写了更稳；画布不代用户改提示词。

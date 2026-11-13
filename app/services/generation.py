@@ -244,37 +244,204 @@ async def comfyui_queue_position(client, root: str, prompt_id: str):
     return None
 
 
-async def comfyui_upload_reference(client, root: str, ref_url: str) -> str:
-    """把画布参考图送进 ComfyUI 的 input 目录，返回 LoadImage 能用的名字。
-    支持 data URL / 应用本地媒体 / http(s) 三种来源；不支持时返回空串。"""
-    ref_url = str(ref_url or '').strip()
-    if not ref_url:
+def comfyui_reference_source_path(ref) -> str:
+    """把参考图解析成本地文件路径（进程内，不联网）。
+
+    画布给本地提供方的参考图是项目媒体相对 URL（`/api/project-library/{pid}/media/{aid}`）。
+    之前这里对非 data URL 一律 `client.get(ref_url)` 回打自己，而项目媒体接口有适配器作用域网关，
+    进程内直连必然 403（`require_project_media_adapter_scope`）——这就是「参考图传不过去」的根因。
+    现在全部走 store / 本地媒体解析，只有真正的外部 http(s) 外链才允许下网。
+    """
+    item = ref if isinstance(ref, dict) else {'url': ref}
+    for key in ('path', 'source_path'):
+        candidate = str(item.get(key) or '').strip()
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    value = str(item.get('url') or '').strip()
+    if not value:
         return ''
-    payload = None
-    if ref_url.startswith('data:'):
-        if ';base64,' not in ref_url:
-            return ''
-        header, encoded = ref_url.split(';base64,', 1)
+    if value.startswith('/api/project-library/'):
+        parts = value.split('?', 1)[0].split('/')
+        if len(parts) >= 6 and parts[3] and parts[5]:
+            try:
+                record = _svc.project_store_call('media_record', parts[3], parts[5])
+            except Exception:
+                record = {}
+            record_path = str((record or {}).get('path') or '').strip()
+            if record_path and os.path.isfile(record_path):
+                return record_path
+    try:
+        local_path = _svc.local_media_adapter_path(value, 'image')
+    except Exception:
+        # 项目媒体句柄在这里会被作用域网关拒（require_project_media_adapter_scope），
+        # 我们本来就不打算用它解析项目媒体，所以当“没解析到”处理。
+        local_path = ''
+    if local_path and os.path.isfile(local_path):
+        return local_path
+    return ''
+
+
+def comfyui_reference_image_bytes(path):
+    """读参考图并缩到最长边 `COMFYUI_REFERENCE_MAX_SIZE`。
+
+    不缩直接传的后果（实测）：3166×3173 的 JPEG 在 2048² 工作流上会 OOM
+    （`节点 4: Allocation on device 0 would exceed allowed memory`）。
+    """
+    try:
+        with Image.open(path) as img:
+            img.load()
+            if max(img.size) > COMFYUI_REFERENCE_MAX_SIZE:
+                img.thumbnail((COMFYUI_REFERENCE_MAX_SIZE, COMFYUI_REFERENCE_MAX_SIZE), Image.LANCZOS)
+            if img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGB')
+            buf = BytesIO()
+            fmt = 'PNG' if img.mode == 'RGBA' else 'JPEG'
+            img.save(buf, format=fmt, quality=92 if fmt == 'JPEG' else None)
+            return buf.getvalue(), ('image/png' if fmt == 'PNG' else 'image/jpeg')
+    except Exception:
+        with open(path, 'rb') as handle:
+            return handle.read(), 'image/png'
+
+
+def comfyui_reference_payload(ref):
+    item = ref if isinstance(ref, dict) else {'url': ref}
+    value = str(item.get('url') or '').strip()
+    if value.startswith('data:') and ';base64,' in value:
+        header, encoded = value.split(';base64,', 1)
         mime = header.split(':', 1)[1].split(';', 1)[0] if ':' in header else 'image/png'
         try:
             raw = base64.b64decode(encoded)
         except Exception:
-            return ''
-        payload = apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
-    else:
-        path = _svc.local_media_adapter_path(ref_url, 'image')
-        if path:
-            payload = apimart_upload_file_payload(path)
-        elif ref_url.startswith(('http://', 'https://')):
-            response = await client.get(ref_url)
-            response.raise_for_status()
-            payload = apimart_upload_payload_from_bytes(
-                response.content,
-                response.headers.get('content-type', 'image/png'),
-                name_hint='canvas_ref',
-            )
+            return None
+        # data URL 也走一遍缩图，避免内联大图直接撑炸显存
+        try:
+            with Image.open(BytesIO(raw)) as img:
+                img.load()
+                if max(img.size) > COMFYUI_REFERENCE_MAX_SIZE:
+                    tmp = os.path.join(str(_svc._main('RUNTIME_ROOT') or ''), f'.comfyui-ref-{uuid.uuid4().hex[:8]}.png')
+                    img.thumbnail((COMFYUI_REFERENCE_MAX_SIZE, COMFYUI_REFERENCE_MAX_SIZE), Image.LANCZOS)
+                    img.save(tmp)
+                    try:
+                        shrunk, shrunk_mime = comfyui_reference_image_bytes(tmp)
+                    finally:
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+                    return apimart_upload_payload_from_bytes(shrunk, shrunk_mime, name_hint='canvas_ref')
+        except Exception:
+            pass
+        return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
+    path = comfyui_reference_source_path(item)
+    if path:
+        raw, mime = comfyui_reference_image_bytes(path)
+        return apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
+    return None
+
+
+async def comfyui_cancel_prompt(client, root: str, prompt_id: str) -> None:
+    """把还没开始跑的任务从 ComfyUI 队列里撤掉。
+
+    只删队列不跑 `/interrupt`：ComfyUI 是单队列，interrupt 会打断**正在跑的**那一张（可能是用户别的任务），
+    而幂等性在这里很关键——撤错了就是白烧算力。仅当我们的 prompt_id 确实在 running 里才 interrupt。
+    """
+    try:
+        await client.post(f'{root}/queue', json={'delete': [str(prompt_id)]})
+    except Exception:
+        return
+    try:
+        queue = await client.get(f'{root}/queue')
+        data = queue.json() or {} if queue.status_code == 200 else {}
+    except Exception:
+        return
+    running = [str(item[1]) for item in (data.get('queue_running') or []) if isinstance(item, (list, tuple)) and len(item) > 1]
+    if str(prompt_id) in running:
+        try:
+            await client.post(f'{root}/interrupt')
+        except Exception:
+            pass
+
+
+async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, width, height, references):
+    """轮询 /history 直到拿到产物。任何非正常退出（超时/报错/取消）都把任务从队列里撤掉。"""
+    deadline = started + COMFYUI_IMAGE_TASK_TIMEOUT
+    next_queue_at = started + COMFYUI_IMAGE_QUEUE_INTERVAL
+    queue_position = None
+    completed = False
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f'ComfyUI 生图超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}），已从队列撤单。'
+                        '若产物已落盘，可在 ComfyUI 的 output/MiniMax-H3-Image/ 目录里找到；本适配器不自动重提。'
+                    ),
+                )
+            try:
+                history = await client.get(f'{root}/history/{prompt_id}')
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f'查询 ComfyUI 任务状态失败：{exc}') from exc
+            try:
+                history_raw = history.json() or {}
+            except Exception:
+                history_raw = {}
+            entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
+            if entry:
+                status = entry.get('status') or {}
+                if str(status.get('status_str') or '').strip().lower() == 'error':
+                    raw_error = comfyui_execution_error_text(status)
+                    hint = ''
+                    if 'exceed allowed memory' in raw_error or 'out of memory' in raw_error.lower():
+                        hint = '（显存不够：把画布的面积档调低一档，或关掉参考图重试）'
+                    raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{raw_error}{hint}')
+                images = [
+                    image
+                    for node in (entry.get('outputs') or {}).values()
+                    for image in ((node or {}).get('images') or [])
+                    if isinstance(image, dict) and image.get('filename')
+                ]
+                if images:
+                    completed = True
+                    return images, queue_position
+            now = time.monotonic()
+            if now >= next_queue_at:
+                next_queue_at = now + COMFYUI_IMAGE_QUEUE_INTERVAL
+                queue_position = await comfyui_queue_position(client, root, prompt_id)
+                report(
+                    'provider_generating',
+                    queue_position=queue_position,
+                    elapsed_ms=int((now - started) * 1000),
+                    width=width,
+                    height=height,
+                    references=references,
+                )
+            await asyncio.sleep(COMFYUI_IMAGE_POLL_INTERVAL)
+    finally:
+        if not completed:
+            await comfyui_cancel_prompt(client, root, prompt_id)
+
+
+async def comfyui_upload_reference(client, root: str, ref) -> str:
+    """把画布参考图送进 ComfyUI 的 input 目录，返回 LoadImage 能用的名字。解析不到返回空串。"""
+    payload = comfyui_reference_payload(ref)
     if not payload:
-        return ''
+        # 本地解析不到的才考虑外部外链。本地回环地址一律不走网：那是没解析成功的项目媒体句柄，
+        # 再打一遍必被适配器作用域挡成 403。
+        item = ref if isinstance(ref, dict) else {'url': ref}
+        external = str(item.get('url') or '').strip()
+        if external.startswith(('http://', 'https://')) and '127.0.0.1' not in external and 'localhost' not in external:
+            try:
+                response = await client.get(external)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=400, detail=f'下载外部参考图失败：{external}（{exc}）') from exc
+            payload = apimart_upload_payload_from_bytes(
+                response.content, response.headers.get('content-type', 'image/png'), name_hint='canvas_ref',
+            )
+        if not payload:
+            return ''
     filename, content, content_type = payload
     upload = await client.post(
         f'{root}/upload/image',
@@ -313,22 +480,28 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
     explicit = dict(image_parameters or {})
     width, height = comfyui_h3_resolution(explicit.get('aspect_ratio'), explicit.get('resolution'), size)
     refs = [
-        str(ref.get('url') or '').strip()
+        ref
         for ref in (reference_images or [])
-        if isinstance(ref, dict) and str(ref.get('url') or '').strip()
+        if isinstance(ref, dict) and (str(ref.get('url') or '').strip() or str(ref.get('path') or '').strip())
     ][:COMFYUI_MAX_REFERENCES]
     root = comfyui_api_root(provider)
     started = time.monotonic()
     timeout = httpx.Timeout(connect=10.0, read=max(COMFYUI_IMAGE_TASK_TIMEOUT, 60.0), write=COMFYUI_UPLOAD_TIMEOUT, pool=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         names = []
-        for index, ref_url in enumerate(refs, start=1):
+        for index, ref in enumerate(refs, start=1):
             report('uploading', bytes_done=index - 1, bytes_total=len(refs))
-            name = await comfyui_upload_reference(client, root, ref_url)
+            name = await comfyui_upload_reference(client, root, ref)
             if name:
                 names.append(name)
         if refs and not names:
-            raise HTTPException(status_code=400, detail='参考图无法传给 ComfyUI（仅支持 data URL、应用本地媒体与 http/https）。')
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    '参考图无法交给本地 ComfyUI：只支持项目媒体、应用本地图片、data URL 与公网 http(s) 链接。'
+                    '如果这张图刚在画布上传，请确认它在项目媒体库里仍然存在。'
+                ),
+            )
         graph = comfyui_h3_workflow(clean_prompt, width, height, reference_names=names)
         report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
         try:
@@ -351,47 +524,9 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
         prompt_id = str(submitted.get('prompt_id') or '').strip()
         if not prompt_id:
             raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')
-        deadline = started + COMFYUI_IMAGE_TASK_TIMEOUT
-        next_queue_at = started + COMFYUI_IMAGE_QUEUE_INTERVAL
-        queue_position = None
-        images = []
-        while True:
-            now = time.monotonic()
-            if now >= deadline:
-                raise HTTPException(
-                    status_code=504,
-                    detail=(
-                        f'ComfyUI 生图超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}）。'
-                        '任务可能仍在跑，产物稍后会出现在 ComfyUI 的 output/MiniMax-H3-Image/ 目录；本适配器不自动重试。'
-                    ),
-                )
-            try:
-                history = await client.get(f'{root}/history/{prompt_id}')
-            except httpx.HTTPError as exc:
-                raise HTTPException(status_code=502, detail=f'查询 ComfyUI 任务状态失败：{exc}') from exc
-            try:
-                history_raw = history.json() or {}
-            except Exception:
-                history_raw = {}
-            entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
-            if entry:
-                status = entry.get('status') or {}
-                if str(status.get('status_str') or '').strip().lower() == 'error':
-                    raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{comfyui_execution_error_text(status)}')
-                images = [
-                    image
-                    for node in (entry.get('outputs') or {}).values()
-                    for image in ((node or {}).get('images') or [])
-                    if isinstance(image, dict) and image.get('filename')
-                ]
-                if images:
-                    break
-            now = time.monotonic()
-            if now >= next_queue_at:
-                next_queue_at = now + COMFYUI_IMAGE_QUEUE_INTERVAL
-                queue_position = await comfyui_queue_position(client, root, prompt_id)
-                report('provider_generating', queue_position=queue_position, elapsed_ms=int((now - started) * 1000), width=width, height=height, references=len(names))
-            await asyncio.sleep(COMFYUI_IMAGE_POLL_INTERVAL)
+        images, queue_position = await comfyui_wait_for_images(
+            client, root, prompt_id, started, report, width=width, height=height, references=len(names),
+        )
         image = images[0]
         # ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），
         # 用产物元数据里的真实尺寸回填，别把节点的对齐差值报给画布。
@@ -428,6 +563,23 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             'references': len(names),
             'status': 'success',
         }
+        # 4K PNG 常常 20MB+，再 base64 一轮就是 27MB 的 JSON——画布卡死/超时多半在这里。
+        # 对齐 codex / gemini-cli 等本地提供方：落盘到 output 目录，只回一个本地 URL。
+        output_url = ''
+        try:
+            output_dir = str(_svc._main('OUTPUT_OUTPUT_DIR') or '').strip()
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                target = os.path.join(output_dir, f'comfyui-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}.png')
+                with open(target, 'wb') as handle:
+                    handle.write(content)
+                output_url = str(_svc.codex_output_url_from_path(target) or '')
+                if output_url:
+                    data['output_path'] = target
+        except Exception:
+            output_url = ''
+        if output_url:
+            return ({'type': 'url', 'value': output_url}, data)
         return ({'type': 'b64', 'value': base64.b64encode(content).decode('ascii')}, data)
 
 
