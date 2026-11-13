@@ -1,6 +1,7 @@
 """Agent nodes API: session lifecycle, WebSocket streaming, command sending."""
 import asyncio
 import json
+import logging
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,25 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 # #240：agent-nodes 全部端点（含 WebSocket stream）接入同源/Host 守卫。
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
 
+logger = logging.getLogger(__name__)
+
+# #335: 未知 agentCli 不得静默回落 pi——create 入口直接 400 拒绝。
+AGENT_CLI_WHITELIST = ("pi", "codex")
+
+
+def _validated_agent_cli(node: dict) -> str:
+    """Empty/missing agentCli → default pi; explicit unknown value → 400 (#335)."""
+    raw = str(node.get("agentCli") or "").strip()
+    if not raw:
+        return "pi"
+    if raw not in AGENT_CLI_WHITELIST:
+        raise HTTPException(status_code=400, detail={
+            "error": "unknown agent_cli",
+            "agent_cli": raw,
+            "supported": list(AGENT_CLI_WHITELIST),
+        })
+    return raw
+
 
 def _apply_node_host(project_id: str, node_id: str, session) -> None:
     """#318 票 B：宿主选择 = 节点属性 agentCli（"pi" 默认 / "codex"），并恢复
@@ -33,7 +53,9 @@ def _apply_node_host(project_id: str, node_id: str, session) -> None:
     if not isinstance(node, dict):
         return
     agent_cli = str(node.get("agentCli") or "").strip() or "pi"
-    if agent_cli not in ("pi", "codex"):
+    if agent_cli not in AGENT_CLI_WHITELIST:
+        # #335: spawn/status 路径的兼容兑底保留，但必须留痕（create 入口已 400 拒绝）。
+        logger.warning("#335 unknown agentCli %r on node %s; falling back to pi", agent_cli, node_id)
         agent_cli = "pi"
     session.agent_cli = agent_cli
     if not session.ext_session_id:
@@ -77,6 +99,15 @@ async def create_agent_node(
             autonomy = node.get("autonomy", "") or "cautious"
         except HTTPException:
             autonomy = "cautious"
+
+    # #335: 节点显式声明了未知 agentCli → 400，先于任何会话/spawn。
+    try:
+        host_node = _find_node(project_id, node_id)
+        if isinstance(host_node, dict):
+            _validated_agent_cli(host_node)
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            raise
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id, model, autonomy)
 
