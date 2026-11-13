@@ -1,0 +1,5 @@
+{
+ "source": "assets/input/ai_ref_10073401ad09.png",
+ "prompt_a": "提取画面主体，去除背景，输出透明背景 PNG，保留主体边缘细节",
+ "a_error": "RuntimeError('qwen-image-edit 调用失败（HTTP 404）：{\"error\":{\"message\":\"Model not exist.\",\"id\":\"a29b97ca-9270-9520-8e74-59f7dd5af90e\",\"type\":\"invalid_request_error\",\"code\":\"model_not_found\"}}')"
+}

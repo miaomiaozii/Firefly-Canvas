@@ -73,12 +73,37 @@ async def _update_node_field(project_id: str, node_id: str, field: str, value: A
     return node
 
 
+async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: str) -> None:
+    """#332: agent-nodes create must persist the node into canvas.json——此前
+    API 建的节点只存在于运行内存，进程重启整体蒸发、agent-events 成孤儿。
+    已存在的节点绝不动（位置/字段以画布为准）；缺失时写入最小形状
+    （type=smart-agent，前端可渲染），走既有 canvas 变更通道带 revision+broadcast。"""
+    try:
+        _find_node(project_id, node_id)
+        return
+    except HTTPException:
+        pass
+    now = _app_main.now_ms()
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": {
+        "id": node_id,
+        "type": "smart-agent",
+        "kind": "agent",
+        "title": f"Agent {node_id}",
+        "x": 0,
+        "y": 0,
+        "agentCli": agent_cli,
+        "created_at": now,
+        "updated_at": now,
+    }}])
+
+
 @router.post("")
 async def create_agent_node(
     project_id: str,
     node_id: str = Body(...),
     model: str = Body(default=""),
     autonomy: str = Body(default=""),
+    agent_cli: str = Body(default="", alias="agentCli"),
     x_agent_project: str = Header(default=""),
 ):
     """Create or resume an agent node session.
@@ -101,13 +126,22 @@ async def create_agent_node(
             autonomy = "cautious"
 
     # #335: 节点显式声明了未知 agentCli → 400，先于任何会话/spawn。
+    # #332: body 可直接带 agentCli（幻影节点无 canvas 属性可读）；同样先验后落。
+    host_node = None
     try:
         host_node = _find_node(project_id, node_id)
-        if isinstance(host_node, dict):
-            _validated_agent_cli(host_node)
-    except HTTPException as exc:
-        if exc.status_code == 400:
-            raise
+    except HTTPException:
+        pass
+    requested_cli = (agent_cli or "").strip()
+    if requested_cli:
+        _validated_agent_cli({"agentCli": requested_cli})
+    if isinstance(host_node, dict):
+        _validated_agent_cli(host_node)
+
+    resolved_cli = requested_cli or (host_node.get("agentCli") if isinstance(host_node, dict) else "") or "pi"
+    # #332: 节点不在 canvas 时先落盘（先于 spawn），重启不蒸发。
+    if host_node is None:
+        await _upsert_agent_canvas_node(project_id, node_id, resolved_cli)
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id, model, autonomy)
 
@@ -131,6 +165,7 @@ async def create_agent_node(
         "status": session.status,
         "model": session.model or model,
         "autonomy": session.autonomy or autonomy,
+        "agentCli": resolved_cli,
     }
 
 

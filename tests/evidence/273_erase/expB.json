@@ -1,0 +1,19 @@
+{
+  "tag": "expB",
+  "endpoint": "https://llm-u3cjfye74dk9hoh9.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/images/generations",
+  "model": "qwen-image-edit-max-2026-01-16",
+  "prompt": "remove all objects and fill the background naturally",
+  "size": "1464x824",
+  "status": 404,
+  "elapsed_s": 0.84,
+  "input_image": "input_copy.jpg",
+  "input_size": "1464x824",
+  "response": {
+    "error": {
+      "message": "Model not exist.",
+      "id": "07927aed-be47-9147-bf74-f37268783bce",
+      "type": "invalid_request_error",
+      "code": "model_not_found"
+    }
+  }
+}

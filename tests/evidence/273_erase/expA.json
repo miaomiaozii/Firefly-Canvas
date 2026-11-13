@@ -1,0 +1,19 @@
+{
+  "tag": "expA",
+  "endpoint": "https://llm-u3cjfye74dk9hoh9.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/images/generations",
+  "model": "qwen-image-edit-max-2026-01-16",
+  "prompt": "移除画面中的水印和文字，其余内容保持不变",
+  "size": "1464x824",
+  "status": 404,
+  "elapsed_s": 0.76,
+  "input_image": "input_copy.jpg",
+  "input_size": "1464x824",
+  "response": {
+    "error": {
+      "message": "Model not exist.",
+      "id": "3e95ec90-05d9-9026-b759-b7d61a56cc59",
+      "type": "invalid_request_error",
+      "code": "model_not_found"
+    }
+  }
+}

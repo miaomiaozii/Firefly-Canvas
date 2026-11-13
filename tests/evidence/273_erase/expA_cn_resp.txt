@@ -1,0 +1,2 @@
+status=404 model=wan2.7-image-pro endpoint=images/edits multipart elapsed=0.4s
+
