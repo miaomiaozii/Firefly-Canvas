@@ -11,9 +11,65 @@
 """
 from __future__ import annotations
 
+import os
+import shutil
 from typing import Dict, List, Optional
 
 from .base import HostAdapter, SpawnParams
+
+
+def codex_home_dir() -> str:
+    """#318 隔离尾单：CODEX_HOME = RUNTIME 根下 codex-home（ADR 0024 不变量③落地）。
+
+    背景：codex 默认读写用户全局 ~/.codex（sessions/rollout 持续污染用户目录）。
+    拉起时注入 CODEX_HOME=<RUNTIME_ROOT>/codex-home 后 sessions/config 全落隔离位。
+    """
+    from ...constants import RUNTIME_ROOT
+    return os.path.join(RUNTIME_ROOT, "codex-home")
+
+
+def prepare_codex_home(home: str) -> str:
+    """建隔离 CODEX_HOME 目录并同步登录态：auth.json 从用户全局目录拷入（仅当隔离侧
+    不存在或全局更新）。不拷 auth.json 则隔离家目录下 codex 未登录，轮必挂。
+    用户未登录（全局无 auth.json）时静默跳过——失败交给 codex 自身报错。
+    """
+    os.makedirs(home, exist_ok=True)
+    global_auth = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
+    if not os.path.isfile(global_auth):
+        return home
+    local_auth = os.path.join(home, "auth.json")
+    try:
+        if (not os.path.isfile(local_auth)
+                or os.path.getmtime(global_auth) > os.path.getmtime(local_auth)):
+            shutil.copy2(global_auth, local_auth)
+    except OSError:
+        pass  # 拷贝失败不阻断拉起：codex 会报可操作的未登录错误
+    return home
+
+
+def codex_spawn_env(base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """拉起 codex 的 env：注入隔离 CODEX_HOME（显式外部 CODEX_HOME 优先，留运维逃生口）。"""
+    env = dict(os.environ if base is None else base)
+    env["CODEX_HOME"] = env.get("CODEX_HOME") or prepare_codex_home(codex_home_dir())
+    return env
+
+
+def write_home_mcp_config(home: str, mcp_url: str) -> None:
+    """把 firefly MCP 条目写进隔离 CODEX_HOME/config.toml（只写隔离目录，绝不碰用户全局）。
+
+    -c 注入仍是每轮权威（url 含 project/node 动态参数，此处覆盖写同值保持一致）；
+    落盘的价值：`CODEX_HOME=<隔离> codex mcp list` 可见 firefly（#318 尾单验收件③），
+    且隔离家目录自描述可审计。
+    """
+    os.makedirs(home, exist_ok=True)
+    body = (
+        "# Firefly 画布自动写入（隔离 CODEX_HOME；每轮按当前 MCP url 覆盖）\n"
+        "[mcp_servers.firefly]\n"
+        "url = " + _toml_value(mcp_url) + "\n"
+        'default_tools_approval_mode = "approve"\n'
+    )
+    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as f:
+        f.write(body)
 
 # 画布系统提示（codex 侧经 -c developer_instructions 注入；引号转义后传入）
 CANVAS_INSTRUCTIONS = (

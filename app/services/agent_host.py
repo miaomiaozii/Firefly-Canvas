@@ -771,7 +771,7 @@ class AgentHostManager:
         if session._turn_open:
             raise RuntimeError(f"Agent {session.node_id} busy：codex 拒收并发 prompt（ADR 0024 不变量）")
         from .agent_adapters import SpawnParams
-        from .agent_adapters.codex_adapter import CodexAdapter
+        from .agent_adapters.codex_adapter import CodexAdapter, codex_spawn_env, write_home_mcp_config
 
         adapter = self._adapters.get("codex") or CodexAdapter()
         effective_autonomy = session.autonomy or "cautious"
@@ -785,6 +785,9 @@ class AgentHostManager:
             f"{resolve_agent_api_base(os.environ)}/api/mcp?project={session.project_id}"
             f"&node={session.node_id}"
         )
+        # #318 隔离尾单：隔离 CODEX_HOME + 写入 firefly MCP 条目（件③ mcp list 可见）
+        spawn_env = codex_spawn_env()
+        write_home_mcp_config(spawn_env["CODEX_HOME"], mcp_url)
         params = SpawnParams(
             resolved_cli=shutil.which("codex"),
             session_dir=session_dir,
@@ -827,7 +830,8 @@ class AgentHostManager:
                 # 沙盒即边界（审批实测）：cwd = per-node 临时目录，-s read-only 下
                 # 写画布一律经 MCP 端点确认闸。
                 cwd=session_dir,
-                env=os.environ.copy(),
+                # #318 隔离尾单：CODEX_HOME=RUNTIME根/codex-home（sessions 不再写用户全局 ~/.codex）
+                env=spawn_env,
             )
         except OSError as e:
             session._turn_open = False
