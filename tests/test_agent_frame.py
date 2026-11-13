@@ -17,11 +17,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from fastapi import HTTPException
 from firefly_projects import ProjectStore
 from app.services import agent_frame
 from app.services.agent_host import agent_host_manager
 from app.services.agent_adapters.codex_adapter import CodexAdapter, insert_ref_images
-from app.routers.api_agent_tools import create_node_core
+from app.routers.api_agent_tools import create_node_core, update_node_core
 
 
 def run_async(coro):
@@ -66,7 +67,8 @@ class CreateNodePlacement(unittest.TestCase):
             {"op": "upsert_node", "node": {"id": "agent-1", "type": "smart-agent",
                                            "x": 0, "y": 0, "chatFrameId": "group-1"}},
             {"op": "upsert_node", "node": {"id": "group-1", "type": "smart-group",
-                                           "x": 100, "y": 100, "w": 800, "h": 360, "items": []}},
+                                           "x": 100, "y": 100, "w": 800, "h": 360, "items": [],
+                                           "chatFrame": True, "chatFrameFor": "agent-1"}},
         ], base_revision=0)
 
     def tearDown(self):
@@ -107,6 +109,22 @@ class CreateNodePlacement(unittest.TestCase):
         nodes = self._nodes()
         self.assertEqual((nodes[r1["node_id"]]["x"], nodes[r1["node_id"]]["y"]), (0, 0))
         self.assertEqual((nodes[r2["node_id"]]["x"], nodes[r2["node_id"]]["y"]), (0, 0))
+
+    def test_chatframe_items_immutable_via_update(self):
+        """监理钉 B1：会话框 items 由服务端落位链独占——canvas.update_node 传 items 拒绝(400)；
+        非会话框字段（title 等）仍可改；普通 agent 节点的 items 键不受该护栏影响。"""
+        with self.assertRaises(HTTPException) as cm:
+            run_async(update_node_core(self.pid, "group-1", {"items": ["bogus"]}))
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("items", cm.exception.detail)
+        self.assertEqual(self._nodes()["group-1"]["items"], [], "store 内 items 未被篡改")
+        # 其他字段照常可改（护栏不扩大到整节点）。
+        r = run_async(update_node_core(self.pid, "group-1", {"title": "改名"}))
+        self.assertTrue(r["success"])
+        self.assertEqual(self._nodes()["group-1"]["title"], "改名")
+        # 非 smart-group 节点不受影响。
+        r2 = run_async(update_node_core(self.pid, "agent-1", {"items": ["x"]}))
+        self.assertTrue(r2["success"])
 
 
 class _FakeStore:

@@ -332,6 +332,12 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
     # Get current node
     target_node = _find_node(project_id, node_id)
 
+    # #323 监理钉B1：会话框（chatFrame=true 的 smart-group）成员关系由服务端落位链独占维护
+    # （create_node_core 同事务追加 items）；任何 canvas.update_node/REST 覆写 items 直接拒绝，
+    # 防 LLM 重排打乱网格/丢成员。Refs #323。
+    if "items" in updates and target_node.get("type") == "smart-group" and target_node.get("chatFrame") is True:
+        raise HTTPException(status_code=400, detail="会话框 items 由服务端落位链维护，canvas.update_node 不可覆写")
+
     # Apply updates
     for key, value in updates.items():
         if key not in ("id", "type", "created_at"):  # Don't allow changing identity

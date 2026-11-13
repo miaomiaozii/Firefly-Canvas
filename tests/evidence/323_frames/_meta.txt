@@ -20,3 +20,8 @@
 - tests/test_canvas_module_units.py：仅 test_units_canvas_agent_tui 红（断言 mjs exit 0，根因=上述基线既有红，基线即红）。
 - tests/test_ui_integrity_contract.py：13 passed。
 - 未验证（申报）：core_surface/dual_tab_sync 等重型浏览器套件未跑（新菜单卡 `data-create-type="ref-frame"` 默认 hidden、按 groupId 才显示，理论上不影响按条目断言的既有用例）。
+
+## 323_b_card.png —— 监理钉 B1/B2/B3 修复后卡面现物（headless 临时节点，不碰持久化）
+- agent 卡 head-meta：「空闲 | 会话框 ✓ 监理钉复核 · 会话框」（钉B3 状态行，绑定态直接可见）
+- node-actions 文字钮：「打开会话框」（钉B2，绑定态文案=动作）+「参考 ×1」
+- 会话框 group title 带归属「监理钉复核 · 会话框」+ chatFrame/chatFrameFor 机器标记（钉B1）；server 侧 update_node items 覆写拒绝(400)断言入 tests/test_agent_frame.py::test_chatframe_items_immutable_via_update

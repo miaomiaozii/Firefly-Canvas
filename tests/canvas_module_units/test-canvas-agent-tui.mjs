@@ -1621,7 +1621,7 @@ test('#323 E1 agentChatFrameAction：无框 → agent 右侧 +40 建 smart-group
     assert.equal(r2.groupId, groups()[0].id);
     assert.equal(groups().length, 1, '再点不得建第二个框');
     assert.deepEqual(fromContext(renders.filter(r => r.kind === 'centerViewport').at(-1).point),
-        { x: 100 + 382 + 40 + 120, y: 200 + 100 }, '居中点 = frame + (120, 100)');
+        { x: 100 + 382 + 40 + 170, y: 200 + 143 }, '居中点 = 框真中心（x + w/2, y + h/2；w340/h286 默认，监理钉B2）');
 
     // stale chatFrameId（指向不存在节点）→ 按无处理（自愈降级），重建并覆盖旧 id。
     evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').chatFrameId = 'ghost'");
@@ -1655,22 +1655,45 @@ test('#323 E1 agentHeadActionButtonsHtml：会话框按钮注入 .node-actions�
     assert.ok(out.includes('data-agent-chat-frame="a1"'), out);
     assert.ok(out.includes('data-agent-ref-frame="a1"'), out);
     assert.ok(!out.includes('agent-chat-frame-btn agent-tui-btn-active'), '无框 → 非激活态');
-    assert.ok(!out.includes('agent-chat-frame-check'), '无框 → 无 ✓ 角标');
-    assert.ok(out.includes('创建会话框'), '无框 title 提示');
+    assert.ok(out.includes('>创建会话框</button>'), '无框 → 文字钮「创建会话框」（监理钉B2）');
 
     // stale chatFrameId（指向不存在节点）→ 按无处理，按钮不得显示激活态。
     evaluate(ctx, "canvasState.nodes[0].chatFrameId = 'ghost'");
     out = fromContext(html(liveNode()));
     assert.ok(!out.includes('agent-chat-frame-btn agent-tui-btn-active'), out);
-    assert.ok(!out.includes('agent-chat-frame-check'), out);
+    assert.ok(out.includes('>创建会话框</button>'), 'stale → 仍显示「创建会话框」');
 
-    // 框真实存在 → class + ✓ 角标 + title 变「点击跳转」。
+    // 框真实存在 → 激活 class + 文字钮变「打开会话框」（一键可达语义直接写在文案上）。
     evaluate(ctx, 'canvasState.nodes.push({ id: "g1", type: NODE_TYPE_GROUP, x: 0, y: 0, items: [] })');
     evaluate(ctx, "canvasState.nodes[0].chatFrameId = 'g1'");
     out = fromContext(html(liveNode()));
     assert.ok(out.includes('agent-chat-frame-btn agent-tui-btn-active'), out);
-    assert.ok(out.includes('agent-chat-frame-check'), out);
-    assert.ok(out.includes('会话框（点击跳转）'), out);
+    assert.ok(out.includes('>打开会话框</button>'), '绑定 → 文字钮「打开会话框」（监理钉B2）');
+});
+
+test('#323 监理钉B1/B3：新建会话框带 chatFrame/chatFrameFor 机器标记；已有框点击=居中到框真中心；卡面状态段两态可见', () => {
+    const { ctx, renders } = loadAgentTuiModule({ withNodeOps: true, open: false,
+        nodes: [{ id: 'a1', type: 'smart-agent', title: '创作', x: 100, y: 50, w: 480 }] });
+    const chat = fn(ctx, 'agentChatFrameAction');
+    const r1 = fromContext(chat('a1'));
+    assert.equal(r1.action, 'created');
+    const g = fromContext(evaluate(ctx, 'canvasState.nodes.filter(n => n.type === NODE_TYPE_GROUP)'));
+    assert.equal(g[0].chatFrame, true, '监理钉B1：框节点带 chatFrame 机器标记');
+    assert.equal(g[0].chatFrameFor, 'a1', '监理钉B1：chatFrameFor 指向归属 agent（其他 agent 可读）');
+    assert.equal(g[0].title, '创作 · 会话框', '监理钉B1：框面可见归属标记（title 渲染在 group 卡 head）');
+    // 已有框 → 居中到框真中心（x + w/2, y + h/2）。
+    evaluate(ctx, "canvasState.nodes.find(n => n.type === NODE_TYPE_GROUP).w = 800; canvasState.nodes.find(n => n.type === NODE_TYPE_GROUP).h = 360");
+    const r2 = fromContext(chat('a1'));
+    assert.equal(r2.action, 'center', '绑定态点击=跳转不重建');
+    assert.ok(renders.some(r => r.kind === 'centerViewport'), '绑定态点击必须触发居中');
+    // 卡面状态段（钉B3）：绑定/未绑定两态。
+    const status = fn(ctx, 'agentChatFrameStatusHtml');
+    const agent = () => fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1')"));
+    let s = fromContext(status(agent()));
+    assert.ok(s.includes('is-bound') && s.includes('会话框 ✓') && s.includes('创作 · 会话框'), s);
+    evaluate(ctx, "delete canvasState.nodes.find(n => n.id === 'a1').chatFrameId");
+    s = fromContext(status(agent()));
+    assert.ok(s.includes('is-unbound') && s.includes('会话框 —'), s);
 });
 
 test('#323 E1 bindAgentHeadControls：点「会话框」按钮 → 真实创建；再点 → 居中不重复建', () => {

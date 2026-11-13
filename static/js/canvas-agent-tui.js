@@ -1422,6 +1422,8 @@ function bindAgentNodeControls(el, node){
 }
 
 function renderAgentNode(nodeId) {
+    // #323 监理钉：会话框状态行由 agentChatFrameStatusHtml 提供（head-meta 区，主 render 与
+    // renderAgentNode 两路同步注入）。Refs #323。
     // #314：IME 组合进行中——推迟重建，compositionend 后补渲染（中文输入不被杀）
     const st314 = agentTuiState.get(nodeId);
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
@@ -1478,7 +1480,8 @@ function renderAgentNode(nodeId) {
     // Update node card status light + last line preview
     const headMeta = el.querySelector('.node-head-meta');
     if (headMeta) {
-        headMeta.innerHTML = agentCardStatusHtml(nodeId);
+        // #323 监理钉B3：状态段追加会话框绑定状态（卡面直接可见，Refs #323）。
+        headMeta.innerHTML = agentCardStatusHtml(nodeId) + agentChatFrameStatusHtml(node);
     }
 }
 
@@ -1548,25 +1551,42 @@ function agentRefFrameAssetCount(group){
     return count;
 }
 
-// E1：agent 卡「会话框」小按钮——无框时在 agent 右侧（宽 + 40 偏移）创建 smart-group，
-// group.title = (agent.title||'会话') + ' · 会话框'，写 agent.chatFrameId（服务端落位用）；
-// 已有框时点击 = 视口居中到该 frame（现成 centerViewportOnWorldPoint）。
+// E1：agent 卡「创建会话框/打开会话框」文字钮（监理钉B2：绑定后一键可达=文案直接说明动作，
+// 非纯图标）——无框时在 agent 右侧（宽 + 40 偏移）创建 smart-group，
+// group.title = (agent.title||'会话') + ' · 会话框'（监理钉B1：框面可见归属标记），且框节点带
+// chatFrame/chatFrameFor 机器可读标记（Refs #323）；已有框时点击 = 视口居中到该 frame 真中心。
 function agentChatFrameAction(agentId){
     const agent = canvasState.nodes.find(n => n.id === agentId);
     if(!agent || !isSmartAgentNode(agent)) return null;
     const existing = agentChatFrameGroup(agent);
     if(existing){
-        centerViewportOnWorldPoint({x:Number(existing.x || 0) + 120, y:Number(existing.y || 0) + 100});
+        centerViewportOnWorldPoint({x:Number(existing.x || 0) + (Number(existing.w) || 640) / 2, y:Number(existing.y || 0) + (Number(existing.h) || 480) / 2});
         return {action:'center', groupId:existing.id};
     }
     // 无框（含 stale id 自愈降级）：createSmartGroupNode 内部已 pushUndo + render + scheduleSave，
-    // 之后写入的 title/chatFrameId 需再 render + scheduleSave 一次（防抖合并成一次保存）。
+    // 之后写入的 title/chatFrameId 需再 render + scheduleSave 一次（防抖合并一次保存）。
     const group = createSmartGroupNode(Number(agent.x || 0) + (Number(agent.w || 240)) + 40, Number(agent.y || 0), {});
     group.title = (agent.title || '会话') + ' · 会话框';
+    // 监理钉B1：框内标记——chatFrame 机器标记 + chatFrameFor 归属（其他 agent 可读）；
+    // 可见层=title 带归属（group 卡 head 渲染 title，画布上直接看出是谁的会话框）。
+    group.chatFrame = true;
+    group.chatFrameFor = agent.id;
     agent.chatFrameId = group.id;
     render();
     scheduleSave();
     return {action:'created', groupId:group.id};
+}
+
+// 监理钉B3：卡面会话框状态段（node-head-meta 区，状态灯同排）——绑定状态对用户直接可见，
+// 不靠隐藏字段。Refs #323。
+function agentChatFrameStatusHtml(node){
+    const frame = agentChatFrameGroup(node);
+    if(frame){
+        const title = String(frame.title || '会话框');
+        const short = title.length > 14 ? title.slice(0, 14) + '…' : title;
+        return `<span class="agent-chat-frame-status is-bound" title="会话框：${escapeHtml(title)}">会话框 ✓ ${escapeHtml(short)}</span>`;
+    }
+    return '<span class="agent-chat-frame-status is-unbound" title="未绑定会话框（点「创建会话框」建框，生成节点自动排入）">会话框 —</span>';
 }
 
 // E2：agent 卡「参考」按钮文案——解绑态「参考」，绑定态「参考 ×N」（N = 绑定框素材数）。
@@ -1603,12 +1623,13 @@ function agentRefFrameCycle(agentId, buttonEl){
 function agentHeadActionButtonsHtml(node){
     const id = escapeAttr(node.id);
     const hasChatFrame = Boolean(agentChatFrameGroup(node));
-    const chatTitle = hasChatFrame ? '会话框（点击跳转）' : '创建会话框';
+    // 监理钉B2：文字钮直接说明动作——未绑定「创建会话框」、已绑定「打开会话框」（点击跳转）。
+    const chatLabel = hasChatFrame ? '打开会话框' : '创建会话框';
     const frame = agentRefFrameGroup(node);
     const refTitle = frame
         ? `参考框：${frame.title || '智能分组'}（${agentRefFrameAssetCount(frame)} 个素材），点击切换下一个`
         : '绑定参考框（循环所有参考框）';
-    const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatTitle)}" aria-label="${escapeHtml(chatTitle)}">${agentIco('message-square')}${hasChatFrame ? '<span class="agent-chat-frame-check">✓</span>' : ''}</button>`;
+    const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatLabel)}" aria-label="${escapeHtml(chatLabel)}">${escapeHtml(chatLabel)}</button>`;
     const refBtn = `<button type="button" class="agent-tui-btn agent-ref-frame-btn${frame ? ' agent-tui-btn-active' : ''}" data-agent-ref-frame="${id}" title="${escapeHtml(refTitle)}" aria-label="${escapeHtml(refTitle)}">${escapeHtml(agentRefFrameButtonLabel(node))}</button>`;
     return chatBtn + refBtn;
 }
