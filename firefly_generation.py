@@ -656,6 +656,18 @@ def route_video_generation(
     )
 
 
+def _capability_option_match(value: Any, options: Iterable[Any]) -> bool:
+    """档位比对按大小写不敏感：model_specs 的展示值是 `2K`/`HD`，服务商能力表里常写 `2k`/`hd`。
+
+    两者本来指同一档，精确比对会把合法请求误判为“不兼容参数”而 400（#330 的 MiniMax 2K/4K 就撞过）。
+    这里只放宽大小写，不做模糊匹配：不在列表里的值照样判不兼容。
+    """
+    if value is None:
+        return True
+    wanted = str(value).strip().casefold()
+    return any(str(option).strip().casefold() == wanted for option in options)
+
+
 def _incompatible_common_parameters(request: Mapping[str, Any], capability: Mapping[str, Any]) -> list[str]:
     incompatible: list[str] = []
     media_types = capability.get("media_types") or []
@@ -664,18 +676,18 @@ def _incompatible_common_parameters(request: Mapping[str, Any], capability: Mapp
 
     sizes = capability.get("sizes") or []
     requested_size = request.get("size")
-    size_supported = bool(capability.get("arbitrary_size") or "*" in sizes or (requested_size is None) or requested_size in sizes)
+    size_supported = bool(capability.get("arbitrary_size") or "*" in sizes or _capability_option_match(requested_size, sizes))
     if not size_supported:
         incompatible.append("size")
 
     aspect_ratios = capability.get("aspect_ratios") or []
     requested_aspect_ratio = request.get("aspect_ratio")
-    if requested_aspect_ratio is not None and not capability.get("arbitrary_aspect_ratio") and "*" not in aspect_ratios and requested_aspect_ratio not in aspect_ratios:
+    if requested_aspect_ratio is not None and not capability.get("arbitrary_aspect_ratio") and "*" not in aspect_ratios and not _capability_option_match(requested_aspect_ratio, aspect_ratios):
         incompatible.append("aspect_ratio")
 
     resolutions = capability.get("resolutions") or []
     requested_resolution = request.get("resolution")
-    if requested_resolution is not None and not capability.get("arbitrary_resolution") and "*" not in resolutions and requested_resolution not in resolutions:
+    if requested_resolution is not None and not capability.get("arbitrary_resolution") and "*" not in resolutions and not _capability_option_match(requested_resolution, resolutions):
         incompatible.append("resolution")
 
     for key, minimum_key, maximum_key in (
