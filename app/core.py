@@ -152,7 +152,7 @@ LOAD_LOCK = Lock()
 NEXT_TASK_ID = 1
 UPDATE_LOCK = Lock()
 PROVIDER_ID_RE = re.compile('^[a-zA-Z0-9_-]{2,40}$')
-SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'codex'}
+SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'codex', 'minimax'}
 # #236 即梦整体剔除：存量配置里的 jimeng 服务商条目在加载时一并清除（与 modelscope/runninghub 同机制）。
 REMOVED_PROVIDER_IDS = {'modelscope', 'runninghub', 'jimeng'}
 SUPPORTED_IMAGE_REQUEST_MODES = {'openai', 'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'}
@@ -173,6 +173,10 @@ CODEX_DEFAULT_IMAGE_MODELS = ['gpt-image-2']
 CODEX_DEFAULT_CHAT_MODELS = ['gpt-5.4']
 GEMINI_CLI_DEFAULT_IMAGE_MODELS = ['auto']
 GEMINI_CLI_DEFAULT_CHAT_MODELS = ['auto']
+# #330: MiniMax H3 Image（国内站 platform.minimaxi.com）。默认 base 取官方文档值
+# api.minimax.cn；实测 api.minimaxi.com 也能认证（前端占位提示里给作备选）。
+MINIMAX_DEFAULT_BASE_URL = 'https://api.minimax.cn'
+MINIMAX_DEFAULT_IMAGE_MODELS = ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed']
 try:
     CODEX_DEFAULT_TIMEOUT = max(30, min(3600, int(os.getenv('CODEX_CLI_TIMEOUT', '900'))))
 except Exception:
@@ -601,8 +605,17 @@ def bearer_auth_value(value):
     token = strip_auth_scheme(value, 'Bearer')
     return f'Bearer {token}' if token else ''
 
+def minimax_default_provider():
+    # #330: 内置 MiniMax 预设——用户只填 Key，端点/模型可改（端点走
+    # image_generation_endpoint / image_edit_endpoint 覆盖机制，本地部署兼容口）。
+    # 能力位：H3 比例整数 1–300 且 1:3–3:1，画布标准 11 比例全部合法；
+    # 档位 1k/2k/4k 映射 area；参考图 1–16 张；size 恒为 auto（画布像素值不发送）。
+    minimax_aspect_ratios = ['1:1', '16:9', '9:16', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21']
+    minimax_image_models = list(MINIMAX_DEFAULT_IMAGE_MODELS)
+    return {'id': 'minimax', 'name': 'MiniMax（海螺）', 'base_url': MINIMAX_DEFAULT_BASE_URL, 'protocol': 'minimax', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': minimax_image_models, 'image_model_capabilities': {model: {'media_types': ['image'], 'sizes': ['*'], 'aspect_ratios': list(minimax_aspect_ratios), 'resolutions': ['1k', '2k', '4k'], 'max_reference_images': 16} for model in minimax_image_models}, 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': '', 'volcengine_region': ''}
+
 def default_api_providers():
-    return [{'id': 'volcengine', 'name': '火山引擎', 'base_url': VOLCENGINE_DEFAULT_BASE_URL, 'protocol': 'volcengine', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': [], 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': VOLCENGINE_DEFAULT_PROJECT_NAME, 'volcengine_region': VOLCENGINE_DEFAULT_REGION}]
+    return [{'id': 'volcengine', 'name': '火山引擎', 'base_url': VOLCENGINE_DEFAULT_BASE_URL, 'protocol': 'volcengine', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': [], 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': VOLCENGINE_DEFAULT_PROJECT_NAME, 'volcengine_region': VOLCENGINE_DEFAULT_REGION}, minimax_default_provider()]
 
 def merge_default_api_providers(providers, inject_missing=True):
     merged = [dict(item) for item in providers if str(item.get('id') or '').strip().lower() not in REMOVED_PROVIDER_IDS]
@@ -624,6 +637,18 @@ def merge_default_api_providers(providers, inject_missing=True):
             current['protocol'] = 'volcengine'
             current['volcengine_project_name'] = str(current.get('volcengine_project_name') or VOLCENGINE_DEFAULT_PROJECT_NAME).strip() or VOLCENGINE_DEFAULT_PROJECT_NAME
             current['volcengine_region'] = str(current.get('volcengine_region') or VOLCENGINE_DEFAULT_REGION).strip() or VOLCENGINE_DEFAULT_REGION
+    minimax_default = next((d for d in default_api_providers() if d['id'] == 'minimax'), None)
+    if minimax_default:
+        # #330: MiniMax 预设随「API 平台」自带（与 volcengine 同机制：空列表注入，
+        # 已有条目只补默认 base_url / 协议，不覆盖用户改过的端点和模型）。
+        current = next((item for item in merged if item.get('id') == 'minimax'), None)
+        if not current:
+            if inject_missing:
+                merged.append(dict(minimax_default))
+        else:
+            if not current.get('base_url'):
+                current['base_url'] = minimax_default['base_url']
+            current['protocol'] = 'minimax'
     for current in merged:
         current_protocol = str((current or {}).get('protocol') or '').strip().lower()
         if current_protocol not in {'codex', 'gemini-cli'}:
@@ -2398,6 +2423,10 @@ def is_gemini_provider(provider):
 
 def is_volcengine_provider(provider):
     return provider_protocol(provider) == 'volcengine'
+
+def is_minimax_provider(provider):
+    # #330: MiniMax H3 Image（国内站）独立协议——请求/响应形状与 OpenAI images 不同，不复用 openai 模式。
+    return provider_protocol(provider) == 'minimax'
 
 def is_runninghub_provider(provider):
     return provider_protocol(provider) == 'runninghub' or str((provider or {}).get('id') or '').strip().lower() == 'runninghub'

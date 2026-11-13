@@ -28,7 +28,8 @@ CLI_PROTOCOLS = {"codex", "gemini-cli"}
 # #236 即梦整体剔除：CLI 视频链路随之清零（原唯一成员 jimeng），在线视频协议不受影响。
 VIDEO_CLI_PROTOCOLS = set()
 VIDEO_EXECUTION_PROTOCOLS = {"openai", "apimart", "volcengine", "runninghub"} | VIDEO_CLI_PROTOCOLS
-FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "runninghub"}
+# #330: MiniMax 的请求/响应形状是协议内生的（H3 images），不允许 model_protocols 逐模型改协议。
+FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "runninghub", "minimax"}
 # 服务商文档（gpt-best.apifox.cn api-341817446 / api-420361512）：nano-banana 与
 # nano-banana-pro（gemini-3-pro-image-preview）的基础宽高比。
 # 21:9 与其镜像 9:21 一起支持（服务商档位 1280x544 / 544x1280 成对存在）。
