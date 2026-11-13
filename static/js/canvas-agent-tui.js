@@ -722,6 +722,67 @@ async function showForkPicker(nodeId, projectId) {
     }
 }
 
+// #325 票 G：外部 CLI 接管。命令文本由服务端 snippet 端点生成（端口/基址取运行时值，
+// #279 同源要求），前端只拉取+展示+复制，不自行拼接 URL。
+async function fetchAgentCliSnippet(nodeId, projectId) {
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/external-cli-snippet?node=${encodeURIComponent(nodeId)}`);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return await response.json();
+    } catch (e) {
+        console.error('Failed to get CLI snippet:', e);
+        return null;
+    }
+}
+
+function agentCliSnippetDialogHtml(data) {
+    const rows = [
+        ['codex', 'Codex CLI', data.codex_cmd],
+        ['claude', 'Claude Code', data.claude_cmd],
+    ].map(([key, label, cmd]) => `
+        <div class="agent-cli-row">
+            <div class="agent-cli-label">${escapeHtml(label)}</div>
+            <textarea class="agent-cli-cmd agent-cli-${key}-cmd" readonly rows="2" spellcheck="false">${escapeHtml(String(cmd || ''))}</textarea>
+            <button type="button" class="agent-tui-btn" data-agent-cli-copy="${key}">复制</button>
+        </div>`).join('');
+    return `<h3>由外部 CLI 接管本节点</h3>
+        <div class="agent-cli-note">外部 CLI 经 MCP 连到本节点（与画布内 Agent 共享同一节点会话归属）。粘贴到终端执行：</div>
+        ${rows}
+        <form method="dialog" class="agent-fork-actions"><button value="close" class="primary">关闭</button></form>`;
+}
+
+async function showAgentCliTakeover(nodeId, projectId) {
+    const data = await fetchAgentCliSnippet(nodeId, projectId);
+    if (!data) return;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'agent-cli-dialog';
+    dlg.innerHTML = agentCliSnippetDialogHtml(data);
+    dlg.addEventListener('click', event => {
+        const btn = event.target && event.target.closest ? event.target.closest('[data-agent-cli-copy]') : null;
+        if (!btn) return;
+        const key = btn.getAttribute('data-agent-cli-copy');
+        const cmd = key === 'codex' ? data.codex_cmd : data.claude_cmd;
+        const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(cmd).then(done, () => { fallbackCopy(dlg, key); done(); });
+        } else {
+            fallbackCopy(dlg, key);
+            done();
+        }
+    });
+    function fallbackCopy(dlg, key) {
+        const ta = dlg.querySelector(`.agent-cli-${key}-cmd`);
+        if (!ta) return;
+        ta.removeAttribute('readonly');
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        ta.setAttribute('readonly', '');
+    }
+    dlg.addEventListener('close', () => dlg.remove());
+    document.body.appendChild(dlg);
+    dlg.showModal();
+}
+
 function sendAgentConfirm(nodeId, projectId, approved) {
     const state = getAgentTuiState(nodeId);
     if (!state.confirm) return;
@@ -1038,6 +1099,8 @@ function agentNodeBodyHtml(node) {
 
     // Fork button
     const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉" aria-label="从历史轮次分叉">${agentIco('git-branch')}</button>`;
+    // #325 票 G：外部 CLI 接管入口（弹层命令由服务端 snippet 端点生成）。
+    const cliButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-cli" data-agent-cli="${escapeAttr(nodeId)}" title="由外部 CLI 接管（codex/claude）" aria-label="由外部 CLI 接管">${agentIco('terminal')}</button>`;
 
     // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
@@ -1071,6 +1134,7 @@ function agentNodeBodyHtml(node) {
                 ${autonomySelectHtml}
                 ${branchSelectHtml}
                 ${forkButtonHtml}
+                ${cliButtonHtml}
             </span>
         </div>
         ${agentReconnectBannerHtml(state)}
@@ -1371,6 +1435,16 @@ function bindAgentNodeControls(el, node){
         forkBtn.addEventListener('click', event => {
             event.stopPropagation();
             showForkPicker(nodeId, projectId);
+        });
+    }
+
+    // #325 票 G：外部 CLI 接管按钮（fetch 异步，失败已在 fetchAgentCliSnippet 内 console.error）。
+    const cliBtn = el.querySelector('[data-agent-cli]');
+    if (cliBtn) {
+        cliBtn.addEventListener('mousedown', event => event.stopPropagation());
+        cliBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            showAgentCliTakeover(nodeId, projectId);
         });
     }
 

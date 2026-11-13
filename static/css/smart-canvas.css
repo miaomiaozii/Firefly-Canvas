@@ -3703,6 +3703,19 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-fork-dialog button.primary { background: #3d59a1; border-color: #565f89; color: #c0caf5; }
 .agent-fork-dialog button:hover { filter: brightness(1.15); }
 
+/* #325 票 G：外部 CLI 接管弹层（与 fork 弹窗同体系） */
+.agent-cli-dialog { border: 1px solid #3b4261; background: #1a1b26; color: #c0caf5; border-radius: 10px; padding: 16px 18px; min-width: 420px; max-width: 620px; font-family: inherit; }
+.agent-cli-dialog::backdrop { background: rgba(10, 12, 22, .55); }
+.agent-cli-dialog h3 { margin: 0 0 6px; font-size: 14px; color: #a9b1d6; font-weight: 600; }
+.agent-cli-dialog .agent-cli-note { font-size: 12px; color: #565f89; margin-bottom: 10px; line-height: 1.5; }
+.agent-cli-dialog .agent-cli-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
+.agent-cli-dialog .agent-cli-label { grid-column: 1 / -1; font-size: 12px; color: #9aa5ce; }
+.agent-cli-dialog textarea.agent-cli-cmd { grid-column: 1; width: 100%; box-sizing: border-box; background: #24283b; border: 1px solid #3b4261; color: #c0caf5; border-radius: 6px; padding: 6px 8px; font-size: 11px; font-family: Consolas, Menlo, monospace; resize: vertical; line-height: 1.45; }
+.agent-cli-dialog button { background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+.agent-cli-dialog button:hover { filter: brightness(1.15); }
+.agent-cli-dialog .agent-fork-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.agent-cli-dialog .agent-fork-actions button.primary { background: #3d59a1; border-color: #565f89; color: #c0caf5; }
+
 .agent-tui-header {
     display: flex;
     align-items: center;

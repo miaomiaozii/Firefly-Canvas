@@ -116,6 +116,35 @@ async def stop_agent_node(
     return {"success": True, "node_id": node_id, "status": "stopped"}
 
 
+@router.get("/external-cli-snippet")
+async def external_cli_snippet(
+    project_id: str,
+    node: str = Query(default="", max_length=200),
+    x_agent_project: str = Header(default=""),
+):
+    """#325 票 G（spec P5）：外部 CLI 接管命令 snippet。
+
+    基址取 server 运行时实际监听值（resolve_agent_api_base：
+    FIREFLY_AGENT_API_BASE → FIREFLY_PORT → 3000，#279 同源要求，禁硬编码）。
+    与 P1 的 &node= 绑定共用：外部 CLI 会话绑定到该节点（ADR 0022 三级仲裁）。
+    """
+    if not node:
+        raise HTTPException(status_code=400, detail="node query parameter is required")
+    _find_node(project_id, node)  # 404 for missing project/node
+    from app.services.agent_host import resolve_agent_api_base
+    base = resolve_agent_api_base().rstrip("/")
+    mcp_url = f"{base}/api/mcp?project={project_id}&node={node}"
+    codex_cmd = f"codex exec -c 'mcp_servers.firefly.url=\"{mcp_url}\"' \"列出画布节点\""
+    claude_cmd = f"claude mcp add --transport http firefly \"{mcp_url}\""
+    return {
+        "success": True,
+        "node_id": node,
+        "mcp_url": mcp_url,
+        "codex_cmd": codex_cmd,
+        "claude_cmd": claude_cmd,
+    }
+
+
 @router.get("/{node_id}/status")
 async def get_agent_status(
     project_id: str,

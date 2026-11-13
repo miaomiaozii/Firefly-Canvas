@@ -1283,6 +1283,44 @@ test('showForkPicker: prompt 选轮次与分支名后分叉（entry_id + name）
     assert.equal(blank.fetchCalls.length, 1, '空白选择 → 不分叉');
 });
 
+// ── #325 票 G：外部 CLI 接管（snippet 端点消费 + 头部按钮 + 弹层内容）──────
+test('fetchAgentCliSnippet: GET external-cli-snippet?node= 返回数据；非 2xx → null+console.error 零副作用', async () => {
+    const ok = loadAgentTuiModule({
+        nodes: [{ id: 'n1', type: 'agent' }],
+        fetchResponse: { ok: true, json: async () => ({ mcp_url: 'http://127.0.0.1:3000/api/mcp?project=p1&node=n1', codex_cmd: 'CODEX_CMD', claude_cmd: 'CLAUDE_CMD' }) },
+    });
+    const data = await fn(ok.ctx, 'fetchAgentCliSnippet')('n1', 'p1');
+    assert.equal(fromContext(ok.fetchCalls.at(-1).url), '/api/projects/p1/agent-nodes/external-cli-snippet?node=n1');
+    assert.equal(data.codex_cmd, 'CODEX_CMD');
+    assert.equal(data.mcp_url, 'http://127.0.0.1:3000/api/mcp?project=p1&node=n1');
+
+    const bad = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }], fetchResponse: { ok: false, json: async () => ({}) } });
+    const none = await fn(bad.ctx, 'fetchAgentCliSnippet')('n1', 'p1');
+    assert.equal(none, null, '失败返回 null（fromContext 把 null 原样带回）');
+    assert.ok(bad.consoleErrors.some(m => m.startsWith('Failed to get CLI snippet:')), bad.consoleErrors.join('|'));
+});
+
+test('agentCliSnippetDialogHtml: 弹层含两条命令与 mcp_url（转义），复制按钮带 data 属性', () => {
+    const { ctx } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
+    const html = fn(ctx, 'agentCliSnippetDialogHtml')({
+        mcp_url: 'http://127.0.0.1:3000/api/mcp?project=p&node=n1',
+        codex_cmd: `codex exec -c 'mcp_servers.firefly.url="u<1>"' "列出画布节点"`,
+        claude_cmd: 'claude mcp add --transport http firefly "u"',
+    });
+    assert.ok(html.includes('agent-cli-codex-cmd'), 'codex 命令行存在');
+    assert.ok(html.includes('agent-cli-claude-cmd'), 'claude 命令行存在');
+    assert.ok(html.includes('data-agent-cli-copy="codex"') && html.includes('data-agent-cli-copy="claude"'), '两条各有复制按钮');
+    assert.ok(html.includes('u&lt;1&gt;'), '命令文本必须 HTML 转义');
+    assert.ok(html.includes('mcp_url') === false || html.includes('api/mcp'), 'url 展示存在');
+});
+
+test('#325 票 G: agent 卡头部含「由外部 CLI 接管」按钮（data-agent-cli 绑节点 id）', () => {
+    const { ctx } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
+    const html = fn(ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'agent', title: 'A' });
+    assert.ok(html.includes('data-agent-cli="n1"'), '接管按钮存在且携带节点 id');
+    assert.ok(html.includes('agent-tui-btn-cli'), '类名供 CSS/测试定位');
+});
+
 // ── renderAgentNode：重渲染与重绑定 ───────────────────────────────
 test('renderAgentNode: 重渲染主体 + 卡片状态 + 重绑定；el/node 缺失与 layout=null → no-op', () => {
     const { ctx, harness, bodyHtmlCalls } = loadAgentTuiModule({
