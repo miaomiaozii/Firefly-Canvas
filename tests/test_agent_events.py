@@ -92,6 +92,29 @@ class PersistenceTests(_Base):
         recs2 = self.read_log()
         assert [r["seq"] for r in recs2] == sorted({r["seq"] for r in recs2})  # 跨轮单调无复用
 
+    async def test_tool_duration_injected_live_and_log(self):
+        """#322 票 D：tool_execution_end 就地注入 duration_ms，live 与 events.jsonl 同带。"""
+        self.install_which(FAKE_CODEX)
+        s = await self.mgr.get_or_create_session("proj-ev", "node-ev")
+        s.agent_cli = "codex"
+        seen = []
+        self.mgr.on_event(s, lambda sess, ev: seen.append(dict(ev)))
+        assert await self.mgr.spawn_session(s)
+        await self.mgr.send_prompt(s, "跑个工具")
+        assert await self._wait_turn_done(s)
+        recs = self.read_log()
+        starts = [r["event"] for r in recs if r["event"]["type"] == "tool_execution_start"]
+        ends = [r["event"] for r in recs if r["event"]["type"] == "tool_execution_end"]
+        assert starts and ends, "stub 的 command_execution 对未映射为 tool 事件对"
+        for e in ends:
+            self.assertIsInstance(e.get("duration_ms"), int)
+            self.assertGreaterEqual(e["duration_ms"], 0)
+        live_ends = [e for e in seen if e.get("type") == "tool_execution_end"]
+        assert live_ends and all(isinstance(e.get("duration_ms"), int) for e in live_ends)
+        # todo_list 项→tool 事件对，终态 args 带打勾列表（checklist 数据源）
+        todo_ends = [e for e in ends if e.get("toolName") == "todo_list"]
+        assert todo_ends and todo_ends[0].get("args", {}).get("todos")
+
     async def test_seq_survives_manager_restart(self):
         self.install_which(FAKE_CODEX)
         s = await self.mgr.get_or_create_session("proj-ev", "node-ev")

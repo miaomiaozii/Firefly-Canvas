@@ -25,6 +25,22 @@ def main() -> int:
             f.write('FAKE LAST')
     if '--json' in args:
         print(json.dumps({"type": "thread.started", "thread_id": "fake-1"}))
+        # #322 票 D：tool 段事件对（command_execution + todo_list），供 duration/
+        # 分组/checklist 测试。
+        print(json.dumps({"type": "item.started", "item": {
+            "type": "command_execution", "id": "c1", "command": "echo hi",
+            "status": "in_progress"}}))
+        print(json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "id": "c1", "command": "echo hi",
+            "status": "completed", "exit_code": 0, "aggregated_output": "hi"}}))
+        print(json.dumps({"type": "item.started", "item": {
+            "type": "todo_list", "id": "t1", "status": "in_progress",
+            "todos": [{"content": "步骤一", "status": "in_progress"},
+                      {"content": "步骤二", "status": "pending"}]}}))
+        print(json.dumps({"type": "item.completed", "item": {
+            "type": "todo_list", "id": "t1", "status": "completed",
+            "todos": [{"content": "步骤一", "status": "completed"},
+                      {"content": "步骤二", "status": "completed"}]}}))
         print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "FAKE LAST"}}))
         print(json.dumps({"type": "turn.completed", "usage": {
             "input_tokens": 42, "output_tokens": 7, "cached_input_tokens": 3}}))

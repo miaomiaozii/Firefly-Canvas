@@ -343,9 +343,10 @@ test('handleAgentEvent: 工具活动 running→done/error，update 只挂到已�
     assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
     handle('n1', { type: 'tool_execution_update', toolCallId: 'c1', update: { pct: 50 } });
     handle('n1', { type: 'tool_execution_update', toolCallId: 'missing', update: { pct: 1 } });
-    handle('n1', { type: 'tool_execution_end', toolCallId: 'c1', result: 'ok', isError: false });
+    handle('n1', { type: 'tool_execution_end', toolCallId: 'c1', result: 'ok', isError: false, duration_ms: 1500 });
     assert.deepEqual(fromContext(evaluate(ctx, 'Array.from(agentTuiState.get("n1").toolActivities.values())')), [
-        { name: 'write', status: 'done', args: { p: 1 }, result: 'ok', isError: false, update: { pct: 50 } },
+        // #322 票 D：start 新增 turn/duration_ms 字段；end 携带 duration_ms 则落盘
+        { name: 'write', status: 'done', args: { p: 1 }, result: 'ok', isError: false, update: { pct: 50 }, turn: 0, duration_ms: 1500 },
     ]);
     assert.equal(fromContext(evaluate(ctx, 'agentTuiState.get("n1").toolActivities.size')), 1,
         '未知 toolCallId 的 update 不能凭空建条目');
@@ -353,7 +354,7 @@ test('handleAgentEvent: 工具活动 running→done/error，update 只挂到已�
     handle('n2', { type: 'tool_execution_start', toolName: 'rm', toolCallId: 'c2' });
     handle('n2', { type: 'tool_execution_end', toolCallId: 'c2', result: 'boom', isError: true });
     assert.deepEqual(fromContext(evaluate(ctx, 'agentTuiState.get("n2").toolActivities.get("c2")')),
-        { name: 'rm', status: 'error', isError: true, result: 'boom' });
+        { name: 'rm', status: 'error', result: 'boom', isError: true, turn: 0, duration_ms: null });
 });
 
 test('handleAgentEvent: auto_retry_end 失败时置 error 并推系统消息，成功时回 busy', () => {
@@ -763,7 +764,11 @@ test('process_exited / socket.onclose 也要给末条流式消息定型（#222 �
     socket.onclose();
     let state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
     assert.equal('streaming' in state.messages[0], false, '断开后 messages 末条的流式标记必须清掉');
-    assert.equal('streaming' in state.thinking[0], false, 'thinking 末条也要清，否则下轮 thinking 续写进旧块');
+    // #322 票 D：finalize 现在把本轮 thinking 归档成 role=thinking 消息（inline 折叠），
+    // 不再保留 state.thinking 条目——两条旧症状（流式续写/历史堆积）一并防。
+    assert.deepEqual(state.thinking, [], '归档后 state.thinking 清空');
+    const archived = state.messages.find(m => m.role === 'thinking');
+    assert.ok(archived && archived.text === '在想', 'thinking 必须归档进消息流');
 
     evaluate(ctx, `(() => {
         const state = getAgentTuiState("n1");
@@ -1017,15 +1022,61 @@ test('agentNodeBodyHtml: 模型/自治/分支下拉按节点真值选中最优�
     assert.ok(plain.includes('agent-tui-empty'), '空会话要有占位文案');
 });
 
-test('agentNodeBodyHtml: thinking 默认隐藏，thinkingVisible 打开后才渲染且转义', () => {
+test('agentNodeBodyHtml: #322 思考 inline 折叠——默认收起不展开，thinkingVisible=全展开，全转义', () => {
     const { ctx } = loadAgentTuiModule();
     const body = fn(ctx, 'agentNodeBodyHtml');
     evaluate(ctx, 'const s = getAgentTuiState("n1"); s.thinking = [{text:"<i>私密</i>"}]');
-    assert.ok(!fromContext(body({ id: 'n1', type: 'agent' })).includes('agent-tui-thinking'));
+    const collapsed = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(collapsed.includes('agent-tui-thought'), 'live thinking 必须渲染为 inline details（默认收起）');
+    assert.ok(!collapsed.includes('agent-tui-thought agent-tui-thought-live" open'), '默认不得带 open');
+    assert.ok(collapsed.includes('&lt;i&gt;私密&lt;/i&gt;'), collapsed);
     evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible = true');
+    const opened = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(opened.includes('agent-tui-thought agent-tui-thought-live" open'), opened);
+    // 已归档思考（role=thinking 消息）同样 inline details，默认收起
+    evaluate(ctx, 'getAgentTuiState("n1").thinking = []; getAgentTuiState("n1").thinkingVisible = false; getAgentTuiState("n1").messages.push({role:"thinking", text:"旧思考<b>"})');
+    const arc = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(arc.includes('<details class="agent-tui-thought">'), arc);
+    assert.ok(arc.includes('旧思考&lt;b&gt;'), arc);
+});
+
+test('agentNodeBodyHtml: #322 工具段按轮分组折叠（已执行 N 步 · 总 X.Xs）+ 耗时展示', () => {
+    const { ctx } = loadAgentTuiModule();
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    evaluate(ctx, `(() => {
+        const s = getAgentTuiState("n1"); s._turnSeq = 1;
+        s.toolActivities.set("a1", {name:"shell",status:"done",args:{command:"ls"},result:"ok",isError:false,turn:1,duration_ms:1200});
+        s.toolActivities.set("a2", {name:"read",status:"done",args:{path:"x"},result:"f",isError:false,turn:1,duration_ms:300});
+        s.toolActivities.set("b1", {name:"shell",status:"done",args:null,result:"y",isError:false,turn:2,duration_ms:500});
+    })()`);
     const html = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.ok(html.includes('agent-tui-thinking'), html);
-    assert.ok(html.includes('&lt;i&gt;私密&lt;/i&gt;'), html);
+    assert.ok(html.includes('data-tool-group="1"'), html);
+    assert.ok(html.includes('已执行 2 步 · 总 1.5s'), html);
+    assert.ok(html.includes('data-tool-group="2"'), html);
+    assert.ok(html.includes('已执行 1 步 · 总 0.5s'), html);
+    assert.ok(html.includes('agent-tui-tool-duration">1.2s'), html);
+    // 运行中的段：默认展开且文案切换
+    evaluate(ctx, 'getAgentTuiState("n1").toolActivities.set("c9", {name:"shell",status:"running",args:null,result:null,isError:false,turn:3,duration_ms:null})');
+    const running = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(running.includes(' open data-tool-group="3"'), running);
+    assert.ok(running.includes('执行中 1 步…'), running);
+});
+
+test('agentNodeBodyHtml: #322 todo 工具卡渲染 checklist（☐/▶/☑），无列表数据不渲染', () => {
+    const { ctx } = loadAgentTuiModule();
+    const body = fn(ctx, 'agentNodeBodyHtml');
+    evaluate(ctx, `(() => {
+        const s = getAgentTuiState("n1"); s._turnSeq = 1;
+        s.toolActivities.set("t1", {name:"todo_list",status:"done",args:{todos:[{content:"甲",status:"completed"},{content:"乙",status:"in_progress"},{content:"丙",status:"pending"}]},result:null,isError:false,turn:1,duration_ms:10});
+    })()`);
+    const html = fromContext(body({ id: 'n1', type: 'agent' }));
+    // #322 票 D：codex 宿主实发名 todo_list（adapter 直传 item type）也要渲染 checklist
+    assert.ok(html.includes('agent-tui-checklist-item'), html);
+    assert.ok(html.includes('☑') && html.includes('▶') && html.includes('☐'), html);
+    assert.ok(html.includes('甲') && html.includes('乙'), html);
+    evaluate(ctx, 'getAgentTuiState("n1").toolActivities.set("t1", {name:"todo_list",status:"done",args:{},result:null,isError:false,turn:1,duration_ms:10})');
+    const empty = fromContext(body({ id: 'n1', type: 'agent' }));
+    assert.ok(!empty.includes('agent-tui-checklist-item'), '无来源不显示（不造假）');
 });
 
 // ── agent-task 只读卡 ───────────────────────────────────────────────

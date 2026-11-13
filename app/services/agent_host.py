@@ -495,6 +495,17 @@ class AgentHostManager:
 
     async def _dispatch_event(self, session: AgentSession, event: dict):
         """Dispatch an event to all registered handlers."""
+        # #322 票 D：工具耗时——start 记 monotonic 时锟，end 就地注入 duration_ms，
+        # 在 _persist_event 之前 ⇒ live WS 与 events.jsonl 回放都带耗时（单一注入点）。
+        _etype = event.get("type", "")
+        if _etype == "tool_execution_start":
+            session._tool_ts = getattr(session, "_tool_ts", {})
+            session._tool_ts[event.get("toolCallId", "")] = time.monotonic()
+        elif _etype == "tool_execution_end":
+            _ts_map = getattr(session, "_tool_ts", {})
+            _t0 = _ts_map.pop(event.get("toolCallId", ""), None)
+            if _t0 is not None:
+                event["duration_ms"] = round((time.monotonic() - _t0) * 1000)
         # #318 票 C：单一 fan-out——先持久化（就地注入 seq，WS 广播 payload 自动带
         # seq，前端去重/续拉按 seq），再分发。best-effort，永不阻断实时流。
         self._persist_event(session, event)

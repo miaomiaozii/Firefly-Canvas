@@ -188,6 +188,13 @@ function finalizeAgentStreamingTurn(state){
     const thinking = state.thinking || [];
     const lastThinking = thinking[thinking.length - 1];
     if (lastThinking && lastThinking.streaming) delete lastThinking.streaming;
+    // #322 票 D：turn 边界把本轮 thinking 归档进消息流（时序位置），下次渲染成
+    // inline「思考 ▸」折叠；当前轮进行中的仍走实时 thinking 区。
+    const turnThinkingText = thinking.map(t => t.text || '').join('');
+    if (turnThinkingText) {
+        state.messages.push({ role: 'thinking', text: turnThinkingText });
+        state.thinking = [];
+    }
 }
 
 // #318 票 C：事件回放。WS session 确认事件后拉 GET events?since=lastSeq 重建：
@@ -269,6 +276,7 @@ function applyAgentEventBody(nodeId, event) {
             break;
         case 'agent_start':
             state.status = 'busy';
+            state._turnSeq = (state._turnSeq || 0) + 1; // #322 票 D：工具段分组边界
             break;
         case 'agent_end':
             state.status = 'idle';
@@ -342,6 +350,8 @@ function applyAgentEventBody(nodeId, event) {
                 args: event.args,
                 result: null,
                 isError: false,
+                turn: state._turnSeq || 0, // #322：连续 tool 段按轮分组
+                duration_ms: null,
             });
             state.status = 'busy';
             break;
@@ -361,6 +371,9 @@ function applyAgentEventBody(nodeId, event) {
                 activity.status = event.isError ? 'error' : 'done';
                 activity.result = event.result;
                 activity.isError = event.isError;
+                if (Number.isFinite(Number(event.duration_ms))) {
+                    activity.duration_ms = Number(event.duration_ms); // #322：live+回放都带
+                }
             }
             break;
         }
@@ -879,13 +892,11 @@ function agentNodeBodyHtml(node) {
     // Determine status indicator
     let { statusClass, statusText } = agentStatusPresentation(state);
 
-    // Render thinking (hidden by default, toggleable via 💭 button)
+    // #322 票 D：当前轮进行中的 thinking——inline details，默认收起（💭=全展开）。
     let thinkingHtml = '';
-    if (state.thinkingVisible && state.thinking && state.thinking.length > 0) {
-        const thinkingText = state.thinking.map(t => t.text || '').join('');
-        if (thinkingText) {
-            thinkingHtml = `<div class="agent-tui-thinking"><span class="agent-tui-thinking-label">${agentIco('brain')} thinking</span><div class="agent-tui-thinking-text">${escapeHtml(thinkingText)}</div></div>`;
-        }
+    const liveThinkingText = (state.thinking || []).map(t => t.text || '').join('');
+    if (liveThinkingText) {
+        thinkingHtml = `<details class="agent-tui-thought agent-tui-thought-live"${state.thinkingVisible ? ' open' : ''}><summary>${agentIco('brain')} 思考</summary><div class="agent-tui-thinking-text">${escapeHtml(liveThinkingText)}</div></details>`;
     }
 
     // Render messages
@@ -900,34 +911,82 @@ function agentNodeBodyHtml(node) {
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</span></div>`;
+        } else if (msg.role === 'thinking') {
+            // #322 票 D：已归档思考——inline 折叠，默认收起
+            messagesHtml += `<details class="agent-tui-thought"${state.thinkingVisible ? ' open' : ''}><summary>${agentIco('brain')} 思考</summary><div class="agent-tui-thinking-text">${escapeHtml(msg.text)}</div></details>`;
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         }
     }
 
-    // Render tool activities (collapsible)
+    // #322 票 D：tool 活动按轮分组折叠「已执行 N 步 · 总 X.Xs ▸」，展开复用原卡；
+    // todo 类工具改渲染 checklist（无数据不显示，不造假）；长输出 >300px CSS 截断+
+    // 卡内「展开全文」二级开关（scope-add #322）。
     let toolsHtml = '';
+    // codex 宿主实发名是 todo_list（codex_adapter 直传 item type），必须覆盖。
+    const isTodoTool = (name) => /^(todo|write_todos|todowrite|todo_list)$/i.test(String(name || ''));
+    const checklistHtml = (args) => {
+        const items = args && (args.todos || args.updates);
+        if (!Array.isArray(items) || !items.length) return '';
+        return `<div class="agent-tui-checklist">` + items.map(it => {
+            const st = it && it.status === 'completed' ? '☑'
+                : (it && it.status === 'in_progress' ? '▶' : '☐');
+            const done = it && it.status === 'completed' ? ' done' : '';
+            const body = String((it && (it.content || it.subject || it.text)) || '');
+            return `<div class="agent-tui-checklist-item${done}"><span class="agent-tui-checklist-mark">${st}</span> ${escapeHtml(body)}</div>`;
+        }).join('') + `</div>`;
+    };
+    const toolGroups = [];
     for (const [toolCallId, activity] of state.toolActivities) {
-        let icon = agentIco('settings');
-        if (activity.status === 'done') icon = agentIco('check');
-        else if (activity.status === 'error') icon = agentIco('x');
-        else if (activity.status === 'running') icon = agentIco('hourglass');
-
-        const argsPreview = activity.args ? JSON.stringify(activity.args).slice(0, 80) : '';
-        const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
-        const resultPreview = activity.result ? String(activity.result).slice(0, 120) : '';
-        const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
-        toolsHtml += `<div class="agent-tui-tool${expandedClass}" data-tool-call-id="${escapeAttr(toolCallId)}">
-            <div class="agent-tui-tool-header">
-                <span class="agent-tui-tool-toggle">${agentIco(activity.expanded ? 'chevron-down' : 'chevron-right')}</span>
-                <span class="agent-tui-tool-icon">${icon}</span>
-                <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
-            </div>
-            <div class="agent-tui-tool-details">
-                ${argsFull ? `<div class="agent-tui-tool-args"><pre>${escapeHtml(argsFull)}</pre></div>` : ''}
-                ${resultPreview ? `<div class="agent-tui-tool-result"><pre>${escapeHtml(resultPreview)}</pre></div>` : ''}
-            </div>
-        </div>`;
+        const gkey = activity.turn || 0;
+        const lastG = toolGroups[toolGroups.length - 1];
+        if (lastG && lastG.turn === gkey) lastG.items.push({ toolCallId, activity });
+        else toolGroups.push({ turn: gkey, items: [{ toolCallId, activity }] });
+    }
+    for (const group of toolGroups) {
+        const n = group.items.length;
+        const running = group.items.some(i => i.activity.status === 'running');
+        const errN = group.items.filter(i => i.activity.status === 'error').length;
+        const totalMs = group.items.reduce((s, i) => s + (i.activity.duration_ms || 0), 0);
+        // 耗时已知但为 0ms（亚毫秒工具）也要展示——票面要求「展开含耗时」，缺失才省略。
+        const totalKnown = group.items.some(i => Number.isFinite(i.activity.duration_ms));
+        const groupOpen = running || Boolean(state.toolGroupExpanded && state.toolGroupExpanded[group.turn]);
+        let groupSummary = running
+            ? `执行中 ${n} 步…`
+            : `已执行 ${n} 步` + (totalKnown ? ` · 总 ${(totalMs / 1000).toFixed(1)}s` : '')
+              + (errN ? ` · ${errN} 失败` : '');
+        let cardsHtml = '';
+        for (const { toolCallId, activity } of group.items) {
+            let icon = agentIco('settings');
+            if (activity.status === 'done') icon = agentIco('check');
+            else if (activity.status === 'error') icon = agentIco('x');
+            else if (activity.status === 'running') icon = agentIco('hourglass');
+            const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
+            const resultFull = activity.result != null ? String(activity.result) : '';
+            const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
+            const durationHtml = Number.isFinite(activity.duration_ms)
+                ? `<span class="agent-tui-tool-duration">${(activity.duration_ms / 1000).toFixed(1)}s</span>` : '';
+            const longOutput = resultFull.length > 600 || (resultFull.split('\n').length > 12);
+            const expandBtn = (longOutput && activity.status !== 'running')
+                ? `<button type="button" class="agent-tui-expand-output" data-expand-output="${escapeAttr(toolCallId)}">${activity.resultExpanded ? '收起' : '展开全文'}</button>` : '';
+            const resultClass = (longOutput && !activity.resultExpanded) ? ' agent-tui-tool-result-clamped' : '';
+            const todoHtml = isTodoTool(activity.name) ? checklistHtml(activity.args) : '';
+            cardsHtml += `<div class="agent-tui-tool${expandedClass}" data-tool-call-id="${escapeAttr(toolCallId)}">
+                <div class="agent-tui-tool-header">
+                    <span class="agent-tui-tool-toggle">${agentIco(activity.expanded ? 'chevron-down' : 'chevron-right')}</span>
+                    <span class="agent-tui-tool-icon">${icon}</span>
+                    <span class="agent-tui-tool-name">${escapeHtml(activity.name)}</span>
+                    ${durationHtml}
+                </div>
+                <div class="agent-tui-tool-details">
+                    ${todoHtml || (argsFull ? `<div class="agent-tui-tool-args"><pre>${escapeHtml(argsFull)}</pre></div>` : '')}
+                    ${resultFull ? `<div class="agent-tui-tool-result${resultClass}"><pre>${escapeHtml(resultFull)}</pre></div>${expandBtn}` : ''}
+                </div>
+            </div>`;
+        }
+        toolsHtml += `<details class="agent-tui-tool-group${running ? ' agent-tui-tool-group-running' : ''}"${groupOpen ? ' open' : ''} data-tool-group="${group.turn}">`
+            + `<summary><span class="agent-tui-tool-group-toggle">${agentIco(groupOpen ? 'chevron-down' : 'chevron-right')}</span><span class="agent-tui-tool-group-summary">${escapeHtml(groupSummary)}</span></summary>`
+            + `<div class="agent-tui-tool-group-items">${cardsHtml}</div></details>`;
     }
 
     // Render confirmation card if waiting for user decision
@@ -1137,6 +1196,30 @@ function bindAgentNodeControls(el, node){
             const activity = state.toolActivities.get(toolCallId);
             if (activity) {
                 activity.expanded = !activity.expanded;
+                renderAgentNode(nodeId);
+            }
+        });
+    });
+
+    // #322 票 D：工具段分组展开态持久在 state（重渲染不丢）
+    el.querySelectorAll('[data-tool-group]').forEach(groupEl => {
+        groupEl.addEventListener('mousedown', event => event.stopPropagation());
+        groupEl.addEventListener('toggle', () => {
+            const gState = getAgentTuiState(nodeId);
+            gState.toolGroupExpanded = gState.toolGroupExpanded || {};
+            gState.toolGroupExpanded[Number(groupEl.getAttribute('data-tool-group'))] = groupEl.open;
+        });
+    });
+
+    // #322 票 D：长输出「展开全文/收起」二级开关（scope-add）
+    el.querySelectorAll('[data-expand-output]').forEach(btn => {
+        btn.addEventListener('mousedown', event => event.stopPropagation());
+        btn.addEventListener('click', event => {
+            event.stopPropagation();
+            const gState = getAgentTuiState(nodeId);
+            const activity = gState.toolActivities.get(btn.getAttribute('data-expand-output'));
+            if (activity) {
+                activity.resultExpanded = !activity.resultExpanded;
                 renderAgentNode(nodeId);
             }
         });
