@@ -1,0 +1,212 @@
+"""本地 ComfyUI（MiniMax-H3-Image GGUF）工作流模板与尺寸映射。
+
+#331：画布把本地 ComfyUI 当成一个生图服务商协议 `comfyui`：提交 API 格式的图、
+轮询 /history、取 /view。工作流图以 Python 常量内置而不是外部 JSON 文件——
+`app/data/` 整目录被 .gitignore 忽略（只有 model_specs.json 例外），放那儿会丢。
+
+图结构取自实测可用的 9 节点模板（ComfyUI 0.45.2 + ComfyUI-GGUF）：
+    1 UnetLoaderGGUF → 7 KSampler.model
+    2 CLIPLoaderGGUF(type="minimax") → 4 MiniMaxH3ImageConditioning.clip
+    3 VAELoader → 4 .vae 与 8 VAEDecode.vae
+    4 → positive 给 5（ConditioningZeroOut 当 negative）与 7.positive；→ LATENT 给 7.latent_image
+    7 → 8 VAEDecode → 9 SaveImage
+节点 4 自己编码 latent，不需要 EmptyLatentImage；batch 恒为 1（模型硬性拒绝 batch>1）。
+"""
+import copy
+import math
+import random
+
+# 作者值：32B 蒸馏模型 6 步 / cfg 1.0 / euler+simple。别随手加到 20 步或抬 cfg。
+COMFYUI_H3_DEFAULT_STEPS = 6
+COMFYUI_H3_DEFAULT_CFG = 1.0
+COMFYUI_H3_DEFAULT_SAMPLER = 'euler'
+COMFYUI_H3_DEFAULT_SCHEDULER = 'simple'
+COMFYUI_H3_FILENAME_PREFIX = 'MiniMax-H3-Image/canvas'
+
+# 画布分辨率档 → 目标面积（MP）。1k 档就是模型地板 2048²（4 MP），再低会明显崩。
+COMFYUI_MP_TIERS = {'1k': 4.0, '2k': 8.0, '4k': 16.0}
+COMFYUI_DEFAULT_MP_TIER = '2k'
+# 边长步长 = 8：作者 ResolutionSelector 就是用 8 的倍数（节点 object_info 的 step 提示写的是 32，
+# 但实测作者那套 8 倍数尺寸（如 5016×3344、2512×1672）能直接提交）。改成 32 就对不上公开尺寸表了。
+COMFYUI_SIZE_STEP = 8
+# 参考图上限：节点 images 允许到 100，但画布一次传 16 张已经超出模型的有效参考能力。
+COMFYUI_MAX_REFERENCES = 16
+
+COMFYUI_H3_T2I_WORKFLOW = {
+    '1': {
+        'class_type': 'UnetLoaderGGUF',
+        'inputs': {'unet_name': 'MiniMax-H3-Image-Pruned-Q4_K_M.gguf'},
+        '_meta': {'title': 'MiniMax-H3-Image @unet'},
+    },
+    '2': {
+        'class_type': 'CLIPLoaderGGUF',
+        # type 只能是 minimax（32B 编码器唯一合法值），别改。
+        'inputs': {'clip_name': 'qwen3vl_32b_minimax_h3-Q4_K_M.gguf', 'type': 'minimax'},
+        '_meta': {'title': 'Qwen3-VL 32B text encoder'},
+    },
+    '3': {
+        'class_type': 'VAELoader',
+        'inputs': {'vae_name': 'minimax_h3_image_vae_fp16.safetensors'},
+        '_meta': {'title': 'MiniMax-H3-Image VAE'},
+    },
+    '4': {
+        'class_type': 'MiniMaxH3ImageConditioning',
+        'inputs': {
+            'clip': ['2', 0],
+            'vae': ['3', 0],
+            'prompt': '',
+            'width': 2048,
+            'height': 2048,
+        },
+        '_meta': {'title': 'Positive @prompt @size'},
+    },
+    '5': {
+        'class_type': 'ConditioningZeroOut',
+        'inputs': {'conditioning': ['4', 0]},
+        '_meta': {'title': 'negative'},
+    },
+    '7': {
+        'class_type': 'KSampler',
+        'inputs': {
+            'model': ['1', 0],
+            'positive': ['4', 0],
+            'negative': ['5', 0],
+            'latent_image': ['4', 1],
+            'seed': 0,
+            'steps': COMFYUI_H3_DEFAULT_STEPS,
+            'cfg': COMFYUI_H3_DEFAULT_CFG,
+            'sampler_name': COMFYUI_H3_DEFAULT_SAMPLER,
+            'scheduler': COMFYUI_H3_DEFAULT_SCHEDULER,
+            'denoise': 1.0,
+        },
+        '_meta': {'title': 'sampler'},
+    },
+    '8': {
+        'class_type': 'VAEDecode',
+        'inputs': {'samples': ['7', 0], 'vae': ['3', 0]},
+        '_meta': {'title': 'decode'},
+    },
+    '9': {
+        'class_type': 'SaveImage',
+        'inputs': {'images': ['8', 0], 'filename_prefix': COMFYUI_H3_FILENAME_PREFIX},
+        '_meta': {'title': 'Save Image @save'},
+    },
+}
+
+
+def comfyui_parse_aspect(value):
+    """解析 '3:2' / '3x2' / '3/2'；非法返回 (0, 0)。"""
+    text = str(value or '').strip().replace('：', ':')
+    if not text:
+        return (0.0, 0.0)
+    for sep in (':', 'x', 'X', '*', '/'):
+        if sep in text:
+            left, _, right = text.partition(sep)
+            try:
+                a, b = float(left), float(right)
+            except (TypeError, ValueError):
+                return (0.0, 0.0)
+            if a > 0 and b > 0:
+                return (a, b)
+            return (0.0, 0.0)
+    return (0.0, 0.0)
+
+
+def _comfyui_snap(value, step=COMFYUI_SIZE_STEP):
+    step = max(1, int(step or 1))
+    return max(step, int(round(float(value) / step)) * step)
+
+
+def comfyui_h3_resolution(aspect_ratio='', resolution='', size=''):
+    """把画布的比例 + 面积档换算成 ComfyUI 要的 width/height（8 的倍数）。
+
+    算法与作者 ResolutionSelector 一致：目标面积 = MP × 1024 × 1024，
+    先用比例反解宽、再取高，两边各自对齐 8。
+    实测对照（16 MP 档）：1:1→4096²、3:2→5016×3344、4:3→4728×3544、
+    16:9→5464×3072、21:9→6256×2680；8 MP 档 1:1→2896²；4 MP 档 1:1→2048²。
+    """
+    tier = str(resolution or '').strip().lower()
+    megapixels = COMFYUI_MP_TIERS.get(tier)
+    if megapixels is None:
+        megapixels = COMFYUI_MP_TIERS[COMFYUI_DEFAULT_MP_TIER]
+    ratio_a, ratio_b = comfyui_parse_aspect(aspect_ratio)
+    if not ratio_a or not ratio_b:
+        # 没有比例时退回画布给的像素尺寸（换算成同面积档，避免用户看到 512² 直接崩）
+        ratio_a, ratio_b = _comfyui_ratio_from_size(size)
+    area = megapixels * 1024 * 1024
+    width = _comfyui_snap(math.sqrt(area * ratio_a / ratio_b))
+    height = _comfyui_snap(width * ratio_b / ratio_a)
+    return (width, height)
+
+
+def _comfyui_ratio_from_size(size):
+    match = str(size or '').strip().lower().replace('*', 'x')
+    left, _, right = match.partition('x')
+    try:
+        width, height = float(left), float(right)
+    except (TypeError, ValueError):
+        return (1.0, 1.0)
+    if width <= 0 or height <= 0:
+        return (1.0, 1.0)
+    return (width, height)
+
+
+def comfyui_h3_seed(seed=None):
+    try:
+        value = int(seed)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        value = random.randint(1, 2 ** 31 - 1)
+    return int(value) % (2 ** 31)
+
+
+def comfyui_h3_workflow(
+    prompt,
+    width,
+    height,
+    seed=None,
+    steps=COMFYUI_H3_DEFAULT_STEPS,
+    cfg=COMFYUI_H3_DEFAULT_CFG,
+    sampler_name=COMFYUI_H3_DEFAULT_SAMPLER,
+    scheduler=COMFYUI_H3_DEFAULT_SCHEDULER,
+    filename_prefix=COMFYUI_H3_FILENAME_PREFIX,
+    reference_names=None,
+):
+    """在 9 节点模板上注入参数；给了参考图就挂 LoadImage 并接节点 4 的 images。
+
+    参考图走节点 4 的 autogrow 输入：`"images": {"image_1": [<节点>, 0], ...}`。
+    这个形状是实测出来的（文档没写），LoadImage 的 image 用 /upload/image 返回的 name。
+    """
+    graph = copy.deepcopy(COMFYUI_H3_T2I_WORKFLOW)
+    graph['4']['inputs'].update(
+        {
+            'prompt': str(prompt or ''),
+            'width': _comfyui_snap(width),
+            'height': _comfyui_snap(height),
+        }
+    )
+    graph['7']['inputs'].update(
+        {
+            'seed': comfyui_h3_seed(seed),
+            'steps': int(steps or COMFYUI_H3_DEFAULT_STEPS),
+            'cfg': float(cfg if cfg is not None else COMFYUI_H3_DEFAULT_CFG),
+            'sampler_name': str(sampler_name or COMFYUI_H3_DEFAULT_SAMPLER),
+            'scheduler': str(scheduler or COMFYUI_H3_DEFAULT_SCHEDULER),
+        }
+    )
+    if filename_prefix:
+        graph['9']['inputs']['filename_prefix'] = str(filename_prefix)
+    names = [str(name or '').strip() for name in (reference_names or []) if str(name or '').strip()]
+    if names:
+        wired = {}
+        for index, name in enumerate(names[:COMFYUI_MAX_REFERENCES], start=1):
+            node_id = f'ref{index}'
+            graph[node_id] = {
+                'class_type': 'LoadImage',
+                'inputs': {'image': name},
+                '_meta': {'title': f'reference {index}'},
+            }
+            wired[f'image_{index}'] = [node_id, 0]
+        graph['4']['inputs']['images'] = wired
+    return graph

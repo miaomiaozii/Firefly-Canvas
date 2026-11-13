@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (AGNES_DEFAULT_VIDEO_MODELS, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
+from app.core import (AGNES_DEFAULT_VIDEO_MODELS, COMFYUI_DEFAULT_BASE_URL, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
 _from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'api_key_from_payload', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'runninghub_models_payload', 'save_api_providers', 'update_env_values', 'volcengine_provider_api_key']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -426,6 +426,26 @@ def apply_agnes_model_defaults(base_url, grouped, ids):
     grouped['video'] = sorted(set(grouped.get('video') or []))
     return (grouped, ids)
 
+async def comfyui_test_connection(payload):
+    """ComfyUI 没有 /v1/models，改探 /system_stats + 关键节点是否存在。"""
+    base_url = str(payload.base_url or COMFYUI_DEFAULT_BASE_URL or '').strip().rstrip('/')
+    if not base_url:
+        raise HTTPException(status_code=400, detail='请先填写 ComfyUI 请求地址')
+    if not re.match('^https?://', base_url):
+        raise HTTPException(status_code=400, detail='请求地址必须以 http:// 或 https:// 开头')
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            stats = await client.get(f'{base_url}/system_stats')
+            if stats.status_code >= 400:
+                return {'ok': False, 'status': stats.status_code, 'message': f'ComfyUI /system_stats 返回 {stats.status_code}：{stats.text[:200]}'}
+            nodes = await client.get(f'{base_url}/object_info/MiniMaxH3ImageConditioning')
+    except httpx.HTTPError as e:
+        return {'ok': False, 'status': 0, 'message': f'连不上 ComfyUI（{base_url}）：{str(e)[:200]}'}
+    if nodes.status_code != 200:
+        return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': f'ComfyUI 服务可用，但没找到 MiniMaxH3ImageConditioning 节点（{base_url}）：需要安装 MiniMax-H3-Image 自定义节点，否则生图会直接失败。'}
+    return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': 'ComfyUI 服务可用，已检测到 MiniMaxH3ImageConditioning 节点。'}
+
+
 @router.post('/api/providers/test-connection')
 async def test_provider_connection(payload: TestConnectionPayload):
     """测试请求地址是否可用：调上游 /v1/models。验证通过时同时把模型清单按类别返回，避免再调一次拉取接口。"""
@@ -444,6 +464,8 @@ async def test_provider_connection(payload: TestConnectionPayload):
         provider = {'id': 'runninghub', 'name': 'RunningHub', 'base_url': (payload.base_url or RUNNINGHUB_DEFAULT_BASE_URL).strip().rstrip('/'), 'protocol': 'runninghub', 'api_key': api_key_from_payload(payload, protocol)}
         payload_models = await runninghub_models_payload(provider)
         return {'ok': True, 'status': 200, 'message': 'RunningHub OpenAPI 可用，已拉取官方直连模型注册表。', 'model_count': payload_models['total'], 'image_models': payload_models['image_models'], 'chat_models': payload_models['chat_models'], 'video_models': payload_models['video_models'], 'all': payload_models['all'], 'protocol': 'runninghub', 'raw': payload_models.get('raw')}
+    if protocol == 'comfyui':
+        return await comfyui_test_connection(payload)
     base_url = (payload.base_url or '').strip().rstrip('/')
     if not base_url:
         raise HTTPException(status_code=400, detail='请先填写请求地址')

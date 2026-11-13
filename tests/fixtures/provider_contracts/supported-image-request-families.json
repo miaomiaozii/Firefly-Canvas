@@ -9,6 +9,7 @@
     "protocol:volcengine",
     "protocol:runninghub",
     "protocol:codex",
+    "protocol:comfyui",
     "openai-mode:openai-json",
     "openai-mode:openai-video-proxy",
     "openai-mode:openai-responses",
@@ -38,6 +39,10 @@
     ],
     "protocol:codex": [
       "tests.test_provider_contract_families.ProviderFamilyContractTests.test_codex_skill_preserves_ordered_duplicate_ref_image_arguments"
+    ],
+    "protocol:comfyui": [
+      "tests.test_comfyui_h3_image.ComfyEndToEndTests.test_text_to_image_roundtrip",
+      "tests.test_comfyui_h3_image.ComfyEndToEndTests.test_image_to_image_uploads_reference_first"
     ],
     "openai-mode:openai-json": [
       "tests.test_provider_contract_families.ProviderFamilyContractTests.test_openai_json_wrapper_preserves_ordered_duplicate_references"
@@ -93,6 +98,24 @@
     }
   ],
   "sources": [
+    {
+      "id": "comfyui-http-api",
+      "authority": "primary-documentation",
+      "url": "https://docs.comfy.org/development/comfyui-server/comms_routes",
+      "retrieved_at": "2026-11-14",
+      "supports": [
+        "ComfyUI /prompt, /history/{prompt_id}, /view, /upload/image and /queue HTTP routes"
+      ]
+    },
+    {
+      "id": "h3-local-workflow",
+      "authority": "local-observation",
+      "path": "app/services/comfyui_workflows.py",
+      "retrieved_at": "2026-11-14",
+      "supports": [
+        "MiniMax-H3-Image 9-node graph, ConditioningZeroOut negative, autogrow reference images, 8-pixel size step"
+      ]
+    },
     {
       "id": "openai-images",
       "authority": "primary-documentation",
@@ -1175,6 +1198,86 @@
           "images[].url"
         ]
       }
+    },
+  {
+    "key": "protocol:comfyui",
+    "status": "local-backend",
+    "boundary": "httpx.AsyncClient.post",
+    "request_shape": "ComfyUI API-format graph POSTed to /prompt, polled via /history/{prompt_id}, image fetched from /view; local references uploaded first to /upload/image",
+    "response_shape": {
+      "prompt_id": "string",
+      "outputs": {
+        "<node id>": {
+          "images": [
+            {
+              "filename": "string",
+              "subfolder": "string",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "status": {
+        "status_str": "success|error",
+        "completed": true,
+        "messages": []
+      }
+    },
+    "capability_matrix": {
+      "resolutions": [
+        "1k",
+        "2k",
+        "4k"
+      ],
+      "aspect_ratios": [
+        "1:1",
+        "16:9",
+        "2:3"
+      ],
+      "references": "ordered-with-duplicates"
+    },
+    "parameter_mapping": {
+      "prompt": "graph.4.inputs.prompt",
+      "aspect_ratio": "graph.4.inputs.width/height solved from area tier and ratio with an 8-pixel step",
+      "resolution": "area tier 4/8/16 MP, node 4 stays the only latent source",
+      "references": "graph.4.inputs.images image_1..N wired to LoadImage nodes in caller order"
+    },
+    "source_refs": [
+      "comfyui-http-api",
+      "h3-local-workflow"
+    ],
+    "final_request_golden": {
+      "method": "POST",
+      "url": "https://provider.invalid/v1/prompt",
+      "header_names": [],
+      "json": {
+        "prompt": {
+          "1": {
+            "class_type": "UnetLoaderGGUF"
+          },
+          "4": {
+            "class_type": "MiniMaxH3ImageConditioning",
+            "inputs": {
+              "prompt": "provider family contract prompt",
+              "width": 3864,
+              "height": 2176
+            }
+          },
+          "9": {
+            "class_type": "SaveImage"
+          }
+        },
+        "client_id": "canvas-<12 hex>"
+      },
+      "data": null,
+      "files": []
+    },
+    "transport_rules": {
+      "auth_header": "none (ComfyUI runs on 127.0.0.1)",
+      "polling": "/history/{prompt_id} until outputs appear or COMFYUI_IMAGE_TASK_TIMEOUT",
+      "retry": "never retried: one graph run is not idempotent and a timed-out run still burns a full GPU pass",
+      "reference_transport": "data URL / app-local media / http(s) -> POST /upload/image -> LoadImage name"
     }
+  }
   ]
 }
