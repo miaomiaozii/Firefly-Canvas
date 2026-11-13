@@ -1516,6 +1516,124 @@ function cleanupAgentTuiState(nodeId) {
     }
 }
 
+// ── #323 票 E：会话框（agent.chatFrameId）+ 参考框（group.refFrame / agent.refFrameId）───────────────────
+// 服务端只把它们当节点字段用（create_node_core 按 chatFrameId 落位；refFrame 由服务端从
+// canvas store 读）——前端负责字段写入 + UI。Refs #323。
+
+// Agent 的会话框（smart-group）。自愈降级：chatFrameId 指向不存在/非分组节点 → 按无处理。
+function agentChatFrameGroup(agent){
+    const id = String(agent?.chatFrameId || '');
+    if(!id) return null;
+    const node = canvasState.nodes.find(n => n.id === id);
+    return (node && isSmartGroupNode(node)) ? node : null;
+}
+
+// Agent 当前绑定的参考框（smart-group）。自愈方式同上。
+function agentRefFrameGroup(agent){
+    const id = String(agent?.refFrameId || '');
+    if(!id) return null;
+    const node = canvasState.nodes.find(n => n.id === id);
+    return (node && isSmartGroupNode(node)) ? node : null;
+}
+
+// 参考框内素材数：items→nodes，images 非空的成员节点计 1（#323 票 E 口径）。
+function agentRefFrameAssetCount(group){
+    if(!isSmartGroupNode(group)) return 0;
+    const ids = Array.isArray(group.items) ? group.items : [];
+    let count = 0;
+    ids.forEach(id => {
+        const member = canvasState.nodes.find(n => n.id === id);
+        if(member && (member.images || []).length > 0) count += 1;
+    });
+    return count;
+}
+
+// E1：agent 卡「会话框」小按钮——无框时在 agent 右侧（宽 + 40 偏移）创建 smart-group，
+// group.title = (agent.title||'会话') + ' · 会话框'，写 agent.chatFrameId（服务端落位用）；
+// 已有框时点击 = 视口居中到该 frame（现成 centerViewportOnWorldPoint）。
+function agentChatFrameAction(agentId){
+    const agent = canvasState.nodes.find(n => n.id === agentId);
+    if(!agent || !isSmartAgentNode(agent)) return null;
+    const existing = agentChatFrameGroup(agent);
+    if(existing){
+        centerViewportOnWorldPoint({x:Number(existing.x || 0) + 120, y:Number(existing.y || 0) + 100});
+        return {action:'center', groupId:existing.id};
+    }
+    // 无框（含 stale id 自愈降级）：createSmartGroupNode 内部已 pushUndo + render + scheduleSave，
+    // 之后写入的 title/chatFrameId 需再 render + scheduleSave 一次（防抖合并成一次保存）。
+    const group = createSmartGroupNode(Number(agent.x || 0) + (Number(agent.w || 240)) + 40, Number(agent.y || 0), {});
+    group.title = (agent.title || '会话') + ' · 会话框';
+    agent.chatFrameId = group.id;
+    render();
+    scheduleSave();
+    return {action:'created', groupId:group.id};
+}
+
+// E2：agent 卡「参考」按钮文案——解绑态「参考」，绑定态「参考 ×N」（N = 绑定框素材数）。
+function agentRefFrameButtonLabel(agent){
+    const frame = agentRefFrameGroup(agent);
+    if(!frame) return '参考';
+    return `参考 ×${agentRefFrameAssetCount(frame)}`;
+}
+
+// E2：agent 卡「参考」按钮点击循环：未绑定 → 第一个 refFrame=true group → 下一个 → … → 未绑定。
+// 当前绑定不在参考框集合（如该组刚被取消参考框）时按未绑定处理（从第一个开始）。
+// 无 refFrame group 时只更新按钮 title 提示（禁止 alert），不改绑定。写/清 agent.refFrameId + 保存。
+function agentRefFrameCycle(agentId, buttonEl){
+    const agent = canvasState.nodes.find(n => n.id === agentId);
+    if(!agent || !isSmartAgentNode(agent)) return null;
+    const frames = canvasState.nodes.filter(n => isSmartGroupNode(n) && n.refFrame === true);
+    if(!frames.length){
+        if(buttonEl) buttonEl.title = '暂无参考框：右键画布上的分组选「设为参考框」';
+        return {action:'none', refFrameId:String(agent.refFrameId || ''), frames:0};
+    }
+    const index = frames.findIndex(frame => frame.id === String(agent.refFrameId || ''));
+    let nextId = '';
+    if(index === -1) nextId = frames[0].id;
+    else if(index === frames.length - 1) nextId = '';
+    else nextId = frames[index + 1].id;
+    if(nextId) agent.refFrameId = nextId; else delete agent.refFrameId;
+    render();
+    scheduleSave();
+    return {action:'cycled', refFrameId:nextId, frames:frames.length};
+}
+
+// E1/E2：agent 卡 node head 区两个小按钮（render() 注入 .node-actions；
+// 风格同卡内 agent-tui-btn 图标按钮，激活态 class + ✓ 角标）。
+function agentHeadActionButtonsHtml(node){
+    const id = escapeAttr(node.id);
+    const hasChatFrame = Boolean(agentChatFrameGroup(node));
+    const chatTitle = hasChatFrame ? '会话框（点击跳转）' : '创建会话框';
+    const frame = agentRefFrameGroup(node);
+    const refTitle = frame
+        ? `参考框：${frame.title || '智能分组'}（${agentRefFrameAssetCount(frame)} 个素材），点击切换下一个`
+        : '绑定参考框（循环所有参考框）';
+    const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatTitle)}" aria-label="${escapeHtml(chatTitle)}">${agentIco('message-square')}${hasChatFrame ? '<span class="agent-chat-frame-check">✓</span>' : ''}</button>`;
+    const refBtn = `<button type="button" class="agent-tui-btn agent-ref-frame-btn${frame ? ' agent-tui-btn-active' : ''}" data-agent-ref-frame="${id}" title="${escapeHtml(refTitle)}" aria-label="${escapeHtml(refTitle)}">${escapeHtml(agentRefFrameButtonLabel(node))}</button>`;
+    return chatBtn + refBtn;
+}
+
+// E1/E2 按钮绑定（smart-canvas.js bindNodeEvents 在节点渲染时调用，与 bindAgentNodeControls 同族）。
+function bindAgentHeadControls(el, node){
+    if(!el || !node) return;
+    el.querySelectorAll('[data-agent-chat-frame]').forEach(btn => {
+        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
+        btn.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            agentChatFrameAction(btn.dataset.agentChatFrame || node.id);
+        });
+    });
+    el.querySelectorAll('[data-agent-ref-frame]').forEach(btn => {
+        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
+        btn.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            agentRefFrameCycle(btn.dataset.agentRefFrame || node.id, btn);
+        });
+    });
+}
+
 // 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
 function renderMarkdown(text){
     if(text == null) return '';

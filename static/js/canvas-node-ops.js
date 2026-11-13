@@ -152,6 +152,20 @@ function createSmartGroupNode(x, y, options={}){
     return node;
 }
 
+// #323 票 E：smart-group 右键菜单「设为参考框/取消参考框」——切 group.refFrame（true↔false）。
+// refFrame 只是节点字段（服务端从 canvas store 读），前端写字段 + pushUndo + render + scheduleSave，
+// 与同文件其它节点操作函数同一口径。菜单文案按当前态切换（见 smart-canvas.js openCreateMenu）。
+function toggleGroupRefFrame(groupId){
+    const group = canvasState.nodes.find(n => n.id === groupId);
+    if(!group || !isSmartGroupNode(group)) return false;
+    pushUndo();
+    group.refFrame = !group.refFrame;
+    render();
+    scheduleSave();
+    toast(group.refFrame ? '已设为参考框' : '已取消参考框');
+    return true;
+}
+
 function moveNodeElementsDuringDrag(){
     if(!canvasCore.dragState) return;
     const groupItems = canvasCore.dragState.group || [{id:canvasCore.dragState.id}];

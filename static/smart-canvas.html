@@ -197,6 +197,14 @@
                         <div class="create-card-sub" data-i18n="smart.menuTidySub">自动整理选中节点（Shift+A）</div>
                     </span>
                 </button>
+                <!-- #323 票 E：仅右键智能分组才可见（openCreateMenu 按 groupId 切换 hidden，标题随当前 refFrame 态换文案） -->
+                <button class="create-card" type="button" data-create-type="ref-frame" hidden>
+                    <span class="create-card-icon"><i data-lucide="frame"></i></span>
+                    <span>
+                        <div class="create-card-title">设为参考框</div>
+                        <div class="create-card-sub">Agent 卡「参考」按钮可循环绑定参考框</div>
+                    </span>
+                </button>
             </div>
         </div>
         <input id="fileInput" type="file" accept="image/*,video/*,audio/*" multiple hidden>

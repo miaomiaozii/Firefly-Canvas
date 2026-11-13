@@ -20,19 +20,25 @@
 //       canvas-core.js  → tr / nodeScale / escapeHtml / escapeAttr / canvas(let) / canvasCore(Proxy)
 //       canvas-node-types.js → NODE_TYPE_AGENT / NODE_TYPE_TASK
 //       canvas-state.js → canvasState
-//   - 9 个手写桩（全部来自 hub smart-canvas.js，按真实契约最小化）：
+//   - 11 个手写桩（全部来自 hub smart-canvas.js，按真实契约最小化）：
 //       trf → 值传递记录器（返回值 = 真实 tr(key) + 被代入值；无 StudioI18n 时 smart-canvas.js:
 //             314-316 的逐字 trf 返回 key 本身、代入值被丢弃，值传递路径不可观察，故刻意不用
 //             逐字镜像——也不重新实现模板替换，零产品逻辑）；
 //       chatApiProviders / providerChatModels → 数据驱动（测试直接喂数组）；
 //       canvasId / sourceProjectId → 数据字段；
 //       imageLayout / nodeBodyHtml / render / centerViewportOnWorldPoint → 零逻辑记录器
-//       （只记录「被调了几次、参数是什么」，不返回布局结构，也不参与任何断言的计算）。
+//       （只记录「被调了几次、参数是什么」，不返回布局结构，也不参与任何断言的计算）；
+//       scheduleSave → #323 票 E 新增的零逻辑记录器（只有票 E 函数引用）。
+//       注：toast 不是 hub 自由名（canvas-core.js 真函数，桩会被加载盖住）——
+//       改为注册真 #toast 元素，断言走 element.textContent。
 //   - 浏览器表面积（harness 不提供、按实例补，零产品逻辑）：
 //       WebSocket → 记录器类 + OPEN 常量（真实契约只有 readyState/send/close/onmessage…）；
 //       fetch → 记录器（harness.mjs:209 默认 fetch 直接抛，测试内按实例覆盖）；
 //       prompt → 返回预置答案的记录器。
-// ADR 0020 判据「桩要开始重新实现产品逻辑就停」：**未命中**——9 个桩里 0 个复制产品逻辑。
+//   - #323 票 E（会话框/参考框）：loader 选项 withNodeOps=true 额外加载真实
+//       canvas-layout-utils.js（纯常量）/ canvas-undo.js（真 pushUndo）/ canvas-node-ops.js
+//       （真 createSmartGroupNode/toggleGroupRefFrame）；新增记录器只有 scheduleSave/alert（toast 走真元素）。
+// ADR 0020 判据「桩要开始重新实现产品逻辑就停」：**未命中**——11 个桩里 0 个复制产品逻辑。
 //
 // 防的回归（全部断言可观察输出/副作用，不是「不抛错就算过」）：
 //   - 谓词走真 NODE_TYPE_* 常量（不是字符串字面量）；
@@ -71,6 +77,13 @@
 //     停止自动重连、force 重试清上限立即建连、后端 session 事件清退避态、后端 error 事件
 //     （此前 default 分支静默吞掉→节点一直显示空闲）置 failed 态+原因且不重复堆叠、
 //     失败横幅（agentNodeBodyHtml）与手动「重试连接」按钮；
+//   - #323 票 E 会话框/参考框：agentChatFrameAction 无框 → 真 createSmartGroupNode
+//     （位置 = agent.x + (w||240) + 40、标题 = (agent.title||'会话') + ' · 会话框'、写 chatFrameId、
+//     第二次点击不重复建只 centerViewportOnWorldPoint、stale id 按无自愈）；agentRefFrameCycle
+//     循环（未绑定 → 第一个 → 下一个 → 未绑定，×N 素材计数，解绑 = 清字段），无参考框只更新
+//     按钮 title（禁 alert、绑定不动、不 render/不保存）；toggleGroupRefFrame true↔false
+//     （render+scheduleSave+toast），非 group id no-op；head 按钮 HTML（会话框激活 class+✓、
+//     参考解绑「参考」/绑定「参考 ×N」）。
 //
 // 明确判为「单测盖不住」的行为（不写假测试）：
 //   - WebSocket 真实服务端行为：握手/断线重连/服务端事件顺序（onmessage JSON.parse 异常
@@ -137,6 +150,8 @@ function loadAgentTuiModule({
     location = { protocol: 'http:', host: 'example.test' },
     fetchResponse = undefined,
     layout = { x: 0, y: 0, width: 10, height: 10 },
+    // #323 票 E：加载真实 canvas-node-ops.js（createSmartGroupNode/toggleGroupRefFrame）及其依赖。
+    withNodeOps = false,
 } = {}) {
     const { ctx, harness } = createCanvasContext();
     // 注意：harness.mjs:180 设 `ctx.window = ctx`（浏览器里 window === 全局对象）。
@@ -152,8 +167,11 @@ function loadAgentTuiModule({
     const promptReturns = [];
     const promptLabels = [];
     const consoleErrors = [];
+    const alerts = [];   // #323 票 E：alert 必须为 0（票面禁止 alert），记录器兼作断言
+    // #323 票 E：toast 是 canvas-core.js 的真实函数（不是 hub 自由名，无法用 ctx.toast 桩盖住）——
+    // 注册真 #toast 元素让真 toast 跑通，断言走 element.textContent。
 
-    // 9 个 hub 自由名（见文件头桩预算）。
+    // hub 自由名（见文件头桩预算）。
     // trf 是零逻辑记录器：把翻译 key 和被代入的值都拼进返回值，让测试能断言
     // 「调用方确实把 kind 传进去了」，不复制 smart-canvas.js:314-316 的模板替换逻辑。
     ctx.trf = (key, values = {}) =>
@@ -172,6 +190,10 @@ function loadAgentTuiModule({
     };
     ctx.render = () => renders.push({ kind: 'render' });
     ctx.centerViewportOnWorldPoint = (point) => renders.push({ kind: 'centerViewport', point });
+    // #323 票 E：保存记录器（零逻辑；hub 自由名，只有票 E 的新函数引用它）。
+    ctx.scheduleSave = () => renders.push({ kind: 'scheduleSave' });
+    ctx.alert = () => alerts.push(1);
+    harness.element('toast');
     // prompt 记录器：返回值按队列弹出，队列空回退 null（与浏览器取消选择一致）。
     ctx.prompt = (label) => {
         promptLabels.push(label);
@@ -187,13 +209,16 @@ function loadAgentTuiModule({
         'canvas-node-types.js',
         'canvas-state.js',
         'canvas-core.js',
+        // #323 票 E：真实节点操作链（createSmartGroupNode 的 pushUndo/布局常量走真模块，
+        // 不是桩——ADR 0020 判据「桩要开始重新实现产品逻辑就停」）。
+        ...(withNodeOps ? ['canvas-layout-utils.js', 'canvas-undo.js', 'canvas-node-ops.js'] : []),
         'canvas-agent-tui.js',
     ]);
     fromContext(evaluate(ctx, `canvas = ${JSON.stringify(canvasData ?? { project_id: 'proj-9' })}`));
     for (const node of nodes) {
         ctx.canvasState.nodes.push(node);
     }
-    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, promptReturns, promptLabels, consoleErrors };
+    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, promptReturns, promptLabels, consoleErrors, alerts };
 }
 
 const fn = (ctx, name) => globalFunction(ctx, name);
@@ -1560,4 +1585,236 @@ test('#285 fetchAgentChatModels：走 /agent-nodes/chat-models 端点（# 号编
     assert.equal(fetchCalls.length, 1, '恰一次拉取');
     const url = String(fromContext(fetchCalls[0].url));
     assert.ok(url.includes('/api/projects/proj%231/agent-nodes/chat-models'), `请求 URL 异常：${url}`);
+});
+
+// ── #323 票 E：会话框（chatFrameId）+ 参考框（refFrame / refFrameId）───────────────────────────────────
+// 服务端只用节点字段（create_node_core 按 chatFrameId 落位；refFrame 由服务端从 canvas store 读），
+// 这里钉的是前端字段写入 + UI 行为。withNodeOps 加载真 createSmartGroupNode（不桩产品逻辑）。
+
+test('#323 E1 agentChatFrameAction：无框 → agent 右侧 +40 建 smart-group、写 chatFrameId；再点不重复建只居中；stale id 自愈', () => {
+    const { ctx, renders } = loadAgentTuiModule({
+        withNodeOps: true,
+        open: false,
+        nodes: [{ id: 'a1', type: 'smart-agent', title: '创作', x: 100, y: 200, w: 382 }],
+    });
+    const action = fn(ctx, 'agentChatFrameAction');
+    const groups = () => fromContext(evaluate(ctx, 'canvasState.nodes.filter(n => n.type === NODE_TYPE_GROUP)'));
+    const chatFrameId = () => fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').chatFrameId"));
+
+    assert.equal(action('ghost'), null, '不存在的 agent 是 no-op');
+
+    const r1 = action('a1');
+    assert.equal(r1.action, 'created');
+    assert.equal(groups().length, 1, '真实 createSmartGroupNode 建了一个 smart-group');
+    assert.equal(groups()[0].x, 100 + 382 + 40, '位置 = agent.x + agent.w + 40');
+    assert.equal(groups()[0].y, 200);
+    assert.equal(groups()[0].title, '创作 · 会话框', '标题 = (agent.title||会话) + " · 会话框"');
+    assert.deepEqual(groups()[0].items, []);
+    assert.equal(r1.groupId, groups()[0].id);
+    assert.equal(chatFrameId(), groups()[0].id, 'agent.chatFrameId 必须指向新框');
+    assert.ok(renders.some(r => r.kind === 'render'), '创建必须 render');
+    assert.ok(renders.some(r => r.kind === 'scheduleSave'), '创建必须保存');
+
+    // 第二次点击：不重复建，只视口居中到该 frame（centerViewportOnWorldPoint 记录器）。
+    const r2 = action('a1');
+    assert.equal(r2.action, 'center');
+    assert.equal(r2.groupId, groups()[0].id);
+    assert.equal(groups().length, 1, '再点不得建第二个框');
+    assert.deepEqual(fromContext(renders.filter(r => r.kind === 'centerViewport').at(-1).point),
+        { x: 100 + 382 + 40 + 120, y: 200 + 100 }, '居中点 = frame + (120, 100)');
+
+    // stale chatFrameId（指向不存在节点）→ 按无处理（自愈降级），重建并覆盖旧 id。
+    evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').chatFrameId = 'ghost'");
+    const r3 = action('a1');
+    assert.equal(r3.action, 'created', 'stale id 不得当成已有框去居中');
+    assert.notEqual(r3.groupId, 'ghost');
+    assert.equal(groups().length, 2);
+    assert.equal(chatFrameId(), r3.groupId, '新 chatFrameId 覆盖 stale id');
+});
+
+test('#323 E1 agentChatFrameAction：agent 无 title/无 w → 默认标题「会话 · 会话框」、位置按 w=240 回退', () => {
+    const { ctx } = loadAgentTuiModule({
+        withNodeOps: true,
+        open: false,
+        nodes: [{ id: 'a2', type: 'smart-agent', x: 10, y: 20 }],
+    });
+    const r = fn(ctx, 'agentChatFrameAction')('a2');
+    assert.equal(r.action, 'created');
+    const g = fromContext(evaluate(ctx, 'canvasState.nodes.filter(n => n.type === NODE_TYPE_GROUP)'));
+    assert.equal(g[0].x, 10 + 240 + 40, 'w 缺失回退 240');
+    assert.equal(g[0].y, 20);
+    assert.equal(g[0].title, '会话 · 会话框', 'title 缺失回退「会话」');
+});
+
+test('#323 E1 agentHeadActionButtonsHtml：会话框按钮注入 .node-actions；激活态（class+✓）按框真实存在（stale id 自愈）', () => {
+    const { ctx } = loadAgentTuiModule({ nodes: [{ id: 'a1', type: 'smart-agent', title: '创作' }] });
+    const html = fn(ctx, 'agentHeadActionButtonsHtml');
+    const liveNode = () => fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1')"));
+
+    let out = fromContext(html(liveNode()));
+    assert.ok(out.includes('data-agent-chat-frame="a1"'), out);
+    assert.ok(out.includes('data-agent-ref-frame="a1"'), out);
+    assert.ok(!out.includes('agent-chat-frame-btn agent-tui-btn-active'), '无框 → 非激活态');
+    assert.ok(!out.includes('agent-chat-frame-check'), '无框 → 无 ✓ 角标');
+    assert.ok(out.includes('创建会话框'), '无框 title 提示');
+
+    // stale chatFrameId（指向不存在节点）→ 按无处理，按钮不得显示激活态。
+    evaluate(ctx, "canvasState.nodes[0].chatFrameId = 'ghost'");
+    out = fromContext(html(liveNode()));
+    assert.ok(!out.includes('agent-chat-frame-btn agent-tui-btn-active'), out);
+    assert.ok(!out.includes('agent-chat-frame-check'), out);
+
+    // 框真实存在 → class + ✓ 角标 + title 变「点击跳转」。
+    evaluate(ctx, 'canvasState.nodes.push({ id: "g1", type: NODE_TYPE_GROUP, x: 0, y: 0, items: [] })');
+    evaluate(ctx, "canvasState.nodes[0].chatFrameId = 'g1'");
+    out = fromContext(html(liveNode()));
+    assert.ok(out.includes('agent-chat-frame-btn agent-tui-btn-active'), out);
+    assert.ok(out.includes('agent-chat-frame-check'), out);
+    assert.ok(out.includes('会话框（点击跳转）'), out);
+});
+
+test('#323 E1 bindAgentHeadControls：点「会话框」按钮 → 真实创建；再点 → 居中不重复建', () => {
+    const { ctx, harness, renders } = loadAgentTuiModule({
+        withNodeOps: true,
+        open: false,
+        nodes: [{ id: 'a1', type: 'smart-agent', x: 0, y: 0 }],
+    });
+    const chatBtn = harness.makeElement('button');
+    chatBtn.dataset.agentChatFrame = 'a1';
+    const refBtn = harness.makeElement('button');
+    refBtn.dataset.agentRefFrame = 'a1';
+    const el = harness.makeElement('div');
+    el.querySelectorAll = (sel) => (sel === '[data-agent-chat-frame]' ? [chatBtn] : sel === '[data-agent-ref-frame]' ? [refBtn] : []);
+    fn(ctx, 'bindAgentHeadControls')(el, { id: 'a1', type: 'smart-agent' });
+    const groups = () => fromContext(evaluate(ctx, 'canvasState.nodes.filter(n => n.type === NODE_TYPE_GROUP)'));
+
+    chatBtn.dispatchEvent(ev('click'));
+    assert.equal(groups().length, 1, '首次点击创建 smart-group');
+    assert.equal(groups()[0].x, 0 + 240 + 40, '无 w 回退 240');
+    assert.equal(fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').chatFrameId")), groups()[0].id);
+
+    chatBtn.dispatchEvent(ev('click'));
+    assert.equal(groups().length, 1, '第二次点击不得重复建');
+    assert.ok(renders.some(r => r.kind === 'centerViewport'), '第二次点击 = 视口居中');
+});
+
+test('#323 E2 toggleGroupRefFrame：refFrame true↔false 切换（写字段 + render + 保存 + toast）；非 group id 返回 false', () => {
+    const { ctx, harness, renders } = loadAgentTuiModule({
+        withNodeOps: true,
+        nodes: [{ id: 'g1', type: 'smart-group', items: [] }, { id: 'i1', type: 'smart-image', images: [] }],
+    });
+    const toggle = fn(ctx, 'toggleGroupRefFrame');
+    const refFrame = () => evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g1').refFrame");
+    const toastText = () => fromContext(harness.element('toast').textContent);
+
+    assert.equal(toggle('g1'), true);
+    assert.equal(refFrame(), true, '第一次切换置 true');
+    assert.equal(toastText(), '已设为参考框');
+    assert.ok(renders.some(r => r.kind === 'render'), '切换必须 render');
+    assert.ok(renders.some(r => r.kind === 'scheduleSave'), '切换必须保存');
+
+    assert.equal(toggle('g1'), true);
+    assert.equal(refFrame(), false, '第二次切换回 false（菜单文案随之变「设为参考框」）');
+    assert.equal(toastText(), '已取消参考框');
+
+    assert.equal(toggle('i1'), false, '非分组节点 no-op');
+    assert.equal(toggle('ghost'), false, '不存在 id no-op');
+});
+
+test('#323 E2 agentRefFrameCycle：未绑定 → 第一个 → 下一个 → 未绑定 → 第一个；×N 计数（一个框 2 素材、一个 0）', () => {
+    const { ctx, renders } = loadAgentTuiModule({
+        open: false,
+        nodes: [
+            { id: 'a1', type: 'smart-agent' },
+            { id: 'g1', type: 'smart-group', refFrame: true, items: ['i1', 'i2'] },
+            { id: 'g2', type: 'smart-group', refFrame: true, items: [] },
+            { id: 'i1', type: 'smart-image', images: [{ url: '/x/a.png' }] },
+            { id: 'i2', type: 'smart-image', images: [{ url: '/x/b.png' }] },
+            { id: 'i3', type: 'smart-image', images: [] }, // 不在 items 里且 images 空，双不计数
+        ],
+    });
+    const cycle = fn(ctx, 'agentRefFrameCycle');
+    const label = fn(ctx, 'agentRefFrameButtonLabel');
+    const agent = () => evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1')");
+
+    // ×N 素材数：g1 = 2（i1/i2 images 非空各计 1），g2 = 0。
+    const g1 = fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g1')"));
+    const g2 = fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g2')"));
+    assert.equal(fn(ctx, 'agentRefFrameAssetCount')(g1), 2);
+    assert.equal(fn(ctx, 'agentRefFrameAssetCount')(g2), 0);
+    assert.equal(label(agent()), '参考', '解绑态显示「参考」');
+
+    // 未绑定 → 第一个参考框（g1，×2）。
+    let r = cycle('a1');
+    assert.equal(r.action, 'cycled');
+    assert.equal(r.refFrameId, 'g1');
+    assert.equal(fromContext(agent().refFrameId), 'g1', 'agent.refFrameId 写入');
+    assert.equal(label(agent()), '参考 ×2', '绑定态显示「参考 ×N」');
+
+    // → 下一个（g2，×0）。
+    r = cycle('a1');
+    assert.equal(r.refFrameId, 'g2');
+    assert.equal(label(agent()), '参考 ×0', '空框也要如实显示 ×0');
+
+    // 最后一个 → 回未绑定（字段清掉，不是留空串）。
+    r = cycle('a1');
+    assert.equal(r.refFrameId, '');
+    assert.equal(evaluate(ctx, "'refFrameId' in canvasState.nodes.find(n => n.id === 'a1')"), false, '解绑 = 清字段');
+    assert.equal(label(agent()), '参考');
+
+    // 循环回到第一个。
+    r = cycle('a1');
+    assert.equal(r.refFrameId, 'g1');
+    assert.equal(r.frames, 2);
+    assert.ok(renders.filter(x => x.kind === 'render').length >= 4, '每次循环都 render');
+    assert.ok(renders.filter(x => x.kind === 'scheduleSave').length >= 4, '每次循环都保存');
+});
+
+test('#323 E2 agentRefFrameCycle：无参考框只更新 title 提示（禁 alert、绑定不动、不 render/不保存）；stale 绑定 + 有参考框 → 按未绑定', () => {
+    const { ctx, alerts, renders } = loadAgentTuiModule({
+        open: false,
+        nodes: [
+            { id: 'a1', type: 'smart-agent', refFrameId: 'gone' },
+            { id: 'g9', type: 'smart-group', refFrame: false, items: [] },
+        ],
+    });
+    const cycle = fn(ctx, 'agentRefFrameCycle');
+    const btn = { title: '旧提示' };
+
+    const r = cycle('a1', btn);
+    assert.equal(r.action, 'none');
+    assert.equal(r.refFrameId, 'gone', '无参考框 → 原绑定不动');
+    assert.ok(String(btn.title).includes('设为参考框'), `title 要给出可操作提示：${btn.title}`);
+    assert.equal(alerts.length, 0, '禁止 alert');
+    assert.equal(renders.filter(x => x.kind === 'render').length, 0, '无参考框 → 不 render');
+    assert.equal(renders.filter(x => x.kind === 'scheduleSave').length, 0, '无参考框 → 不保存');
+
+    // stale 绑定（'gone' 不存在）且参考框存在 → 按未绑定处理，从第一个开始。
+    evaluate(ctx, 'canvasState.nodes.push({ id: "g1", type: NODE_TYPE_GROUP, refFrame: true, items: [] })');
+    const r2 = cycle('a1');
+    assert.equal(r2.action, 'cycled');
+    assert.equal(r2.refFrameId, 'g1');
+});
+
+test('#323 E2 agentHeadActionButtonsHtml：参考按钮解绑「参考」/绑定「参考 ×N」；绑定态带激活 class + title 带框名', () => {
+    const { ctx } = loadAgentTuiModule({
+        nodes: [
+            { id: 'a1', type: 'smart-agent' },
+            { id: 'g1', type: 'smart-group', refFrame: true, items: ['i1'], title: '参考框A' },
+            { id: 'i1', type: 'smart-image', images: [{ url: '/a.png' }] },
+        ],
+    });
+    const html = fn(ctx, 'agentHeadActionButtonsHtml');
+    const liveNode = () => fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1')"));
+
+    let out = fromContext(html(liveNode()));
+    assert.ok(out.includes('agent-ref-frame-btn'), out);
+    assert.ok(!out.includes('agent-ref-frame-btn agent-tui-btn-active'), '解绑 → 无激活 class');
+    assert.ok(out.includes('>参考</button>'), `解绑显示「参考」：${out}`);
+
+    evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').refFrameId = 'g1'");
+    out = fromContext(html(liveNode()));
+    assert.ok(out.includes('agent-ref-frame-btn agent-tui-btn-active'), '绑定 → 激活 class');
+    assert.ok(out.includes('参考 ×1'), '绑定显示「参考 ×N」');
+    assert.ok(out.includes('参考框：参考框A'), 'title 带绑定框名');
 });

@@ -4120,6 +4120,36 @@ button.prompt-flow-context-image { cursor:pointer; }
     color: #9ece6a;
 }
 
+/* #323 票 E：Agent 卡 head 区两个小按钮（会话框/参考框）——与卡内图标按钮同族（agent-tui-btn）；
+   激活态与思考开关同规范（绿描边）。参考按钮是文字钮，放宽固定 28px 宽。 */
+.agent-chat-frame-btn {
+    position: relative;
+}
+.agent-chat-frame-btn.agent-tui-btn-active,
+.agent-ref-frame-btn.agent-tui-btn-active {
+    background: #414868;
+    border-color: #9ece6a;
+    color: #9ece6a;
+}
+.agent-ref-frame-btn {
+    width: auto;
+    min-width: 28px;
+    padding: 0 7px;
+    font-size: 12px;
+}
+.agent-chat-frame-check {
+    position: absolute;
+    top: -7px;
+    right: -6px;
+    font-size: 10px;
+    line-height: 1;
+    color: #9ece6a;
+    background: #1a1e2e;
+    border-radius: 999px;
+    padding: 1px 2px;
+    pointer-events: none;
+}
+
 .agent-tui-thinking {
     margin: 4px 0;
     padding: 6px 8px;

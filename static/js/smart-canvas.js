@@ -9223,8 +9223,12 @@ function render(){
             ? `<div class="node-upstream-deleted-marker" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
             : '';
         const agentCardStatus = isAgent ? agentCardStatusHtml(node.id) : '';
+        // #323 票 E：agent 卡 head 区两个小按钮（会话框/参考框）——HTML 在 canvas-agent-tui.js，
+        // 绑定走 bindAgentHeadControls（bindNodeEvents 里调）。放 .node-actions 而非 head-meta：
+        // head-meta 会被 renderAgentNode 每次刷新 innerHTML，.node-actions 只随全量 render() 重建。
+        const agentHeadButtons = isAgent ? agentHeadActionButtonsHtml(node) : '';
         const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
-            <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${deleteBtn}</div></div>
+            <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${agentHeadButtons}${deleteBtn}</div></div>
             ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
@@ -10658,7 +10662,10 @@ function bindNodeEvents(){
         if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.element === el) return;
         const nodeForControls = canvasState.nodes.find(n => n.id === id);
         if(isSmartConversationNode(nodeForControls)) bindConversationNodeControls(el, nodeForControls);
-        if(isSmartAgentNode(nodeForControls)) bindAgentNodeControls(el, nodeForControls);
+        if(isSmartAgentNode(nodeForControls)){
+            bindAgentNodeControls(el, nodeForControls);
+            bindAgentHeadControls(el, nodeForControls); // #323 票 E：head 区「会话框/参考」小按钮
+        }
         if(isSmartAgentTaskNode(nodeForControls)) bindAgentTaskNodeControls(el, nodeForControls);
         if(nodeForControls?.type === NODE_TYPE_LOCAL_EDIT) bindLocalEditNodeControls(el, nodeForControls);
         if(nodeForControls?.type === NODE_TYPE_PROMPT) bindPromptNodeControls(el, nodeForControls);
@@ -14287,6 +14294,17 @@ function openCreateMenu(event, options={}){
     });
     if(renameCard) renameCard.hidden = !opVisibility.rename;
     if(tidyCard) tidyCard.hidden = !opVisibility.tidy;
+    // #323 票 E：「参考框」切换卡——仅右键智能分组时可见；文案按当前 refFrame 态切换。
+    const refFrameCard = createMenu.querySelector('[data-create-type="ref-frame"]');
+    if(refFrameCard){
+        const refGroup = options.groupId ? canvasState.nodes.find(n => n.id === options.groupId) : null;
+        const isRefGroup = Boolean(refGroup && isSmartGroupNode(refGroup));
+        refFrameCard.hidden = !isRefGroup;
+        if(isRefGroup){
+            const refTitleEl = refFrameCard.querySelector('.create-card-title');
+            if(refTitleEl) refTitleEl.textContent = refGroup.refFrame ? '取消参考框' : '设为参考框';
+        }
+    }
     createMenu.style.left = '14px';
     createMenu.style.top = '14px';
     createMenu.classList.add('open');
@@ -15792,6 +15810,14 @@ createMenu?.addEventListener('click', event => {
     const card = event.target.closest('[data-create-type]');
     if(!card) return;
     const type = card.dataset.createType || 'image';
+    // #323 票 E：smart-group 右键「设为参考框/取消参考框」——必须放在 createNodeFromMenu 之前拦截
+    //（ref-frame 不是节点类型，漏拦会被当图片节点创建）。
+    if(type === 'ref-frame'){
+        const refGroupId = canvasState.createMenuGroupId;
+        closeCreateMenu();
+        toggleGroupRefFrame(refGroupId);
+        return;
+    }
     if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
     if(type === 'rename') return quickEditFromMenu(); // #253：右键「重命名」→ 就地快速编辑
     if(type === 'tidy'){ closeCreateMenu(); arrangeSelectedSmartNodes(); return; } // #253：右键「整理排版」→ 复用现有 arrangeSelectedSmartNodes
