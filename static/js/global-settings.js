@@ -162,7 +162,7 @@
       <div class="provider-fields">
         <label>${tr('globalSettings.providerName')}<input data-field="name" maxlength="80"></label>
         <label>${tr('globalSettings.endpoint')}<input data-field="base_url" autocomplete="off"></label>
-        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option></select></label>
+        <label>${tr('globalSettings.protocol')}<select data-field="protocol"><option value="openai">OpenAI</option><option value="apimart">APIMart</option><option value="gemini">Gemini</option><option value="volcengine">Volcengine</option><option value="codex">OpenAI CLI</option><option value="gemini-cli">Antigravity CLI</option><option value="comfyui">ComfyUI（本地）</option></select></label>
         <label class="wide">${tr('globalSettings.apiKey')}<input data-field="api_key" type="password" autocomplete="new-password"></label>
       </div>
       <div class="model-grid">

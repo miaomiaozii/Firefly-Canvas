@@ -152,7 +152,7 @@ LOAD_LOCK = Lock()
 NEXT_TASK_ID = 1
 UPDATE_LOCK = Lock()
 PROVIDER_ID_RE = re.compile('^[a-zA-Z0-9_-]{2,40}$')
-SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'codex'}
+SUPPORTED_PROVIDER_PROTOCOLS = {'openai', 'apimart', 'gemini', 'gemini-cli', 'volcengine', 'runninghub', 'codex', 'comfyui'}
 # #236 即梦整体剔除：存量配置里的 jimeng 服务商条目在加载时一并清除（与 modelscope/runninghub 同机制）。
 REMOVED_PROVIDER_IDS = {'modelscope', 'runninghub', 'jimeng'}
 SUPPORTED_IMAGE_REQUEST_MODES = {'openai', 'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'}
@@ -185,6 +185,19 @@ AGNES_DEFAULT_VIDEO_MODELS = ['agnes-video-v2.0']
 VOLCENGINE_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 VOLCENGINE_DEFAULT_PROJECT_NAME = 'default'
 VOLCENGINE_DEFAULT_REGION = 'cn-beijing'
+# ---- #331 本地 ComfyUI（MiniMax-H3-Image GGUF）----
+# 画布直接把本地 ComfyUI 当生图后端：POST /prompt → GET /history/{id} → GET /view。
+# 只监听本机时画布后端与服务端同机即可直连（浏览器直连才需要 --enable-cors-header）。
+COMFYUI_DEFAULT_BASE_URL = os.getenv('COMFYUI_BASE_URL', 'http://127.0.0.1:8188')
+# 单张耗时实测：16 MP ≈ 84 s、8 MP ≈ 60 s、4 MP ≈ 55 s（RTX 4070 Ti SUPER，单 GPU 串行）。
+# 下面的截止是自设安全阀（排队 + 生成 + 下载），不是上游 SLA。
+COMFYUI_IMAGE_TASK_TIMEOUT = float(os.getenv('COMFYUI_IMAGE_TASK_TIMEOUT', '1800'))
+COMFYUI_IMAGE_POLL_INTERVAL = float(os.getenv('COMFYUI_IMAGE_POLL_INTERVAL', '2'))
+COMFYUI_IMAGE_QUEUE_INTERVAL = float(os.getenv('COMFYUI_IMAGE_QUEUE_INTERVAL', '6'))
+COMFYUI_UPLOAD_TIMEOUT = float(os.getenv('COMFYUI_UPLOAD_TIMEOUT', '120'))
+COMFYUI_DOWNLOAD_TIMEOUT = float(os.getenv('COMFYUI_DOWNLOAD_TIMEOUT', '300'))
+# 该模型名与 model_specs.json 里的条目同名，画布据此渲染 比例/面积档 参数。
+COMFYUI_H3_MODEL_ID = 'comfyui-h3-image'
 RUNNINGHUB_DEFAULT_IMAGE_MODELS = ['gpt-image-2.0/text-to-image-channel-low-price', 'gpt-image-2.0/edit-channel-low-price', 'gpt-image-2/text-to-image-official-stable', 'gpt-image-2/image-to-image-official-stable', 'nano-banana/text-to-image-official-stable', 'nano-banana/edit-official-stable']
 RUNNINGHUB_DEFAULT_VIDEO_MODELS = ['google/veo3.1-fast/text-to-video-channel-low-price', 'sora-2/text-to-video-official-stable', 'seedance-2.0-global/text-to-video', 'seedance-2.0-global/image-to-video']
 RUNNINGHUB_MODEL_ENDPOINT_ALIASES = {'Seedance2.0 Image to Video': 'bytedance/seedance-2.0-global/image-to-video', 'Seedance2.0 Text to Video': 'bytedance/seedance-2.0-global/text-to-video', 'seedance2.0 image to video': 'bytedance/seedance-2.0-global/image-to-video', 'seedance2.0 text to video': 'bytedance/seedance-2.0-global/text-to-video', 'gpt-image-2.0/text-to-image-channel-low-price': 'rhart-image-g-2/text-to-image', 'gpt-image-2/text-to-image-channel-low-price': 'rhart-image-g-2/text-to-image', 'gpt-image-2.0/edit-channel-low-price': 'rhart-image-g-2/image-to-image', 'gpt-image-2/edit-channel-low-price': 'rhart-image-g-2/image-to-image', 'gpt-image-2.0/image-to-image-channel-low-price': 'rhart-image-g-2/image-to-image', 'gpt-image-2/image-to-image-channel-low-price': 'rhart-image-g-2/image-to-image', 'nano-banana/text-to-image-channel-low-price': 'rhart-image-v1/text-to-image', 'nano-banana/edit-channel-low-price': 'rhart-image-v1/edit'}
@@ -252,7 +265,8 @@ RESPONSES_REJECT_STATUSES = {400, 404, 405, 415, 422}
 RESPONSES_POLL_INTERVAL = 5.0
 RESPONSES_POLL_MAX_SECONDS = 25 * 60.0
 PER_MODEL_PROTOCOL_OPTIONS = {'openai', 'gemini'}
-FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'runninghub'}
+# #331：ComfyUI 的请求形状（/prompt 图 + /history 轮询）是协议内生的，不允许逐模型改协议。
+FIXED_PROTOCOL_PROVIDER_IDS = {'modelscope', 'volcengine', 'runninghub', 'comfyui'}
 AVATAR_SUPPORTED_PLATFORMS = {'apimart', 'volcengine'}
 IMAGE_TASK_SUCCESS_STATUSES = {'SUCCESS', 'SUCCESSFUL', 'SUCCEED', 'SUCCEEDED', 'COMPLETED', 'COMPLETE', 'DONE', 'FINISHED', 'OK', 'READY'}
 IMAGE_TASK_FAILED_STATUSES = {'FAILURE', 'FAILED', 'FAIL', 'ERROR', 'ERRORED', 'CANCELED', 'CANCELLED', 'TIMEOUT', 'REJECTED', 'EXPIRED'}
@@ -971,11 +985,18 @@ def normalize_provider(item):
     if provider_id == 'runninghub':
         protocol = 'runninghub'
         base_url = base_url or RUNNINGHUB_DEFAULT_BASE_URL
+    if provider_id == 'comfyui':
+        # #331：本地 ComfyUI 不需要 API Key，Base URL 缺省指向本机 8188。
+        protocol = 'comfyui'
+        base_url = base_url or COMFYUI_DEFAULT_BASE_URL
     locked_rule = locked_recommended_provider_rule(provider_id, name, base_url)
     if locked_rule:
         protocol = locked_rule['protocol']
         image_request_mode = locked_rule['image_request_mode']
     image_models = model_list_from_values(item.get('image_models') or [])
+    if provider_id == 'comfyui' and not image_models:
+        # #331：本地 ComfyUI 的工作流是固定的，给一个能直接命中的模型名，省得用户先猜。
+        image_models = [COMFYUI_H3_MODEL_ID]
     video_models = model_list_from_values(item.get('video_models') or [])
     if locked_rule and 'video_models' in locked_rule:
         video_models = model_list_from_values(locked_rule.get('video_models') or [])

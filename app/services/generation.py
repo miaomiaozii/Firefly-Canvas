@@ -7,6 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_h3_resolution, comfyui_h3_workflow  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -181,6 +182,244 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
                 detail = data.get('error_info') or data.get('message') or data.get('detail') or str(data)
                 raise HTTPException(status_code=502, detail=f'ModelScope 任务失败：{detail}')
         raise HTTPException(status_code=504, detail=f'ModelScope 生图任务超时：{last_payload}')
+
+def is_comfyui_provider(provider) -> bool:
+    return provider_protocol(provider) == 'comfyui'
+
+
+def comfyui_api_root(provider) -> str:
+    """ComfyUI 根地址。它是会话式多端点接口（/prompt、/history、/view、/upload/image、/queue），
+    换机器/容器只改 base_url，不需要按端点分别配置。"""
+    root = str((provider or {}).get('base_url') or '').strip().rstrip('/')
+    if root:
+        return root
+    return str(COMFYUI_DEFAULT_BASE_URL or 'http://127.0.0.1:8188').strip().rstrip('/')
+
+
+def comfyui_node_errors_text(raw, limit: int = 3) -> str:
+    """把 /prompt 的 node_errors 翻成一句话。常见失败：尺寸不是 8 的倍数、模型文件名不存在、clip type 不是 minimax。"""
+    parts = []
+    for node_id, info in (raw or {}).get('node_errors', {}).items():
+        messages = []
+        for err in (info or {}).get('errors') or []:
+            text = str(err.get('message') or err.get('details') or '').strip()
+            if text:
+                messages.append(text)
+        label = str((info or {}).get('class_type') or '').strip()
+        detail = '；'.join(messages) or '参数不合法'
+        parts.append(f'节点 {node_id}（{label}）：{detail}' if label else f'节点 {node_id}：{detail}')
+        if len(parts) >= limit:
+            break
+    return '；'.join(parts)
+
+
+def comfyui_execution_error_text(status) -> str:
+    for message in (status or {}).get('messages') or []:
+        if isinstance(message, (list, tuple)) and len(message) > 1 and str(message[0]) == 'execution_error':
+            info = message[1] or {}
+            text = str(info.get('exception_message') or '').strip()
+            node_id = str(info.get('node_id') or '').strip()
+            if text:
+                return f'节点 {node_id}: {text}' if node_id else text
+    return str((status or {}).get('status_str') or '未知错误')
+
+
+async def comfyui_queue_position(client, root: str, prompt_id: str):
+    """排队位置（0 = 正在跑，N = 前面还有任务，None = 查不到）。仅用于进度文案。"""
+    try:
+        response = await client.get(f'{root}/queue')
+        if response.status_code != 200:
+            return None
+        data = response.json() or {}
+    except Exception:
+        return None
+    running = data.get('queue_running') or []
+    pending = data.get('queue_pending') or []
+    for index, item in enumerate(pending):
+        if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:
+            return len(pending) - index
+    for item in running:
+        if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:
+            return 0
+    return None
+
+
+async def comfyui_upload_reference(client, root: str, ref_url: str) -> str:
+    """把画布参考图送进 ComfyUI 的 input 目录，返回 LoadImage 能用的名字。
+    支持 data URL / 应用本地媒体 / http(s) 三种来源；不支持时返回空串。"""
+    ref_url = str(ref_url or '').strip()
+    if not ref_url:
+        return ''
+    payload = None
+    if ref_url.startswith('data:'):
+        if ';base64,' not in ref_url:
+            return ''
+        header, encoded = ref_url.split(';base64,', 1)
+        mime = header.split(':', 1)[1].split(';', 1)[0] if ':' in header else 'image/png'
+        try:
+            raw = base64.b64decode(encoded)
+        except Exception:
+            return ''
+        payload = apimart_upload_payload_from_bytes(raw, mime, name_hint='canvas_ref')
+    else:
+        path = _svc.local_media_adapter_path(ref_url, 'image')
+        if path:
+            payload = apimart_upload_file_payload(path)
+        elif ref_url.startswith(('http://', 'https://')):
+            response = await client.get(ref_url)
+            response.raise_for_status()
+            payload = apimart_upload_payload_from_bytes(
+                response.content,
+                response.headers.get('content-type', 'image/png'),
+                name_hint='canvas_ref',
+            )
+    if not payload:
+        return ''
+    filename, content, content_type = payload
+    upload = await client.post(
+        f'{root}/upload/image',
+        files={'image': (filename, content, content_type)},
+        data={'overwrite': 'true', 'type': 'input'},
+    )
+    if upload.status_code != 200:
+        raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传失败（{upload.status_code}）：{upload.text[:200]}')
+    try:
+        raw = upload.json() or {}
+    except Exception:
+        raw = {}
+    name = str(raw.get('name') or '').strip()
+    if not name:
+        raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传未返回文件名：{str(raw)[:200]}')
+    subfolder = str(raw.get('subfolder') or '').strip().strip('/')
+    return f'{subfolder}/{name}' if subfolder else name
+
+
+async def generate_comfyui_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None, progress_callback=None):
+    """本地 ComfyUI（MiniMax-H3-Image GGUF）文生图 / 图生图。
+
+    一次画布任务 = 一张 ComfyUI 图：POST /prompt → 轮询 /history → GET /view。
+    本接口不幂等（失败重跑会重算一轮算力），所以这里不重试；超时也不重提。
+    """
+    def report(phase, **details):
+        if callable(progress_callback):
+            try:
+                progress_callback(phase, **details)
+            except Exception:
+                pass
+
+    clean_prompt = str(prompt or '').strip()
+    if not clean_prompt:
+        raise HTTPException(status_code=400, detail='提示词不能为空。')
+    explicit = dict(image_parameters or {})
+    width, height = comfyui_h3_resolution(explicit.get('aspect_ratio'), explicit.get('resolution'), size)
+    refs = [
+        str(ref.get('url') or '').strip()
+        for ref in (reference_images or [])
+        if isinstance(ref, dict) and str(ref.get('url') or '').strip()
+    ][:COMFYUI_MAX_REFERENCES]
+    root = comfyui_api_root(provider)
+    started = time.monotonic()
+    timeout = httpx.Timeout(connect=10.0, read=max(COMFYUI_IMAGE_TASK_TIMEOUT, 60.0), write=COMFYUI_UPLOAD_TIMEOUT, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        names = []
+        for index, ref_url in enumerate(refs, start=1):
+            report('uploading', bytes_done=index - 1, bytes_total=len(refs))
+            name = await comfyui_upload_reference(client, root, ref_url)
+            if name:
+                names.append(name)
+        if refs and not names:
+            raise HTTPException(status_code=400, detail='参考图无法传给 ComfyUI（仅支持 data URL、应用本地媒体与 http/https）。')
+        graph = comfyui_h3_workflow(clean_prompt, width, height, reference_names=names)
+        report('provider_generating', queue_position=None, width=width, height=height, references=len(names))
+        try:
+            submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
+        except httpx.ConnectError as exc:
+            raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc
+        if submit.status_code != 200:
+            try:
+                error_raw = submit.json() or {}
+            except Exception:
+                error_raw = {}
+            detail = comfyui_node_errors_text(error_raw) or str(error_raw.get('error') or submit.text[:300])
+            raise HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}')
+        try:
+            submitted = submit.json() or {}
+        except Exception:
+            submitted = {}
+        prompt_id = str(submitted.get('prompt_id') or '').strip()
+        if not prompt_id:
+            raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')
+        deadline = started + COMFYUI_IMAGE_TASK_TIMEOUT
+        next_queue_at = started + COMFYUI_IMAGE_QUEUE_INTERVAL
+        queue_position = None
+        images = []
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f'ComfyUI 生图超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}）。'
+                        '任务可能仍在跑，产物稍后会出现在 ComfyUI 的 output/MiniMax-H3-Image/ 目录；本适配器不自动重试。'
+                    ),
+                )
+            try:
+                history = await client.get(f'{root}/history/{prompt_id}')
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f'查询 ComfyUI 任务状态失败：{exc}') from exc
+            try:
+                history_raw = history.json() or {}
+            except Exception:
+                history_raw = {}
+            entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
+            if entry:
+                status = entry.get('status') or {}
+                if str(status.get('status_str') or '').strip().lower() == 'error':
+                    raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{comfyui_execution_error_text(status)}')
+                images = [
+                    image
+                    for node in (entry.get('outputs') or {}).values()
+                    for image in ((node or {}).get('images') or [])
+                    if isinstance(image, dict) and image.get('filename')
+                ]
+                if images:
+                    break
+            now = time.monotonic()
+            if now >= next_queue_at:
+                next_queue_at = now + COMFYUI_IMAGE_QUEUE_INTERVAL
+                queue_position = await comfyui_queue_position(client, root, prompt_id)
+                report('provider_generating', queue_position=queue_position, elapsed_ms=int((now - started) * 1000), width=width, height=height, references=len(names))
+            await asyncio.sleep(COMFYUI_IMAGE_POLL_INTERVAL)
+        image = images[0]
+        view = await client.get(
+            f'{root}/view',
+            params={
+                'filename': image.get('filename') or '',
+                'subfolder': image.get('subfolder') or '',
+                'type': image.get('type') or 'output',
+            },
+        )
+        if view.status_code != 200:
+            raise HTTPException(status_code=502, detail=f'从 ComfyUI 取图失败（{view.status_code}）：{image.get("filename")}')
+        content = view.content or b''
+        if not content:
+            raise HTTPException(status_code=502, detail='ComfyUI 返回了空图片。')
+        report('receiving', bytes_done=len(content), bytes_total=len(content))
+        data = {
+            'prompt_id': prompt_id,
+            'image': image,
+            'width': width,
+            'height': height,
+            'bytes': len(content),
+            'elapsed_ms': int((time.monotonic() - started) * 1000),
+            'queue_position': queue_position,
+            'references': len(names),
+            'status': 'success',
+        }
+        return ({'type': 'b64', 'value': base64.b64encode(content).decode('ascii')}, data)
+
 
 async def wait_for_runninghub_image_task(client, provider, task_id):
     query_url = runninghub_openapi_url(provider, 'query')
@@ -1447,6 +1686,18 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         return await generate_codex_provider_image(prompt, size, model, reference_images, provider)
     if is_gemini_cli_provider(provider):
         return await generate_gemini_cli_provider_image(prompt, size, model, reference_images, provider)
+    if is_comfyui_provider(provider):
+        # #331：本地 ComfyUI 直接吃画布的 aspect_ratio + resolution 档；显式尺寸走适配器内的 8 倍数换算。
+        return await generate_comfyui_provider_image(
+            prompt,
+            size,
+            model,
+            reference_images,
+            provider,
+            image_parameters=image_parameters,
+            progress_callback=progress_callback,
+        )
+
     if is_runninghub_provider(provider):
         return await generate_runninghub_provider_image(prompt, size, model, reference_images, provider, image_parameters)
     if effective_protocol(provider, model) == 'gemini':

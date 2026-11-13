@@ -314,6 +314,59 @@
     }
   },
   "image_models": {
+  "comfyui-h3-image":     {
+      "display_name": "MiniMax H3 Image（本地 ComfyUI）",
+      "api_type": "comfyui_h3_images",
+      "supports_vision": true,
+      "async_mode": false,
+      "parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "options": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "4:5",
+            "5:4",
+            "3:2",
+            "2:3",
+            "21:9",
+            "9:21"
+          ],
+          "default": "1:1",
+          "description": "本地 H3 的宽高比：适配器按 目标面积 × 比例 算出 8 的倍数像素尺寸"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "default": "1K",
+          "description": "面积档：1k=4 MP（2048² 起，模型地板）、2k=8 MP、4k=16 MP；2048² 一张约 55 秒，16 MP 约 85 秒"
+        }
+      },
+      "limits": {
+        "n": 1,
+        "response_format": [
+          "b64"
+        ],
+        "max_reference_images": 16,
+        "size_rule": "aspect_ratio + resolution → 8 的倍数 WxH（1:1 时为 2048/2896/4096）；模型硬性要求 batch=1，steps 6 / cfg 1.0 为蒸馏模型推荐值",
+        "unsupported_params": [
+          "quality",
+          "output_format"
+        ],
+        "size_multiple": 8,
+        "min_pixels": 4194304,
+        "max_pixels": 16777216
+      },
+      "notes": "服务商协议选 comfyui，Base URL 填 http://127.0.0.1:8188（默认值）。模型名随意，适配器固定用 MiniMax-H3-Image 的 9 节点工作流（见 app/services/comfyui_workflows.py）；参考图走 /upload/image → 节点 4 的 images autogrow 输入。",
+      "source": "本地 ComfyUI 实测（ComfyUI 0.45.2 + ComfyUI-GGUF，MiniMax-H3-Image Pruned Q4_K_M，RTX 4070 Ti SUPER），见 issue #331"
+    },
     "nano-banana-pro": {
       "display_name": "Nano Banana Pro",
       "api_type": "images_generations",

@@ -3966,7 +3966,7 @@ function isGenericOpenAIProvider(provider){
     if(!provider) return false;
     const proto = String(provider.protocol || 'openai').toLowerCase();
     const id = String(provider.id || '').toLowerCase();
-    const specific = ['codex','runninghub','volcengine','gemini-cli'];
+    const specific = ['codex','runninghub','volcengine','gemini-cli','comfyui'];
     return !specific.includes(proto) && !specific.includes(id);
 }
 // 将 spec 的适配模型合并进 provider 模型列表（additive：保留原序，补入缺失的 spec 模型）。
