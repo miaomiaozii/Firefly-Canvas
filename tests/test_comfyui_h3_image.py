@@ -66,7 +66,7 @@ class FakeComfy:
             return {
                 self.prompt_id: {
                     'status': {'status_str': 'success', 'completed': True, 'messages': []},
-                    'outputs': {'9': {'images': [{'filename': 'canvas_00001_.png', 'subfolder': 'MiniMax-H3-Image', 'type': 'output'}]}},
+                    'outputs': {'9': {'images': [{'filename': 'canvas_00001_.png', 'subfolder': 'MiniMax-H3-Image', 'type': 'output', 'metadata': {'kind': 'image', 'width': 2720, 'height': 1536}}]}},
                 }
             }
         if step == 'error':
@@ -252,9 +252,10 @@ class ComfyEndToEndTests(ComfyBase):
             reference_images=None, provider_id=PROVIDER_ID, preserve_model=True,
             image_parameters={'aspect_ratio': '1:1', 'resolution': '1K'},
         ))
-        # 8MP 档默认 -> 1K 档 2048²
+        # 8MP 档默认 -> 1K 档 2048²；宽高以 ComfyUI 产物元数据为准（节点会对齐到自己的步长）
         self.assertEqual(image, {'type': 'b64', 'value': base64.b64encode(TINY_PNG).decode('ascii')})
-        self.assertEqual((raw['width'], raw['height']), (2048, 2048))
+        self.assertEqual((raw['width'], raw['height']), (2720, 1536))
+        self.assertEqual((raw['requested_width'], raw['requested_height']), (2048, 2048))
         # 只提交一次，绝不自动重试
         self.assertEqual(len(fake.requests_to('/prompt', 'POST')), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
@@ -285,7 +286,7 @@ class ComfyEndToEndTests(ComfyBase):
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
         self.assertEqual(body['prompt']['4']['inputs']['images'], {'image_1': ['ref1', 0]})
         self.assertEqual(body['prompt']['ref1']['inputs']['image'], 'canvas_ref_1.png')
-        self.assertEqual((raw['width'], raw['height']), (3864, 2176))
+        self.assertEqual((raw['requested_width'], raw['requested_height']), (3864, 2176))
 
     def test_validation_error_surfaces_node_message(self):
         from fastapi import HTTPException

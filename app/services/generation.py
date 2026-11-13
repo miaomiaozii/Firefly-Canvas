@@ -393,6 +393,14 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
                 report('provider_generating', queue_position=queue_position, elapsed_ms=int((now - started) * 1000), width=width, height=height, references=len(names))
             await asyncio.sleep(COMFYUI_IMAGE_POLL_INTERVAL)
         image = images[0]
+        # ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），
+        # 用产物元数据里的真实尺寸回填，别把节点的对齐差值报给画布。
+        metadata = image.get('metadata') or {}
+        try:
+            actual_width = int(metadata.get('width') or 0) or width
+            actual_height = int(metadata.get('height') or 0) or height
+        except (TypeError, ValueError):
+            actual_width, actual_height = width, height
         view = await client.get(
             f'{root}/view',
             params={
@@ -410,8 +418,10 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
         data = {
             'prompt_id': prompt_id,
             'image': image,
-            'width': width,
-            'height': height,
+            'width': actual_width,
+            'height': actual_height,
+            'requested_width': width,
+            'requested_height': height,
             'bytes': len(content),
             'elapsed_ms': int((time.monotonic() - started) * 1000),
             'queue_position': queue_position,
