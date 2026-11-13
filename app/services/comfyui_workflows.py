@@ -18,6 +18,12 @@ import os
 import random
 
 # 作者值：32B 蒸馏模型 6 步 / cfg 1.0 / euler+simple。别随手加到 20 步或抬 cfg。
+from .comfyui_pe_prompts import H3_PE_SYSTEM_PROMPT, H3_PE_TASK_PROMPT
+
+
+# 参考图在进模型前先按官方两段缩放（scale total pixels → scale to multiple 32）。
+COMFYUI_REFERENCE_PIXEL_MULTIPLE = 32
+
 COMFYUI_H3_DEFAULT_STEPS = 6
 COMFYUI_H3_DEFAULT_CFG = 1.0
 COMFYUI_H3_DEFAULT_SAMPLER = 'euler'
@@ -40,13 +46,17 @@ COMFYUI_EDIT_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_EDIT_MAX_MEGAPIXELS', '16
 COMFYUI_DEFAULT_MP_TIER = '2k'
 # 边长步长 = 8：作者 ResolutionSelector 就是用 8 的倍数（节点 object_info 的 step 提示写的是 32，
 # 但实测作者那套 8 倍数尺寸（如 5016×3344、2512×1672）能直接提交）。改成 32 就对不上公开尺寸表了。
-COMFYUI_SIZE_STEP = 8
+COMFYUI_SIZE_STEP = 32   # 节点 4 的 width/height 步长是 32，不按 32 取整会被静默向下取整（2728 -> 2720）
+COMFYUI_PE_ENCODER = 'qwen3.5_9b_w4a8_gptq.safetensors'
+
 # 参考图上限：节点 images 允许到 100，但画布一次传 16 张已经超出模型的有效参考能力。
 COMFYUI_MAX_REFERENCES = 16
 # 画布传这些值（或不传）时视为“跟随参考图”
 COMFYUI_AUTO_RATIO_VALUES = {'', 'auto', 'reference', 'keep', 'keep_ratio', 'follow', '跟随参考图'}
 
 COMFYUI_H3_T2I_WORKFLOW = {
+    # 节点编号沿用本项目早期的 1/2/3/4/5/7/8/9（骨架 = 官方模板 image_minimax_h3_image_edit），
+    # 官方 PE 链的节点号原样保留（34/35/36/39/40/41/43/44/61），方便对着工作流文件排错。
     '1': {
         'class_type': 'UnetLoaderGGUF',
         'inputs': {'unet_name': 'MiniMax-H3-Image-Pruned-Q4_K_M.gguf'},
@@ -63,12 +73,89 @@ COMFYUI_H3_T2I_WORKFLOW = {
         'inputs': {'vae_name': 'minimax_h3_image_vae_fp16.safetensors'},
         '_meta': {'title': 'MiniMax-H3-Image VAE'},
     },
+    # ---- 提示词增强（PE，官方 TextGenerateV2 链）----
+    '61': {
+        'class_type': 'PrimitiveBoolean',
+        'inputs': {'value': True},
+        '_meta': {'title': 'Boolean (Enable PE?)'},
+    },
+    '43': {
+        'class_type': 'PrimitiveStringMultiline',
+        'inputs': {'value': ''},
+        '_meta': {'title': 'Text (user_prompt)'},
+    },
+    '39': {
+        'class_type': 'PrimitiveStringMultiline',
+        'inputs': {'value': H3_PE_TASK_PROMPT},
+        '_meta': {'title': 'Text (task_prompt)'},
+    },
+    '36': {
+        'class_type': 'PrimitiveStringMultiline',
+        'inputs': {'value': H3_PE_SYSTEM_PROMPT},
+        '_meta': {'title': 'Text (system_prompt)'},
+    },
+    '40': {
+        'class_type': 'StringReplace',
+        # 官方写法：task_prompt 里的 {input text} 占位符换成用户提示词。
+        'inputs': {'string': ['39', 0], 'find': '{input text}', 'replace': ['43', 0]},
+        '_meta': {'title': 'StringReplace'},
+    },
+    '35': {
+        'class_type': 'CLIPLoader',
+        # PE 用的不是 32B 主编码器，是官方指定的 qwen3.5 9B（模板 note 里写明了）。
+        'inputs': {
+            'clip_name': 'qwen3.5_9b_w4a8_gptq.safetensors',
+            'type': 'minimax',
+            'device': 'default',
+        },
+        '_meta': {'title': 'PE text encoder'},
+    },
+    '34': {
+        'class_type': 'TextGenerateV2',
+        'inputs': {
+            'clip': ['35', 0],
+            'prompt': ['40', 0],
+            'max_length': 8196,
+            'sampling_mode': 'on',
+            'sampling_mode.temperature': 1.0,
+            'sampling_mode.top_k': 20,
+            'sampling_mode.top_p': 0.95,
+            'sampling_mode.min_p': 0.0,
+            'sampling_mode.repetition_penalty': 1.0,
+            'sampling_mode.presence_penalty': 0.0,
+            'sampling_mode.seed': 0,
+            'thinking': True,
+            'use_default_template': True,
+            'mtp': 'auto',
+            'system_prompt': ['36', 0],
+        },
+        '_meta': {'title': 'PE generate'},
+    },
+    '44': {
+        'class_type': 'JsonExtractString',
+        'inputs': {'json_string': ['34', 0], 'key': 'expanded_caption'},
+        '_meta': {'title': 'JsonExtractString'},
+    },
+    '37': {
+        'class_type': 'PreviewAny',
+        # 官方在这里挂 PreviewAny 看最终提示词；保留它，出问题时能直接从 /history 里读出
+        # PE 到底把提示词改成了什么。
+        'inputs': {'source': ['41', 0]},
+        '_meta': {'title': 'prompt output'},
+    },
+    '41': {
+        'class_type': 'ComfySwitchNode',
+        # switch=true 时用 PE 结果，false 时用原始用户提示词。
+        'inputs': {'switch': ['61', 0], 'on_true': ['44', 0], 'on_false': ['43', 0]},
+        '_meta': {'title': 'PE on/off'},
+    },
+    # ---- 生图主链 ----
     '4': {
         'class_type': 'MiniMaxH3ImageConditioning',
         'inputs': {
             'clip': ['2', 0],
             'vae': ['3', 0],
-            'prompt': '',
+            'prompt': ['37', 0],
             'width': 2048,
             'height': 2048,
         },
@@ -275,25 +362,30 @@ def comfyui_h3_workflow(
     scheduler=COMFYUI_H3_DEFAULT_SCHEDULER,
     filename_prefix=COMFYUI_H3_FILENAME_PREFIX,
     reference_names=None,
+    pe_enabled=True,
 ):
-    """在 9 节点模板上注入参数；给了参考图就挂 LoadImage 并接节点 4 的 images。
+    """按官方 `image_minimax_h3_image_edit` 骨架组装 API 图。
 
-    参考图必须写成**扁平键** `images.image_0` / `images.image_1` ……：
-    - 嵌套写法 `{"images": {"image_1": [...]}}` 会被后端**静默丢弃**（实测：节点收到空 images，
-      宽度高度都退回 2048，等于默默变成纯文生图，不报任何错）。
-    - 序号从 0 开始，和前端 autogrow 一致（`comfyui_frontend` 的
-      `autogrowOrdinalToName` → `${group}.${prefix}${ordinal}`，ordinal 从 0 数）。
-      所以 `<Picture 1>` 对应 `images.image_0`。
-    LoadImage 的 image 用 /upload/image 返回的 name。
+    注入点：
+    - 用户提示词 → 节点 43（`Text (user_prompt)`）；PE 链会把它替换进 task_prompt 的
+      `{input text}` 占位符，`JsonExtractString` 取出 `expanded_caption` 后经
+      `ComfySwitchNode` 送到节点 4 的 prompt。
+    - 尺寸 → 节点 4 的 width/height（官方是让 GetImageSize 跟着参考图走，画布必须听用户选的比例，
+      所以这里换成画布给定值）。
+    - 参考图 → LoadImage → 官方那两段缩放（scale total pixels 到面积档 → scale to multiple 32）
+      → 节点 4 的 `images.image_*`，第一张同时喂 PE 的 `images.image1`。
+
+    参考图键名两个节点**不一样**，都是读源码确认的，别互相套用：
+    - `MiniMaxH3ImageConditioning`：`TemplatePrefix(prefix="image_")` → `images.image_0`、`images.image_1`……
+      扁平键。嵌套写法 `{"images": {"image_1": [...]}}` 会被后端**静默丢弃**（实测：节点收到空 images，
+      等于默默退化成纯文生图，不报任何错）。
+    - `TextGenerateV2`：`TemplateNames(names=["image1"…"image50"])` → `images.image1`（无下划线、从 1 数）。
     """
     graph = copy.deepcopy(COMFYUI_H3_T2I_WORKFLOW)
-    graph['4']['inputs'].update(
-        {
-            'prompt': str(prompt or ''),
-            'width': _comfyui_snap(width),
-            'height': _comfyui_snap(height),
-        }
-    )
+    target_width = _comfyui_snap(width)
+    target_height = _comfyui_snap(height)
+    graph['43']['inputs']['value'] = str(prompt or '')
+    graph['4']['inputs'].update({'width': target_width, 'height': target_height})
     graph['7']['inputs'].update(
         {
             'seed': comfyui_h3_seed(seed),
@@ -303,16 +395,44 @@ def comfyui_h3_workflow(
             'scheduler': str(scheduler or COMFYUI_H3_DEFAULT_SCHEDULER),
         }
     )
+    if not pe_enabled:
+        # 关掉 PE 时不用另建图：官方那个开关（节点 61）就是为此存在的。
+        graph['61']['inputs']['value'] = False
     if filename_prefix:
         graph['9']['inputs']['filename_prefix'] = str(filename_prefix)
+
     names = [str(name or '').strip() for name in (reference_names or []) if str(name or '').strip()]
     if names:
+        megapixels = min(max(target_width * target_height / 1_000_000, 4.0), COMFYUI_EDIT_MAX_MEGAPIXELS)
         for index, name in enumerate(names[:COMFYUI_MAX_REFERENCES]):
-            node_id = f'ref{index}'
-            graph[node_id] = {
+            load_id = f'ref{index}'
+            area_id = f'rs_a{index}'
+            snap_id = f'rs_b{index}'
+            graph[load_id] = {
                 'class_type': 'LoadImage',
                 'inputs': {'image': name},
                 '_meta': {'title': f'reference {index + 1}'},
             }
-            graph['4']['inputs'][f'images.image_{index}'] = [node_id, 0]
+            graph[area_id] = {
+                'class_type': 'ResizeImageMaskNode',
+                'inputs': {
+                    'input': [load_id, 0],
+                    'resize_type': 'scale total pixels',
+                    'resize_type.megapixels': round(megapixels, 3),
+                    'scale_method': 'area',
+                },
+                '_meta': {'title': f'reference {index + 1} @area'},
+            }
+            graph[snap_id] = {
+                'class_type': 'ResizeImageMaskNode',
+                'inputs': {
+                    'input': [area_id, 0],
+                    'resize_type': 'scale to multiple',
+                    'resize_type.multiple': COMFYUI_REFERENCE_PIXEL_MULTIPLE,
+                    'scale_method': 'area',
+                },
+                '_meta': {'title': f'reference {index + 1} @snap'},
+            }
+            graph['4']['inputs'][f'images.image_{index}'] = [snap_id, 0]
+        graph['34']['inputs']['images.image1'] = ['rs_b0', 0]
     return graph

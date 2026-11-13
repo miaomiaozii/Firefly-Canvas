@@ -197,15 +197,15 @@ class ComfyResolutionTests(unittest.TestCase):
         from app.services.comfyui_workflows import comfyui_h3_resolution
         rows = [
             ('4k', '1:1', (4096, 4096)),
-            ('4k', '3:2', (5016, 3344)),
-            ('4k', '2:3', (3344, 5016)),
-            ('4k', '4:3', (4728, 3544)),
-            ('4k', '3:4', (3544, 4728)),
-            ('4k', '16:9', (5464, 3072)),
-            ('4k', '9:16', (3072, 5464)),
-            ('4k', '21:9', (6256, 2680)),
-            ('2k', '1:1', (2896, 2896)),
-            ('2k', '16:9', (3864, 2176)),
+            ('4k', '3:2', (5024, 3360)),
+            ('4k', '2:3', (3360, 5056)),
+            ('4k', '4:3', (4736, 3552)),
+            ('4k', '3:4', (3552, 4736)),
+            ('4k', '16:9', (5472, 3072)),
+            ('4k', '9:16', (3072, 5472)),
+            ('4k', '21:9', (6272, 2688)),
+            ('2k', '1:1', (2912, 2912)),
+            ('2k', '16:9', (3872, 2176)),
             ('1k', '1:1', (2048, 2048)),
         ]
         for tier, ratio, expected in rows:
@@ -265,27 +265,44 @@ class ComfyWorkflowTests(unittest.TestCase):
         from app.services.comfyui_workflows import COMFYUI_H3_T2I_WORKFLOW, comfyui_h3_workflow
         graph = comfyui_h3_workflow('一只猫', 2896, 2896, seed=42)
         node4 = graph['4']['inputs']
-        self.assertEqual(node4['prompt'], '一只猫')
-        self.assertEqual((node4['width'], node4['height']), (2896, 2896))
-        self.assertNotIn('images', node4)
+        # 提示词不经节点 4 直连：官方骨架里它走 PE 链（43 → StringReplace → TextGenerateV2
+        # → JsonExtractString → ComfySwitchNode → PreviewAny → 节点 4）。
+        self.assertEqual(node4['prompt'], ['37', 0])
+        self.assertEqual(graph['43']['inputs']['value'], '一只猫')
+        self.assertEqual(graph['40']['inputs']['replace'], ['43', 0])
+        self.assertEqual(graph['34']['class_type'], 'TextGenerateV2')
+        self.assertEqual(graph['41']['inputs']['switch'], ['61', 0])
+        self.assertTrue(graph['61']['inputs']['value'])
+        self.assertEqual(graph['44']['inputs']['key'], 'expanded_caption')
+        self.assertEqual((node4['width'], node4['height']), (2880, 2880))
+        self.assertFalse([k for k in node4 if k.startswith('images')])
         self.assertEqual(graph['7']['inputs']['seed'], 42)
         self.assertEqual(graph['7']['inputs']['steps'], 6)
         self.assertEqual(graph['7']['inputs']['cfg'], 1.0)
         self.assertEqual(graph['7']['inputs']['sampler_name'], 'euler')
         self.assertEqual(graph['7']['inputs']['scheduler'], 'simple')
         # 模板本身没被就地改坏
-        self.assertEqual(COMFYUI_H3_T2I_WORKFLOW['4']['inputs']['prompt'], '')
+        self.assertEqual(COMFYUI_H3_T2I_WORKFLOW['43']['inputs']['value'], '')
         self.assertEqual(COMFYUI_H3_T2I_WORKFLOW['7']['inputs']['seed'], 0)
 
     def test_reference_images_wire_autogrow_input(self):
         from app.services.comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_h3_workflow
         graph = comfyui_h3_workflow('改成油画', 2048, 2048, reference_names=['a.png', 'b.png'])
-        self.assertEqual(graph['4']['inputs']['images.image_0'], ['ref0', 0])
-        self.assertEqual(graph['4']['inputs']['images.image_1'], ['ref1', 0])
+        # 参考图先过官方那两段缩放（按面积缩 → 对齐 32 的倍数），再进节点 4
+        self.assertEqual(graph['4']['inputs']['images.image_0'], ['rs_b0', 0])
+        self.assertEqual(graph['4']['inputs']['images.image_1'], ['rs_b1', 0])
+        # 嵌套形状是无效的（后端会静默丢掉），只能扁平
         self.assertNotIn('images', graph['4']['inputs'])
+        self.assertEqual(graph['rs_b0']['inputs']['input'], ['rs_a0', 0])
+        self.assertEqual(graph['rs_a0']['inputs']['input'], ['ref0', 0])
+        self.assertEqual(graph['rs_a0']['inputs']['resize_type'], 'scale total pixels')
+        self.assertEqual(graph['rs_b0']['inputs']['resize_type'], 'scale to multiple')
+        self.assertEqual(graph['rs_b0']['inputs']['resize_type.multiple'], 32)
         self.assertEqual(graph['ref0']['class_type'], 'LoadImage')
         self.assertEqual(graph['ref0']['inputs']['image'], 'a.png')
         self.assertEqual(graph['ref1']['inputs']['image'], 'b.png')
+        # PE 也吃第一张参考图，键名与节点 4 不同（image1，无下划线、从 1 数）
+        self.assertEqual(graph['34']['inputs']['images.image1'], ['rs_b0', 0])
         many = comfyui_h3_workflow('x', 2048, 2048, reference_names=[f'{i}.png' for i in range(40)])
         wired = [k for k in many['4']['inputs'] if k.startswith('images.image_')]
         self.assertEqual(len(wired), COMFYUI_MAX_REFERENCES)
@@ -319,11 +336,12 @@ class ComfyEndToEndTests(ComfyBase):
         # 只提交一次，绝不自动重试
         self.assertEqual(len(fake.requests_to('/prompt', 'POST')), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['prompt'], '一只戴宇航员头盔的猫')
+        self.assertEqual(body['prompt']['43']['inputs']['value'], '一只戴宇航员头盔的猫')
         self.assertEqual(body['prompt']['4']['inputs']['width'], 2048)
         self.assertEqual(body['prompt']['9']['class_type'], 'SaveImage')
-        # 画布档位不得泄漏成 quality（本地工作流没有这个概念）
-        self.assertNotIn('quality', json.dumps(body))
+        # 画布档位不得泄漏成 quality（本地工作流没有这个概念）；
+        # 只检查生图节点，PE 的 task_prompt 文本里本来就有 quality 这个词。
+        self.assertNotIn('quality', json.dumps(body['prompt']['4']['inputs']))
         view = fake.requests_to('/view')[0].url.params
         self.assertEqual(view['filename'], 'canvas_00001_.png')
         self.assertEqual(view['subfolder'], 'MiniMax-H3-Image')
@@ -345,13 +363,13 @@ class ComfyEndToEndTests(ComfyBase):
         uploads = fake.requests_to('/upload/image', 'POST')
         self.assertEqual(len(uploads), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['ref0', 0])
-        self.assertNotIn('images', body['prompt']['4']['inputs'])
+        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['rs_b0', 0])
+        self.assertFalse([k for k in body['prompt']['4']['inputs'] if k == 'images'])
         self.assertEqual(body['prompt']['ref0']['inputs']['image'], 'canvas_ref_1.png')
         # 选了具体比例就必须听画布的：本地节点不要求参考图与画布同比例
         # （实测方形参考图 + 16:9 画布能正常出 2720×1536，主体无拉伸）
         node4 = body['prompt']['4']['inputs']
-        self.assertEqual((node4['width'], node4['height']), (3864, 2176))
+        self.assertEqual((node4['width'], node4['height']), (3872, 2176))
 
     def test_auto_ratio_follows_reference_shape(self):
         """画布没选比例（auto）时才跟参考图走——对应官方 edit 模板的 GetImageSize 写法。"""
@@ -381,7 +399,7 @@ class ComfyEndToEndTests(ComfyBase):
         ))
         self.assertTrue(raw['prompt_prefixed'])
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['prompt'], 'Edit <Picture 1>. 让它变成白天')
+        self.assertEqual(body['prompt']['43']['inputs']['value'], 'Edit <Picture 1>. 让它变成白天')
 
     def test_prompt_with_picture_token_is_left_alone(self):
         from app.services.generation import generate_ai_image
@@ -394,7 +412,7 @@ class ComfyEndToEndTests(ComfyBase):
         ))
         self.assertFalse(raw['prompt_prefixed'])
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['prompt'], 'Swap the sky in <Picture 1> to daylight')
+        self.assertEqual(body['prompt']['43']['inputs']['value'], 'Swap the sky in <Picture 1> to daylight')
 
     def test_validation_error_surfaces_node_message(self):
         from fastapi import HTTPException
@@ -514,8 +532,8 @@ class ComfyReferenceResolutionTests(ComfyBase):
         self.assertEqual(calls[0][0], 'media_record')
         self.assertEqual(len(fake.requests_to('/upload/image', 'POST')), 1)
         body = json.loads(fake.requests_to('/prompt', 'POST')[0].content.decode('utf-8'))
-        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['ref0', 0])
-        self.assertNotIn('images', body['prompt']['4']['inputs'])
+        self.assertEqual(body['prompt']['4']['inputs']['images.image_0'], ['rs_b0', 0])
+        self.assertFalse([k for k in body['prompt']['4']['inputs'] if k == 'images'])
         self.assertEqual(raw['references'], 1)
         self.assertEqual(image['type'], 'url')
 

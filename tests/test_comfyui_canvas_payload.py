@@ -41,13 +41,13 @@ class ComfyTierTests(unittest.TestCase):
 
     def test_resolution_tier_drives_pixels(self):
         from app.services.comfyui_workflows import comfyui_h3_resolution
-        self.assertEqual(comfyui_h3_resolution('wide', '1k'), (2728, 1536))
-        self.assertEqual(comfyui_h3_resolution('16:9', '1K'), (2728, 1536))
-        self.assertEqual(comfyui_h3_resolution('story', '1k'), (1536, 2728))
+        self.assertEqual(comfyui_h3_resolution('wide', '1k'), (2720, 1536))
+        self.assertEqual(comfyui_h3_resolution('16:9', '1K'), (2720, 1536))
+        self.assertEqual(comfyui_h3_resolution('story', '1k'), (1536, 2720))
         self.assertEqual(comfyui_h3_resolution('1:1', 'low'), (2048, 2048))
         self.assertEqual(comfyui_h3_resolution('1:1', 'high'), (4096, 4096))
         # 不传档位：从 size 面积反推（1280×720 ≈ 0.9MP → H3 地板 4MP 档）
-        self.assertEqual(comfyui_h3_resolution('wide', '', '1280x720'), (2728, 1536))
+        self.assertEqual(comfyui_h3_resolution('wide', '', '1280x720'), (2720, 1536))
 
 
 class ComfyCanvasPayloadTests(unittest.TestCase):
@@ -112,10 +112,10 @@ class ComfyCanvasPayloadTests(unittest.TestCase):
 
     def test_canvas_variants(self):
         cases = [
-            ({'aspect_ratio': 'wide', 'resolution': '1k'}, (2728, 1536)),
-            ({'aspect_ratio': '16:9', 'resolution': 'low'}, (2728, 1536)),
-            ({'aspect_ratio': 'story', 'resolution': '1K'}, (1536, 2728)),
-            ({'aspect_ratio': '4:3'}, (2368, 1776)),
+            ({'aspect_ratio': 'wide', 'resolution': '1k'}, (2720, 1536)),
+            ({'aspect_ratio': '16:9', 'resolution': 'low'}, (2720, 1536)),
+            ({'aspect_ratio': 'story', 'resolution': '1K'}, (1536, 2720)),
+            ({'aspect_ratio': '4:3'}, (2368, 1792)),
         ]
         for params, expected in cases:
             node4 = self._node4_for(params)

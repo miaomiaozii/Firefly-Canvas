@@ -31,7 +31,7 @@
 
 - 多一个协议要维护，但换来本地/云端两条路径互不牵连。
 - 本机 ComfyUI 未启动时任务以 503 快速失败并提示改 `base_url`，不占用重试预算。
-- 尺寸表以节点 `ResolutionSelector` 的实测表为准（1k/2k/4k = 4/8/16 MP，边长 8 的倍数）；`docs/MODEL_PARAMETERS.md` 记录的云 API 表与此差值在 1 个步长内，两套各自独立维护。
+- 尺寸表以节点 4 的 `width`/`height` 步长为准：**必须是 32 的倍数**。官方图片节点声明 `step: 32`，传非 32 倍数会被静默向下取整（传 2728 → 实际 2720），所以适配器（`COMFYUI_SIZE_STEP = 32`）直接把 1K/2K/4K = 4/8/16 MP 的结果取整到 32。`docs/MODEL_PARAMETERS.md` 记录的云 API 表与此差值在 1 个步长内，两套各自独立维护。
 - 将来要接「远程 ComfyUI 容器」时只需改 `base_url` 并补鉴权头，不需要动工作流与协议。
 
 ## 上线后的四项修正（用户报「取不回来 / 参考图传不过去 / 图都不对」后实测得出）
@@ -68,7 +68,7 @@ LoadImage(image_1)
 
 另一条官方事实：模板里的 t2i 用 `ResolutionSelector('1:1 (Square)', 4, 32)`（4 MP / 边长 32），并附注「doesn't work well in low resolution ... Raise ... 16MP」；画布的面积档命名（1K/2K/4K = 4/8/16 MP）与之一致。
 
-另：官方 edit 模板还串了一个提示词增强子图（`qwen3.5_9b` + `TextGenerateV2` + `JsonExtractString('expanded_caption')` + `ComfySwitchNode` 开关），默认开。本地适配器**没有**接这层：它需要额外 9B 文本模型和一次 LLM 推理，属另一个决策范围；需要时用 `Generate Text` 节点自己跑。
+官方 edit 模板还串了一层提示词增强（PE）：`TextGenerateV2`（用 `qwen3.5_9b_w4a8_gptq.safetensors` 作 LLM）+ `JsonExtractString('expanded_caption')` + `ComfySwitchNode`（开关节点 61）+ 官方给的 system/task 提示词。
 
 ## 追加（2026-11-14 深夜，维护者实测反馈后）
 
@@ -76,7 +76,7 @@ LoadImage(image_1)
 节点 4 的 `images` 是 `COMFY_AUTOGROW_V3`。API 图里**必须**把它写成扁平键：
 
 ```json
-"4": {"inputs": {"images.image_0": ["ref0", 0], "prompt": "...", "width": 2728, "height": 1536}}
+"4": {"inputs": {"images.image_0": ["ref0", 0], "prompt": "...", "width": 2720, "height": 1536}}
 ```
 
 写成嵌套的 `"images": {"image_0": [...]}` 会被后端**静默丢弃**：不报错、不警告，节点拿到的 `images` 是空的，输出尺寸回落到默认 2048，整单退化成文生图。第一版适配器就是嵌套写法，导致画布上"参考图传不过去"——图能出，但跟参考图毫无关系。
@@ -87,3 +87,26 @@ LoadImage(image_1)
 
 ### 显存不足自动腾一次
 显存碎片导致 OOM 很常见（同一张图前一次能跑、后一次 OOM）。适配器把 OOM 单独归类：收到 `out of memory` / `exceed allowed memory` 时先 `POST /free {"unload_models": true, "free_memory": true}`，再同图重跑**一次**；第二次仍 OOM 才把错误抛给画布（并提示降档）。这不是"自动重试"——只针对显存这一种确定性可恢复的失败，且上限一次。
+
+### 提示词增强（PE）已接入：与官方模板同构
+
+维护者对照官方 `image_minimax_h3_image_edit.json`（27 节点）后要求「按官方模板重建，含 PE」（2026-11-14，选项 A）。适配器现在发出的图在节点集与连线上与官方一致，只有三处**必须**的差异：
+
+| 官方模板 | 适配器 |
+|---|---|
+| `UNETLoader`/`CLIPLoader`（safetensors） | `UnetLoaderGGUF`/`CLIPLoaderGGUF`（本机只有 GGUF 权重） |
+| `GetImageSize` 把参考图尺寸回填给节点 4 | 尺寸取画布的比例 + 面积档（画布必须能指定比例，官方网页也支持比例与参考图不同） |
+| `ImageCompare` 对比面板 | 不进 API 图（`compare_view` 是纯前端自定义类型，后端会 `required_input_missing`） |
+
+PE 链（节点号与官方一致，便于对照）：`43 PrimitiveStringMultiline(用户提示词)` → `40 StringReplace(task_prompt 里的 {input text})` → `34 TextGenerateV2(clip=35 CLIPLoader qwen3.5_9b_w4a8_gptq, system_prompt=36, images.image1=参考图)` → `44 JsonExtractString(expanded_caption)` → `41 ComfySwitchNode(switch=61 PrimitiveBoolean)` → `37 PreviewAny` → 节点 4 的 `prompt`。关 PE 就把节点 61 置 false，提示词直连；适配器用 `pe_enabled=False` 表达这件事。
+
+官方 system/task 提示词逐字落库在 `app/services/comfyui_pe_prompts.py`（脚本从模板导出，不手抄）。
+
+实测代价（4070 Ti SUPER 16GB，4030×4030 参考图 + 4MP 输出）：
+
+| 路径 | 纯 H3 | 加 PE |
+|---|---|---|
+| 文生图 1K 16:9 | 30s | 90s（冷启动）/ 30s（PE 模型已常驻） |
+| 图生图 1K 1:1 | 35s | 60–175s（首跑要 175s：PE 9B + 主模型 + Qwen3-VL-32B 同时抢显存） |
+
+代价换来的东西是实打实的：PE 会把「把参考图里的毯子放进客厅」扩写成带 `<Picture 1>`、光照、镜头、材质描述的完整提示词（实测 714 字符），H3 因此更愿意保留产品外观。
