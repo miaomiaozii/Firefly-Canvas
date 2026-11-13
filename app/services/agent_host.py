@@ -624,18 +624,108 @@ class AgentHostManager:
 
     async def send_prompt(self, session: AgentSession, message: str, images: list = None) -> None:
         """Send a prompt to the agent."""
+        # Refs #323 票 E（reference frame）：每轮发送前解析 agent.refFrameId 素材，
+        # 注入当前 CLI（pi=RPC images，codex=`exec -i` 实测语法）。护栏（监理 token 钉）：
+        # ≤REF_MAX_IMAGES 张、单图 >REF_MAX_IMAGE_BYTES 跳过、路径解析失败跳过不炸整轮
+        #（监理钉③）；视频本轮不注入（codex -i 只吃图）。注入不进落盘正文（防 jsonl
+        # 爆炸），但监理钉①：user_prompt 事件带轻量 refs 元数据 {node_id,name}+跳过清单，
+        # 回放 UI 可区分带素材/不带素材轮次，决策可审计。
+        ref_images, ref_skipped = self._collect_reference_images(session)
+        user_payload = {"type": "user_prompt", "text": message}
+        if ref_images or ref_skipped:
+            user_payload["refs"] = [{"node_id": r["node_id"], "name": r["name"]} for r in ref_images]
+            if ref_skipped:
+                user_payload["refs_skipped"] = ref_skipped
         # #318 票 C：user 侧入回放日志（仅落盘不广播——前端实时侧用本地回声，
         # 避免双气泡；降级重放/刷新回放读此数据）。
-        self._persist_event(session, {"type": "user_prompt", "text": message})
+        self._persist_event(session, user_payload)
+        inject_text = message
+        if ref_images or ref_skipped:
+            names = [r["name"] for r in ref_images] + [s["name"] for s in ref_skipped]
+            inject_text = f"{message}\n\n【参考框素材清单】{'、'.join(names)}（图片已随本消息注入；视频/超限项见跳过原因）"
         # #318 票 B：codex 宿主不经 pi RPC——每轮一个 `codex exec --json` 进程。
         if session.agent_cli == "codex":
-            await self._codex_turn(session, message)
+            await self._codex_turn(session, inject_text,
+                                   ref_paths=[r["path"] for r in ref_images])
             return
-        command = {"type": "prompt", "message": message}
-        if images:
-            command["images"] = images
+        command = {"type": "prompt", "message": inject_text}
+        rpc_images = list(images or [])
+        for r in ref_images:
+            payload = self._pi_image_payload(r)
+            if payload is not None:
+                rpc_images.append(payload)
+        if rpc_images:
+            command["images"] = rpc_images
         await self.send_command(session, command)
         session.status = "busy"
+
+    def _collect_reference_images(self, session: AgentSession) -> tuple[list, list]:
+        """agent.refFrameId → smart-group 成员 → 可注入图片清单（纯读，失败全降级）。
+
+        返回 (images:[{node_id,name,path,mime}], skipped:[{name,reason}])。
+        Refs #323 票 E；护栏常数在 app/services/agent_frame.py。
+        """
+        from .agent_frame import REF_MAX_IMAGES, REF_MAX_IMAGE_BYTES
+        images: list = []
+        skipped: list = []
+        store = _app_main.FIREFLY_PROJECT_STORE
+        if store is None or not getattr(session, "node_id", ""):
+            return images, skipped
+        try:
+            canvas = store.canvas(session.project_id)
+        except Exception:
+            return images, skipped
+        nodes = {str(n.get("id")): n for n in (canvas.get("nodes") or [])
+                 if isinstance(n, dict) and n.get("id")}
+        agent = nodes.get(str(session.node_id)) or {}
+        frame = nodes.get(str(agent.get("refFrameId") or ""))
+        if not isinstance(frame, dict) or frame.get("type") != "smart-group":
+            return images, skipped
+        for mid in (frame.get("items") or []):
+            member = nodes.get(str(mid))
+            if not isinstance(member, dict):
+                skipped.append({"name": str(mid), "reason": "节点不存在"})
+                continue
+            name = str(member.get("title") or member.get("name") or mid)
+            member_images = [img for img in (member.get("images") or []) if isinstance(img, dict)]
+            target = next((img for img in member_images if str(img.get("kind") or "") == "image"), None)
+            if target is None:
+                if any(str(img.get("kind") or "") == "video" for img in member_images):
+                    skipped.append({"name": name, "reason": "视频本轮不注入"})
+                continue
+            if len(images) >= REF_MAX_IMAGES:
+                skipped.append({"name": name, "reason": f"超单轮 {REF_MAX_IMAGES} 张上限"})
+                continue
+            try:
+                record = store.media_record(session.project_id, str(target.get("asset_id") or ""))
+                path = str(record.get("path") or "")
+                size = os.path.getsize(path)
+            except Exception:
+                # 监理钉③：路径/文件解析失败→跳过该素材不炸整轮（未来换宿主/容器化即此路径）。
+                skipped.append({"name": name, "reason": "路径解析失败"})
+                continue
+            if size > REF_MAX_IMAGE_BYTES:
+                skipped.append({"name": name, "reason": f"单图超 {REF_MAX_IMAGE_BYTES // 1_000_000}MB"})
+                continue
+            images.append({"node_id": str(mid), "name": name, "path": path,
+                           "mime": self._image_mime(path)})
+        return images, skipped
+
+    @staticmethod
+    def _image_mime(path: str) -> str:
+        ext = os.path.splitext(path)[1].lower()
+        return {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif"}.get(ext, "image/png")
+
+    def _pi_image_payload(self, ref: dict):
+        """pi RPC images 元素（rpc-commands.md:ImageContent{type,data,mimeType}，base64）。"""
+        import base64
+        try:
+            with open(ref["path"], "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+        except OSError:
+            return None
+        return {"type": "image", "data": data, "mimeType": ref["mime"]}
 
     async def send_steer(self, session: AgentSession, message: str) -> None:
         """Send a steer command (redirect current turn)."""
@@ -669,6 +759,7 @@ class AgentHostManager:
         message: str,
         allow_resume: bool = True,
         degrade_budget: bool = True,
+        ref_paths: list | None = None,
     ) -> None:
         """一轮 = 一个 `codex exec --json` 进程（ADR 0024 状态机）。
 
@@ -713,6 +804,10 @@ class AgentHostManager:
             cmd = adapter.build_argv(params)
         if cmd is None:
             raise RuntimeError("未找到 codex 可执行文件：PATH 中没有 'codex'")
+        # Refs #323 票 E：参考框素材注入——codex 0.162 实测 `exec -i <FILE>...`（多图重复
+        # -i），插在 stdin 占位 `-` 之前；路径解析失败已在收集层降级，这里不再炸。
+        from .agent_adapters.codex_adapter import insert_ref_images
+        cmd = insert_ref_images(cmd, ref_paths or [])
 
         session.last_error = ""
         session._turn_started_at = time.time()

@@ -267,8 +267,14 @@ async def canvas_edit_outpaint(project_id: str, request: Request, x_agent_projec
 # =============================================================================
 
 
-async def create_node_core(project_id: str, node: dict) -> dict:
-    """Create a node on the canvas. `node` must be a dict; `type` is required."""
+async def create_node_core(project_id: str, node: dict, agent_node_id: str = "") -> dict:
+    """Create a node on the canvas. `node` must be a dict; `type` is required.
+
+    Refs #323 票 E（会话 frame）：调用方未显式给 x/y 且发起 agent 绑了
+    chatFrameId（smart-group）时，新节点按 frame 网格顺序落位并追加进 frame.items
+    （监理钉②：容量不足按整行自动长高，compute_frame_slot 定义）；显式给 x/y 的
+    尊重调用方。仅覆盖 server 侧建节点链（前端级联生成不在票 E 范围）。
+    """
     _validate_project(project_id)
     if not isinstance(node, dict):
         raise HTTPException(status_code=400, detail="node must be an object")
@@ -278,14 +284,45 @@ async def create_node_core(project_id: str, node: dict) -> dict:
         node["id"] = f"node-{uuid.uuid4().hex[:12]}"
     if not node.get("type"):
         raise HTTPException(status_code=400, detail="node.type is required")
+    _explicit_pos = ("x" in node) or ("y" in node)
     if "x" not in node:
         node["x"] = 0
     if "y" not in node:
         node["y"] = 0
     node["created_at"] = _app_main.now_ms()
 
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    mutations = [{"op": "upsert_node", "node": node}]
+    if not _explicit_pos and agent_node_id:
+        frame = _find_chat_frame(project_id, agent_node_id)
+        if frame is not None:
+            from app.services import agent_frame as _frame_mod
+            index = len(frame.get("items") or [])
+            dx, dy, new_h = _frame_mod.compute_frame_slot(frame, index)
+            node["x"] = int(frame.get("x") or 0) + dx
+            node["y"] = int(frame.get("y") or 0) + dy
+            grown = {**frame,
+                     "items": [*(frame.get("items") or []), node["id"]],
+                     "h": max(int(frame.get("h") or 0), new_h)}
+            mutations.append({"op": "upsert_node", "node": grown})
+
+    await _apply_mutations(project_id, mutations)
     return {"success": True, "node_id": node["id"]}
+
+
+def _find_chat_frame(project_id: str, agent_node_id: str) -> dict | None:
+    """agent 节点 → chatFrameId → 存在的 smart-group（链上任一环缺失= None）。"""
+    store = _app_main.FIREFLY_PROJECT_STORE
+    try:
+        canvas = store.canvas(project_id)
+    except Exception:
+        return None
+    nodes = {str(n.get("id")): n for n in (canvas.get("nodes") or []) if isinstance(n, dict)}
+    agent = nodes.get(str(agent_node_id))
+    frame_id = str((agent or {}).get("chatFrameId") or "")
+    frame = nodes.get(frame_id)
+    if isinstance(frame, dict) and frame.get("type") == "smart-group":
+        return frame
+    return None
 
 
 async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:

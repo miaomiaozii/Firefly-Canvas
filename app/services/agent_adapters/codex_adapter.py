@@ -66,6 +66,21 @@ class CodexAdapter(HostAdapter):
         return head + ["resume", thread_id] + tail
 
 
+def insert_ref_images(cmd: List[str], ref_paths: List[str]) -> List[str]:
+    """Refs #323 票 E：把参考图 `-i <FILE>` 对插在 stdin 占位 `-` 之前（codex 0.162
+    `exec --help` 实测 `-i, --image <FILE>...`，多图用重复 -i）。无路径/无占位时原样返回。
+
+    必须是模块级函数：此前内联在 agent_host._codex_turn 里，改动造成 build_resume_argv
+    脱离 CodexAdapter 类（现物教训：类体内插入模块级 def 会切分方法）。
+    """
+    if not ref_paths or "-" not in cmd:
+        return list(cmd)
+    out = list(cmd)
+    idx = out.index("-")
+    out[idx:idx] = [v for p in ref_paths for v in ("-i", p)]
+    return out
+
+
 def _toml_value(s: str) -> str:
     """TOML 基本字符串值（codex -c 的 value 按 TOML 解析）。"""
     escaped = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "")

@@ -347,7 +347,7 @@ async def _impl_get_node(project_id, agent_node_id, args):
 
 
 async def _impl_create_node(project_id, agent_node_id, args):
-    return await create_node_core(project_id, args.get("node") or {})
+    return await create_node_core(project_id, args.get("node") or {}, agent_node_id=agent_node_id or "")
 
 
 async def _impl_update_node(project_id, agent_node_id, args):
