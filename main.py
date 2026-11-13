@@ -24,6 +24,19 @@ import app.core as _core_runtime
 import os as _os_boot
 import sys as _sys_boot
 _os_boot.environ.setdefault("FIREFLY_MAIN_MODULE", __name__)
+
+# Refs #329（挂 #318 钉②，根治三连踩）：隔离实例口径=设了 FIREFLY_RUNTIME_ROOT 即算隔离；
+# 此时若未同设 FIREFLY_PROJECTS_ROOT，projects 会静默落回用户真实库（默认根），
+# 测程 scratch 污染用户数据。拒启+报错，不靠自觉。用户正常启动（两 env 都不设）不受影响。
+if (_os_boot.environ.get("FIREFLY_RUNTIME_ROOT", "").strip()
+        and not _os_boot.environ.get("FIREFLY_PROJECTS_ROOT", "").strip()):
+    _sys_boot.stderr.write(
+        "[FIREFLY] 拒绝启动：检测到隔离实例（FIREFLY_RUNTIME_ROOT 已设）但未设 "
+        "FIREFLY_PROJECTS_ROOT——项目库会静默落回用户真实库（默认 "
+        "D:\\Firefly-Canvas-Projects）造成污染。请同时设置 "
+        "FIREFLY_PROJECTS_ROOT=<隔离路径> 再启动（Refs #329）。\n")
+    _sys_boot.exit(2)
+
 import app.services as _svc  # W1c services layer
 from app.services import *
 from app.services import agent_host as _agent_host_boot
