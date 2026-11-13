@@ -38,6 +38,33 @@ EVENTS_REPLAY_TURNS = 20         # 降级重建重放最近 N 轮（不足按实
 EVENTS_REPLAY_MAX_CHARS = 12000  # 重放文本块字符预算（保最近轮）
 # 单条 RPC 命令响应超时（wait_for 硬超时 → finally 必杀）。
 RPC_TIMEOUT_SECONDS = 10.0
+
+# #326 codex 冷启动止血：轮结束后后台 `codex --version` 预热进程/文件缓存，
+# 下一轮 spawn 的固定开销（现测 CLI 基线 ≈1.1–1.3s/次）尽量落热态。
+# 不改 per-turn 进程模型（ADR 0024 不变）；全局冷却 30s，失败不重试、不入事件流。
+_CODEX_WARMUP_COOLDOWN_S = 30.0
+_codex_warmup_last = 0.0
+
+
+def maybe_warm_codex() -> bool:
+    """Fire-and-forget codex CLI 预热。返回是否实际发起（冷却窗口内 False）。"""
+    global _codex_warmup_last
+    now = time.time()
+    if now - _codex_warmup_last < _CODEX_WARMUP_COOLDOWN_S:
+        return False
+    _codex_warmup_last = now
+    exe = shutil.which("codex")
+    if not exe:
+        return False
+
+    def _run():
+        try:
+            subprocess.run([exe, "--version"], capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
 # busy 会话空闲 reap 阈值：15 分钟无活动视为挂死（对照 ComfyArt bot.py 15min reap）。
 IDLE_TIMEOUT_SECONDS = 15 * 60
 # 空闲 watchdog 扫描间隔。
@@ -956,6 +983,9 @@ class AgentHostManager:
                 session._reader_task = None
             exit_code = process.returncode
             session._last_activity = time.time()
+            # #326：降级重试行不预热（紧接新 spawn，缓存本就热）；正常轮结束后预热。
+            if not (resumed and not saw_thread_id and exit_code not in (0, None) and degrade_budget):
+                maybe_warm_codex()
             if resumed and not saw_thread_id and exit_code not in (0, None) and degrade_budget:
                 # ADR 0024 §2 降级：resume 认不出旧会话 → UI 可见 + 新会话重发一次。
                 # 票 C：重放上下文 = 回放日志最近 EVENTS_REPLAY_TURNS 轮（含 user 侧，
