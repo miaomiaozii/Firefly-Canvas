@@ -7,7 +7,7 @@ import email.utils  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
-from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto  # noqa: E402
+from .comfyui_workflows import COMFYUI_MAX_REFERENCES, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 import logging
 logger = logging.getLogger(__name__)
@@ -504,7 +504,9 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
     if not clean_prompt:
         raise HTTPException(status_code=400, detail='提示词不能为空。')
     explicit = dict(image_parameters or {})
-    resolution = explicit.get('resolution')
+    # 先把分辨率档归一化成具体档位再往下传：下游（尺寸表 / 参考图缩放量）都只认 1k/2k/4k，
+    # 而画布不同入口会传 '1K'、'1k'、'low'、'medium'、'' 甚至不带，直接透传会让用户选了的档位静默失效。
+    resolution = comfyui_resolution_tier(explicit.get('resolution'), size)
     width, height = comfyui_h3_resolution(explicit.get('aspect_ratio'), resolution, size)
     refs = [
         ref

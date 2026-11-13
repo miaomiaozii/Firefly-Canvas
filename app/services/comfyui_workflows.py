@@ -26,6 +26,14 @@ COMFYUI_H3_FILENAME_PREFIX = 'MiniMax-H3-Image/canvas'
 
 # 画布分辨率档 → 目标面积（MP）。1k 档就是模型地板 2048²（4 MP），再低会明显崩。
 COMFYUI_MP_TIERS = {'1k': 4.0, '2k': 8.0, '4k': 16.0}
+# 画布分辨率档的别名 → H3 面积档。画布不同入口传的写法不一样：
+# `/api/image-params` 的 size 面板传小写 '1k'，model_specs 的枚举是大写 '1K'，
+# 另外旧路径/保底路径还会传 'low'/'medium'/'high' 或空串。全吃下来，别让用户选了的档位白白落回默认。
+COMFYUI_TIER_ALIASES = {
+    '1k': '1k', '1': '1k', 'low': '1k', '低': '1k', '1024': '1k',
+    '2k': '2k', '2': '2k', 'medium': '2k', '中': '2k', '2048': '2k',
+    '4k': '4k', '4': '4k', 'high': '4k', '高': '4k', 'best': '4k', '4096': '4k',
+}
 # 图生图把参考图缩放到的那一档像素量；官方 edit 模板用 4 MP（= 1K 档）。
 # 上限只是防手滑，不是模型限制：超过 16 MP 在 16GB 卡上会 OOM。
 COMFYUI_EDIT_MAX_MEGAPIXELS = float(os.getenv('COMFYUI_EDIT_MAX_MEGAPIXELS', '16'))
@@ -100,11 +108,26 @@ COMFYUI_H3_T2I_WORKFLOW = {
 }
 
 
+COMFYUI_ASPECT_ALIASES = {
+    'square': (1.0, 1.0), 'portrait': (2.0, 3.0), 'landscape': (3.0, 2.0),
+    'portrait43': (3.0, 4.0), 'landscape43': (4.0, 3.0), 'story': (9.0, 16.0),
+    'wide': (16.0, 9.0), 'ultrawide': (21.0, 9.0), 'ultratall': (9.0, 21.0),
+    'portrait45': (4.0, 5.0), 'landscape45': (5.0, 4.0),
+}
+
+
 def comfyui_parse_aspect(value):
-    """解析 '3:2' / '3x2' / '3/2'；非法返回 (0, 0)。"""
+    """解析 '3:2' / '3x2' / '3/2' / 'wide' 这类比例；非法返回 (0, 0)。
+
+    画布节点上的比例 chip 是预设名（square/wide/story…），而 model_specs 里是 '16:9'；
+    `aspectRatioForRun` 一般已经转过了，但扩图/自定义路径会直接把预设名传下来，所以两边都认。
+    """
     text = str(value or '').strip().replace('：', ':')
     if not text:
         return (0.0, 0.0)
+    alias = COMFYUI_ASPECT_ALIASES.get(text.lower())
+    if alias:
+        return alias
     for sep in (':', 'x', 'X', '*', '/'):
         if sep in text:
             left, _, right = text.partition(sep)
@@ -123,6 +146,32 @@ def _comfyui_snap(value, step=COMFYUI_SIZE_STEP):
     return max(step, int(round(float(value) / step)) * step)
 
 
+def comfyui_resolution_tier(resolution='', size=''):
+    """分辨率档 → H3 面积档（'1k'/'2k'/'4k'）。
+
+    传了能认的档就用它；传空/auto/无法识别时，**从画布给的 size 面积反推**，而不是无条件回落到 2K：
+    历史 bug —— 画布某些路径（旧节点、扩图、直调 API）不传 resolution，适配器直接按 2K=8MP 跑，
+    用户选 1K 却得到 8MP/两分钟；反过来 4K 也会静默降成 8MP。
+    """
+    tier = COMFYUI_TIER_ALIASES.get(str(resolution or '').strip().lower())
+    if tier:
+        return tier
+    # auto/空/不认得的写法：按 请求面积 反推最近的档（宁大勿小，H3 地板是 4MP）
+    area_mp = 0.0
+    try:
+        width, height = str(size or '').strip().lower().replace('*', 'x').partition('x')[::2]
+        area_mp = (float(width) * float(height)) / (1024 * 1024)
+    except (TypeError, ValueError):
+        area_mp = 0.0
+    if area_mp <= 0:
+        return COMFYUI_DEFAULT_MP_TIER
+    if area_mp <= 4.5:
+        return '1k'
+    if area_mp <= 8.5:
+        return '2k'
+    return '4k'
+
+
 def comfyui_h3_resolution(aspect_ratio='', resolution='', size=''):
     """把画布的比例 + 面积档换算成 ComfyUI 要的 width/height（8 的倍数）。
 
@@ -131,10 +180,7 @@ def comfyui_h3_resolution(aspect_ratio='', resolution='', size=''):
     实测对照（16 MP 档）：1:1→4096²、3:2→5016×3344、4:3→4728×3544、
     16:9→5464×3072、21:9→6256×2680；8 MP 档 1:1→2896²；4 MP 档 1:1→2048²。
     """
-    tier = str(resolution or '').strip().lower()
-    megapixels = COMFYUI_MP_TIERS.get(tier)
-    if megapixels is None:
-        megapixels = COMFYUI_MP_TIERS[COMFYUI_DEFAULT_MP_TIER]
+    megapixels = COMFYUI_MP_TIERS[comfyui_resolution_tier(resolution, size)]
     ratio_a, ratio_b = comfyui_parse_aspect(aspect_ratio)
     if not ratio_a or not ratio_b:
         # 没有比例时退回画布给的像素尺寸（换算成同面积档，避免用户看到 512² 直接崩）
@@ -148,16 +194,14 @@ def comfyui_h3_resolution(aspect_ratio='', resolution='', size=''):
 COMFYUI_EDIT_SIZE_STEP = 32
 
 
-def comfyui_edit_megapixels(resolution=''):
+def comfyui_edit_megapixels(resolution='', size=''):
     """图生图的目标像素量（对应官方工作流的 `scale total pixels`）。
 
     官方 edit 模板默认 4 MP（节点 56），与画布 1K 档一致；画布选 2K/4K 就抬到 8/16 MP。
     官方 note 原话：「MiniMax H3 Image doesn't work well in low resolution, so this workflow
     upscale the input image to 4MP at first.」——图生图不能拿小图直接跑。
     """
-    tier = str(resolution or '').strip().lower()
-    megapixels = COMFYUI_MP_TIERS.get(tier) or COMFYUI_MP_TIERS[COMFYUI_DEFAULT_MP_TIER]
-    return min(float(megapixels), float(COMFYUI_EDIT_MAX_MEGAPIXELS))
+    return min(float(COMFYUI_MP_TIERS[comfyui_resolution_tier(resolution, size)]), float(COMFYUI_EDIT_MAX_MEGAPIXELS))
 
 
 def comfyui_align_size(width, height, step=COMFYUI_EDIT_SIZE_STEP):
@@ -170,7 +214,7 @@ def comfyui_align_size(width, height, step=COMFYUI_EDIT_SIZE_STEP):
     return (_comfyui_snap(width, step), _comfyui_snap(height, step))
 
 
-def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZE_STEP):
+def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZE_STEP, size=''):
     """参考图 → 工作流尺寸：先 scale total pixels 到面积档，再对齐 step。
 
     返回值就是节点 4 的 width/height，也就是输出图的实际尺寸。
@@ -182,8 +226,8 @@ def comfyui_edit_target_size(width, height, resolution='', step=COMFYUI_EDIT_SIZ
     except (TypeError, ValueError):
         source_width, source_height = 0.0, 0.0
     if source_width <= 0 or source_height <= 0:
-        return comfyui_h3_resolution('', resolution, '')
-    area = comfyui_edit_megapixels(resolution) * 1024 * 1024
+        return comfyui_h3_resolution('', resolution, size)
+    area = comfyui_edit_megapixels(resolution, size) * 1024 * 1024
     ratio = source_width / source_height
     target_height = math.sqrt(area / ratio)
     target_width = target_height * ratio

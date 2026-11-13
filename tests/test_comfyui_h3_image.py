@@ -217,11 +217,11 @@ class ComfyResolutionTests(unittest.TestCase):
                 self.assertEqual(width % 8, 0, f'{tier} {ratio} {width}')
                 self.assertEqual(height % 8, 0, f'{tier} {ratio} {height}')
 
-    def test_unknown_tier_falls_back_to_default_and_size_ratio(self):
-        from app.services.comfyui_workflows import COMFYUI_MP_TIERS, COMFYUI_DEFAULT_MP_TIER, comfyui_h3_resolution
-        area = COMFYUI_MP_TIERS[COMFYUI_DEFAULT_MP_TIER] * 1024 * 1024
+    def test_unknown_tier_derives_from_size_area(self):
+        from app.services.comfyui_workflows import COMFYUI_MP_TIERS, comfyui_h3_resolution
+        # 不传档位时按 size 面积反推（1536×1024 ≈ 1.5MP → H3 地板 4MP 档），不再无条件落到 2K
         width, height = comfyui_h3_resolution('', '', '1536x1024')
-        self.assertAlmostEqual(width * height / area, 1.0, places=1)
+        self.assertAlmostEqual(width * height / (COMFYUI_MP_TIERS['1k'] * 1024 * 1024), 1.0, places=1)
         self.assertAlmostEqual((width / height) / 1.5, 1.0, places=2)
 
     def test_parse_aspect_accepts_colon_x_slash(self):
