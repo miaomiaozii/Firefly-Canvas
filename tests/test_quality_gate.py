@@ -402,6 +402,35 @@ class QualityGateTests(unittest.TestCase):
             self.assertNotIn("Firefly-Canvas", runner.read_text(encoding="utf-8"))
             self.assertIn("Path(__file__).resolve().parents[1]", runner.read_text(encoding="utf-8"))
 
+    def test_every_browser_harness_that_spawns_kills_process_trees(self):
+        # #361：chrome 带 ``--user-data-dir`` 会拉起 GPU / renderer / crashpad 一整套，
+        # 只 `.terminate()` 直接子进程的话那些会留在后台钉着临时 profile
+        # （2026-11-14 清出来的 26 个遗留里有 8 个 headless 浏览器）。
+        offenders = []
+        for runner in sorted((ROOT / "tests").glob("*browser*.py")):
+            text = runner.read_text(encoding="utf-8")
+            if "Popen(" in text and "process_tree" not in text:
+                offenders.append(runner.name)
+        self.assertEqual([], offenders, "起子进程的 browser 夹具必须走 kill_process_tree")
+
+    def test_gate_helper_imports_exist_in_both_modes(self):
+        # 门有两个 import 分支：当包导入走 ``from tools.process_tree import``，
+        # 而门在沙箱 workspace 里把自己是当顶层脚本跑，走 ``from process_tree import``。
+        # 只修一个分支时，测试里 ``import tools.quality_gate`` 是绿的，真跑门才 NameError。
+        probe = (
+            "import pathlib, sys\n"
+            f"sys.path.insert(0, str(pathlib.Path(r'{ROOT}') / 'tools'))\n"
+            "import quality_gate\n"
+            "required = ['ProcessJob', 'gate_leftover_processes', 'job_object_supported', "
+            "'kill_process_tree', 'select_reapable_orphans']\n"
+            "missing = [n for n in required if not hasattr(quality_gate, n)]\n"
+            "raise SystemExit(1 if missing else 0)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=180
+        )
+        self.assertEqual(0, result.returncode, f"沙箱模式（顶层脚本）缺帮助函数：{result.stderr[-400:]}")
+
     def test_canvas_interactions_evidence_stays_out_of_the_gate(self):
         # #172：canvas_interactions_browser.py 长期红（两条布局断言），
         # 接入只会让门常红并掩盖真实回归；那张票判定完再接。

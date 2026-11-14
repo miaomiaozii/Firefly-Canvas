@@ -34,6 +34,7 @@ if __package__:
     from tools.process_tree import (
         ProcessJob,
         gate_leftover_processes,
+        job_object_supported,
         kill_process_tree,
         select_reapable_orphans,
     )
@@ -70,6 +71,7 @@ else:
     from process_tree import (
         ProcessJob,
         gate_leftover_processes,
+        job_object_supported,
         kill_process_tree,
         select_reapable_orphans,
     )
@@ -1988,19 +1990,13 @@ def process_matches_recorded_target(pid: int, target: str) -> bool:
 
 
 def stop_process_id(pid: int) -> None:
+    """把已经判定为泄漏的 pid 连同它的树端掉。
+
+    Windows 走 :func:`kill_process_tree`（同一个 ``taskkill /T /F``，两边不各写一份）；
+    POSIX 先 TERM 等 2s，还活着再 KILL。
+    """
     if os.name == "nt":
-        system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
-        taskkill = system_root / "System32" / "taskkill.exe"
-        try:
-            subprocess.run(
-                [str(taskkill), "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return
+        kill_process_tree(pid, grace=0.0)
         return
     try:
         os.kill(pid, signal.SIGTERM)
@@ -2043,12 +2039,6 @@ def stop_process_tree(process: subprocess.Popen) -> None:
     OS 直接杀整棵树），两边不能各写一份。
     """
     kill_process_tree(process, grace=2.0)
-    if process.poll() is None:
-        process.kill()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
 
 
 def unittest_summary(command: list[str], stdout: str, stderr: str) -> dict | None:
@@ -2116,12 +2106,40 @@ _ACTIVE_STEP_PROCESSES: set[subprocess.Popen] = set()
 _ACTIVE_STEP_LOCK = threading.Lock()
 
 
-def terminate_active_step_processes() -> None:
-    for process in list(_ACTIVE_STEP_PROCESSES):
-        kill_process_tree(process, grace=0.5)
-
-
+# 进模块就要把钩子装好（测试要能断言这一点）。
 EXIT_HOOKS_INSTALLED = False
+
+# 重入护栏：Ctrl+C 按两下、或 atexit 与信号钩子同时触发，只杀一轮。
+# 没护栏时每次都会把杀树流程（带 grace 等待）重跑一遗，退出能拖 N×2s。
+_TERMINATING_STEPS = False
+_TERMINATING_LOCK = threading.Lock()
+
+
+def terminate_active_step_processes() -> None:
+    global _TERMINATING_STEPS
+    with _ACTIVE_STEP_LOCK:  # 边遍历边被 run_step 改集合会 RuntimeError，也会漏杀
+        processes = list(_ACTIVE_STEP_PROCESSES)
+    with _TERMINATING_LOCK:
+        if _TERMINATING_STEPS:
+            return
+        _TERMINATING_STEPS = True
+    for process in processes:
+        kill_process_tree(process, grace=2.0)
+
+
+def _uninstall_signal_hooks() -> None:
+    """杀过一轮后把信号恢复默认：第二下 Ctrl+C 应该直接死，不要在杀树里绕圈。"""
+    default = getattr(signal, "SIG_DFL", None)
+    if default is None:
+        return
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, default)
+        except (ValueError, OSError, RuntimeError):
+            pass
 
 
 def _install_exit_hooks() -> None:
@@ -2130,6 +2148,7 @@ def _install_exit_hooks() -> None:
 
     def _on_signal(signum, _frame):
         terminate_active_step_processes()
+        _uninstall_signal_hooks()
         # 杀完树后按惯例退出码走人：130 = 128 + SIGINT。
         raise SystemExit(130 if signum == getattr(signal, "SIGINT", 2) else 143)
 
@@ -3539,8 +3558,8 @@ def main(argv: list[str] | None = None) -> int:
         run_root = Path(temporary)
         workspace_root = run_root / "workspace"
         # #361：本轮的子进程从一开始就挂进作业；同时清掉上一轮没收尾的孤儿。
-        process_lifecycle = {"job_object": process_job().status()}
-        process_lifecycle.update(reap_leftover_runs(run_root.name))
+        # （作业到底挂上没挂上，看报告里收尾时读的 ``process_lifecycle``——开跑时一个子进程都还没起。）
+        process_lifecycle = dict(reap_leftover_runs(run_root.name))
         try:
             workspace_info["copied_files"] = create_execution_workspace(repo_root, workspace_root)
         except RuntimeError as error:
@@ -3940,6 +3959,7 @@ def main(argv: list[str] | None = None) -> int:
         "process_lifecycle": {
             **process_lifecycle,
             "job_object": process_job().status(),
+            "job_available": job_object_supported(),
             "attached": process_job().attached,
         },
         "steps": steps,

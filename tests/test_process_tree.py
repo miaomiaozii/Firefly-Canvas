@@ -17,6 +17,7 @@ from pathlib import Path
 from tools.process_tree import (
     ProcessJob,
     _epoch_from_cim,
+    descendant_pids,
     kill_process_tree,
     process_alive,
     select_reapable_orphans,
@@ -283,6 +284,89 @@ class ProcessJobTests(unittest.TestCase):
             )
         finally:
             self._cleanup(process)
+
+
+ORPHAN_PARENT_CODE = r"""
+import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+print(child.pid, flush=True)
+"""
+
+
+class OrphanedTreeTests(unittest.TestCase):
+    """家长先退出时也要能把后代找回来。
+
+    2026-11-14 那 12 个 ``node --check`` 就是这个形状：父进程已退，孩子还在钉着临时目录。
+    ``taskkill /PID 家长 /T`` 这时没用——树是从**活着的**根往下数的。所以
+    :func:`kill_process_tree` 自己拿 Toolhelp32 快照按 ppid 数一遍（ppid 是建进程时记下的，
+    家长退了也不会改写）。
+    """
+
+    def test_kill_process_tree_after_parent_exit_reaches_orphan(self):
+        parent = subprocess.Popen(
+            [sys.executable, "-c", ORPHAN_PARENT_CODE],
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
+        try:
+            orphan_pid = int((parent.stdout.readline() or "").strip() or 0)
+            self.assertGreater(orphan_pid, 0, "没读到孤儿 pid，测试本身有问题")
+            parent.wait(timeout=30)
+            self.assertFalse(process_alive(parent.pid), "家长应该已经退了")
+            self.assertTrue(process_alive(orphan_pid), "家长退了，孩子应该还活着（测试前提）")
+
+            kill_process_tree(parent.pid)  # 裸 pid：只能靠 ppid 快照找回后代
+
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and process_alive(orphan_pid):
+                time.sleep(0.2)
+            self.assertFalse(
+                process_alive(orphan_pid),
+                f"家长退出后 kill_process_tree 没把孤儿 pid={orphan_pid} 带走（#361）",
+            )
+        finally:
+            parent.stdout.close()
+            if process_alive(orphan_pid):
+                kill_process_tree(orphan_pid)
+
+    def test_descendant_pids_finds_a_live_child(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertIn(child.pid, descendant_pids(os.getpid()))
+        finally:
+            kill_process_tree(child)
+
+
+class LeftoverMarkerTests(unittest.TestCase):
+    """清扫只能命中门/端到端自己留下的东西，不能命中「命令行里提到了应用文件」。"""
+
+    def test_bare_app_file_name_does_not_mark_a_process_as_leftover(self):
+        snapshot = [
+            {
+                "pid": 4242,
+                "parent_pid": 9999,
+                "command_line": "node --check static/js/smart-canvas.js",
+                "created_at": 0.0,
+            }
+        ]
+        self.assertEqual(
+            select_reapable_orphans(snapshot, now=time.time()),
+            [],
+            "带应用文件名的工具进程被当成垃圾——用户的真实应用在跑，误杀比泄漏更糟",
+        )
+
+    def test_gate_temp_directory_is_still_a_leftover(self):
+        snapshot = [
+            {
+                "pid": 4243,
+                "parent_pid": 9999,
+                "command_line": "node --check C:/Users/x/AppData/Local/Temp/firefly-quality-gate-run-ab12/workspace/static/js/smart-canvas.js",
+                "created_at": 0.0,
+            }
+        ]
+        self.assertEqual(select_reapable_orphans(snapshot, now=time.time()), [4243])
 
 
 if __name__ == "__main__":

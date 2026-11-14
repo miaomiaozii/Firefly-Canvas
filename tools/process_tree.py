@@ -32,14 +32,18 @@ from pathlib import Path
 
 __all__ = [
     "ProcessJob",
-    "kill_process_tree",
+    "descendant_pids",
+    "gate_leftover_processes",
     "job_object_supported",
-    "popen_in_job",
-    "default_job",
+    "kill_process_tree",
+    "process_alive",
+    "process_parent_map",
+    "select_reapable_orphans",
 ]
 
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_TH32CS_SNAPPROCESS = 0x00000002
 
 
 def job_object_supported() -> bool:
@@ -169,9 +173,12 @@ class ProcessJob:
             self.failures.append(f"拿不到 pid {pid} 的进程句柄（GetLastError={self.last_error}）")
             return False
         ok = bool(kernel32.AssignProcessToJobObject(ctypes.c_void_p(self.handle), ctypes.c_void_p(handle)))
+        # 错误码必须紧跟失败调用读：CloseHandle 会把 last error 顶掉，
+        # 否则报告里那个 ``GetLastError=`` 是个陈码，排查时会骗人。
+        assign_error = ctypes.get_last_error()
         kernel32.CloseHandle(ctypes.c_void_p(handle))
         if not ok:
-            self.last_error = ctypes.get_last_error()
+            self.last_error = assign_error
             self.failures.append(f"AssignProcessToJobObject 失败：pid {pid}（GetLastError={self.last_error}）")
             return False
         self.attached += 1
@@ -264,33 +271,18 @@ def _kernel32():
     return _KERNEL32
 
 
-_DEFAULT_JOB: ProcessJob | None = None
-
-
-def default_job(name: str = "firefly-quality-gate") -> ProcessJob:
-    """本进程的默认作业（懒建）。进程退出时 OS 会关句柄，作业里的树一起没。"""
-    global _DEFAULT_JOB
-    if _DEFAULT_JOB is None:
-        _DEFAULT_JOB = ProcessJob(name)
-    return _DEFAULT_JOB
-
-
-def popen_in_job(command, **kwargs):
-    """在默认作业里起子进程。"""
-    return default_job().spawn(command, **kwargs)
-
-
 # --------------------------------------------------------------------------- 上一轮留下的孤儿
 
 # 只在命令行里出现这些标记的进程才会被当成「上一轮门/端到端留下的垃圾」。
 # 故意不包含 ``main.py`` 或 ``chrome.exe`` 这种本身常见的名字——用户的真实应用在跑，
 # 误杀比泄漏更糟。2026-11-14 那 26 个遗留全部带临时目录前缀。
+# （以前这里还写了裸 ``smart-canvas.js``：那等于「命令行里提到应用文件名的都杀」，
+# 任何加载过这个文件的工具进程都能被 ``taskkill /T /F``，跟上面的原则直接矛盾——拿掉。）
 GATE_LEFTOVER_MARKERS = (
     "firefly-quality-gate-run-",
     "firefly-quality-gate-evidence",
     "firefly-e2e-profile-",
     "test-canvas-generation-tasks.mjs",
-    "smart-canvas.js",
 )
 
 
@@ -453,27 +445,113 @@ def process_alive(pid: int) -> bool:
         return False
 
 
-def kill_process_tree(process, grace: float = 0.0) -> None:
-    """杀掉一个子进程连同它的全部后代。
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("cntUsage", ctypes.c_uint32),
+        ("th32ProcessID", ctypes.c_uint32),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", ctypes.c_uint32),
+        ("cntThreads", ctypes.c_uint32),
+        ("th32ParentProcessID", ctypes.c_uint32),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.c_uint32),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
 
-    Windows：``taskkill /T /F``（没有 taskkill 或失败时退回 ``Popen.kill()``）。
-    POSIX：进程组 ``killpg``（调用方须用 ``start_new_session=True`` 起进程）。
+
+def process_parent_map() -> dict[int, int]:
+    """进程快照：``pid -> ppid``（Toolhelp32，毫秒级）。
+
+    Windows 的 ppid 是**建进程那一刻**记下的，家长退出后不会改写——所以「家长已经死了」
+    的孤儿（2026-11-14 那 12 个 ``node --check``）照样能顺着 ppid 找回来。
+    拿不到快照（非 Windows、句柄失效）返回空字典，调用方按「查不到」处理。
     """
-    if getattr(process, "poll", lambda: None)() is not None:
-        return
-    if os.name == "nt":
-        _taskkill(process.pid, tree=True)
+    if not _nt():
+        return {}
+    kernel32 = _kernel32()
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if not snapshot or ctypes.c_void_p(snapshot).value in (None, ctypes.c_void_p(-1).value):
+        return {}
+    entry = _PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+    pairs: dict[int, int] = {}
+    try:
+        first = kernel32.Process32FirstW(ctypes.c_void_p(snapshot), ctypes.byref(entry))
+        while first:
+            pairs[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            first = kernel32.Process32NextW(ctypes.c_void_p(snapshot), ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(snapshot))
+    return pairs
+
+
+def descendant_pids(root_pid: int) -> list[int]:
+    """:func:`process_parent_map` 里 ``root_pid`` 的全部后代（不含自己）。"""
+    pairs = process_parent_map()
+    if not pairs:
+        return []
+    children: dict[int, list[int]] = {}
+    for pid, parent in pairs.items():
+        children.setdefault(parent, []).append(pid)
+    root = int(root_pid)
+    found: list[int] = []
+    pending = list(children.get(root, []))
+    while pending and len(found) < 5000:  # 上限防快照异常时死循环
+        pid = pending.pop()
+        if pid == root or pid in found or pid in (0, 4):
+            continue
+        found.append(pid)
+        pending.extend(children.get(pid, []))
+    return found
+
+
+def _orphan_children(root_pid: int) -> list[int]:
+    """已经退出的 ``root_pid`` 的直接孩子（只给活的）。
+
+    只取一层：这些孤儿的子树还能被 ``taskkill /T`` 数到，一个个杀只会把时间花在
+    重复的 taskkill 上。
+    """
+    pairs = process_parent_map()
+    root = int(root_pid)
+    return [
+        pid
+        for pid, parent in pairs.items()
+        if parent == root and pid not in (0, 4) and process_alive(pid)
+    ]
+
+
+def kill_process_tree(process, grace: float = 2.0) -> None:
+    """杀掉一个进程连同它的全部后代。``process`` 可以是 ``Popen``，也可以裸传 pid。
+
+    **先杀后代，再杀根——但只在根已经死了的时候。** ``taskkill /T`` 的树是从**活着的**根往下
+    数的：根还活着时一条 ``taskkill /PID 根 /T /F`` 就把整树带走（不要一个个杀，
+    那是每个后代一条 taskkill，chrome 那种三十个子进程的夹具会把几分钟耗在杀进程上）。
+    根已经退出时 ``/T`` 什倒都数不到，而「父进程先退、node/chrome 留在原地钉着临时目录」
+    正是 2026-11-14 泄漏的形状——这种情形才用 :func:`process_parent_map` 自己数一遍：
+    ppid 是建进程时记下的，不随家长退出改写，所以只需要杀掉家长的**直接孩子**，
+    它们的子树交给 ``/T``。
+
+    非 Windows 走进程组 ``killpg``（调用方须用 ``start_new_session=True`` 起进程），
+    拿不到进程组就退回 ``Popen.kill()``。
+
+    ``grace`` 是等根进程真正消失的秒数：``taskkill /F`` 返回时句柄可能还没释放完，
+    紧接着删临时目录会撞 WinError 32（目录还被死进程的工作目录钉着）。
+    """
+    pid = int(getattr(process, "pid", process))
+    root_alive = process_alive(pid)
+    if root_alive:
+        _kill_one(pid, process=process)
     else:
-        try:
-            os.killpg(os.getpgid(process.pid), 9)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                process.kill()
-            except OSError:
-                pass
-    # 等到根进程真的没了再返回：``taskkill /F`` 返回时句柄可能还没释放完，
-    # 紧接着删临时目录就会撞 WinError 32（目录还被死进程的工作目录钉着）。
-    deadline = time.monotonic() + max(grace, 2.0)
+        for orphan in _orphan_children(pid):
+            _kill_one(orphan, process=None)
+        _kill_one(pid, process=process)
+
+    if not root_alive:
+        return
+    deadline = time.monotonic() + max(grace, 0.0)
     waiter = getattr(process, "wait", None)
     if waiter is not None:
         while time.monotonic() < deadline:
@@ -485,5 +563,29 @@ def kill_process_tree(process, grace: float = 0.0) -> None:
             except ValueError:
                 break
     else:
-        while getattr(process, "poll", lambda: 0)() is None and time.monotonic() < deadline:
+        while process_alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
+    # taskkill 不存在或被拒时，至少把根进程本身掐了。
+    if process_alive(pid):
+        hard_kill = getattr(process, "kill", None)
+        if hard_kill is not None:
+            try:
+                hard_kill()
+            except OSError:
+                pass
+
+
+def _kill_one(pid: int, process) -> None:
+    """杀单个 pid 的树：Windows 用 ``taskkill /T /F``，POSIX 用进程组，最后退回 ``Popen.kill()``。"""
+    if os.name == "nt":
+        _taskkill(pid, tree=True)
+        return
+    try:
+        os.killpg(os.getpgid(pid), 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        hard_kill = getattr(process, "kill", None)
+        if hard_kill is not None:
+            try:
+                hard_kill()
+            except OSError:
+                pass
