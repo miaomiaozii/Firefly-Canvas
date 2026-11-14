@@ -49,6 +49,8 @@ _codex_warmup_last: dict = {}
 
 def maybe_warm_codex(node_id: str = "") -> bool:
     """Fire-and-forget codex CLI 预热（按节点冷却）。返回是否实际发起。"""
+    if os.environ.get("FIREFLY_CODEX_WARMUP", "").strip().lower() in ("off", "0", "false"):
+        return False  # A/B 对照开关（#326）
     now = time.time()
     if now - _codex_warmup_last.get(node_id, 0.0) < _CODEX_WARMUP_COOLDOWN_S:
         return False
