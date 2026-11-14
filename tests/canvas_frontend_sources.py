@@ -44,6 +44,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-generation-cascade.js",
     "canvas-generation-tasks.js",
     "canvas-agent-tui.js",
+    # #324：跨项目搜索面板（顶栏搜索 + 结果列表）。
+    "canvas-search.js",
     "smart-canvas.js",
 )
 

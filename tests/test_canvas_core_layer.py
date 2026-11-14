@@ -213,6 +213,10 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 6 -> 7
     "canvas-agent-tui.js": 12,  # #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
+    # #324 新建跨项目搜索面板（#359 补登记）：实测 2 处均来自同一行 `window.focusAndSelectNode`
+    # 的 typeof 守卫 + 调用——那是 smart-canvas.js 经 window 暴露的契约，不是裸词法全局引用；
+    # 本模块自带 escapeHtml，零 canvasCore 接口引用。钉 2 是防日后出现真·核心顶层名引用而漏计。
+    "canvas-search.js": 2,
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
     "canvas-layout-utils.js": 0,
@@ -254,6 +258,8 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
     "canvas-agent-tui.js": 12,
+    # #324 新建跨项目搜索面板：同上 2 处 `window.focusAndSelectNode`（未接口化，自由侧等于反向侧）。
+    "canvas-search.js": 2,
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
     "canvas-layout-utils.js": 0,
