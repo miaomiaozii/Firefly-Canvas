@@ -48,7 +48,7 @@ JS
 # K2b Ctrl+D 复制 → 节点+1；随后 Ctrl+Z 撤回 → 还原（同时实测撤回键）
 e2e_run k2b-duplicate-undo <<'JS'
 const pre = await page.evaluate(() => canvasState.nodes.length);
-await page.evaluate(() => { const ids = canvasState.selectedIds||[]; canvasState.selectedIds = ids.slice(0,1); canvasState.selectedId = ids[0] || canvasState.nodes[0].id; });
+await clickNode(E2E_NODE_ID);   // 真鼠标选中一个节点（以前在 evaluate 里改 canvasState.selectedIds，那是喂结果）
 await page.keyboard.press('Control+d');
 await page.waitForTimeout(700);
 const mid = await page.evaluate(() => canvasState.nodes.length);
@@ -94,7 +94,7 @@ JS
 # K2d Ctrl+Shift+Z 重做：撤回复制再重做，节点数序列 pre→pre→pre+1
 e2e_run k2d-redo <<'JS'
 const pre = await page.evaluate(() => canvasState.nodes.length);
-await page.evaluate(() => { canvasState.selectedIds = [canvasState.nodes[0].id]; canvasState.selectedId = canvasState.nodes[0].id; });
+await clickNode(E2E_NODE_ID);   // 同上：真点选，不改内部状态
 await page.keyboard.press('Control+d');
 await page.waitForTimeout(600);
 await page.keyboard.press('Control+z');

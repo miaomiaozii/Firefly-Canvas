@@ -126,8 +126,18 @@ e2e_new_project() {
 }
 
 e2e_run() {
-  local name="$1" out i js shot
+  local name="$1" out i js shot fake
   js=$(cat)
+  # 真事件守卫（#360）：场景体里不许做合成交互，也不许绕过 UI 直接改应用内部状态。
+  # evaluate 只准读断言。#344/#299 那批「假绿」就是从这两处溜进来的：el.click() 绕开
+  # 命中测试和焦点行为，直接改 canvasState/viewport 等于把预期结果喂给断言。
+  fake=$(printf '%s\n' "$js" | grep -nE "document\.(querySelector|querySelectorAll|getElementById)[^;]*\.(click|focus)\(|dispatchEvent\(|canvasState\.[a-zA-Z]+[[:space:]]*=[^=]|viewport\.(x|y|scale)[[:space:]]*=[^=]|\.value[[:space:]]*=[[:space:]]*[\"']" || true)
+  if [ -n "$fake" ]; then
+    echo "FAIL  $name 场景体里有合成交互或直接改内部状态（#360：evaluate 只读断言，交互用 page.mouse/page.keyboard）："
+    printf '%s\n' "$fake" | sed 's/^/    /' | head -8
+    E2E_FAIL=$((E2E_FAIL + 1))
+    return
+  fi
   for i in 1 2; do
     if [ -z "${FIREFLY_E2E_PROJECT:-}" ]; then
       e2e_new_project || { echo "FAIL  $name"; echo "  建隔离项目失败（$BASE 是否在跑？）"; E2E_FAIL=$((E2E_FAIL + 1)); return; }
@@ -139,6 +149,19 @@ await page.waitForSelector('.image-node', {timeout: 30000});
 await page.waitForTimeout(2500);
 const E2E_PID = "$E2E_PID";
 const E2E_NODE_ID = "e2e-n1";
+// 真鼠标选节点：读坐标用 evaluate（只读），点击用 page.mouse——选中要走应用真实的
+// 点选路径，不是在 evaluate 里改 canvasState.selectedId（那等于把选中态喂给测试）。
+const clickNode = async (nid) => {
+  const pt = await page.evaluate((id) => {
+    const sel = '.image-node[data-id="' + id + '"]';
+    const el = document.querySelector(sel) || document.querySelector('.image-node');
+    if (!el) throw new Error('NODE_MISSING: ' + id);
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, nid);
+  await page.mouse.click(pt.x, pt.y);
+  await page.waitForTimeout(300);
+};
 // 起点断言：页面状态必须等于夹具定义（多一个/少一个/坐标飘了都算起点不可靠，
 // 「逐级 ±1」这类断言在脏起点上会假绿）。读只模式（FIREFLY_E2E_PROJECT）不检。
 if ("${FIREFLY_E2E_RESEED:-1}" !== "0" && "${FIREFLY_E2E_PROJECT:-}" === "") {
