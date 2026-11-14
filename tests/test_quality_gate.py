@@ -2641,6 +2641,9 @@ class QualityGateTests(unittest.TestCase):
         self.assertIn("Job Object", lifecycle["job_object"])
         self.assertIsInstance(lifecycle["scanned"], int)
         self.assertIsInstance(lifecycle["reaped"], list)
+        # #361：临时目录删不动（还有进程钉着）要能在报告里看见，但不翻 verdict。
+        self.assertIn("workspace_leftovers", lifecycle)
+        self.assertIsInstance(lifecycle["workspace_leftovers"], list)
 
     def test_timed_out_step_leaves_no_living_grandchild(self):
         """#361 验收：步骤超时后，它生的孙进程也不能活着。

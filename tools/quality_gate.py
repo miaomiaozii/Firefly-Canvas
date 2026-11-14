@@ -36,6 +36,7 @@ if __package__:
         gate_leftover_processes,
         job_object_supported,
         kill_process_tree,
+        remove_execution_workspace,
         select_reapable_orphans,
     )
     from tools.complete_generation_lifecycle_evidence import (
@@ -73,6 +74,7 @@ else:
         gate_leftover_processes,
         job_object_supported,
         kill_process_tree,
+        remove_execution_workspace,
         select_reapable_orphans,
     )
     from complete_generation_lifecycle_evidence import (
@@ -3942,6 +3944,9 @@ def main(argv: list[str] | None = None) -> int:
     unit_contract_inventory = unit_contract_shards(
         unit_contract_modules, load_unit_contract_durations(repo_root), repo_root
     )
+    # #361：本轮临时目录删不动 = 还有进程钉着里面的文件。不翻 verdict（那多半是刚杀完
+    # 进程的收尾竞态），但必须记进报告——静默吞掉等于把泄漏最直观的信号扔了。
+    workspace_leftovers = remove_execution_workspace(run_root)
     report = {
         "schema_version": 1,
         "mode": args.mode,
@@ -3961,6 +3966,7 @@ def main(argv: list[str] | None = None) -> int:
             "job_object": process_job().status(),
             "job_available": job_object_supported(),
             "attached": process_job().attached,
+            "workspace_leftovers": workspace_leftovers,
         },
         "steps": steps,
         "unit_contract_inventory": {

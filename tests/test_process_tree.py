@@ -20,6 +20,9 @@ from tools.process_tree import (
     descendant_pids,
     kill_process_tree,
     process_alive,
+    process_creation_time,
+    remove_execution_workspace,
+    select_orphan_children,
     select_reapable_orphans,
 )
 
@@ -294,22 +297,27 @@ print(child.pid, flush=True)
 
 
 class OrphanedTreeTests(unittest.TestCase):
-    """家长先退出时也要能把后代找回来。
+    """家长先退出时也要能把后代找回来，但不能拿 PID 复用去赌。
 
     2026-11-14 那 12 个 ``node --check`` 就是这个形状：父进程已退，孩子还在钉着临时目录。
     ``taskkill /PID 家长 /T`` 这时没用——树是从**活着的**根往下数的。所以
     :func:`kill_process_tree` 自己拿 Toolhelp32 快照按 ppid 数一遍（ppid 是建进程时记下的，
-    家长退了也不会改写）。
+    家长退了也不会改写）。但 ppid 对得上不等于那孩子就是根留下的：PID 会被复用，所以还
+    要「孤儿的创建时间不早于根的启动时间」（见 :func:`select_orphan_children`）。
     """
 
-    def test_kill_process_tree_after_parent_exit_reaches_orphan(self):
-        parent = subprocess.Popen(
+    def _spawn_parent(self, job):
+        return job.spawn(
             [sys.executable, "-c", ORPHAN_PARENT_CODE],
             stdout=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
+
+    def test_kill_process_tree_after_parent_exit_reaches_orphan(self):
+        job = ProcessJob("orphan-test")
+        parent = self._spawn_parent(job)
         try:
             orphan_pid = int((parent.stdout.readline() or "").strip() or 0)
             self.assertGreater(orphan_pid, 0, "没读到孤儿 pid，测试本身有问题")
@@ -317,7 +325,7 @@ class OrphanedTreeTests(unittest.TestCase):
             self.assertFalse(process_alive(parent.pid), "家长应该已经退了")
             self.assertTrue(process_alive(orphan_pid), "家长退了，孩子应该还活着（测试前提）")
 
-            kill_process_tree(parent.pid)  # 裸 pid：只能靠 ppid 快照找回后代
+            kill_process_tree(parent)  # 起进程时记了启动时间，孤儿按创建时间能认出来
 
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and process_alive(orphan_pid):
@@ -329,6 +337,33 @@ class OrphanedTreeTests(unittest.TestCase):
         finally:
             parent.stdout.close()
             if process_alive(orphan_pid):
+                kill_process_tree(orphan_pid)
+
+    def test_bare_pid_without_start_time_leaves_orphans_alone(self):
+        """裸 pid 没有启动时间就当判据不足：宁可漏，不能凭 ppid 数字杀陌生进程树。
+
+        PID 复用后，那个 pid 可能已经是用户浏览器或编辑器的了——taskkill /T 下去连带整棵
+        树都没了，比漏杀严重得多。
+        """
+        job = ProcessJob("bare-pid-test")
+        parent = self._spawn_parent(job)
+        orphan_pid = 0
+        try:
+            orphan_pid = int((parent.stdout.readline() or "").strip() or 0)
+            self.assertGreater(orphan_pid, 0, "没读到孤儿 pid，测试本身有问题")
+            parent.wait(timeout=30)
+            self.assertTrue(process_alive(orphan_pid), "家长退了，孩子应该还活着（测试前提）")
+
+            kill_process_tree(parent.pid)  # 裸 pid：没有创建时间判据
+
+            time.sleep(2.0)
+            self.assertTrue(
+                process_alive(orphan_pid),
+                f"判据不足时不该动孤儿 pid={orphan_pid}（PID 复用保护）",
+            )
+        finally:
+            parent.stdout.close()
+            if orphan_pid and process_alive(orphan_pid):
                 kill_process_tree(orphan_pid)
 
     def test_descendant_pids_finds_a_live_child(self):
@@ -367,6 +402,79 @@ class LeftoverMarkerTests(unittest.TestCase):
             }
         ]
         self.assertEqual(select_reapable_orphans(snapshot, now=time.time()), [4243])
+
+
+class OrphanSelectionTests(unittest.TestCase):
+    """回收孤儿的判据（纯函数层，不用真起进程）。
+
+    PID 会被复用：ppid 等于一个早就退出的根，不等于那孩子是根留下的——可能是同一个 pid
+    被新进程拿去之后生的。创建时间对不上就是陌生人，不能杀。
+    """
+
+    ROOT_STARTED = 1_800_000_000.0
+
+    def test_child_predating_the_root_is_not_an_orphan(self):
+        # 同一个 pid 被复用之后的进程：比「根」还早出生，不是根的孩子。
+        children = [(4242, self.ROOT_STARTED - 3600.0)]
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [])
+
+    def test_child_born_after_the_root_is_an_orphan(self):
+        children = [(4243, self.ROOT_STARTED + 5.0)]
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [4243])
+
+    def test_unreadable_creation_time_is_left_alone(self):
+        children = [(4244, None)]
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [])
+
+    def test_without_a_recorded_start_time_nothing_is_reaped(self):
+        # 没判据就一个都不动：宁漏不误杀。
+        children = [(4245, self.ROOT_STARTED + 5.0)]
+        self.assertEqual(select_orphan_children(children, None), [])
+
+    def test_mixed_snapshot_keeps_only_the_young_ones(self):
+        children = [
+            (10, self.ROOT_STARTED - 1.0),   # 容差内：计时精度差异，当作孩子
+            (11, self.ROOT_STARTED - 60.0),  # 明显早于根：PID 复用，不动
+            (12, self.ROOT_STARTED + 1.0),
+            (13, None),
+        ]
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [10, 12])
+
+    def test_process_creation_time_reads_a_live_process(self):
+        created = process_creation_time(os.getpid())
+        self.assertIsNotNone(created)
+        self.assertGreater(created, 1_500_000_000.0)
+        self.assertLessEqual(created, time.time() + 1.0)
+
+
+class WorkspaceCleanupTests(unittest.TestCase):
+    """#361：临时目录删不动要能被报告看见，不能静默吞。"""
+
+    @unittest.skipUnless(os.name == "nt", "POSIX 上打开着的文件照样删得掉，验不出钉住")
+    def test_pinned_file_is_reported_then_cleaned(self):
+        with tempfile.TemporaryDirectory(prefix="firefly-workspace-") as outer:
+            root = Path(outer) / "run"
+            (root / "sub").mkdir(parents=True)
+            pinned = root / "sub" / "pinned.txt"
+            pinned.write_text("x", encoding="utf-8")
+            handle = open(pinned, "r")  # 没 FILE_SHARE_DELETE：Windows 上这个文件删不掉
+            try:
+                leftovers = remove_execution_workspace(root)
+            finally:
+                handle.close()
+            self.assertTrue(
+                any("pinned.txt" in item for item in leftovers),
+                f"被钉住的文件必须出现在 leftovers 里，实际：{leftovers}",
+            )
+            self.assertEqual(remove_execution_workspace(root), [], "放开后应该能删干净")
+
+    def test_clean_directory_reports_nothing(self):
+        with tempfile.TemporaryDirectory(prefix="firefly-workspace-") as outer:
+            root = Path(outer) / "run"
+            (root / "sub").mkdir(parents=True)
+            (root / "sub" / "f.txt").write_text("x", encoding="utf-8")
+            self.assertEqual(remove_execution_workspace(root), [])
+            self.assertFalse(root.exists())
 
 
 if __name__ == "__main__":
