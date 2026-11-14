@@ -8,6 +8,16 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
+# issue #364：文本日志另外落一份到 <FIREFLY_RUNTIME_ROOT>/logs/server.log（UTF-8、追加写、
+# 7 天 / 100MB 轮转）。以前只有上面那个 stdout handler，内容全靠启动器重定向到
+# data/server.stdout.log——固定文件名，下次启动就盖掉，崩溃前的日志就没了，也没轮转。
+# 必须在导 app.* 之前装：导入期就报的行（system_trust、.env 加载失败）也要进得去。
+# 守卫只看 __main__：测试里大量 `import main`，不能一导入就往仓库里写文件。
+if __name__ == "__main__":
+    import firefly_server_log
+
+    firefly_server_log.configure_server_logging()
+
 logger = logging.getLogger(__name__)
 
 # 必须在任何 HTTPS 之前：企业代理用自签证书拦截 TLS 时，Python 内置根证书库会报

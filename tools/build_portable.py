@@ -25,8 +25,14 @@ VENDOR = Path(os.environ.get('FIREFLY_VENDOR_DIR', str(REPO / 'tools' / '.vendor
 
 INCLUDE_TOP = [
     'main.py', 'firefly_generation.py', 'firefly_diagnostics.py', 'firefly_opsdb.py',
+    # issue #364：main.py 在 __main__ 里 import 它，漏了便携包直接起不来。
+    'firefly_server_log.py',
     'firefly_project_annotations.py', 'firefly_project_undo.py', 'firefly_project_versions.py',
     'firefly_projects.py', 'firefly_projects_cleanup.py', 'firefly_projects_deletion.py',
+    # 存量缺口：main.py 直接 `import firefly_json_io`（#345 原子写走它），
+    # static 搜索走 firefly_search——INCLUDE_TOP 一直漏这两个，便携包里没文件。
+    # 由 tests/test_server_logging.py 的便携包清单守卫钉住，不能再靠自觉。
+    'firefly_json_io.py', 'firefly_search.py',
     'firefly_usage.py', 'layout_engine.py', 'local_edit.py', 'plan_ir_builder.py', 'plan_ir',
     'excel_importer.py', 'app', 'static', 'LICENSE', 'NOTICE.md', 'README.md',
 ]

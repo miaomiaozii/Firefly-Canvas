@@ -58,6 +58,6 @@ endlocal & exit /b 1
 :server_launch_failed
 echo.
 echo Failed to launch the detached Firefly server.
-echo Check data\server.stderr.log for details, then run 安装依赖.bat if needed.
+echo Check logs\ (server.log, boot-*.stderr.log) for details, then run 安装依赖.bat if needed.
 pause
 endlocal & exit /b 1

@@ -101,10 +101,17 @@ function Bump-AllAssetVersions {
 
 function Start-FireflyServer {
     $py = Resolve-Python
-    $dataDir = Join-Path $root 'data'
-    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-    $stdout = Join-Path $dataDir 'server.stdout.log'
-    $stderr = Join-Path $dataDir 'server.stderr.log'
+    # issue #364：不再重定向到 data\ 下的 server.*.log（固定名、下次启动直接盖掉）。
+    # 每次启动一对带 UTC 时间戳的 boot 日志；服务日志走 logs\server.log（UTF-8、追加、
+    # 7 天 / 100MB 轮转，见 firefly_server_log.py）。
+    $logDir = Join-Path $root 'logs'
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $stdout = Join-Path $logDir ("boot-$stamp.stdout.log")
+    $stderr = Join-Path $logDir ("boot-$stamp.stderr.log")
+    # 不设 UTF-8，Windows 子进程按 GBK 码页写，中文日志全成乱码。
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
     # Same entrypoint as run.bat -> launch-firefly.ps1.
     Start-Process -FilePath $py `
         -ArgumentList @('tools\run-server.py') `
@@ -112,7 +119,7 @@ function Start-FireflyServer {
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr | Out-Null
-    Write-Host "[REFRESH] Server starting via tools\run-server.py ..."
+    Write-Host "[REFRESH] Server starting via tools\run-server.py ... log: $stdout"
 }
 
 Write-Host "=== Firefly Canvas cache refresh ==="

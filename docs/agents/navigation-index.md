@@ -74,6 +74,12 @@
 - 最相关测试：`tests/test_diagnostics.py`。
 - 不变量：prompt→prompt_sha256、API key/媒体字节/完整本地路径脱敏；仅本地、100MB/7 天轮转、用户可清空、永不自动上传（模块不导入任何 HTTP 客户端）。
 
+### 服务器文本日志（#364）
+
+- 稳定符号：`firefly_server_log.py`（`log_dir`、`server_log_path`、`ServerLogHandler`、`prune_boot_logs`、`configure_server_logging`）；调用点 `main.py:17`（`__main__` 守卫内，必须在 `from app.services.system_trust import` 之前）；三个启动器写 `logs/boot-<UTC 时间戳>.(stdout|stderr).log`。
+- 最相关测试：`tests/test_server_logging.py`（重启追加不覆盖、UTF-8 中文、100MB 轮转、7 天清理、boot 日志体积上限、启动器与便携包清单守卫）。
+- 不变量：日志落 `<FIREFLY_RUNTIME_ROOT>/logs/`（与 `firefly_diagnostics.py` 同一个根），追加写不覆盖上一次启动；文本一律 UTF-8（启动器给子进程 `PYTHONUTF8=1`）；`httpx` logger 降到 WARNING；测试里 `import main` 不往仓库写文件。uvicorn 自己的 access/error 流仍在 boot 日志里（不进 `server.log`），由 `prune_boot_logs` 按 7 天 / 100MB 收。
+
 ## ADR 索引
 
 | 编号 | 标题 | 一句话 |
