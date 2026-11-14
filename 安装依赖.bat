@@ -1,4 +1,7 @@
 @echo off
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
 
 echo ============================================
@@ -71,6 +74,17 @@ echo [Extra] Installing WebSocket support for Uvicorn...
 if errorlevel 1 (
     echo [WARN] Failed to install uvicorn[standard]. WebSocket features may be unavailable.
 )
+
+:verify
+echo.
+echo [verify] Checking dependencies one by one...
+"%PYEXE%" tools\check_dependencies.py
+if not errorlevel 1 goto :done
+echo.
+echo [MISSING] The Chinese list above names exactly which packages are still missing.
+echo Re-run this file, or run: "%PYEXE%" -m pip install -r requirements.txt
+pause
+exit /b 1
 
 :done
 echo.

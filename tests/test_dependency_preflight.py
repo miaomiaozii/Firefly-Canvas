@@ -7,6 +7,7 @@
 1. ``tools/check_dependencies.py``：逐个依赖体检（中文点名 / 纯 ASCII 名单 / 可选项不拦启动）。
 2. 启动脚本：``run.bat`` 缺依赖要停下来（缺项清单由 ``check_dependencies.py`` 用中文打，
    因为 .bat 自己放中文会被 cmd 的 GBK 解析砸碎）；``launch-firefly.ps1`` 起服务前先体检；
+   ``安装依赖.bat`` 装完要自己跑一遍体检（pip 报成功不等于依赖齐）；
    ``wait-for-local-server.ps1`` 等不到服务要读 boot 日志尾部、给中文提示（人双击时还弹窗）。
 3. 编码：Windows PowerShell 5.1 按 ANSI/GBK 读无 BOM 的 .ps1，中文会变乱码（实测），
    所以带中文的 .ps1 必须 UTF-8 with BOM。
@@ -166,6 +167,92 @@ class RunBatFailureMessageTests(unittest.TestCase):
         #    缺哪几个模块的中文清单由 tools\check_dependencies.py 自己打（它走 UTF-8 子进程）。
         stripped = re.sub(r"安装依赖\.bat", "", text)
         self.assertTrue(stripped.isascii(), "run.bat 除了 安装依赖.bat 这个文件名以外不能放中文")
+
+
+class InstallBatVerifyTests(unittest.TestCase):
+    """#363 续做：`安装依赖.bat` 装完要自己跑一遍体检，缺了就停下来点名。
+
+    票里原本只有 pip 自己报的错——装失败会退，装“成功”但实际还缺东西（包名对不上、
+    extra 没装）就会 Done，用户接着双击 run.bat 又是一头雾水。
+    """
+
+    INSTALL_BAT = ROOT / "安装依赖.bat"
+
+    def _workdir(self, tmp: str, *, check_exit: int) -> tuple[Path, dict[str, str]]:
+        workdir = Path(tmp)
+        shutil.copy(self.INSTALL_BAT, workdir / self.INSTALL_BAT.name)
+        (workdir / "requirements.txt").write_text("", encoding="utf-8")
+        (workdir / "packages").mkdir()
+        stub = workdir / "tools" / "check_dependencies.py"
+        stub.parent.mkdir(parents=True)
+        stub.write_text(
+            "import sys\n"
+            "print('[缺少依赖] pillow（导入名：PIL）')\n"
+            f"sys.exit({check_exit})\n",
+            encoding="utf-8",
+        )
+        # 把 pip 摁在本地：不联网，只仍向空 packages 目录（装空 requirements 秒过）。
+        env = dict(
+            os.environ,
+            PIP_NO_INDEX="1",
+            PIP_FIND_LINKS=str(workdir / "packages"),
+            PIP_DISABLE_PIP_VERSION_CHECK="1",
+        )
+        return workdir, env
+
+    def _run(self, workdir: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["cmd.exe", "/c", str(workdir / self.INSTALL_BAT.name)],
+            cwd=workdir,
+            capture_output=True,
+            input=b"\n",
+            env=env,
+            timeout=180,
+        )
+
+    @unittest.skipUnless(IS_WINDOWS, "安装依赖.bat 只在 Windows 上跑")
+    @unittest.skipUnless(shutil.which("python") or shutil.which("python.exe"), "本机没有 python")
+    def test_missing_dependency_stops_with_the_chinese_list(self):
+        with tempfile.TemporaryDirectory(prefix="ff363-install-") as tmp:
+            workdir, env = self._workdir(tmp, check_exit=1)
+            result = self._run(workdir, env)
+            text = _decode(result.stdout) + _decode(result.stderr)
+            self.assertEqual(result.returncode, 1, text)
+            self.assertIn("[verify] Checking dependencies", text, "装完必须自己体检一遍")
+            self.assertIn("[缺少依赖] pillow", text, "缺项清单要在屏幕上看得见")
+            self.assertIn("[MISSING]", text)
+            self.assertNotIn("Done. Run run.bat", text, "还缺依赖不能报 Done")
+
+    @unittest.skipUnless(IS_WINDOWS, "安装依赖.bat 只在 Windows 上跑")
+    @unittest.skipUnless(shutil.which("python") or shutil.which("python.exe"), "本机没有 python")
+    def test_complete_dependencies_still_report_done(self):
+        with tempfile.TemporaryDirectory(prefix="ff363-install-") as tmp:
+            workdir, env = self._workdir(tmp, check_exit=0)
+            result = self._run(workdir, env)
+            text = _decode(result.stdout) + _decode(result.stderr)
+            self.assertIn("[verify] Checking dependencies", text)
+            self.assertIn("Done. Run run.bat", text, "依赖齐时不能假报缺）")
+
+    def test_install_bat_verify_block_is_parse_safe(self):
+        raw = self.INSTALL_BAT.read_bytes()
+        text = raw.decode("utf-8")
+        # LF 行尾会把 cmd 里的命令砸碎（#363 踩过），中文文件名字面量也会被 GBK 解析砸坏。
+        self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"), "安装依赖.bat 必须是 CRLF 行尾")
+        self.assertTrue(text.isascii(), "安装依赖.bat 里不能放中文字面量（体检脚本自己打中文）")
+        # 体检必须在 pip 安装之后、:done 之前，缺了要 exit /b 1。
+        install_at = text.index("-r requirements.txt")
+        verify_at = text.index("check_dependencies.py")
+        done_at = re.search(r"(?m)^:done\s*$", text).start()  # 标签行，不是前面的 `goto :done`
+        self.assertTrue(install_at < verify_at < done_at, "体检要在装完之后、报 Done 之前")
+        tail = text[verify_at:done_at]
+        self.assertIn("exit /b 1", tail, "体检不过要停下来")
+        # 这两行必须是顶语的：cmd 的 `if (...)` 块里放标签会把后面的 `:done` 吞掉。
+        self.assertIn(
+            '"%PYEXE%" tools\\check_dependencies.py\r\nif not errorlevel 1 goto :done\r\n', text,
+            "体检与跳转要是顶语行",
+        )
+        # 体检脚本打中文，没切过 UTF-8 码页前会被当 GBK 回显成乱码。
+        self.assertIn("chcp 65001", text[:verify_at], "体检前必须 chcp 65001，否则中文缺项清单是乱码")
 
 
 class LauncherGuardsTests(unittest.TestCase):
