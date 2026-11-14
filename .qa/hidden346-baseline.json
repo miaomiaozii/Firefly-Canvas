@@ -1,0 +1,93 @@
+{
+  "project-list (root)": {
+    "total": 10,
+    "offenders": []
+  },
+  "global-settings": {
+    "total": 0,
+    "offenders": []
+  },
+  "smart-canvas": {
+    "total": 24,
+    "offenders": [
+      {
+        "tag": "B",
+        "id": "smartMarkedCount",
+        "cls": "smart-marked-count",
+        "display": "block"
+      },
+      {
+        "tag": "DIV",
+        "id": "canvasSearchPanel",
+        "cls": "canvas-search-panel",
+        "display": "flex"
+      },
+      {
+        "tag": "DIV",
+        "id": "projectSaveState",
+        "cls": "project-save-state",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": null,
+        "cls": "create-card",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": null,
+        "cls": "create-card",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": null,
+        "cls": "create-card",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": null,
+        "cls": "create-card",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "assetBatchToggleBtn",
+        "cls": "asset-mini-btn",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "assetDetectUnusedBtn",
+        "cls": "asset-mini-btn",
+        "display": "flex"
+      },
+      {
+        "tag": "DIV",
+        "id": "assetBatchBar",
+        "cls": "asset-batch-bar",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "smartTrashOpenBtn",
+        "cls": "preview-icon-btn",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "smartHistoryPurgeTrash",
+        "cls": "preview-icon-btn danger",
+        "display": "flex"
+      },
+      {
+        "tag": "BUTTON",
+        "id": "imagePreviewMarkBtn",
+        "cls": "image-edit-btn secondary",
+        "display": "flex"
+      }
+    ]
+  }
+}

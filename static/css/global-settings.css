@@ -368,10 +368,6 @@ input[type="radio"] {
   line-height: var(--line-compact);
 }
 
-.model-option[hidden] {
-  display: none;
-}
-
 .model-option:hover,
 .model-option:focus-within {
   background: color-mix(in srgb, var(--accent) 10%, var(--soft));

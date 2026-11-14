@@ -434,6 +434,12 @@ STEP_DEFINITIONS = {
     # #269：#255 图层面板的浏览器证据（多层创建→显隐切换→拖拽重排→合成 PNG 像素断言）。
     # 按 #167/#185 先例接进 trial/release（并行组），fast/domain 保持快。
     "layers-panel-evidence": lambda python: [python, "tests/layers_panel_browser.py"],
+    # #346：`hidden` 语义的页面级计算样式证据——逐页扫 `[hidden]` 元素断言它们真的不占盒，
+    # 再真按 Esc、真点 ×、真点顶栏开合验面板开关。按 #167/#185/#269 先例接进 domain/trial/release
+    # （trial/release 在并行组：runner 自带临时 InMemoryUserStore 与临时端口）；实测 6.8s。
+    # 不进 fast：fast 预算 30s 而存量已用 20s（#185 同因）。纯文本守卫
+    # tests/test_canvas_hidden_attribute_semantics.py 不挂步骤，靠 unit-contract 分片与全量 pytest 跑。
+    "canvas-hidden-visibility-evidence": lambda python: [python, "tests/canvas_hidden_visibility_browser.py"],
     "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
     # #295：tabbit 端到端套件接进交付门禁（失败自动重跑+证据归档已在 #296 落地，
     # 入口脚本只做编排）。按 #167/#185 先例接进 trial/release；无 tabbit/app 没开时
@@ -470,6 +476,8 @@ MODE_STEPS = {
         "provider-contract",
         "native-browser-evidence",
         "generation-lifecycle-evidence",
+        # #346：页面级 `[hidden]` 计算样式证据（含画布搜索面板的 ×/Esc 开关）。
+        "canvas-hidden-visibility-evidence",
         "egress-attribution",
     ),
     "trial": (
@@ -486,6 +494,8 @@ MODE_STEPS = {
         "excel-import-evidence",
         "canvas-boundaries-evidence",
         "layers-panel-evidence",
+        # #346：`hidden` 语义页面级证据。
+        "canvas-hidden-visibility-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -510,6 +520,8 @@ MODE_STEPS = {
         "edge-compatibility",
         "canvas-boundaries-evidence",
         "layers-panel-evidence",
+        # #346：`hidden` 语义页面级证据。
+        "canvas-hidden-visibility-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -541,6 +553,8 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "browser-tracer",
         "canvas-boundaries-evidence",
         "layers-panel-evidence",
+        # #346：runner 自带临时 InMemoryUserStore 与临时端口，不共享状态——可以进并行组。
+        "canvas-hidden-visibility-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",

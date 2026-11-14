@@ -1,3 +1,12 @@
+/* #346：`hidden` 属性的语义必须压过作者样式。各页样式里大量 `display:flex/grid`，
+   而浏览器 UA 的 `[hidden]{display:none}` 是普通声明，被作者样式直接赢掉——带 hidden 的元素照样显示。
+   实测：画布页 24 个 `[hidden]` 元素里 13 个仍在显示（含 #337 的跨项目搜索面板：× 和 Esc 都置了 hidden，面板还挂着）。
+   页面级计算样式断言见 tests/canvas_hidden_visibility_browser.py。
+   要反过来覆盖这条必须自己写 `!important`——那就是一次显式决定，不会再悄悄发生。 */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --page: #f4f6f9;
   --panel: #ffffff;

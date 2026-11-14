@@ -371,6 +371,8 @@ class QualityGateTests(unittest.TestCase):
             "video-failure-evidence",
             "node-flow-cascade-evidence",
             "fly-fixes-evidence",
+            # #346：`hidden` 语义的页面级计算样式证据。
+            "canvas-hidden-visibility-evidence",
         ):
             command = STEP_DEFINITIONS[name](sys.executable)
             runner = repo_root / command[1]
@@ -527,6 +529,8 @@ class QualityGateTests(unittest.TestCase):
             # #295：tabbit 端到端入口同一套路（门只验接线；环境未就绪时真实入口
             # 也会 exit 0 快速跳过，桩与真实行为一致）。
             "tabbit_e2e_evidence.py",
+            # #346：`hidden` 语义页面级证据 runner 同一套路（门只验接线不验产品行为）。
+            "canvas_hidden_visibility_browser.py",
         ):
             (self.fixture_root / "tests" / runner_name).write_text(
                 "import sys\n"
@@ -2614,8 +2618,8 @@ class QualityGateTests(unittest.TestCase):
         # 槽位按当前分片方案的确定性展开。
         expected = {
             "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
-            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "egress-attribution")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
+            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
@@ -2633,6 +2637,7 @@ class QualityGateTests(unittest.TestCase):
                     "edge-compatibility",
                     "canvas-boundaries-evidence",
                     "layers-panel-evidence",
+                    "canvas-hidden-visibility-evidence",
                     "video-failure-evidence",
                     "node-flow-cascade-evidence",
                     "fly-fixes-evidence",
