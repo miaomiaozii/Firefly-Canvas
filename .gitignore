@@ -61,3 +61,7 @@ node_modules/
 tools/.vendor/
 .pipeline/evidence/
 codex-home/
+
+# #360：e2e 套件每跑一次刷一次的截图目录（票面证据走 .qa/shots/ 与门内归档）
+.qa/artifacts/
+.pipeline/gate/

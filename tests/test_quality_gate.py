@@ -333,20 +333,37 @@ class QualityGateTests(unittest.TestCase):
     def test_tabbit_e2e_suite_wires_mouse_scenario(self):
         # #310：#295 只接了三个套件，scenario_mouse.sh（#299 的鼠标维，m1–m6）
         # 不在 SCENARIO_SCRIPTS 里，任何档位都不会被跑到。这里锁套件清单：
-        # 四套件缺一不可，且脚本文件必须在册——防止再接线遗漏。
+        # #360：套件清单改为「tools/e2e/ 下所有 scenario_*.sh 自动纳入」（见
+        # tests/tabbit_e2e_evidence.py 的 _scenario_scripts）；这里钉住当时那四套的
+        # 硬编码清单已过期，改成断言：四套仍在 + 任何 scenario_*.sh 不在清单就是 bug。
         # 门内该步恒为环境跳过（合成临时 home 看不见 tabbit-cli，#310 承认的
         # 空步），真实留证走门外执行入口脚本，路径取舍见 #310 评论。
         from tests import tabbit_e2e_evidence
+        root = Path(__file__).resolve().parents[1]
+        on_disk = {f"tools/e2e/{p.name}" for p in (root / "tools" / "e2e").glob("scenario_*.sh")}
+        self.assertEqual(set(tabbit_e2e_evidence.SCENARIO_SCRIPTS), on_disk,
+                         "tools/e2e/ 下的 scenario_*.sh 必须全部接进门，新增套件不需要改入口")
+        # #360：五个写型入口都要在门里跑；e2e_qa.sh 不叫 scenario_*.sh，单独钉。
+        self.assertIn(tabbit_e2e_evidence.QA_SCRIPT, tabbit_e2e_evidence.ENTRY_SCRIPTS,
+                      "e2e_qa.sh 也是写型入口（#360），不能从门里溜掉")
+        self.assertEqual(set(tabbit_e2e_evidence.ENTRY_SCRIPTS),
+                         set(tabbit_e2e_evidence.SCENARIO_TIMEOUTS),
+                         "每个入口都要有自己那份超时预算（#360：预算按套件拆）")
         self.assertEqual(
-            set(tabbit_e2e_evidence.SCENARIO_SCRIPTS),
+            on_disk & {
+                "tools/e2e/scenario_keys.sh",
+                "tools/e2e/scenario_delete_undo.sh",
+                "tools/e2e/scenario_ux_rules.sh",
+                "tools/e2e/scenario_mouse.sh",
+            },
             {
                 "tools/e2e/scenario_keys.sh",
                 "tools/e2e/scenario_delete_undo.sh",
                 "tools/e2e/scenario_ux_rules.sh",
                 "tools/e2e/scenario_mouse.sh",
             },
+            "#310 那四套不能从清单里掉出去",
         )
-        root = Path(__file__).resolve().parents[1]
         for script in tabbit_e2e_evidence.SCENARIO_SCRIPTS:
             self.assertTrue((root / script).is_file(), f"套件脚本缺失: {script}")
 

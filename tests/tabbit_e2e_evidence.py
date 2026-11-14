@@ -45,21 +45,36 @@ from __future__ import annotations
 
 import os
 import shutil
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# #360：套件输出里带中文场景名与 →/ı 等非 GBK 字符，Windows 默认 stdout（cp936）
+# 会在 print 时 UnicodeEncodeError 把整个步炸掉（实测 shot_diff 输出里 'ı' 炸过）。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 HEALTHZ_URL = "http://127.0.0.1:3000/api/healthz"
-SCENARIO_SCRIPTS = (
-    "tools/e2e/scenario_keys.sh",
-    "tools/e2e/scenario_delete_undo.sh",
-    "tools/e2e/scenario_ux_rules.sh",
-    # #310：#295 只接了三个，鼠标维（tools/e2e/scenario_mouse.sh，m1–m6）
-    # 任何档位都不被跑到——门禁全绿时鼠标手感回归仍只有人肉能发现。
-    "tools/e2e/scenario_mouse.sh",
+SCENARIO_SCRIPTS = tuple(
+    f"tools/e2e/{p.name}" for p in sorted((ROOT / "tools" / "e2e").glob("scenario_*.sh"))
 )
+# #360：第五个写型入口。e2e_qa.sh（s1–s6）以前不在门里跑——它也从 healthz 取用户
+# 打开的项目写数据，现在同样走夹具（自建自删），所以接进门。
+QA_SCRIPT = "tools/e2e_qa.sh"
+ENTRY_SCRIPTS = SCENARIO_SCRIPTS + (QA_SCRIPT,)
 SCENARIO_TIMEOUT = 600
+# #360：超时预算按套件拆。实测（2026-11-14，应用开着跑本机）：keys 154s / mouse 67s /
+# ux_rules 44s / delete_undo 44s / qa 29s。预算给实测的 ~4 倍余量；以前共用 600s×4，
+# 历史最坏 mouse 单套 2160s 会把 release 档 900s 预算整块吃掉。
+SCENARIO_TIMEOUTS = {
+    "tools/e2e/scenario_keys.sh": 600,
+    "tools/e2e/scenario_mouse.sh": 300,
+    "tools/e2e/scenario_delete_undo.sh": 240,
+    "tools/e2e/scenario_ux_rules.sh": 240,
+    QA_SCRIPT: 180,
+}
 EVID_SHOTS = ROOT / ".pipeline" / "evidence" / "screenshots"
 
 
@@ -76,7 +91,7 @@ def environment_skip(reason: str) -> int:
     # 判成 failed（tools/quality_gate.py:2045），与「无 tabbit 不炸门」的意图相反。
     print(
         f"TABBIT-E2E 环境未就绪，本步按跳过处理（exit 0，门禁计为通过）：{reason}。"
-        "四套件（keys/delete_undo/ux_rules/mouse）均未执行——门内该步恒为空步（#310 路径 B），"
+        "五个入口（keys/delete_undo/ux_rules/mouse + e2e_qa）均未执行——门内该步恒为空步（#310 路径 B），"
         "端到端留证走门外执行本入口，见 #310 评论的留证机制。"
     )
     return 0
@@ -107,10 +122,34 @@ def check_environment() -> int | None:
     return None
 
 
+TALLY = {"suites": [], "pass": 0, "fail": 0, "skip": 0, "skipped": []}
+RESULT_RE = re.compile(
+    r"^RESULT suite=(?P<suite>\S+) pass=(?P<pass>\d+) fail=(?P<fail>\d+) skip=(?P<skip>\d+)", re.M
+)
+SKIP_RE = re.compile(r'^SKIP\s+(?P<name>\S+)', re.M)
+
+
+def tally_scenarios(script: str, stdout: str) -> None:
+    """#360：把每个套件的三态计数汇总到 E2E_SUMMARY，skip 单独列出、不并进 pass。
+
+    套件脚本（tools/e2e/e2e_common.sh）打印 `RESULT suite=… pass=… fail=… skip=…`；
+    没有这行说明套件没按约定报告（例如中途崩掉），按失败处理。
+    """
+    m = RESULT_RE.search(stdout)
+    if not m:
+        raise SystemExit(f"FAIL  {script}: 没有 RESULT 三态汇总行（#360 要求 pass/fail/skip 可分辨）")
+    TALLY["suites"].append(m.group("suite"))
+    for key in ("pass", "fail", "skip"):
+        TALLY[key] += int(m.group(key))
+    TALLY["skipped"] += SKIP_RE.findall(stdout)
+
+
 def run_scenarios() -> int:
-    for script in SCENARIO_SCRIPTS:
+    rc_all = 0
+    for script in ENTRY_SCRIPTS:
         script_path = ROOT / script
-        print(f"== 运行 {script} ==")
+        timeout = SCENARIO_TIMEOUTS.get(script, SCENARIO_TIMEOUT)
+        print(f"== 运行 {script} （预算 {timeout}s）==")
         try:
             proc = subprocess.run(
                 ["bash", str(script_path)],
@@ -118,11 +157,11 @@ def run_scenarios() -> int:
                 capture_output=True,
                 text=True,
                 encoding="utf-8", errors="replace",
-                timeout=SCENARIO_TIMEOUT,
+                timeout=timeout,
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            print(f"FAIL  {script}: 超过 {SCENARIO_TIMEOUT}s 未完成")
+            print(f"FAIL  {script}: 超过 {timeout}s 未完成")
             return 1
         if proc.stdout:
             print(proc.stdout.rstrip())
@@ -133,6 +172,7 @@ def run_scenarios() -> int:
             print(f"FAIL  {script}: exit {proc.returncode}，输出 tail：")
             print("\n".join(tail))
             return 1
+        tally_scenarios(script, proc.stdout)
     return 0
 
 
@@ -172,9 +212,18 @@ def main() -> int:
         return skip_code
     if run_scenarios() != 0:
         return 1
+    # #360：三态汇总——skip 单独列，不并进 pass。“全绿”不等于零 skip，
+    # 零 skip 但里面有已知缺陷也不算验收过。
+    print(
+        f"E2E_SUMMARY suites={len(TALLY['suites'])} pass={TALLY['pass']} fail={TALLY['fail']} "
+        f"skip={TALLY['skip']} skipped=[{', '.join(TALLY['skipped'])}]"
+    )
+    if TALLY["fail"]:
+        print(f"FAIL 有 {TALLY['fail']} 个场景失败")
+        return 1
     run_shot_diff()
     archive_diff_evidence()
-    print("TABBIT-E2E 全绿")
+    print(f"TABBIT-E2E 全绿（pass={TALLY['pass']}，skip={TALLY['skip']} 未计入通过）")
     return 0
 
 

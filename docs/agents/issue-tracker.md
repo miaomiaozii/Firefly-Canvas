@@ -39,6 +39,13 @@ PRs as a request surface: no.
 - “读取相关 ticket”表示执行 `gh issue view <number> --comments`。
 - Issue 与 Pull Request 共用编号；无法确定类型时，先检查 PR，再检查 Issue。
 
+## 验收留证（#360）
+
+- UI 类 issue 的验收必须附 tabbit 实测截图：真鼠标/真键盘事件操作（`page.mouse.*` / `page.keyboard.*`），`page.evaluate` 只用于读断言，不用来 `el.click()` 或塞值。截图落 `.qa/shots/`（工树产物，不入库），票面写清路径与场景名。
+- e2e 套件只在夹具自建的隔离项目上跑：`python tools/e2e/e2e_harness.py create` 建、跑完 `cleanup` 删。禁止取 `/api/healthz` 的 `open_project_ids`——那是用户当前打开的真实项目。
+- 报告三态 pass / fail / skip，skip 不计通过；已知缺陷用 `SKIP KNOWN-GAP/KNOWN-STALE：<原因>`，不许静默绿。
+- 新增套件放进 `tools/e2e/scenario_*.sh` 就自动接进门（`tests/tabbit_e2e_evidence.py` 按名字扫），同时在 `SCENARIO_TIMEOUTS` 里给它单独超时预算。
+
 ## Wayfinding
 
 `/wayfinder` 使用一个带 `wayfinder:map` 标签的 Issue 作为总地图，子 Issue 作为决策任务。

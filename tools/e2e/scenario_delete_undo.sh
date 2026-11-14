@@ -1,159 +1,135 @@
 #!/usr/bin/env bash
 # scenario_delete_undo.sh — #300 删除与撤回端到端验收
 # D1 删除节点断言消失；D2 Ctrl+Z 原位恢复；D3 删→复制→撤→重做逐级对应；
-# D4 agent 画布写操作是否进同一撤回链（成本高 PASS-skip）。
+# D4 agent 画布写操作是否进同一撤回链（成本高 SKIP）。
 # 机制锚点：删除按钮 .node-delete（smart-canvas.js:9212/9221/9295，选中/悬停出现）；
 # 批删 :15306 ids.forEach deleteNode；undo :15292；redo :15287（redoStack 跳过 projectOriginalDelete 快照）。
+# #360：不再取用户打开的项目——本套会真删节点，改用 e2e_common 自建的隔离项目。
 set -u
-BASE="${FIREFLY_BASE:-http://127.0.0.1:3000}"
-TABBIT="$LOCALAPPDATA/Tabbit/LocalAgent/bin/tabbit-cli.exe"
-TABBIT="${TABBIT:-$HOME/.local/Tabbit/LocalAgent/bin/tabbit-cli.exe}"
-if [ ! -x "$TABBIT" ]; then echo "FATAL: tabbit-cli 不存在: $TABBIT"; exit 99; fi
-PID=$(curl -s -m 5 "$BASE/api/healthz" | python -c 'import sys,json;d=json.load(sys.stdin);ids=d.get("open_project_ids") or [];print(ids[0] if ids else "")' 2>/dev/null)
-[ -z "$PID" ] && { echo "FATAL: $BASE 上没有打开的项目"; exit 98; }
-URL="$BASE/static/smart-canvas.html?id=$PID&project=$PID&project_mode=1"
-# #296：场景结束态自动截图存证；基线对比 tools/e2e_shot_diff.py
-EVID_DIR="$(cd "$(dirname "$0")/../.." && pwd -W)/.pipeline/evidence/screenshots"
-FAILS=0
+source "$(dirname "$0")/e2e_common.sh"
+e2e_start "delete_undo" "Delete Undo QA" 90000
 
-run() {
-  local name="$1" out i js
-  js=$(cat)
-  for i in 1 2; do
-    out=$("$TABBIT" nodejs --task "Delete Undo QA" --request-id "du-$name-$i" --timeout-ms 180000 <<JS 2>&1
-await page.goto("$URL", {waitUntil: "domcontentloaded"});
-if (!page.url().includes('smart-canvas')) throw new Error('NAV_FAIL: ' + page.url());
-await page.waitForSelector('.image-node', {timeout: 30000});
-await page.waitForTimeout(2500);
-
-await page.evaluate(() => {
-  const n = document.querySelector('.image-node');
-  if (!n) throw new Error('NO_NODE');
-  const w = canvasState.nodes.find(v => v.id === n.dataset.id) || {x:0,y:0};
-  const cx = w.x + (w.w || 200) / 2, cy = w.y + (w.h || 200) / 2;
-  viewport.x = window.innerWidth / 2 - cx * viewport.scale;
-  viewport.y = window.innerHeight / 2 - cy * viewport.scale;
-  applyViewport();
-  canvasState.selectedId = ''; canvasState.selectedIds = [];
-  return true;
-});
-await page.waitForTimeout(400);
-const __r = await (async () => {
-$js
-})();
-await page.screenshot();
-return __r;
-JS
-)
-    SHOT=$(echo "$out" | grep -o '"path":"[^"]*screenshot[^"]*\.png"' | tail -1 | sed 's/"path":"//;s/"$//;s/\\/\//g')
-    if [ -n "$SHOT" ] && [ -f "$SHOT" ]; then mkdir -p "$EVID_DIR"; cp -f "$SHOT" "$EVID_DIR/$name-attempt$i.png" 2>/dev/null || true; fi
-    if echo "$out" | grep -q '"status":"succeeded"'; then
-      echo "PASS  $name  $(echo "$out" | grep -o '"evidence":"[^"]*"' | head -1)"
-      return
-    fi
-  done
-  echo "FAIL  $name"; echo "$out" | tail -4; FAILS=$((FAILS+1))
-}
-
-echo "== 删除/撤回验收 @ $URL =="
-
-# D1 真实点击选中首节点 → 其 .node-delete 出现 → 点击 → 节点数 -1 且 DOM 中消失
-run d1-delete <<'JS'
-const box = await page.evaluate(() => { const n=document.querySelector('.image-node'); const r=n.getBoundingClientRect(); return {x:r.x+r.width/2, y:r.y+r.height/2, id:n.dataset.id}; });
-await page.mouse.click(box.x, box.y);
+# D1 真实点击选中首节点 → 其 .node-delete 出现 → 真实点击删除 → 节点数 -1 且 DOM 中消失
+e2e_run d1-delete <<'JS'
+const target = page.locator('.image-node').first();
+const nodeId = await target.getAttribute('data-id');
+await target.click();                       // 真实鼠标点节点本体（不是 evaluate 里的合成 click）
 await page.waitForTimeout(500);
-const hasBtn = await page.evaluate(() => {
-  const n = document.querySelector('.image-node[data-id="' + '' + '"]') || [...document.querySelectorAll('.image-node')].find(e => e.dataset.id);
-  const target = [...document.querySelectorAll('.image-node')].find(e => e.dataset.id === window.__duTarget);
-  return !!document.querySelector('.node-delete');
-});
-await page.evaluate((id) => { window.__duTarget = id; }, box.id);
-if (!hasBtn) {
-  const del = await page.evaluate(() => document.querySelector('.node-delete'));
-  if (!del) return { evidence: 'PASS-skip: 选中/悬停未出现 .node-delete（可发现性缺陷备注, 改用键盘验证撤回链）' };
-}
+const del = page.locator('.node-delete').first();
+if (!(await del.count())) return { skip: '选中后未出现 .node-delete（可发现性缺陷），无法验证删除→撤回链' };
 const pre = await page.evaluate(() => canvasState.nodes.length);
-await page.evaluate(() => document.querySelector('.node-delete').click());
+await del.click();                          // 真实点击删除按钮
 await page.waitForTimeout(800);
 const post = await page.evaluate((id) => ({
   n: canvasState.nodes.length,
   gone: !canvasState.nodes.find(v => v.id === id) && !document.querySelector('.image-node[data-id="' + id + '"]')
-}), box.id);
+}), nodeId);
 if (post.n !== pre - 1 || !post.gone) throw new Error('DELETE_FAIL: ' + JSON.stringify({pre, post}));
-return { evidence: `nodes ${pre}→${post.n}, 节点 ${box.id} DOM 已移除` };
+return { evidence: `nodes ${pre}→${post.n}, 节点 ${nodeId} DOM 已移除` };
 JS
 
 # D2 Ctrl+Z 原位恢复：节点数还原 + nodeRect 位置与删除前一致（容差 2px）
-run d2-undo-restore <<'JS'
-// D1 已删一个节点（若 D1 是 skip 则本用例自行构造：点 .node-delete 或用 deleteNode）
-const target = await page.evaluate(() => {
-  const n = document.querySelector('.image-node');
-  const rec = canvasState.nodes.find(v => v.id === n.dataset.id);
-  return { id: n.dataset.id, x: rec.x, y: rec.y };
-});
-const before = await page.evaluate((t) => {
-  const n = document.querySelector('.image-node[data-id="' + t.id + '"]');
-  if (n) { const b = n.querySelector('.node-delete') || null; if (b) { b.click(); return { deleted: true, x: t.x, y: t.y }; } }
-  return { deleted: false, x: t.x, y: t.y };
-}, target);
-if (!before.deleted) return { evidence: 'PASS-skip: 无 .node-delete 可用，无法构造删除→撤回' };
+e2e_run d2-undo-restore <<'JS'
+const target = page.locator('.image-node').first();
+const nodeId = await target.getAttribute('data-id');
+const orig = await page.evaluate((id) => {
+  const rec = canvasState.nodes.find(v => v.id === id);
+  return { x: rec ? rec.x : null, y: rec ? rec.y : null };
+}, nodeId);
+await target.click();
+const del = page.locator('.node-delete').first();
+if (!(await del.count())) return { skip: '选中后无 .node-delete 可用，无法构造删除→撤回' };
+await del.click();
 await page.waitForTimeout(800);
-await page.keyboard.press('Control+z');
+await page.keyboard.press('Control+z');     // 真实快捷键撤回
 await page.waitForTimeout(900);
-const after = await page.evaluate((t) => {
-  const rec = canvasState.nodes.find(v => v.id === t.id);
-  const el = document.querySelector('.image-node[data-id="' + t.id + '"]');
+const after = await page.evaluate((id) => {
+  const rec = canvasState.nodes.find(v => v.id === id);
+  const el = document.querySelector('.image-node[data-id="' + id + '"]');
   return { exists: !!rec, x: rec ? rec.x : null, y: rec ? rec.y : null, dom: !!el };
-}, target);
+}, nodeId);
 if (!after.exists || !after.dom) throw new Error('UNDO_RESTORE_FAIL: 撤回后节点未恢复 ' + JSON.stringify(after));
-if (Math.abs(after.x - target.x) > 2 || Math.abs(after.y - target.y) > 2) throw new Error('POS_DRIFT: ' + JSON.stringify({orig: target, after}));
-return { evidence: `原位恢复 (${after.x.toFixed(1)},${after.y.toFixed(1)} vs 删除前 (${target.x.toFixed(1)},${target.y.toFixed(1)})` };
+if (Math.abs(after.x - orig.x) > 2 || Math.abs(after.y - orig.y) > 2) throw new Error('POS_DRIFT: ' + JSON.stringify({orig, after}));
+return { evidence: `原位恢复 (${after.x.toFixed(1)},${after.y.toFixed(1)} vs 删除前 (${orig.x.toFixed(1)},${orig.y.toFixed(1)})` };
 JS
 
 # D3 逐级栈对应：复制→删副本→撤→撤→重做→重做，相邻步必须 ±1（避开原节点删除的归档语义）
-run d3-undo-redo-stack <<'JS'
+e2e_run d3-undo-redo-stack <<'JS'
 const N0 = await page.evaluate(() => canvasState.nodes.length);
+const firstId = await page.locator('.image-node').first().getAttribute('data-id');
 const idsBefore = await page.evaluate(() => canvasState.nodes.map(v => v.id));
 const seq = [];
-const selById = (id) => page.evaluate((i) => { canvasState.selectedIds = [i]; canvasState.selectedId = i; }, id);
-// 1) 复制首节点
-await selById(idsBefore[0]);
+const clickNode = async (id) => { await page.locator(`.image-node[data-id="${id}"]`).click(); await page.waitForTimeout(250); };
+// 1) 真实选中首节点后按 Ctrl+D 复制
+await clickNode(firstId);
 await page.keyboard.press('Control+d'); await page.waitForTimeout(600);
+// 副本 id 由应用生成（smart_*），只能从「不在复制前的 id 集」里找
 const newId = await page.evaluate((prev) => (canvasState.nodes.map(v => v.id).find(id => !prev.includes(id)) || ''), idsBefore);
 seq.push(await page.evaluate(() => canvasState.nodes.length));
 if (!newId) throw new Error('D3_SETUP: 复制未产生新节点 ' + JSON.stringify(seq));
-// 2) 删副本
-await selById(newId);
-const del = await page.evaluate(() => document.querySelector('.node-delete'));
-if (del) { await page.evaluate(() => document.querySelector('.node-delete').click()); await page.waitForTimeout(600); }
+const selNow = await page.evaluate(() => canvasState.selectedId);
+if (selNow !== newId) {
+  return { skip: 'Ctrl+D 后选中态没落在副本上（selectedId=' + selNow + ', 副本=' + newId + '），删除链会错删原卡，不可断言' };
+}
+// 2) 删除副本走键盘 Delete（#347 修的就是这条路径）。不用鼠标点卡片删除钮：
+//    Ctrl+D 的副本落在原卡 +32/+32，两张 292px 的卡大面积重叠，副本删除钮被原卡压住
+//    （探针实测：点 .node-delete 被邻卡 intercept，5s 超时）；而拖开副本再点会给撤回栈
+//    多塞一步拖拽，断言就不是「复制→删→撤→重做逐级对应」了。
+//    副本的 .node-delete 仍然断言存在——「点错卡/删错卡」这个 bug 类靠它兜。
+const delBtn = page.locator('.image-node[data-id="' + newId + '"] .node-delete').first();
+if (!(await delBtn.count())) throw new Error('DELETE_BTN_MISSING: 副本 ' + newId + ' 没有自己的删除钮');
+await page.keyboard.press('Delete');
+await page.waitForTimeout(600);
+const gone = await page.evaluate((id) => !canvasState.nodes.some(v => v.id === id), newId);
+if (!gone) throw new Error('DELETE_NOOP: 副本 ' + newId + ' 还在（键盘 Delete 没删掉）');
 seq.push(await page.evaluate(() => canvasState.nodes.length));
-// 3) 撤→撤→重做→重做
+// 3) 撤→撤→重做→重做（真实快捷键）
 for (const k of ['Control+z', 'Control+z', 'Control+Shift+z', 'Control+Shift+z']) {
   await page.keyboard.press(k); await page.waitForTimeout(600);
   seq.push(await page.evaluate(() => canvasState.nodes.length));
 }
-// 现场恢复：目标 N0（上限 6 步）
-for (let s = 0; s < 6 && await page.evaluate(() => canvasState.nodes.length) !== N0; s++) {
-  await page.keyboard.press('Control+z'); await page.waitForTimeout(500);
+// 期望序列（精确，不是“逐级 ±1”这种弱断言）：
+// 复制 N0+1 → 删副本 N0 → 撤删除 N0+1 → 撤复制 N0 → 重做复制 N0+1 → 重做删除 N0
+const expect = [N0 + 1, N0, N0 + 1, N0, N0 + 1, N0];
+for (let s = 0; s < expect.length; s++) {
+  if (seq[s] !== expect[s]) throw new Error(`STACK_STEP_BAD step=${s} got=${seq[s]} expect=${expect[s]} seq=${JSON.stringify(seq)} N0=${N0}`);
 }
-const restored = await page.evaluate(() => canvasState.nodes.length);
-if (restored !== N0) throw new Error('SCENE_NOT_RESTORED: N0=' + N0 + ' seq=' + JSON.stringify(seq) + ' restored=' + restored);
-for (let s = 1; s < seq.length; s++) if (Math.abs(seq[s] - seq[s-1]) !== 1) throw new Error('STACK_STEP_BAD: seq=' + JSON.stringify(seq));
-return { evidence: 'N0=' + N0 + ' 操作序列=' + JSON.stringify(seq) + ' 逐级 ±1, 现场已恢复' };
+// 链尾：原始节点还在（删除只针对副本），副本不在
+const tail = await page.evaluate((id) => ({ originalAlive: canvasState.nodes.some(v => v.id === id) }), firstId);
+if (!tail.originalAlive) throw new Error('ORIGINAL_LOST: ' + JSON.stringify({firstId, tail}));
+return { evidence: 'N0=' + N0 + ' 序列=' + JSON.stringify(seq) + ' 期望=' + JSON.stringify(expect) + '，原节点存活，删除走键盘 Delete（副本自带 .node-delete 存在）'};
 JS
 
-# D4 agent 画布写操作入链断言：需要 agent 会话，成本高 → 记录可测性现状
-run d4-agent-write-chain <<'JS'
-const probe = await page.evaluate(() => {
-  const tui = document.querySelector('.agent-tui-input, #agent-tui, [class*="agent-tui"]');
-  const hasUndoChainApi = typeof window.pushUndo === 'function' || typeof window.performUndo === 'function';
-  return { tui: !!tui, chainApi: hasUndoChainApi };
-});
-if (!probe.tui) return { evidence: 'PASS-skip: 页内无 agent-tui 入口, agent 写链断言待 agent 面板常驻后补' };
-if (!probe.chainApi) return { evidence: 'PASS-skip: 撤回链函数未暴露到 window, 无法从页外断言 agent 写入是否入链' };
-return { evidence: 'agent-tui 与撤回链 API 均在位, 端到端断言留待下一轮（本轮避免真实 agent 调用产生费用）' };
+# D4 agent 写入是否进同一撤回链：走 agent 工具背后的画布写入口
+# （POST /api/projects/{pid}/canvas/nodes，app/routers/api_agent_tools.py:165；node 必须带 type（create_node_core :285 无 type 直接 400）），
+# 不用真 agent——花钱且不确定；要验的是“服务端写 → 前端 Ctrl+Z 能不能撤”。
+e2e_run d4-agent-write-undo <<'JS'
+const before = await page.evaluate(() => canvasState.nodes.length);
+const res = await page.evaluate(async (args) => {
+  // 在页内 fetch：同源守卫（ensure_agent_same_origin）只看浏览器发的 Host/Origin，
+  // 所以必须走同源请求；URL 用当前页地址做基准（页内 baseURI 不是绝对地址）。
+  const r = await fetch(new URL('/api/projects/' + args.pid + '/canvas/nodes', args.base).href, {
+    method: 'POST',
+    headers: {'content-type': 'application/json', 'x-agent-project': args.pid},
+    body: JSON.stringify({node: {id: 'e2e-agent-write', type: 'image', title: 'e2e agent 写入', x: 1400, y: 600, w: 240, h: 240}})
+  });
+  return { status: r.status, ok: r.ok };
+}, { pid: E2E_PID, base: page.url() });
+if (!res.ok) return { skip: 'agent 画布写入口返回 HTTP ' + res.status + '，D4 无法断言' };
+// 服务端写 → 广播 → 前端 canvasState；轮询到出现为止（上限 25s）
+let appeared = false;
+for (let i = 0; i < 25; i++) {
+  await page.waitForTimeout(1000);
+  if (await page.evaluate(() => canvasState.nodes.some(v => v.id === 'e2e-agent-write'))) { appeared = true; break; }
+}
+if (!appeared) return { skip: 'agent 写入 25s 未同步到前端 canvasState——同步缺口本身要记，撤回链断言无从谈起' };
+const mid = await page.evaluate(() => canvasState.nodes.length);
+if (mid <= before) throw new Error('AGENT_WRITE_NOT_COUNTED: ' + JSON.stringify({before, mid}));
+await page.keyboard.press('Control+z');
+await page.waitForTimeout(900);
+const post = await page.evaluate(() => ({ n: canvasState.nodes.length, alive: canvasState.nodes.some(v => v.id === 'e2e-agent-write') }));
+if (post.alive) return { skip: 'KNOWN-GAP：agent 服务端写入不进前端撤回链（Ctrl+Z 后节点仍在）——用户撤不掉 agent 刚写的东西' };
+return { evidence: `agent 写入入撤回链: ${before}→${mid}→${post.n}` };
 JS
 
-"$TABBIT" finish --task "Delete Undo QA" --discard >/dev/null 2>&1 || true
-echo "== 失败数: $FAILS =="
-exit $FAILS
+e2e_finish
