@@ -5,6 +5,12 @@ never sees a real project library, API key, .env file, or external model.
 """
 
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 
 import asyncio
 import http.server
@@ -639,11 +645,11 @@ def launch(browser: Path, server: ConversationBrowserServer, viewport: tuple[int
             raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
         return result
     finally:
-        process.terminate()
+        kill_process_tree(process)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            kill_process_tree(process)
             process.wait(timeout=5)
         remove_profile(profile)
 

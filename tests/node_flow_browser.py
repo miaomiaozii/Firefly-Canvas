@@ -1,5 +1,11 @@
 """逐节点传参闭环浏览器测试：prompt 文本传递、节点级设置覆盖、上游输出作为下游 refs、adapter 参数捕获。"""
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 
 import json
 import subprocess
@@ -117,11 +123,11 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
     try:
         return server.wait_for_result(before, timeout=120)
     finally:
-        process.terminate()
+        kill_process_tree(process)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            kill_process_tree(process)
             process.wait(timeout=5)
         harness.remove_profile(profile)
 

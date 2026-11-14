@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import ast
 import csv
 import datetime as dt
@@ -30,6 +31,12 @@ from urllib.parse import urlsplit
 from PIL import Image, UnidentifiedImageError
 
 if __package__:
+    from tools.process_tree import (
+        ProcessJob,
+        gate_leftover_processes,
+        kill_process_tree,
+        select_reapable_orphans,
+    )
     from tools.complete_generation_lifecycle_evidence import (
         failed_complete_generation_lifecycle_evidence,
         validate_complete_generation_lifecycle_artifacts,
@@ -60,6 +67,12 @@ if __package__:
         validate_ui_integrity_artifacts,
     )
 else:
+    from process_tree import (
+        ProcessJob,
+        gate_leftover_processes,
+        kill_process_tree,
+        select_reapable_orphans,
+    )
     from complete_generation_lifecycle_evidence import (
         failed_complete_generation_lifecycle_evidence,
         validate_complete_generation_lifecycle_artifacts,
@@ -2024,24 +2037,12 @@ def stop_leaked_children(events: list[dict], guard_events_file: Path) -> None:
 
 
 def stop_process_tree(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5,
-            )
-        except subprocess.TimeoutExpired:
-            pass
-    else:
-        try:
-            os.killpg(process.pid, 9)
-        except ProcessLookupError:
-            pass
+    """结束一个步骤子进程连同它的全部后代（node / chrome 也算）。
+
+    实现跟 ``tools/process_tree.py`` 里共用：那里还管作业对象兜底（门被 Ctrl+C / 崩掉时
+    OS 直接杀整棵树），两边不能各写一份。
+    """
+    kill_process_tree(process, grace=2.0)
     if process.poll() is None:
         process.kill()
     try:
@@ -2074,6 +2075,80 @@ def output_reports_skip(stdout: str, stderr: str) -> bool:
     )
 
 
+_PROCESS_JOB: ProcessJob | None = None
+
+
+def process_job() -> ProcessJob:
+    """本轮门共用的 Job Object（懒建）。
+
+    子进程挂进作业之后，它自己生的 node/chrome 也自动在作业里。门无论怎么结束
+    （跑完、超时、Ctrl+C、崩了），OS 关最后一个句柄时把整棵树端掉——这条不要求
+    「记得去 cleanup」。挂不上时（受限环境）会自动退到主动杀树，并在报告里说出来。
+    """
+    global _PROCESS_JOB
+    if _PROCESS_JOB is None:
+        _PROCESS_JOB = ProcessJob("firefly-quality-gate")
+    return _PROCESS_JOB
+
+
+def reap_leftover_runs(run_marker: str) -> dict:
+    """开跑前扫掉上一轮没收尾的孤儿进程（#361）。
+
+    Job Object 只能保证「本轮」不漏；上一轮门被 Ctrl+C、被杀、崩在中间留下的
+    node --check / .mjs / headless chrome 没人管——2026-11-14 清出 26 个这种进程。
+    只杀三个条件都满足的：命令行带临时目录前缀、父进程已经不在了、跑了超过 30 分钟。
+    用户的真实应用（不带前缀）、当下另一个在跑的门（父进程还在）、本轮自己的子进程
+    （``run_marker`` 排除）都不会误伤。
+    """
+    snapshot = gate_leftover_processes()
+    if not snapshot:
+        return {"scanned": 0, "reaped": [], "note": "进程快照不可用（非 Windows 或 CIM 失败）"}
+    pids = select_reapable_orphans(snapshot, now=time.time(), keep=run_marker)
+    for pid in pids:
+        stop_process_id(pid)
+    return {"scanned": len(snapshot), "reaped": pids}
+
+
+# 正在跑的步骤子进程登记表：门被 Ctrl+C、被 SIGTERM、或从 except 路径退出时，
+# 也要把它们的进程树端掉（#361）。Job Object 在受限环境里挂不上（GetLastError=5），
+# 这时只剩这条路径能兜住「门死了、步骤还活着」。
+_ACTIVE_STEP_PROCESSES: set[subprocess.Popen] = set()
+_ACTIVE_STEP_LOCK = threading.Lock()
+
+
+def terminate_active_step_processes() -> None:
+    for process in list(_ACTIVE_STEP_PROCESSES):
+        kill_process_tree(process, grace=0.5)
+
+
+EXIT_HOOKS_INSTALLED = False
+
+
+def _install_exit_hooks() -> None:
+    global EXIT_HOOKS_INSTALLED
+    atexit.register(terminate_active_step_processes)
+
+    def _on_signal(signum, _frame):
+        terminate_active_step_processes()
+        # 杀完树后按惯例退出码走人：130 = 128 + SIGINT。
+        raise SystemExit(130 if signum == getattr(signal, "SIGINT", 2) else 143)
+
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _on_signal)
+        except (ValueError, OSError, RuntimeError):
+            # 非主线程（并行组里的线程池调用方）装不上信号：没关系，atexit 还在。
+            pass
+
+    EXIT_HOOKS_INSTALLED = True
+
+
+_install_exit_hooks()
+
+
 def run_step(
     name: str,
     command: list[str],
@@ -2086,7 +2161,7 @@ def run_step(
     started = time.monotonic()
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
-        process = subprocess.Popen(
+        process = process_job().spawn(
             command,
             cwd=repo_root,
             env=environment,
@@ -2111,6 +2186,9 @@ def run_step(
             "stderr_tail": redact_text(str(error), sensitive_values),
         }
     try:
+        # 登记：门自己被打断（Ctrl+C / SIGTERM）时也要能查到这一棵子树。
+        with _ACTIVE_STEP_LOCK:
+            _ACTIVE_STEP_PROCESSES.add(process)
         stdout, stderr = process.communicate(timeout=max(timeout, 0.01))
         status = "passed" if process.returncode == 0 else "failed"
         exit_code = process.returncode
@@ -2126,6 +2204,9 @@ def run_step(
             stdout, stderr = "", "process output did not close after timeout"
         status = "timed-out"
         exit_code = 124
+    finally:
+        with _ACTIVE_STEP_LOCK:
+            _ACTIVE_STEP_PROCESSES.discard(process)
     summary = unittest_summary(command, stdout, stderr)
     reported_skip = output_reports_skip(stdout, stderr)
     if summary and any(summary.values()) and status == "passed":
@@ -3450,9 +3531,16 @@ def main(argv: list[str] | None = None) -> int:
     unattributed_blocking_events: list[dict] = []
     blocking_event_attribution: list[dict] = []
 
-    with tempfile.TemporaryDirectory(prefix="firefly-quality-gate-run-") as temporary:
+    # ``ignore_cleanup_errors``：刚杀掉的步骤进程可能还钉着 workspace 目录几百毫秒，
+    # 删不掉不能让整个门炸掉（#361）。
+    with tempfile.TemporaryDirectory(
+        prefix="firefly-quality-gate-run-", ignore_cleanup_errors=True
+    ) as temporary:
         run_root = Path(temporary)
         workspace_root = run_root / "workspace"
+        # #361：本轮的子进程从一开始就挂进作业；同时清掉上一轮没收尾的孤儿。
+        process_lifecycle = {"job_object": process_job().status()}
+        process_lifecycle.update(reap_leftover_runs(run_root.name))
         try:
             workspace_info["copied_files"] = create_execution_workspace(repo_root, workspace_root)
         except RuntimeError as error:
@@ -3846,6 +3934,14 @@ def main(argv: list[str] | None = None) -> int:
         "verdict": "passed" if final_exit_code == 0 else "failed",
         "final_exit_code": final_exit_code,
         "evidence_dir": str(evidence_dir),
+        # #361：报告要说清楚本轮子进程到底挂进作业了没有。挂不上不是错（受限环境），
+        # 但不能闭着不说——那样只有主动杀树在兜底，没人知道。作业状态在**收尾时**读，
+        # 开跑时读只能得到「一个子进程都还没挂」。
+        "process_lifecycle": {
+            **process_lifecycle,
+            "job_object": process_job().status(),
+            "attached": process_job().attached,
+        },
         "steps": steps,
         "unit_contract_inventory": {
             "modules": list(unit_contract_modules),

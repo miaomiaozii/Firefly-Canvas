@@ -18,6 +18,12 @@ pi 子进程用假进程替代（`_FakeProcess` + 打桩 spawn_session/get_fork_
     python tests/agent_node_routes_browser.py [--artifacts-dir tmp/repro170]
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 
 import argparse
 import json
@@ -420,11 +426,11 @@ def main() -> int:
                 print('AGENT_ROUTE_GUARD_FAIL:', ' | '.join(failures), flush=True)
             return 0 if ok else 1
         finally:
-            process.terminate()
+            kill_process_tree(process)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                kill_process_tree(process)
                 process.wait(timeout=5)
             harness.remove_profile(profile)
             server.should_exit = True

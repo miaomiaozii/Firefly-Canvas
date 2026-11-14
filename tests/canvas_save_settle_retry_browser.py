@@ -8,6 +8,12 @@
   python tests/canvas_save_settle_retry_browser.py --artifacts-dir DIR --shots-dir DIR
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 import argparse
 import json
 import subprocess
@@ -55,7 +61,7 @@ def run_one(browser, store: ProjectStore, work_root: Path, artifacts: Path, shot
         (artifacts / "segment.json").write_text(json.dumps(segment, ensure_ascii=False, indent=2), encoding="utf-8")
         return segment
     finally:
-        proc.terminate()
+        kill_process_tree(proc)
         proc.wait(timeout=10)
         harness.remove_profile(profile)
         server.close()

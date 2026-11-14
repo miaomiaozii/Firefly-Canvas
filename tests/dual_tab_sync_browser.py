@@ -11,6 +11,12 @@ HTTP handler 不支持 WebSocket 升级，前端 /ws/stats 广播在那种环境
 - 终态断言：服务端画布含全部节点且无重复 id、双方 DOM 均可见两页节点、无保存错误
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 import io
 import json
 import os
@@ -253,11 +259,11 @@ def main():
             return 0 if passed else 1
         finally:
             for process in (proc_a, proc_b):
-                process.terminate()
+                kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    kill_process_tree(process)
                     process.wait(timeout=5)
             harness.remove_profile(profile_a)
             harness.remove_profile(profile_b)

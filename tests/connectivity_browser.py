@@ -4,6 +4,12 @@
 直接读取服务端 fake 适配器捕获到的真实生成请求 payload，逐字段断言传参正确性。
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 import asyncio
 import base64
 import io
@@ -360,11 +366,11 @@ def main():
             return 0 if passed else 1
         finally:
             for browser_process in (proc, secondary_proc):
-                browser_process.terminate()
+                kill_process_tree(browser_process)
                 try:
                     browser_process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    browser_process.kill()
+                    kill_process_tree(browser_process)
                     browser_process.wait(timeout=5)
             harness.remove_profile(profile)
             harness.remove_profile(secondary_profile)

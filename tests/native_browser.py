@@ -1,5 +1,11 @@
 """Reusable Chrome DevTools Protocol harness for trusted browser input evidence."""
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 
 import base64
 import hashlib
@@ -322,11 +328,11 @@ class NativeBrowser:
             browser._enable_domains()
             return browser
         except Exception as error:
-            process.terminate()
+            kill_process_tree(process)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                kill_process_tree(process)
                 process.wait(timeout=5)
             log_stream.flush()
             log_stream.seek(0)
@@ -1310,11 +1316,11 @@ class NativeBrowser:
             self.cdp.close()
         finally:
             if self.process is not None:
-                self.process.terminate()
+                kill_process_tree(self.process)
                 try:
                     self.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    self.process.kill()
+                    kill_process_tree(self.process)
                     self.process.wait(timeout=5)
             if self.log_stream is not None:
                 self.log_stream.close()

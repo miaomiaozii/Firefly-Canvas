@@ -1,5 +1,11 @@
 """Real headless-Chrome acceptance for cross-canvas navigation (list -> canvas A via real click, canvas B standalone)."""
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 import json, sys, tempfile, urllib.parse, subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
@@ -24,7 +30,7 @@ def launch(browser,server,url,viewport,segments):
             results.append(server.wait_for_result(before,timeout=120))
         return results
     finally:
-      proc.terminate();proc.wait(timeout=5);harness.remove_profile(profile)
+      kill_process_tree(proc);proc.wait(timeout=5);harness.remove_profile(profile)
 
 def main():
     browser=harness.find_browser();harness.CLIENT_SCRIPT=CLIENT_SCRIPT;harness.INJECT_PATHS={'/static/project-list.html',harness.HTML_PAGE_PATH};runs=[]

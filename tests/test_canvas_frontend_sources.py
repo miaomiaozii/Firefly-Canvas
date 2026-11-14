@@ -63,11 +63,17 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
             f"node 不可用（{node}）：javascript-syntax 门必须真跑，不能静默跳过",
         )
         for name in CANVAS_SCRIPTS:
-            result = subprocess.run(
-                [node, "--check", str(ROOT / "static" / "js" / name)],
-                capture_output=True,
-                text=True,
-            )
+            try:
+                # 必须有超时：node 挂在某个文件上时，整个测试进程会被Ctrl+C / 门杀掉，
+                # 没超时的 node --check 就变成孤儿留在后台（2026-11-14 那 12 个 node --check 就是这么来的）。
+                result = subprocess.run(
+                    [node, "--check", str(ROOT / "static" / "js" / name)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail(f"static/js/{name}: node --check 30 秒还没返回，语法检查不能这样挂着")
             self.assertEqual(result.returncode, 0, f"static/js/{name}: {result.stderr.strip()}")
 
     def test_agent_node_path_literals_match_backend_prefix(self):

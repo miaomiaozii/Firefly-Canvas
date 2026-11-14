@@ -3,6 +3,12 @@ Seeds a prompt + video node chain, runs the cascade with a fake video adapter
 that fails on the first call, then succeeds on retry.
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 
 import json
 import subprocess
@@ -125,11 +131,11 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
     try:
         return server.wait_for_result(before, timeout=120)
     finally:
-        process.terminate()
+        kill_process_tree(process)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            kill_process_tree(process)
             process.wait(timeout=5)
         harness.remove_profile(profile)
 

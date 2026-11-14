@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,8 +16,11 @@ from tests.long_content_fixture import write_long_content_runner
 from tests.project_linked_generation_fixture import write_project_linked_generation_runner
 from tests.ui_integrity_fixture import write_ui_integrity_runner, write_valid_ui_integrity_artifact
 from tools.native_input_evidence import double_click_evidence, selector_owner_click_evidence
+from tools.process_tree import kill_process_tree, process_alive
 from tools.quality_gate import (
+    _ACTIVE_STEP_PROCESSES,
     BROWSER_EVIDENCE_STEP_NAMES,
+    EXIT_HOOKS_INSTALLED,
     MODE_STEPS,
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
@@ -29,6 +33,7 @@ from tools.quality_gate import (
     expand_unit_contract_steps,
     failed_native_browser_evidence,
     stop_leaked_children,
+    terminate_active_step_processes,
     trusted_node_executable,
     unit_contract_modules_for_shards,
     unit_contract_slot_for_shard,
@@ -2601,6 +2606,63 @@ class QualityGateTests(unittest.TestCase):
         # :3275），fixture 子门要跟同组其他步骤抢 CPU，实测一次 3.015 秒就红了。
         # 所以阈值绑到夹具自身的 5 秒 sleep：跑完必然 >=5 秒，提前杀掉则远小于它。
         self.assertLess(report["duration_seconds"], 5)
+        # #361：报告要说清楚本轮子进程到底挂进作业了没有。挂不上不是错（受限环境），
+        # 但不能闭着不说——那样只有主动杀树在兜底，没人知道。
+        lifecycle = report["process_lifecycle"]
+        self.assertIn("Job Object", lifecycle["job_object"])
+        self.assertIsInstance(lifecycle["scanned"], int)
+        self.assertIsInstance(lifecycle["reaped"], list)
+
+    def test_timed_out_step_leaves_no_living_grandchild(self):
+        """#361 验收：步骤超时后，它生的孙进程也不能活着。
+
+        以前只会杀步骤子进程本身（孙进程被丢回桌面会话）。孙进程用心跳文件证明生死：
+        活着就每 0.2 秒追一个字节，门退出后再读两次，大小不再长就是死了。
+        （不能用 pid：pid 会被回收，一个进过坟的 pid 也查得到）。
+        """
+        heartbeat = Path(self.temp_dir.name) / "leak-heartbeat"
+        child_code = (
+            "import time\n"
+            "from pathlib import Path\n"
+            f"path = Path({str(heartbeat)!r})\n"
+            "for _ in range(100):\n"
+            "    with path.open('a') as handle:\n"
+            "        handle.write('x')\n"
+            "    time.sleep(0.2)\n"
+        )
+        # 故意把漏网进程放在 fast 的**第一个** unittest 步骤（javascript-syntax 跑的就是
+        # tests/test_canvas_frontend_sources.py，见 setUp 里的桩）：预算一到它一定已经在跑，
+        # 不会出现「还没轮到这一步就超时」的飘。桩自己 20 秒后会退出，不会漏在后台。
+        (self.fixture_root / "tests" / "test_canvas_frontend_sources.py").write_text(
+            "import subprocess, sys, time\n"
+            "import unittest\n\n"
+            f"CHILD_CODE = {child_code!r}\n\n"
+            "class LeakySlowContract(unittest.TestCase):\n"
+            "    def test_spawn_then_sleep(self):\n"
+            "        subprocess.Popen([sys.executable, '-c', CHILD_CODE])\n"
+            "        time.sleep(20)\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate(
+            FIREFLY_TEST_MODE="1",
+            FIREFLY_QUALITY_GATE_TEST_BUDGET_SECONDS="3",
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "javascript-syntax")
+        self.assertEqual(report["first_failure"]["status"], "timed-out")
+
+        time.sleep(1.0)
+        self.assertTrue(heartbeat.exists(), "孙进程没起来，测试本身有问题")
+        first = heartbeat.stat().st_size
+        time.sleep(1.5)
+        second = heartbeat.stat().st_size
+        self.assertEqual(
+            first,
+            second,
+            "门退出了，超时步骤的孙进程还在写心跳文件——进程树没杀干",
+        )
 
     def test_all_modes_are_cumulative_and_keep_their_declared_budgets(self):
         (self.fixture_root / "tests" / "test_project_store.py").write_text(
@@ -2893,6 +2955,59 @@ class GuardAttributionConsistencyTests(unittest.TestCase):
             ["project-contract", "surface-contract"],
             f'两条同名目标的违规没能各自归到自己的 step：{findings}',
         )
+
+
+class ProcessLifecycleHooksTests(unittest.TestCase):
+    """#361：门被打断时，正在跑的步骤子进程连同它生的 node / chrome 也要一起走。
+
+    Job Object 在受限环境里挂不上（GetLastError=5），那时只剩这条登记+杀树的路。
+    """
+
+    def test_exit_hooks_are_installed_on_import(self):
+        self.assertTrue(EXIT_HOOKS_INSTALLED, "进模块就要把 atexit / 信号钩子装好")
+
+    def test_terminate_active_step_processes_kills_whole_tree(self):
+        if os.environ.get("FIREFLY_QUALITY_GATE_SELF_TEST") == "1":
+            self.skipTest("门自测沙箱里守卫会 deny 无关子进程（sitecustomize 的 Popen 包装），"
+                          "这条要验真实现场，只能在门外跑")
+        with tempfile.TemporaryDirectory(prefix="firefly-lifecycle-hook-") as temporary:
+            child = Path(temporary) / "child.py"
+            child.write_text("import time\nwhile True:\n    time.sleep(0.2)\n", encoding="utf-8")
+            parent = Path(temporary) / "parent.py"
+            parent.write_text(
+                "import subprocess, sys, time\n"
+                "proc = subprocess.Popen([sys.executable, sys.argv[1]])\n"
+                "print(proc.pid, flush=True)\n"
+                "while True:\n    time.sleep(0.2)\n",
+                encoding="utf-8",
+            )
+            tree_root = subprocess.Popen(
+                [sys.executable, str(parent), str(child)],
+                stdout=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            _ACTIVE_STEP_PROCESSES.add(tree_root)
+            try:
+                grandchild_pid = int((tree_root.stdout.readline() or "").strip())
+                self.assertGreater(grandchild_pid, 0)
+                self.assertTrue(process_alive(grandchild_pid), "孙进程应该还在跑")
+
+                terminate_active_step_processes()
+
+                tree_root.wait(timeout=15)
+                deadline = time.monotonic() + 15
+                while process_alive(grandchild_pid) and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                self.assertFalse(
+                    process_alive(grandchild_pid),
+                    f"门退出时没把孙进程（pid {grandchild_pid}）带走——就是 2026-11-14 那 26 个残留的成因",
+                )
+            finally:
+                _ACTIVE_STEP_PROCESSES.discard(tree_root)
+                if tree_root.poll() is None:
+                    kill_process_tree(tree_root)
 
 
 if __name__ == "__main__":

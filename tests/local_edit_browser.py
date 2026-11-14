@@ -1,5 +1,11 @@
 """Real headless-Chrome local-edit smoke acceptance at desktop and mobile viewports."""
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_Path
+_REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.process_tree import kill_process_tree
 import io, json, sys, tempfile, urllib.parse, subprocess
 from pathlib import Path
 from PIL import Image
@@ -28,7 +34,7 @@ def launch(browser,server,pid,viewport):
     proc=subprocess.Popen([str(browser),'--headless=new','--disable-gpu','--disable-background-networking','--disable-extensions','--no-first-run','--window-size=%d,%d'%(w,h),f'--user-data-dir={profile}',url],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=ROOT)
     try:return server.wait_for_result(before,timeout=60)
     finally:
-      proc.terminate();proc.wait(timeout=5);harness.remove_profile(profile)
+      kill_process_tree(proc);proc.wait(timeout=5);harness.remove_profile(profile)
 def main():
     browser=harness.find_browser();harness.CLIENT_SCRIPT=CLIENT_SCRIPT; runs=[]
     with tempfile.TemporaryDirectory(prefix='firefly-issue15-projects-') as root:
