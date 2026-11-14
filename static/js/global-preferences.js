@@ -10,7 +10,9 @@
         if(response.ok) current = {...defaults, ...((await response.json()).preferences || {})};
       } catch(error) {}
       current.theme = current.theme === 'light' ? 'light' : 'dark';
-      current.language = current.language === 'en' ? 'en' : 'zh';
+      // #365：界面语言只剩中文。不管后端戒坏值、也不管 localStorage 里存的旧 'en'，
+      // 这里一律当 zh 算，下一行写回 localStorage 就把老用户的英文偏好迁掉了。
+      current.language = 'zh';
       const interval = Number.parseInt(current.autosave_interval_minutes, 10);
       current.autosave_interval_minutes = Number.isInteger(interval) && interval >= 1 && interval <= 240 ? interval : defaults.autosave_interval_minutes;
       localStorage.setItem('studio_theme', current.theme);

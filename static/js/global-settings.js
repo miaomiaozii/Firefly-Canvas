@@ -357,7 +357,7 @@
     renderProviders(data.providers || []);
     renderCli(data.cli || {});
     document.getElementById('themeSelect').value = data.preferences?.theme || 'dark';
-    document.getElementById('languageSelect').value = data.preferences?.language || 'zh';
+    // #365：偏好里没有语言选项了（界面固定中文），这里不再读那个下拉。
     libraryPath.value = data.project_library?.path || '';
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
     const ps = data.photoshop || {};
@@ -417,16 +417,15 @@
   });
   document.getElementById('savePreferences').addEventListener('click', async () => {
     const theme = document.getElementById('themeSelect').value;
-    const language = document.getElementById('languageSelect').value;
     setStatus(localText('正在保存偏好…', 'Saving preferences…'));
     try {
-      await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme, language})});
+      // #365：只存主题。payload 里的 language 不发了（模型默认就是 'zh'）。
+      await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme})});
       window.StudioTheme?.set(theme);
-      window.StudioI18n?.set(language);
-      state.preferences = {theme, language};
+      state.preferences = {theme, language:'zh'};
       render(state);
       notifyCanvas('preferences-changed', {preferences:state.preferences});
-      setStatus(localText('外观与语言已保存', 'Appearance and language saved'), 'success');
+      setStatus(localText('外观已保存', 'Appearance saved'), 'success');
     } catch(error) { setStatus(error.message || localText('偏好保存失败', 'Failed to save preferences'), 'error'); }
   });
   document.getElementById('libraryForm').addEventListener('submit', async event => {

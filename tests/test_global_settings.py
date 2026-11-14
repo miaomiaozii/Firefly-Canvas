@@ -338,16 +338,64 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertIs(main.FIREFLY_PROJECT_STORE, self.store)
 
     def test_preferences_are_shared_by_the_global_settings_api(self):
-        saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "en"})
+        saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "zh"})
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "en"})
+        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh"})
         with (
             patch.object(main, "codex_status", AsyncMock(return_value={})),
             patch.object(main, "gemini_cli_status", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
-        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "en"})
+        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh"})
+
+    def test_legacy_english_preference_is_migrated_to_chinese(self):
+        """#365：旧配置里存的 en 要自动迁成 zh，不能报错也不能让页面停在英文。"""
+        main.save_global_preferences("light", "en")
+        # 写盘时已经落成 zh（文件里不会残留 en）。
+        self.assertEqual(
+            json.loads(Path(main.GLOBAL_SETTINGS_FILE).read_text(encoding="utf-8-sig"))["language"], "zh"
+        )
+        # 老页面/老缓存继续发 en：照接（不 400），存下来变 zh。
+        saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "en"})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["preferences"]["language"], "zh")
+        self.assertEqual(
+            self.client.get("/api/global-settings/preferences").json()["preferences"]["language"], "zh"
+        )
+
+    def test_hand_written_english_preference_on_disk_is_read_back_as_chinese(self):
+        """#365：直接用文本方式写成 en 的老文件（没经过 API），读出来也得是 zh。"""
+        Path(main.GLOBAL_SETTINGS_FILE).write_text(
+            json.dumps({"theme": "dark", "language": "en"}), encoding="utf-8"
+        )
+        self.assertEqual(main.load_global_preferences(), {"theme": "dark", "language": "zh"})
+
+    def test_unknown_language_is_still_rejected(self):
+        """#365：en 是为了兼容老客户端才继续接的；其它乱值仍要 400。"""
+        response = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "fr"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("语言", response.json()["detail"])
+
+    def test_settings_page_offers_no_language_choice(self):
+        """#365：设置页不能再有语言下拉；前端也不再看存着的英文偏好。"""
+        html = (ROOT / "static" / "global-settings.html").read_text(encoding="utf-8")
+        self.assertNotIn("languageSelect", html, "设置页不能再有语言下拉")
+        self.assertNotIn('<option value="en"', html, "设置页不能再有 English 选项")
+        self.assertNotIn('data-i18n="globalSettings.language"', html)
+
+        script = (ROOT / "static" / "js" / "global-settings.js").read_text(encoding="utf-8")
+        self.assertNotIn("languageSelect", script, "设置页 JS 不能再去读语言下拉")
+
+        preferences = (ROOT / "static" / "js" / "global-preferences.js").read_text(encoding="utf-8")
+        self.assertIn("current.language = 'zh';", preferences,
+                      "加载偏好时要强制 zh：下一行写回 localStorage 就把老用户的 studio_lang='en' 迁掉了")
+
+    def test_i18n_validator_no_longer_requires_english(self):
+        """#365：不补英文翻译，所以校验器不能再要求每个 key 都有 en。"""
+        validator = (ROOT / "static" / "js" / "i18n" / "validate-i18n.js").read_text(encoding="utf-8")
+        self.assertNotIn("!('en' in entry)", validator, "校验器不能再要求 en")
+        self.assertIn("!('zh' in entry)", validator, "zh 仍然要钉（没文案的键会把 key 名喷到屏幕上）")
 
     def test_autosave_interval_field_is_ignored_for_backwards_compatibility(self):
         saved = self.client.patch("/api/global-settings/preferences", json={

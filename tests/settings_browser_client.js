@@ -76,13 +76,14 @@
         const savePreferences = setting('#savePreferences');
 
         setValue(setting('#themeSelect'), 'light', 'change');
-        setValue(setting('#languageSelect'), 'en', 'change');
+        // #365：语言下拉已经没了（英文选项实际用不到）；存出来的 language 固定 zh。
         savePreferences.click();
         const preferencesSaved = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && setting('#themeSelect')?.value === 'light');
         const savedSettings = await fetchSettings();
-        assertion('valid theme and language preferences save from the iframe', preferencesSaved && savedSettings.preferences?.theme === 'light' && savedSettings.preferences?.language === 'en', {
+        assertion('valid theme preference saves from the iframe with Chinese as the only language', preferencesSaved && savedSettings.preferences?.theme === 'light' && savedSettings.preferences?.language === 'zh', {
             status:setting('#pageStatus')?.textContent || '',
-            preferences:savedSettings.preferences
+            preferences:savedSettings.preferences,
+            languageSelect:setting('#languageSelect') ? 'present' : 'missing'
         });
         assertion('preference change reaches the hosting canvas', document.documentElement.classList.contains('studio-theme-dark') === false, document.documentElement.className);
 

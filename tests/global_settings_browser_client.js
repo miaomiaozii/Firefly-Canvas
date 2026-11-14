@@ -96,8 +96,10 @@
     record('all five sections present', sections.every(id => !!sectionEls[id]), sections.map(id => id + '=' + !!sectionEls[id]).join(' '));
 
     const theme = document.getElementById('themeSelect');
+    // #365：语言下拉已从设置页拿掉（英文选项实际用不到），主题下拉还在。
     const lang = document.getElementById('languageSelect');
-    record('preference selects populated', !!theme && !!lang && theme.options.length >= 2 && lang.options.length >= 2, 'theme=' + (theme ? theme.options.length : 0) + ' lang=' + (lang ? lang.options.length : 0));
+    record('preference selects populated', !!theme && theme.options.length >= 2, 'theme=' + (theme ? theme.options.length : 0));
+    record('language control removed', !lang, 'languageSelect=' + (lang ? 'present' : 'missing'));
 
     const providerList = document.getElementById('providerList');
     const providerCards = providerList ? providerList.querySelectorAll('.provider-card, .provider-row, [class*=provider]') : [];

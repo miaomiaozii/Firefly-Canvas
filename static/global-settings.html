@@ -12,9 +12,9 @@
   </script>
   <script src="/static/js/theme.js"></script>
   <script src="/static/js/i18n.js"></script>
-  <script src="/static/js/global-preferences.js?v=20261114.203147.6148"></script>
-  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20261114.203147.6148">
-  <link rel="stylesheet" href="/static/css/global-settings.css?v=20261114.203147.6148">
+  <script src="/static/js/global-preferences.js?v=20261115.065738.1200"></script>
+  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=20261115.065738.1200">
+  <link rel="stylesheet" href="/static/css/global-settings.css?v=20261115.065738.1200">
 </head>
 <body>
   <main class="settings-shell">
@@ -32,12 +32,12 @@
 
     <section class="settings-section" aria-labelledby="preferencesTitle">
       <div class="section-heading">
-        <div><p class="section-index">01</p><h2 id="preferencesTitle" data-i18n="globalSettings.preferences">外观、语言与保存</h2></div>
+        <div><p class="section-index">01</p><h2 id="preferencesTitle" data-i18n="globalSettings.preferences">外观与保存</h2></div>
         <button id="savePreferences" class="primary-button" type="button" data-i18n="globalSettings.savePreferences">保存偏好</button>
       </div>
       <div class="preference-grid">
         <label><span data-i18n="globalSettings.theme">主题</span><select id="themeSelect"><option value="dark" data-i18n="globalSettings.dark">深色</option><option value="light" data-i18n="globalSettings.light">浅色</option></select></label>
-        <label><span data-i18n="globalSettings.language">语言</span><select id="languageSelect"><option value="zh" data-i18n="globalSettings.chinese">简体中文</option><option value="en" data-i18n="globalSettings.english">English</option></select></label>
+        <!-- #365：语言下拉已移除（英文选项实际用不到），界面固定中文。 -->
       </div>
     </section>
 
@@ -97,6 +97,6 @@
       <div id="taskConsoleList" class="task-console-list" role="list"></div>
     </section>
   </main>
-  <script src="/static/js/global-settings.js?v=20261114.203147.6148"></script>
+  <script src="/static/js/global-settings.js?v=20261115.065738.1200"></script>
 </body>
 </html>

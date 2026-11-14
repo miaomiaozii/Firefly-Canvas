@@ -45,7 +45,9 @@ for(const key of new Set([...Object.keys(entries.zh || {}), ...Object.keys(entri
 const missing = [];
 const bad = [];
 for(const [key, entry] of Object.entries(dict)){
-    if(!entry || typeof entry !== 'object' || !('zh' in entry) || !('en' in entry)) missing.push(key);
+    // #365：界面只保留中文，不再要求每个 key 都有 en（英文选项已移除，不补英文翻译）。
+    // zh 仍然必预：没接上文案的键会把 key 名直接喷到屏幕上。
+    if(!entry || typeof entry !== 'object' || !('zh' in entry)) missing.push(key);
     const zh = String(entry?.zh ?? '');
     const en = String(entry?.en ?? '');
     if(/[�]|璁|娴|澶|鎻|鐢|鍙|杈|绋|鏂|涓/.test(zh) || /[�]/.test(en)) bad.push(key);
@@ -75,7 +77,7 @@ for(const file of scanFiles){
 const unresolved = [...used].filter(key => !(key in dict)).sort();
 
 if(missing.length || bad.length || unresolved.length){
-    if(missing.length) console.error('Missing zh/en:', missing.join(', '));
+    if(missing.length) console.error('Missing zh:', missing.join(', '));
     if(bad.length) console.error('Possible mojibake:', bad.join(', '));
     if(unresolved.length) console.error('Unresolved keys:', unresolved.join(', '));
     process.exit(1);

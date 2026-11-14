@@ -31,11 +31,13 @@ def load_global_preferences():
     # #345：读坏了也留痕迹（同一个文件会被保存回写，静默回到默认主题/语言就是用户丢设置）。
     raw = firefly_json_io.read_json(_app_main.GLOBAL_SETTINGS_FILE, default=None, encoding='utf-8-sig')
     theme = raw.get('theme') if isinstance(raw, dict) else None
-    language = raw.get('language') if isinstance(raw, dict) else None
-    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
+    # #365：界面语言只剩中文。老配置里存的 'en' 读出来就迁成 'zh'（不报错，下次保存自然写成 zh）——
+    # 这就是验收里的「旧配置为 en 的用户打开后显示中文」。
+    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': defaults['language']}
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
-    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
+    # #365：language 参数留着（老客户端 / 老页面缓存还会发这个字段），但值一律 'zh'。
+    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': 'zh'}
     # #345：这一处本来就是临时文件+换名，只是自己另写了一份；收进公共实现（写序一字不差），
     # 免以后又分叉。
     firefly_json_io.write_json_atomic(_app_main.GLOBAL_SETTINGS_FILE, preferences)
@@ -114,6 +116,8 @@ async def global_settings():
 
 @router.patch('/api/global-settings/preferences')
 async def update_global_preferences(payload: GlobalPreferencesPayload):
+    # #365：语言只认 zh；老页面/老缓存发的 'en' 照接（存下去会被迁成 zh），不能返回 400——
+    # 那会让用户只改个主题也存不了。其它值仍然拒。
     if payload.theme not in {'light', 'dark'} or payload.language not in {'zh', 'en'}:
         raise HTTPException(status_code=400, detail='主题或语言无效')
     return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language)}
