@@ -6,6 +6,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 import os
 import json
 import uuid
+import firefly_json_io
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -22,11 +23,9 @@ router = APIRouter()
 
 
 def shared_folders_load():
-    try:
-        with open(SHARED_FOLDERS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
+    # #345：读坏了不能当成“没配过共享文件夹”——这份文件会被保存回写，静默清空就是用户丢数据。
+    # read_json 会先把坏文件改名 .corrupt-<UTC> 保住字节并记诊断（界面会提示）。
+    data = firefly_json_io.read_json(SHARED_FOLDERS_FILE, default={})
     if not isinstance(data, dict):
         data = {}
     folders = data.get('folders')
@@ -35,9 +34,8 @@ def shared_folders_load():
     return {'folders': [f for f in folders if isinstance(f, dict)]}
 
 def shared_folders_save(data):
-    os.makedirs(_app_main.DATA_DIR, exist_ok=True)
-    with open(SHARED_FOLDERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # #345：同一个文件先被截断再写，中途死掉就是一个 0 字节的共享文件夹列表。
+    firefly_json_io.write_json_atomic(SHARED_FOLDERS_FILE, data)
 
 def shared_folder_by_id(folder_id):
     for entry in shared_folders_load().get('folders', []):

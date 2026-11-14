@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, Iterable, List
 
 from firefly_diagnostics import emit as _diag_emit
+import firefly_json_io
 
 
 MEDIA_TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
@@ -124,41 +125,16 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return value
 
 
+# #345：写临时文件 + fsync + os.replace 这套写法以前在这里和全局配置的各个保存点各存了一份
+# （三份已经开始不一致：只有这份 fsync 了）。现在只有 firefly_json_io 一份实现，
+# 项目库和全局配置共用；名字保留成别名，调用点和测试都不用改。
 def _atomic_copy(src: Path, dst: Path) -> None:
     """Copy ``src`` to ``dst`` with a tmp+rename atomic commit (issue #94)."""
-    staging = dst.with_name(f".{dst.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        shutil.copyfile(src, staging)
-        os.replace(staging, dst)
-    finally:
-        staging.unlink(missing_ok=True)
+    firefly_json_io._atomic_copy(src, dst)
 
 
 def _write_json_atomic(path: Path, value: Dict[str, Any], *, keep_backup: bool, backup_count: int = 1) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        if keep_backup and path.exists():
-            # 轮转（issue #94）：.bak 为最新，.bak-2/.bak-3 … 更旧；左移时先处理最旧端。
-            count = max(1, int(backup_count))
-            def backup_name(index: int) -> Path:
-                return path.with_name(path.name + (".bak" if index == 1 else f".bak-{index}"))
-            for index in range(count, 1, -1):
-                src = backup_name(index - 1)
-                dst = backup_name(index)
-                if src.exists():
-                    _atomic_copy(src, dst)
-                elif dst.exists():
-                    dst.unlink()
-            _atomic_copy(path, backup_name(1))
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    firefly_json_io.write_json_atomic(path, value, keep_backup=keep_backup, backup_count=backup_count)
 
 
 def _file_sha256(path: Path) -> str:
@@ -1456,14 +1432,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         """
         project_id = _clean_project_id(project_id)
         path = self.root / project_id / "photoshop-round-trips.json"
-        try:
-            table = _read_json(path)
-        except (OSError, ValueError, json.JSONDecodeError):
-            if path.exists():
-                try:
-                    path.replace(self.root / project_id / f"photoshop-round-trips.json.corrupt-{_now_ms()}")
-                except OSError:
-                    pass
+        # #345：损坏隔离以前这里又自己写了一份改名（第三份）；收进 firefly_json_io，
+        # 读失败会先保住坏文件并记诊断，然后返回空表。
+        table = firefly_json_io.read_json(path, default=None)
+        if table is None:
             return {}
         requests = table.get("requests") if isinstance(table, dict) else None
         if not isinstance(requests, dict):
@@ -3181,11 +3153,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             data = _read_json(chosen[1])
             quarantined = None
             if primary.is_file():
-                quarantine_path = self._safe_project_path(
-                    project_dir, f"{file}.corrupt-{_now_ms()}"
-                )
-                os.replace(primary, quarantine_path)
-                quarantined = quarantine_path.name
+                # #345：改名走公共实现（第三副本收掉）；改不动就报错不恢复——
+                # 把现场顶掉再“恢复”，就再也没人知道当时到底坏成什么样。
+                moved = firefly_json_io.quarantine_corrupt_json(primary)
+                if moved is None:
+                    raise ProjectStoreError(f"{file} 损坏但改名隔离失败，未执行恢复（坏文件仍在原地）")
+                quarantined = moved.name
             _write_json_atomic(
                 primary,
                 self._project_canvas_for_persistence(data) if file == "canvas.json" else data,
@@ -3320,12 +3293,17 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     continue
             if canvas is None:
                 raise ProjectStoreError("画布文件和备份均不可读取") from primary_error
+            # #345：用备份覆盖 canvas.json 之前先把坏文件改名 .corrupt-<UTC> 保住现场。
+            # 以前这一步直接把坏内容用备份顶掉（keep_backup=False），现场从此不存在，
+            # 而“第二次编辑的内容没了”这种事故只能靠那份现场定因。
+            corrupt_saved = firefly_json_io.quarantine_corrupt_json(primary)
             _write_json_atomic(primary, self._project_canvas_for_persistence(canvas), keep_backup=False)
             # 记录自动回退（issue #94，ADR 0018）：前端据此打开恢复向导，
             # 让用户显式确认恢复目标，而不是静默使用旧状态。
             self._recovery_marks[project_id] = {
                 "file": "canvas.json",
                 "restored_from": restored_name,
+                "corrupt_saved": corrupt_saved.name if corrupt_saved is not None else None,
                 "at": _now_ms(),
             }
         if canvas.get("project_id") != project_id or canvas.get("id") != project_id:

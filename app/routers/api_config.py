@@ -5,6 +5,7 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
+import firefly_json_io
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (AI_API_KEY, CHAT_MODEL, IMAGE_MODEL, MODELSCOPE_CHAT_MODELS, _os, _sys, json, os, preferred_chat_model)
 _from_main_names = ['AI_BASE_URL', 'CHAT_MODELS', 'GLOBAL_CONFIG_FILE', 'IMAGE_MODELS', 'VIDEO_MODELS', 'modelscope_api_key', 'public_api_providers']
@@ -28,11 +29,19 @@ async def get_global_token():
     saved_token = modelscope_api_key()
     if saved_token:
         return {'token': saved_token}
-    if os.path.exists(_app_main.GLOBAL_CONFIG_FILE):
-        try:
-            with open(_app_main.GLOBAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                return {'token': config.get('modelscope_token', '')}
-        except:
-            pass
+    # #345：这里以前是裸 ``except: pass``——全局配置文件坏了也一声不味。
+    # read_json 会先把坏文件改名 .corrupt-<UTC> 保住现场并记一条诊断。
+    config = firefly_json_io.read_json(_app_main.GLOBAL_CONFIG_FILE, default=None)
+    if isinstance(config, dict):
+        return {'token': config.get('modelscope_token', '')}
     return {'token': ''}
+
+
+@router.get('/api/config/data-diagnostics')
+async def data_diagnostics():
+    """#345：全局配置读坏了要给界面一个说法。
+
+    坏文件已经被改名成 ``<name>.corrupt-<UTC>`` 保在原处（不会被下一次的默认值保存盖掉）；
+    这里只回“哪个文件、什么时候、为什么”，不回文件内容——里面可能有 Key 密文。
+    """
+    return {'items': firefly_json_io.recent_data_diagnostics()}

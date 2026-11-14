@@ -373,10 +373,25 @@
     return data;
   }
 
+  // #345：全局配置（服务商/资源库/提示词库/存储目录）读到半份 JSON 时，后端已把坏文件改名
+  // .corrupt-<UTC> 保住现场。以前这里是静默回到默认值：用户以为数据蒸发了，而且下一次
+  // 保存会把默认值写盘。现在把文件名和“不要去覆盖它”说出来。
+  async function dataFaultText(){
+    const data = await requestJson('/api/config/data-diagnostics');
+    const items = Array.isArray(data.items) ? data.items : [];
+    if(!items.length) return '';
+    const names = [...new Set(items.map(item => String(item.file || '').split(/[\\/]/).pop()).filter(Boolean))];
+    return localText(
+      `配置文件读取失败，已隔离：${names.join('、')}。坏文件已改名保在原目录（.corrupt-…），先用它恢复再保存，否则会用默认值盖掉`,
+      `Config file failed to load and was quarantined: ${names.join(', ')}. The damaged file was renamed in place (.corrupt-…); recover from it before saving, or defaults will overwrite it`);
+  }
+
   async function load(){
     setStatus(localText('正在读取设置…', 'Loading settings…'));
     try {
       render(await requestJson('/api/global-settings'));
+      const faults = await dataFaultText().catch(() => '');
+      if(faults){ setStatus(faults, 'error'); return; }
       setStatus(localText('设置已就绪', 'Settings ready'), 'success');
     } catch(error) { setStatus(error.message || localText('设置读取失败', 'Failed to load settings'), 'error'); }
   }

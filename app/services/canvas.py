@@ -1,21 +1,19 @@
 # canvas domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+import firefly_json_io  # noqa: E402
 
 def save_to_history(record):
     with CANVAS_LOCK, HISTORY_LOCK:
-        history = []
-        if os.path.exists(_svc._main('HISTORY_FILE')):
-            try:
-                with open(_svc._main('HISTORY_FILE'), 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except:
-                pass
+        # #345：history.json 也是全局 JSON：以前裸 open("w")（先截断），读坏了又是裸
+        # except 静默丢掉整段历史。坏文件先改名 .corrupt-<UTC> 保住，写也走临时文件+换名。
+        history = firefly_json_io.read_json(_svc._main('HISTORY_FILE'), default=[])
+        if not isinstance(history, list):
+            history = []
         if 'timestamp' not in record:
             record['timestamp'] = time.time()
         history.insert(0, record)
-        with open(_svc._main('HISTORY_FILE'), 'w', encoding='utf-8') as f:
-            json.dump(history[:5000], f, ensure_ascii=False, indent=4)
+        firefly_json_io.write_json_atomic(_svc._main('HISTORY_FILE'), history[:5000], indent=4)
 
 def canvas_path(canvas_id):
     cleaned = re.sub('[^a-zA-Z0-9_-]', '', canvas_id or '')
@@ -28,8 +26,8 @@ def save_canvas(canvas):
         raise HTTPException(status_code=410, detail='核心画布必须通过带版本号的增量项目接口保存')
     with CANVAS_LOCK:
         canvas['updated_at'] = max(_svc._main('now_ms')(), int(canvas.get('updated_at') or 0) + 1)
-        with open(canvas_path(canvas['id']), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        # #345：同一个画布文件先被截断再写，中途死掉就是一个 0 字节的画布。
+        firefly_json_io.write_json_atomic(canvas_path(canvas['id']), canvas)
 
 def new_canvas(title='未命名画布', icon='layers', kind='classic', project=None, board_x=None, board_y=None):
     project_id = str(project or '').strip()

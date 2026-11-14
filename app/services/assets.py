@@ -2,6 +2,7 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _safe_asset_tag, _sniff_image_ext  # noqa: E402,F401
+import firefly_json_io  # noqa: E402
 import logging
 logger = logging.getLogger(__name__)
 
@@ -296,11 +297,9 @@ def load_prompt_libraries():
     if not os.path.exists(_svc._main('PROMPT_LIBRARY_PATH')):
         data = default_prompt_libraries()
         return save_prompt_libraries(data)
-    try:
-        with open(_svc._main('PROMPT_LIBRARY_PATH'), 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        data = default_prompt_libraries()
+    # #345：提示词库读坏了以前直接换成内置模板，紧接着就被保存回磁盘，用户自己写的
+    # 库全没。现在坏文件先改名 .corrupt-<UTC> 保住并记诊断，后面的默认值不会覆盖它。
+    data = firefly_json_io.read_json(_svc._main('PROMPT_LIBRARY_PATH'), default=None)
     if not isinstance(data, dict):
         data = default_prompt_libraries()
     normalized = normalize_prompt_libraries(data)
@@ -311,7 +310,6 @@ def load_prompt_libraries():
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data['updated_at'] = _svc._main('now_ms')()
-    os.makedirs(_svc._main('DATA_DIR'), exist_ok=True)
-    with open(_svc._main('PROMPT_LIBRARY_PATH'), 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # #345：同一个文件先被截断再写，dump 中途死掉就是个 0 字节的提示词库。
+    firefly_json_io.write_json_atomic(_svc._main('PROMPT_LIBRARY_PATH'), data)
     return data

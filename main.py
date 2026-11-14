@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 from app.core import *  # noqa: F401,F403
 import app.core as _core_runtime
+import firefly_json_io
 
 import os as _os_boot
 import sys as _sys_boot
@@ -437,13 +438,10 @@ async def lifespan_context(_app):
 app.router.lifespan_context = lifespan_context
 
 def load_storage_settings():
-    raw = {}
-    try:
-        if os.path.exists(STORAGE_SETTINGS_FILE):
-            with open(STORAGE_SETTINGS_FILE, "r", encoding="utf-8-sig") as f:
-                raw = json.load(f) if f else {}
-    except Exception as exc:
-        logger.warning(f"加载存储目录设置失败: {exc}")
+    # #345：读坏了不能再当成“从没配过”——read_json 会先把坏文件改名 .corrupt-<UTC> 保住字节
+    # 并记一条诊断（界面会提示），然后才用默认目录继续跑。
+    raw = firefly_json_io.read_json(STORAGE_SETTINGS_FILE, default={}, encoding="utf-8-sig")
+    if not isinstance(raw, dict):
         raw = {}
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():
@@ -622,10 +620,10 @@ def load_asset_library():
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
-    try:
-        with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as f:
-            lib = json.load(f)
-    except Exception:
+    # #345：以前 except → default_asset_library()，下一次保存就把空库写回磁盘——用户整个
+    # 资源库消失且没有任何痕迹。现在坏文件先改名 .corrupt-<UTC> 保住，再走默认值。
+    lib = firefly_json_io.read_json(ASSET_LIBRARY_PATH, default=None)
+    if not isinstance(lib, dict):
         lib = default_asset_library()
     # #212: 默认库历史名一次性迁移后回写一次磁盘，使存量数据与界面收敛
     migrated = any(isinstance(l, dict) and str(l.get('id')) == 'default' and str(l.get('name')) in DEFAULT_LIBRARY_LEGACY_NAMES for l in lib.get('libraries') or [])
@@ -642,9 +640,8 @@ def save_asset_library(lib):
         lib = normalize_asset_library(lib)
         sort_asset_library_items(lib)
         lib["updated_at"] = now_ms()
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
-            json.dump(lib, f, ensure_ascii=False, indent=2)
+        # #345：以前 open("w") 先截断再 dump，中途死掉就是一个 0 字节的资源库。
+        firefly_json_io.write_json_atomic(ASSET_LIBRARY_PATH, lib)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(manager.broadcast_asset_library_updated(int(lib["updated_at"])), GLOBAL_LOOP)
 

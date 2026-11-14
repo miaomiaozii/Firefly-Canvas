@@ -1,24 +1,23 @@
 # projects domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+import firefly_json_io  # noqa: E402
 import logging
 logger = logging.getLogger(__name__)
 
 def load_projects():
-    try:
-        with open(_svc._main('PROJECTS_PATH'), 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        projects = data.get('projects') if isinstance(data, dict) else data
-        if isinstance(projects, list):
-            return [p for p in projects if isinstance(p, dict) and p.get('id')]
-    except Exception:
-        pass
+    # #345：项目列表读坏了以前直接 return []，下一次保存就把空列表写回 data/projects.json，
+    # 项目“凭空消失”。现在坏文件先改名 .corrupt-<UTC> 保住并记诊断。
+    data = firefly_json_io.read_json(_svc._main('PROJECTS_PATH'), default=None)
+    projects = data.get('projects') if isinstance(data, dict) else data
+    if isinstance(projects, list):
+        return [p for p in projects if isinstance(p, dict) and p.get('id')]
     return []
 
 def save_projects(projects):
     with CANVAS_LOCK:
-        with open(_svc._main('PROJECTS_PATH'), 'w', encoding='utf-8') as f:
-            json.dump({'projects': projects}, f, ensure_ascii=False, indent=2)
+        # #345：同一个文件先被截断再写，中途死掉就是一个 0 字节的 projects.json。
+        firefly_json_io.write_json_atomic(_svc._main('PROJECTS_PATH'), {'projects': projects})
 
 def ensure_default_project():
     """兼容读取旧分类元数据；核心产品不再创建默认项目。"""

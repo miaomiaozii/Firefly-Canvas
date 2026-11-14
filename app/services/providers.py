@@ -2,6 +2,7 @@
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _storage_abs_path  # noqa: E402,F401
+import firefly_json_io  # noqa: E402
 from . import secret_store, write_guard  # noqa: E402
 import logging
 logger = logging.getLogger(__name__)
@@ -461,9 +462,8 @@ def save_storage_settings(payload):
         dirs[key] = _storage_abs_path((payload or {}).get(key), fallback)
     for path in dirs.values():
         os.makedirs(path, exist_ok=True)
-    os.makedirs(_svc._main('DATA_DIR'), exist_ok=True)
-    with open(_svc._main('STORAGE_SETTINGS_FILE'), 'w', encoding='utf-8') as f:
-        json.dump(dirs, f, ensure_ascii=False, indent=2)
+    # #345：存储目录配坏过一次，下次启动会静默回到默认目录，看起来像“资源丢了”。
+    firefly_json_io.write_json_atomic(_svc._main('STORAGE_SETTINGS_FILE'), dirs)
     _svc._main('apply_storage_settings')(dirs)
     return {'dirs': dirs}
 
@@ -486,15 +486,19 @@ def load_api_providers():
     defaults = default_api_providers()
     if not os.path.exists(_svc._main('API_PROVIDERS_FILE')):
         return merge_default_api_providers(defaults)
+    # #345：api_providers.json 里是加密后的 API Key。以前解析失败只留一行 warning，返回
+    # 默认平台，下一次保存就把默认值写回去——用户的 Key 从此消失，现场也没了。
+    # 现在坏文件先改名 .corrupt-<UTC> 保住（加密内容还能拿回来恢复），并记诊断给界面提示。
+    raw = firefly_json_io.read_json(_svc._main('API_PROVIDERS_FILE'), default=None)
+    if raw is None:
+        return defaults
     try:
-        with open(_svc._main('API_PROVIDERS_FILE'), 'r', encoding='utf-8') as f:
-            raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
         providers = [_decrypt_provider_secrets(item) for item in providers]
         providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
         return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
     except Exception as e:
-        logger.warning(f'加载 API 平台配置失败: {e}')
+        logger.exception(f'解析 API 平台配置失败（文件已保留，不会用默认值覆盖）: {e}')
         return defaults
 
 def _decrypt_provider_secrets(provider):
@@ -507,10 +511,9 @@ def _decrypt_provider_secrets(provider):
 def save_api_providers(providers):
     providers_file = _svc._main('API_PROVIDERS_FILE')
     write_guard.ensure_writable_config(providers_file)
-    os.makedirs(_svc._main('DATA_DIR'), exist_ok=True)
+    # #345：open("w") 在打开那一刻就把真 Key 截成 0 字节，dump 中途死掉就什么都没有。
     with GLOBAL_CONFIG_LOCK:
-        with open(providers_file, 'w', encoding='utf-8') as f:
-            json.dump([_encrypt_provider_secrets(item) for item in providers], f, ensure_ascii=False, indent=2)
+        firefly_json_io.write_json_atomic(providers_file, [_encrypt_provider_secrets(item) for item in providers])
 
 def _encrypt_provider_secrets(provider):
     provider = dict(provider or {})
@@ -561,31 +564,16 @@ def update_env_values(updates):
 
 def load_global_preferences():
     defaults = {'theme': 'dark', 'language': 'zh'}
-    try:
-        with open(_svc._main('GLOBAL_SETTINGS_FILE'), 'r', encoding='utf-8-sig') as handle:
-            raw = json.load(handle)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return defaults
+    # #345：读坏了也留痕迹（同一个文件会被保存回写，静默回默认值会掉用户主题/语言）。
+    raw = firefly_json_io.read_json(_svc._main('GLOBAL_SETTINGS_FILE'), default=None, encoding='utf-8-sig')
     theme = raw.get('theme') if isinstance(raw, dict) else None
     language = raw.get('language') if isinstance(raw, dict) else None
     return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
     preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
-    os.makedirs(os.path.dirname(_svc._main('GLOBAL_SETTINGS_FILE')), exist_ok=True)
-    temporary = f"{_svc._main('GLOBAL_SETTINGS_FILE')}.{uuid.uuid4().hex}.tmp"
-    try:
-        with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
-            json.dump(preferences, handle, ensure_ascii=False, indent=2)
-            handle.write('\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, _svc._main('GLOBAL_SETTINGS_FILE'))
-    finally:
-        try:
-            os.remove(temporary)
-        except FileNotFoundError:
-            pass
+    # #345：这一处本来就是 tmp+fsync+replace，只是自己写了一份；收进公共实现，免以后又分叉。
+    firefly_json_io.write_json_atomic(_svc._main('GLOBAL_SETTINGS_FILE'), preferences)
     return preferences
 
 def api_headers(json_body=True, provider=None, model=''):

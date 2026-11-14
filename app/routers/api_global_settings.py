@@ -11,6 +11,7 @@ import os
 import json
 import shutil
 import uuid
+import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -27,31 +28,17 @@ router = APIRouter()
 
 def load_global_preferences():
     defaults = {'theme': 'dark', 'language': 'zh'}
-    try:
-        with open(_app_main.GLOBAL_SETTINGS_FILE, 'r', encoding='utf-8-sig') as handle:
-            raw = json.load(handle)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return defaults
+    # #345：读坏了也留痕迹（同一个文件会被保存回写，静默回到默认主题/语言就是用户丢设置）。
+    raw = firefly_json_io.read_json(_app_main.GLOBAL_SETTINGS_FILE, default=None, encoding='utf-8-sig')
     theme = raw.get('theme') if isinstance(raw, dict) else None
     language = raw.get('language') if isinstance(raw, dict) else None
     return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
     preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
-    os.makedirs(os.path.dirname(_app_main.GLOBAL_SETTINGS_FILE), exist_ok=True)
-    temporary = f'{_app_main.GLOBAL_SETTINGS_FILE}.{uuid.uuid4().hex}.tmp'
-    try:
-        with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
-            json.dump(preferences, handle, ensure_ascii=False, indent=2)
-            handle.write('\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, _app_main.GLOBAL_SETTINGS_FILE)
-    finally:
-        try:
-            os.remove(temporary)
-        except FileNotFoundError:
-            pass
+    # #345：这一处本来就是临时文件+换名，只是自己另写了一份；收进公共实现（写序一字不差），
+    # 免以后又分叉。
+    firefly_json_io.write_json_atomic(_app_main.GLOBAL_SETTINGS_FILE, preferences)
     return preferences
 
 

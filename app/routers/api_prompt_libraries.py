@@ -7,6 +7,7 @@ import os
 import json
 import re
 import uuid
+import firefly_json_io
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (BaseModel, HTTPException, List, PROMPT_BUILTIN_CATEGORY_IDS, PromptLibraryBatchDeleteRequest, PromptLibraryCategoryRequest, PromptLibraryItemRequest, PromptLibraryRequest, _os, _sys, builtin_prompt_templates, defaultPromptTemplateCategories, find_prompt_library, json, normalize_prompt_category_id, normalize_prompt_template_categories, os, re, sanitize_asset_name, seed_system_prompt_library, uuid)
@@ -107,11 +108,9 @@ def load_prompt_libraries():
     if not os.path.exists(PROMPT_LIBRARY_PATH):
         data = default_prompt_libraries()
         return save_prompt_libraries(data)
-    try:
-        with open(PROMPT_LIBRARY_PATH, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        data = default_prompt_libraries()
+    # #345：提示词库读坏了以前直接换成内置模板，紧接着就被保存回磁盘，用户自己写的库全没。
+    # 现在坏文件先改名 .corrupt-<UTC> 保住并记诊断，后面的默认值不会覆盖它。
+    data = firefly_json_io.read_json(PROMPT_LIBRARY_PATH, default=None)
     if not isinstance(data, dict):
         data = default_prompt_libraries()
     normalized = normalize_prompt_libraries(data)
@@ -122,9 +121,8 @@ def load_prompt_libraries():
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data['updated_at'] = _app_main.now_ms()
-    os.makedirs(_app_main.DATA_DIR, exist_ok=True)
-    with open(PROMPT_LIBRARY_PATH, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # #345：同一个文件先被截断再写，dump 中途死掉就是个 0 字节的提示词库。
+    firefly_json_io.write_json_atomic(PROMPT_LIBRARY_PATH, data)
     return data
 
 def public_prompt_libraries(data=None):

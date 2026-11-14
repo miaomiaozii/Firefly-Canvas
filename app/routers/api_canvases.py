@@ -8,6 +8,7 @@ import os
 import json
 import re
 import hashlib
+import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -34,8 +35,8 @@ def save_canvas(canvas):
         raise HTTPException(status_code=410, detail='核心画布必须通过带版本号的增量项目接口保存')
     with CANVAS_LOCK:
         canvas['updated_at'] = max(_app_main.now_ms(), int(canvas.get('updated_at') or 0) + 1)
-        with open(canvas_path(canvas['id']), 'w', encoding='utf-8') as f:
-            json.dump(canvas, f, ensure_ascii=False, indent=2)
+        # #345：同一个画布文件先被截断再写，中途死掉就是一个 0 字节的画布。
+        firefly_json_io.write_json_atomic(canvas_path(canvas['id']), canvas)
 
 def load_canvas(canvas_id):
     try:
@@ -321,8 +322,7 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
                 canvas['board_x'] = float(payload.board_x)
             if payload.board_y is not None:
                 canvas['board_y'] = float(payload.board_y)
-            with open(canvas_path(canvas['id']), 'w', encoding='utf-8') as f:
-                json.dump(canvas, f, ensure_ascii=False, indent=2)
+            firefly_json_io.write_json_atomic(canvas_path(canvas['id']), canvas)
             return canvas
     canvas = await asyncio.to_thread(mutate_meta)
     return {'canvas': canvas_record(canvas)}

@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import os
 import json
+import firefly_json_io
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (BASE_DIR, Dict, _os, _storage_abs_path, _sys, json, os)
 from app.core import _storage_abs_path
@@ -31,13 +32,10 @@ def _storage_abs_path(value, fallback):
     return os.path.abspath(text)
 
 def load_storage_settings():
-    raw = {}
-    try:
-        if os.path.exists(STORAGE_SETTINGS_FILE):
-            with open(STORAGE_SETTINGS_FILE, 'r', encoding='utf-8-sig') as f:
-                raw = json.load(f) if f else {}
-    except Exception as exc:
-        logger.warning(f'加载存储目录设置失败: {exc}')
+    # #345：存储目录配坏过一次，下次启动会静默回到默认目录，看起来像“资源丢了”。
+    # read_json 会先把坏文件改名 .corrupt-<UTC> 保住字节并记诊断（界面会提示）。
+    raw = firefly_json_io.read_json(STORAGE_SETTINGS_FILE, default={}, encoding='utf-8-sig')
+    if not isinstance(raw, dict):
         raw = {}
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():
@@ -50,9 +48,8 @@ def save_storage_settings(payload):
         dirs[key] = _storage_abs_path((payload or {}).get(key), fallback)
     for path in dirs.values():
         os.makedirs(path, exist_ok=True)
-    os.makedirs(_app_main.DATA_DIR, exist_ok=True)
-    with open(STORAGE_SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(dirs, f, ensure_ascii=False, indent=2)
+    # #345：以前 open("w") 先截断再 dump，中途死掉就是一个 0 字节的存储设置。
+    firefly_json_io.write_json_atomic(STORAGE_SETTINGS_FILE, dirs)
     apply_storage_settings(dirs)
     return {'dirs': dirs}
 

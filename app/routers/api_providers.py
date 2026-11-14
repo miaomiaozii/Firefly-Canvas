@@ -9,6 +9,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 import os
 import json
 import re
+import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -127,10 +128,10 @@ def apply_locked_recommended_model_rules(base_url='', grouped=None):
 def save_api_providers(providers):
     providers_file = _app_main.API_PROVIDERS_FILE
     _svc.write_guard.ensure_writable_config(providers_file)
-    os.makedirs(_app_main.DATA_DIR, exist_ok=True)
+    # #345：open("w") 在打开那一刻就把真 Key 截成 0 字节，dump 中途死掉就什么都没有；
+    # 而 load_api_providers 的“解析失败→内置默认”紧跟着就会把默认值写回去。两头一起修。
     with GLOBAL_CONFIG_LOCK:
-        with open(providers_file, 'w', encoding='utf-8') as f:
-            json.dump([_encrypt_provider_secrets(item) for item in providers], f, ensure_ascii=False, indent=2)
+        firefly_json_io.write_json_atomic(providers_file, [_encrypt_provider_secrets(item) for item in providers])
 
 def _encrypt_provider_secrets(provider):
     provider = dict(provider or {})
