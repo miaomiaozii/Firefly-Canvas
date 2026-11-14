@@ -4,7 +4,8 @@
         "common.apiSettings": { zh: "API 设置", en: "API Settings" },
         "common.darkMode": { zh: "黑夜模式", en: "Dark Mode" },
         "common.lightMode": { zh: "白天模式", en: "Light Mode" },
-        "common.language": { zh: "中文", en: "English" },
+        // #365：这里原来有一条语言下拉的标签文案（中文 / English）。下拉已经整个没了，
+        // 这条也没人用了，跟着删：界面上已经没有任何能把语言切到英文的入口。
         "common.cancel": { zh: "取消", en: "Cancel" },
         "common.confirm": { zh: "确定", en: "Confirm" },
         "common.save": { zh: "保存", en: "Save" },

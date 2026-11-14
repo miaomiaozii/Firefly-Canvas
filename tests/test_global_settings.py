@@ -1,6 +1,7 @@
 import json
 import asyncio
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -390,6 +391,30 @@ class GlobalSettingsApiTests(unittest.TestCase):
         preferences = (ROOT / "static" / "js" / "global-preferences.js").read_text(encoding="utf-8")
         self.assertIn("current.language = 'zh';", preferences,
                       "加载偏好时要强制 zh：下一行写回 localStorage 就把老用户的 studio_lang='en' 迁掉了")
+
+    def test_no_product_page_renders_a_language_control(self):
+        """#365 收尾：全仓只剩一个语言入口——而且它已经没了。
+
+        review 要求“三页搜一遍确认没有第二个入口”。手搜的结果是：三个页面里带 lang 的
+        只有 `<html lang="zh-CN">`（文档语言声明，不是控件）。这条守卫把“手搜”变成“钉住”：
+        以后谁往画布顶栏（很多面板是 JS 拼的）再加一个语言下拉，这里直接红。
+        """
+        static = ROOT / "static"
+        for name in ("global-settings.html", "smart-canvas.html", "project-list.html"):
+            html = (static / name).read_text(encoding="utf-8")
+            for tag in re.findall(r"<select\b[^>]*>", html):
+                self.assertNotIn("lang", tag.lower(), f"{name} 里不该有语言下拉：{tag}")
+            self.assertNotIn('<option value="en"', html, f"{name} 不该再有 English 选项")
+            self.assertNotIn('data-i18n="globalSettings.language"', html)
+
+        # 画布顶栏的下拉都是 JS 拼出来的，所以 HTML 干净不算数——连 JS 一起钉。
+        for script in sorted(static.rglob("*.js")):
+            text = script.read_text(encoding="utf-8")
+            rel = script.relative_to(ROOT).as_posix()
+            self.assertNotIn("languageSelect", text, f"{rel} 里不该再提 languageSelect")
+            self.assertNotIn('<option value="en"', text, f"{rel} 不该再造 English 选项")
+            self.assertNotIn("common.language", text,
+                             f"{rel} 不该再用语言下拉的标签文案（下拉已经整个没了）")
 
     def test_i18n_validator_no_longer_requires_english(self):
         """#365：不补英文翻译，所以校验器不能再要求每个 key 都有 en。"""
