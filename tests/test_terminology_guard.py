@@ -170,6 +170,9 @@ WHITELIST = [
     # "logs" in legitimate contexts (directory paths, legacy keys)
     ("CLI/windows/gemini/install_gemini_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
     ("CLI/windows/openai/install_openai_codex_cli.ps1", "logs (as history field)", "PowerShell $logDir variable"),
+    # #363：启动失败路径要读启动日志尾巴，这里的 'logs' 是 #364 定的日志目录名（真日志，不是画布历史）
+    ("tools/launch-firefly.ps1", "logs (as history field)", "Boot log directory path (#364), real logging not history"),
+    ("tools/wait-for-local-server.ps1", "logs (as history field)", "Boot log directory path (#363), real logging not history"),
     ("firefly_diagnostics.py", "logs (as history field)", "Diagnostics log directory path"),
     ("firefly_projects.py", "logs (as history field)", "Legacy logs key compatibility"),
     # fal.ai 队列协议的上游响应字段：status 返回体的 logs 是服务商契约字段名，不是画布历史字段

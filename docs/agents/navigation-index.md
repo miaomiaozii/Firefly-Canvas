@@ -80,6 +80,12 @@
 - 最相关测试：`tests/test_server_logging.py`（重启追加不覆盖、UTF-8 中文、100MB 轮转、7 天清理、boot 日志体积上限、启动器与便携包清单守卫）。
 - 不变量：日志落 `<FIREFLY_RUNTIME_ROOT>/logs/`（与 `firefly_diagnostics.py` 同一个根），追加写不覆盖上一次启动；文本一律 UTF-8（启动器给子进程 `PYTHONUTF8=1`）；`httpx` logger 降到 WARNING；测试里 `import main` 不往仓库写文件。uvicorn 自己的 access/error 流仍在 boot 日志里（不进 `server.log`），由 `prune_boot_logs` 按 7 天 / 100MB 收。
 
+### 启动失败可见性（#363）
+
+- 稳定符号：`tools/check_dependencies.py`（`REQUIRED` 依赖表、`--names-only`、`--probe`、`--extra-modules`、退出码 0/1）；`tools/show-firefly-failure.ps1`（`Get-FireflyBootLogTail`、`Show-FireflyFailure`）；调用点 `run.bat`、`tools/launch-firefly.ps1`、`tools/wait-for-local-server.ps1`。
+- 最相关测试：`tests/test_dependency_preflight.py`（缺依赖逐个点名、给 PowerShell 的名单纯 ASCII、可选项缺失不算致命、真跑一遗 run.bat 失败路径、带中文的 .ps1 必须 BOM、run.bat 必须 CRLF 且除文件名外全 ASCII）。
+- 不变量：PowerShell 5.1 按 OEM（本机 GBK）码页解码子进程输出，所以**给它的名单只能 ASCII**；中文文案只能由 Python 子进程（`PYTHONUTF8=1`）或带 BOM 的 .ps1 字面量出。`run.bat` 保持 CRLF 行尾（LF 会被 cmd 砸成碎片）。体检用 stdlib `importlib.util.find_spec`，不用 `pkg_resources`（便携包的 `python310._pth` 下它连 `__file__` 都没有）；`--extra-modules` 的可选依赖缺失不阻断启动。
+
 ## ADR 索引
 
 | 编号 | 标题 | 一句话 |
