@@ -153,8 +153,8 @@ const E2E_NODE_ID = "e2e-n1";
 // 点选路径，不是在 evaluate 里改 canvasState.selectedId（那等于把选中态喂给测试）。
 const clickNode = async (nid) => {
   const pt = await page.evaluate((id) => {
-    const sel = '.image-node[data-id="' + id + '"]';
-    const el = document.querySelector(sel) || document.querySelector('.image-node');
+    const el = document.querySelector('.image-node[data-id="' + id + '"]');
+    // 找不到目标节点就当场炸：退回「第一个 .image-node」会把「点错了节点」伪装成「通过」。
     if (!el) throw new Error('NODE_MISSING: ' + id);
     const r = el.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
