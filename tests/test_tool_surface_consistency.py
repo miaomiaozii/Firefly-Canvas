@@ -311,24 +311,28 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
         def tmp_upload_run():
             client, store, pid_a, pid_b = self._fixture()
-            tmp = tempfile.NamedTemporaryFile(prefix="online_356_", suffix=".png", delete=False)
-            tmp.write(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
-            tmp.close()
+            # #355（01:08 收口）：只允许当前项目目录/用户选定目录——两路各用本项目内的同名图。
+            img_a = store.root / pid_a / "356t.png"
+            img_b = store.root / pid_b / "356t.png"
+            for p in (img_a, img_b):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
             try:
-                a = self._mcp_call(client, pid_a, "media.upload", {"file_path": tmp.name})
-                b = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": tmp.name})
+                a = self._mcp_call(client, pid_a, "media.upload", {"file_path": str(img_a)})
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": str(img_b)})
                 self._assert_pair(a, b, "media.upload")
                 la = self._mcp_call(client, pid_a, "media.list", {})
                 lb = self._rest(client, "GET", f"/api/projects/{pid_b}/media/list")
                 self._assert_pair(la, lb, "media.upload→list 交叉验证")
             finally:
-                Path(tmp.name).unlink(missing_ok=True)
+                for p in (img_a, img_b):
+                    p.unlink(missing_ok=True)
 
         def media_delete_run():
             client, store, pid_a, pid_b = self._fixture()
-            # #355：media.upload 只读项目目录/用户选定目录——测试图落 store 根下。
-            img_a = store.root / f"356d_a_{uuid.uuid4().hex[:6]}.png"
-            img_b = store.root / f"356d_b_{uuid.uuid4().hex[:6]}.png"
+            # #355（01:08 收口）：只读当前项目目录/用户选定目录——测试图落各自项目目录。
+            img_a = store.root / pid_a / f"356d_a_{uuid.uuid4().hex[:6]}.png"
+            img_b = store.root / pid_b / f"356d_b_{uuid.uuid4().hex[:6]}.png"
             for p in (img_a, img_b):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)

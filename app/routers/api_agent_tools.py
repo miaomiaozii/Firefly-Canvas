@@ -584,8 +584,9 @@ async def upload_media(project_id: str, request: Request, x_agent_project: str =
 async def upload_media_core(project_id: str, file_path: str) -> dict:
     """Import a local media file into the project library (Request-free core).
 
-    #355 W3：只允许读项目目录（store 根）与用户选定目录（存储设置三目录）下的图片；
-    越界与不存在返回同一句错误（不泄漏「文件是否存在」，防任意路径探测）。
+    #355 W3（review 01:08 收口）：只允许读**当前项目目录**（store.root/<project_id>）
+    与用户选定目录（存储设置三目录）下的图片；其他项目的目录也在禁区——
+    跨项目偷读会被拒。越界与不存在返回同一句错误（不泄漏存在性）。
     """
     _validate_project(project_id)
     if not file_path:
@@ -593,7 +594,10 @@ async def upload_media_core(project_id: str, file_path: str) -> dict:
 
     store = _app_main.FIREFLY_PROJECT_STORE
     allowed_roots = []
-    for root in (getattr(store, "root", None),
+    own_project_dir = None
+    if getattr(store, "root", None):
+        own_project_dir = Path(str(store.root)) / str(project_id)
+    for root in (own_project_dir,
                  getattr(_app_main, "OUTPUT_INPUT_DIR", None),
                  getattr(_app_main, "OUTPUT_OUTPUT_DIR", None),
                  getattr(_app_main, "LOCAL_UPLOAD_DIR", None)):

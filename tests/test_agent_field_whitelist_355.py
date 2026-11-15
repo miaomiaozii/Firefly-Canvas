@@ -3,8 +3,8 @@
 覆盖票面四点（REVIEW.md 第 1 批）：
 1. update_node 字段白名单（pi/MCP 共用 manifest 同一份；至少挡 images/model/agentCli/extSessionId/autonomy）；
 2. create_node 遇到已存在的 id 报错（不再 upsert 覆盖）；
-3. media.upload 只允许读项目目录（store 根）和用户选定目录（存储设置三目录）下的图片；
-4. 路径不可用时不泄漏「文件是否存在」（越界与不存在同一句错误）。
+3. media.upload 只允许读**当前项目目录**（store.root/<pid>，review 01:08：不是 store 根——其他项目也在禁区）和用户选定目录（存储设置三目录）下的图片；
+4. 路径不可用时不泄漏「文件是否存在」（越界与不存在同一句错误）；另验 `items` 不在白名单（frame 成员由 frame/连边端点专管）。
 """
 import copy
 import sys
@@ -87,12 +87,12 @@ class Guards355Tests(unittest.TestCase):
 
     # ---------------------------------------------------------------- W1 whitelist
     def test_whitelist_covers_blocked_fields_and_is_manifest_shared(self):
-        for field in ("images", "model", "agentCli", "extSessionId", "autonomy"):
+        for field in ("images", "model", "agentCli", "extSessionId", "autonomy", "items"):
             self.assertNotIn(field, UPDATABLE_NODE_FIELDS)
 
     def test_core_rejects_non_whitelisted_fields(self):
         for field in ("images", "model", "agentCli", "extSessionId", "autonomy",
-                      "chatFrameId", "mcp_session", "type"):
+                      "chatFrameId", "mcp_session", "type", "items"):
             with self.assertRaises(HTTPException) as cm:
                 run_async(update_node_core(self.pid, "prompt-1", {field: "x"}))
             self.assertEqual(cm.exception.status_code, 400, field)
@@ -145,12 +145,26 @@ class Guards355Tests(unittest.TestCase):
         self.assertEqual(fresh.status_code, 200, fresh.text)
 
     # ---------------------------------------------------------------- W3 media paths
-    def test_media_upload_under_store_root_ok(self):
-        img = self._png(self.store.root / "ok-image.png")
+    def test_media_upload_under_own_project_dir_ok(self):
+        img = self._png(self.store.root / self.pid / "ok-image.png")
         resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
                                 json={"file_path": str(img)})
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()["success"])
+
+    def test_media_upload_cross_project_rejected(self):
+        """review 01:08：store.root 是全部项目的根，其他项目目录必须在禁区。"""
+        other = self.store.create_project("Other 355")
+        img = self._png(self.store.root / other["id"] / "other-secret.png")
+        resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
+                                json={"file_path": str(img)})
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertIn("not available", resp.text)
+        # store 根本身也不再是允许根（它是全部项目的父目录）
+        stray = self._png(self.store.root / "stray.png")
+        resp2 = self.client.post(f"/api/projects/{self.pid}/media/upload",
+                                 json={"file_path": str(stray)})
+        self.assertEqual(resp2.status_code, 404, resp2.text)
 
     def test_media_upload_under_user_selected_dir_ok(self):
         sel = Path(self.temp_dir.name) / "user-selected"
@@ -189,7 +203,7 @@ class Guards355Tests(unittest.TestCase):
             outside.cleanup()
 
     def test_media_upload_non_image_rejected(self):
-        txt = self.store.root / "notes.txt"
+        txt = self.store.root / self.pid / "notes.txt"
         txt.parent.mkdir(parents=True, exist_ok=True)
         txt.write_text("not an image", encoding="utf-8")
         resp = self.client.post(f"/api/projects/{self.pid}/media/upload",

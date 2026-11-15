@@ -111,8 +111,10 @@ class CreateNodePlacement(unittest.TestCase):
         self.assertEqual((nodes[r2["node_id"]]["x"], nodes[r2["node_id"]]["y"]), (0, 0))
 
     def test_chatframe_items_immutable_via_update(self):
-        """监理钉 B1：会话框 items 由服务端落位链独占——canvas.update_node 传 items 拒绝(400)；
-        非会话框字段（title 等）仍可改；普通 agent 节点的 items 键不受该护栏影响。"""
+        """监理钉 B1 + #355（review 01:08）：items 已从 UPDATABLE_NODE_FIELDS 白名单移除——
+        所有节点（含普通 agent 节点）的 items 都不再可经 update_node 改；
+        非会话框字段（title 等）仍可改。
+        """
         with self.assertRaises(HTTPException) as cm:
             run_async(update_node_core(self.pid, "group-1", {"items": ["bogus"]}))
         self.assertEqual(cm.exception.status_code, 400)
@@ -122,9 +124,11 @@ class CreateNodePlacement(unittest.TestCase):
         r = run_async(update_node_core(self.pid, "group-1", {"title": "改名"}))
         self.assertTrue(r["success"])
         self.assertEqual(self._nodes()["group-1"]["title"], "改名")
-        # 非 smart-group 节点不受影响。
-        r2 = run_async(update_node_core(self.pid, "agent-1", {"items": ["x"]}))
-        self.assertTrue(r2["success"])
+        # #355：普通 agent 节点的 items 同样被白名单拒绝（旧行为已作废）。
+        with self.assertRaises(HTTPException) as cm2:
+            run_async(update_node_core(self.pid, "agent-1", {"items": ["x"]}))
+        self.assertEqual(cm2.exception.status_code, 400)
+        self.assertIn("白名单", cm2.exception.detail)
 
 
 class _FakeStore:

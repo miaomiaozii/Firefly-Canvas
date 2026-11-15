@@ -30,9 +30,9 @@ class AgentMediaToolsTests(unittest.TestCase):
         self.project_id = self.project["id"]
 
         # Create a test image file
-        # #355：media.upload 只允许读项目目录（store 根）/用户选定目录下的图片，
-        # 测试图落在 store 根下（旧行为：任意 temp 路径可读，已收紧）。
-        self.test_image = self.store.root / "test-image.png"
+        # #355（01:08 收口）：media.upload 只允许读当前项目目录（store.root/<pid>）/用户选定目录，
+        # 测试图落本项目目录下。
+        self.test_image = self.store.root / self.project_id / "test-image.png"
         self.test_image.parent.mkdir(parents=True, exist_ok=True)
         # Create a minimal valid PNG (1x1 red pixel)
         import struct
