@@ -324,12 +324,19 @@ function clearNodeMediaBeforeDelete(id){
     return true;
 }
 
-function deleteNodeFromButton(id){
+async function deleteNodeFromButton(id){
     // #65: 生成中的节点禁止删除——任务写回会落到不存在的节点上（孤儿资产或报错）。
     const buttonNode = canvasState.nodes.find(n => n.id === id);
     if(buttonNode && smartNodeInFlight(buttonNode)){ toast(tr('smart.nodeDeleteBusy')); return; }
-    // #315：Agent 节点承载完整对话历史——删除前确认（#149 B5 一步直删仅保留给普通节点）
-    if(buttonNode && window.isSmartAgentNode?.(buttonNode) && !window.confirm(tr('smart.agentDeleteConfirm'))) return;
+    // #347: Agent 节点删除前确认（ffDialog.ask 替代原生 confirm，danger）。
+    // #353 合并后删节点会结束 Agent 进程，撤销只能恢复画布节点，不算可恢复 → 不再「直接删 + 撤销 toast」。
+    if(buttonNode && window.isSmartAgentNode?.(buttonNode) && !(await window.ffDialog.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.agentDeleteConfirm'),
+        confirmText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     // #149 B5: 统一为一步直接删节点（与 Delete 键行为一致），不再对有图节点两步清图
     deleteNode(id);
 }

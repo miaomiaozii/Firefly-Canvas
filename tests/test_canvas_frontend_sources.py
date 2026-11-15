@@ -357,5 +357,84 @@ class SwallowedErrorRatchetTests(unittest.TestCase):
                 self.assertLess(toast_pos, m.start(), f"{page}: ui-toast.js 必须在 {script} 之前加载")
 
 
+class TestNoNativeDialogs(unittest.TestCase):
+    """#347：产品页禁用原生 confirm()/prompt()——原生弹窗阻塞整页且样式不统一，
+    改用应用内对话框 window.ffDialog（ui-dialog.js）：确认 → ask，输入 → input。
+    本测试扫全部 static/**.js + 产品页内联脚本，出现原生对话框调用即红。
+    """
+
+    _DIALOG_CALL = re.compile(r"(?<![\w$])(confirm|prompt)\s*\(")
+
+    def _js_sources(self) -> list[tuple[str, str]]:
+        sources = []
+        for js in sorted((ROOT / "static").rglob("*.js")):
+            sources.append((js.relative_to(ROOT).as_posix(), js.read_text(encoding="utf-8")))
+        for page in ("smart-canvas.html", "project-list.html", "global-settings.html"):
+            html = (ROOT / "static" / page).read_text(encoding="utf-8")
+            for m in re.finditer(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S):
+                sources.append((f"{page} (inline)", m.group(1)))
+        return sources
+
+    def test_no_native_dialog_calls(self):
+        offenders = []
+        for name, src in self._js_sources():
+            stripped = self._strip_strings(SwallowedErrorRatchetTests._strip_js_comments(src))
+            for m in self._DIALOG_CALL.finditer(stripped):
+                line = stripped[: m.start()].count("\n") + 1
+                offenders.append(f"{name}:{line}({m.group(1)})")
+        self.assertEqual(
+            offenders,
+            [],
+            "禁止原生 confirm/prompt——用 window.ffDialog.ask / window.ffDialog.input（ui-dialog.js）。违规：" + ", ".join(offenders),
+        )
+
+    @staticmethod
+    def _strip_strings(src: str) -> str:
+        """在注释已去的基础上，再把字符串字面量内容换成空格（保留长度）——
+        i18n 文案里的 "prompt(s)" 等英文不是调用。"""
+        out = list(src)
+        i, n = 0, len(src)
+        while i < n:
+            c = src[i]
+            if c in "\"'`":
+                q = c
+                j = i + 1
+                while j < n:
+                    if src[j] == "\\":
+                        j += 2
+                        continue
+                    if src[j] == q:
+                        break
+                    j += 1
+                for k in range(i, min(j + 1, n)):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = j + 1
+            else:
+                i += 1
+        return "".join(out)
+
+
+class TestUiToastNetworkErrorMapping(unittest.TestCase):
+    """#347（并入 #365 跟进项）：ffToast.error 把常见英文浏览器网络错误映射成中文，
+    不认识的保留原文。node 里抽出 ui-toast.js 的 NET_ERROR_ZH + zhNetworkError
+    真实代码执行（vm 上下文，非副本），断言映射行为。"""
+
+    def test_mapping_applies_to_error_only(self):
+        src = (ROOT / "static" / "js" / "ui-toast.js").read_text(encoding="utf-8")
+        self.assertIn('if (type === "error") msg = zhNetworkError(msg);', src)
+
+    def test_zh_network_error_cases(self):
+        node = _node_for_syntax_check()
+        self.assertTrue(Path(node).is_file(), f"node 不可用（{node}）：映射测试必须真跑")
+        # 质量门只允许 `node tests/*.mjs`（单参数）——harness 是已提交文件，
+        # 内部从 static/js/ui-toast.js 抽真实 NET_ERROR_ZH/zhNetworkError 执行。
+        proc = subprocess.run(
+            [node, "tests/ui-toast-network-error-harness.mjs"],
+            capture_output=True, text=True, timeout=60, cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"映射用例失败：{proc.stderr.strip()}")
+
+
 if __name__ == "__main__":
     unittest.main()

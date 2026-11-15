@@ -4589,7 +4589,13 @@ async function deletePromptTemplate(){
     scheduleSave();
 }
 async function createPromptTemplateGroup(){
-    const name = window.prompt(tr('smart.tplNewGroupPrompt'), tr('smart.tplNewGroupDefault'));
+    // #347: 原生 prompt 换应用内输入对话框（空输入/取消 → null → 不创建）
+    const name = await window.ffDialog?.input({
+        title: tr('smart.tplNewGroupPrompt'),
+        value: tr('smart.tplNewGroupDefault'),
+        okText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+    });
     if(!String(name || '').trim()) return;
     const lib = activePromptLibrary();
     // 系统库（readonly=false）也走后端新增分组，与素材库管理同步。
@@ -4615,7 +4621,12 @@ async function renamePromptTemplateGroup(groupId){
     const lib = activePromptLibrary();
     const group = activePromptTemplateGroups().find(g => g.id === groupId);
     if(!group) return;
-    const name = window.prompt(tr('smart.tplGroupNamePrompt'), group.name || '');
+    const name = await window.ffDialog?.input({
+        title: tr('smart.tplGroupNamePrompt'),
+        value: group.name || '',
+        okText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+    });
     if(!String(name || '').trim()) return;
     // 系统库的内置分组也走后端重命名（后端已放开内置分组限制），两端同步。
     if(lib && !lib.readonly){
@@ -4635,9 +4646,16 @@ async function renamePromptTemplateGroup(groupId){
 }
 async function deletePromptTemplateGroup(groupId){
     const lib = activePromptLibrary();
+    // #347: 原生 confirm 换应用内对话框（分组删除，模板移入“我的”，两个分支同一文案）
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.tplDeleteGroupConfirm'),
+        confirmText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     // 系统库的内置分组也走后端删除（后端已放开限制并把孤立条目改挂到剩余分组），两端同步。
     if(lib && !lib.readonly){
-        if(!window.confirm(tr('smart.tplDeleteGroupConfirm'))) return;
         try {
             const data = await fetch(`/api/prompt-libraries/categories/${encodeURIComponent(groupId)}`, {method:'DELETE'})
                 .then(async r => { if(!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || tr('smart.deleteFailed')); return r.json(); });
@@ -4647,7 +4665,6 @@ async function deletePromptTemplateGroup(groupId){
         } catch(err){ if(typeof setStatus === 'function') setStatus(err.message || tr('smart.deleteFailed')); }
         return;
     }
-    if(!window.confirm(tr('smart.tplDeleteGroupConfirm'))) return;
     promptTemplateGroups = promptTemplateGroups.filter(g => g.id !== groupId);
     promptPresets = promptPresets.map(p => p.category === groupId ? {...p, category:'mine'} : p);
     Object.entries(promptTemplateOverrides.editedBuiltins || {}).forEach(([id, item]) => {
@@ -5594,8 +5611,14 @@ function bindAssetItemEvents(){
     assetGrid.querySelectorAll('[data-delete-asset]').forEach(btn => {
         btn.onclick = async e => {
             e.preventDefault(); e.stopPropagation();
-            // #66: 全局库单删=硬删，先确认（声明不可恢复）。
-            if(!confirm(tr('smart.assetDeleteGlobalConfirm'))) return;
+            // #66: 全局库单删=硬删，先确认（声明不可恢复）。#347: 原生 confirm 换应用内对话框
+            if(!(await window.ffDialog?.ask({
+                title: tr('common.confirmTitle'),
+                message: tr('smart.assetDeleteGlobalConfirm'),
+                confirmText: tr('smart.deleteConfirmAnyway'),
+                cancelText: tr('common.cancel'),
+                danger: true,
+            }))) return;
             btn.disabled = true;
             try {
                 // #348: 补 res.ok 检查——删除失败以前静默（同上：JSON detail 不抛错）。
@@ -5648,8 +5671,14 @@ function bindAssetItemEvents(){
                         return;
                     }
                 } else {
-                    // #66: 无引用时硬删同样需要确认（声明不可恢复）
-                    if(!confirm(tr('smart.assetDeleteNoRefConfirm'))){
+                    // #66: 无引用时硬删同样需要确认（声明不可恢复）。#347: 原生 confirm 换应用内对话框
+                    if(!(await window.ffDialog?.ask({
+                        title: tr('common.confirmTitle'),
+                        message: tr('smart.assetDeleteNoRefConfirm'),
+                        confirmText: tr('smart.deleteConfirmAnyway'),
+                        cancelText: tr('common.cancel'),
+                        danger: true,
+                    }))){
                         btn.disabled = false;
                         return;
                     }
@@ -5829,7 +5858,13 @@ async function smartAssetBatchDelete(){
     const message = (totalRefs > 0 || refCheckFailed)
         ? tr('smart.batchDeleteRefsConfirm').replace('{n}', String(ids.length)).replace('{r}', String(totalRefs))
         : tr('smart.batchDeleteConfirm').replace('{n}', String(ids.length));
-    if(!confirm(message)){
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: message,
+        confirmText: tr('smart.deleteConfirmAnyway'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))){
         assetBatchBusy = false;
         updateAssetBatchBar();
         return;
@@ -5997,7 +6032,14 @@ let smartTrashPurging = false;
 async function smartTrashPurgeItem(assetId){
     const projectId = smartProjectId();
     if(!assetId || !projectId || smartTrashPurging) return;
-    if(!confirm(tr('smart.trashForeverConfirm'))) return;
+    // #347: 回收区单条彻底删除=不可逆——原生 confirm 换应用内对话框
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.trashForeverConfirm'),
+        confirmText: tr('smart.deleteConfirmAnyway'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     smartTrashPurging = true;
     try {
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/trash/media?asset_id=${encodeURIComponent(assetId)}`, {method: 'DELETE'});
@@ -6076,7 +6118,14 @@ async function smartUnusedCleanAll(){
     const projectId = smartProjectId();
     const entries = smartUnusedList ? [...smartUnusedList.querySelectorAll('[data-unused-asset]')].map(el => el.dataset.unusedAsset).filter(Boolean) : [];
     if(!projectId || !entries.length) return;
-    if(!confirm(tr('smart.unusedCleanConfirm').replace('{n}', String(entries.length)))) return;
+    // #347: 未使用媒体清理（硬删）——原生 confirm 换应用内对话框
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.unusedCleanConfirm').replace('{n}', String(entries.length)),
+        confirmText: tr('smart.deleteConfirmAnyway'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     smartUnusedBusy = true;
     if(smartUnusedCleanBtn) smartUnusedCleanBtn.disabled = true;
     let okCount = 0;
@@ -6162,8 +6211,18 @@ function showAssetDeleteWarningDialog(assetId, references, checkFailed = false){
         // #70 (D4): 项目范围删原图（仅多节点引用时显示）
         const wideBtn = backdrop.querySelector('.asset-delete-warning-wide');
         if(wideBtn){
-            wideBtn.onclick = () => {
-                if(confirm(tr('smart.deleteProjectWideConfirm'))){
+            wideBtn.onclick = async () => {
+                // #70 (D4): 项目范围删原图（仅多节点引用时显示）。
+                // #347: 嵌套原生 confirm 换应用内对话框（删原图+全部引用，不可逆）；
+                // 取消时保留外层对话框，可继续选择
+                const ok = await window.ffDialog?.ask({
+                    title: tr('common.confirmTitle'),
+                    message: tr('smart.deleteProjectWideConfirm'),
+                    confirmText: tr('smart.deleteConfirmAnyway'),
+                    cancelText: tr('common.cancel'),
+                    danger: true,
+                });
+                if(ok){
                     backdrop.remove();
                     resolve('wide');
                 }
@@ -6305,8 +6364,14 @@ async function deleteLocalAssetFromPanel(itemId){
     const item = (activeAssetCategory()?.items || []).find(x => x.id === itemId)
         || (localAssetLibrary.items || []).find(x => x.id === itemId || x.file === itemId);
     if(!item) return;
-    // #66: 本地素材删=磁盘硬删，先确认（声明不可恢复）。
-    if(!confirm(tr('smart.localAssetDeleteConfirm'))) return;
+    // #66: 本地素材删=磁盘硬删，先确认（声明不可恢复）。#347: 原生 confirm 换应用内对话框
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.localAssetDeleteConfirm'),
+        confirmText: tr('smart.deleteConfirmAnyway'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     try {
         const data = await fetch('/api/local-assets/delete', {
             method:'POST',
@@ -7859,7 +7924,14 @@ async function deleteCanvasLogEntry(historyId, deleteMedia=false){
     if(!canvas || !canvasId || !historyId) return;
     if(smartHistoryDeletingBusy) return;
     const confirmText = deleteMedia ? tr('canvas.deleteLogMediaConfirm') : tr('canvas.deleteLogConfirm');
-    if(!confirm(confirmText)) return;
+    // #347: 原生 confirm 换应用内对话框（deleteMedia 时连带删媒体文件，均不可逆）
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: confirmText,
+        confirmText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+        danger: deleteMedia,
+    }))) return;
     smartHistoryDeletingBusy = true;
     const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history, historyId);
     try {
@@ -7946,7 +8018,8 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         toast(tr('canvas.originalDeleteUnavailable'));
         return;
     }
-    if(!options.skipConfirm && !confirm(tr('canvas.deleteOriginalConfirm'))) return;
+    // #347: 删原图可恢复（移回收区 7 天，另有 Ctrl+Z 与撤销 toast）——不再询问，直接执行；
+    // options 参数保留（:11312 调用方传 {skipConfirm:true}），两类调用行为现已一致
     // Bug fix: 实时查找当前 outputIndex（基于 output_id），避免从生图节点再次生图后 outputIndex 失效
     const currentIndex = allOutputs.find(o => String(o.output_id || '') === outputId)?.outputIndex ?? Number(outputIndex);
     const deletionUiState = captureSmartOriginalDeletionUiState(historyId, outputId, currentIndex);
@@ -7975,13 +8048,19 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         const data = result.data;
         const deletionId = String(data.deleted?.deletion_id || '');
         if(!deletionId) throw new Error(tr('canvas.originalDeleteFailed'));
-        pushUndo({projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}});
+        const undoSnapshot = {projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}};
+        pushUndo(undoSnapshot);
         await adoptServerCanvas(data.canvas || canvas, {activeTaskLogs});
         reconcileSmartOriginalDeletionUi(historyId, outputId, deletionUiState);
         render();
         renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
-        toast(tr('canvas.originalDeleted'));
+        // #347: 直接执行给撤销 toast（Ctrl+Z 仍是第二通道）
+        ffToast.info(tr('canvas.originalDeleted'), {
+            timeoutMs: 8000,
+            action: { label: tr('common.undo'), run: () => restoreSmartProjectOriginalUndo(undoSnapshot)
+                .catch(err => { ffToast.error(err?.message || tr('canvas.originalDeleteFailed')); }) },
+        });
     } catch(err){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
     }
@@ -8106,7 +8185,15 @@ async function refreshSmartProjectMediaTrashButton(){
     }
 }
 async function purgeSmartProjectMediaTrash(){
-    if(!canvas || canvas.format !== 'firefly-canvas-v1' || smartHistoryPurgeTrash?.getAttribute('aria-busy') === 'true' || !confirm(tr('canvas.clearProjectTrashConfirm'))) return;
+    if(!canvas || canvas.format !== 'firefly-canvas-v1' || smartHistoryPurgeTrash?.getAttribute('aria-busy') === 'true') return;
+    // #347: 清空回收区=不可逆——原生 confirm 换应用内对话框
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('canvas.clearProjectTrashConfirm'),
+        confirmText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     smartProjectMediaTrashRefreshVersion++;
     smartHistoryPurgeTrash.disabled = true;
     smartHistoryPurgeTrash.setAttribute('aria-busy', 'true');
@@ -8735,7 +8822,14 @@ async function cancelNodeGenerationTask(nodeId, button=null){
     const node = canvasState.nodes.find(item => String(item?.id || '') === String(nodeId || ''));
     const info = node ? smartProjectTaskInfo(node) : null;
     if(!info?.taskId) return;
-    if(!window.confirm(tr('smart.nodeCancelConfirm'))) return;
+    // #347: 取消任务不可逆——原生 confirm 换应用内对话框
+    if(!(await window.ffDialog?.ask({
+        title: tr('common.confirmTitle'),
+        message: tr('smart.nodeCancelConfirm'),
+        confirmText: tr('common.confirm'),
+        cancelText: tr('common.cancel'),
+        danger: true,
+    }))) return;
     if(button){ button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     try {
         await controlProjectImageTask('', info.taskId, 'cancel', button);
@@ -8815,7 +8909,14 @@ function renderBatchTaskDetail(){
         btn.addEventListener('click', async e => {
             e.preventDefault(); e.stopPropagation();
             const taskId = btn.dataset.batchTaskCancel;
-            if(!window.confirm(trf('smart.batchTaskCancelConfirm', {task: taskId}))) return;
+            // #347: 原生 confirm 换应用内对话框
+            if(!(await window.ffDialog?.ask({
+                title: tr('common.confirmTitle'),
+                message: trf('smart.batchTaskCancelConfirm', {task: taskId}),
+                confirmText: tr('common.confirm'),
+                cancelText: tr('common.cancel'),
+                danger: true,
+            }))) return;
             btn.disabled = true;
             btn.setAttribute('aria-busy', 'true');
             try {
@@ -10865,7 +10966,13 @@ function bindNodeEvents(){
                 const nodeId = btn.dataset.imageTaskUrl;
                 const node = canvasState.nodes.find(n => String(n.id || '') === String(nodeId));
                 if(!node) return;
-                const url = prompt(tr('smart.imageUrlPrompt'));
+                // #347: 原生 prompt 换应用内输入对话框
+                const url = await window.ffDialog?.input({
+                    title: tr('smart.imageUrlPrompt'),
+                    placeholder: tr('smart.imageUrlPrompt'),
+                    okText: tr('common.confirm'),
+                    cancelText: tr('common.cancel'),
+                });
                 if(!url) return;
                 try{
                     toast(tr('smart.downloadingImage'));
@@ -15394,17 +15501,32 @@ window.addEventListener('keydown', e => {
         if(e.target?.closest?.('[data-id] button, [data-id] .node-actions')){ return; }
         e.preventDefault();
         const ids = canvasState.selectedIds.length ? canvasState.selectedIds.slice() : [canvasState.selectedId];
-        // #315：选中项含 Agent 节点——先确认（与 × 删除钮同一文案）
-        if(ids.some(id => { const n = canvasState.nodes.find(x => x.id === id); return n && isSmartAgentNode(n); }) && !confirm(tr('smart.agentDeleteConfirm'))){ return; }
+        const hasAgent = ids.some(id => { const n = canvasState.nodes.find(x => x.id === id); return n && isSmartAgentNode(n); });
         // #65: 选中项里有生成中的节点时禁止删除（先取消任务）。
         if(ids.map(id => canvasState.nodes.find(n => n.id === id)).some(node => node && smartNodeInFlight(node))){
             toast(tr('smart.nodeDeleteBusy'));
             return;
         }
-        pushUndo();
-        ids.forEach(id => { undoSuppressed = true; deleteNode(id); undoSuppressed = false; });
-        render();
-        scheduleSave();
+        const doDelete = () => {
+            pushUndo();
+            ids.forEach(id => { undoSuppressed = true; deleteNode(id); undoSuppressed = false; });
+            render();
+            scheduleSave();
+        };
+        // #347: 选中项含 Agent 节点（单选/多选同路径）→ 先确认（ffDialog.ask，danger）。
+        // #353 合并后删节点会结束 Agent 进程，撤销只能恢复画布节点，不算可恢复 → 改回确认框。
+        // 对话框为模态（backdrop 拦截指针），期间选中集不会漂移。
+        if(hasAgent){
+            ffDialog.ask({
+                title: tr('common.confirmTitle'),
+                message: tr('smart.agentDeleteConfirm'),
+                confirmText: tr('common.confirm'),
+                cancelText: tr('common.cancel'),
+                danger: true,
+            }).then(ok => { if(ok) doDelete(); });
+            return;
+        }
+        doDelete();
     }
     if((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'g' && !isEditableTarget(e.target)){
         e.preventDefault();

@@ -53,6 +53,9 @@
         "projectList.trashedBadge": { zh: "完整项目", en: "Whole project" },
         "projectList.restore": { zh: "恢复项目", en: "Restore project" },
         "projectList.restoreFailed": { zh: "项目恢复失败", en: "Failed to restore project" },
+        // #347：删除项目=移入回收站，直接执行 + 撤销 toast；彻底删除（purge）仍走应用内确认
+        "projectList.deletedToast": { zh: "“{name}”已移入回收站" },
+        "projectList.restoredToast": { zh: "“{name}”已恢复" },
         "projectList.purge": { zh: "永久删除", en: "Delete permanently" },
         "projectList.purgeConfirm": { zh: "永久删除“{name}”？此操作无法撤销。", en: "Permanently delete “{name}”? This cannot be undone." },
         "projectList.purgeFailed": { zh: "永久删除失败", en: "Permanent delete failed" },

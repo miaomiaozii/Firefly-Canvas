@@ -8,6 +8,9 @@
         // 这条也没人用了，跟着删：界面上已经没有任何能把语言切到英文的入口。
         "common.cancel": { zh: "取消", en: "Cancel" },
         "common.confirm": { zh: "确定", en: "Confirm" },
+        // #347：应用内对话框（ui-dialog.js）的默认标题与撤销按钮；只加 zh（#365 方向：界面只留中文）
+        "common.confirmTitle": { zh: "确认" },
+        "common.undo": { zh: "撤销" },
         "common.save": { zh: "保存", en: "Save" },
         "common.delete": { zh: "删除", en: "Delete" },
         "common.edit": { zh: "编辑", en: "Edit" },

@@ -220,11 +220,24 @@
       const deleteButton = card.querySelector('.danger');
       deleteButton.textContent = tr('projectList.delete');
       deleteButton.addEventListener('click', async () => {
-        if(!confirm(tr('projectList.deleteConfirm').replace('{name}', project.name))) return;
+        // #347: 删除项目=移入回收站（可恢复）——不再询问，直接执行 + 撤销 toast
         const response = await fetch(`/api/project-library/${encodeURIComponent(project.id)}`, {method:'DELETE'});
         const data = await response.json().catch(() => ({}));
         if(!response.ok){ status.textContent = data.detail || tr('projectList.deleteFailed'); return; }
         await Promise.all([load(), ...(trashPanel.hidden ? [] : [loadTrash()])]);
+        window.ffToast?.info(tr('projectList.deletedToast').replace('{name}', project.name), {
+          timeoutMs: 8000,
+          action: {
+            label: tr('common.undo'),
+            run: async () => {
+              const res = await fetch(`/api/project-library/trash/${encodeURIComponent(project.id)}/restore`, {method:'POST'});
+              const body = await res.json().catch(() => ({}));
+              if(!res.ok){ window.ffToast?.error(body.detail || tr('projectList.restoreFailed')); return; }
+              window.ffToast?.success(tr('projectList.restoredToast').replace('{name}', project.name));
+              await Promise.all([load(), ...(trashPanel.hidden ? [] : [loadTrash()])]);
+            }
+          }
+        });
       });
       grid.appendChild(card);
     });
@@ -255,7 +268,14 @@
         await Promise.all([load(), loadTrash()]);
       });
       card.querySelector('.purge').addEventListener('click', async () => {
-        if(!confirm(tr('projectList.purgeConfirm').replace('{name}', project.name))) return;
+        // #347: 彻底删除=不可逆——原生 confirm 换应用内确认对话框
+        if(!(await window.ffDialog?.ask({
+          title: tr('common.confirmTitle'),
+          message: tr('projectList.purgeConfirm').replace('{name}', project.name),
+          confirmText: tr('projectList.purge'),
+          cancelText: tr('common.cancel'),
+          danger: true,
+        }))) return;
         const response = await fetch(`/api/project-library/trash/${encodeURIComponent(project.id)}`, {method:'DELETE'});
         const data = await response.json().catch(() => ({}));
         if(!response.ok){ status.textContent = data.detail || tr('projectList.purgeFailed'); return; }
