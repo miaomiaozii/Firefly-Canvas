@@ -638,7 +638,25 @@ class GlobalSettingsUiContractTests(unittest.TestCase):
         self.assertIn('/static/js/global-preferences.js?v=', settings_page)
         self.assertNotIn("自动保存间隔", settings_page)
         self.assertNotIn("autosave_interval_minutes", settings_script)
-        self.assertNotIn("comfyui", (settings_page + settings_script).lower())
+        # #373 口径（维护者在 issue #373 确认；对应 ADR 0004 的 2026-11-15 修订与 ADR 0025）：
+        # 设置页协议下拉里的 `comfyui（本地）` 是故意保留的——用户实际在用自己的 ComfyUI
+        # 服务出图。守卫本意是防这个字样渗进无关文案，不是禁这个协议选项。所以改成：
+        # 只允许它出现在 `data-field="protocol"` 那个下拉的 <option> 里，别处出现仍判红。
+        protocol_option = re.compile(
+            r'<select data-field="protocol">.*?<option value="comfyui"[^>]*>[^<]*</option>.*?</select>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        self.assertEqual(
+            len(protocol_option.findall(settings_script)),
+            1,
+            '协议下拉里应有且只应有一处 comfyui 选项（`<option value="comfyui">`）',
+        )
+        for surface, text in (("global-settings.html", settings_page), ("global-settings.js", settings_script)):
+            self.assertNotIn(
+                "comfyui",
+                protocol_option.sub("", text).lower(),
+                f"{surface}：comfyui 只能出现在协议下拉的选项里，不能出现在其它文案",
+            )
         self.assertNotIn("comfyui", (project_page + canvas_page).lower())
         self.assertFalse((ROOT / "static" / "comfyui-settings.html").exists())
         self.assertIn("clean.engine = normalizeSmartOnlineEngine(clean.engine)", settings_script := (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8"))
