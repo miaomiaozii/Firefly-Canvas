@@ -1,5 +1,6 @@
 # local_assets domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
+import firefly_json_io  # noqa: E402  # #374：sidecar 走原子写/隔离读
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_display_name, _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path  # noqa: E402,F401
 
@@ -8,18 +9,18 @@ def _local_upload_classification_path(filename):
 
 def _read_local_upload_classification(filename):
     path = _local_upload_classification_path(filename)
-    if not os.path.isfile(path):
+    # #374：以前这里 `except Exception: return None` 会把半份文件静默吞掉——分类丢了也没人知道。
+    # read_json 先把坏文件改名 .corrupt-<UTC> 保住字节并记一条诊断，再按缺失处理。
+    data = firefly_json_io.read_json(path, default=None)
+    if data is None:
         return None
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return _svc.normalize_asset_classification(json.load(f))
-    except Exception:
-        return None
+    return _svc.normalize_asset_classification(data)
 
 def _write_local_upload_classification(filename, classification):
     path = _local_upload_classification_path(filename)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(_svc.normalize_asset_classification(classification), f, ensure_ascii=False, indent=2)
+    # #345 把全局 JSON 都收了，这个 per-asset sidecar 当时漏了（另开票 #374）。
+    # 旧的 `open(path,'w') + json.dump` 在打开那一刻就清空旧内容，写到一半断电这份分类就归零。
+    firefly_json_io.write_json_atomic(path, _svc.normalize_asset_classification(classification))
 
 def _local_upload_abs(rel):
     rel_path = _local_upload_rel_path(rel)

@@ -24,9 +24,9 @@ router = APIRouter()
 
 
 def _write_local_upload_classification(filename, classification):
-    path = _local_upload_classification_path(filename)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(normalize_asset_classification(classification), f, ensure_ascii=False, indent=2)
+    # 本模块以前自己一份同样的截断式写法（与 app/services/local_assets.py 重复）。
+    # #374 起只薄一层到 services 的原子实现：两边行为再也拆不开。
+    return _svc._write_local_upload_classification(filename, classification)
 
 def _local_upload_abs(rel):
     rel_path = _local_upload_rel_path(rel)
