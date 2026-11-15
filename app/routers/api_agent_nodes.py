@@ -41,10 +41,19 @@ def _validated_agent_cli(node: dict) -> str:
     return raw
 
 
+# #354：autonomy 合法值（与 :358 set_agent_autonomy 的校验同源）。
+AGENT_AUTONOMY_WHITELIST = ("cautious", "standard", "autonomous")
+
+
 def _apply_node_host(project_id: str, node_id: str, session) -> None:
     """#318 票 B：宿主选择 = 节点属性 agentCli（"pi" 默认 / "codex"），并恢复
     extSessionId（resume 链跨重启存活，ADR 0024 不变量）。当前轮进行中的进程
-    不切宿主；未知值回退 pi。best-effort：节点不存在/非 agent 型不改会话。"""
+    不切宿主；未知值回退 pi。best-effort：节点不存在/非 agent 型不改会话。
+
+    #354：model/autonomy 也从节点播种——节点是持久权威源（set_agent_model/
+    set_agent_autonomy 已落 canvas.json），服务器重启后新建会话默认空值，
+    不播种就会用默认模型/cautious spawn。
+    """
     if session.is_running:
         return
     try:
@@ -53,6 +62,13 @@ def _apply_node_host(project_id: str, node_id: str, session) -> None:
         return
     if not isinstance(node, dict):
         return
+    # #354：未运行时，会话的 model/autonomy 以节点为准（节点没配则保留会话现值）。
+    node_model = str(node.get("model") or "").strip()
+    if node_model:
+        session.model = node_model
+    node_autonomy = str(node.get("autonomy") or "").strip()
+    if node_autonomy in AGENT_AUTONOMY_WHITELIST:
+        session.autonomy = node_autonomy
     agent_cli = str(node.get("agentCli") or "").strip() or "pi"
     if agent_cli not in AGENT_CLI_WHITELIST:
         # #335: spawn/status 路径的兼容兑底保留，但必须留痕（create 入口已 400 拒绝）。
