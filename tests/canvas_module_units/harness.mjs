@@ -64,6 +64,8 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-generation-cascade.js',
     'canvas-generation-tasks.js',
     'canvas-agent-tui.js',
+    // #324（ADR-0026）：跨项目搜索面板（static/js/canvas-search.js，IIFE 自挂载）。
+    'canvas-search.js',
     'smart-canvas.js',
 ];
 
@@ -83,6 +85,11 @@ function makeElement(tag = 'div') {
         hidden: false,
         textContent: '',
         innerHTML: '',
+        // <dialog> 表面（#317：fork 选择器从 prompt() 换成画布自有 <dialog>）。
+        // 只补真实契约（open / returnValue / show / showModal / close→close 事件），
+        // 不解析 innerHTML、不做焦点/模态语义——那些是浏览器 runner 的事。
+        open: false,
+        returnValue: '',
         classList: {
             add: (...cs) => cs.forEach((c) => classes.add(String(c))),
             remove: (...cs) => cs.forEach((c) => classes.delete(String(c))),
@@ -118,6 +125,14 @@ function makeElement(tag = 'div') {
             return oldChild;
         },
         remove: () => {},
+        show: () => { el.open = true; },
+        showModal: () => { el.open = true; },
+        // 真实语义：close(retval) 先写 returnValue 再派发 close 事件（retval 省略则不动）。
+        close: (retval) => {
+            if (retval !== undefined) el.returnValue = String(retval);
+            el.open = false;
+            (listeners.get('close') || []).slice().forEach((fn) => fn.call(el, { type: 'close' }));
+        },
         querySelector: () => null,
         querySelectorAll: () => [],
         getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
@@ -142,6 +157,9 @@ export function createCanvasContext({ locationSearch = '' } = {}) {
             if (!harness.elementsById.has(id)) harness.elementsById.set(id, makeElement(tag));
             return harness.elementsById.get(id);
         },
+        // document.createElement('dialog') 建出来的弹层，按创建顺序记录（#317 起
+        // 画布自有弹层靠 document.body.appendChild + showModal 呈现，测试要从这里取句柄）。
+        dialogs: [],
         // document.querySelector(All) 的结果，按选择器注册。
         queryResults: Object.create(null),
         querySelectorAll(selector, els) { harness.queryResults[selector] = els; return els; },
@@ -181,7 +199,11 @@ export function createCanvasContext({ locationSearch = '' } = {}) {
         head: makeElement('head'),
         body: makeElement('body'),
         currentScript: null,
-        createElement: (t) => makeElement(t),
+        createElement: (t) => {
+            const el = makeElement(t);
+            if (String(t).toLowerCase() === 'dialog') harness.dialogs.push(el);
+            return el;
+        },
         getElementById: (id) => harness.elementsById.get(id) || null,
         querySelector: (sel) => (harness.queryResults[sel] || [])[0] || null,
         querySelectorAll: (sel) => harness.queryResults[sel] || [],

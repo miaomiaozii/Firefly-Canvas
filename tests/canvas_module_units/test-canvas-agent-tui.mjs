@@ -34,7 +34,9 @@
 //   - 浏览器表面积（harness 不提供、按实例补，零产品逻辑）：
 //       WebSocket → 记录器类 + OPEN 常量（真实契约只有 readyState/send/close/onmessage…）；
 //       fetch → 记录器（harness.mjs:209 默认 fetch 直接抛，测试内按实例覆盖）；
-//       prompt → 返回预置答案的记录器。
+//       #317：fork 选择器不再是 prompt（canvas-agent-tui.js:676-704 换成画布自有 <dialog>）——
+//       harness 已补 dialog 表面（open/returnValue/showModal/close→close 事件 + harness.dialogs
+//       句柄），测试按实例给 dialog 补 input 替身（见本文件 fillForkDialog），零产品逻辑。
 //   - #323 票 E（会话框/参考框）：loader 选项 withNodeOps=true 额外加载真实
 //       canvas-layout-utils.js（纯常量）/ canvas-undo.js（真 pushUndo）/ canvas-node-ops.js
 //       （真 createSmartGroupNode/toggleGroupRefFrame）；新增记录器只有 scheduleSave/alert（toast 走真元素）。
@@ -56,8 +58,9 @@
 //   - sendAgentSteer / sendAgentFollowUp 的 HTTP 回退（WS 未连：URL/body 精确；onSuccess 不
 //     执行——#221 缺口，断言钉现状）；
 //   - forkAgentSession / switchAgentBranch：成功写回 node.branches/current_branch 且清空
-//     messages/toolActivities、失败零副作用；showForkPicker 的 prompt 选择→fork(entry_id,
-//     name)、空列表/越界/空白选择不分叉；
+//     messages/toolActivities、失败零副作用；showForkPicker 的 <dialog> 选择→fork(entry_id,
+//     name)（#317：两次 prompt() 换成一个 dialog）、空列表/取消/无选中轮次不分叉、
+//     分支名留空仍分叉（服务端自动命名）；
 //   - renderAgentNode：nodeBodyHtml 输出进 .node-body innerHTML、卡片状态进 .node-head-meta、
 //     重绑定在旧 socket 非 OPEN 时新建；el/node 缺失与 layout=null → no-op；
 //   - bindAgentNodeControls：Enter 发送（trim/清空、busy→follow_up、Shift+Enter/纯空白
@@ -88,9 +91,8 @@
 // 明确判为「单测盖不住」的行为（不写假测试）：
 //   - WebSocket 真实服务端行为：握手/断线重连/服务端事件顺序（onmessage JSON.parse 异常
 //     分支只覆盖到「解析失败不外抛」，真实网络时序靠浏览器 runner）；
-//   - showForkPicker 的完整 UI 选择器：真实实现用 window.prompt（源码注释明示 "In a full
-//     implementation, this would be a UI picker"）；prompt 选择流程本文件已覆盖，真实 UI
-//     交互靠浏览器 runner；
+//   - showForkPicker 弹层的真实模态语义：<dialog> 的 showModal/close/returnValue 与取值本文件
+//     已覆盖（harness 补 dialog 桩），但焦点陷阱、Escape 关闭、CSS 布局靠浏览器 runner；
 //   - fork/switch-branch/model/autonomy/prompt 等 HTTP 端点的真实网络往返（fetch 是
 //     数据驱动桩，只验证请求形态与本地状态变化）；
 //   - 渲染出的 HTML 在浏览器里的实际布局/CSS（只断言字符串包含关系）。
@@ -164,8 +166,6 @@ function loadAgentTuiModule({
     const fetchCalls = makeFetchHarness(ctx, fetchResponse);
     const renders = [];
     const bodyHtmlCalls = [];
-    const promptReturns = [];
-    const promptLabels = [];
     const consoleErrors = [];
     const alerts = [];   // #323 票 E：alert 必须为 0（票面禁止 alert），记录器兼作断言
     // #323 票 E：toast 是 canvas-core.js 的真实函数（不是 hub 自由名，无法用 ctx.toast 桩盖住）——
@@ -194,11 +194,8 @@ function loadAgentTuiModule({
     ctx.scheduleSave = () => renders.push({ kind: 'scheduleSave' });
     ctx.alert = () => alerts.push(1);
     harness.element('toast');
-    // prompt 记录器：返回值按队列弹出，队列空回退 null（与浏览器取消选择一致）。
-    ctx.prompt = (label) => {
-        promptLabels.push(label);
-        return promptReturns.length > 0 ? promptReturns.shift() : null;
-    };
+    // #317 起本模块不再调 prompt（fork 走 <dialog>），故不再有 prompt 记录器；
+    // 需要 prompt 的用例可直接按实例覆盖 ctx.prompt（harness.mjs 默认返回 null）。
     // console 记录器：让 console.error 分支可断言，同时避免测试输出噪音。
     ctx.console = {
         error: (...args) => { consoleErrors.push(args.map(String).join(' ')); },
@@ -218,7 +215,7 @@ function loadAgentTuiModule({
     for (const node of nodes) {
         ctx.canvasState.nodes.push(node);
     }
-    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, promptReturns, promptLabels, consoleErrors, alerts };
+    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, consoleErrors, alerts };
 }
 
 const fn = (ctx, name) => globalFunction(ctx, name);
@@ -922,8 +919,9 @@ test('cleanupAgentTuiState: socket.close() 抛错也不能中断删除', () => {
 test('agentCardStatusHtml: 无会话时给空闲；六种状态映射到各自 class/文案', () => {
     const { ctx } = loadAgentTuiModule();
     const card = fn(ctx, 'agentCardStatusHtml');
+    // #317 无障碍：状态 span 带 role="status"（canvas-agent-tui.js:898,924）。
     assert.equal(fromContext(card('missing')),
-        '<span class="agent-card-status agent-tui-status-idle">空闲</span>');
+        '<span class="agent-card-status agent-tui-status-idle" role="status">空闲</span>');
     for (const [status, cls, text] of [
         ['busy', 'agent-tui-status-busy', '运行中'],
         ['connecting', 'agent-tui-status-connecting', '连接中'],
@@ -974,7 +972,8 @@ test('agentCardStatusHtml 与 agentNodeBodyHtml 对同一状态必须给同一�
     const card = fn(ctx, 'agentCardStatusHtml');
     const body = fn(ctx, 'agentNodeBodyHtml');
     const statusText = (html, scope) => {
-        const match = new RegExp(`class="agent-${scope}-status agent-tui-status-[a-z]+">([^<]*)<`).exec(html);
+        // 状态 class 后可能还有别的属性（#317：卡片侧带 role="status"）。
+        const match = new RegExp(`class="agent-${scope}-status agent-tui-status-[a-z]+"[^>]*>([^<]*)<`).exec(html);
         assert.ok(match, `没找到 ${scope} 状态文案: ${html}`);
         return match[1];
     };
@@ -1251,36 +1250,94 @@ test('switchAgentBranch: 成功更新 current_branch 并清空会话；失败零
     assert.equal(fromContext(evaluate(bad.ctx, 'getAgentTuiState("n1").messages.length')), 1, '失败不清会话');
 });
 
-test('showForkPicker: prompt 选轮次与分支名后分叉（entry_id + name）；空列表/越界/空白选择不分叉', async () => {
+// #317：fork 选择器从两次 prompt() 换成画布自有 <dialog>（canvas-agent-tui.js:676-704
+// agentForkPickerDialog，:705-723 showForkPicker）。harness.mjs 补了 dialog 表面
+// （open/returnValue/showModal/close→close 事件 + harness.dialogs 句柄），但它不解析 innerHTML，
+// 所以这里按产品 close 回调真正读取的两个选择器补 input 替身，再按「点分叉/点取消」的语义
+// close(returnValue)：弹层构建、returnValue 判定、取值 trim、轮次→entryId 映射、fork POST
+// 全跑的是产品代码。
+function fillForkDialog(harness, dlg, { index, name, confirm = true }) {
+    const radio = index === null ? null : harness.makeElement('input');
+    if (radio) radio.value = String(index);
+    const nameInput = harness.makeElement('input');
+    nameInput.value = name;
+    dlg.querySelector = (sel) => (
+        sel === 'input[name="forkidx"]:checked' ? radio
+            : sel === 'input[name="branchname"]' ? nameInput : null);
+    dlg.close(confirm ? 'ok' : 'cancel');
+}
+
+test('showForkPicker: <dialog> 选轮次与分支名后分叉（entry_id + name）；空列表/取消/无选中不分叉', async () => {
     const listResponse = { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }, { text: '第二轮', entryId: 'e2' }] }) };
     const ok = loadAgentTuiModule({
         nodes: [{ id: 'n1', type: 'agent' }],
         fetchResponse: (url) => url.endsWith('/fork-messages') ? listResponse : { ok: true, json: async () => ({}) },
     });
-    ok.promptReturns.push('2', '分叉线');
-    await fn(ok.ctx, 'showForkPicker')('n1', 'p1');
-    assert.equal(ok.promptLabels.length, 2, '两轮 prompt：选轮次 + 分支名');
-    assert.ok(ok.promptLabels[0].includes('1. 第一轮') && ok.promptLabels[0].includes('2. 第二轮'), 'prompt 列出编号消息列表');
-    assert.ok(ok.promptLabels[1].startsWith('分支名称：'), '第二问是分支名');
+    const picking = fn(ok.ctx, 'showForkPicker')('n1', 'p1');
+    await new Promise(r => setImmediate(r));
+    assert.equal(ok.harness.dialogs.length, 1, '#317：fork 选择器是画布自有 <dialog>');
+    const dlg = ok.harness.dialogs[0];
+    assert.equal(dlg.className, 'agent-fork-dialog');
+    assert.equal(dlg.open, true, 'showModal 必须被调用（不 open 用户看不到选择器）');
+    assert.equal(dlg.parentNode === ok.ctx.document.body, true, '弹层挂到 document.body');
+    // 原两次 prompt 的文案映射逐字搬到弹层：标题=「从哪轮分叉？」、编号消息列表、分支名输入位。
+    assert.ok(dlg.innerHTML.includes('从哪轮分叉？'), dlg.innerHTML);
+    assert.ok(dlg.innerHTML.includes('agent-fork-idx">1.</span><span>第一轮')
+        && dlg.innerHTML.includes('agent-fork-idx">2.</span><span>第二轮'), '弹层列出编号消息列表');
+    assert.ok(dlg.innerHTML.includes('分支名称（留空自动）'), '分支名输入位（原第二问）');
+    assert.ok(dlg.innerHTML.includes('name="forkidx" value="1" checked'), '默认选中最后一轮');
+    assert.ok(dlg.innerHTML.includes('value="第二轮"'), '分支名默认值 = 最后一条消息前 30 字');
+    assert.ok(dlg.innerHTML.includes('>取消</button>') && dlg.innerHTML.includes('>分叉</button>'), '取消/分叉两个动作按钮');
+
+    fillForkDialog(ok.harness, dlg, { index: 1, name: '分叉线' });
+    await picking;
     const forkCall = ok.fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
     assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e2', name: '分叉线' });
+    assert.equal(dlg.open, false, 'close 后弹层收起');
 
-    // 空消息列表：直接返回，不 prompt 不分叉。
+    // 空消息列表：直接返回，不建弹层不分叉。
     const empty = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: { ok: true, json: async () => ({ messages: [] }) } });
     await fn(empty.ctx, 'showForkPicker')('n1', 'p1');
-    assert.equal(empty.promptLabels.length, 0);
+    assert.equal(empty.harness.dialogs.length, 0, '空列表不弹选择器');
     assert.equal(empty.fetchCalls.length, 1, '只有 fork-messages 一次请求');
 
-    // 越界选择（'99'）与空白选择（prompt 返回 null）都不分叉。
     const one = { ok: true, json: async () => ({ messages: [{ text: '只有一轮', entryId: 'e9' }] }) };
+
+    // 点「取消」（returnValue='cancel'）不分叉。
+    const cancel = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
+    const cancelling = fn(cancel.ctx, 'showForkPicker')('n1', 'p1');
+    await new Promise(r => setImmediate(r));
+    fillForkDialog(cancel.harness, cancel.harness.dialogs[0], { index: 0, name: 'x', confirm: false });
+    await cancelling;
+    assert.equal(cancel.fetchCalls.length, 1, '取消 → 不分叉');
+
+    // 没有选中轮次（input[name="forkidx"]:checked 查不到）即使点分叉也不分叉。
+    const none = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
+    const nonPicking = fn(none.ctx, 'showForkPicker')('n1', 'p1');
+    await new Promise(r => setImmediate(r));
+    fillForkDialog(none.harness, none.harness.dialogs[0], { index: null, name: 'x' });
+    await nonPicking;
+    assert.equal(none.fetchCalls.length, 1, '无选中轮次 → 不分叉');
+
+    // 越界序号：dialog 生成的 radio 只会是 0..N-1，此路只可能来自被篡改的 DOM；产品无越界
+    // 防护，messages[99].entryId 抛错被 catch 吞掉 → 仍然不发 fork（原「越界不分叉」守卫保留）。
     const oob = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
-    oob.promptReturns.push('99');
-    await fn(oob.ctx, 'showForkPicker')('n1', 'p1');
-    assert.equal(oob.fetchCalls.length, 1, '越界 → 不分叉');
+    const oobPicking = fn(oob.ctx, 'showForkPicker')('n1', 'p1');
+    await new Promise(r => setImmediate(r));
+    fillForkDialog(oob.harness, oob.harness.dialogs[0], { index: 99, name: '' });
+    await oobPicking;
+    assert.equal(oob.fetchCalls.length, 1, '越界序号 → 不分叉');
+    assert.ok(oob.consoleErrors.some(m => m.startsWith('Failed to show fork picker:')), oob.consoleErrors.join('|'));
+
+    // 分支名留空（trim 后空串）：#317 起仍分叉，交服务端自动命名（旧 prompt 的「空白不选」语义作废）。
     const blank = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
-    await fn(blank.ctx, 'showForkPicker')('n1', 'p1');
-    assert.equal(blank.fetchCalls.length, 1, '空白选择 → 不分叉');
+    const blankPicking = fn(blank.ctx, 'showForkPicker')('n1', 'p1');
+    await new Promise(r => setImmediate(r));
+    fillForkDialog(blank.harness, blank.harness.dialogs[0], { index: 0, name: '   ' });
+    await blankPicking;
+    assert.equal(blank.fetchCalls.length, 2, '留空分支名仍发 fork');
+    assert.deepEqual(JSON.parse(fromContext(blank.fetchCalls.at(-1).opts.body)), { entry_id: 'e9', name: '' });
 });
 
 // ── #325 票 G：外部 CLI 接管（snippet 端点消费 + 头部按钮 + 弹层内容）──────
@@ -1473,7 +1530,7 @@ test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮'
 });
 
 test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch change、fork、工具行展开', async () => {
-    const { ctx, harness, fetchCalls, promptReturns, promptLabels } = loadAgentTuiModule({
+    const { ctx, harness, fetchCalls } = loadAgentTuiModule({
         open: false,
         nodes: [{ id: 'n1', type: 'agent', model: 'm0', autonomy: 'cautious' }],
         chatProviders: [{ id: 'p1' }],
@@ -1526,12 +1583,13 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/switch-branch');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { branch_id: 'b2' });
 
-    // fork 按钮 → showForkPicker（异步 fire-and-forget，等微任务排空）。
-    promptReturns.push('1', '线');
+    // fork 按钮 → showForkPicker（异步 fire-and-forget）：#317 起走画布自有 <dialog>。
     tree.forkBtn.dispatchEvent(ev('click'));
     await new Promise(r => setImmediate(r));
-    assert.equal(promptLabels.length, 2, 'prompt 选轮次 + 分支名');
-    assert.ok(promptLabels[0].includes('1. 第一轮'), promptLabels[0]);
+    assert.equal(harness.dialogs.length, 1, 'fork 按钮打开 <dialog> 选择器');
+    assert.ok(harness.dialogs[0].innerHTML.includes('agent-fork-idx">1.</span><span>第一轮'), harness.dialogs[0].innerHTML);
+    fillForkDialog(harness, harness.dialogs[0], { index: 0, name: '线' });
+    await new Promise(r => setImmediate(r));
     const forkCall = fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
     assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e1', name: '线' });
