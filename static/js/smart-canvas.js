@@ -947,6 +947,11 @@ function persistActiveSmartSettings(){
 }
 async function backToProjectList(){
     savePromptDraftForCurrent();
+    if(canvasProjectGone){
+        // #377：没地方可存了。以前这里会先 saveCanvas，失败就 return，结栗是把人困在页面上。
+        window.location.href = '/';
+        return;
+    }
     if(canvas?.format === 'firefly-canvas-v1' || params.get('project_mode') === '1'){
         clearTimeout(debouncedSaveTimer);
         debouncedSaveTimer = null;
@@ -5159,6 +5164,7 @@ function startCanvasMetaPoll(){
     // WS / iframe 转发不可靠时的兜底：定期看服务器 updated_at 是否变新，变新就合并拉取
     if(canvasMetaPollTimer) return;
     canvasMetaPollTimer = setInterval(async () => {
+        if(canvasProjectGone) return;  // #377：项目已经没了，不再每 8 秒去摸一个不存在的 id
         if(!canvasId || !canvas) return;
         if(canvasSyncInFlight || dragState || selectionState) return;
         try {
@@ -6719,8 +6725,54 @@ registerSmartPendingActionRebuilder('video', (entry, live) => async (target) => 
     }
     if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
 });
+// #377：项目在另一个标签页被删了，这个页面还在按防抖/周期往一个不存在的 project_id 打 PATCH——
+// 旧 access 日志里这样刷了 15,183 次 404（三个项目各约 5,000 次）。收到一次 404 就认了：
+// 项目没了，停掉自动保存（当前画布留在内存里不静默丢），并给用户导出与返回的出口。
+let canvasProjectGone = false;
+function canvasProjectDeleted(){ return canvasProjectGone; }
+function markCanvasProjectGone(){
+    if(canvasProjectGone) return false;
+    canvasProjectGone = true;
+    clearTimeout(debouncedSaveTimer);
+    debouncedSaveTimer = null;
+    contentDirty = false;
+    setProjectSaveState('error', tr('smart.projectGoneState'));
+    showCanvasGoneNotice();
+    return true;
+}
+function exportCanvasProjectSnapshot(){
+    // 另存：把当前画布（含未落库的本地修改）导成 JSON 文件，不依赖服务端。
+    const storageCanvas = canvasForStorage();
+    const blob = new Blob([JSON.stringify(storageCanvas, null, 2)], {type:'application/json'});
+    const title = String(storageCanvas.title || tr('smart.title')).replace(/[\\/:*?"<>|]+/g, '_');
+    canvasSaveBlobAsFile(blob, `${title}.json`);
+    toast(tr('smart.projectGoneExported'));
+}
+function showCanvasGoneNotice(){
+    if(document.getElementById('canvasGoneNotice')) return;
+    const banner = document.createElement('div');
+    banner.id = 'canvasGoneNotice';
+    banner.className = 'canvas-gone-notice';
+    banner.setAttribute('role', 'alert');
+    const text = document.createElement('span');
+    text.className = 'canvas-gone-notice-text';
+    text.textContent = tr('smart.projectGoneNotice');
+    const exportButton = document.createElement('button');
+    exportButton.type = 'button';
+    exportButton.className = 'canvas-gone-notice-button';
+    exportButton.textContent = tr('smart.projectGoneExport');
+    exportButton.addEventListener('click', exportCanvasProjectSnapshot);
+    const backButton = document.createElement('button');
+    backButton.type = 'button';
+    backButton.className = 'canvas-gone-notice-button canvas-gone-notice-secondary';
+    backButton.textContent = tr('smart.projectGoneBack');
+    backButton.addEventListener('click', () => { window.location.href = '/'; });
+    banner.append(text, exportButton, backButton);
+    document.body.appendChild(banner);
+}
 function markContentDirty(){
     if(canvas?.format !== 'firefly-canvas-v1') return;
+    if(canvasProjectGone) return;  // #377：项目已经没了，不再排新的自动保存
     contentDirty = true;
     scheduleDebouncedSave();
     if(canvas?.format === 'firefly-canvas-v1') setProjectSaveState('dirty', tr('smart.projectDirty'));
@@ -6842,6 +6894,11 @@ async function saveCoreCanvasIncrementally(storageCanvas){
                 headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({mutations, client_id:smartClientId, base_revision:baseRevision, force_empty:forceEmpty}),
             });
+            if(response.status === 404){
+                // #377：project_id 不存在（多半在别的标签页被删）。返回标记，不能当普通
+                // 失败丢回上层——那会被防抖周期拉成上万次 404。
+                return {status:404, projectGone:true};
+            }
             if(response.status === 409){
                 const conflict = await response.json().catch(() => ({}));
                 return {status:409, canvas:conflict?.detail?.canvas || null};
@@ -6860,6 +6917,11 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             return {status:response.status, ...(await response.json())};
         },
     });
+    if(flushResult.response?.projectGone){
+        // #377：一次 404 就够。后续自动保存全部停掉，只弹一次提示。
+        markCanvasProjectGone();
+        return {saved:false, hasLateChanges:false};
+    }
     // #62 C-4: 悬空媒体引用自愈——本地状态永远存不上时，放弃本次不可保存的修改，
     // 以服务端画布为准 rebase（服务端画布不含悬空引用），一次性提示用户。
     if(flushResult.response?.invalidMutation){
@@ -6943,6 +7005,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
 }
 async function saveCanvas({automatic=false}={}){
     if(!canvasId || !canvas) return;
+    if(canvasProjectGone) return false;  // #377：已经知道项目没了，一次 PATCH 都不再发
     if(automatic && !contentDirty) return true;
     if(canvasSyncInFlight){
         markContentDirty();

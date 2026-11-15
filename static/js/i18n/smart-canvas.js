@@ -881,6 +881,11 @@
         "smart.annoSave": { zh: "保存", en: "Save" },
         "smart.annoCancel": { zh: "取消", en: "Cancel" },
         "smart.annoDelete": { zh: "删除批注", en: "Delete annotation" },
-        "smart.annoToastFail": { zh: "批注保存失败", en: "Failed to save annotation" }
+        "smart.annoToastFail": { zh: "批注保存失败", en: "Failed to save annotation" },
+        "smart.projectGoneState": { zh: "项目已被删除", en: "Project deleted" },
+        "smart.projectGoneNotice": { zh: "项目已被删除，自动保存已停下。当前画布还在，可先导出再返回列表。", en: "This project was deleted — autosave has stopped. Your canvas is still here; export it before going back." },
+        "smart.projectGoneExport": { zh: "导出画布", en: "Export canvas" },
+        "smart.projectGoneBack": { zh: "返回列表", en: "Back to list" },
+        "smart.projectGoneExported": { zh: "画布已导出为 JSON 文件", en: "Canvas exported as a JSON file" }
     });
 })();

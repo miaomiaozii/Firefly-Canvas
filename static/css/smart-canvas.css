@@ -4424,3 +4424,10 @@ button.prompt-flow-context-image { cursor:pointer; }
 /* #284：Agent 会话内 MEDIA: 缩略图（点开大图） */
 .agent-tui-media-thumb { display:inline-block; margin:4px 6px 0 0; vertical-align:top; }
 .agent-tui-media-thumb img { max-height:120px; max-width:100%; border-radius:8px; border:1px solid rgba(255,255,255,0.14); object-fit:contain; background:rgba(15,23,42,0.6); cursor:zoom-in; }
+
+/* #377：项目已被删除——停掉自动保存后的常驻提示（不自动消失，给导出/返回两个出口） */
+.canvas-gone-notice { position:fixed; left:50%; bottom:96px; z-index:190; transform:translateX(-50%); display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:color-mix(in srgb, var(--panel) 92%, transparent); box-shadow:0 22px 58px var(--shadow); backdrop-filter:blur(18px); color:var(--text); font-size:12px; font-weight:700; max-width:min(720px, calc(100vw - 40px)); }
+.canvas-gone-notice-text { white-space:normal; line-height:1.5; }
+.canvas-gone-notice-button { flex:none; height:32px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:var(--strong); color:var(--strong-text); font-size:12px; font-weight:800; cursor:pointer; }
+.canvas-gone-notice-secondary { background:var(--panel); color:var(--text); }
+.theme-dark .canvas-gone-notice { border-color:rgba(148,163,184,.26); box-shadow:0 16px 38px rgba(0,0,0,.36); }
