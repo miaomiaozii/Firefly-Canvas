@@ -4,7 +4,10 @@ These endpoints are called by the Pi agent's canvas-tools extension via localhos
 They execute canvas mutations through the existing project store.
 """
 import asyncio
+import mimetypes
+import os
 import time
+from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 import json
 import uuid
@@ -13,6 +16,7 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
+from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import OnlineImageRequest, AIReference
 from app.services.misc import build_online_image_result
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
@@ -281,6 +285,12 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         raise HTTPException(status_code=400, detail="node must be an object")
 
     # Ensure node has required fields
+    # #355 W2：caller 传了已存在于画布的 id → 报错，不再静默 upsert 覆盖。
+    caller_id = str(node.get("id") or "")
+    if caller_id:
+        for existing in _open_canvas(project_id).get("nodes") or []:
+            if isinstance(existing, dict) and str(existing.get("id", "")) == caller_id:
+                raise HTTPException(status_code=400, detail=f"node id already exists: {caller_id}")
     if not node.get("id"):
         node["id"] = f"node-{uuid.uuid4().hex[:12]}"
     if not node.get("type"):
@@ -330,6 +340,16 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
     """Update an existing node's properties (`updates` is a flat field dict)."""
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="updates must be an object")
+    # #355 W1：可更新字段白名单（清单在 manifest，两路共用）；白名单外一律 400。
+    illegal = sorted(k for k in updates if k not in _UPDATABLE_NODE_FIELDS)
+    if illegal:
+        raise HTTPException(
+            status_code=400,
+            detail="update_node 字段白名单外的键被拒: " + ",".join(illegal),
+        )
+    for key in ("x", "y", "w", "h"):
+        if key in updates and (isinstance(updates[key], bool) or not isinstance(updates[key], (int, float))):
+            raise HTTPException(status_code=400, detail=f"{key} must be a number")
     # Get current node
     target_node = _find_node(project_id, node_id)
 
@@ -339,10 +359,9 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
     if "items" in updates and target_node.get("type") == "smart-group" and target_node.get("chatFrame") is True:
         raise HTTPException(status_code=400, detail="会话框 items 由服务端落位链维护，canvas.update_node 不可覆写")
 
-    # Apply updates
+    # Apply updates（#355：已过白名单，不再需要逐键身份过滤）
     for key, value in updates.items():
-        if key not in ("id", "type", "created_at"):  # Don't allow changing identity
-            target_node[key] = value
+        target_node[key] = value
     target_node["updated_at"] = _app_main.now_ms()
 
     await _apply_mutations(project_id, [{"op": "upsert_node", "node": target_node}])
@@ -563,24 +582,49 @@ async def upload_media(project_id: str, request: Request, x_agent_project: str =
 
 
 async def upload_media_core(project_id: str, file_path: str) -> dict:
-    """Import a local media file into the project library (Request-free core)."""
+    """Import a local media file into the project library (Request-free core).
+
+    #355 W3：只允许读项目目录（store 根）与用户选定目录（存储设置三目录）下的图片；
+    越界与不存在返回同一句错误（不泄漏「文件是否存在」，防任意路径探测）。
+    """
     _validate_project(project_id)
     if not file_path:
         raise HTTPException(status_code=400, detail="file_path is required")
 
-    import os
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-
-    # Use the store directly to import the media file
     store = _app_main.FIREFLY_PROJECT_STORE
+    allowed_roots = []
+    for root in (getattr(store, "root", None),
+                 getattr(_app_main, "OUTPUT_INPUT_DIR", None),
+                 getattr(_app_main, "OUTPUT_OUTPUT_DIR", None),
+                 getattr(_app_main, "LOCAL_UPLOAD_DIR", None)):
+        if not root:
+            continue
+        try:
+            allowed_roots.append(Path(str(root)).resolve())
+        except OSError:
+            continue
+
+    not_available = f"media file not available: {os.path.basename(str(file_path))}"
+    try:
+        source = Path(str(file_path)).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail=not_available)
+    if not any(source == root or source.is_relative_to(root) for root in allowed_roots):
+        # 越界：与「不存在」同一句，不区分。
+        raise HTTPException(status_code=404, detail=not_available)
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail=not_available)
+    mime = mimetypes.guess_type(source.name)[0] or ""
+    if not mime.startswith("image/"):
+        raise HTTPException(status_code=400, detail="only image files can be uploaded via media.upload")
+
     try:
         record = store.import_media_file(
             project_id,
-            file_path,
-            os.path.basename(file_path),
+            str(source),
+            source.name,
             "",
-            source_info={"locator": file_path, "name": os.path.basename(file_path), "type": "local_output"}
+            source_info={"locator": str(source), "name": source.name, "type": "local_output"}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

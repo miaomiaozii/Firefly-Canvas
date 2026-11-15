@@ -232,7 +232,9 @@ class AgentGenerateToolsTests(unittest.TestCase):
         """media.upload uploads a media file."""
         # Create a temporary image file
         import os
-        temp_image = os.path.join(self.temp_dir.name, "test_image.png")
+        # #355：只允许读 store 根（项目目录）/用户选定目录下图片——测试图落 store 根下。
+        os.makedirs(self.store.root, exist_ok=True)
+        temp_image = os.path.join(str(self.store.root), "test_image.png")
         with open(temp_image, "wb") as f:
             # Write a minimal valid PNG
             f.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01')

@@ -38,6 +38,14 @@ PARAM_RECT = {
 
 VIEW_TIMEOUT_NOTE = "慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s"
 
+# #355 W1：canvas.update_node / REST PATCH /canvas/nodes/{id} 可更新字段白名单——
+# 两路共用同一份（update_node_core 强制）。故意不含：images、model、agentCli、
+# extSessionId、autonomy、chatFrameId、mcp_session 等会话/生成/绑定字段（票面点名）。
+# id/type/created_at 在 core 里另有身份保护（命中白名单外同样被拒）。
+UPDATABLE_NODE_FIELDS = frozenset({
+    "title", "text", "prompt", "x", "y", "w", "h", "status", "items",
+})
+
 TOOLS = [
     {"name": "canvas.list_nodes", "description": "列出画布上所有节点（含连边摘要）", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"name": "canvas.get_node", "description": "获取单个节点详情", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},

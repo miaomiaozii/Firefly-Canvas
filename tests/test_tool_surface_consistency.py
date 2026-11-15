@@ -326,12 +326,15 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
         def media_delete_run():
             client, store, pid_a, pid_b = self._fixture()
-            tmp = tempfile.NamedTemporaryFile(prefix="online_356d_", suffix=".png", delete=False)
-            tmp.write(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
-            tmp.close()
+            # #355：media.upload 只读项目目录/用户选定目录——测试图落 store 根下。
+            img_a = store.root / f"356d_a_{uuid.uuid4().hex[:6]}.png"
+            img_b = store.root / f"356d_b_{uuid.uuid4().hex[:6]}.png"
+            for p in (img_a, img_b):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
             try:
-                ua = self._mcp_call(client, pid_a, "media.upload", {"file_path": tmp.name})
-                ub = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": tmp.name})
+                ua = self._mcp_call(client, pid_a, "media.upload", {"file_path": str(img_a)})
+                ub = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": str(img_b)})
                 asset_a = json.loads(ua["text"])["asset_id"]
                 asset_b = json.loads(ub["text"])["asset_id"]
                 agent_id = self._materialize_agent(client, store, pid_a)
@@ -339,7 +342,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 b = self._rest(client, "DELETE", f"/api/projects/{pid_b}/media/{asset_b}")
                 self._assert_pair(a, b, "media.delete")
             finally:
-                Path(tmp.name).unlink(missing_ok=True)
+                for p in (img_a, img_b):
+                    p.unlink(missing_ok=True)
 
         def search_run():
             client, store, pid_a, pid_b = self._fixture()

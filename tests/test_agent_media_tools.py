@@ -30,7 +30,10 @@ class AgentMediaToolsTests(unittest.TestCase):
         self.project_id = self.project["id"]
 
         # Create a test image file
-        self.test_image = Path(self.temp_dir.name) / "test-image.png"
+        # #355：media.upload 只允许读项目目录（store 根）/用户选定目录下的图片，
+        # 测试图落在 store 根下（旧行为：任意 temp 路径可读，已收紧）。
+        self.test_image = self.store.root / "test-image.png"
+        self.test_image.parent.mkdir(parents=True, exist_ok=True)
         # Create a minimal valid PNG (1x1 red pixel)
         import struct
         import zlib
@@ -82,13 +85,16 @@ class AgentMediaToolsTests(unittest.TestCase):
         self.assertIn("asset_id", data["media"])
 
     def test_upload_media_file_not_found(self):
-        """media.upload returns 404 for missing file."""
+        """media.upload returns 404 for missing file.
+
+        #355：错误句改为不泄漏存在性的统一措辞（越界/不存在同一句）。
+        """
         response = self.client.post(
             f"/api/projects/{self.project_id}/media/upload",
             json={"file_path": "/nonexistent/file.png"},
         )
         self.assertEqual(response.status_code, 404)
-        self.assertIn("File not found", response.json()["detail"])
+        self.assertIn("not available", response.json()["detail"])
 
     def test_upload_media_missing_file_path(self):
         """media.upload returns 400 when file_path is missing."""
