@@ -16,3 +16,7 @@ status: accepted
 - 第一阶段 Agent 不得删除项目、媒体或节点，不得修改全局设置、API Key 或项目库，不得跨项目访问或直接控制 Photoshop。
 - Agent 默认先生成可见执行计划，列出任务、模型类型、数量和参数；用户确认执行计划后才能调用在线服务。
 - 执行期间不得增加计划外的生成任务；需要新增时必须更新计划并再次取得确认。
+
+## 例外（2026-11-15，随 #356 补记）
+
+上文「不得跨项目访问」有一条已裁决的例外：`canvas.search_projects` 的**只读**跨项目搜索由 [ADR 0026](0026-cross-project-search-via-canvas-scan.md) 允许——直扫各项目 `canvas.json` 白名单字段与项目名，按项目分组返回 id/kind/field/snippet；不读 agent-events/sessions、不返回媒体、不写任何项目，并受 200 总量 / 每项目 20 / >8MB 跳过 的护栏约束。除此之外，跨项目访问仍然禁止。
