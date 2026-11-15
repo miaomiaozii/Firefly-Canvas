@@ -54,37 +54,44 @@ function Stop-FireflyServer {
 }
 
 function Bump-AssetVersions {
-    $htmlPath = Join-Path $root 'static\smart-canvas.html'
-    if (-not (Test-Path -LiteralPath $htmlPath)) {
-        Write-Host "[WARN] static\smart-canvas.html not found; skipping cache bust."
+    # #371：以前只刷 smart-canvas.html 一个页——另两个产品页（project-list.html / global-settings.html）
+    # 的 CSS/JS 戳记停在旧值，改了前端用户拿不到，只有手动跑 refresh-cache.ps1 才刷。
+    # 现在与 refresh-cache.ps1 同口径：一切 static\*.html 里的 ?v= 刷成同一个新值。
+    $staticDir = Join-Path $root 'static'
+    if (-not (Test-Path -LiteralPath $staticDir)) {
+        Write-Host "[WARN] static\ not found; skipping cache bust."
         return
     }
     # Read/write via .NET with explicit UTF-8 (no BOM) so the file's encoding and
     # CRLF line endings are preserved; Set-Content's default encoding corrupts it.
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    $content = [System.IO.File]::ReadAllText($htmlPath, $utf8NoBom)
-    # Unique on every restart so the browser always fetches the fresh main CSS/JS.
-    # Only the two files that actually change during development are bumped, to
-    # keep the HTML (and git) clean; vendor assets are untouched.
+    # Unique on every restart so the browser always fetches the fresh CSS/JS.
     $newVersion = (Get-Date -Format 'yyyyMMdd.HHmmss') + '.' + ((Get-Random -Maximum 9000) + 1000)
     # Use ${1} (not $1) so .NET does not swallow the version digits into the group ref.
     # #292 后遗症：必须整页统一 bump——守卫 test_canvas_assets_share_one_cache_buster 要求
     # 同一页所有静态资产共用一个 ?v=；选择性 bump（只 css/js）会把守卫刷红。
-    $updated = [regex]::Replace($content, '((?:href|src)="/static/[^"]*\?v=)[^"]+', "`${1}$newVersion")
-    if ($updated -ne $content) {
+    $bumped = 0
+    foreach ($html in Get-ChildItem -Path $staticDir -Filter '*.html' -File -ErrorAction SilentlyContinue) {
+        $content = [System.IO.File]::ReadAllText($html.FullName, $utf8NoBom)
+        if ($content -notmatch '\?v=') { continue }
+        $updated = [regex]::Replace($content, '(\?v=)[^"''\s>]+', "`${1}$newVersion")
+        if ($updated -eq $content) { continue }
         # 原子写：先写 temp 再覆盖——进程被杀时不会留下 0 字节 html（本仓实测两次被杀即归零）。
         # bump 失败不该炸掉整次重启：捕获后降级为 WARN，服务照常起。
         try {
-            $tmp = "$htmlPath.tmp"
+            $tmp = "$($html.FullName).tmp"
             [System.IO.File]::WriteAllText($tmp, $updated, $utf8NoBom)
-            Move-Item -LiteralPath $tmp -Destination $htmlPath -Force
-            Write-Host "[RESTART] Bumped smart-canvas css/js versions to $newVersion (browser cache invalidated)."
+            Move-Item -LiteralPath $tmp -Destination $html.FullName -Force
+            $bumped++
         } catch {
-            Write-Host ("[WARN] cache bust failed: " + $_.Exception.GetType().FullName + ": " + $_.Exception.Message)
-            Remove-Item -LiteralPath "$htmlPath.tmp" -Force -ErrorAction SilentlyContinue
+            Write-Host ("[WARN] cache bust failed for " + $html.Name + ": " + $_.Exception.GetType().FullName + ": " + $_.Exception.Message)
+            Remove-Item -LiteralPath "$($html.FullName).tmp" -Force -ErrorAction SilentlyContinue
         }
+    }
+    if ($bumped -gt 0) {
+        Write-Host "[RESTART] Bumped asset versions on $bumped page(s) to $newVersion (browser cache invalidated)."
     } else {
-        Write-Host "[WARN] smart-canvas.css/js ?v= parameters not found in smart-canvas.html."
+        Write-Host "[WARN] no ?v= parameters found under static\*.html; browser may still serve cached assets."
     }
 }
 

@@ -142,5 +142,87 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual(missing, [], f"以下画布脚本没带缓存戳进 HTML：{missing}")
 
 
+    # #371：上面那条守卫只钉 .js（筛 `stamped_scripts` 时把 .css 丢了）——canvas-search.css 在
+    # smart-canvas.html:30 上连 ?v= 都没有，改完 CSS 用户永远拿旧的。现在把三个产品页的
+    # 本地资产（css + js）一律纳进来。
+    PRODUCT_PAGES = ("smart-canvas.html", "project-list.html", "global-settings.html")
+    # 新增样式表时必须按页里的 link 顺序登记（与 CANVAS_SCRIPTS 同一约定）。
+    CANVAS_STYLESHEETS = (
+        "studio-foundation.css",
+        "smart-canvas.css",
+        "excel-import.css",
+        "canvas-annotations.css",
+        # #324 的跨项目搜索面板样式：当时只登记了 canvas-search.js，CSS 漏了（#371）。
+        "canvas-search.css",
+    )
+
+    def page_html(self, name: str) -> str:
+        return (ROOT / "static" / name).read_text(encoding="utf-8")
+
+    def test_local_assets_on_product_pages_all_carry_a_cache_stamp(self):
+        unstamped = []
+        for page in self.PRODUCT_PAGES:
+            for match in re.finditer(r'(?:href|src)="(/static/[^"]+)"', self.page_html(page)):
+                path = match.group(1)
+                # 只要求代码资产（js/css）带戳：链另一个 .html 和图片不是缓存事故源头。
+                if not re.search(r"\.(js|css)$", path.split("?")[0]):
+                    continue
+                if "?v=" not in path:
+                    unstamped.append(f"{page} -> {path}")
+        self.assertEqual(
+            [],
+            unstamped,
+            "产品页里的 /static/ 资产必须带 ?v= 缓存戳（不带 = 改了代码用户拿不到，重启也不刷）",
+        )
+
+    def test_canvas_stylesheets_are_registered_and_stamped(self):
+        html = self.page_html("smart-canvas.html")
+        tagged = {path.split("?")[0].rsplit("/", 1)[-1]: value
+                  for path, value in re.findall(r'href="(/static/css/[^"]+)\?v=([0-9][0-9.]*)"', html)}
+        missing_files = [name for name in self.CANVAS_STYLESHEETS if not (ROOT / "static" / "css" / name).is_file()]
+        self.assertEqual([], missing_files, f"登记了的样式表不在盘上：{missing_files}")
+        missing = [name for name in self.CANVAS_STYLESHEETS if name not in tagged]
+        self.assertEqual(missing, [], f"以下画布样式表没带缓存戳进 HTML：{missing}")
+        linked = {path.split("?")[0].rsplit("/", 1)[-1]
+                  for path in re.findall(r'href="(/static/css/[^"]+)"', html)}
+        unregistered = sorted(linked - set(self.CANVAS_STYLESHEETS))
+        self.assertEqual(unregistered, [], f"HTML 里链了但未登记的样式表：{unregistered}")
+
+    def test_css_imports_carry_a_cache_stamp(self):
+        # 样式表里的 @import 不在 restart/refresh 的 bump 正则范围内（那个只碰 HTML 的 href/src），
+        # 所以只能靠这里钉：没 ?v= 的 @import 永远拿旧文件。
+        offenders = []
+        for css in (ROOT / "static" / "css").glob("*.css"):
+            text = css.read_text(encoding="utf-8")
+            for match in re.finditer(r"@import\s+url\(['\"]?(/static/[^'\")]+)", text):
+                if "?v=" not in match.group(1):
+                    offenders.append(f"{css.name} -> {match.group(1)}")
+        self.assertEqual([], offenders, "样式表里的 @import 必须带 ?v=")
+
+    def test_product_pages_share_one_stamp_across_the_repo(self):
+        # 三页共用 studio-foundation.css / theme.js 这些资产。tools/refresh-cache.ps1 刷所有页，
+        # 而 tools/restart-firefly.ps1 以前只刷 smart-canvas.html——那意味着改完 CSS 走普通重启，
+        # project-list.html / global-settings.html 的戳停在旧值。两边现在刷同一批页。
+        stamps = {}
+        for page in self.PRODUCT_PAGES:
+            values = set(re.findall(r'"/static/[^"]+\?v=([0-9][0-9.]*)"', self.page_html(page)))
+            self.assertEqual(len(values), 1, f"{page} 自己就没共用一个戳：{sorted(values)}")
+            stamps[page] = values.pop()
+        distinct = set(stamps.values())
+        self.assertEqual(
+            len(distinct), 1,
+            "三个产品页的缓存戳必须同值（不同值 = 某个启动器没刷到那页）：\n"
+            + "\n".join(f"  {page} -> {value}" for page, value in stamps.items()),
+        )
+
+    def test_restart_and_refresh_bump_the_same_product_pages(self):
+        restart = (ROOT / "tools" / "restart-firefly.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            "static\\*.html",
+            restart,
+            "restart-firefly.ps1 必须刷所有 static\\*.html（只刷 smart-canvas.html 会让另两页的 CSS/JS 停在旧戳）",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
