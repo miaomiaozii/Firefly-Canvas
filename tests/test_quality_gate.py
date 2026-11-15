@@ -33,7 +33,9 @@ from tools.quality_gate import (
     discover_unit_contract_modules,
     expected_native_focus,
     expand_unit_contract_steps,
+    merge_gate_exit_code,
     failed_native_browser_evidence,
+    step_exit_code,
     stop_leaked_children,
     terminate_active_step_processes,
     trusted_node_executable,
@@ -936,6 +938,58 @@ class QualityGateTests(unittest.TestCase):
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
         self.assertEqual(Path(report["evidence_dir"]), self.evidence_dir.resolve())
         self.assertIn("final_exit_code", report)
+
+    def test_fast_mode_keeps_running_later_steps_after_an_early_failure(self):
+        """#370 验收：人为让靠前步骤红，后面的步骤仍必须跑完并出现在报告里。
+
+        #359 当时就是卡在 javascript-syntax，后面四步一次没跑到——一次只看一个
+        红点，修一个冒一个。这里把 smart-canvas.js 写坏让第一步红，断言五步都在
+        报告里、只有第一步红、退出码仍是失败。
+        """
+        (self.fixture_root / "static" / "js" / "smart-canvas.js").write_text(
+            "const broken = ;\n", encoding="utf-8"
+        )
+
+        result = self.run_gate(mode="fast")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["verdict"], "failed")
+        self.assertEqual(
+            [step["name"] for step in report["steps"]], list(MODE_STEPS["fast"])
+        )
+        by_name = {step["name"]: step for step in report["steps"]}
+        self.assertEqual(by_name["javascript-syntax"]["status"], "failed")
+        self.assertEqual(report["first_failure"]["name"], "javascript-syntax")
+        for name in MODE_STEPS["fast"][1:]:
+            self.assertEqual(
+                by_name[name]["status"],
+                "passed",
+                f"{name} 该照样跑完并绿：{by_name[name]['stderr_tail']}",
+            )
+        # 不开 evidence JSON 也得能看见是哪几步红：逐步结果进了 stderr 输出。
+        self.assertIn("[failed] javascript-syntax", result.stderr)
+        self.assertIn("[passed] doc-link-check", result.stderr)
+
+    def test_fast_mode_reports_every_failing_step_not_just_the_first(self):
+        """#370：多个独立红点要一次全部暴露，而不是修一个冒一个。"""
+        (self.fixture_root / "static" / "js" / "smart-canvas.js").write_text(
+            "const broken = ;\n", encoding="utf-8"
+        )
+        (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
+            "import unittest\n"
+            "class FixtureContract(unittest.TestCase):\n"
+            "    def test_also_broken(self): self.fail('surface contract sentinel')\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_gate(mode="fast")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        red = [step["name"] for step in report["steps"] if step["status"] != "passed"]
+        self.assertEqual(red, ["javascript-syntax", "surface-contract"])
+        self.assertEqual(report["first_failure"]["name"], "javascript-syntax")
 
     def test_domain_validates_and_reports_native_browser_artifacts(self):
         (self.fixture_root / "tests" / "test_project_store.py").write_text(
@@ -3067,6 +3121,32 @@ class ProcessLifecycleHooksTests(unittest.TestCase):
                 _ACTIVE_STEP_PROCESSES.discard(tree_root)
                 if tree_root.poll() is None:
                     kill_process_tree(tree_root)
+
+
+class ContinueOnFailureExitCodeTests(unittest.TestCase):
+    """#370：门不再中途 break 后，多个红共存，退出码按「最严重」给。
+
+    严重度：超时（124）> 前置条件不成立（2）> 步骤红（1）。否则后面的绿步会把
+    前面的红盖掉，或一个普通失败遮掉超时这个最该优先看的事实。
+    """
+
+    def test_merge_never_downgrades(self):
+        self.assertEqual(merge_gate_exit_code(0, 1), 1)
+        self.assertEqual(merge_gate_exit_code(1, 0), 1)
+        self.assertEqual(merge_gate_exit_code(2, 1), 2)
+        self.assertEqual(merge_gate_exit_code(1, 2), 2)
+        self.assertEqual(merge_gate_exit_code(2, 124), 124)
+        self.assertEqual(merge_gate_exit_code(124, 2), 124)
+
+    def test_unknown_codes_count_as_a_plain_failure(self):
+        self.assertEqual(merge_gate_exit_code(0, 3), 3)
+        self.assertEqual(merge_gate_exit_code(124, 3), 124)
+
+    def test_step_exit_code_maps_status_to_the_right_severity(self):
+        self.assertEqual(step_exit_code({"status": "passed"}), 0)
+        self.assertEqual(step_exit_code({"status": "failed"}), 1)
+        self.assertEqual(step_exit_code({"status": "timed-out"}), 124)
+        self.assertEqual(step_exit_code({"status": "precondition-failed"}), 2)
 
 
 if __name__ == "__main__":

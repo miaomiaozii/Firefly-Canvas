@@ -490,6 +490,31 @@ STEP_DEFINITIONS = {
     "doc-link-check": lambda python: [python, "tools/doc_link_check.py", "--advisory"],
 }
 
+# #370：失败不再中断整个模式。退出码按「最严重」累积，不是「最后看到的那个」：
+# 超时（124）> 前置条件不成立（2）> 步骤红（1）。一个门里多个红点共存时，
+# 外层脚本拿到的仍是要优先处理的那个码。
+EXIT_CODE_SEVERITY = {0: 0, 1: 1, 2: 2, 124: 3}
+
+
+def merge_gate_exit_code(current: int, candidate: int) -> int:
+    """累积退出码：只升不降（按 EXIT_CODE_SEVERITY，不在表里的当成 1）。"""
+    if EXIT_CODE_SEVERITY.get(candidate, 1) > EXIT_CODE_SEVERITY.get(current, 0):
+        return candidate
+    return current
+
+
+def step_exit_code(step: dict) -> int:
+    """一步对应的退出码：超时 124、前置条不成立 2、其它非 passed 算 1。"""
+    status = step.get("status")
+    if status == "passed":
+        return 0
+    if status == "timed-out":
+        return 124
+    if status == "precondition-failed":
+        return 2
+    return 1
+
+
 MODE_STEPS = {
     "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"),
     "domain": (
@@ -3711,15 +3736,11 @@ def main(argv: list[str] | None = None) -> int:
                             else:
                                 step["browser_evidence"] = failed_browser_evidence(artifact_root)
                         steps.append(step)
-                        if step["status"] == "timed-out":
-                            final_exit_code = 124
-                            break
-                        if step["status"] == "precondition-failed":
-                            final_exit_code = 2
-                            break
-                        if step["status"] != "passed":
-                            final_exit_code = 1
-                            break
+                        # #370：不 break。fast 档 5 个步骤里前面红了，后面的 excel-api-smoke /
+                        # surface-contract / egress-attribution / doc-link-check 也得跑完并进报告——
+                        # 一次只看一个红点、修一个冒一个，来回成本太高。预算用尽时下面的
+                        # `remaining <= 0` 会把未跑的步骤标成 timed-out，不会无限吃墙钟。
+                        final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
                         continue
                     # Parallel group: isolated unit shards and browser journeys
                     # share one wall-clock deadline. Queued work recalculates its
@@ -3863,17 +3884,8 @@ def main(argv: list[str] | None = None) -> int:
                             else:
                                 step["browser_evidence"] = failed_browser_evidence(artifact_root)
                         steps.append(step)
-                        if step["status"] == "timed-out":
-                            final_exit_code = 124
-                            group_failed = True
-                        elif step["status"] == "precondition-failed":
-                            final_exit_code = 2
-                            group_failed = True
-                        elif step["status"] != "passed":
-                            final_exit_code = 1
-                            group_failed = True
-                    if group_failed:
-                        break
+                        final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
+                    # #370：并行组里有成员红也不 break，后面的组继续跑。
 
             # #230：合并后的全量事件一次性贴判据标签（跨 step 看目标，才能把
             # 「A step 里产品请求过这个目标」和「B step 里同一目标的代理噪声」
@@ -4055,6 +4067,14 @@ def main(argv: list[str] | None = None) -> int:
             "message": "mode budget was exceeded while writing quality gate evidence",
         }
         write_report(evidence_dir, report)
+    # #370：逐步结果直接打 stderr——门不再中途 break 后一次会出现多个红点，
+    # 不打开 evidence JSON 也得能看见是哪几步红了（提交前 hook 就靠这段输出）。
+    for step in report.get("steps", []):
+        print(
+            f"[{step['status']}] {step['name']}"
+            f" ({step.get('duration_seconds', 0)}s, exit={step.get('exit_code')})",
+            file=sys.stderr,
+        )
     print(
         json.dumps(
             {

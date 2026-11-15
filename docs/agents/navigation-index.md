@@ -66,6 +66,9 @@
 - 稳定符号：`tools/quality_gate.py` `MODE_BUDGETS`:92（fast 30s / domain 120s / trial 300s / release 900s）、`MODE_STEPS`:133、`BROWSER_EVIDENCE_STEP_NAMES`:181、`CRITICAL_JOURNEY_STEPS`:198、`browser_step_spec`:1265、`execution_groups`:1347（浏览器证据步并行分组）、`SUPPORT_MATRIX`:1384、`RETRY_POLICY`:1406、`build_severity_findings`:1416（S0/S1/S2/S3 频率分层）、`verdict_reasons`:1478、`provider_contract_summary`:1507、`GUARD_SOURCE`（sitecustomize 非 loopback 拒绝+provider 可执行阻断）、`validate_native_browser_artifacts`:1996、`main`:2383。
 - 最相关测试：`tests/test_quality_gate.py`（含 hard-deny、retry 漂白、预算超限判罚契约、severity findings、S2 显式接受 flag、Edge 控制面白名单、并行分组）。#39 起 release 模式额外跑 `tests/edge_compatibility_browser.py`（Windows stable Edge，校验器 `tools/edge_compatibility_evidence.py`）。
 - 权威依据：MISSION.md（声明预算）与 issue #21/#39。
+- #370 起：门不再在首个失败处 `break`（顺序步与并行组都是）——一个模式里的所有步骤都跑完并进 `report["steps"]`，逐步结果也打到 stderr（`[failed] 步骤名`）；退出码按最严重累积：`EXIT_CODE_SEVERITY`:496、`merge_gate_exit_code`:499、`step_exit_code`:506（超时 124 > 前置不成立 2 > 步骤红 1）。
+- 提交前 hook（#370）：`tools/hooks/pre-commit`（跑 `python tools/quality_gate.py fast`，模式是位置参数不是 `--mode`），一次性绕过 `FIREFLY_SKIP_PRECOMMIT=1 git commit ...`；安装/检查：`python tools/install_git_hooks.py`（= `git config core.hooksPath tools/hooks`，`--check` / `--uninstall`）。hook 文件跟着代码走，不要往 `.git/hooks/` 拷副本。
+- 最相关测试（#370）：`tests/test_quality_gate.py::test_fast_mode_keeps_running_later_steps_after_an_early_failure`、`::test_fast_mode_reports_every_failing_step_not_just_the_first`、`ContinueOnFailureExitCodeTests`；`tests/test_pre_commit_hook.py`（真 `git commit` 被红门拦住 / 绿门放行 / 幂等安装 / 缺 hook 文件时拒绝安装）。
 - 不变量：证据目录必须在仓库外；任何 guard 阻断事件或 retry 证据事件即判失败；首次失败永久保留不被重试覆盖；预算超限 exit 124 且不能靠超时/跳过/重试制造绿色；dirty worktree 保留并在报告记录。
 
 ### 结构化诊断日志（T17 #37）

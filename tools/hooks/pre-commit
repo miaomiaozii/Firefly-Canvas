@@ -1,0 +1,48 @@
+#!/bin/sh
+# #370：提交前检查。
+#
+# 跑质量门 fast 档（javascript-syntax / excel-api-smoke / surface-contract /
+# egress-attribution / doc-link-check 五步）。这一步是必要的：像 #359 那种
+# 「改了 HTML 忘了同步测试清单」的遗漏，本来就该在提交前被拦住。
+#
+# 安装（一次，仓库级，不用每人手工 git config）：
+#     python tools/install_git_hooks.py
+# 只跳过这次提交：
+#     FIREFLY_SKIP_PRECOMMIT=1 git commit ...
+#
+# 注意：质量门复制当前工作树到临时沙箱里跑，所以它检查的就是你要提交的内容；
+# 它不会动仓库，也不会碰 3000 端口上正在跑的服务。
+
+if [ "${FIREFLY_SKIP_PRECOMMIT:-}" = "1" ]; then
+    echo "pre-commit: 已跳过质量门（FIREFLY_SKIP_PRECOMMIT=1），下次提交照常跑。" >&2
+    exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+cd "$repo_root" || exit 1
+
+# 解释器：优先 $PYTHON，其次 python，最后 Windows 启动器 py -3。
+if [ -n "${PYTHON:-}" ]; then
+    :
+elif command -v python >/dev/null 2>&1; then
+    PYTHON=python
+elif command -v py >/dev/null 2>&1; then
+    PYTHON="py -3"
+else
+    echo "pre-commit: 找不到 python，无法跑质量门。装了 Python 再提交，" >&2
+    echo "pre-commit: 或临时用 FIREFLY_SKIP_PRECOMMIT=1 git commit ... 绕过。" >&2
+    exit 1
+fi
+
+echo "pre-commit: 跑质量门 fast 档（约 20 秒）…" >&2
+# shellcheck disable=SC2086  # $PYTHON 允许 "py -3" 这种带参数的形式
+# 先把退出码接下来再判：写成 `if cmd; then ...; fi` 后拿 `$?` 会是 if 语句自己的 0，
+# 门红也会当成绿放提交过去（上面那个写法就是这么错让提交溜过去的）。
+$PYTHON tools/quality_gate.py fast
+status=$?
+if [ "$status" -eq 0 ]; then
+    exit 0
+fi
+echo "pre-commit: 质量门没过，提交已拦住（退出码 $status）。" >&2
+echo "pre-commit: 上面每步的结果都列出来了；完整证据在 stderr 里 evidence_dir 指向的目录。" >&2
+exit "$status"
