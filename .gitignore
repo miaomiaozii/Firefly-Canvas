@@ -65,3 +65,16 @@ codex-home/
 # #360：e2e 套件每跑一次刷一次的截图目录（票面证据走 .qa/shots/ 与门内归档）
 .qa/artifacts/
 .pipeline/gate/
+
+# #366：流水线 / e2e 的一次性日志不入库（历史上误跟踪了 8 个，checkout 会拿旧日志盖掉本地现场）。
+# 写 ** 而不是 *：gitignore 里的单个 * 不跨目录，`.pipeline/*.log` 盖不住 .pipeline/archive-m4/。
+.pipeline/**/*.log
+.qa/**/*.log
+
+# #366：素材库索引是用户数据（真实数据在运行目录，仓库里这份是本地调试落盘）。
+# 不能跟踪：checkout / reset 会用仓库里那份盖掉用户真实的素材索引。
+# 备份：.local/agent-work/backup/asset_library.json.pre-366
+data/asset_library.json
+
+# #366：某个外部工具在本仓根目录碰出的空配置（内容就是 `{}`，全仓零引用）
+paseo.json

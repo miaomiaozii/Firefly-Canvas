@@ -5,7 +5,7 @@
 **审查方式**: 主上下文单上下文双轴审查（交接文档硬约束：本地算力限制，**禁用子代理**）
 **Spec 源**: `docs/TODO.md`（Phase 2 2.1-2.7）+ `docs/agent-pi-roadmap.md`（P1 第 92-94 行）+ 交接文档固定决策
 **Standards 源**: 仓库既有 router/测试/命名约定 + Fowler 气味基线
-**说明**: 本报告取代 `docs/code-review-phase2.md`（v1，上一轮审查）。v1 声称已修复的 11 项中，
+**说明**: 本报告取代 `docs/archive/code-review-phase2.md`（v1，上一轮审查）。v1 声称已修复的 11 项中，
 第 6（布局防重叠）、7（收集节点持久化）、8（prompt injection 防护）三项的修复**不完整或有误**，
 详见下方 Standards S-1/S-2/S-3 与 Spec F-1/F-2/F-3。
 

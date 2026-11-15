@@ -61,10 +61,14 @@ class DefaultLibraryNamingTests(unittest.TestCase):
             "i18n 兜底文案必须与真实数据里的默认库名同一个词",
         )
 
-        # 种子数据（全新安装的落盘默认值）
-        seed = json.loads((ROOT / "data/asset_library.json").read_text(encoding="utf-8"))
-        names = [l.get("name") for l in seed.get("libraries", []) if l.get("id") == "default"]
-        self.assertEqual(names, [CANONICAL_DEFAULT_NAME], "种子数据默认库名必须是规范名")
+        # 本地落盘的素材库索引（#366 起不再入库：它是用户数据，跟踪会让 checkout 用仓里那份
+        # 盖掉用户真实的素材索引）。干净检出 / 门的隔离工作区里没这个文件，就不能钉；
+        # 开发机上有则继续钉规范名。
+        seed_path = ROOT / "data/asset_library.json"
+        if seed_path.exists():
+            seed = json.loads(seed_path.read_text(encoding="utf-8"))
+            names = [l.get("name") for l in seed.get("libraries", []) if l.get("id") == "default"]
+            self.assertEqual(names, [CANONICAL_DEFAULT_NAME], "本地素材库索引的默认库名必须是规范名")
 
     def test_no_legacy_display_names_in_user_visible_sources(self):
         """默认库的两个历史显示名不再出现在任何用户可见文案来源里。"""

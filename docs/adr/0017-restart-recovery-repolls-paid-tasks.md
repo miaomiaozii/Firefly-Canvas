@@ -9,7 +9,7 @@ date: 2026-09-10
 
 ## 背景
 
-修复前（2026-08-31 生图流程专项审计，`docs/generation-flow-review.md`）：
+修复前（2026-08-31 生图流程专项审计，`docs/archive/generation-flow-review.md`）：
 
 - 服务重启时，durable 状态为 pending 的任务被 `fail_image_generation` 终止，错误文案「服务重启后无法确认任务是否已调用在线模型；为避免重复计费，任务已终止，请显式重试」（`app/routers/api_project_library.py` 旧 :1098-1100）。
 - 根因：**provider 任务 ID 未持久化**，重启后无法向 provider 查询原任务。
@@ -44,4 +44,4 @@ date: 2026-09-10
 | `app/routers/api_project_library.py:2371` | registry 丢失后从 canvas 重建任务状态 |
 | `app/routers/api_project_library.py:2435` | resuming 锁内标志，防并发双重恢复 |
 
-关联：issue #80、#82；`docs/generation-flow-review.md`。
+关联：issue #80、#82；`docs/archive/generation-flow-review.md`。
