@@ -584,6 +584,16 @@ class QualityGateTests(unittest.TestCase):
             "        self.assertTrue(True)\n",
             encoding="utf-8",
         )
+        # #356：surface-contract 步骤新增 tests.test_tool_surface_consistency.SourceSameOriginTests
+        # （清单↔codegen freshness）。fixture 最小骨架里没有这个模块，同一套路给桩
+        # （门只验接线；同源层真实断言由真门跑/全量 pytest 验）。
+        (self.fixture_root / "tests" / "test_tool_surface_consistency.py").write_text(
+            "import unittest\n\n"
+            "class SourceSameOriginTests(unittest.TestCase):\n"
+            "    def test_stub(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
         # #261：doc-link-check（fast advisory）跑 tools/doc_link_check.py。fixture 是
         # 最小仓库骨架没有 docs/，给一个桩（门只验接线，报告行为由真门跑/单测验）。
         (self.fixture_root / "tools").mkdir(exist_ok=True)
