@@ -1126,7 +1126,9 @@ class AIReference(BaseModel):
 
 class OnlineImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=ONLINE_IMAGE_PROMPT_MAX_LENGTH)
-    provider_id: str = 'comfly'
+    # #381：不再默认 comfly。拿 comfly 当默认值等于“前端没选就等于这家”——
+    # 平台被删或改名时就会变成“静默换成主服务商”。留空表示“没指定”，由后端按主平台走并记日志。
+    provider_id: str = ''
     model: str = ''
     size: str = '1024x1024'
     quality: str = 'auto'
@@ -1435,7 +1437,7 @@ class LocalImageImportRequest(BaseModel):
 
 class LocalAssetCaptionRequest(BaseModel):
     names: List[str] = []
-    provider: str = 'comfly'
+    provider: str = ''  # #381：空=未指定（按主平台），不是 comfly
     model: str = ''
     ms_model: str = ''
     prompt: str = '描述图片'
@@ -1446,7 +1448,7 @@ class LocalAssetCaptionSaveRequest(BaseModel):
 
 class LocalAssetClassifyRequest(BaseModel):
     names: List[str] = []
-    provider: str = 'comfly'
+    provider: str = ''  # #381：空=未指定（按主平台），不是 comfly
     model: str = ''
     ms_model: str = ''
     prompt: str = ''
@@ -1461,7 +1463,7 @@ class LocalAssetUrlImportRequest(BaseModel):
     items: List[LocalAssetUrlImportItem] = []
     folder: str = ''
     classify: bool = False
-    provider: str = 'comfly'
+    provider: str = ''  # #381：空=未指定（按主平台），不是 comfly
     model: str = ''
     ms_model: str = ''
     prompt: str = ''
@@ -1534,7 +1536,7 @@ class AssetAvatarRegisterRequest(BaseModel):
 class AssetLibraryClassifyRequest(BaseModel):
     library_id: str = ''
     ids: List[str] = []
-    provider: str = 'comfly'
+    provider: str = ''  # #381：空=未指定（按主平台），不是 comfly
     model: str = ''
     ms_model: str = ''
     prompt: str = ''

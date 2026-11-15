@@ -177,7 +177,9 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str, need_vision:
         if need_vision and not _svc._main('looks_like_vision_chat_model')(mdl):
             raise HTTPException(status_code=400, detail=f'当前选择的模型 {mdl} 不支持识图，请切换到支持视觉的模型后再发送图片。')
         return (base, hdrs, mdl)
-    api_provider = _svc._main('get_api_provider')(provider or '')
+    # #381（接 #349）：聊天请求也不能拿认不出的 id 去换成主服务商。没指定可以按主平台走（记日志），
+    # 存着已删/改名的平台则直接 400，错误里带那个 id。
+    api_provider = _svc._main('get_api_provider_required')(provider or '')
     if is_codex_provider(api_provider):
         raise HTTPException(status_code=400, detail='OpenAI CLI 使用本机 codex 登录态，不需要 API Key。请使用画布/聊天里的 OpenAI CLI 专用通道。')
     if is_gemini_cli_provider(api_provider):
@@ -403,12 +405,15 @@ def pick_chat_image_provider(provider_id='', fallback_id=''):
     if providers:
         primary = next((p for p in providers if p.get('primary')), None)
         return primary or providers[0]
-    return _svc._main('get_api_provider')(provider_id or fallback_id or 'comfly')
+    # #381：走到这里 = 一个能生图的启用平台都没有。以前拿 'comfly' 兼底再静默换主服务商；
+    # 现在没指定就按主平台走（记日志），指定了但认不出就 400——空手生图不如报错。
+    return _svc._main('get_api_provider_required')(provider_id or fallback_id)
 
 async def decide_chat_agent_action(payload, conversation, refs):
     has_previous_image = bool(latest_chat_image_refs(conversation, 1))
     fallback = heuristic_agent_decision(payload.message, refs, has_previous_image)
-    provider_cfg = _svc._main('get_api_provider')(payload.provider) if payload.provider not in ('modelscope',) else {}
+    # #381：路由判断用的服务商配置也必须是真的那家；静默换成别家会选错 CLI/模型分支。
+    provider_cfg = _svc._main('get_api_provider_required')(payload.provider) if payload.provider not in ('modelscope',) else {}
     if is_codex_provider(provider_cfg):
         fallback['router_model'] = selected_model(payload.model, (provider_cfg.get('chat_models') or CODEX_DEFAULT_CHAT_MODELS)[0])
         return fallback
@@ -436,7 +441,8 @@ async def decide_chat_agent_action(payload, conversation, refs):
         return fallback
 
 async def build_chat_text_reply(payload, conversation):
-    provider_cfg = _svc._main('get_api_provider')(payload.provider) if payload.provider not in ('modelscope',) else {}
+    # #381：同上——选 CLI 还是 HTTP 全看这份配置是不是真属于用户选的那家。
+    provider_cfg = _svc._main('get_api_provider_required')(payload.provider) if payload.provider not in ('modelscope',) else {}
     if is_codex_provider(provider_cfg):
         model = selected_model(payload.model, (provider_cfg.get('chat_models') or CODEX_DEFAULT_CHAT_MODELS)[0])
         payload.model = model

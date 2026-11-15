@@ -199,6 +199,8 @@ class LegacyPathCount8Tests(unittest.IsolatedAsyncioTestCase):
         )
         self._patches = [
             patch.object(main, "get_api_provider", return_value=FAKE_PROVIDER),
+            # #381：legacy 这条路现在按 required 解析，桩要跟着接缝改名
+            patch.object(main, "get_api_provider_required", return_value=FAKE_PROVIDER),
             patch.object(main.manager, "broadcast_new_image", new=AsyncMock()),
             patch.object(misc, "GLOBAL_LOOP", None),
             patch.object(services, "save_ai_image_to_output", new=AsyncMock(return_value="/output/fake-online.png")),

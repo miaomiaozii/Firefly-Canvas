@@ -126,6 +126,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         reference = [{"url": "/assets/input/source.png", "name": "source.png", "role": "source"}]
         with (
             patch.object(APP, "get_api_provider", return_value=provider),
+            patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
             patch.object(APP, "output_file_from_url", return_value=str(__file__)),
             patch.object(APP, "api_headers", return_value={}),
             patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),
@@ -163,6 +164,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
             reference = [{"url": "/assets/input/reference.png", "name": "reference.png", "role": "source"}]
             with (
                 patch.object(APP, "get_api_provider", return_value=provider),
+                patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
                 patch.object(APP, "output_file_from_url", return_value=str(source_path)),
                 patch.object(APP, "api_headers", return_value={}),
                 patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),
@@ -206,6 +208,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
             reference = [{"url": "/assets/input/reference.png", "name": "reference.png", "role": "source"}]
             with (
                 patch.object(APP, "get_api_provider", return_value=provider),
+                patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
                 patch.object(APP, "output_file_from_url", return_value=str(source_path)),
                 patch.object(APP, "api_headers", return_value={}),
                 patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),
@@ -285,6 +288,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         }
         with (
             patch.object(APP, "get_api_provider", return_value=provider),
+            patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
             patch.object(APP, "api_headers", return_value={}),
             patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),
         ):
@@ -472,6 +476,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         }
         with (
             patch.object(APP, "get_api_provider", return_value=provider),
+            patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
             patch.object(APP, "api_headers", return_value={}),
             patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),
         ):
@@ -499,6 +504,7 @@ class BananaOutpaintRequestTests(unittest.TestCase):
         reference = [{"url": "/assets/input/source.png", "name": "source.png", "role": "source"}]
         with (
             patch.object(APP, "get_api_provider", return_value=provider),
+            patch.object(APP, "get_api_provider_required", return_value=provider),  # #381：不保模型这条路现在走 required
             patch.object(APP, "output_file_from_url", return_value=str(__file__)),
             patch.object(APP, "api_headers", return_value={}),
             patch.object(APP.httpx, "AsyncClient", FakeAsyncClient),

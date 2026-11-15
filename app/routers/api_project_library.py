@@ -1201,6 +1201,8 @@ async def _maybe_recover_project_image_task(project_id: str, task_id: str, task:
     provider = None
     if provider_id:
         try:
+            # #381 有意留着用会静默换平台的旧函数：下一行自己比对 candidate['id']，
+            # 认不出就退回“按记录里的原平台尝试”（见下方注释），不会发给别家。
             candidate = get_api_provider(provider_id)
             if isinstance(candidate, dict) and str(candidate.get('id') or '').strip().lower() == provider_id.lower():
                 provider = candidate
@@ -3484,7 +3486,9 @@ async def append_project_conversation_message(project_id: str, node_id: str, pay
         if not isinstance(conversation, dict) or conversation.get('type') != NODE_TYPE_CONVERSATION:
             raise HTTPException(status_code=400, detail='目标节点不是对话节点')
         stored_adapter = conversation.get('conversation_adapter') if isinstance(conversation.get('conversation_adapter'), dict) else {}
-        node_adapter = {'provider': str(payload.provider if payload.provider is not None else stored_adapter.get('provider') or 'comfly'), 'model': str(payload.model if payload.model is not None else stored_adapter.get('model') or ''), 'ms_model': str(payload.ms_model if payload.ms_model is not None else stored_adapter.get('ms_model') or ''), 'system_prompt': str(payload.system_prompt if payload.system_prompt is not None else stored_adapter.get('system_prompt') or '')}
+        # #381：存节点适配配置时不再把“没选”写成 'comfly'——写下去就是一个不存在的平台，
+        # 下次跑只能靠后端静默换服务商兼底。留空 = 未指定，跑时按主平台走并记日志。
+        node_adapter = {'provider': str(payload.provider if payload.provider is not None else stored_adapter.get('provider') or ''), 'model': str(payload.model if payload.model is not None else stored_adapter.get('model') or ''), 'ms_model': str(payload.ms_model if payload.ms_model is not None else stored_adapter.get('ms_model') or ''), 'system_prompt': str(payload.system_prompt if payload.system_prompt is not None else stored_adapter.get('system_prompt') or '')}
         existing = conversation_task_snapshot(current_canvas, node_id, request_id)
         if existing:
             if existing['status'] == 'pending':

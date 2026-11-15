@@ -42,8 +42,10 @@ _real_main_call.mod = None
 
 def _patch_svc_main(provider=None):
     def side_effect(name, *args, **kwargs):
-        if name in ("get_api_provider", "get_api_provider_exact"):
-            return lambda _pid: provider if provider is not None else {}
+        if name in ("get_api_provider", "get_api_provider_exact", "get_api_provider_required"):
+            # #381：认不出的服务商不再静默换成主平台，这三个名字都要桦住；
+            # required 还带 allow_primary_when_empty 关键字，十 signature 得接得住。
+            return lambda _pid=None, **_kw: provider if provider is not None else {}
         if name == "api_headers":
             return lambda **kw: {"Authorization": "Bearer test-key", "Content-Type": "application/json"}
         return _real_main_call(name)

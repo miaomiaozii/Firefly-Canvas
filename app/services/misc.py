@@ -119,7 +119,9 @@ def apimart_video_reference_error(value: str) -> str:
 
 async def build_online_image_result(payload: OnlineImageRequest):
     require_online_image_project_media_scope(payload)
-    provider = _svc._main('get_api_provider')(payload.provider_id)
+    # #381（接 #349）：这里以前用会静默换服务商的 get_api_provider——前端存着已删的平台时，
+    # 出图的其实是主服务商。新建请求允许没指定（按主平台走，记日志），但不允许认不出还继续。
+    provider = _svc._main('get_api_provider_required')(payload.provider_id)
     default_model = (provider.get('image_models') or [IMAGE_MODEL])[0]
     model = selected_model(payload.model, default_model)
     request_size = snap_size_to_multiple(payload.size, 16)

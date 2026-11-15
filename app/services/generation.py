@@ -1762,7 +1762,8 @@ class _ProgressUpload:
 
 def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=False):
     values = [str(prompt or '')]
-    provider_label = str(provider_id or 'comfly')
+    # #381：日志标签不再拿 'comfly' 充数——没指定就是没指定，写个假名字会让事后排查认错平台。
+    provider_label = str(provider_id or '')
     try:
         provider_key = _svc._main('provider_env_key_value')(provider_label)
     except Exception:
@@ -1770,6 +1771,8 @@ def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=Fa
     if provider_key:
         values.append(str(provider_key))
     try:
+        # #381 没改这一行：它只为日志脱敏取“该藏哪个 Key”，不参与选服务商；
+        # 选哪一家由 _generate_ai_image_impl 里的 required/exact 决定，整段又在 try 里。
         provider_getter = 'get_api_provider_exact' if preserve_model else 'get_api_provider'
         provider = _svc._main(provider_getter)(provider_label)
     except Exception:
@@ -1795,7 +1798,7 @@ def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=Fa
     return values
 
 
-async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
+async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None):  # #381：默认不再是 comfly
     """Provider-boundary diagnostics span around the image generation pipeline.
 
     Emits one provider.request event and exactly one terminal event
@@ -1803,7 +1806,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     log — only correlation fields and a redacted exception chain.
     """
     started = time.monotonic()
-    provider_label = str(provider_id or 'comfly')
+    provider_label = str(provider_id or '')  # #381：没指定就写空，不拿 comfly 充数
     model_label = str(model or '')
     _diag_emit('provider.request', provider_id=provider_label, model=model_label, state='requested')
     try:
@@ -2162,7 +2165,7 @@ class _FalQueueResponse:
         return self._payload
 
 
-async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='comfly', *, preserve_model=False, image_parameters=None, progress_callback=None):
+async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None):  # #381：默认不再是 comfly
     def report_progress(phase, **details):
         if not callable(progress_callback):
             return
@@ -2172,7 +2175,9 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             pass
 
     require_project_media_values_scope([str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip() for ref in reference_images or [] if str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip()])
-    provider = _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider')(provider_id)
+    # #381（接 #349）：不保模型这条路以前走 get_api_provider——存着已删的平台时会静默换成主服务商，
+    # 用户看到的图其实是另一家出的。preserve_model 那条一直是 exact（空值也拒），保持不动。
+    provider = _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider_required')(provider_id)
     if provider['id'] == 'modelscope':
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
     if is_codex_provider(provider):
@@ -3850,7 +3855,8 @@ def smart_group_export_folder(folder: str, group_name: str) -> str:
     return path
 
 async def caption_image_with_provider(abs_path, prompt, provider_id, model, ms_model=''):
-    llm_provider = _svc._main('get_api_provider')(provider_id) if provider_id not in ('modelscope',) else {}
+    # #381（接 #349）：描述/分类这类新建请求允许没指定（按主平台走），但不允许认不出还继续。
+    llm_provider = _svc._main('get_api_provider_required')(provider_id) if provider_id not in ('modelscope',) else {}
     if is_codex_provider(llm_provider):
         resolved_model = selected_model(model, (llm_provider.get('chat_models') or CODEX_DEFAULT_CHAT_MODELS)[0])
         payload = CanvasLLMRequest(message=(prompt or '描述图片').strip() or '描述图片', provider=provider_id or 'codex', model=resolved_model, images=[abs_path])

@@ -848,6 +848,7 @@ class ProviderFamilyContractTests(unittest.TestCase):
                 legacy_capture = ProviderContractCapture({"data": [{"url": "http://127.0.0.1/legacy.png"}]})
                 with (
                     patch.object(APP, "get_api_provider", return_value=deepcopy(fixture)),
+                    patch.object(APP, "get_api_provider_required", return_value=deepcopy(fixture)),  # #381：旧名不再被这条路调用
                     patch.object(APP, "api_headers", return_value={"Authorization": AUTHORIZATION}),
                     patch.object(APP.httpx, "AsyncClient", legacy_capture.async_client),
                     patch.object(SERVICES, "save_ai_image_to_output", new=AsyncMock(return_value="http://127.0.0.1/legacy.png")),
