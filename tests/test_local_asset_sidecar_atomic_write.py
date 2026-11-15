@@ -135,14 +135,19 @@ class TruncatingJsonWritesSweepTests(unittest.TestCase):
         "firefly_json_io.py": "公共实现本身：先写 staging 再 os.replace，不是截断式",
         "app/routers/startup.py": "save_project_conversation_durable 自建 tmp+fsync+os.replace，已经原子（只是没复用公共实现）",
         "tools/configure_comfly_fal_topaz.py": "一次性开发脚本，不在服务路径上；写前先 copyfile 备份 .bak-fal-topaz",
+        "tools/quality_gate.py": "两个写点都不是产品数据：`write_report` 自己走 .report.json.tmp + os.replace（已原子，只是没复用公共实现）；`isolated_environment` 在门的临时沙箱里新建 sitecustomize.py 等文件，没有旧内容会被毁",
     }
 
     KNOWN_UNMIGRATED = {
-        # 确实是截断式，但属 per-conversation 文件（不是 sidecar），不在本票范围。
-        # 已在票注释里报给 review：要么另开票，要么折进本票。
-        "app/services/conversation.py": "save_conversation 仍是 open(path,'w')+json.dump；per-conversation 文件，#345 未覆盖",
+        # 确实是截断式，但不在 #383 范围（票面只点了 conversation.py 与 ui_integrity_evidence）。
+        # 都是门/开发工具写的报告类文件，不在服务路径上；要不要收进 #383 或另开票，等 review 拍。
+        "tools/e2e/e2e_harness.py": "cmd_create / cmd_fingerprint 写 e2e 场景定义与指纹档，门侧产物",
+        "tools/quality_gate_profile.py": "main 写门剖面报告，一次性诊断产物",
+        "tools/verify_portable.py": "main 写便携包验证报告，一次性诊断产物",
     }
 
+    # tests/ 不进扫描：测试的 fixture 往自己的临时目录写假数据，没有“旧内容被毁”这个问题。
+    # 扫它会把上百个 fixture 拉进来，名单变成噪音，真正的产品写点反而看不见。
     SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".local", "tmp", ".qa", "tests"}
 
     def _scan(self):
@@ -175,6 +180,57 @@ class TruncatingJsonWritesSweepTests(unittest.TestCase):
         for rel in ("app/services/local_assets.py", "app/routers/api_local_assets.py"):
             self.assertNotIn(rel, found, f"{rel} 又出现截断式 JSON 写入了：{found.get(rel)}")
 
+    def test_383_write_points_are_gone(self):
+        """#383 修的两处（对话文件、UI 完整性证据）也必须从扫描结果里消失。
+
+        `tools/ui_integrity_evidence.py` 里还有别的写点（写图、写文本），所以不能整文件断言，
+        只能断言扫到的函数名里不含 `write_json`。
+        """
+        found = self._scan()
+        self.assertNotIn("app/services/conversation.py", found,
+                         f"conversation.py 又出现截断式 JSON 写入了：{found.get('app/services/conversation.py')}")
+        self.assertNotIn("write_json", set(found.get("tools/ui_integrity_evidence.py", set())),
+                         f"ui_integrity_evidence.write_json 又回到截断式：{found.get('tools/ui_integrity_evidence.py')}")
+
+    def test_detector_catches_a_truncating_write_inside_a_class(self):
+        """自我证明：检测器不能只认列 0 的 def——类方法里的截断式写法也得抓到。
+
+        #374 版只扫列 0 的 def，#383 按要求扩到任意缩进；不补这一条，扩完可能实际还是漏。
+        """
+        source = (
+            "class Store:\n"
+            "    def save(self, path, payload):\n"
+            "        with open(path, 'w', encoding='utf-8') as handle:\n"
+            "            json.dump(payload, handle)\n"
+        )
+        self.assertEqual(_truncating_write_funcs(source), ["save"], "类方法里的截断式写法必须被扫到")
+
+    def test_detector_catches_write_text_of_json_dumps(self):
+        """另一种截断式：`Path.write_text(json.dumps(...))`。以前完全不报。"""
+        source = (
+            "def write_report(path, report):\n"
+            "    path.write_text(json.dumps(report, ensure_ascii=False) + '\\n', encoding='utf-8')\n"
+        )
+        self.assertEqual(_truncating_write_funcs(source), ["write_report"],
+                         "write_text(json.dumps(...)) 必须被当成截断式写入")
+
+    def test_detector_ignores_append_and_atomic_replace(self):
+        """反向用例：追加写（'a'）与 staging+os.replace 不该报。"""
+        append = (
+            "def log(path, row):\n"
+            "    with open(path, 'a', encoding='utf-8') as handle:\n"
+            "        handle.write(json.dumps(row) + '\\n')\n"
+        )
+        self.assertEqual(_truncating_write_funcs(append), [], "追加 JSONL 不该报")
+        atomic = (
+            "def save(path, payload):\n"
+            "    staging = path.with_name('.tmp')\n"
+            "    staging.write_text(json.dumps(payload), encoding='utf-8')\n"
+            "    os.replace(staging, path)\n"
+        )
+        # 这条仍会被扫到（写法形似），所以靠 JUSTIFIED 名单说清已原子；断言只为把现状钉住。
+        self.assertEqual(_truncating_write_funcs(atomic), ["save"])
+
     def test_list_entries_still_name_real_findings(self):
         """名单里每一项必须还能扫得到——防理由过期还挂着。"""
         found = self._scan()
@@ -185,6 +241,9 @@ class TruncatingJsonWritesSweepTests(unittest.TestCase):
 # 一个函数里“以写模式打开文件”+“json.dump”同时出现，就是截断式写法的样子。
 # 只认 'w'/'wx'：'a' 是追加（日志行），不会把旧内容清空。
 _OPEN_W = re.compile(r"open\([^)]{0,160}?['\"]wx?['\"]")
+# 另一种截断式：`Path.write_text(json.dumps(...))`——#383 按要求补上（#374 版完全不报）。
+_WRITE_TEXT = re.compile(r"\.write_text\(")
+_DEF_HEADER = re.compile(r"^(\s*)(?:async\s+)?def\s+(\w+)")
 
 
 def _strip_comment_lines(text: str) -> str:
@@ -193,31 +252,39 @@ def _strip_comment_lines(text: str) -> str:
 
 
 def _truncating_write_funcs(text: str):
-    """按顶层函数体切块（列 0 的下一条非空行结束），返回含“截断式打开 + json.dump”的函数名。
+    """按函数体切块，返回含“截断式写法 + json.dump”的函数名。
+
+    #383 扩了两点（reviewer 要求）：
+      1. 任意缩进的 def 都算函数起点（#374 版只认列 0，类方法里的写法全漏）；
+      2. `Path.write_text(json.dumps(...))` 也算截断式（打开那一刻旧内容就没了）。
 
     不用正则切块：函数间那些列 0 的模块级语句会被归到上一个函数头下，
-    把不相干的 `open(...,'w')` 与 `json.dump` 拼成一个假阳性。
+    把不相干的 `open(...,'w')` 与 `json.dump` 拼成一个假阳性（#374 踩过）。
     """
     names = []
     lines = _strip_comment_lines(text).splitlines()
     index = 0
     while index < len(lines):
-        header = re.match(r"(?:async )?def (\w+)", lines[index])
-        if not header or lines[index][:1].isspace():
+        header = _DEF_HEADER.match(lines[index])
+        if not header:
             index += 1
             continue
-        body = []
+        indent = len(header.group(1))
         cursor = index
         # 先把签名整行消掉（多行签名的收尾如 `) -> None:` 也在列 0）。
         while cursor < len(lines) and not lines[cursor].rstrip().endswith(":"):
             cursor += 1
         cursor += 1
-        while cursor < len(lines) and (not lines[cursor].strip() or lines[cursor][:1].isspace()):
-            body.append(lines[cursor])
+        body = []
+        while cursor < len(lines):
+            line = lines[cursor]
+            if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+                break
+            body.append(line)
             cursor += 1
         chunk = "\n".join(body)
-        if _OPEN_W.search(chunk) and "json.dump" in chunk:
-            names.append(header.group(1))
+        if "json.dump" in chunk and (_OPEN_W.search(chunk) or _WRITE_TEXT.search(chunk)):
+            names.append(header.group(2))
         index = max(cursor, index + 1)
     return names
 

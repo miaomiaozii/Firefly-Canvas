@@ -1,6 +1,7 @@
 # conversation domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+import firefly_json_io  # noqa: E402  # #383：对话文件走原子写 / 隔离读
 from app.constants import NODE_TYPE_CONVERSATION
 from firefly_usage import normalize_usage, parse_codex_jsonl_usage, usage_has_data  # #258 用量采集
 
@@ -8,8 +9,14 @@ def load_conversation(user_id, conversation_id):
     path = _svc._main('conversation_path')(user_id, conversation_id)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail='对话不存在')
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    # #383（接 #345/#374）：半份 JSON 以前直接往上抛 JSONDecodeError（到 HTTP 层就是 500）。
+    # 现在交给 read_json：先把坏文件改名 `.corrupt-<UTC>` 保住字节 + 记 ERROR/诊断，再按
+    # 「文件不存在」继续，返回一个空会话（不抛异常、不弹 5xx）。
+    data = firefly_json_io.read_json(path, default=None)
+    if not isinstance(data, dict):
+        timestamp = _svc._main('now_ms')()
+        return {'id': conversation_id, 'title': '新对话', 'created_at': timestamp, 'updated_at': timestamp, 'messages': []}
+    return data
 
 async def codex_reference_paths(reference_images=None):
     paths = []
@@ -141,8 +148,9 @@ def conversation_path(user_id, conversation_id):
 def save_conversation(user_id, conversation):
     with CANVAS_LOCK, CONVERSATION_LOCK:
         path = conversation_path(user_id, conversation['id'])
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(conversation, f, ensure_ascii=False, indent=2)
+        # #383：原来是 `open(path,'w') + json.dump`——打开那一刻旧内容就没了，写一半断就只剩
+        # 半份文件。换公共实现：staging + fsync + os.replace，抛错时目标文件保持原样。
+        firefly_json_io.write_json_atomic(path, conversation)
 
 def new_conversation(user_id, title='新对话'):
     timestamp = _svc._main('now_ms')()
@@ -156,10 +164,10 @@ def list_conversations(user_id):
         if not filename.endswith('.json'):
             continue
         path = os.path.join(_svc.user_dir(user_id), filename)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
+        # #383：坏文件不再 `except Exception: continue` 静默跳过——read_json 会先改名
+        # `.corrupt-<UTC>` 保住字节并记 ERROR/诊断，这条才不进列表（现场留得住）。
+        data = firefly_json_io.read_json(path, default=None)
+        if not isinstance(data, dict):
             continue
         messages = data.get('messages', [])
         last_message = next((m for m in reversed(messages) if m.get('role') != 'system'), None)

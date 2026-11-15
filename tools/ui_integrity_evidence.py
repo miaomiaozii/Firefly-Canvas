@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,6 +27,9 @@ except ModuleNotFoundError:  # Direct `python tools/...py` execution.
     from evidence_common import artifact_path, read_json as load_json
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:  # 直接 `python tools/ui_integrity_evidence.py` 跑时仓库根不在路径上
+    sys.path.insert(0, str(ROOT))
+import firefly_json_io  # noqa: E402  # #383：证据 JSON 走公共原子写，不再截断式 write_text
 DEFAULT_BASELINES = ROOT / "tests" / "baselines" / "ui-integrity"
 EXPECTED_VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 EXPECTED_SCENES = (
@@ -117,8 +121,9 @@ def product_node_action_ids(source_path: Path = PRODUCT_SMART_CANVAS_JS) -> list
 
 
 def write_json(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # #383：原来是 `path.write_text(json.dumps(...))`——打开那一刻旧证据就没了，写一半断
+    # 就留下一份读不通的证据（门拿到的就是坏 JSON）。换 #345 的公共实现。
+    firefly_json_io.write_json_atomic(path, value)
 
 
 def sha256(path: Path) -> str:
