@@ -208,9 +208,14 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         self.assertEqual([item for item in self.history_records(project['id'], task_id) if item.get('status') == 'succeeded'], [])
 
     def test_image_task_query_endpoint_still_saves_to_global_library(self):
-        """/api/image-task-query 重构后契约不变：查到成品落全局库并广播。"""
+        """/api/image-task-query 重构后契约不变：查到成品落全局库并广播。
+
+        #349 以后这里必须自己把服务商表撑好：以前这个入口会静默换成真表里存在的服务商，
+        不撑也能进适配器；现在 fake-http 不在表里就是 400（正好是要的行为）。
+        """
         query_mock = AsyncMock(return_value=upstream_success_payload())
-        with patch.object(api_image_task_query, 'fetch_image_task_payload', query_mock):
+        with patch.object(api_image_task_query, 'fetch_image_task_payload', query_mock), \
+             patch.object(main, 'load_api_providers', return_value=self.providers):
             response = self.client.post('/api/image-task-query', json={'provider_id': 'fake-http', 'task_id': UPSTREAM_TASK_ID})
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()

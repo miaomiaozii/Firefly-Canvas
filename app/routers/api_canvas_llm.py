@@ -9,7 +9,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, text_from_responses, unwrap_apimart_response)
 from app.services.conversation import chat_request_latest, chat_text_from_raw
-_from_main_names = ['codex_chat_text', 'gemini_cli_chat_text', 'get_api_provider', 'is_image_reference_value', 'is_video_reference_value', 'media_reference_to_url', 'resolve_chat_provider', 'video_reference_to_frame_data_urls']
+_from_main_names = ['codex_chat_text', 'gemini_cli_chat_text', 'get_api_provider_required', 'is_image_reference_value', 'is_video_reference_value', 'media_reference_to_url', 'resolve_chat_provider', 'video_reference_to_frame_data_urls']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -56,7 +56,8 @@ async def canvas_llm(payload: CanvasLLMRequest):
     finally:
         if project_scope is not None:
             PROJECT_MEDIA_ADAPTER_PROJECT.reset(project_scope)
-    _provider = _app_main.get_api_provider(payload.provider)
+    # #349：指定了就按指定的走。认不出的平台以前会被悄悄换成主服务商，结果其实来自别家。
+    _provider = _app_main.get_api_provider_required(payload.provider)
     audio_references = [item for item in payload.audio_references or [] if isinstance(item, dict) and str(item.get('asset_id') or item.get('url') or '').strip()]
     if (payload.audios or audio_references) and (not chat_provider_supports_audio(_provider)):
         raise HTTPException(status_code=400, detail={'code': 'unsupported_audio_input', 'message': '当前对话适配器不支持音频参考输入'})
@@ -72,7 +73,8 @@ async def canvas_llm(payload: CanvasLLMRequest):
         return {'text': text, 'model': model, 'raw_usage': None, 'raw': raw}
     _need_vision = bool((payload.images or []) or (payload.videos or []))
     chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=_need_vision)
-    _llm_provider = _app_main.get_api_provider(payload.provider) if payload.provider not in ('modelscope',) else {}
+    # #349：上面已经严格解析过一次，这里直接复用，不再拿原值重查（重查会再走一次默认值）。
+    _llm_provider = _provider if payload.provider not in ('modelscope',) else {}
     _is_apimart = is_apimart_provider(_llm_provider)
     system_prompt = (payload.system_prompt or '').strip()
     upstream_messages = [{'role': 'system', 'content': system_prompt}] if system_prompt else []

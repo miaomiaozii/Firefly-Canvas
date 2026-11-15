@@ -891,7 +891,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         provider = {"id": "jimeng", "name": "即梦", "protocol": "jimeng"}
         adapter = AsyncMock(return_value={"videos": ["/output/should-not-run.mp4"]})
 
-        with patch.object(main, "get_api_provider", return_value=provider), patch.object(
+        with patch.object(main, "get_api_provider_required", return_value=provider), patch.object(
             canvas_video_router, "execute_canvas_video", adapter
         ):
             response = self.client.post("/api/canvas-video", json={
@@ -906,7 +906,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"]["code"], "project_media_handle_requires_project_task")
         adapter.assert_not_awaited()
 
-        with patch.object(main, "get_api_provider", return_value=provider), patch.object(
+        with patch.object(main, "get_api_provider_required", return_value=provider), patch.object(
             canvas_video_router, "execute_canvas_video", adapter
         ):
             ordinary = self.client.post("/api/canvas-video", json={
@@ -976,7 +976,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
         route = SimpleNamespace(provider_id=provider["id"], model="video-model")
         request = main.project_video_request(payload)
         try:
-            with patch.object(main, "get_api_provider", return_value=provider), patch.object(
+            with patch.object(main, "get_api_provider_required", return_value=provider), patch.object(
                 main, "provider_env_key_value", return_value="test-key"
             ):
                 asyncio.run(main.execute_project_video_generation(project["id"], request, route, references))
@@ -1360,7 +1360,7 @@ class ProjectVideoGenerationContractTests(unittest.TestCase):
 
         payload = main.CanvasVideoRequest(prompt="协议覆盖", provider_id=provider["id"], model="video-gemini")
         save_output = AsyncMock(return_value="/output/result.mp4")
-        with patch.object(main, "get_api_provider", return_value=provider), patch.object(
+        with patch.object(main, "get_api_provider_required", return_value=provider), patch.object(
             main, "provider_env_key_value", return_value="override-key"
         ), patch.object(main.httpx, "AsyncClient", return_value=client), patch.object(
             main, "save_remote_video_to_output", save_output

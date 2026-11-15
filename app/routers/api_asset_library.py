@@ -17,7 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from pydantic import BaseModel, Field
 from app.core import (AVATAR_SUPPORTED_PLATFORMS, AVATAR_TASK_DONE_STATUSES, AVATAR_TASK_FAIL_STATUSES, Any, AssetAvatarRegisterRequest, AssetLibraryAddRequest, AssetLibraryBatchAddRequest, AssetLibraryBatchCropRequest, AssetLibraryBatchDeleteRequest, AssetLibraryBatchMoveRequest, AssetLibraryCategoryRequest, AssetLibraryClassifyRequest, AssetLibraryRenameRequest, AssetLibraryRequest, BaseModel, Dict, HTTPException, Image, List, VIDEO_POLL_TIMEOUT, VOLCENGINE_ARK_ASSET_HOST, VOLCENGINE_ARK_ASSET_REGION, VOLCENGINE_ARK_ASSET_SERVICE, VOLCENGINE_ARK_ASSET_VERSION, VOLCENGINE_DEFAULT_PROJECT_NAME, _os, _sys, _volc_hmac, apimart_avatar_asset_type, asset_library_media_kind, avatar_platform_for_provider, datetime, extract_apimart_avatar_asset_uri, find_asset_item_in_library, hashlib, hmac, httpx, is_apimart_provider, is_volcengine_provider, json, os, sanitize_asset_name, shutil, tempfile, urllib, uuid, valid_apimart_video_image_input, volcengine_sign_v4_headers)
 from app.core import _volc_hmac
-_from_main_names = ['ASSET_LIBRARY_DIR', 'api_headers', 'check_apimart_avatar_task', 'check_volcengine_avatar_task', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'find_asset_category_in_library', 'find_asset_category_with_library', 'find_asset_library', 'get_api_provider', 'load_asset_library', 'local_asset_public_url', 'make_asset_library_item', 'normalize_asset_library', 'now_ms', 'output_file_from_url', 'remove_asset_library_file', 'save_asset_library', 'submit_apimart_avatar_asset', 'submit_volcengine_avatar_asset', 'unique_asset_category_dir', 'upload_audio_for_apimart', 'upload_image_for_apimart', 'upload_media_for_apimart', 'upload_video_for_apimart', 'video_api_root', 'volcengine_access_key_value', 'volcengine_ark_asset_call', 'volcengine_ensure_asset_group', 'volcengine_public_asset_url', 'volcengine_secret_key_value']
+_from_main_names = ['ASSET_LIBRARY_DIR', 'api_headers', 'check_apimart_avatar_task', 'check_volcengine_avatar_task', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'find_asset_category_in_library', 'find_asset_category_with_library', 'find_asset_library', 'get_api_provider_required', 'load_asset_library', 'local_asset_public_url', 'make_asset_library_item', 'normalize_asset_library', 'now_ms', 'output_file_from_url', 'remove_asset_library_file', 'save_asset_library', 'submit_apimart_avatar_asset', 'submit_volcengine_avatar_asset', 'unique_asset_category_dir', 'upload_audio_for_apimart', 'upload_image_for_apimart', 'upload_media_for_apimart', 'upload_video_for_apimart', 'video_api_root', 'volcengine_access_key_value', 'volcengine_ark_asset_call', 'volcengine_ensure_asset_group', 'volcengine_public_asset_url', 'volcengine_secret_key_value']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -425,7 +425,7 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
     target_item = find_asset_item_in_library(lib, item_id, payload.library_id)
     if not target_item:
         raise HTTPException(status_code=404, detail='资产不存在')
-    provider = _app_main.get_api_provider(payload.provider_id)
+    provider = _app_main.get_api_provider_required(payload.provider_id)
     platform = avatar_platform_for_provider(provider)
     if platform not in AVATAR_SUPPORTED_PLATFORMS:
         name = (provider or {}).get('name') or (provider or {}).get('id') or '该平台'
@@ -464,7 +464,7 @@ async def check_asset_library_avatar(item_id: str, payload: AssetAvatarRegisterR
     if not target_item:
         raise HTTPException(status_code=404, detail='资产不存在')
     regs = target_item.get('registrations') if isinstance(target_item.get('registrations'), dict) else {}
-    provider = _app_main.get_api_provider(payload.provider_id or '')
+    provider = _app_main.get_api_provider_required(payload.provider_id or '')
     platform = avatar_platform_for_provider(provider)
     if platform not in AVATAR_SUPPORTED_PLATFORMS:
         raise HTTPException(status_code=400, detail='该平台暂不支持数字人/真人认证审核。')

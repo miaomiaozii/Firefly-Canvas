@@ -58,6 +58,7 @@ from app.services import agent_host as _agent_host_boot
 _agent_host_boot.ensure_agent_api_base_env(_os_boot.environ)
 api_headers = _svc.api_headers
 get_api_provider_exact = _svc.get_api_provider_exact
+get_api_provider_required = _svc.get_api_provider_required
 
 codex_cli_executable = _svc.codex_cli_executable
 fetch_runninghub_model_registry = _svc.fetch_runninghub_model_registry

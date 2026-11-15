@@ -309,7 +309,7 @@ class ConversationNodeApiContractTests(unittest.TestCase):
                 "url": audio_data,
             }],
         )
-        with patch.object(main, "get_api_provider", return_value={"id": "offline-default"}):
+        with patch.object(main, "get_api_provider_required", return_value={"id": "offline-default"}):
             with self.assertRaises(main.HTTPException) as raised:
                 asyncio.run(main.canvas_llm(payload))
         self.assertEqual(raised.exception.status_code, 400)
@@ -352,7 +352,7 @@ class ConversationNodeApiContractTests(unittest.TestCase):
                 "url": audio_data,
             }],
         )
-        with patch.object(main, "get_api_provider", return_value={"id": "audio-capable", "chat_audio_input": True}), \
+        with patch.object(main, "get_api_provider_required", return_value={"id": "audio-capable", "chat_audio_input": True}), \
              patch.object(main, "resolve_chat_provider", return_value=("https://example.invalid/v1", {}, "audio-model")), \
              patch.object(main.httpx, "AsyncClient", FakeAsyncClient):
             result = asyncio.run(main.canvas_llm(payload))
@@ -404,7 +404,7 @@ class ConversationNodeApiContractTests(unittest.TestCase):
             provider="media-capable",
             images=[project_url],
         )
-        with patch.object(main, "get_api_provider", return_value={"id": "media-capable"}), \
+        with patch.object(main, "get_api_provider_required", return_value={"id": "media-capable"}), \
              patch.object(main, "resolve_chat_provider", return_value=("https://example.invalid/v1", {}, "media-model")), \
              patch.object(main.httpx, "AsyncClient", FakeAsyncClient):
             result = asyncio.run(main.canvas_llm(payload))
@@ -442,7 +442,7 @@ class ConversationNodeApiContractTests(unittest.TestCase):
                 {"asset_id": media[2]["asset_id"], "kind": "audio", "name": "reference.mp3"},
             ],
         }
-        with patch.object(main, "get_api_provider", return_value={"id": "media-capable", "chat_audio_input": True}), \
+        with patch.object(main, "get_api_provider_required", return_value={"id": "media-capable", "chat_audio_input": True}), \
              patch.object(main, "resolve_chat_provider", return_value=("https://example.invalid/v1", {}, "media-model")), \
              patch.object(main.httpx, "AsyncClient", FakeAsyncClient):
             result = asyncio.run(main.project_conversation_adapter(request))

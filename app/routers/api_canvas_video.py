@@ -5,7 +5,7 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (CanvasVideoRequest, _os, _sys, require_canvas_video_project_media_scope)
-_from_main_names = ['execute_canvas_video', 'get_api_provider']
+_from_main_names = ['execute_canvas_video', 'get_api_provider_required']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -18,5 +18,6 @@ router = APIRouter()
 @router.post('/api/canvas-video')
 async def canvas_video(payload: CanvasVideoRequest):
     require_canvas_video_project_media_scope(payload)
-    provider = _app_main.get_api_provider(payload.provider_id)
+    # #349：前端没选平台时传空，按主平台走（记日志）；传了但认不出米直接 400，不换平台。
+    provider = _app_main.get_api_provider_required(payload.provider_id)
     return await execute_canvas_video(payload, provider)

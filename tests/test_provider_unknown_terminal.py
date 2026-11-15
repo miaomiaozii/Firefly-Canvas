@@ -96,7 +96,8 @@ class ImageTaskQueryUnknownTerminalTests(unittest.TestCase):
         self.client.close()
 
     def _query(self, provider, body):
-        with patch.object(main, 'get_api_provider', return_value=provider):
+        # #349：这个入口不再走会静默换服务商的 get_api_provider，改钉 get_api_provider_required。
+        with patch.object(main, 'get_api_provider_required', return_value=provider):
             return self.client.post('/api/image-task-query', json=body)
 
     def test_generic_unknown_status_is_failed(self):

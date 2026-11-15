@@ -2440,8 +2440,11 @@ function providerModelNameLookup(provider){
 }
 function resolveChatProviderId(providerId=''){
     const providers = chatApiProviders();
-    if(providers.some(p => p.id === providerId)) return providerId;
-    return providers[0]?.id || 'comfly';
+    const wanted = String(providerId || '').trim();
+    // #349：配过的平台不在列表里（被删、改名）时，以前会抓第一个顶上，会话就悄悄发给别家了。
+    // 现在照原值传：后端认不出会直接报「未找到 API 平台：xxx」，错误里带的是真名字。
+    if(wanted) return wanted;
+    return providers[0]?.id || '';
 }
 
 function providerChatModels(providerId){
@@ -2889,7 +2892,7 @@ function renderApiParams(){
 }
 function renderApiVideoParams(){
     const providers = videoApiProviders();
-    if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || 'comfly';
+    if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || '';  // #349：末尾的 'comfly' 拿掉；没真平台就留空由后端按主平台走
     const models = providerVideoModels(settings.videoProvider);
     if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
     dynamicParams.innerHTML = `

@@ -558,6 +558,31 @@ def get_api_provider_exact(provider_id: str):
         raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
     return provider
 
+def get_api_provider_required(provider_id: str = '', *, allow_primary_when_empty: bool = True):
+    """#349：按 id 精确取服务商。认不出来就报错，绝不悄悄换成别家。
+
+    与旧 get_api_provider 的差别只有一处，但那处很要命：旧函数把认不出的 id（已删、
+    拼错、插件里存着的旧平台）换成主服务商继续发请求，用户看到的结果其实来自另一家。
+
+    - 空值：allow_primary_when_empty=True（默认）时显式按主平台走，并记一行日志；
+      查询类入口（不知道任务属于哪家就不能瞎猜）传 False。
+    - 未知 id：400，文案带上是哪个 id。
+    """
+    providers = _svc._main('load_api_providers')()
+    target = (provider_id or '').strip().lower()
+    if not target:
+        if not allow_primary_when_empty:
+            raise HTTPException(status_code=400, detail='未指定 API 平台：无法确定该请求属于哪家服务商，不能猜一个发。')
+        primary = get_primary_provider_id(providers)
+        logger.info('请求未指定 API 平台，按主平台处理：%s', primary)
+        target = primary
+    provider = next((p for p in providers if p['id'] == target), None)
+    if not provider:
+        raise HTTPException(status_code=400, detail=f'未找到 API 平台：{target}。它可能已删除或名字改了；请在设置里选一个现有平台，未保存的新平台请用当前表单直接拉取。')
+    if not provider.get('enabled', True):
+        raise HTTPException(status_code=400, detail=f"API 平台已禁用：{provider.get('name') or target}")
+    return provider
+
 def update_env_values(updates):
     with API_ENV_LOCK:
         return _update_env_values_unlocked(updates)

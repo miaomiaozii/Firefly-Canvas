@@ -1180,12 +1180,12 @@ class ProjectVideoGenerationRequest(BaseModel):
     base_revision: int = Field(ge=0)
 
 class ImageTaskQueryRequest(BaseModel):
-    provider_id: str = 'comfly'
+    provider_id: str = ''  # #349：不再默认 comfly——查询必须用任务自己的服务商，空值会被后端拒掉
     task_id: str = Field(min_length=1, max_length=240)
 
 class CanvasVideoRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
-    provider_id: str = 'comfly'
+    provider_id: str = ''  # #349：空值 = 显式“没选”，后端按主平台走并记日志；认不出的名字直接 400
     model: str = 'veo3-fast'
     duration: int = 5
     width: Optional[int] = None
@@ -1285,7 +1285,7 @@ class CanvasLLMRequest(BaseModel):
     system_prompt: str = ''
     model: str = ''
     messages: List[Dict[str, Any]] = []
-    provider: str = 'comfly'
+    provider: str = ''  # #349：不再默认 comfly，避免存着旧平台的会话实际发给别家
     ms_model: str = ''
     images: List[str] = []
     videos: List[str] = []

@@ -429,7 +429,8 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         const trustedSource = trustedMode ? (['library','cloud','manual'].includes(runSettings.videoTrustedSource) ? runSettings.videoTrustedSource : 'library') : 'none';
         // 仅「素材库链接」来源才走 asset:// 认证地址 + 后端可信素材路由；上传云端/手动网址走普通直链。
         const useAssetUris = trustedSource === 'library';
-        const targetPlatform = videoProviderPlatform(runSettings.videoProvider || 'comfly');
+        // #349：这里以前写死 || 'comfly'，对不选平台的场景会拿 comfly 去比平台。空值下结果本来也是 ''，改成直传。
+        const targetPlatform = videoProviderPlatform(runSettings.videoProvider || '');
         let mismatchedAsset = false;
         const effUrl = ref => {
             const uris = (ref && ref.asset_uris && typeof ref.asset_uris === 'object') ? ref.asset_uris : null;
@@ -455,7 +456,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         if(mismatchedAsset) toast(tr('smart.assetPlatformMismatch'));
         const payload = {
             prompt,
-            provider_id: runSettings.videoProvider || 'comfly',
+            provider_id: runSettings.videoProvider || '',  // #349：不再默认 comfly；没选就交给后端主平台（会记日志）
             model: runSettings.videoModel || 'veo3-fast',
             size:videoSize.size,
             width:videoSize.width,
@@ -523,14 +524,19 @@ function extractUpstreamTaskId(text){
 }
 
 function providerIdForSmartTask(node, task){
-    return task?.providerId || node?.runSettings?.provider_id || settings.provider_id || 'comfly';
+    // #349：末尾那个 || 'comfly' 拿掉了。查的是已有任务，猜一个服务商只会得到「任务不存在」，
+    // 情原不查、说清楚原因，也不能拿别家的接口去查别家的任务。
+    return task?.providerId || node?.runSettings?.provider_id || settings.provider_id || '';
 }
 
 async function fetchImageTaskQuery(providerId, taskId){
+    if(!String(providerId || '').trim()){
+        throw new Error('不知道这条任务属于哪家服务商，没法查询。请在该节点重新选定服务商后再查询。');
+    }
     return fetch('/api/image-task-query', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({provider_id:providerId || 'comfly', task_id:taskId})
+        body:JSON.stringify({provider_id:providerId, task_id:taskId})
     }).then(async r => {
         if(!r.ok) throw new Error(await r.text());
         return r.json();
