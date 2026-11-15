@@ -193,7 +193,10 @@
         document.querySelectorAll('iframe').forEach(frame => {
             try {
                 frame.contentWindow?.postMessage({ type: 'studio-ui-scale', mode, scale }, '*');
-            } catch(e) {}
+            } catch(e) {
+                // #348: 跨源/已关闭的 iframe 发不出缩放广播；其余 iframe 不受影响。
+                console.warn('[theme] 缩放广播到 iframe 失败', e);
+            }
         });
     }
 
@@ -201,7 +204,10 @@
         const next = normalizeScaleMode(mode);
         try {
             localStorage.setItem(SCALE_KEY, next);
-        } catch(e) {}
+        } catch(e) {
+            // #348: 隐私模式等场景 localStorage 不可写；缩放仍会在本次会话内生效。
+            console.warn('[theme] 缩放偏好写入 localStorage 失败', e);
+        }
         applyScale(next);
         if(shouldBroadcast) broadcastScale(next);
     }

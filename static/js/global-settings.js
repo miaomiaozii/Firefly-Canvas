@@ -7,7 +7,8 @@
   const embedded = window.self !== window.top;
   let state = null;
   let studioApiChannel = null;
-  try { studioApiChannel = new BroadcastChannel('studio-api'); } catch(error) {}
+  // #348: BroadcastChannel 不可用（旧浏览器/被禁用）时 studioApiChannel 保持 null，notifyCanvas 自动降级到 parent/opener postMessage 路径。
+  try { studioApiChannel = new BroadcastChannel('studio-api'); } catch(error) { /* #348: 见上方注释 */ }
   const tr = key => window.StudioI18n?.t?.(key) || key;
   const localText = (zh, en) => window.StudioI18n?.lang?.() === 'en' ? en : zh;
   const librarySummaryText = library => window.StudioI18n?.lang?.() === 'en'
@@ -129,13 +130,22 @@
     // Embedded settings already has a direct parent channel. Do not also send
     // the same event through BroadcastChannel: the canvas would refresh twice.
     if(embedded && window.parent && window.parent !== window){
-      try { window.parent.postMessage(message, window.location.origin); } catch(error) {}
+      try { window.parent.postMessage(message, window.location.origin); } catch(error) {
+        // #348: 父窗口不可用（已关闭/跨源受限）；下方还有 BroadcastChannel/opener 两条兜底通道。
+        console.warn('[global-settings] 通知画布失败（parent 通道）', error);
+      }
       return;
     }
     if(studioApiChannel){
-      try { studioApiChannel.postMessage(message); return; } catch(error) {}
+      try { studioApiChannel.postMessage(message); return; } catch(error) {
+        // #348: BroadcastChannel 已关闭/损坏；继续走 opener 兜底通道。
+        console.warn('[global-settings] 通知画布失败（BroadcastChannel 通道）', error);
+      }
     }
-    try { if(window.opener && !window.opener.closed) window.opener.postMessage(message, window.location.origin); } catch(error) {}
+    try { if(window.opener && !window.opener.closed) window.opener.postMessage(message, window.location.origin); } catch(error) {
+      // #348: 最后一条兜底通道也失败；设置本身已保存成功，画布刷新/重开时会拿到最新值。
+      console.warn('[global-settings] 通知画布失败（opener 通道，无更多兜底）', error);
+    }
   }
   function waitForCanvasReadyForLibrarySwitch(){
     if(!embedded || !window.parent || window.parent === window) return Promise.resolve(true);

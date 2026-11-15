@@ -269,6 +269,7 @@ async function persistUndoStackNow(projectId){
         });
         if(!res.ok) console.warn('[canvas-undo] undo-stack 持久化失败', res.status);
     } catch(err) {
+        // #348: 后台持久化（防抖触发）；失败时本次会话内撤销仍可用，下次变更会再试。
         console.warn('[canvas-undo] undo-stack 持久化失败', err && err.message);
     }
 }
@@ -289,6 +290,7 @@ async function restorePersistedUndoStack(){
         redoEntries.forEach(snap => { if(snap && typeof snap === 'object') redoStack.push(snap); });
         syncUndoRedoButtons();
     } catch(err) {
-        // 静默：恢复失败只回到「刷新失忆」的旧行为，不影响画布可用。
+        // #348: 恢复失败回落「刷新失忆」的旧行为，不影响画布可用（原注释保留）。
+        console.warn('[canvas-undo] 恢复持久化 undo 栈失败', err && err.message);
     }
 }

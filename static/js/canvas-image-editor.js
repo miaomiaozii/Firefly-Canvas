@@ -1901,8 +1901,16 @@ function resizeCropFromDrag(dx, dy){
 async function uploadCroppedBlob(blob, name){
     const form = new FormData();
     form.append('files', blob, name);
-    const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
-    return data.files?.[0];
+    const res = await fetch('/api/ai/upload', {method:'POST', body:form});
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+        // #348: 上传失败以前静默（.then(r => r.json()) 不检查 res.ok）——用户点了裁剪/扩图却无反应。
+        const detail = typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`;
+        console.warn('[image-editor] 编辑结果上传失败', name, detail);
+        window.ffToast?.error?.(`编辑结果上传失败：${detail}`);
+        return null;
+    }
+    return data.files?.[0] || null;
 }
 
 function applyOutpaintSizeToSmartParams(width, height){

@@ -224,5 +224,138 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         )
 
 
+class SwallowedErrorRatchetTests(unittest.TestCase):
+    """#348：吞错 ratchet 守卫。
+
+    空 catch / 只 console 的 catch / 空 .catch(()=>{}) 属于「错误被吞」：
+    用户触发的操作失败必须提示（ffToast），后台/可忽略的必须 console.warn 并加
+    `// #348:` 标记注释说明为什么可以忽略。本测试扫全部 static/**.js + 产品页内联脚本，
+    任何「没有实质处理、又没有 #348 标记」的吞错点都会红——新增吞错必须先接线。
+    """
+
+    MARKER = "#348"
+
+    def _js_sources(self) -> list[tuple[str, str]]:
+        sources = []
+        for js in sorted((ROOT / "static").rglob("*.js")):
+            sources.append((js.relative_to(ROOT).as_posix(), js.read_text(encoding="utf-8")))
+        # 产品页内联 <script>（如 smart-canvas.html 的早期主题应用）同样在范围内
+        for page in ("smart-canvas.html", "project-list.html", "global-settings.html"):
+            html = (ROOT / "static" / page).read_text(encoding="utf-8")
+            for m in re.finditer(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S):
+                if "catch" in m.group(1):
+                    sources.append((f"{page} (inline)", m.group(1)))
+        return sources
+
+    @staticmethod
+    def _strip_js_comments(src: str) -> str:
+        """去掉 // 与 /* */ 注释，用空格等长替换（保留换行）——行号/偏移与原始源码对齐。"""
+        out = list(src)
+        i, n = 0, len(src)
+        while i < n:
+            c = src[i]
+            if c in "\"'`":
+                q = c
+                j = i + 1
+                while j < n:
+                    if src[j] == "\\":
+                        j += 2
+                        continue
+                    if src[j] == q:
+                        break
+                    j += 1
+                i = j + 1
+            elif c == "/" and i + 1 < n and src[i + 1] == "/":
+                while i < n and src[i] != "\n":
+                    out[i] = " "
+                    i += 1
+            elif c == "/" and i + 1 < n and src[i + 1] == "*":
+                j = src.find("*/", i + 2)
+                end = n if j == -1 else j + 2
+                for k in range(i, end):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = end
+            else:
+                i += 1
+        return "".join(out)
+
+    @staticmethod
+    def _match_brace(src: str, open_idx: int) -> int:
+        """src[open_idx] 必须是 '{'，返回配对 '}' 的下标（跳过字符串），失败返回 -1。"""
+        depth = 0
+        i, n = open_idx, len(src)
+        while i < n:
+            c = src[i]
+            if c in "\"'`":
+                q = c
+                i += 1
+                while i < n:
+                    if src[i] == "\\":
+                        i += 2
+                        continue
+                    if src[i] == q:
+                        break
+                    i += 1
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+            i += 1
+        return -1
+
+    @classmethod
+    def _swallowed_sites(cls, src: str) -> list[tuple[int, str]]:
+        """返回 (行号, 原始块文本)：空 catch / 只 console 的 catch / 空 .catch(箭头)。"""
+        stripped = cls._strip_js_comments(src)
+        sites: list[tuple[int, int]] = []  # (catch 起点, 块 '{' 下标)
+        for m in re.finditer(r"\bcatch\s*(?:\(\s*[\w$]*\s*\))?\s*\{", stripped):
+            sites.append((m.start(), m.end() - 1))
+        for m in re.finditer(r"\.catch\s*\(", stripped):
+            # 只认箭头函数体：`.catch(` 后第一个 `=> {` 的 `{`
+            am = re.search(r"=>\s*\{", stripped[m.end():m.end() + 300])
+            if am:
+                sites.append((m.start(), m.end() + am.end() - 1))
+        out: list[tuple[int, str]] = []
+        for origin, open_idx in sites:
+            close_idx = cls._match_brace(stripped, open_idx)
+            if close_idx == -1:
+                continue
+            body = stripped[open_idx + 1 : close_idx]
+            body_no_console = re.sub(r"\bconsole\s*\.\s*\w+\s*\(.*?\)\s*;?", "", body, flags=re.S)
+            if body_no_console.strip():
+                continue  # 有实质处理，不算吞错
+            line = stripped[:origin].count("\n") + 1
+            out.append((line, src[open_idx : close_idx + 1]))
+        return out
+
+    def test_no_unmarked_swallowed_error_sites(self):
+        offenders = []
+        for name, src in self._js_sources():
+            for line, raw in self._swallowed_sites(src):
+                if self.MARKER not in raw:
+                    offenders.append(f"{name}:{line}")
+        self.assertEqual(
+            offenders,
+            [],
+            "发现未接线的吞错点（空 catch / 只 console）。用户触发 → window.ffToast.error（ui-toast.js）；"
+            "后台/可忽略 → console.warn 并在 catch 块内加 `// #348:` 注释说明原因。违规：" + ", ".join(offenders),
+        )
+
+    def test_product_pages_load_ui_toast_before_business_scripts(self):
+        # #348：ffToast 必须在业务脚本之前可用（theme.js 之后）。
+        for page in ("smart-canvas.html", "project-list.html", "global-settings.html"):
+            html = (ROOT / "static" / page).read_text(encoding="utf-8")
+            self.assertIn("/static/js/ui-toast.js", html, f"{page} 没加载 ui-toast.js")
+            toast_pos = html.index("/static/js/ui-toast.js")
+            for script in ("global-preferences.js", "project-list.js", "global-settings.js", "smart-canvas.js"):
+                m = re.search(rf"/static/js/{re.escape(script)}\?v=", html)
+                if not m:
+                    continue  # 该页不加载这个脚本
+                self.assertLess(toast_pos, m.start(), f"{page}: ui-toast.js 必须在 {script} 之前加载")
+
+
 if __name__ == "__main__":
     unittest.main()

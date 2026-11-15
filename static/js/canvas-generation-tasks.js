@@ -89,7 +89,7 @@ async function runPromptLLMNode(nodeId){
 async function queueSmartGenerationRegistration(nodeId, operation){
     const key = String(nodeId || '');
     const previous = smartGenerationRegistrationQueues.get(key) || Promise.resolve();
-    const current = previous.catch(() => {}).then(operation);
+    const current = previous.catch(error => { /* #348: 串行队列的故障隔离——前一个操作失败不阻塞下一个；每个操作自己负责 toast/错误处理 */ }).then(operation);
     smartGenerationRegistrationQueues.set(key, current);
     try {
         return await current;
@@ -375,7 +375,10 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
                     canvasCore.scheduleSave();
                     await canvasCore.saveCanvas();
                 }
-                if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+                if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(error => {
+                    // #348: fire-and-forget 完成跟踪（上方注释：不得阻塞 resume 日志）；resumeSmartPendingNode 内部已按任务自行处理失败。
+                    console.warn('[generation-tasks] 视频 pending 节点恢复失败', error);
+                });
             })(), {prompt, refs, runSettings});
             const pendingError = new Error(tr('smart.canvasVideoPendingAfterSave'));
             pendingError.smartSavePendingResume = true;
@@ -989,7 +992,8 @@ async function retryFailedGenerationInner(node){
                     return;
                 }
             }catch(_){
-                // 取回失败则继续尝试重新提交
+                // #348: 取回失败则继续尝试重新提交（下方路径）；记日志便于排查。
+                console.warn('[generation-tasks] 失败任务取回请求出错，转重新提交', _);
             }
         }
     }
@@ -1076,7 +1080,8 @@ function resumeSmartPendingTasks(){
         });
     });
     canvasState.nodes.filter(node => smartPendingTasks(node).length).forEach(node => {
-        void resumeSmartPendingNode(node).catch(() => {});
+        // #348: 页面加载后的后台恢复；resumeSmartPendingNode 内部已按任务自行处理失败。
+        void resumeSmartPendingNode(node).catch(error => { /* #348: 同上——后台恢复的 fire-and-forget 跟踪 */ });
     });
 }
 // #189: after a settled canvas save, replay only the generation requests whose
@@ -1125,7 +1130,10 @@ function mirrorPendingActionToStorage(entry){
         if(!node.pendingActionResumes.some(rec => rec?.actionId === entry.actionId)){
             node.pendingActionResumes.push({actionId:entry.actionId, kind:entry.kind, payload:entry.payload, enqueuedAt:entry.createdAt});
         }
-    } catch(error){ /* mirror is best-effort; in-memory entry remains authoritative */ }
+    } catch(error){
+        // #348: mirror 是尽力而为（见上方 #197 注释）；内存项仍是权威来源，下一轮 dispatch 会再 mirror。
+        console.warn('[generation-tasks] pending-action mirror 写入节点失败', error);
+    }
 }
 // #197: drop the persisted mark from the anchored node (used when the entry can no
 // longer be replayed — node gone). The next save lands the removal.
@@ -1134,7 +1142,7 @@ function clearPendingActionFromStorage(entry){
         const node = (typeof canvasState !== 'undefined' && canvasState?.nodes || []).find(n => n && n.id === entry.nodeId);
         if(!node || !Array.isArray(node.pendingActionResumes)) return;
         node.pendingActionResumes = node.pendingActionResumes.filter(rec => rec?.actionId !== entry.actionId);
-    } catch(error){ /* best-effort */ }
+    } catch(error){ /* #348: 尽力而为——清不掉时下次保存会覆盖；内存队列已移除 */ }
 }
 // #198: per-kind replay success check. conversation / photoshop / video replay
 // closures THROW on a failed request, so a resolved replay means success. local-edit
@@ -1158,7 +1166,10 @@ function schedulePendingActionRetryTimer(entry){
     const delay = Math.max(0, Number(entry.nextRetryAt || 0) - Date.now());
     entry._retryTimer = setTimeout(() => {
         entry._retryTimer = null;
-        if(smartPendingActionResumes.has(entry.actionId)) void resumeSmartPendingActionResumes(canvasState.nodes).catch(() => {});
+        if(smartPendingActionResumes.has(entry.actionId)) void resumeSmartPendingActionResumes(canvasState.nodes).catch(error => {
+            // #348: 后台重试器安全网；单条 entry 的失败由 dispatcher 自行回写标记并退避重排。
+            console.warn('[generation-tasks] pending-action 重试器执行失败', error);
+        });
     }, delay);
 }
 // #198: a replayed gate request failed AFTER its mark had already been cleared from
@@ -1201,7 +1212,7 @@ function handlePendingActionReplayFailure(entry, freshNode){
     // Event API on purpose: the layer ratchet (tests/test_canvas_core_layer.py)
     // forbids any new bare reference from this module to a smart-canvas top-level
     // name, and #201 track 1 will later interface-ify this module properly.
-    try { window.dispatchEvent(new Event('pagehide')); } catch(error){ /* best-effort */ }
+    try { window.dispatchEvent(new Event('pagehide')); } catch(error){ /* #348: 尽力而为——pagehide 监听器自身出错不影响退避重排已完成 */ }
 }
 function hasSmartPendingActionResume(kind, nodeId){
     for(const entry of smartPendingActionResumes.values()){

@@ -225,6 +225,14 @@ export function createCanvasContext({ locationSearch = '' } = {}) {
     };
     ctx.cancelAnimationFrame = (id) => { harness.rafQueue = harness.rafQueue.filter((t) => t.id !== id); };
     ctx.fetch = async () => { throw new Error('fetch is disabled in the unit harness'); };
+    // #348：统一 toast（static/js/ui-toast.js）不属画布模块加载集（is_canvas_module 口径），
+    // 被测代码里的 ffToast.error/info/success 走记录式桩，断言可读 harness.toasts。
+    harness.toasts = [];
+    ctx.ffToast = {
+        error: (msg) => harness.toasts.push({ type: 'error', message: String(msg) }),
+        info: (msg) => harness.toasts.push({ type: 'info', message: String(msg) }),
+        success: (msg) => harness.toasts.push({ type: 'success', message: String(msg) }),
+    };
     ctx.CustomEvent = class CustomEvent {
         constructor(type, options = {}) { this.type = type; this.detail = options && options.detail; }
     };

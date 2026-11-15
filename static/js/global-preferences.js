@@ -8,7 +8,10 @@
       try {
         const response = await fetch('/api/global-settings/preferences', {cache:'no-store'});
         if(response.ok) current = {...defaults, ...((await response.json()).preferences || {})};
-      } catch(error) {}
+      } catch(error) {
+        // #348: 后台初始化（页面加载时拉偏好），失败回落到下方默认值，不影响页面可用。
+        console.warn('[global-preferences] 读取全局偏好失败，使用默认值', error);
+      }
       current.theme = current.theme === 'light' ? 'light' : 'dark';
       // #365：界面语言只剩中文。不管后端戒坏值、也不管 localStorage 里存的旧 'en'，
       // 这里一律当 zh 算，下一行写回 localStorage 就把老用户的英文偏好迁掉了。

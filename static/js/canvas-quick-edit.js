@@ -78,7 +78,11 @@
       const value = input.value.trim();
       cleanup();
       if (save && value && typeof opts.onCommit === "function") {
-        try { opts.onCommit(value); } catch (err) { console.warn("[quick-edit] onCommit failed", err); }
+        try { opts.onCommit(value); } catch (err) {
+          // #348: 用户触发的重命名提交失败——必须让用户看到，否则改完没反应。
+          console.warn("[quick-edit] onCommit failed", err);
+          window.ffToast?.error?.("重命名保存失败：" + (err && err.message ? err.message : String(err)));
+        }
       }
       finish();
     }

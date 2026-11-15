@@ -88,7 +88,10 @@ function connectAgentWebSocket(nodeId, projectId, options = {}) {
     if (!state.chatModelsFetched) {
         state.chatModelsFetched = true;
         Promise.resolve().then(() => fetchAgentChatModels(projectId)).then(() => {
-            try { renderAgentNode(nodeId); } catch (e) {}
+            try { renderAgentNode(nodeId); } catch (e) {
+                // #348: 后台异步重渲染（模型池拉取完成后）；失败不影响节点本身，下次渲染会重试。
+                console.warn('[agent-tui] 模型池更新后重渲染失败', e);
+            }
         }).catch(() => { state.chatModelsFetched = false; });
     }
     // CONNECTING(0)/OPEN(1) 都算「连接在途」：不再新建（重复建连正是重连风暴的根源之一）。
@@ -149,6 +152,7 @@ function openAgentWebSocket(nodeId, projectId) {
             const data = JSON.parse(event.data);
             handleAgentEvent(nodeId, data);
         } catch (e) {
+            // #348: 服务端发来的畸形事件，只跳过该条；连接与后续事件不受影响。
             console.error('Failed to parse agent event:', e);
         }
     };
@@ -219,7 +223,10 @@ function replayAgentEvents(nodeId, state) {
                 }
             }
         })
-        .catch(() => {})
+        .catch(e => {
+            // #348: 事件回放请求失败（后台补偿通道）；finally 里本地缓冲事件仍会应用。
+            console.warn('[agent-tui] 事件回放请求失败', e);
+        })
         .finally(() => {
             state._replayInFlight = false;
             const buf = state._replayBuffer || [];
@@ -454,7 +461,7 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
             try {
                 const data = await resp.json();
                 if (data && data.detail) detail = String(data.detail);
-            } catch (e) { /* 非 JSON 错误体 */ }
+            } catch (e) { /* #348: 非 JSON 错误体，detail 回落 HTTP 状态码，错误仍会写入历史区（下一行） */ }
             state.messages.push({ role: 'system', text: `⚠️ 指令未送达：${detail}` });
         }).catch(e => {
             console.error('Failed to send agent prompt:', e);
@@ -488,7 +495,7 @@ async function convertAgentMediaAttachment(file) {
     const resp = await fetch(url, { method: 'POST', body: fd });
     if (!resp.ok) {
         let detail = `HTTP ${resp.status}`;
-        try { detail = (await resp.json()).detail || detail; } catch (e) { /* 非 JSON 错误体 */ }
+        try { detail = (await resp.json()).detail || detail; } catch (e) { /* #348: 非 JSON 错误体，detail 回落 HTTP 状态码，随后 throw 由调用方提示 */ }
         throw new Error(detail);
     }
     return resp.json();
@@ -552,7 +559,17 @@ function sendAgentCommand(nodeId, projectId, command, options = {}) {
         // 用户意图，与走哪条通道无关），请求真送达才写成功文案，没送达写警告。
         if (optimistic) optimistic(state);
         renderAgentNode(nodeId);
-        fetch(url, fetchOpts).then(() => {
+        fetch(url, fetchOpts).then(async response => {
+            if (!response.ok) {
+                // #348: HTTP 错误以前被当成功（.then 不检查 res.ok）→ 按钮假成功。拆出原因交给 onFailure。
+                let detail = `HTTP ${response.status}`;
+                try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
+                const error = new Error(`agent ${command}: ${detail}`);
+                console.error(`Failed to send agent ${command}:`, error);
+                if (onFailure) onFailure(state, error);
+                renderAgentNode(nodeId);
+                return;
+            }
             if (onSuccess) onSuccess(state);
             renderAgentNode(nodeId);
         }).catch(e => {
@@ -606,7 +623,17 @@ function setAgentModel(nodeId, projectId, model) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model }),
-    }).catch(e => console.error('Failed to set agent model:', e));
+    }).then(async response => {
+        if (!response.ok) {
+            // #348: 模型切换失败以前静默（乐观更新已改本地，服务端拒绝无提示）。
+            let detail = `HTTP ${response.status}`;
+            try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
+            throw new Error(detail);
+        }
+    }).catch(e => {
+        console.error('Failed to set agent model:', e);
+        window.ffToast?.error?.(`Agent 模型切换失败：${e?.message || e}`);
+    });
     renderAgentNode(nodeId);
 }
 
@@ -620,7 +647,17 @@ function setAgentAutonomy(nodeId, projectId, autonomy) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ autonomy: autonomy }),
-    }).catch(e => console.error('Failed to set agent autonomy:', e));
+    }).then(async response => {
+        if (!response.ok) {
+            // #348: 自主级别切换失败以前静默（同 setAgentModel）。
+            let detail = `HTTP ${response.status}`;
+            try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
+            throw new Error(detail);
+        }
+    }).catch(e => {
+        console.error('Failed to set agent autonomy:', e);
+        window.ffToast?.error?.(`Agent 自主级别切换失败：${e?.message || e}`);
+    });
     renderAgentNode(nodeId);
 }
 
@@ -646,6 +683,8 @@ async function forkAgentSession(nodeId, projectId, entryId, name) {
         renderAgentNode(nodeId);
     } catch (e) {
         console.error('Failed to fork agent session:', e);
+        // #348: 用户触发的 fork 失败——选择器已关，不提示用户会以为成功。
+        window.ffToast?.error?.(`Fork 失败：${e && e.message ? e.message : String(e)}`);
     }
 }
 
@@ -670,6 +709,8 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
         renderAgentNode(nodeId);
     } catch (e) {
         console.error('Failed to switch agent branch:', e);
+        // #348: 用户触发的分支切换失败——不提示用户会以为已切换。
+        window.ffToast?.error?.(`切换分支失败：${e && e.message ? e.message : String(e)}`);
     }
 }
 
@@ -719,6 +760,8 @@ async function showForkPicker(nodeId, projectId) {
         await forkAgentSession(nodeId, projectId, message.entryId, picked.name || '');
     } catch (e) {
         console.error('Failed to show fork picker:', e);
+        // #348: 用户点开 Fork 选择器但拉取消息失败——不提示用户会以为没有可 fork 的消息。
+        window.ffToast?.error?.(`打开 Fork 选择器失败：${e && e.message ? e.message : String(e)}`);
     }
 }
 
@@ -775,7 +818,10 @@ async function showAgentCliTakeover(nodeId, projectId) {
         if (!ta) return;
         ta.removeAttribute('readonly');
         ta.select();
-        try { document.execCommand('copy'); } catch (e) {}
+        try { document.execCommand('copy'); } catch (e) {
+            // #348: 剪贴板双通道都失败（clipboard API 与 execCommand）；对话框仍开着，命令文本可手动全选复制。
+            console.warn('[agent-tui] 复制 CLI 命令失败', e);
+        }
         ta.setAttribute('readonly', '');
     }
     dlg.addEventListener('close', () => dlg.remove());
@@ -1546,7 +1592,7 @@ function renderAgentNode(nodeId) {
             const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
             if (newInput) {
                 newInput.focus();
-                try { newInput.setSelectionRange(selStart, selEnd); } catch (e) { /* noop */ }
+                try { newInput.setSelectionRange(selStart, selEnd); } catch (e) { /* #348: 防御性——光标恢复失败不影响输入，焦点已恢复 */ }
             }
         }
     }
@@ -1587,7 +1633,7 @@ function cleanupAgentTuiState(nodeId) {
             state.reconnectTimer = null;
         }
         if (state.socket) {
-            try { state.socket.close(); } catch (e) {}
+            try { state.socket.close(); } catch (e) { /* #348: 防御性——close 可能因已关闭再抛，清理流程继续 */ }
         }
         agentTuiState.delete(nodeId);
     }

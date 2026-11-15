@@ -219,7 +219,10 @@ function canvasRecordDownload({ filename, bytes = 0, report = null, status = 'ok
         const list = canvasDownloadRecords();
         list.unshift(record);
         localStorage.setItem(CANVAS_DOWNLOAD_RECORDS_KEY, JSON.stringify(list.slice(0, CANVAS_DOWNLOAD_RECORDS_LIMIT)));
-    }catch(e){ /* 存不下就算了，下载结果已经拿到 */ }
+    }catch(e){
+        // #348: 下载记录只是本地历史，localStorage 写不下不影响已拿到的下载结果。
+        console.warn('[canvas-download] 下载记录写入失败', e);
+    }
     return record;
 }
 

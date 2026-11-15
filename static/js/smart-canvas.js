@@ -297,7 +297,10 @@ function loadProjectViewport(projectId=canvasId){
 function persistProjectViewport(){
     const key = projectViewportStorageKey();
     if(!key) return;
-    try { localStorage.setItem(key, JSON.stringify(normalizeProjectViewport(viewport))); } catch(error) {}
+    try { localStorage.setItem(key, JSON.stringify(normalizeProjectViewport(viewport))); } catch(error) {
+        // #348: 视口位置记忆是 best-effort（隐私模式/配额满）；失败只影响下次打开的初始视口。
+        console.warn('[smart-canvas] 视口位置写入 localStorage 失败', error);
+    }
 }
 const MS_GEN_MODELS = {
     custom: { label:tr('smart.custom'), modelId:'', acceptsImage:true }
@@ -385,7 +388,7 @@ async function clipboardMatchesText(value){
         if(navigator.clipboard?.readText && window.isSecureContext){
             return (await navigator.clipboard.readText()) === value;
         }
-    } catch(_) {}
+    } catch(_) { /* #348: 剪贴板读取被拒/不可用——返回 null 表示「未验证」，调用方按未失败处理 */ }
     return null;
 }
 async function copyTextToClipboard(text){
@@ -401,7 +404,7 @@ async function copyTextToClipboard(text){
             const verified = await clipboardMatchesText(value);
             return verified !== false;
         }
-    } catch(_) {}
+    } catch(_) { /* #348: 剪贴板写入失败——返回 false，由调用方（复制按钮）提示用户 */ }
     return false;
 }
 function syncIconButtonAccessibility(root=document){
@@ -449,7 +452,7 @@ function smartActivateVideoPreview(target){
         if(fallback){
             fallback.controls = true;
             fallback.muted = false;
-            fallback.play?.().catch(() => {});
+            fallback.play?.().catch(error => { /* #348: play() 被策略/源拒绝——控件仍在，用户可手动重播 */ });
             return true;
         }
         return false;
@@ -472,7 +475,7 @@ function smartActivateVideoPreview(target){
         if(image) image._inlineVideoActive = true;
         video.dataset.inlineVideoActive = '1';
     });
-    video.play?.().catch(() => {});
+    video.play?.().catch(error => { /* #348: play() 被策略/源拒绝——控件仍在，用户可手动重播 */ });
     return true;
 }
 function isSmartPreviewImage(img){
@@ -510,7 +513,7 @@ function preloadSmartSelectedHighRes(src){
         const img = new Image();
         img.decoding = 'async';
         img.onload = async () => {
-            try { if(img.decode) await img.decode(); } catch(e) {}
+            try { if(img.decode) await img.decode(); } catch(e) { /* #348: decode 失败不影响后续使用，图像已加载成功 */ }
             smartSelectedHighResLoaded.add(src);
             resolve(true);
         };
@@ -644,6 +647,7 @@ async function importProjectMediaReference(item){
             }
         }
     } catch(_error) {
+        // #348: 畸形/外部 URL 定位符走普通导入路径（原注释保留）。
         // Keep the normal import path for malformed or external locators.
     }
     const itemKind = mediaKindForItem(item);
@@ -1980,7 +1984,7 @@ shell.addEventListener('pointerover', event => {
     video.muted = true;
     video.loop = true;
     const playing = video.play();
-    if(playing?.catch) playing.catch(() => {});
+    if(playing?.catch) playing.catch(error => { /* #348: hover 试播被策略/源拒绝——控件仍在，点击可正式播放 */ });
 });
 shell.addEventListener('pointerout', event => {
     const video = event.target?.closest?.('video[data-video-preview="1"]');
@@ -1988,7 +1992,7 @@ shell.addEventListener('pointerout', event => {
     if(event.relatedTarget && video.contains(event.relatedTarget)) return;
     video.dataset.hoverPlaying = '';
     video.pause();
-    try { video.currentTime = 0; } catch(error) {}
+    try { video.currentTime = 0; } catch(error) { /* #348: 防御性——复位播放位置失败不影响 hover 试播状态清理 */ }
 });
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
@@ -3951,7 +3955,7 @@ async function loadConfig(){
         try {
             const spec = await fetch('/api/model-specs').then(r => r.ok ? r.json() : null);
             if(spec && typeof spec === 'object'){ modelSpecs = Object.assign({}, modelSpecs, spec); }
-        } catch(_){}
+        } catch(_){ /* #348: model-specs 拉取失败不阻塞（见上方注释）——UI 回退 provider 配置 */ }
         // 提供商配置已就绪即先渲染参数面板。
         sanitizeSmartApiSelection(settings);
         updateProviderModels();
@@ -4060,6 +4064,9 @@ async function loadPromptTemplates(){
         if(!promptLibraries.some(lib => lib.id === activePromptLibraryId)) activePromptLibraryId = promptLibraries[0]?.id || 'system';
         renderPromptLibrarySelect();
     } catch(e) {
+        // #348: 用户打开面板/切换词库时失败——面板会变空，必须提示原因。
+        console.warn('[smart-canvas] 提示词模板库加载失败', e);
+        window.ffToast?.error?.(`提示词模板库加载失败：${e && e.message ? e.message : String(e)}`);
         builtinPromptTemplates = [];
         promptLibraries = [];
     }
@@ -4417,7 +4424,7 @@ async function openPromptTemplatePanel(nodeId='', templateId='', options={}){
     if(templateId) promptTemplateSelectedId = templateId;
     promptTemplatePanel.classList.add('open');
     // 每次打开都从后端拉取最新提示词库，确保素材库管理里的新增/修改/删除实时反映到画布（同根同源）。
-    try { await loadPromptTemplates(); } catch(e){}
+    try { await loadPromptTemplates(); } catch(e){ /* #348: loadPromptTemplates 内部已 toast+console.warn，这里仅防御 */ }
     if(!promptTemplateSelectedId || !promptTemplateItems().some(it => it.id === promptTemplateSelectedId)){
         promptTemplateSelectedId = promptTemplateItems()[0]?.id || '';
     }
@@ -5128,7 +5135,7 @@ async function mergeReloadCanvasNow(){
         if(!res.ok) return;
         const data = await res.json();
         if(data && data.canvas) applyMergedServerCanvas(data.canvas);
-    } catch(e) {}
+    } catch(e) { /* #348: 跨页同步的合并拉取——失败等下次变更/轮询再合并，不提示用户 */ }
 }
 
 // 导出刷新函数供外部模块调用
@@ -5172,7 +5179,10 @@ function startCanvasMetaPoll(){
             if(!res.ok) return;
             const meta = await res.json();
             if(Number(meta.updated_at || 0) > Number(canvas.updated_at || 0)) mergeReloadCanvasNow();
-        } catch(e) {}
+        } catch(e) {
+            // #348: 后台 8s 轮询兜底——单次失败记日志、等下一轮，不提示用户（避免网络抖动时弹窗打扰）
+            console.warn('[smart-canvas] 元信息轮询失败，等下一轮：', e && e.message);
+        }
     }, 8000);
 }
 function connectAssetLibrarySyncSocket(){
@@ -5196,18 +5206,18 @@ function connectAssetLibrarySyncSocket(){
                 const data = JSON.parse(event.data);
                 if(data?.type === 'asset_library_updated') handleAssetLibraryUpdatedMessage(data);
                 if(data?.type === 'canvas_updated') handleCanvasUpdatedMessage(data);
-            } catch(e) {}
+            } catch(e) { /* #348: 素材同步 WS 的畸形消息——跳过该条，连接不受影响 */ }
         };
         socket.onclose = () => {
             retryTimer = setTimeout(connect, 3000);
         };
         socket.onerror = () => {
-            try { socket.close(); } catch(e) {}
+            try { socket.close(); } catch(e) { /* #348: 防御性——close 可能再抛，重连由 onclose 定时器安排 */ }
         };
     };
     window.addEventListener('beforeunload', () => {
         clearTimeout(retryTimer);
-        try { socket?.close(); } catch(e) {}
+        try { socket?.close(); } catch(e) { /* #348: 页面卸载时的防御性关闭 */ }
     });
     connect();
 }
@@ -5405,7 +5415,7 @@ function showAssetHoverPreview(event, item){
         media.setAttribute('disablepictureinpicture', '');
         media.setAttribute('controlslist', 'nodownload noplaybackrate noremoteplayback');
         media.src = item.url;
-        media.play?.().catch(() => {});
+        media.play?.().catch(error => { /* #348: 素材悬浮预览的自动播放被策略/源拒绝——用户可重新悬浮/手动播放 */ });
     } else {
         // 用预览代理（缩放图）而非原图，悬浮预览更快、不卡。
         media.loading = 'lazy';
@@ -5484,8 +5494,14 @@ function beginAssetInlineRename(assetId){
                 render();
                 toast(tr('smart.localAssetRenamedSynced'));
             } else {
-                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(assetId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}).then(r => r.json());
-                setAssetLibraryFromResponse(data);
+                // #348: 补 res.ok 检查——HTTP 错误以前会被 .then(r=>r.json()) 静默吞掉（FastAPI 的 JSON detail 不抛错），重命名失败无提示。
+                const renameRes = await fetch(`/api/asset-library/items/${encodeURIComponent(assetId)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+                if(!renameRes.ok){
+                    let detail = `HTTP ${renameRes.status}`;
+                    try{ detail = String((await renameRes.json()).detail || detail); }catch(e){ /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码，外层 catch 会 toast */ }
+                    throw new Error(detail);
+                }
+                setAssetLibraryFromResponse(await renameRes.json());
             }
         } catch(err){
             restore();
@@ -5582,8 +5598,14 @@ function bindAssetItemEvents(){
             if(!confirm(tr('smart.assetDeleteGlobalConfirm'))) return;
             btn.disabled = true;
             try {
-                const data = await fetch(`/api/asset-library/items/${encodeURIComponent(btn.dataset.deleteAsset)}`, {method:'DELETE'}).then(r => r.json());
-                setAssetLibraryFromResponse(data);
+                // #348: 补 res.ok 检查——删除失败以前静默（同上：JSON detail 不抛错）。
+                const delRes = await fetch(`/api/asset-library/items/${encodeURIComponent(btn.dataset.deleteAsset)}`, {method:'DELETE'});
+                if(!delRes.ok){
+                    let detail = `HTTP ${delRes.status}`;
+                    try{ detail = String((await delRes.json()).detail || detail); }catch(e){ /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码，外层 catch 会 toast */ }
+                    throw new Error(detail);
+                }
+                setAssetLibraryFromResponse(await delRes.json());
             } catch(err){
                 toast(err.message || tr('smart.assetDeleteFail'));
             } finally {
@@ -5604,6 +5626,8 @@ function bindAssetItemEvents(){
                 let refCheckFailed = false;
                 try {
                     const refRes = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}/references`);
+                    // #348: HTTP 错误也计入 refCheckFailed——以前只有网络异常会进 catch，HTTP 500 的 JSON 体会被当「无引用」。
+                    if(!refRes.ok) throw new Error(`HTTP ${refRes.status}`);
                     const refData = await refRes.json();
                     references = refData.references || [];
                 } catch(refErr) {
@@ -5688,7 +5712,7 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
                 nextCanvas = rebased.canvas;
                 nextBaseline = rebased.baseline;
             }
-        } catch(_){ /* rebase 异常回退整体替换，保证不阻断同步 */ }
+        } catch(_){ /* #348: rebase 异常回退整体替换，保证不阻断同步（原注释保留） */ }
     }
     canvas = nextCanvas;
     canvas.history = activeTaskLogs !== null
@@ -5796,6 +5820,8 @@ async function smartAssetBatchDelete(){
     for(const assetId of ids){
         try {
             const refRes = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media/${encodeURIComponent(assetId)}/references`);
+            // #348: 同上方单删引用检查——HTTP 错误计入 refCheckFailed，避免把「查不到」当「无引用」。
+            if(!refRes.ok) throw new Error(`HTTP ${refRes.status}`);
             const refData = await refRes.json().catch(() => ({}));
             totalRefs += (refData.references || []).length;
         } catch(_){ refCheckFailed = true; }
@@ -6436,7 +6462,7 @@ async function openCanvasRecoveryWizard(recovery){
             const data = await res.json();
             window.__smartRecoveryEntries = Array.isArray(data.backups) ? data.backups : [];
         }
-    } catch(error) { /* 旧格式画布没有备份：列表保持为空 */ }
+    } catch(error) { /* #348: 旧格式画布没有备份列表（或请求失败）：列表保持为空，不阻断恢复向导 */ }
     smartRecoveryRender();
 }
 
@@ -6565,7 +6591,8 @@ async function loadAutosavePreferences(){
     try {
         await window.FireflyGlobalPreferences?.load?.();
     } catch(error) {
-        // ignore
+        // #348: 后台加载自动保存偏好；失败时 FireflyGlobalPreferences.load 内部已 console.warn，这里仅防御。
+        console.warn('[smart-canvas] 加载自动保存偏好失败', error);
     }
 }
 async function refreshAutosavePreferences(preferences=null){
@@ -6723,7 +6750,10 @@ registerSmartPendingActionRebuilder('video', (entry, live) => async (target) => 
         scheduleSave();
         await saveCanvas();
     }
-    if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(() => {});
+    if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(error => {
+        // #348: fire-and-forget 完成跟踪；resumeSmartPendingNode 内部已按任务自行处理失败。
+        console.warn('[smart-canvas] 视频 pending 节点恢复失败', error);
+    });
 });
 // #377：项目在另一个标签页被删了，这个页面还在按防抖/周期往一个不存在的 project_id 打 PATCH——
 // 旧 access 日志里这样刷了 15,183 次 404（三个项目各约 5,000 次）。收到一次 404 就认了：
@@ -7232,7 +7262,7 @@ function pasteAssetsFromInbox(){
     canvasState.selectedIds = created.length > 1 ? created : [];
     canvasState.selectedImage = {nodeId:'', index:-1};
     lastNodePasteAt = Date.now();
-    try { localStorage.removeItem(SMART_CANVAS_ASSET_INBOX_KEY); } catch(e){}
+    try { localStorage.removeItem(SMART_CANVAS_ASSET_INBOX_KEY); } catch(e) { /* #348: 粘贴收件箱清理是 best-effort；粘贴已成功（下方有 toast） */ }
     render();
     scheduleSave();
     toast(trf('smart.pastedAssets', {n: created.length}));
@@ -7510,16 +7540,16 @@ function captureMediaPlaybackState(media){
 }
 function restoreMediaPlaybackState(media, state){
     if(!media || !state) return;
-    try { media.playbackRate = state.playbackRate || 1; } catch(e) {}
-    try { media.muted = state.muted; } catch(e) {}
-    try { media.volume = state.volume; } catch(e) {}
+    try { media.playbackRate = state.playbackRate || 1; } catch(e) { /* #348: 防御性——媒体元素不支持/无效速率，其余状态继续恢复 */ }
+    try { media.muted = state.muted; } catch(e) { /* #348: 防御性——静音恢复失败不影响其他状态 */ }
+    try { media.volume = state.volume; } catch(e) { /* #348: 防御性——音量恢复失败不影响其他状态 */ }
     const applyTime = () => {
         if(Number.isFinite(state.currentTime) && state.currentTime > 0 && Math.abs((media.currentTime || 0) - state.currentTime) > 0.2){
-            try { media.currentTime = state.currentTime; } catch(e) {}
+            try { media.currentTime = state.currentTime; } catch(e) { /* #348: 防御性——定位失败不影响播放状态恢复 */ }
         }
         if(!state.paused && typeof media.play === 'function'){
             const playPromise = media.play();
-            if(playPromise?.catch) playPromise.catch(() => {});
+            if(playPromise?.catch) playPromise.catch(error => { /* #348: 移植后恢复播放被策略/源拒绝——用户可手动播放 */ });
         }
     };
     if(media.readyState >= 1) applyTime();
@@ -8160,7 +8190,10 @@ async function controlProjectImageTask(historyId, taskId, action, button=null){
         });
         render();
         toast(tr('smart.taskRequeued'));
-        void resumeSmartPendingNode(resultNode, {taskIds:[retryTaskId]}).catch(() => {});
+        void resumeSmartPendingNode(resultNode, {taskIds:[retryTaskId]}).catch(error => {
+            // #348: fire-and-forget 完成跟踪；resumeSmartPendingNode 内部已按任务自行处理失败。
+            console.warn('[smart-canvas] 重排任务恢复失败', error);
+        });
     } catch(error){
         toast((error?.message || (action === 'cancel' ? tr('smart.cancelTaskFailed') : tr('smart.retryTaskFailed'))).slice(0, 160));
     } finally {
@@ -10555,7 +10588,7 @@ function bindLocalEditNodeControls(el, node){
     const beginSelectionPointer = event => {
         if(event.button !== 0 || !selectionCanvas) return;
         event.preventDefault(); event.stopPropagation();
-        try { selectionCanvas.setPointerCapture?.(event.pointerId); } catch (_) {}
+        try { selectionCanvas.setPointerCapture?.(event.pointerId); } catch (_) { /* #348: 防御性——setPointerCapture 失败不影响选择框绘制 */ }
         const point = displayPoint(event);
         if(node.mode === 'modify'){
             selectionDrag = {start:point, current:point};
@@ -10593,7 +10626,7 @@ function bindLocalEditNodeControls(el, node){
     const endSelectionPointer = event => {
         if(!selectionDrag) return;
         event.preventDefault(); event.stopPropagation();
-        try { selectionCanvas?.releasePointerCapture?.(event.pointerId); } catch (_) {}
+        try { selectionCanvas?.releasePointerCapture?.(event.pointerId); } catch (_) { /* #348: 防御性——指针可能已释放，选择提交继续 */ }
         if(node.mode === 'modify' || node.selectionType === 'freehand'){
             commitSelection(node.mode === 'modify' ? null : selectionDrag.points);
             selectionDrag = null;
@@ -11774,7 +11807,7 @@ function promptNodeFlowSelection(textarea){
 }
 function restorePromptNodeFlowSelection(textarea, selection){
     if(!textarea || !selection) return;
-    try { textarea.setSelectionRange(selection.start, selection.end, selection.direction); } catch (_) {}
+    try { textarea.setSelectionRange(selection.start, selection.end, selection.direction); } catch (_) { /* #348: 防御性——选区恢复失败不影响输入框 */ }
 }
 function clearPromptNodeFlowGeometry(element){
     if(!element) return;
@@ -12648,11 +12681,11 @@ async function smartResponseErrorMessage(response, fallback=tr('chat.requestFail
         const detail = data.detail ?? data.error ?? data.message;
         if(typeof detail === 'string') return detail || fallback;
         if(Array.isArray(detail)) return detail.map(item => item?.msg || item?.message || String(item)).join('\n') || fallback;
-    } catch(_) {}
+    } catch(_) { /* #348: 错误体非 JSON——落到下方 text 解析（渐进回退设计） */ }
     try {
         const text = await response.text();
         if(text) return text;
-    } catch(_) {}
+    } catch(_) { /* #348: text 也取不到——返回 fallback 文案（渐进回退设计） */ }
     return fallback;
 }
 function smartDropDataTypes(dataTransfer){
@@ -14527,7 +14560,7 @@ async function exportSelectedSmartNodes(){
             try{
                 const j = await res.json();
                 detail = j?.detail || j?.message || detail;
-            }catch(e){}
+            }catch(e){ /* #348: 非 JSON 错误体，detail 回落 HTTP 状态码，下一行 toast 仍会提示 */ }
             toast(`${tr('smart.exportFailed')}: ${detail}`);
             return;
         }
@@ -14589,7 +14622,7 @@ async function exportMarkedSmartNodes(){
         });
         if(!res.ok){
             let detail = res.status;
-            try{ const j = await res.json(); detail = j?.detail || j?.message || detail; }catch(e){}
+            try{ const j = await res.json(); detail = j?.detail || j?.message || detail; }catch(e){ /* #348: 非 JSON 错误体，detail 回落 HTTP 状态码，下一行 toast 仍会提示 */ }
             toast(`${tr('smart.exportFailed')}: ${detail}`);
             return;
         }
@@ -15210,7 +15243,7 @@ shell.ondrop = async e => {
                 createImageNodeAt(historyDropPoint, [assetNodeImageFromItem(asset)], {skipUndo:true});
             }
             return;
-        } catch {}
+        } catch { /* #348: 拖拽载荷 JSON 解析失败——继续走下方通用图片拖拽路径 */ }
     }
     const payload = await resolveSmartImageDropPayload(e.dataTransfer);
     if(payload.type === 'none') return;
@@ -15541,7 +15574,7 @@ if(promptTemplateLibrarySelect) promptTemplateLibrarySelect.onchange = async () 
     promptTemplateEditing = false;
     // 拉取最新数据，确保素材库管理里新建/新增的词库与提示词在画布即时可见。
     const want = activePromptLibraryId;
-    try { await loadPromptTemplates(); } catch(e){}
+    try { await loadPromptTemplates(); } catch(e){ /* #348: loadPromptTemplates 内部已 toast+console.warn，这里仅防御 */ }
     if(promptLibraries.some(lib => lib.id === want)) activePromptLibraryId = want;
     renderPromptLibrarySelect();
     renderPromptTemplatePanel({preserveScroll:false});
@@ -16035,7 +16068,7 @@ promptInput.addEventListener('mouseover', event => {
         media.setAttribute('disablepictureinpicture', '');
         media.setAttribute('controlslist', 'nodownload noplaybackrate noremoteplayback');
         media.src = token.dataset.url || '';
-        media.play?.().catch(() => {});
+        media.play?.().catch(error => { /* #348: @提及预览视频的自动播放被策略/源拒绝——预览可手动重播 */ });
     } else {
         media.src = token.dataset.url || '';
         media.alt = 'preview';
@@ -16338,7 +16371,7 @@ try {
         if(event.data?.type === 'asset_library_updated') handleAssetLibraryUpdatedMessage(event.data);
         if(event.data?.type === 'canvas_updated') handleCanvasUpdatedMessage(event.data);
     };
-} catch(e) {}
+    } catch(e) { /* #348: BroadcastChannel 不可用（旧浏览器/被禁用）时静默降级——跨页同步仍有 window message 事件通道（下方 message 监听）兼底 */ }
 window.addEventListener('focus', () => {
     if(Date.now() - lastConfigRefreshAt > 1200) refreshSmartConfigFromSettings();
 });
@@ -16353,7 +16386,10 @@ window.addEventListener('message', event => {
                 while(canvasSyncInFlight) await new Promise(resolve => setTimeout(resolve, 50));
                 if(contentDirty) ok = await saveCanvas({automatic:false}) === true;
             }
-            try { source?.postMessage({type:'settings-project-library-ready', requestId, ok}, location.origin); } catch(error) {}
+            try { source?.postMessage({type:'settings-project-library-ready', requestId, ok}, location.origin); } catch(error) {
+                // #348: 设置 iframe 已关闭时回不了 ready；设置页会自行超时处理。
+                console.warn('[smart-canvas] 回复设置页 project-library-ready 失败', error);
+            }
         })();
         return;
     }

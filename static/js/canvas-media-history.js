@@ -67,7 +67,7 @@ function smartOriginalMediaUrl(itemOrUrl){
             const original = parsed.searchParams.get('url') || '';
             return original || text;
         }
-    } catch(e) {}
+    } catch(e) { /* #348: 防御性 URL 解析——非法 URL 直接按原样返回（下一行） */ }
     return text;
 }
 
@@ -81,7 +81,7 @@ function smartMediaPreviewUrl(itemOrUrl, size=512){
     try {
         const parsed = new URL(raw, window.location.origin);
         if(/^\/api\/project-library\/[^/]+\/media\/[^/]+$/.test(parsed.pathname)) return `${parsed.pathname}/preview?w=${width}`;
-    } catch(e) {}
+    } catch(e) { /* #348: 防御性 URL 解析——非法 URL 走下方 displayMediaUrl 通用路径 */ }
     const displayItem = typeof itemOrUrl === 'object' && itemOrUrl ? {...itemOrUrl, url:raw} : raw;
     const displayUrl = canvasCore.displayMediaUrl(displayItem);
     if(!raw || raw.startsWith('data:') || raw.startsWith('blob:')) return displayUrl;
@@ -495,7 +495,11 @@ async function cascadeArchiveDeletedMedia(images){
                 removeProjectMediaFromCache(assetId);
                 if(assetLibraryIsProject()) renderAssetLibrary();
             }
-        } catch(err) { /* 服务端判定仍被引用（409）或其他失败：保留在库，不阻断删除 */ }
+        } catch(err) {
+            // #348: 归档是删除后的尽力清理（服务端判定仍被引用 409 等）：保留在库，
+            // 不阻断用户已发起的节点删除；删除本身已成功。
+            console.warn('[media-history] 媒体归档失败，保留在素材库', err);
+        }
     }));
     refreshSmartProjectMediaTrashButton();
 }
@@ -671,7 +675,7 @@ function markedItemDisplayName(item){
         const path = String(item?.url || '').split('?')[0];
         const file = path.slice(path.lastIndexOf('/') + 1);
         if(file && !/^[0-9a-f]{24,}$/i.test(file)) return decorate(decodeURIComponent(file));
-    }catch(e){}
+    }catch(e){ /* #348: 防御性——非法 percent 编码的 URL 回落到 asset_id 短名 */ }
     return String(item?.asset_id || '');
 }
 
@@ -1129,7 +1133,7 @@ function clearSmartHistoryPointerState(){
     const state = canvasState.smartHistoryPointerState;
     if(!state) return;
     state.image?.classList.remove('is-dragging');
-    try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) {}
+    try { state.image?.releasePointerCapture?.(state.pointerId); } catch(_) { /* #348: 防御性——指针可能已释放，清理继续 */ }
     setSmartHistoryDragState(false);
     canvasState.smartHistoryPointerState = null;
     scheduleSmartHistoryWindowRender();
@@ -1157,7 +1161,7 @@ function bindSmartHistoryImage(image, item, historyId, outputIndex){
         if(event.button !== 0) return;
         event.stopPropagation();
         const pointerId = event.pointerId ?? 1;
-        try { image.setPointerCapture?.(pointerId); } catch(_) {}
+        try { image.setPointerCapture?.(pointerId); } catch(_) { /* #348: 防御性——setPointerCapture 失败不影响后续拖拽判断 */ }
         canvasState.smartHistoryPointerState = {
             image,
             card:image.closest('.log-media-card'),
@@ -1335,7 +1339,7 @@ function zoomSmartHistoryDetail(factor, clientX=null, clientY=null){
 
 function finishSmartHistoryDetailPan(stage, pointerId){
     if(!smartHistoryDetailView.drag) return;
-    try { stage?.releasePointerCapture?.(pointerId ?? smartHistoryDetailView.drag.pointerId); } catch (_) {}
+    try { stage?.releasePointerCapture?.(pointerId ?? smartHistoryDetailView.drag.pointerId); } catch (_) { /* #348: 防御性——指针可能已释放，继续收尾 */ }
     smartHistoryDetailView.drag = null;
     applySmartHistoryDetailTransform();
 }
@@ -2605,9 +2609,9 @@ function playGenerationCompleteSound(){
                 osc.stop(start + tone.at + tone.duration + 0.02);
             });
         };
-        if(ctx.state === 'suspended') ctx.resume().then(play).catch(() => {});
+        if(ctx.state === 'suspended') ctx.resume().then(play).catch(() => { /* #348: 音频上下文恢复失败，提示音属装饰，静默即可 */ });
         else play();
-    } catch(e) {}
+    } catch(e) { /* #348: AudioContext 不可用/不支持——成功提示音是装饰性功能，无降级必要 */ }
 }
 function usedCanvasOutputUrls(){
     const used = new Set();
