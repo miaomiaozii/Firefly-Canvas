@@ -1,0 +1,48 @@
+# 依赖锁文件：每个包（含传递依赖）都钉到确切版本，离线安装与便携包都用它。
+# 与 requirements.txt 的分工：那份写「要什么、允许什么范围」，这份写「这次装出来的确切版本」。
+#
+# 生成方式（必须用 Python 3.12，便携包就是 3.12.10；换 Python 版本要重新生成）：
+#   python -m venv .venv312 && .venv312\Scripts\python -m pip install -r requirements.txt
+#   .venv312\Scripts\python -m pip freeze | grep -v "^pip==" | grep -v "^setuptools==" > requirements.lock
+# 或直接用：python tools/offline_packages.py download
+#
+# 平台：wheel 只取 cp312 / win_amd64 与 py3-none-any（见 tools/offline_packages.py）。
+# 改 requirements.txt 后必须重新生成并同步 packages/，否则离线安装会缺包（Refs #362）。
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+certifi==2026.10.23
+charset-normalizer==3.5.2
+click==8.5.1
+colorama==0.4.6
+fastapi==0.163.0
+flatbuffers==25.12.19
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+numpy==2.5.4
+onnxruntime==1.32.0
+opencv-python==5.0.0.93
+opentelemetry-api==1.45.2
+packaging==26.3
+pillow==13.0.0
+protobuf==7.36.2
+pyclipper==1.4.0
+pydantic==2.14.3
+pydantic_core==2.50.4
+python-multipart==0.0.33
+PyYAML==6.0.3
+rapidocr-onnxruntime==1.4.4
+requests==2.34.2
+shapely==2.2.0
+six==1.17.0
+socksio==1.0.0
+starlette==1.10.0
+tqdm==4.70.1
+truststore==0.10.5
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+urllib3==2.8.0
+uvicorn==0.54.0
+websockets==14.2

@@ -20,6 +20,7 @@ import zipfile
 from pathlib import Path
 
 PORT = 3101
+REPO = Path(__file__).resolve().parents[1]
 
 
 def log(name: str, ok: bool, detail: str = '') -> None:
@@ -28,11 +29,92 @@ def log(name: str, ok: bool, detail: str = '') -> None:
         raise SystemExit(1)
 
 
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+def offline_install_rehearsal(wheel_dir: Path, keep: bool) -> None:
+    """#362 离线安装演练：干净 venv + `--no-index` 装锁文件 + 服务真起来。
+
+    验收就是这一条：「干净的 3.12 环境断网安装成功，服务能启动」。以前 packages/ 与
+    requirements 没人核对，离线安装在别人机器上当场报错也没人知道。
+    """
+    sys.path.insert(0, str(REPO / 'tools'))
+    from offline_packages import check_packages, parse_lock  # noqa: E402
+    from process_tree import ProcessJob, descendant_pids, kill_process_tree  # noqa: E402
+
+    if sys.version_info[:2] != (3, 12):
+        log('演练用的解释器是 3.12', False, f'当前 {sys.version.split()[0]}：{sys.executable}')
+
+    problems = check_packages(wheel_dir)
+    if problems:
+        log('wheel 目录覆盖 requirements.lock', False, f'{len(problems)} 项不匹配，首条：{problems[0]}')
+    log(f'wheel 目录覆盖 requirements.lock（{len(parse_lock())} 项）', True, str(wheel_dir))
+
+    work = Path(tempfile.mkdtemp(prefix='ff-offline-rehearsal-'))
+    venv = work / 'venv'
+    try:
+        r = subprocess.run([sys.executable, '-m', 'venv', str(venv)], capture_output=True, text=True)
+        log('建干净 venv', r.returncode == 0, r.stderr.strip()[:200])
+        venv_py = venv / 'Scripts' / 'python.exe'
+
+        r = subprocess.run([str(venv_py), '-m', 'pip', 'install', '--quiet', '--no-index',
+                            f'--find-links={wheel_dir}', '-r', str(REPO / 'requirements.lock')],
+                           capture_output=True, text=True, timeout=900)
+        log('断网安装（--no-index -r requirements.lock）', r.returncode == 0,
+            (r.stderr or r.stdout).strip()[-300:])
+
+        r = subprocess.run([str(venv_py), str(REPO / 'tools' / 'check_dependencies.py')],
+                           capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=str(REPO))
+        log('新环境依赖自检', r.returncode == 0, (r.stdout or '').strip().splitlines()[-1:][0] if r.stdout else '')
+
+        # 服务真起来：隔离 runtime + 隔离 projects + 空闲端口（不碰用户在跑的 3000）
+        port = _free_port()
+        env = dict(os.environ,
+                   FIREFLY_RUNTIME_ROOT=str(work / 'runtime'),
+                   FIREFLY_PROJECTS_ROOT=str(work / 'projects'),
+                   FIREFLY_PORT=str(port), PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
+        job = ProcessJob(name='offline-rehearsal')
+        proc = job.spawn([str(venv_py), 'main.py'], env=env, cwd=str(REPO))
+        started, status = False, 0
+        try:
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=4) as resp:
+                        status = resp.status
+                        started = status == 200
+                        break
+                except Exception:
+                    time.sleep(2)
+        finally:
+            kill_process_tree(proc, grace=8)
+            job.close()
+            leftover = descendant_pids(proc.pid)
+        log('离线装出来的服务能启动并响应', started, f'GET / -> {status} port={port}')
+        log('服务进程树收干净', not leftover, f'残留={leftover}')
+    finally:
+        if not keep:
+            shutil.rmtree(work, ignore_errors=True)
+    print('OFFLINE REHEARSAL PASS', flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('zip_path')
+    ap.add_argument('zip_path', nargs='?')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--offline-install', action='store_true',
+                    help='#362 离线安装演练（不验 zip）：干净 venv + --no-index 装锁文件 + 服务起来')
+    ap.add_argument('--wheel-dir', default=str(REPO / 'packages'),
+                    help='离线演练用的 wheel 目录，默认 packages/')
     args = ap.parse_args()
+    if args.offline_install:
+        offline_install_rehearsal(Path(args.wheel_dir).resolve(), args.keep)
+        return
+    if not args.zip_path:
+        raise SystemExit('需要 zip 路径，或用 --offline-install 跑离线安装演练')
     zip_path = Path(args.zip_path).resolve()
 
     work = Path(tempfile.mkdtemp(prefix='ff-portable-verify-'))

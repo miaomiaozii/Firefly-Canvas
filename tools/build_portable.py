@@ -98,8 +98,13 @@ def install_deps(stage_env: Path) -> None:
     os.environ.setdefault('PIP_INDEX_URL', 'https://mirrors.aliyun.com/pypi/simple/')
     site = stage_env / 'Lib' / 'site-packages'
     site.mkdir(parents=True, exist_ok=True)
-    req = REPO / 'requirements.txt'
-    log('pip install --target site-packages（含 onnxruntime，需要几分钟）')
+    # #362：优先用锁文件。以前装的是 requirements.txt（大多没钉版），同一份代码今天构建和下个月
+    # 构建会拿到不同版本的 fastapi/pydantic，便携包就无法重现。锁文件不在时才退回 requirements.txt。
+    req = REPO / 'requirements.lock'
+    if not req.exists():
+        log('⚠️ 没 requirements.lock，退回 requirements.txt（构建不可重现，请跑 tools/offline_packages.py 生成）')
+        req = REPO / 'requirements.txt'
+    log(f'pip install --target site-packages（{req.name}，含 onnxruntime，需要几分钟）')
     subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', '--disable-pip-version-check',
                     '--target', str(site), '-r', str(req)], check=True)
     log('依赖安装完成')

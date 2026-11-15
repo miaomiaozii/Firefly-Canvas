@@ -141,6 +141,8 @@ class RunBatFailureMessageTests(unittest.TestCase):
                 "sys.exit(1)\n",
                 encoding="utf-8",
             )
+            # #362：run.bat 现在多一步版本守卫，沙箱里没有它会在守卫处死（拿不到体检输出）。
+            shutil.copy(ROOT / "tools" / "python_version_guard.py", workdir / "tools" / "python_version_guard.py")
             result = subprocess.run(
                 ["cmd.exe", "/c", str(workdir / "run.bat")],
                 cwd=workdir,
@@ -182,9 +184,14 @@ class InstallBatVerifyTests(unittest.TestCase):
         workdir = Path(tmp)
         shutil.copy(self.INSTALL_BAT, workdir / self.INSTALL_BAT.name)
         (workdir / "requirements.txt").write_text("", encoding="utf-8")
+        # #362： bat 现在走 requirements.lock，先校 packages/ 再装。这里给空锁文件，
+        # 装环节秒过（与上面空 requirements.txt 同一个手法），焦点仍然是“缺依赖要停下来”。
+        (workdir / "requirements.lock").write_text("", encoding="utf-8")
         (workdir / "packages").mkdir()
         stub = workdir / "tools" / "check_dependencies.py"
         stub.parent.mkdir(parents=True)
+        for helper in ("python_version_guard.py", "offline_packages.py"):
+            shutil.copy(ROOT / "tools" / helper, workdir / "tools" / helper)
         stub.write_text(
             "import sys\n"
             "print('[缺少依赖] pillow（导入名：PIL）')\n"
@@ -240,15 +247,17 @@ class InstallBatVerifyTests(unittest.TestCase):
         self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"), "安装依赖.bat 必须是 CRLF 行尾")
         self.assertTrue(text.isascii(), "安装依赖.bat 里不能放中文字面量（体检脚本自己打中文）")
         # 体检必须在 pip 安装之后、:done 之前，缺了要 exit /b 1。
-        install_at = text.index("-r requirements.txt")
+        # #362：装的是钉过版的 requirements.lock（不是没钉版的 requirements.txt）。
+        install_at = text.index("-r requirements.lock")
         verify_at = text.index("check_dependencies.py")
         done_at = re.search(r"(?m)^:done\s*$", text).start()  # 标签行，不是前面的 `goto :done`
         self.assertTrue(install_at < verify_at < done_at, "体检要在装完之后、报 Done 之前")
         tail = text[verify_at:done_at]
         self.assertIn("exit /b 1", tail, "体检不过要停下来")
         # 这两行必须是顶语的：cmd 的 `if (...)` 块里放标签会把后面的 `:done` 吞掉。
+        # #362：体检改写成 %~dp0 路径（与其它工具调用一致）。
         self.assertIn(
-            '"%PYEXE%" tools\\check_dependencies.py\r\nif not errorlevel 1 goto :done\r\n', text,
+            '"%PYEXE%" "%~dp0tools\\check_dependencies.py"\r\nif not errorlevel 1 goto :done\r\n', text,
             "体检与跳转要是顶语行",
         )
         # 体检脚本打中文，没切过 UTF-8 码页前会被当 GBK 回显成乱码。

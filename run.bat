@@ -1,5 +1,11 @@
 @echo off
 setlocal EnableExtensions
+rem issue #362: everything here is pinned to CPython 3.12 - the portable bundle ships embeddable
+rem 3.12.10 (tools/build_portable.py PY_VER), packages\ wheels are downloaded for cp312 /
+rem win_amd64, and rapidocr-onnxruntime 1.4.4 stops at 3.12. Version check lives in
+rem tools\python_version_guard.py so the explanation can be Chinese (see the CJK note below).
+chcp 65001 >nul
+set "PYTHONUTF8=1"
 cd /d "%~dp0" || goto :startup_failed
 
 set "PYEXE=%~dp0python\python.exe"
@@ -19,14 +25,20 @@ if "%PYEXE%"=="python" (
     if errorlevel 1 goto :python_missing
 )
 
+rem issue #362: block a wrong interpreter here instead of letting pip fail later with
+rem "No matching distribution found" on wheels built for cp312.
+"%PYEXE%" "%~dp0tools\python_version_guard.py"
+if errorlevel 1 goto :python_version
+
 rem issue #363: this used to import only fastapi,requests,uvicorn, so a missing Pillow
 rem still crashed the server in the hidden window. Now every dependency is checked one by
 rem one (tools\check_dependencies.py prints the names in Chinese), and this last call is NOT
 rem sent to >nul so the missing modules stay visible on screen.
 rem Keep this file CRLF and ASCII (except the 安装依赖.bat file name): an LF-only batch file gets
 rem shredded by cmd (seen while fixing #363 - every command came back as "not recognized"), and
-rem Chinese in an echo prints as mojibake until `chcp 65001` is in effect -- so the Chinese
-rem dependency list comes from tools\check_dependencies.py, not from this file.
+rem Chinese in an echo is unreliable even under chcp 65001 (re-checked while fixing #362: two nearly
+rem identical Chinese echo lines, one printed fine, the other was parsed as a command). So every
+rem Chinese message here comes from a Python helper, never from an echo in this file.
 "%PYEXE%" "%~dp0tools\check_dependencies.py"
 if errorlevel 1 goto :dependencies_missing
 
@@ -52,7 +64,14 @@ endlocal & exit /b 1
 :python_missing
 echo.
 echo Python was not found.
-echo Run 安装依赖.bat, or install Python 3.10+ and try again.
+echo Run 安装依赖.bat, or install Python 3.12 (the version this project standardizes on).
+pause
+endlocal & exit /b 1
+
+:python_version
+rem issue #362: tools\python_version_guard.py already printed the Chinese explanation above.
+echo.
+echo Wrong Python version - 3.12 is required (see the message above).
 pause
 endlocal & exit /b 1
 
