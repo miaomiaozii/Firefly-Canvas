@@ -150,6 +150,42 @@ class CheckPackagesTests(unittest.TestCase):
                 self.assertIn(name, empty.stdout)
 
 
+class RepoPackagesGateTests(unittest.TestCase):
+    """#362 门禁：`packages/` 必须覆盖 `requirements.lock`。
+
+    离线安装是产品功能（便携包要给别人用、断网也能装），所以这不是文档约定而是门禁：
+    往 requirements.txt 加了包却忘了同步 packages/，这里直接红。
+    用户定的就是这个方案（packages/ 换成按锁生成的 38 个 wheel）。
+    """
+
+    PACKAGES = ROOT / "packages"
+
+    def test_packages_cover_every_lock_line(self):
+        problems = op.check_packages(self.PACKAGES)
+        self.assertEqual(
+            problems, [],
+            "packages/ 与 requirements.lock 对不上：\n  " + "\n  ".join(problems)
+            + "\n修法：python tools/offline_packages.py download（要 Python 3.12）",
+        )
+
+    def test_every_wheel_installs_on_py312_win(self):
+        # check 对不上时只会报“缺包”，看不出是 ABI 不对；这里直接按 wheel tag 点名。
+        bad = []
+        for (name, version), tags in sorted(op.scan_wheels(self.PACKAGES).items()):
+            if not any(op.tag_installable(tag) for tag in tags):
+                bad.append(f"{name}=={version} 只有 {tags}")
+        self.assertEqual(bad, [], "packages/ 里有 3.12/win 装不了的 wheel：\n  " + "\n  ".join(bad))
+
+    def test_check_command_exits_zero_on_repo_packages(self):
+        # 门禁走的是跟文档、跟 安装依赖.bat 同一条命令，不是测试里的平行实现。
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "offline_packages.py"), "check"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("PASS", proc.stdout)
+
+
 class LauncherTextTests(unittest.TestCase):
     """启动器文案：写明 3.12、走锁文件；bat 必须 CRLF（LF-only 会被 cmd 撕碎）。"""
 
