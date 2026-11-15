@@ -15,7 +15,7 @@ import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (BaseModel, Field, GlobalPreferencesPayload, HTTPException, Optional, PROJECT_LIBRARY_MIGRATION_ACTIVE, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_TASKS_LOCK, Path, ProjectLibraryChangeRequest, ProjectStore, ProjectStoreError, _os, _sys, asyncio, json, os, shutil, uuid)
+from app.core import (BaseModel, Field, GlobalPreferencesPayload, HTTPException, Optional, PROJECT_LIBRARY_MIGRATION_ACTIVE, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_TASKS_LOCK, Path, ProjectLibraryChangeRequest, ProjectStore, ProjectStoreError, _os, _sys, asyncio, ensure_same_origin_request, json, os, shutil, uuid)
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'GLOBAL_SETTINGS_FILE', 'load_global_preferences', 'manager', 'photoshop_connection_status', 'project_library_status', 'public_api_providers', 'save_global_preferences', 'switch_project_library', 'update_env_values']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -100,8 +100,11 @@ def project_library_status():
         return {'path': str(store.root), 'project_count': len(projects), 'migration_active': PROJECT_LIBRARY_MIGRATION_ACTIVE}
 
 @router.get('/api/global-settings')
-async def global_settings():
-    statuses = await asyncio.gather(_app_main.codex_status(), _app_main.gemini_cli_status(), return_exceptions=True)
+async def global_settings(request: Request):
+    # #342：本 GET fan-out 到 codex/gemini status（最多 spawn 4 个 CLI 子进程），
+    # 属副作用 GET，要求显式同源头（Origin/Referer）；内部 fan-out 走 *_core 不受影响。
+    ensure_same_origin_request(request)
+    statuses = await asyncio.gather(_app_main.codex_status_core(), _app_main.gemini_cli_status_core(), return_exceptions=True)
 
     def safe_cli_status(label, value):
         if isinstance(value, BaseException):

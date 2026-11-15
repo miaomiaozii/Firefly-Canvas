@@ -1333,9 +1333,12 @@ async def _maybe_recover_project_image_task(project_id: str, task_id: str, task:
 
 
 @router.get('/api/project-library/{project_id}/image-generation-tasks/{task_id}')
-async def get_project_image_task(project_id: str, task_id: str, recover: Optional[int] = Query(default=None)):
+async def get_project_image_task(request: Request, project_id: str, task_id: str, recover: Optional[int] = Query(default=None)):
     """查询项目生图任务。对 failed/timeout 且带上游任务 id 的任务默认主动重查上游成品
     （手动取回，#234；recover=0 显式关闭）。"""
+    # #342：重查/恢复会下载上游成品、写入项目媒体并 complete/fail 任务（GET 改状态），
+    # 属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     with CANVAS_TASK_LOCK:
         current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
     if current:
@@ -1998,7 +2001,10 @@ def durable_project_video_result(project_id: str, canvas: Mapping[str, Any], dur
 
 
 @router.get('/api/project-library/{project_id}/video-generation-tasks/{task_id}')
-async def get_project_video_task(project_id: str, task_id: str):
+async def get_project_video_task(request: Request, project_id: str, task_id: str):
+    # #342：状态 GET 会 _resume_project_video_generation（轮询上游、归档视频、
+    # complete/flush、改 CANVAS_TASKS），属副作用 GET，要求显式同源头。
+    ensure_same_origin_request(request)
     with CANVAS_TASK_LOCK:
         current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
     if current:
@@ -3514,7 +3520,10 @@ async def append_project_conversation_message(project_id: str, node_id: str, pay
     return conversation_task_response(saved_canvas, snapshot)
 
 @router.get('/api/project-library/{project_id}/conversation/{node_id}/messages/{request_id}')
-async def get_project_conversation_message_task(project_id: str, node_id: str, request_id: str):
+async def get_project_conversation_message_task(request: Request, project_id: str, node_id: str, request_id: str):
+    # #342：状态 GET 会 schedule_project_conversation_task(recover_fifo=True) 启动 LLM
+    # 生成任务或清理持久化终态，属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     clean_request_id = str(request_id or '').strip()
     try:
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
@@ -3792,7 +3801,10 @@ async def restore_project_generated_original_project_wide(project_id: str, paylo
     return {'ok': True, 'canvas': canvas, 'restored': result['restored']}
 
 @router.get('/api/project-library/{project_id}/trash/media')
-async def list_project_media_trash(project_id: str):
+async def list_project_media_trash(request: Request, project_id: str):
+    # #342：列表 GET 会触发过期回收媒体删除（_cleanup_expired_deleted_media_locked，
+    # unlink + 重写 trash/index.json），属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     try:
         items = await asyncio.to_thread(_app_main.project_store_call, 'list_deleted_media', project_id)
     except ProjectNotFound as exc:
@@ -3800,13 +3812,17 @@ async def list_project_media_trash(project_id: str):
     return {'items': items}
 
 @router.get('/api/project-library/{project_id}/trash/media/{asset_id}/preview')
-async def get_project_trash_media_preview(project_id: str, asset_id: str, view: str = 'preview'):
+async def get_project_trash_media_preview(request: Request, project_id: str, asset_id: str, view: str = 'preview'):
     """#86/#208：回收区条目预览。
 
     view=preview（默认）：第一张预览图，无预览回退原文件（列表缩略图）；
     view=original：返回生成原件，原件缺失时回退预览图。
     响应头 X-Canvas-Media-View 告知前端本次实际返回的是哪一种（preview|original）。
+
+    #342：本 GET 走 trash_media_preview_path，会触发过期回收媒体删除（unlink + 重写
+    # trash/index.json），属副作用 GET，要求显式同源头（同域 <img> 自带 Referer，不受影响）。
     """
+    ensure_same_origin_request(request)
     normalized_view = 'original' if str(view or 'preview').strip() == 'original' else 'preview'
 
     def build_response() -> ProjectMediaFileResponse:

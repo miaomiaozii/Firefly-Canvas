@@ -87,7 +87,8 @@ class EndpointBehaviourTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(main.app)
+        # #342：全局 /api 同源守卫要求回环 Host
+        cls.client = TestClient(main.app, base_url="http://127.0.0.1:8765")
 
     def _payload_for(self, url):
         if url == '/api/image-task-query':

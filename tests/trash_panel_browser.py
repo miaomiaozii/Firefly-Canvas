@@ -172,7 +172,7 @@ def trash_items(browser: NativeBrowser, count: int, timeout: float = 30) -> list
 def fetch_trash_api(server, project_id: str) -> list:
     url = f"{server.base_url}/api/project-library/{urllib.parse.quote(project_id)}/trash/media"
     # The production app guards /api/project-library/* with an Origin/Referer
-    # check (protect_project_library_origin in main.py); send the page origin
+    # check (protect_api_origin in main.py); send the page origin
     # the same way the in-app browser fetch does.
     request = urllib.request.Request(url, headers={"Origin": server.base_url})
     with urllib.request.urlopen(request, timeout=20) as response:

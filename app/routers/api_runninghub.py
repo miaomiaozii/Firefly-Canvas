@@ -8,7 +8,7 @@ import json
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (Any, BaseModel, Dict, HTTPException, List, RunningHubSubmitRequest, RunningHubUploadAssetRequest, SEED_UINT32_MAX, _os, _sys, content_type_for_path, httpx, json, normalize_seed_uint32, os, rewrite_runninghub_file_url, rh_is_seed_like_name, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, sanitize_runninghub_node_info_list, urllib)
+from app.core import (Any, BaseModel, Dict, HTTPException, List, RunningHubSubmitRequest, RunningHubUploadAssetRequest, SEED_UINT32_MAX, _os, _sys, content_type_for_path, ensure_same_origin_request, httpx, json, normalize_seed_uint32, os, rewrite_runninghub_file_url, rh_is_seed_like_name, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, sanitize_runninghub_node_info_list, urllib)
 _from_main_names = ['image_output_meta', 'runninghub_api_key', 'runninghub_app_headers', 'runninghub_local_asset_path', 'runninghub_provider', 'runninghub_store_remote_output']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -97,7 +97,10 @@ async def runninghub_submit(payload: RunningHubSubmitRequest):
     raise HTTPException(status_code=400, detail=(raw.get('msg') if isinstance(raw, dict) else '') or f'RunningHub 提交失败：{raw}')
 
 @router.get('/api/runninghub/query')
-async def runninghub_query(taskId: str='', useWallet: bool=False):
+async def runninghub_query(request: Request, taskId: str='', useWallet: bool=False):
+    # #342：本 GET 对上游 RunningHub 发 POST（/task/openapi/outputs）并把产物下载到
+    # 本地 OUTPUT_DIR（store_remote_output），属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     task_id = str(taskId or '').strip()
     if not task_id:
         raise HTTPException(status_code=400, detail='taskId 必填')

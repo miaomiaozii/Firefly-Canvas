@@ -165,7 +165,8 @@ class OnlineImageHttpTests(ProviderTableCase):
     """HTTP 层面：错误体里得带上是哪个服务商，而且上游一次都没发。"""
 
     def test_online_image_endpoint_400_names_the_unknown_provider(self):
-        client = TestClient(main.app)
+        # #342：全局 /api 同源守卫要求回环 Host（默认 testserver 会 403）
+        client = TestClient(main.app, base_url="http://127.0.0.1:8765")
         response = client.post('/api/online-image',
                                json={'prompt': '画一只萤火虫', 'provider_id': UNKNOWN_ID, 'model': 'm-img'})
         self.assertEqual(response.status_code, 400, response.text[:300])
@@ -174,7 +175,7 @@ class OnlineImageHttpTests(ProviderTableCase):
 
     def test_online_image_endpoint_still_works_without_a_provider(self):
         # 没指定≠报错：该按主平台走。假上游故意炸，只为看它有没有走到上游边界。
-        client = TestClient(main.app, raise_server_exceptions=False)
+        client = TestClient(main.app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False)
         response = client.post('/api/online-image', json={'prompt': '画一只萤火虫', 'model': 'm-img'})
         self.assertNotEqual(response.status_code, 400,
                             f'没指定服务商不该被当成错误：{response.text[:300]}')

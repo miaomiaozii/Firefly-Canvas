@@ -7,7 +7,7 @@ import asyncio
 import os
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (BASE_DIR, BaseModel, GeminiCliHelpRequest, HTTPException, _os, _sys, asyncio, codex_decode_output, is_antigravity_cli, os)
+from app.core import (BASE_DIR, BaseModel, GeminiCliHelpRequest, HTTPException, _os, _sys, asyncio, codex_decode_output, ensure_same_origin_request, is_antigravity_cli, os)
 _from_main_names = ['gemini_cli_display_name', 'gemini_cli_executable']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -20,7 +20,15 @@ router = APIRouter()
 
 
 @router.get('/api/gemini-cli/status')
-async def gemini_cli_status():
+async def gemini_cli_status(request: Request):
+    # #342：status GET 会 spawn Antigravity CLI 子进程（--version / models，后者访问
+    # 上游模型列表），属副作用 GET，要求显式同源头（Origin/Referer）。
+    # 内部 fan-out 走 gemini_cli_status_core，不受守卫影响。
+    ensure_same_origin_request(request)
+    return await gemini_cli_status_core()
+
+
+async def gemini_cli_status_core():
     exe = _app_main.gemini_cli_executable()
     display_name = gemini_cli_display_name(exe)
     if not exe:

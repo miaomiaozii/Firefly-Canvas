@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (Any, BaseModel, BytesIO, CanvasAssetCheckRequest, CanvasAssetDownloadRequest, Dict, HTTPException, List, Response, _os, _sys, asset_library_media_kind, asyncio, canvas_asset_downloadable_url, canvas_asset_kind, canvas_asset_name, canvas_asset_url_value, canvas_node_title, canvas_record, extract_canvas_assets, fetch_remote_media_bytes, filename_from_media_url, hashlib, iter_canvas_asset_values, json, os, re, requests, rewrite_runninghub_file_url, sanitize_asset_name, sanitize_export_filename, urllib, zipfile)
+from app.core import (Any, BaseModel, BytesIO, CanvasAssetCheckRequest, CanvasAssetDownloadRequest, Dict, HTTPException, List, Response, _os, _sys, asset_library_media_kind, asyncio, canvas_asset_downloadable_url, canvas_asset_kind, canvas_asset_name, canvas_asset_url_value, canvas_node_title, canvas_record, ensure_same_origin_request, extract_canvas_assets, fetch_remote_media_bytes, filename_from_media_url, hashlib, iter_canvas_asset_values, json, os, re, requests, rewrite_runninghub_file_url, sanitize_asset_name, sanitize_export_filename, urllib, zipfile)
 _from_main_names = ['CANVAS_DIR', 'canvas_assets_index', 'cleanup_expired_canvas_trash', 'local_media_file_by_basename', 'output_file_from_url']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -160,7 +160,10 @@ def fetch_remote_media_bytes(url: str, timeout: float=30.0, max_bytes: int=200 *
         return (b''.join(chunks), content_type)
 
 @router.get('/api/canvas-assets')
-async def list_canvas_assets():
+async def list_canvas_assets(request: Request):
+    # #342：canvas_assets_index 先跑 cleanup_expired_canvas_trash() 删过期回收画布，
+    # 属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     return await asyncio.to_thread(canvas_assets_index)
 
 @router.post('/api/canvas-assets/check')

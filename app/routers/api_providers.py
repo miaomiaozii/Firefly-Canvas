@@ -13,7 +13,7 @@ import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (AGNES_DEFAULT_VIDEO_MODELS, COMFYUI_DEFAULT_BASE_URL, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
+from app.core import (AGNES_DEFAULT_VIDEO_MODELS, COMFYUI_DEFAULT_BASE_URL, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, ensure_same_origin_request, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
 _from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'api_key_from_payload', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'runninghub_models_payload', 'save_api_providers', 'update_env_values', 'volcengine_provider_api_key']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -452,12 +452,12 @@ async def test_provider_connection(payload: TestConnectionPayload):
     """测试请求地址是否可用：调上游 /v1/models。验证通过时同时把模型清单按类别返回，避免再调一次拉取接口。"""
     protocol = protocol_from_payload(payload)
     if protocol == 'codex':
-        status = await _app_main.codex_status()
+        status = await _app_main.codex_status_core()
         payload_models = codex_models_payload(raw={'status': status})
         payload_models.update({'ok': bool(status.get('installed')), 'status': 200 if status.get('installed') else 0, 'message': status.get('message') or ('OpenAI Codex CLI 可用' if status.get('installed') else '未找到 OpenAI Codex CLI')})
         return payload_models
     if protocol == 'gemini-cli':
-        status = await _app_main.gemini_cli_status()
+        status = await _app_main.gemini_cli_status_core()
         payload_models = gemini_cli_models_payload(raw={'status': status})
         payload_models.update({'ok': bool(status.get('installed')), 'status': 200 if status.get('installed') else 0, 'message': status.get('message') or ('Antigravity CLI 可用' if status.get('installed') else '未找到 Antigravity CLI')})
         return payload_models
@@ -528,10 +528,10 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     base_url = (payload.base_url or '').strip().rstrip('/')
     protocol = protocol_from_payload(payload)
     if protocol == 'codex':
-        status = await _app_main.codex_status()
+        status = await _app_main.codex_status_core()
         return {'ok': bool(status.get('installed')), 'protocol': 'codex', 'status_code': 200 if status.get('installed') else 0, 'message': status.get('message') or 'OpenAI Codex CLI 本机检测完成', 'raw': status}
     if protocol == 'gemini-cli':
-        status = await _app_main.gemini_cli_status()
+        status = await _app_main.gemini_cli_status_core()
         return {'ok': bool(status.get('installed')), 'protocol': 'gemini-cli', 'status_code': 200 if status.get('installed') else 0, 'message': status.get('message') or 'Antigravity CLI 本机检测完成', 'raw': status}
     if not base_url:
         raise HTTPException(status_code=400, detail='请先填写请求地址')
@@ -603,12 +603,12 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
     """从上游模型列表端点拉取模型，并按名称做轻量分类。"""
     protocol = protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else 'openai'
     if protocol == 'codex':
-        status = await _app_main.codex_status()
+        status = await _app_main.codex_status_core()
         payload = codex_models_payload(raw={'status': status})
         payload['message'] = status.get('message') or payload['message']
         return payload
     if protocol == 'gemini-cli':
-        status = await _app_main.gemini_cli_status()
+        status = await _app_main.gemini_cli_status_core()
         payload = gemini_cli_models_payload(raw={'status': status})
         payload['message'] = status.get('message') or payload['message']
         return payload
@@ -702,8 +702,11 @@ async def fetch_upstream_models_from_payload(payload: TestConnectionPayload):
     return merge_fetched_models_with_saved(payload.provider_id, fetched)
 
 @router.get('/api/providers/{provider_id}/fetch-models')
-async def fetch_upstream_models(provider_id: str):
+async def fetch_upstream_models(provider_id: str, request: Request):
     """从已保存的上游 OpenAI 兼容接口拉取 /v1/models 列表，按名称智能分类为 image/chat/video。"""
+    # #342：本 GET 会 spawn codex/gemini CLI 子进程或对上游发探测请求，属副作用 GET，
+    # 要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     provider = get_api_provider_exact(provider_id)
     if is_codex_provider(provider):
         fetched = await fetch_models_from_upstream('', '', 'codex', provider.get('image_request_mode') or 'openai')

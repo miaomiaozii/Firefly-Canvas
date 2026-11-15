@@ -26,15 +26,16 @@ async def ai_config():
 
 @router.get('/api/config/token')
 async def get_global_token():
-    saved_token = modelscope_api_key()
-    if saved_token:
-        return {'token': saved_token}
-    # #345：这里以前是裸 ``except: pass``——全局配置文件坏了也一声不味。
-    # read_json 会先把坏文件改名 .corrupt-<UTC> 保住现场并记一条诊断。
-    config = firefly_json_io.read_json(_app_main.GLOBAL_CONFIG_FILE, default=None)
-    if isinstance(config, dict):
-        return {'token': config.get('modelscope_token', '')}
-    return {'token': ''}
+    # #342：不再回传明文 token——能访问本接口的任何页面/进程以前可以直接把密钥搬走。
+    # 只回“已配置”标志；仓内调用方为零（勘查见 review-batch IMPL-NOTES #342 条）。
+    configured = bool(modelscope_api_key())
+    if not configured:
+        # #345：这里以前是裸 ``except: pass``——全局配置文件坏了也一声不味。
+        # read_json 会先把坏文件改名 .corrupt-<UTC> 保住现场并记一条诊断。
+        config = firefly_json_io.read_json(_app_main.GLOBAL_CONFIG_FILE, default=None)
+        if isinstance(config, dict):
+            configured = bool(config.get('modelscope_token', ''))
+    return {'has_token': configured}
 
 
 @router.get('/api/config/data-diagnostics')

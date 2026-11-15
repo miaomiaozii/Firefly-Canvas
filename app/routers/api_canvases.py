@@ -12,7 +12,7 @@ import firefly_json_io
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, NODE_TYPE_IMAGE, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
+from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, NODE_TYPE_IMAGE, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, ensure_same_origin_request, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
 _from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -280,11 +280,16 @@ def delete_media_preview_cache(path: str) -> int:
     return removed
 
 @router.get('/api/canvases')
-async def canvases():
+async def canvases(request: Request):
+    # #342：列表 GET 会顺带 cleanup_expired_canvas_trash() 删除过期回收画布（见
+    # iter_canvas_records），属副作用 GET，按票面口径要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     return {'canvases': list_canvases()}
 
 @router.get('/api/canvases/trash')
-async def trashed_canvases():
+async def trashed_canvases(request: Request):
+    # #342：同上，列表 GET 带过期清理副作用，要求显式同源头。
+    ensure_same_origin_request(request)
     return {'canvases': list_deleted_canvases(), 'retention_days': 30}
 
 @router.post('/api/canvases')

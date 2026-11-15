@@ -237,6 +237,20 @@ class TestAgentForkAPI(unittest.TestCase):
         run_async(agent_host_manager.cleanup_all())
         self.temp_dir.cleanup()
 
+    @staticmethod
+    def _same_origin_request():
+        # #342：fork-messages GET 现在要求显式同源头（Origin/Referer），
+        # 直调端点函数时手造一个带 compliant Origin 的 starlette Request。
+        from starlette.requests import Request as _StarletteRequest
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/fork-messages",
+            "raw_path": b"/fork-messages", "query_string": b"", "root_path": "",
+            "headers": [(b"host", b"127.0.0.1:8765"), (b"origin", b"http://127.0.0.1:8765")],
+            "client": ("127.0.0.1", 0), "server": ("127.0.0.1", 8765),
+        }
+        return _StarletteRequest(scope)
+
     def test_fork_messages_endpoint(self):
         """GET /fork-messages should return the list of forkable messages."""
         from app.routers.api_agent_nodes import get_fork_messages as endpoint
@@ -255,7 +269,7 @@ class TestAgentForkAPI(unittest.TestCase):
             session.session_id = "test-session-1"
 
             # Start the endpoint call (it will wait for the response)
-            endpoint_task = asyncio.create_task(endpoint(self.project_id, self.node_id, x_agent_project=""))
+            endpoint_task = asyncio.create_task(endpoint(self._same_origin_request(), self.project_id, self.node_id, x_agent_project=""))
 
             # Wait for the endpoint to register its handler
             await asyncio.sleep(0.2)

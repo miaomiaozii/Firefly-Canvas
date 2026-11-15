@@ -80,12 +80,9 @@ from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# #342：删除 CORSMiddleware(allow_origins=["*"])——前后端同源，本来就不需要 CORS；
+# 留着等于对任意网页开放跨域读写。外部预检（OPTIONS）现在落到 protect_api_origin → 403，
+# 响应不再带 access-control-allow-origin。
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -595,28 +592,28 @@ async def no_cache_static_assets(request: Request, call_next):
     return response
 
 
+def api_guard_covers(path: str) -> bool:
+    """#342 同源守卫的覆盖谓词（tests/test_api_same_origin_guard.py 路由表遍历验证）。"""
+    normalized = path.rstrip("/")
+    return normalized == "/api" or normalized.startswith("/api/")
+
+
 @app.middleware("http")
-async def protect_project_library_origin(request: Request, call_next):
-    path = request.url.path.rstrip("/")
-    if path == "/api/projects" or path == "/api/project-library" or path.startswith("/api/project-library/"):
-        # The UXP connector has no browser Origin/Referer, but its protocol
-        # handlers enforce the stricter loopback-only boundary themselves.
-        path_parts = [part for part in path.split("/") if part]
-        is_photoshop_round_trip = (
-            len(path_parts) >= 4
-            and path_parts[0] == "api"
-            and path_parts[1] == "project-library"
-            and (
-                (len(path_parts) >= 5 and path_parts[3] == "photoshop" and path_parts[4] == "round-trips")
-                or path_parts[3] == "photoshop-round-trips"
-            )
-        )
-        if not is_photoshop_round_trip:
-            try:
-                ensure_same_origin_request(request)
-            except HTTPException as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    if path == "/api/project-library/import" and request.method == "POST":
+async def protect_api_origin(request: Request, call_next):
+    # #342：/api* 全方法同源守卫——写请求、敏感读、OPTIONS 预检一体覆盖，
+    # 新增路由自动在范围内（路由表遍历测试 tests/test_api_same_origin_guard.py 钉住）。
+    # 口径 = ensure_agent_same_origin（#240）：Host 必须在白名单（默认回环，
+    # FIREFLY_ALLOWED_HOSTS 可扩）；有 Origin/Referer 必须与应用来源精确匹配；
+    # 没有则按本机程序化客户端（MCP / pi sidecar / UXP）放行——画布 agent 与
+    # photoshop 路由另有传输层回环校验（_ensure_photoshop_loopback）兜底，
+    # 旧中间件对 photoshop round-trip 的特判已被本口径吸收。
+    path = request.url.path
+    if api_guard_covers(path):
+        try:
+            ensure_agent_same_origin(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if path.rstrip("/") == "/api/project-library/import" and request.method == "POST":
         try:
             content_length = int(request.headers.get("content-length") or 0)
         except ValueError:
@@ -1340,10 +1337,10 @@ from app.routers.api_canvas_llm import canvas_llm  # noqa: F401
 from app.routers.api_canvas_video import canvas_video  # noqa: F401
 from app.routers.api_canvases import CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DeleteCanvasLogRequest, canvas_path, canvases, collect_local_media_urls, create_canvas, delete_canvas, delete_canvas_log, delete_media_preview_cache, expand_canvas_generated_media_paths, generated_media_path_from_url, get_canvas, get_canvas_meta, iter_canvas_records, json_references_media_path, list_canvases, list_deleted_canvases, load_canvas, load_canvas_any, local_media_path_from_url, persisted_json_references_media_path, purge_canvas, reset_canvas_result_nodes_for_media, restore_canvas, save_canvas, smart_owned_result_items, touch_canvas, trashed_canvases, update_canvas, update_canvas_meta  # noqa: F401
 from app.routers.api_cloud_video import CloudVideoUploadRequest, cloud_video_upload  # noqa: F401
-from app.routers.api_codex import CodexHelpRequest, codex_help, codex_status  # noqa: F401
+from app.routers.api_codex import CodexHelpRequest, codex_help, codex_status, codex_status_core  # noqa: F401
 from app.routers.api_config import ai_config, get_global_token  # noqa: F401
 from app.routers.api_download_output import download_output  # noqa: F401
-from app.routers.api_gemini_cli import GeminiCliHelpRequest, gemini_cli_help, gemini_cli_status  # noqa: F401
+from app.routers.api_gemini_cli import GeminiCliHelpRequest, gemini_cli_help, gemini_cli_status, gemini_cli_status_core  # noqa: F401
 from app.routers.api_global_settings import GlobalPreferencesPayload, ProjectLibraryChangeRequest, get_global_preferences, global_settings, load_global_preferences, photoshop_connection_status, project_library_status, save_global_preferences, switch_project_library, update_global_preferences, update_project_library  # noqa: F401
 from app.routers.api_image_jpeg import image_jpeg  # noqa: F401
 from app.routers.api_image_params import build_image_param_fields, image_params  # noqa: F401

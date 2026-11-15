@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.core import ensure_agent_same_origin
+from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
 from app.routers.api_agent_tools import _find_node, _apply_mutations, _open_canvas
@@ -463,11 +463,15 @@ async def post_agent_node_confirm(
 
 @router.get("/{node_id}/fork-messages")
 async def get_fork_messages(
+    request: Request,
     project_id: str,
     node_id: str,
     x_agent_project: str = Header(default=""),
 ):
     """Get the list of user messages available for forking."""
+    # #342：get_fork_messages 会向存活 `pi --mode rpc` 进程 stdin 写入 RPC 帧
+    # （超时时还会 kill 整棵进程树后重生），属副作用 GET，要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if not session.is_running:
         raise HTTPException(status_code=400, detail="Agent is not running")

@@ -67,7 +67,6 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import HTTPConnection
 from pydantic import BaseModel, Field
-from fastapi.middleware.cors import CORSMiddleware
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
 from firefly_generation import ImageGenerationRequest, ModelRoutingError, VIDEO_EXECUTION_PROTOCOLS, VideoGenerationRequest, apply_angle_preset, normalize_image_model_capabilities, normalize_video_model_capabilities, route_image_generation, route_video_generation
 from local_edit import as_rgba, composite_preserve, composite_rect, encode_png, rasterize_preserve_mask, selection_json
@@ -3131,47 +3130,65 @@ def origin_from_url(value):
         return ''
     return f'{parsed.scheme}://{parsed.netloc}'.lower()
 
-def ensure_same_origin_request(request: Request):
+# #342：Host 白名单可配置——env FIREFLY_ALLOWED_HOSTS（逗号分隔）在默认回环之外追加，
+# 给 #344 局域网模式留口；默认口径不变（只有回环 Host 能访问本机服务）。
+SAME_ORIGIN_DETAIL = '只允许从当前应用页面操作本机数据'
+LOOPBACK_HOSTS = frozenset({'localhost', '127.0.0.1', '::1', '0.0.0.0', '::'})
+
+def allowed_request_hosts():
+    extra = str(os.environ.get('FIREFLY_ALLOWED_HOSTS') or '').strip()
+    if not extra:
+        return LOOPBACK_HOSTS
+    return LOOPBACK_HOSTS | {h.strip().lower() for h in extra.split(',') if h.strip()}
+
+def _host_header_parts(request):
     host = str(request.headers.get('host') or '').lower()
     try:
         hostname = (urllib.parse.urlsplit(f'//{host}').hostname or '').lower()
     except ValueError:
         hostname = ''
-    if hostname not in {'localhost', '127.0.0.1', '::1', '0.0.0.0', '::'}:
-        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+    return host, hostname
+
+def ensure_same_origin_request(request: Request):
+    host, hostname = _host_header_parts(request)
+    if hostname not in allowed_request_hosts():
+        raise HTTPException(status_code=403, detail=SAME_ORIGIN_DETAIL)
     expected = f'{request.url.scheme}://{host}'.lower()
     origin = origin_from_url(request.headers.get('origin', ''))
     referer = origin_from_url(request.headers.get('referer', ''))
     actual = origin or referer
     if actual != expected:
-        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+        raise HTTPException(status_code=403, detail=SAME_ORIGIN_DETAIL)
 
 def ensure_agent_same_origin(request: HTTPConnection):
     """agent-tools / agent-nodes 端点同源/Host 守卫（#240，MCP 开放前置）。
 
-    Host 校验与 ensure_same_origin_request 一致（只允许本机回环）；差异：
+    Host 校验与 ensure_same_origin_request 一致（#342 起走 FIREFLY_ALLOWED_HOSTS 白名单，
+    默认只允许本机回环）；差异：
     无 Origin/Referer 的编程式回环调用（服务端自己 spawn 的 pi sidecar，
     canvas-tools.ts：http://127.0.0.1 + X-Agent-Project 头）按票面
     “本机回环+Host 校验”模型放行；带 Origin/Referer 的请求必须与应用来源精确匹配。
+    #342 加固：Origin 头存在但解析不出 scheme://host（file://、sandbox 的 opaque
+    origin，浏览器发 "null"）一律拒绝——那是浏览器专属形态，程序化客户端不会发；
+    否则「无 Origin 即本机客户端」会被 file:// 攻击页绕过。
     参数标注为 HTTPConnection：FastAPI 对 HTTP 路由注入 Request、对 WebSocket 路由
     注入 WebSocket 实例（0.141 下 Request 标注不会被注入到 WS 依赖）。
     """
-    host = str(request.headers.get('host') or '').lower()
-    try:
-        hostname = (urllib.parse.urlsplit(f'//{host}').hostname or '').lower()
-    except ValueError:
-        hostname = ''
-    if hostname not in {'localhost', '127.0.0.1', '::1', '0.0.0.0', '::'}:
-        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+    host, hostname = _host_header_parts(request)
+    if hostname not in allowed_request_hosts():
+        raise HTTPException(status_code=403, detail=SAME_ORIGIN_DETAIL)
     scheme = request.url.scheme
     # WebSocket 握手：生产 ASGI 为 websocket/wss，starlette TestClient 为 ws/wss
     scheme = {'ws': 'http', 'wss': 'https', 'websocket': 'http', 'websockets': 'https'}.get(scheme, scheme)
     expected = f'{scheme}://{host}'.lower()
-    origin = origin_from_url(request.headers.get('origin', ''))
+    origin_raw = str(request.headers.get('origin') or '').strip()
+    origin = origin_from_url(origin_raw)
+    if origin_raw and not origin:
+        raise HTTPException(status_code=403, detail=SAME_ORIGIN_DETAIL)
     referer = origin_from_url(request.headers.get('referer', ''))
     actual = origin or referer
     if actual and actual != expected:
-        raise HTTPException(status_code=403, detail='只允许从当前应用页面操作本机数据')
+        raise HTTPException(status_code=403, detail=SAME_ORIGIN_DETAIL)
 
 def normalize_local_image_path(value):
     text = str(value or '').strip().strip('"').strip("'")

@@ -6,7 +6,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 import asyncio
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from app.core import (BASE_DIR, BaseModel, CodexHelpRequest, HTTPException, _os, _sys, asyncio, codex_decode_output)
+from app.core import (BASE_DIR, BaseModel, CodexHelpRequest, HTTPException, _os, _sys, asyncio, codex_decode_output, ensure_same_origin_request)
 _from_main_names = ['codex_cli_executable', 'gpt_image_2_skill_executable']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -19,7 +19,15 @@ router = APIRouter()
 
 
 @router.get('/api/codex/status')
-async def codex_status():
+async def codex_status(request: Request):
+    # #342：status GET 会 spawn Codex CLI 子进程（--version / login status，后者可能
+    # 访问上游认证），属副作用 GET，要求显式同源头（Origin/Referer）。
+    # 内部 fan-out（global-settings / providers）走 codex_status_core，不受守卫影响。
+    ensure_same_origin_request(request)
+    return await codex_status_core()
+
+
+async def codex_status_core():
     exe = _app_main.codex_cli_executable()
     image2_exe = _app_main.gpt_image_2_skill_executable()
     if not exe:

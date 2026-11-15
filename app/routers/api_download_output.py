@@ -7,7 +7,7 @@ import os
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from firefly_projects import ProjectNotFound
-from app.core import (FileResponse, HTTPException, Request, StreamingResponse, _os, _sys, content_type_for_path, filename_from_media_url, os, requests, rewrite_runninghub_file_url, sanitize_export_filename, urllib)
+from app.core import (FileResponse, HTTPException, Request, StreamingResponse, _os, _sys, content_type_for_path, ensure_same_origin_request, filename_from_media_url, os, requests, rewrite_runninghub_file_url, sanitize_export_filename, urllib)
 from app.project_activity import (
     ProjectCleanupActive,
     assert_project_owner_admissible,
@@ -26,6 +26,10 @@ router = APIRouter()
 
 @router.get('/api/download-output')
 def download_output(request: Request, url: str, name: str='', inline: bool=False):
+    # #342：本 GET 有副作用——回收区分支触发过期回收媒体删除（trash_media_preview_path
+    # → _cleanup_expired_deleted_media_locked），媒体分支可重写 media/index.json，
+    # 远程分支还会对调用方给定 URL 发请求（SSRF 面）。要求显式同源头（Origin/Referer）。
+    ensure_same_origin_request(request)
     url = rewrite_runninghub_file_url(url)
     parsed = urllib.parse.urlparse(str(url or '').strip())
     segments = parsed.path.split('/')

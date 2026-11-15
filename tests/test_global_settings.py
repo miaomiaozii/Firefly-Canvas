@@ -127,7 +127,10 @@ class GlobalSettingsApiTests(unittest.TestCase):
         os.environ.pop("API_PROVIDER_SECRET_TEST_KEY", None)
         for index in range(12):
             os.environ.pop(f"FIREFLY_CONCURRENT_TEST_{index}", None)
-        self.client = TestClient(main.app)
+        # #342：全局 /api 同源守卫要求回环 Host（默认 base_url testserver 会 403）；
+        # /api/global-settings 与 fetch-models GET 属副作用 GET（D8），还需显式同源头。
+        self.client = TestClient(main.app, base_url="http://127.0.0.1:8765",
+                                 headers={"origin": "http://127.0.0.1:8765"})
 
     def tearDown(self):
         self.client.close()
@@ -147,8 +150,8 @@ class GlobalSettingsApiTests(unittest.TestCase):
 
     def test_global_settings_aggregates_masked_providers_cli_and_library(self):
         with (
-            patch.object(main, "codex_status", AsyncMock(return_value={"installed": True, "logged_in": None})),
-            patch.object(main, "gemini_cli_status", AsyncMock(return_value={"installed": False, "logged_in": False})),
+            patch.object(main, "codex_status_core", AsyncMock(return_value={"installed": True, "logged_in": None})),
+            patch.object(main, "gemini_cli_status_core", AsyncMock(return_value={"installed": False, "logged_in": False})),
         ):
             response = self.client.get("/api/global-settings")
 
@@ -280,8 +283,8 @@ class GlobalSettingsApiTests(unittest.TestCase):
 
     def test_global_settings_survives_cli_status_failure(self):
         with (
-            patch.object(main, "codex_status", AsyncMock(side_effect=RuntimeError("codex probe failed"))),
-            patch.object(main, "gemini_cli_status", AsyncMock(side_effect=RuntimeError("gemini probe failed"))),
+            patch.object(main, "codex_status_core", AsyncMock(side_effect=RuntimeError("codex probe failed"))),
+            patch.object(main, "gemini_cli_status_core", AsyncMock(side_effect=RuntimeError("gemini probe failed"))),
         ):
             response = self.client.get("/api/global-settings")
         self.assertEqual(response.status_code, 200, response.text)
@@ -344,8 +347,8 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh"})
         with (
-            patch.object(main, "codex_status", AsyncMock(return_value={})),
-            patch.object(main, "gemini_cli_status", AsyncMock(return_value={})),
+            patch.object(main, "codex_status_core", AsyncMock(return_value={})),
+            patch.object(main, "gemini_cli_status_core", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
         self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh"})
@@ -572,7 +575,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
             patch.object(main, "gpt_image_2_skill_executable", return_value="helper"),
             patch.object(main.asyncio, "create_subprocess_exec", AsyncMock(side_effect=codex_processes)),
         ):
-            codex = asyncio.run(main.codex_status())
+            codex = asyncio.run(main.codex_status_core())
         self.assertEqual(codex["installed"], True)
         self.assertEqual(codex["logged_in"], True)
 
@@ -584,7 +587,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
             patch.object(main, "gemini_cli_executable", return_value="agy.exe"),
             patch.object(main.asyncio, "create_subprocess_exec", AsyncMock(side_effect=agy_processes)),
         ):
-            antigravity = asyncio.run(main.gemini_cli_status())
+            antigravity = asyncio.run(main.gemini_cli_status_core())
         self.assertEqual(antigravity["installed"], True)
         self.assertEqual(antigravity["logged_in"], True)
 
