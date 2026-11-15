@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from tools.quality_gate import (
     STEP_DEFINITIONS,
     UNIT_CONTRACT_STEP_NAMES,
     blocking_guard_events,
+    browser_step_spec,
     build_severity_findings,
     classify_guard_events,
     compute_unit_contract_shards,
@@ -383,6 +385,26 @@ class QualityGateTests(unittest.TestCase):
             if "Firefly-Canvas" in text:
                 offenders.append(runner.name)
         self.assertEqual([], offenders)
+
+    def test_wired_browser_runners_accept_zero_arguments(self):
+        # #377 首轮 trial 门：新接进去的 runner 写了 argparse required=True，
+        # 门不带参数跑，步骤 argparse exit 2（0.5s 就红）。
+        # 门的调用形式就是 `python tests/<runner>.py`，所以 runner 的目录参数必须有默认值。
+        repo_root = Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in sorted(BROWSER_EVIDENCE_STEP_NAMES):
+            spec = browser_step_spec(name, sys.executable, Path(tempfile.mkdtemp(prefix="ff-gate-argv-")))
+            command = spec[0] if spec else STEP_DEFINITIONS[name](sys.executable)
+            if not command[1].startswith("tests/"):
+                continue
+            runner = repo_root / command[1]
+            if not runner.is_file():
+                continue
+            text = runner.read_text(encoding="utf-8")
+            for flag in re.findall(r'add_argument\(\s*"(--[a-z-]+)"[^)]*required=True', text, re.S):
+                if flag not in command:
+                    offenders.append(f"{name} -> {command[1]} 要 {flag}，但门的命令里没给")
+        self.assertEqual([], offenders, "门的调用形式必须给齐 runner 标了 required=True 的参数")
 
     def test_wired_canvas_browser_runners_resolve_their_repo_root(self):
         # 门在临时 workspace 里执行步骤；runner 里硬编码的仓库根会读到工作区外的源码，

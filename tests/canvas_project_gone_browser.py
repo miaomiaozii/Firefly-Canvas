@@ -91,8 +91,10 @@ def static_guards() -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--artifacts-dir", type=Path, required=True)
-    parser.add_argument("--shots-dir", type=Path, required=True)
+    # 默认落在 tmp/（.gitignore 内）：门里不带参数跑也不会弄脏 git，失败时现场还能人手复看。
+    # （#377 首轮 trial 门就是被这里坑的：required=True 让步骤 argparse exit 2。）
+    parser.add_argument("--artifacts-dir", type=Path, default=ROOT / "tmp" / "qa" / "canvas-project-gone")
+    parser.add_argument("--shots-dir", type=Path, default=ROOT / "tmp" / "qa" / "canvas-project-gone" / "shots")
     args = parser.parse_args()
     args.artifacts_dir.mkdir(parents=True, exist_ok=True)
     args.shots_dir.mkdir(parents=True, exist_ok=True)
