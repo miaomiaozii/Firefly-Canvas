@@ -3550,6 +3550,16 @@ async def mutate_firefly_canvas(project_id: str, payload: CanvasMutationBatch):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+    # #353：UI 路径删 agent 节点也要终止宿主进程——扫本批 remove_node，逐个 drop
+    # 对应会话（非 agent 节点/无会话时 no-op，幂等）；失败不阻断画布保存。
+    for _mutation in payload.mutations or []:
+        if isinstance(_mutation, dict) and _mutation.get("op") == "remove_node":
+            _removed = str(_mutation.get("node_id") or "").strip()
+            if _removed:
+                try:
+                    await agent_host_manager.drop_node_session(project_id, _removed)
+                except Exception as exc:
+                    logger.warning("#353 drop_node_session failed for %s: %s", _removed, exc)
     await manager.broadcast_canvas_updated(project_id, int(result.get('updated_at') or _app_main.now_ms()), payload.client_id)
     deadline = time.monotonic() + 1.9
     status = await asyncio.to_thread(_app_main.project_store_call, 'save_status', project_id)

@@ -183,9 +183,16 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
 
 @router.delete("/nodes/{node_id}")
 async def delete_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
-    """Delete a node from the canvas."""
+    """Delete a node from the canvas. #353：若该节点有 agent 宿主会话，同步杀进程并
+    摘除会话（REST 与 MCP 共用本协程，单点覆盖；非 agent 节点 no-op）。"""
     _validate_project(project_id)
     await _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
+    try:
+        from app.services.agent_host import agent_host_manager
+        await agent_host_manager.drop_node_session(project_id, node_id)
+    except Exception as exc:
+        from app.core import logger as _logger
+        _logger.warning("#353 drop_node_session failed for %s: %s", node_id, exc)
     return {"success": True, "node_id": node_id}
 
 

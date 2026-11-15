@@ -77,6 +77,10 @@ IDLE_WATCHDOG_INTERVAL_SECONDS = 60.0
 TURN_STALL_NOTIFY_SECONDS = 120.0
 # 连续自动 respawn 上限：超过说明 sidecar 处于崩溃循环，停止自愈并终态化。
 MAX_CONSECUTIVE_RESPAWNS = 5
+# #353：健康 `running`（就绪待命）会话的空闲回收阈值——与挂死 reap（IDLE_TIMEOUT_SECONDS，
+# 杀树后 reader 自愈 respawn）语义不同：这里走 stop_session 温和停，保留
+# extSessionId + agent_nodes/<nid>/sessions 目录，下次提问用 --session-id 续上原会话（ADR 0024）。
+RUNNING_IDLE_REAP_SECONDS = 15 * 60
 # stderr 尾截断：只留尾 800 字（对照 ComfyArt _cli_common.py STDERR_TAIL=800）。
 STDERR_TAIL_CHARS = 800
 STDERR_MAX_CHUNKS = 200
@@ -1543,6 +1547,28 @@ class AgentHostManager:
         if sessions_to_stop:
             logger.info(f"Cleaned up {len(sessions_to_stop)} agent session(s) for project {project_id}")
 
+    async def drop_node_session(self, project_id: str, node_id: str) -> bool:
+        """#353：节点被删除时的会话终态化——从注册表摘除、杀整棵进程树（stop_session
+        语义：`_stopping` 旗使 reader 不再自动 respawn）、删除 `<project>/agent_nodes/<nid>`
+        目录（节点已不存在，resume 无意义，防磁盘垃圾）。
+        幂等；与 cleanup_project（项目级）同族。返回是否确有会话被摘除。
+        注：busy 挂死的 idle reap 不走这里（那条保留 respawn 自愈语义）。
+        """
+        key = f"{project_id}:{node_id}"
+        async with self._lock:
+            session = self.sessions.pop(key, None)
+        if session is None:
+            return False
+        await self.stop_session(session)
+        try:
+            node_dir = Path(self._get_project_dir(project_id)) / "agent_nodes" / str(node_id)
+            if node_dir.exists():
+                shutil.rmtree(node_dir, ignore_errors=True)
+        except Exception as exc:  # 目录清理失败不阻断删除流程（会话已杀已摘）
+            logger.warning(f"#353 agent node dir cleanup failed for {node_id}: {exc}")
+        logger.info(f"#353 agent session dropped with node {node_id} (project {project_id})")
+        return True
+
     async def reap_orphan_sessions(self) -> int:
         """#239 重启孤儿终态化 pass。
 
@@ -1591,8 +1617,18 @@ class AgentHostManager:
             await self._idle_watchdog_pass(time.time())
 
     async def _idle_watchdog_pass(self, now: float) -> None:
-        """#286：单轮扫描。先短阈值发 stall 提醒（可操作），后长阈值 reap。"""
+        """#286：单轮扫描。先短阈值发 stall 提醒（可操作），后长阈值 reap。
+
+        #353：新增健康 `running`（就绪）会话的空闲回收：超过 RUNNING_IDLE_REAP_SECONDS
+        无任何 turn → stop_session 温和回收（不 respawn）；extSessionId/会话目录保留，
+        下次提问续上原会话。codex per-turn 会话空闲时本就无进程，天然跳过。
+        """
         for session in list(self.sessions.values()):
+            if session.status == "running" and session.is_running:
+                if now - session._last_activity > RUNNING_IDLE_REAP_SECONDS:
+                    logger.info(f"Agent {session.node_id} idle while running — reclaiming (resume via extSessionId)")
+                    await self.stop_session(session)
+                continue
             if session.status not in ("busy", "waiting_confirm"):
                 continue
             idle = now - session._last_activity
