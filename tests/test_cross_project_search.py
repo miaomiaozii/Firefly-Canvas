@@ -187,7 +187,10 @@ class TestSearchProjectsAgentTool(unittest.TestCase):
         self.assertIn("canvas.search_projects", names)
         self.assertIn("canvas.search_projects", api_mcp.TOOL_IMPLS)
         ts = (ROOT / "app" / "agent_extensions" / "canvas-tools.ts").read_text(encoding="utf-8")
-        self.assertIn('name: "canvas.search_projects"', ts)
+        # #356：工具定义移到 codegen 的 generated 文件，手写侧只剩 EXECUTORS 键。
+        gen = (ROOT / "app" / "agent_extensions" / "canvas-tools.generated.ts").read_text(encoding="utf-8")
+        self.assertIn('name: "canvas.search_projects"', gen)
+        self.assertIn('"canvas.search_projects": async', ts)
 
     def test_impl_returns_hits(self):
         import asyncio

@@ -241,29 +241,58 @@ class AgentCanvasToolsMediaUrlTests(unittest.TestCase):
         self.assertIn("${API_BASE}/assets/output/${name}", src)
 
     def test_media_generate_tools_apply_normalization(self):
+        # #356 结构：工具注册段已改为 EXECUTORS 映射（schema 来自 generated 文件），
+        # 块 = EXECUTORS 条目从键到下一个键。
         src = self._source()
-        # 每个工具块 = 工具名 → 下一个 registerTool（或文件尾）。钉到真实工具，防止
-        # 只加了一个 normalize 调用而其它工具仍返回 404 路径。
+        import re
+        keys = [(m.start(), m.group(1)) for m in re.finditer(r'\n    "([a-z_.]+)": async', src)]
+
+        def block(tool):
+            for i, (pos, name) in enumerate(keys):
+                if name == tool:
+                    end = keys[i + 1][0] if i + 1 < len(keys) else len(src)
+                    return src[pos:end]
+            self.fail(f"EXECUTORS 缺少工具 {tool}")
+
+        # textResult(payload, true) 必须过 normalizeMediaPayload（#284 可服务绝对 URL）。
+        tr_start = src.index("function textResult(")
+        tr_block = src[tr_start:src.index("\n}", tr_start)]
+        self.assertIn("normalizeMediaPayload(payload)", tr_block,
+                      "textResult(normalize=true) 必须过 normalizeMediaPayload（#284）")
+        # 钉到真实工具：四个工具块都带 `, true)`（归一化开启），防只加一处漏其它。
         for tool in ("generate.status", "generate.wait", "media.upload", "media.list"):
-            start = src.index(f'name: "{tool}"')
-            end = src.find("pi.registerTool", start + 1)
-            block = src[start:end if end != -1 else len(src)]
             self.assertIn(
-                "JSON.stringify(normalizeMediaPayload(data), null, 2)",
-                block,
-                f"{tool} 返回值未过 normalizeMediaPayload（#284 可服务绝对 URL 缺失）",
+                ", true)",
+                block(tool),
+                f"{tool} 返回值未开 textResult 归一化（#284 可服务绝对 URL 缺失）",
             )
+        # 反面：不该归一化的工具块不带 `, true)`。
+        self.assertNotIn(", true)", block("canvas.list_nodes"), "canvas.list_nodes 不应开归一化（#284 口径）")
         # #352：canvas.view_media 改走 buildViewToolResult（image 内容块 + 元数据文本）；
         # 归一化必须仍生效——工具块调用该 helper，且 helper 内部对 meta 过 normalizeMediaPayload。
-        start = src.index('name: "canvas.view_media"')
-        end = src.find("pi.registerTool", start + 1)
-        block = src[start:end if end != -1 else len(src)]
-        self.assertIn("buildViewToolResult(data)", block,
+        vm_block = block("canvas.view_media")
+        self.assertIn("buildViewToolResult(data)", vm_block,
                       "canvas.view_media 必须走 buildViewToolResult（#352 image 内容块）")
         helper_start = src.index("function buildViewToolResult(")
         helper_block = src[helper_start:src.index("\n}", helper_start)]
         self.assertIn("normalizeMediaPayload(meta)", helper_block,
                       "buildViewToolResult 元数据文本必须过 normalizeMediaPayload（#284 口径不变）")
+
+    def test_executors_cover_manifest(self):
+        """#356：EXECUTORS 键集合 = 清单工具名集合（加载器另有 throw 双保险）。"""
+        import re
+        from app.services.agent_tools_manifest import TOOL_NAMES as manifest_names
+        src = self._source()
+        exec_names = {m.group(1) for m in re.finditer(r'\n    "([a-z_.]+)": async', src)}
+        self.assertEqual(exec_names, set(manifest_names))
+
+    def test_generated_defs_match_manifest(self):
+        """#356：generated.ts 的 name 集合与清单一致（深度同源由 codegen freshness 测试保证）。"""
+        import re
+        from app.services.agent_tools_manifest import TOOL_NAMES as manifest_names
+        gen = (ROOT / "app" / "agent_extensions" / "canvas-tools.generated.ts").read_text(encoding="utf-8")
+        gen_names = {m.group(1) for m in re.finditer(r'name: "([a-z_.]+)"', gen)}
+        self.assertEqual(gen_names, set(manifest_names))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "pi-stable";
-import { Type } from "typebox";
+import { CANVAS_TOOL_DEFS } from "./canvas-tools.generated.ts";
 
 // Base URL for FastAPI backend (injected via environment or config)
 // #279：兜底与服务默认监听端口 3000 一致（见 main.py）；实际由 agent_host 注入
@@ -93,652 +93,226 @@ function buildViewToolResult(data) {
     };
 }
 
+// ── #356 结构说明 ──
+// 工具 name/description/参数 schema 全部来自 CANVAS_TOOL_DEFS（canvas-tools.generated.ts），
+// 由 tools/gen_canvas_tools.py 从 app/services/agent_tools_manifest.py 生成——与 MCP 端
+// （app/routers/api_mcp.py）同一来源；本文件只剩 execute 执行器（REST 孪生调用）。
+// 每个清单工具必须在 EXECUTORS 里有同名键，否则加载即 throw；
+// tests/test_tool_surface_consistency.py 双向钉住名字集合。
+// D11（#356）：客户端不做参数默认值——create_node 不发 id、不默认 x/y（服务端 frame
+// 自动落位，agent_node_id 随 body 透传）；connect 不发 edge id、不默认 kind（服务端缺省
+// flow）；search_projects 透传 limit（D13）。
+
+function textResult(payload: any, normalize = false) {
+    const body = normalize ? normalizeMediaPayload(payload) : payload;
+    return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], details: {} };
+}
+
+// 写操作确认门（#242 语义）：先问用户，未批准直接回拒绝结果。
+async function confirmGate(tool: string, params: any, message: string) {
+    return await callApi(`/api/projects/${PROJECT_ID}/agent/confirm`, "POST", {
+        node_id: NODE_ID,
+        tool,
+        params,
+        message,
+    });
+}
+
+function declinedEditResult(confirmData: any) {
+    const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+    return {
+        content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
+        details: {},
+    };
+}
+
+function declinedDeleteResult(confirmData: any, what: string) {
+    const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
+    return {
+        content: [{ type: "text", text: `删除已取消：${reason}。${what}` }],
+        details: { approved: false, reason: confirmData.reason },
+    };
+}
+
+const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
+    "canvas.list_nodes": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes`, "GET")),
+
+    "canvas.get_node": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "GET")),
+
+    "canvas.create_node": async (_toolCallId, params) => {
+        // #356 D11：只发显式字段；id 与缺位落位归服务端（agent_node_id 透传启用 frame 网格）。
+        const node: any = { type: params.type };
+        if (params.title !== undefined) node.title = params.title;
+        if (params.x !== undefined) node.x = params.x;
+        if (params.y !== undefined) node.y = params.y;
+        if (params.text !== undefined) node.text = params.text;
+        if (params.prompt !== undefined) node.prompt = params.prompt;
+        const body: any = { node };
+        if (NODE_ID) body.agent_node_id = NODE_ID;
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes`, "POST", body));
+    },
+
+    "canvas.update_node": async (_toolCallId, params) => {
+        const updates: any = {};
+        if (params.title !== undefined) updates.title = params.title;
+        if (params.text !== undefined) updates.text = params.text;
+        if (params.prompt !== undefined) updates.prompt = params.prompt;
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "PATCH", updates));
+    },
+
+    "canvas.delete_node": async (_toolCallId, params) => {
+        // Hard confirmation gate: ask the user via the backend confirm endpoint
+        const confirmData = await confirmGate("canvas.delete_node", { node_id: params.node_id }, `删除节点 ${params.node_id}？此操作不可撤销。`);
+        if (!confirmData.approved) {
+            return declinedDeleteResult(confirmData, `节点 ${params.node_id} 未被删除。`);
+        }
+        await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "DELETE");
+        return { content: [{ type: "text", text: `节点 ${params.node_id} 已删除。` }], details: {} };
+    },
+
+    "canvas.connect": async (_toolCallId, params) => {
+        // #356 D12/D11：edge id 服务端铸造；kind 缺省归服务端 core（flow）。
+        const edge: any = { from: params.from_node, to: params.to_node };
+        if (params.kind !== undefined) edge.kind = params.kind;
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges`, "POST", { edge }));
+    },
+
+    "canvas.disconnect": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges/${params.from_node}/${params.to_node}`, "DELETE")),
+
+    "canvas.search_projects": async (_toolCallId, params) => {
+        // D13（#356）：limit 透传（此前声明了但从不拼进查询串，永远 50）。
+        let url = `/api/search/projects?q=${encodeURIComponent(params.query)}`;
+        if (params.limit !== undefined) url += `&limit=${encodeURIComponent(String(params.limit))}`;
+        return textResult(await callApi(url, "GET"));
+    },
+
+    "canvas.view": async (_toolCallId, params) => {
+        const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view`, "POST", {
+            scope: params.scope,
+            node_ids: params.node_ids,
+            max_px: params.max_px,
+        });
+        return buildViewToolResult(data);
+    },
+
+    "canvas.view_media": async (_toolCallId, params) => {
+        const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view_media`, "POST", {
+            node_id: params.node_id,
+            max_px: params.max_px,
+            frames: params.frames,
+        });
+        return buildViewToolResult(data);
+    },
+
+    "canvas.edit_crop": async (_toolCallId, params) => {
+        const confirmData = await confirmGate("canvas.edit_crop", { node_id: params.node_id, rect: params.rect }, `裁剪节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
+        if (!confirmData.approved) return declinedEditResult(confirmData);
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop`, "POST", {
+            node_id: params.node_id,
+            rect: params.rect,
+        }));
+    },
+
+    "canvas.batch_edit": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit`, "POST", {
+            node_ids: params.node_ids,
+            prompt: params.prompt,
+        })),
+
+    "canvas.edit_rotate": async (_toolCallId, params) => {
+        const confirmData = await confirmGate("canvas.edit_rotate", { node_id: params.node_id, angle: params.angle }, `旋转节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
+        if (!confirmData.approved) return declinedEditResult(confirmData);
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_rotate`, "POST", {
+            node_id: params.node_id,
+            angle: params.angle,
+        }));
+    },
+
+    "canvas.edit_flip": async (_toolCallId, params) => {
+        const confirmData = await confirmGate("canvas.edit_flip", { node_id: params.node_id, direction: params.direction }, `镜像节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
+        if (!confirmData.approved) return declinedEditResult(confirmData);
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_flip`, "POST", {
+            node_id: params.node_id,
+            direction: params.direction,
+        }));
+    },
+
+    "canvas.edit_outpaint": async (_toolCallId, params) => {
+        const confirmData = await confirmGate("canvas.edit_outpaint", {
+            node_id: params.node_id,
+            outpaint_size: params.outpaint_size,
+            offset: params.offset,
+        }, `红底扩图节点 ${params.node_id}（目标画布 ${params.outpaint_size?.width}x${params.outpaint_size?.height}，外区填 #ff0044）并覆写节点图？原资源保留在资源库。`);
+        if (!confirmData.approved) return declinedEditResult(confirmData);
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_outpaint`, "POST", {
+            node_id: params.node_id,
+            outpaint_size: params.outpaint_size,
+            offset: params.offset,
+        }));
+    },
+
+    "canvas.edit_erase": async (_toolCallId, params) => {
+        const confirmData = await confirmGate("canvas.edit_erase", {
+            node_id: params.node_id,
+            rect: params.rect,
+            prompt: params.prompt,
+        }, `擦除节点 ${params.node_id} 选区（${params.rect?.x},${params.rect?.y} ${params.rect?.width}x${params.rect?.height}，"${params.prompt}"）并覆写节点图？将消耗一次外部模型调用（qwen-image-edit），原资源保留在资源库。`);
+        if (!confirmData.approved) return declinedEditResult(confirmData);
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase`, "POST", {
+            node_id: params.node_id,
+            rect: params.rect,
+            prompt: params.prompt,
+        }));
+    },
+
+    "generate.trigger": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/trigger`, "POST", { node_id: params.node_id })),
+
+    "generate.status": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}`, "GET"), true),
+
+    "generate.wait": async (_toolCallId, params) => {
+        // #243: timeout 走 Query 参数（服务端 wait_for_task 是 Query 参数
+        // timeout:1..600 default 120）；此前发在 GET body 被服务端忽略。
+        const timeout = Math.max(1, Math.min(600, Math.round(params.timeout_seconds ?? 120)));
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait?timeout=${timeout}`, "GET"), true);
+    },
+
+    "media.upload": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/media/upload`, "POST", { file_path: params.file_path }), true),
+
+    "media.list": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/media/list`, "GET"), true),
+
+    "media.delete": async (_toolCallId, params) => {
+        // Hard confirmation gate: ask the user via the backend confirm endpoint
+        const confirmData = await confirmGate("media.delete", { asset_id: params.asset_id }, `删除媒体文件 ${params.asset_id}？此操作不可撤销。`);
+        if (!confirmData.approved) {
+            return declinedDeleteResult(confirmData, `媒体文件 ${params.asset_id} 未被删除。`);
+        }
+        await callApi(`/api/projects/${PROJECT_ID}/media/${params.asset_id}`, "DELETE");
+        return { content: [{ type: "text", text: `媒体文件 ${params.asset_id} 已删除。` }], details: {} };
+    },
+
+    "viewport.focus": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/viewport/focus`, "POST", { node_id: params.node_id })),
+
+    "viewport.zoom": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/viewport/zoom`, "POST", { level: params.level })),
+
+    "viewport.state": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/viewport/state`, "GET")),
+};
+
 export default function (pi: ExtensionAPI) {
-    // Query tools
-    pi.registerTool({
-        name: "canvas.list_nodes",
-        description: "List all nodes on the canvas with summary info (id, type, title, position, connections, status)",
-        parameters: Type.Object({}),
-        async execute() {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes`, "GET");
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.get_node",
-        description: "Get detailed information about a specific node",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to query" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "GET");
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // #243: canvas.get_selection 已摘除——它是恒空的假工具（选择状态是纯客户端
-    // 状态，服务端没有数据来源），ADR 0022 已知缺口「摘除或实装」选摘除。
-
-    // Structure tools
-    pi.registerTool({
-        name: "canvas.create_node",
-        description: "Create a new node on the canvas",
-        parameters: Type.Object({
-            type: Type.String({ description: "Node type: smart-prompt, smart-image, smart-video, smart-agent, conversation" }),
-            title: Type.Optional(Type.String({ description: "Node title" })),
-            x: Type.Optional(Type.Number({ description: "X position" })),
-            y: Type.Optional(Type.Number({ description: "Y position" })),
-            text: Type.Optional(Type.String({ description: "Text content (for prompt nodes)" })),
-            prompt: Type.Optional(Type.String({ description: "Prompt content (for image/video nodes)" })),
-        }),
-        async execute(toolCallId, params) {
-            const node = {
-                id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                type: params.type,
-                title: params.title || "",
-                x: params.x ?? 0,
-                y: params.y ?? 0,
-            };
-            if (params.text !== undefined) node.text = params.text;
-            if (params.prompt !== undefined) node.prompt = params.prompt;
-
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes`, "POST", { node });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.update_node",
-        description: "Update an existing node's properties",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to update" }),
-            title: Type.Optional(Type.String({ description: "New title" })),
-            text: Type.Optional(Type.String({ description: "New text content" })),
-            prompt: Type.Optional(Type.String({ description: "New prompt content" })),
-        }),
-        async execute(toolCallId, params) {
-            const updates: any = {};
-            if (params.title !== undefined) updates.title = params.title;
-            if (params.text !== undefined) updates.text = params.text;
-            if (params.prompt !== undefined) updates.prompt = params.prompt;
-
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "PATCH", updates);
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.delete_node",
-        description: "Delete a node from the canvas (requires user confirmation)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to delete" }),
-        }),
-        async execute(toolCallId, params) {
-            // Hard confirmation gate: ask the user via the backend confirm endpoint
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.delete_node",
-                    params: { node_id: params.node_id },
-                    message: `删除节点 ${params.node_id}？此操作不可撤销。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{
-                        type: "text",
-                        text: `删除已取消：${reason}。节点 ${params.node_id} 未被删除。`,
-                    }],
-                    details: { approved: false, reason: confirmData.reason },
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "DELETE");
-            return {
-                content: [{ type: "text", text: `节点 ${params.node_id} 已删除。` }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.connect",
-        description: "Create a connection between two nodes",
-        parameters: Type.Object({
-            from_node: Type.String({ description: "Source node ID" }),
-            to_node: Type.String({ description: "Target node ID" }),
-            kind: Type.Optional(Type.String({ description: "Connection kind: input, flow" })),
-        }),
-        async execute(toolCallId, params) {
-            const edge = {
-                id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                from: params.from_node,
-                to: params.to_node,
-                kind: params.kind || "flow",
-            };
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edges`, "POST", { edge });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.disconnect",
-        description: "Remove a connection between two nodes",
-        parameters: Type.Object({
-            from_node: Type.String({ description: "Source node ID" }),
-            to_node: Type.String({ description: "Target node ID" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/canvas/edges/${params.from_node}/${params.to_node}`,
-                "DELETE"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.search_projects",
-        description: "跨项目搜索（只读）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中；不搜 agent 会话内容",
-        parameters: Type.Object({
-            query: Type.String({ description: "搜索关键词（大小写不敏感）" }),
-            limit: Type.Number({ description: "命中总数上限（1..200，默认 50）", optional: true }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/search/projects?q=${encodeURIComponent(params.query)}`,
-                "GET"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // #266 只读视图工具（ComfyArt §59.4 语义；慢操作独立 90s 超时契约，服务端施加）
-    pi.registerTool({
-        name: "canvas.view",
-        description:
-            "Export canvas nodes' media as one contact-sheet image, returned as image content (type: image) + metadata text — not base64 text. scope: page (all media nodes) or selection (node_ids). Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
-        parameters: Type.Object({
-            scope: Type.Union([Type.Literal("page"), Type.Literal("selection")], { description: "page=整页；selection=指定节点" }),
-            node_ids: Type.Optional(Type.Array(Type.String(), { description: "Node IDs for scope=selection" })),
-            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view`, "POST", {
-                scope: params.scope,
-                node_ids: params.node_ids,
-                max_px: params.max_px,
-            });
-            return buildViewToolResult(data);
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.view_media",
-        description:
-            "View one node's media: image downscaled, video as frame contact sheet. Returned as image content (type: image) + metadata text. Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to view" }),
-            max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
-            frames: Type.Optional(Type.Number({ description: "Video frame count 1..16, default 4" })),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/view_media`, "POST", {
-                node_id: params.node_id,
-                max_px: params.max_px,
-                frames: params.frames,
-            });
-            return buildViewToolResult(data);
-        },
-    });
-
-    // #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：写操作先走确认门（#242 语义）
-    pi.registerTool({
-        name: "canvas.edit_crop",
-        description:
-            "Crop a node image selection and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to edit" }),
-            rect: Type.Object({
-                x: Type.Number({ description: "Selection left (image px)" }),
-                y: Type.Number({ description: "Selection top (image px)" }),
-                width: Type.Number({ description: "Selection width (image px)" }),
-                height: Type.Number({ description: "Selection height (image px)" }),
-            }, { description: "Selection in source-image pixel coordinates" }),
-        }),
-        async execute(toolCallId, params) {
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.edit_crop",
-                    params: { node_id: params.node_id, rect: params.rect },
-                    message: `裁剪节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-                    details: {},
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop`, "POST", {
-                node_id: params.node_id,
-                rect: params.rect,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // #266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）
-    pi.registerTool({
-        name: "canvas.batch_edit",
-        description:
-            "Batch generation: write one prompt to up to 10 selected nodes and trigger one generation per node (consumes external generation, unlike local edit_*; results stay on each node). Returns per-node task_ids — poll generate.status or wait with generate.wait",
-        parameters: Type.Object({
-            node_ids: Type.Array(Type.String(), { description: "Node IDs to generate on (1..10)" }),
-            prompt: Type.String({ description: "The batch prompt, written to every node" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit`, "POST", {
-                node_ids: params.node_ids,
-                prompt: params.prompt,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 既有能力，flip 同族本地变换）：写操作先走确认门（#242 语义）
-    pi.registerTool({
-        name: "canvas.edit_rotate",
-        description:
-            "Rotate a node image (90/180/270 degrees counter-clockwise) and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to edit" }),
-            angle: Type.Union([Type.Literal(90), Type.Literal(180), Type.Literal(270)], { description: "Counter-clockwise rotation in degrees: 90, 180 or 270" }),
-        }),
-        async execute(toolCallId, params) {
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.edit_rotate",
-                    params: { node_id: params.node_id, angle: params.angle },
-                    message: `旋转节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-                    details: {},
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_rotate`, "POST", {
-                node_id: params.node_id,
-                angle: params.angle,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.edit_flip",
-        description:
-            "Mirror a node image (horizontal left-right / vertical top-bottom) and overwrite the node image (local PIL, no external generation; requires user confirmation; the original asset stays in the library)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to edit" }),
-            direction: Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")], { description: "horizontal = left-right mirror, vertical = top-bottom mirror" }),
-        }),
-        async execute(toolCallId, params) {
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.edit_flip",
-                    params: { node_id: params.node_id, direction: params.direction },
-                    message: `镜像节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-                    details: {},
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_flip`, "POST", {
-                node_id: params.node_id,
-                direction: params.direction,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.edit_outpaint",
-        description:
-            "Red-mask outpaint: enlarge the canvas, fill the outer region with saturated red (#ff0044) and paste the original image at offset, then overwrite the node image (local PIL, no external generation; the red outer region is later filled by generate.trigger — no mask is sent to any model, ADR 0007; requires user confirmation; the original asset stays in the library)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to edit" }),
-            outpaint_size: Type.Object({
-                width: Type.Number({ description: "Target canvas width in pixels (must exceed the original image width)" }),
-                height: Type.Number({ description: "Target canvas height in pixels (must exceed the original image height)" }),
-            }, { description: "Target canvas size in pixels" }),
-            offset: Type.Object({
-                x: Type.Number({ description: "Original image X position on the new canvas (default 0)" }),
-                y: Type.Number({ description: "Original image Y position on the new canvas (default 0)" }),
-            }, { description: "Position of the original image on the new canvas (default 0,0 top-left)" }),
-        }),
-        async execute(toolCallId, params) {
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.edit_outpaint",
-                    params: {
-                        node_id: params.node_id,
-                        outpaint_size: params.outpaint_size,
-                        offset: params.offset,
-                    },
-                    message: `红底扩图节点 ${params.node_id}（目标画布 ${params.outpaint_size?.width}x${params.outpaint_size?.height}，外区填 #ff0044）并覆写节点图？原资源保留在资源库。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-                    details: {},
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_outpaint`, "POST", {
-                node_id: params.node_id,
-                outpaint_size: params.outpaint_size,
-                offset: params.offset,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "canvas.edit_erase",
-        description:
-            "Erase content inside a node-image selection (rect x/y/width/height in original image pixels) per prompt: the rect is cropped, sent to the bailian local-edit model (qwen-image-edit-max-2026-01-16), and the result is composited back into the node image (consumes one external model call; no mask is sent to any model — ADR 0007; requires user confirmation; the original asset stays in the library)",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to edit" }),
-            rect: Type.Object({
-                x: Type.Number({ description: "Selection left edge in original image pixels" }),
-                y: Type.Number({ description: "Selection top edge in original image pixels" }),
-                width: Type.Number({ description: "Selection width in original image pixels" }),
-                height: Type.Number({ description: "Selection height in original image pixels" }),
-            }, { description: "Selection in original image pixels (x/y top-left corner + width/height)" }),
-            prompt: Type.String({ description: "Describe what to erase and how to fill the region" }),
-        }),
-        async execute(toolCallId, params) {
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "canvas.edit_erase",
-                    params: {
-                        node_id: params.node_id,
-                        rect: params.rect,
-                        prompt: params.prompt,
-                    },
-                    message: `擦除节点 ${params.node_id} 选区（${params.rect?.x},${params.rect?.y} ${params.rect?.width}x${params.rect?.height}，"${params.prompt}"）并覆写节点图？将消耗一次外部模型调用（qwen-image-edit），原资源保留在资源库。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-                    details: {},
-                };
-            }
-            const data = await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase`, "POST", {
-                node_id: params.node_id,
-                rect: params.rect,
-                prompt: params.prompt,
-            });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // Generate tools
-    pi.registerTool({
-        name: "generate.trigger",
-        description: "Trigger generation on a node, returns task ID",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to generate on" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/generate/trigger`,
-                "POST",
-                { node_id: params.node_id }
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "generate.status",
-        description: "Query the status of a generation task",
-        parameters: Type.Object({
-            task_id: Type.String({ description: "The task ID to query" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}`,
-                "GET"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "generate.wait",
-        description: "Wait for a generation task to complete (with timeout)",
-        parameters: Type.Object({
-            task_id: Type.String({ description: "The task ID to wait for" }),
-            timeout_seconds: Type.Optional(Type.Number({ description: "Timeout in seconds (default 120)" })),
-        }),
-        async execute(toolCallId, params) {
-            // #243: timeout 走 Query 参数（服务端 wait_for_task 是 Query 参数
-            // timeout:1..600 default 120）；此前发在 GET body 被服务端忽略。
-            const timeout = Math.max(1, Math.min(600, Math.round(params.timeout_seconds ?? 120)));
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait?timeout=${timeout}`,
-                "GET"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    // Media tools
-    pi.registerTool({
-        name: "media.upload",
-        description: "Upload a media file to the project library, returns asset ID",
-        parameters: Type.Object({
-            file_path: Type.String({ description: "Path to the media file to upload" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/media/upload`,
-                "POST",
-                { file_path: params.file_path }
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "media.list",
-        description: "List all media assets in the project",
-        parameters: Type.Object({}),
-        async execute() {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/media/list`,
-                "GET"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "media.delete",
-        description: "Delete a media file from the project (requires user confirmation)",
-        parameters: Type.Object({
-            asset_id: Type.String({ description: "The asset ID to delete" }),
-        }),
-        async execute(toolCallId, params) {
-            // Hard confirmation gate: ask the user via the backend confirm endpoint
-            const confirmData = await callApi(
-                `/api/projects/${PROJECT_ID}/agent/confirm`,
-                "POST",
-                {
-                    node_id: NODE_ID,
-                    tool: "media.delete",
-                    params: { asset_id: params.asset_id },
-                    message: `删除媒体文件 ${params.asset_id}？此操作不可撤销。`,
-                }
-            );
-            if (!confirmData.approved) {
-                const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-                return {
-                    content: [{
-                        type: "text",
-                        text: `删除已取消：${reason}。媒体文件 ${params.asset_id} 未被删除。`,
-                    }],
-                    details: { approved: false, reason: confirmData.reason },
-                };
-            }
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/media/${params.asset_id}`,
-                "DELETE"
-            );
-            return {
-                content: [{ type: "text", text: `媒体文件 ${params.asset_id} 已删除。` }],
-                details: {},
-            };
-        },
-    });
-
-    // Viewport tools
-    pi.registerTool({
-        name: "viewport.focus",
-        description: "Scroll canvas to focus on a node",
-        parameters: Type.Object({
-            node_id: Type.String({ description: "The node ID to focus on" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/viewport/focus`,
-                "POST",
-                { node_id: params.node_id }
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "viewport.zoom",
-        description: "Set the canvas zoom level (0.1 to 8.0)",
-        parameters: Type.Object({
-            level: Type.Number({ description: "Zoom level (0.1 to 8.0)" }),
-        }),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/viewport/zoom`,
-                "POST",
-                { level: params.level }
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
-
-    pi.registerTool({
-        name: "viewport.state",
-        description: "Read the current canvas viewport state (focused node, position, zoom scale)",
-        parameters: Type.Object({}),
-        async execute(toolCallId, params) {
-            const data = await callApi(
-                `/api/projects/${PROJECT_ID}/viewport/state`,
-                "GET"
-            );
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
-        },
-    });
+    for (const def of CANVAS_TOOL_DEFS) {
+        const execute = EXECUTORS[def.name];
+        if (!execute) {
+            throw new Error(`[canvas-tools] EXECUTORS 缺少工具 ${def.name}（清单与执行器漂移）`);
+        }
+        pi.registerTool({ name: def.name, description: def.description, parameters: def.parameters, execute });
+    }
 }

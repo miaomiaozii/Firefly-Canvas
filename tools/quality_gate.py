@@ -410,7 +410,9 @@ STEP_DEFINITIONS = {
         "tests.test_excel_importer",
         "tests.test_excel_export",
     ],
-    "surface-contract": lambda python: [python, "-m", "unittest", "tests.test_product_surface_behavior"],
+    # #356：codegen freshness（清单↔canvas-tools.generated.ts 重跑 diff 为空）进 fast 门
+    # （拍板 a）；DualPathEquivalenceTests 较慢（≈18s）留在全量 pytest，不在 fast。
+    "surface-contract": lambda python: [python, "-m", "unittest", "tests.test_product_surface_behavior", "tests.test_tool_surface_consistency.SourceSameOriginTests"],
     "project-contract": lambda python: [
         python,
         "-m",

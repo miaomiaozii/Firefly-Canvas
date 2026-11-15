@@ -164,9 +164,10 @@ async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(
 
 @router.post("/nodes")
 async def create_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """Create a new node on the canvas."""
+    """Create a new node on the canvas. 可选 `agent_node_id`（#356 D11）：传了则
+    未显式给 x/y 的新节点按该 agent 的会话 frame 网格自动落位（与 MCP 路径同行为）。"""
     body = await request.json()
-    return await create_node_core(project_id, body.get("node", {}))
+    return await create_node_core(project_id, body.get("node", {}), agent_node_id=str(body.get("agent_node_id") or ""))
 
 
 @router.patch("/nodes/{node_id}")
@@ -356,6 +357,8 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
 
     if not edge.get("id"):
         edge["id"] = f"edge-{uuid.uuid4().hex[:12]}"
+    if not edge.get("kind"):
+        edge["kind"] = "flow"  # #356 D12：缺省归服务端（两路一致）；前端总传 kind 不受影响
     if not edge.get("from") or not edge.get("to"):
         raise HTTPException(status_code=400, detail="edge.from and edge.to are required")
 

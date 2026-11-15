@@ -69,7 +69,7 @@ from app.routers.api_agent_tools import (
     view_media_core,
     wait_for_task_core,
 )
-from app.services.canvas_view import DEFAULT_VIEW_MAX_PX, MAX_VIEW_MAX_PX, VIEW_SLOW_TIMEOUT_S
+from app.services.canvas_view import VIEW_SLOW_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -303,61 +303,14 @@ mcp_event_recorder = McpEventRecorder()
 
 
 # ---------------------------------------------------------------------------
-# Tool surface — the canvas agent tools minus the fake canvas.get_selection
-# (ADR 0022 known gap: 摘除; semantics unchanged from canvas-tools.ts). 19 tools.
+# Tool surface — 单一来源清单（#356，ADR 0022）：TOOLS 定义在
+# app/services/agent_tools_manifest.py；pi 扩展（agent_extensions/canvas-tools.ts）
+# 的工具注册段由 tools/gen_canvas_tools.py 从同一清单 codegen。此处只做 MCP 侧
+# 实现绑定。清单改动会由 tests/test_tool_surface_consistency.py 的 codegen
+# freshness 测试钉住（重跑生成器 diff 必须为空）。
 # ---------------------------------------------------------------------------
 
-#: #266 公共参数片段（票面规范：公共参数片段 + additionalProperties:false，
-#: ComfyArt §59.4 建议 5 的 _ID/_IDS/_REGION/_PLACE 模式在本仓的对应实现）
-_PARAM_MAX_PX = {
-    "type": "integer",
-    "description": f"最长边像素，默认 {DEFAULT_VIEW_MAX_PX}，上限 {MAX_VIEW_MAX_PX}（ComfyArt maxPx 契约）",
-    "minimum": 64,
-    "maximum": MAX_VIEW_MAX_PX,
-}
-_PARAM_NODE_IDS = {"type": "array", "items": {"type": "string"}, "description": "节点 ID 列表"}
-_PARAM_RECT = {
-    "type": "object",
-    "description": "选区（原图像素坐标，x/y 左上角 + width/height）",
-    "properties": {
-        "x": {"type": "number"}, "y": {"type": "number"},
-        "width": {"type": "number"}, "height": {"type": "number"},
-    },
-    "required": ["x", "y", "width", "height"],
-    "additionalProperties": False,
-}
-
-TOOLS = [
-    {"name": "canvas.list_nodes", "description": "列出画布上所有节点（含连边摘要）", "inputSchema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "canvas.get_node", "description": "获取单个节点详情", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-    {"name": "canvas.create_node", "description": "创建节点（node 对象需含 type；可含 id/title/x/y/prompt 等）", "inputSchema": {"type": "object", "properties": {"node": {"type": "object"}}, "required": ["node"]}},
-    {"name": "canvas.update_node", "description": "更新节点属性（updates 为扁平字段对象）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["node_id", "updates"]}},
-    {"name": "canvas.delete_node", "description": "删除节点（破坏性：需画布确认门批准，阻塞最长 60s）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-    {"name": "canvas.connect", "description": "创建节点连线（edge 对象需含 from/to）", "inputSchema": {"type": "object", "properties": {"edge": {"type": "object"}}, "required": ["edge"]}},
-    {"name": "canvas.disconnect", "description": "删除节点连线", "inputSchema": {"type": "object", "properties": {"from_node": {"type": "string"}, "to_node": {"type": "string"}}, "required": ["from_node", "to_node"]}},
-    {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"]}},
-    # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
-    {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，以 MCP image 内容块返回，文本块仅含元数据）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
-    {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
-    # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
-    {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
-    # #266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成（调既有生成通路，非本地处理；结果放各自旁边）
-    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
-    # #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 是既有能力，flip 同族本地变换）：本地 PIL，写操作走确认门（#242 语义）
-    {"name": "canvas.edit_rotate", "description": "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "angle": {"type": "integer", "enum": [90, 180, 270], "description": "逆时针旋转角度，90/180/270 之一"}}, "required": ["node_id", "angle"], "additionalProperties": False}},
-    {"name": "canvas.edit_flip", "description": "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "direction": {"type": "string", "enum": ["horizontal", "vertical"], "description": "horizontal=左右镜像，vertical=上下镜像"}}, "required": ["node_id", "direction"], "additionalProperties": False}},
-    {"name": "canvas.edit_outpaint", "description": "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "outpaint_size": {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}, "required": ["width", "height"], "additionalProperties": False, "description": "目标画布尺寸（像素；须大于原图像素）"}, "offset": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "additionalProperties": False, "description": "原图在新画布中的位置（像素，默认 0,0 左上角）"}}, "required": ["node_id", "outpaint_size"], "additionalProperties": False}},
-    {"name": "canvas.edit_erase", "description": "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT, "prompt": {"type": "string", "minLength": 1, "description": "描述要擦除什么、如何填充该区域"}}, "required": ["node_id", "rect", "prompt"], "additionalProperties": False}},
-    {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-    {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
-    {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120"}}, "required": ["task_id"]}},
-    {"name": "media.upload", "description": "导入本机媒体文件到项目资源库（file_path 为服务器本机路径）", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}},
-    {"name": "media.list", "description": "列出项目媒体资源", "inputSchema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "media.delete", "description": "删除媒体资源（破坏性：需画布确认门批准，阻塞最长 60s）", "inputSchema": {"type": "object", "properties": {"asset_id": {"type": "string"}}, "required": ["asset_id"]}},
-    {"name": "viewport.focus", "description": "画布视口聚焦到节点（定向下发给打开该项目的标签页）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]}},
-    {"name": "viewport.zoom", "description": "设置画布缩放级别（定向下发给打开该项目的标签页）", "inputSchema": {"type": "object", "properties": {"level": {"type": "number"}}, "required": ["level"]}},
-    {"name": "viewport.state", "description": "读取当前视口状态（最近一次 focus/zoom 命令）", "inputSchema": {"type": "object", "properties": {}, "required": []}},
-]
+from app.services.agent_tools_manifest import TOOLS  # noqa: E402
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
@@ -371,11 +324,19 @@ async def _impl_get_node(project_id, agent_node_id, args):
 
 
 async def _impl_create_node(project_id, agent_node_id, args):
-    return await create_node_core(project_id, args.get("node") or {}, agent_node_id=agent_node_id or "")
+    # #356 D11：平铺参数为主；旧 `node` 自由对象兼容一版（已弃用）。
+    node = args.get("node")
+    if not isinstance(node, dict) or not node:
+        node = {k: v for k, v in args.items() if v is not None}
+    return await create_node_core(project_id, node, agent_node_id=agent_node_id or "")
 
 
 async def _impl_update_node(project_id, agent_node_id, args):
-    return await update_node_core(project_id, str(args.get("node_id") or ""), args.get("updates") or {})
+    # #356 D11：平铺字段为主；旧 `updates` 自由对象兼容一版（已弃用）。
+    updates = args.get("updates")
+    if not isinstance(updates, dict) or not updates:
+        updates = {k: v for k, v in args.items() if k != "node_id" and v is not None}
+    return await update_node_core(project_id, str(args.get("node_id") or ""), updates)
 
 
 async def _impl_delete_node(project_id, agent_node_id, args):
@@ -385,7 +346,13 @@ async def _impl_delete_node(project_id, agent_node_id, args):
 
 
 async def _impl_connect(project_id, agent_node_id, args):
-    return await create_edge_core(project_id, args.get("edge") or {})
+    # #356 D12：平铺 from_node/to_node/kind 为主；旧 `edge` 对象兼容一版（已弃用）。
+    edge = args.get("edge")
+    if not isinstance(edge, dict) or not edge:
+        edge = {"from": str(args.get("from_node") or ""), "to": str(args.get("to_node") or "")}
+        if args.get("kind"):
+            edge["kind"] = str(args["kind"])
+    return await create_edge_core(project_id, edge)
 
 
 async def _impl_disconnect(project_id, agent_node_id, args):

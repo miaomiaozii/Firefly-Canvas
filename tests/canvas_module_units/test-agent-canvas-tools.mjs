@@ -49,7 +49,22 @@ function loadHelpers(apiBase) {
 }
 
 test('#284 源码契约：五个媒体/生成工具返回值都过 normalizeMediaPayload', () => {
-    // 工具名 → callApi 的路径段（确保钉到真实工具，而不是随便一个 JSON.stringify）。
+    // #356 结构：工具注册段改为 EXECUTORS 映射（schema 来自 canvas-tools.generated.ts）。
+    // 块 = EXECUTORS 条目从键到下一个键；归一化由 textResult(payload, true) 开启。
+    const keys = [];
+    const keyRe = /\n    "([a-z_.]+)": async/g;
+    let m;
+    while ((m = keyRe.exec(SOURCE)) !== null) keys.push({ idx: m.index, name: m[1] });
+    assert.ok(keys.length >= 25, `EXECUTORS 条目数异常：${keys.length}`);
+    const block = (name) => {
+        const i = keys.findIndex((k) => k.name === name);
+        assert.notEqual(i, -1, `canvas-tools.ts EXECUTORS 找不到工具 ${name}`);
+        const end = i + 1 < keys.length ? keys[i + 1].idx : SOURCE.length;
+        return SOURCE.slice(keys[i].idx, end);
+    };
+    // textResult 本体必须真的过 normalizeMediaPayload。
+    assert.ok(SOURCE.includes('normalizeMediaPayload(payload)'),
+        'textResult 未对 normalize=true 应用 normalizeMediaPayload（#284）');
     const wired = [
         ['generate.status', '/generate/tasks/${params.task_id}`'],
         ['generate.wait', '/generate/tasks/${params.task_id}/wait?timeout=${timeout}`'],
@@ -57,28 +72,33 @@ test('#284 源码契约：五个媒体/生成工具返回值都过 normalizeMedi
         ['media.list', '/media/list`'],
     ];
     for (const [tool, pathSeg] of wired) {
-        // 找到该工具的 registerTool 块，断言其返回体用了 normalizeMediaPayload(data)。
-        const toolIdx = SOURCE.indexOf(`name: "${tool}"`);
-        assert.notEqual(toolIdx, -1, `canvas-tools.ts 找不到工具 ${tool}`);
-        // 块范围：从该工具名到下一个 registerTool（或文件尾）。
-        const nextIdx = SOURCE.indexOf('pi.registerTool', toolIdx + 1);
-        const block = SOURCE.slice(toolIdx, nextIdx === -1 ? SOURCE.length : nextIdx);
-        assert.ok(block.includes(pathSeg), `${tool} 块里找不到其 callApi 路径段 ${pathSeg}`);
-        assert.ok(
-            block.includes('JSON.stringify(normalizeMediaPayload(data), null, 2)'),
-            `${tool} 返回值未过 normalizeMediaPayload（#284 可服务绝对 URL 缺失）`,
-        );
+        const b = block(tool);
+        assert.ok(b.includes(pathSeg), `${tool} 块里找不到其 callApi 路径段 ${pathSeg}`);
+        assert.ok(b.includes(', true)'), `${tool} 未开 textResult 归一化（#284 可服务绝对 URL 缺失）`);
     }
+    // 反面：不该归一化的块不带 `, true)`。
+    assert.ok(!block('canvas.list_nodes').includes(', true)'), 'canvas.list_nodes 不应开归一化（#284 口径）');
     // #352：canvas.view_media / canvas.view 改走 buildViewToolResult（image 内容块 + 元数据文本）；
     // #284 口径不变——归一化必须在 helper 内对 meta 生效。
-    const viewMediaIdx = SOURCE.indexOf('name: "canvas.view_media"');
-    assert.notEqual(viewMediaIdx, -1, 'canvas-tools.ts 找不到工具 canvas.view_media');
-    const viewMediaNext = SOURCE.indexOf('pi.registerTool', viewMediaIdx + 1);
-    const viewMediaBlock = SOURCE.slice(viewMediaIdx, viewMediaNext === -1 ? SOURCE.length : viewMediaNext);
+    const viewMediaBlock = block('canvas.view_media');
     assert.ok(viewMediaBlock.includes('/canvas/view_media`'), 'canvas.view_media 块里找不到 callApi 路径段');
     assert.ok(viewMediaBlock.includes('buildViewToolResult(data)'), 'canvas.view_media 必须走 buildViewToolResult（#352）');
     assert.ok(buildViewToolSource().includes('normalizeMediaPayload(meta)'),
         'buildViewToolResult 元数据文本必须过 normalizeMediaPayload（#284 口径不变）');
+});
+
+test('#356 源码契约：generated.ts 工具定义与 EXECUTORS、清单同源', () => {
+    const GEN = readFileSync(
+        path.join(__dirname, '..', '..', 'app', 'agent_extensions', 'canvas-tools.generated.ts'),
+        'utf8',
+    );
+    const genNames = [...GEN.matchAll(/name: "([a-z_.]+)"/g)].map((mm) => mm[1]);
+    assert.ok(genNames.length >= 25, `generated 工具数异常：${genNames.length}`);
+    for (const n of genNames) {
+        assert.ok(SOURCE.includes(`"${n}": async`), `EXECUTORS 缺少清单工具 ${n}（加载即 throw）`);
+    }
+    assert.ok(SOURCE.includes('from "./canvas-tools.generated.ts"'), 'canvas-tools.ts 必须从 generated 文件取 schema（#356 单一来源）');
+    assert.ok(SOURCE.includes('CANVAS_TOOL_DEFS'), 'canvas-tools.ts 未消费 CANVAS_TOOL_DEFS');
 });
 
 function buildViewToolSource() {
