@@ -73,6 +73,26 @@ function normalizeMediaPayload(value) {
 }
 // ── end #284 媒体 URL 归一化 ──
 
+// #352：视图类返回值 image_data_url → image 内容块，文本仅元数据（base64 文本不再撑爆上下文）。
+// 注：刻意不写 TS 类型标注，保证 Node 能直接求值（同 #284 helper 约定）。
+function buildViewToolResult(data) {
+    const dataUrl = String(data?.image_data_url || "");
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) {
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], details: {} };
+    }
+    const mime = (dataUrl.startsWith("data:") ? dataUrl.slice(5, comma).split(";")[0] : "") || "image/png";
+    const meta = { ...(data || {}) };
+    delete meta.image_data_url;
+    return {
+        content: [
+            { type: "image", data: dataUrl.slice(comma + 1), mimeType: mime },
+            { type: "text", text: JSON.stringify(normalizeMediaPayload(meta), null, 2) },
+        ],
+        details: {},
+    };
+}
+
 export default function (pi: ExtensionAPI) {
     // Query tools
     pi.registerTool({
@@ -261,7 +281,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: "canvas.view",
         description:
-            "Export canvas nodes' media as one contact-sheet image (base64 PNG) to feed the model. scope: page (all media nodes) or selection (node_ids). Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+            "Export canvas nodes' media as one contact-sheet image, returned as image content (type: image) + metadata text — not base64 text. scope: page (all media nodes) or selection (node_ids). Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
         parameters: Type.Object({
             scope: Type.Union([Type.Literal("page"), Type.Literal("selection")], { description: "page=整页；selection=指定节点" }),
             node_ids: Type.Optional(Type.Array(Type.String(), { description: "Node IDs for scope=selection" })),
@@ -273,17 +293,14 @@ export default function (pi: ExtensionAPI) {
                 node_ids: params.node_ids,
                 max_px: params.max_px,
             });
-            return {
-                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-                details: {},
-            };
+            return buildViewToolResult(data);
         },
     });
 
     pi.registerTool({
         name: "canvas.view_media",
         description:
-            "View one node's media: image downscaled, video as frame contact sheet. Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
+            "View one node's media: image downscaled, video as frame contact sheet. Returned as image content (type: image) + metadata text. Read-only. Slow op: server-side 90s timeout — set client request timeout >= 90s.",
         parameters: Type.Object({
             node_id: Type.String({ description: "The node ID to view" }),
             max_px: Type.Optional(Type.Number({ description: "Longest side in px, default 1024, cap 2048" })),
@@ -295,10 +312,7 @@ export default function (pi: ExtensionAPI) {
                 max_px: params.max_px,
                 frames: params.frames,
             });
-            return {
-                content: [{ type: "text", text: JSON.stringify(normalizeMediaPayload(data), null, 2) }],
-                details: {},
-            };
+            return buildViewToolResult(data);
         },
     });
 

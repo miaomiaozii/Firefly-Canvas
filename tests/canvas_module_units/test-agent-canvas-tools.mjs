@@ -55,7 +55,6 @@ test('#284 源码契约：五个媒体/生成工具返回值都过 normalizeMedi
         ['generate.wait', '/generate/tasks/${params.task_id}/wait?timeout=${timeout}`'],
         ['media.upload', '/media/upload`'],
         ['media.list', '/media/list`'],
-        ['canvas.view_media', '/canvas/view_media`'],
     ];
     for (const [tool, pathSeg] of wired) {
         // 找到该工具的 registerTool 块，断言其返回体用了 normalizeMediaPayload(data)。
@@ -70,6 +69,44 @@ test('#284 源码契约：五个媒体/生成工具返回值都过 normalizeMedi
             `${tool} 返回值未过 normalizeMediaPayload（#284 可服务绝对 URL 缺失）`,
         );
     }
+    // #352：canvas.view_media / canvas.view 改走 buildViewToolResult（image 内容块 + 元数据文本）；
+    // #284 口径不变——归一化必须在 helper 内对 meta 生效。
+    const viewMediaIdx = SOURCE.indexOf('name: "canvas.view_media"');
+    assert.notEqual(viewMediaIdx, -1, 'canvas-tools.ts 找不到工具 canvas.view_media');
+    const viewMediaNext = SOURCE.indexOf('pi.registerTool', viewMediaIdx + 1);
+    const viewMediaBlock = SOURCE.slice(viewMediaIdx, viewMediaNext === -1 ? SOURCE.length : viewMediaNext);
+    assert.ok(viewMediaBlock.includes('/canvas/view_media`'), 'canvas.view_media 块里找不到 callApi 路径段');
+    assert.ok(viewMediaBlock.includes('buildViewToolResult(data)'), 'canvas.view_media 必须走 buildViewToolResult（#352）');
+    assert.ok(buildViewToolSource().includes('normalizeMediaPayload(meta)'),
+        'buildViewToolResult 元数据文本必须过 normalizeMediaPayload（#284 口径不变）');
+});
+
+function buildViewToolSource() {
+    const start = SOURCE.indexOf('function buildViewToolResult(');
+    assert.notEqual(start, -1, 'canvas-tools.ts 缺少 buildViewToolResult（#352）');
+    const end = SOURCE.indexOf('\n}', start);
+    assert.notEqual(end, -1, 'buildViewToolResult 未找到顶层结束');
+    return SOURCE.slice(start, end + 2);
+}
+
+test('#352 buildViewToolResult：image 内容块在前，文本块仅元数据（无 image_data_url）', () => {
+    const { payload } = loadHelpers(BASE);
+    const factory = new Function('normalizeMediaPayload', buildViewToolSource() + '\nreturn buildViewToolResult;');
+    const build = factory(payload);
+    const out = build({ image_data_url: 'data:image/png;base64,QUJD', width: 640, height: 480, name: 'generated_image_a.png' });
+    assert.equal(out.content[0].type, 'image');
+    assert.equal(out.content[0].data, 'QUJD');
+    assert.equal(out.content[0].mimeType, 'image/png');
+    const text = out.content[1].text;
+    assert.ok(!text.includes('image_data_url') && !text.includes('QUJD'), '文本块泄漏了图片 base64');
+    const meta = JSON.parse(text);
+    assert.equal(meta.width, 640);
+    // #284 口径：元数据里的媒体名仍被归一为可服务绝对 URL。
+    assert.ok(meta.name.includes(`${BASE}/assets/output/generated_image_a.png`), meta.name);
+    // 无图时降级单文本块（不致于丢信息）。
+    const fallback = build({ note: 'no media' });
+    assert.equal(fallback.content.length, 1);
+    assert.equal(fallback.content[0].type, 'text');
 });
 
 test('#284 normalizeMediaUrl：/media/<f>、裸媒体名、磁盘 output 路径 → 绝对 /assets/output/<f>', () => {

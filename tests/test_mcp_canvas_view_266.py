@@ -7,6 +7,8 @@ ComfyArt §59 语义（docs/reference-comfyart-canvas.md §59.4）：
   复用 generate_video_preview_image 链路）
 
 票面规范：工具参数 additionalProperties:false + 公共参数片段 + 错误文案带下一步建议。
+#352：canvas.view / canvas.view_media 成功结果以 MCP image 内容块返回（content[0]），
+text 块仅含元数据（不再包含 image_data_url）。
 Mock 边界：无网络（媒体走 store.import_media 本地字节，视频抽帧用 monkeypatch 替身，
 不依赖本机 ffmpeg/联网）。慢超时契约用缩小的超时值验证 wait_for 接线。
 """
@@ -38,6 +40,10 @@ def _decode_data_url(data_url):
     prefix, b64 = data_url.split(",", 1)
     assert prefix == "data:image/png;base64", prefix
     return base64.b64decode(b64)
+
+
+def _image_blocks(result):
+    return [b for b in result["content"] if b.get("type") == "image"]
 
 
 class CanvasViewSurfaceTests(McpTestBase):
@@ -102,7 +108,8 @@ class CanvasViewTests(McpTestBase):
         result = self.tool_result(self.tool_call(name, args, project=self.project_id))
         if result.get("isError"):
             return result, None
-        return result, json.loads(result["content"][0]["text"])
+        texts = [b for b in result["content"] if b.get("type") == "text"]
+        return result, json.loads(texts[0]["text"])
 
     def call_error(self, name, args):
         result = self.tool_result(self.tool_call(name, args, project=self.project_id))
@@ -124,13 +131,26 @@ class CanvasViewTests(McpTestBase):
         result, data = self.call("canvas.view", {"scope": "page"})
         self.assertIsNone(data) if result.get("isError") else None
         self.assertFalse(result.get("isError"), data)
-        self.assertTrue(data["image_data_url"].startswith("data:image/png;base64,"))
+        images = _image_blocks(result)
+        self.assertEqual(len(images), 1, result["content"])  # #352：成功结果是 image 内容块
+        self.assertEqual(images[0]["mimeType"], "image/png")
+        self.assertEqual(result["content"][0]["type"], "image")  # image 在前，文本块仅元数据
+        self.assertNotIn("image_data_url", data)
         self.assertEqual(data["node_count"], 2)
         self.assertLessEqual(data["width"], 2048)
         self.assertLessEqual(data["height"], 2048)
-        img = Image.open(io.BytesIO(_decode_data_url(data["image_data_url"])))
+        img = Image.open(io.BytesIO(base64.b64decode(images[0]["data"])))
         self.assertLessEqual(max(img.size), 2048)
         self.assertEqual({item["node_id"] for item in data["items"]}, {"img-a", "img-b"})
+
+    def test_view_text_block_contains_no_base64_blob(self):
+        # #352 验收：文本部分只含元数据，无 base64 图片串
+        self.add_media_node("img-a", png=_png_bytes(size=(512, 512)))
+        result, data = self.call("canvas.view", {"scope": "page"})
+        self.assertFalse(result.get("isError"), data)
+        text_blob = "".join(b.get("text", "") for b in result["content"] if b.get("type") == "text")
+        self.assertNotIn("base64", text_blob)
+        self.assertNotIn("data:image", text_blob)
 
     def test_view_selection_only_selected_nodes(self):
         self.add_media_node("img-a")
@@ -204,7 +224,8 @@ class CanvasViewMediaTests(McpTestBase):
         result = self.tool_result(self.tool_call(name, args, project=self.project_id))
         if result.get("isError"):
             return result, None
-        return result, json.loads(result["content"][0]["text"])
+        texts = [b for b in result["content"] if b.get("type") == "text"]
+        return result, json.loads(texts[0]["text"])
 
     def call_error(self, name, args):
         result = self.tool_result(self.tool_call(name, args, project=self.project_id))
@@ -216,7 +237,9 @@ class CanvasViewMediaTests(McpTestBase):
         result, data = self.call("canvas.view_media", {"node_id": "img-a"})
         self.assertFalse(result.get("isError"), data)
         self.assertEqual(data["kind"], "image")
-        img = Image.open(io.BytesIO(_decode_data_url(data["image_data_url"])))
+        images = _image_blocks(result)
+        self.assertEqual(len(images), 1, result["content"])  # #352：image 内容块
+        img = Image.open(io.BytesIO(base64.b64decode(images[0]["data"])))
         self.assertLessEqual(max(img.size), 1024)
         self.assertEqual(img.size[0] >= 1, True)
 
@@ -255,7 +278,9 @@ class CanvasViewMediaTests(McpTestBase):
             self.assertEqual(data["kind"], "video")
             self.assertEqual(data["frames"], 4)
             self.assertGreaterEqual(len(calls), 1)
-            img = Image.open(io.BytesIO(_decode_data_url(data["image_data_url"])))
+            images = _image_blocks(result)
+            self.assertEqual(len(images), 1, result["content"])  # #352：image 内容块
+            img = Image.open(io.BytesIO(base64.b64decode(images[0]["data"])))
             self.assertLessEqual(max(img.size), 1024)
         finally:
             canvas_view.video_contact_sheet = original_sheet

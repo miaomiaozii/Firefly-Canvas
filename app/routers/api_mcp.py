@@ -102,6 +102,29 @@ class McpToolError(Exception):
     """User-facing tool execution error (rendered as an MCP isError result)."""
 
 
+def _tool_result_content_blocks(result) -> list:
+    """#352: 视图类工具的 image_data_url 拆成 MCP image 内容块，文本块仅含元数据。
+
+    canvas.view / canvas.view_media 返回 {"image_data_url": "data:image/png;base64,…", …}；
+    按 MCP 约定拆为 {"type":"image","data","mimeType"} + JSON 元数据 text 块，
+    避免把几十 KB–MB 的 base64 塞进 text 撑爆模型上下文。
+    其余工具保持原样（单 text 块 JSON）。
+    """
+    if isinstance(result, dict) and "image_data_url" in result:
+        data_url = str(result.get("image_data_url") or "")
+        header, sep, b64 = data_url.partition(",")
+        mime = "image/png"
+        if sep and header.startswith("data:") and ";" in header:
+            mime = header[5:].split(";")[0] or "image/png"
+        meta = {k: v for k, v in result.items() if k != "image_data_url"}
+        blocks = []
+        if sep:
+            blocks.append({"type": "image", "data": b64, "mimeType": mime})
+        blocks.append({"type": "text", "text": json.dumps(meta, ensure_ascii=False)})
+        return blocks
+    return [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
+
+
 # ---------------------------------------------------------------------------
 # Project arbitration (ADR 0022: ?project= + client_id 注册表 + 三级仲裁)
 # ---------------------------------------------------------------------------
@@ -314,7 +337,7 @@ TOOLS = [
     {"name": "canvas.disconnect", "description": "删除节点连线", "inputSchema": {"type": "object", "properties": {"from_node": {"type": "string"}, "to_node": {"type": "string"}}, "required": ["from_node", "to_node"]}},
     {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"]}},
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
-    {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，base64 PNG）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
+    {"name": "canvas.view", "description": "整页/选区节点媒体导出为一张图（contact sheet，以 MCP image 内容块返回，文本块仅含元数据）喂模型（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": _PARAM_NODE_IDS, "max_px": _PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
     {"name": "canvas.view_media", "description": "查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": _PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
     # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": _PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
@@ -613,7 +636,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     })
     return _rpc_response(
         200, msg_id, sid,
-        result={"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False},
+        result={"content": _tool_result_content_blocks(result), "isError": False},
     )
 
 

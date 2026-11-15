@@ -244,7 +244,7 @@ class AgentCanvasToolsMediaUrlTests(unittest.TestCase):
         src = self._source()
         # 每个工具块 = 工具名 → 下一个 registerTool（或文件尾）。钉到真实工具，防止
         # 只加了一个 normalize 调用而其它工具仍返回 404 路径。
-        for tool in ("generate.status", "generate.wait", "media.upload", "media.list", "canvas.view_media"):
+        for tool in ("generate.status", "generate.wait", "media.upload", "media.list"):
             start = src.index(f'name: "{tool}"')
             end = src.find("pi.registerTool", start + 1)
             block = src[start:end if end != -1 else len(src)]
@@ -253,6 +253,17 @@ class AgentCanvasToolsMediaUrlTests(unittest.TestCase):
                 block,
                 f"{tool} 返回值未过 normalizeMediaPayload（#284 可服务绝对 URL 缺失）",
             )
+        # #352：canvas.view_media 改走 buildViewToolResult（image 内容块 + 元数据文本）；
+        # 归一化必须仍生效——工具块调用该 helper，且 helper 内部对 meta 过 normalizeMediaPayload。
+        start = src.index('name: "canvas.view_media"')
+        end = src.find("pi.registerTool", start + 1)
+        block = src[start:end if end != -1 else len(src)]
+        self.assertIn("buildViewToolResult(data)", block,
+                      "canvas.view_media 必须走 buildViewToolResult（#352 image 内容块）")
+        helper_start = src.index("function buildViewToolResult(")
+        helper_block = src[helper_start:src.index("\n}", helper_start)]
+        self.assertIn("normalizeMediaPayload(meta)", helper_block,
+                      "buildViewToolResult 元数据文本必须过 normalizeMediaPayload（#284 口径不变）")
 
 
 if __name__ == "__main__":
