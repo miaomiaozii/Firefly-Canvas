@@ -625,9 +625,10 @@ video.node-img { object-fit:cover; background:#0f172a; }
 /* #302: 失败态错误文案被 .node-body overflow:hidden 裁切——允许滚动并加高可见行数，不破坏 height:100% 布局规范 */
 .image-node.empty-node:has(.generation-failed) .node-body { overflow:auto; }
 .image-node.empty-node:has(.generation-failed) .generation-failed { min-height:100%; }
-.generation-failed-retry { display:inline-flex; align-items:center; gap:6px; margin-top:4px; padding:6px 14px; border-radius:8px; border:1px solid var(--line); background:var(--accent, #2563eb); color:#fff; font-size:12px; cursor:pointer; }
-.generation-failed-retry:hover { filter:brightness(1.08); }
-.generation-failed-retry:disabled { opacity:.55; cursor:default; }
+/* #340 顺手：「手动填入 URL」按钮与「重新生成」同款（原零 CSS 浏览器默认外观，#347 FOLLOWUPS 待排项） */
+.generation-failed-retry,.generation-failed-url { display:inline-flex; align-items:center; gap:6px; margin-top:4px; padding:6px 14px; border-radius:8px; border:1px solid var(--line); background:var(--accent, #2563eb); color:#fff; font-size:12px; cursor:pointer; }
+.generation-failed-retry:hover,.generation-failed-url:hover { filter:brightness(1.08); }
+.generation-failed-retry:disabled,.generation-failed-url:disabled { opacity:.55; cursor:default; }
 @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
 .generation-placeholder { position:relative; display:grid; place-items:center; overflow:hidden; isolation:isolate; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent); }
 .generation-placeholder::after { content:""; position:absolute; inset:-35%; z-index:0; background:radial-gradient(circle, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 66%); animation:generation-placeholder-breathe 1.8s ease-in-out infinite; }
@@ -1046,6 +1047,8 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .smart-pill .sub { color:var(--muted); font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .smart-control:hover .smart-pill { background:var(--card); border-color:var(--line); }
 .smart-control.pinned .smart-pill { background:var(--card); border-color:var(--strong); box-shadow:0 6px 16px rgba(15,23,42,.1); }
+/* #340: 模型 pill 在弹层打开时为「填充激活」态——读作激活按钮而非输入框；仅 .model-control（模型类），其他弹层不动 */
+.model-control.pinned .smart-pill { background:var(--strong); border-color:var(--strong); color:var(--strong-text); }
 .dynamic-params .rh-dropdown-control:hover .smart-pill,.dynamic-params .rh-dropdown-control.pinned .smart-pill { border-color:var(--strong); }
 .smart-control:hover .smart-pill i,.smart-control.pinned .smart-pill i { opacity:1; }
 .smart-control.pinned .pill-caret { transform:rotate(180deg); opacity:1; }
@@ -1148,7 +1151,7 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .provider-tab.active { background:var(--strong); color:var(--strong-text); border-color:var(--strong); }
 .model-list-label { color:var(--faint); font-size:var(--font-micro, 10px); line-height:1.2; font-weight:600; letter-spacing:.06em; text-transform:uppercase; margin:0 2px 5px; display:flex; align-items:center; justify-content:space-between; }
 .model-list-label .count { color:var(--faint); font-weight:600; }
-.model-search-row { min-width:0; height:28px; margin:0 0 8px; padding:0 8px; display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--faint); }
+.model-search-row { min-width:0; height:28px; margin:0 0 8px; padding:0 8px; display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:8px; background:var(--soft); color:var(--faint); }
 .model-search-row:focus-within { border-color:var(--strong); color:var(--strong); box-shadow:0 0 0 2px color-mix(in srgb, var(--strong) 14%, transparent); }
 .model-search-row i,.model-search-row svg { width:13px; height:13px; flex:0 0 auto; }
 .model-search-input { min-width:0; flex:1; height:24px; padding:0; border:0; outline:none; background:transparent; color:var(--text); font-size:11px; line-height:1; }
@@ -1162,8 +1165,8 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .direct-option { width:100%; min-height:24px; padding:5px 8px; border-radius:8px; display:flex; align-items:center; justify-content:flex-start; color:var(--muted); background:transparent; border:1px solid transparent; font-size:var(--ctrl-pop-font); line-height:1.2; font-weight:500; text-align:left; overflow:hidden; transition:background .14s ease, color .14s ease, border-color .14s ease, transform .14s ease; }
 .direct-option span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .direct-option:hover { background:var(--soft); border-color:var(--line); color:var(--text); transform:translateY(-1px); }
-.direct-option.active { background:var(--card); border-color:var(--line); color:var(--strong); font-weight:650; box-shadow:inset 0 0 0 1px rgba(15,23,42,.02); }
-.direct-option.active::after { content:""; width:5px; height:5px; border-radius:999px; background:var(--strong); margin-left:auto; flex:0 0 auto; }
+/* #340: 当前模型=「选中」填充态（原白底描边形似输入框，小圆点冗余删除） */
+.direct-option.active { background:var(--strong); border-color:var(--strong); color:var(--strong-text); font-weight:650; box-shadow:none; }
 .model-list::-webkit-scrollbar,.direct-picker-col::-webkit-scrollbar { width:7px; height:7px; }
 .model-list::-webkit-scrollbar-track,.direct-picker-col::-webkit-scrollbar-track { background:transparent; border-radius:999px; }
 .model-list::-webkit-scrollbar-thumb,.direct-picker-col::-webkit-scrollbar-thumb { background:rgba(148,163,184,.42); border-radius:999px; border:2px solid transparent; background-clip:content-box; }
@@ -2634,6 +2637,8 @@ body { color:var(--text); background:var(--page); }
 .dynamic-params .smart-pill:hover,
 .dynamic-params .smart-control.pinned .smart-pill,
 .dynamic-params .setting-check:hover { border-color:var(--designer-accent); }
+/* #340: designer 段模型 pill 填充激活态（该段 pinned 只改线色，需更高特异性覆盖） */
+.dynamic-params .model-control.pinned .smart-pill { background:var(--designer-accent); border-color:var(--designer-accent); color:var(--strong-text); }
 .dynamic-params .setting-check.active,
 .dynamic-params .trusted-src-pill.active { background:var(--designer-accent); border-color:var(--designer-accent); color:#fff; }
 .param-row,
