@@ -596,6 +596,118 @@ async def no_cache_static_assets(request: Request, call_next):
     return response
 
 
+from starlette.types import ASGIApp
+
+
+class ShapeAgentToolErrorsMiddleware:
+    """#391：agent 工具调用（带 X-Agent-Project 头）的错误响应统一成
+    {code,message,hint,retryable,details}。api_agent_tools 已全部显式 agent_error；
+    本中间件是兜底：把未带形状的 detail（含未捕获异常）也翻过去。
+    纯 ASGI 实现，不用 BaseHTTPMiddleware——后者的 call_next 在内层报错时直接
+    向上抛，本层永远看不到异常转换出的 500（实测踩过）。异常在本层被接住：
+    就近年造一个形状化 JSON 错误（状态码 = 异常自身；非 HTTPException → 500/
+    INTERNAL_ERROR）后继续向上抛，让 ServerErrorMiddleware 照常记日志。
+    边界：只处理带 X-Agent-Project 头的流量（agent 工具专用头，#356）；
+    translate_detail 只按状态码映射不猜文案（review 23:59 条件 1）；
+    状态码一律不变（条件 2）。"""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        agent_project = b""
+        for k, v in (scope.get("headers") or []):
+            if k == b"x-agent-project":
+                agent_project = v
+                break
+        if not agent_project:
+            await self.app(scope, receive, send)
+            return
+
+        import json
+
+        from app.services.agent_errors import is_agent_error_shape, translate_detail
+
+        state = {"status": None, "media": "", "start_headers": None,
+                 "chunks": [], "mode": "buffer"}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                state["status"] = message["status"]
+                state["start_headers"] = list(message.get("headers") or [])
+                media = ""
+                for k, v in message.get("headers") or []:
+                    if k == b"content-type":
+                        media = v.decode("latin-1")
+                        break
+                state["media"] = media
+                if state["status"] < 400 or "application/json" not in media:
+                    state["mode"] = "passthrough"
+                    await send(message)
+                # 需改写：暂存 start，缓冲完 body 再发
+                return
+            if message["type"] == "http.response.body" and state["mode"] == "buffer":
+                state["chunks"].append(message.get("body", b""))
+                if message.get("more_body"):
+                    return
+                payload_raw = b"".join(state["chunks"])
+                try:
+                    payload = json.loads(payload_raw.decode("utf-8")) if payload_raw else {}
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = None
+                if payload is None:
+                    hdrs = _drop_content_length(state["start_headers"])
+                    await send({"type": "http.response.start", "status": state["status"], "headers": hdrs})
+                    await send({"type": "http.response.body", "body": payload_raw})
+                    return
+                detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
+                if isinstance(payload, dict) and is_agent_error_shape(detail):
+                    out = payload
+                else:
+                    shaped = translate_detail(state["status"], detail)
+                    out = dict(payload) if isinstance(payload, dict) else {}
+                    out["detail"] = shaped
+                new_body = json.dumps(out, ensure_ascii=False).encode("utf-8")
+                hdrs = _drop_content_length(state["start_headers"])
+                hdrs.append((b"content-length", str(len(new_body)).encode("latin-1")))
+                await send({"type": "http.response.start", "status": state["status"], "headers": hdrs})
+                await send({"type": "http.response.body", "body": new_body})
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:
+            # 内层未捕获异常：BaseHTTPMiddleware 不产生响应，本层就年造形状错误。
+            if state["status"] is not None:
+                raise  # 已经发过响应，不能重复发
+            status = getattr(exc, "status_code", 500) or 500
+            raw_detail = getattr(exc, "detail", None)
+            if isinstance(raw_detail, dict) and is_agent_error_shape(raw_detail):
+                shaped = raw_detail
+            else:
+                shaped = translate_detail(status, raw_detail if raw_detail else "Internal Server Error")
+            body = json.dumps({"detail": shaped}, ensure_ascii=False).encode("utf-8")
+            await send({"type": "http.response.start", "status": status,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"content-length", str(len(body)).encode("latin-1"))]})
+            await send({"type": "http.response.body", "body": body})
+            raise
+
+
+def _drop_content_length(headers):
+    return [(k, v) for k, v in (headers or []) if k != b"content-length"]
+
+
+# 纯 ASGI 中间件（类形态）。注册位置决定包裹关系：先注册 = 更外层。这里在
+# protect_api_origin（后注册、更内层）之外，守卫拦下的 403 也会流经本层——
+# 但守卫对 agent 流量不会带 X-Agent-Project 拦截成功的情况，互不影响。
+app.add_middleware(ShapeAgentToolErrorsMiddleware)
+
+
 def api_guard_covers(path: str) -> bool:
     """#342 同源守卫的覆盖谓词（tests/test_api_same_origin_guard.py 路由表遍历验证）。"""
     normalized = path.rstrip("/")

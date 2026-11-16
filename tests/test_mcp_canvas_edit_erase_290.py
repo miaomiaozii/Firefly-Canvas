@@ -28,6 +28,8 @@ if str(ROOT) not in sys.path:
 import main  # noqa: F401
 from app.core import (BAILIAN_LOCAL_EDIT_MODEL, BAILIAN_PROVIDER_ID,
                       _bailian_local_edit_adapter, wire_local_edit_adapter)
+from fastapi import HTTPException
+
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
@@ -366,7 +368,7 @@ class EditEraseGateTests(McpTestBase):
         outcome, _confirms, adapter_requests, original = self._run_gated_erase(
             True, {"node_id": "img-1",
                    "rect": {"x": 4, "y": 4, "width": 8, "height": 8}, "prompt": "  "})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("prompt", str(outcome))
         self.assertIn("canvas.view", str(outcome))  # 下一步建议
         self.assertEqual(self._node()["images"][0]["asset_id"], original)
@@ -376,7 +378,7 @@ class EditEraseGateTests(McpTestBase):
         outcome, _confirms, adapter_requests, original = self._run_gated_erase(
             True, {"node_id": "img-1",
                    "rect": {"x": 4, "y": 4, "width": 20, "height": 8}, "prompt": "erase x"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("越界", str(outcome))
         self.assertIn("canvas.get_node", str(outcome))  # 下一步建议
         self.assertEqual(self._node()["images"][0]["asset_id"], original)
@@ -386,14 +388,14 @@ class EditEraseGateTests(McpTestBase):
         outcome, _confirms, adapter_requests, _original = self._run_gated_erase(
             True, {"node_id": "img-1",
                    "rect": {"x": 4, "y": 4, "width": 0, "height": 8}, "prompt": "erase x"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("canvas.get_node", str(outcome))
         self.assertEqual(adapter_requests, [])
 
     def test_non_dict_rect_is_error_with_next_step(self):
         outcome, _confirms, adapter_requests, _original = self._run_gated_erase(
             True, {"node_id": "img-1", "rect": "4,4,8,8", "prompt": "erase x"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("rect", str(outcome))
         self.assertIn("canvas.get_node", str(outcome))
         self.assertEqual(adapter_requests, [])
@@ -402,7 +404,7 @@ class EditEraseGateTests(McpTestBase):
         outcome, _confirms, _adapter_requests, _original = self._run_gated_erase(
             True, {"node_id": "ghost",
                    "rect": {"x": 4, "y": 4, "width": 8, "height": 8}, "prompt": "erase x"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("ghost", str(outcome))
         self.assertIn("canvas.list_nodes", str(outcome))  # 下一步建议
 
@@ -415,7 +417,7 @@ class EditEraseGateTests(McpTestBase):
         outcome, _confirms, _adapter_requests, _original = self._run_gated_erase(
             True, {"node_id": "empty-1",
                    "rect": {"x": 4, "y": 4, "width": 8, "height": 8}, "prompt": "erase x"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("media.upload", str(outcome))
 
     def test_adapter_failure_is_error_with_next_step_and_untouched_node(self):
@@ -423,7 +425,7 @@ class EditEraseGateTests(McpTestBase):
             True, {"node_id": "img-1",
                    "rect": {"x": 4, "y": 4, "width": 8, "height": 8}, "prompt": "erase x"},
             adapter_error=RuntimeError("qwen-image-edit 调用失败（HTTP 500）"))
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("局部编辑模型调用失败", str(outcome))
         self.assertIn("bailian", str(outcome))  # 下一步建议：检查凭据/网络
         self.assertEqual(self._node()["images"][0]["asset_id"], original)

@@ -20,6 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main  # noqa: F401
+from fastapi import HTTPException
+
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
@@ -134,7 +136,7 @@ class EditCropGateTests(McpTestBase):
     def test_out_of_bounds_rect_is_error_with_next_step(self):
         outcome, _confirms, original = self._run_gated_crop(
             True, {"node_id": "img-1", "rect": {"x": 0, "y": 0, "width": 999, "height": 999}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("越界", str(outcome))
         self.assertIn("canvas.get_node", str(outcome))  # 下一步建议
         self.assertEqual(self._node_image_asset(), original)
@@ -146,13 +148,13 @@ class EditCropGateTests(McpTestBase):
             self.project_id, [{"op": "upsert_node", "node": node}],
             base_revision=int(canvas.get("revision") or 0))
         outcome, _confirms, _original = self._run_gated_crop(True, {"node_id": "empty-1", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("media.upload", str(outcome))
 
     def test_missing_node_is_error_with_next_step(self):
         outcome, _confirms, _original = self._run_gated_crop(
             True, {"node_id": "ghost", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("ghost", str(outcome))
         self.assertIn("canvas.list_nodes", str(outcome))
 

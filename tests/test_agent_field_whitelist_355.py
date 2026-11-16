@@ -7,6 +7,7 @@
 4. 路径不可用时不泄漏「文件是否存在」（越界与不存在同一句错误）；另验 `items` 不在白名单（frame 成员由 frame/连边端点专管）。
 """
 import copy
+import json
 import sys
 import tempfile
 import unittest
@@ -96,7 +97,8 @@ class Guards355Tests(unittest.TestCase):
             with self.assertRaises(HTTPException) as cm:
                 run_async(update_node_core(self.pid, "prompt-1", {field: "x"}))
             self.assertEqual(cm.exception.status_code, 400, field)
-            self.assertIn("白名单", cm.exception.detail)
+            self.assertEqual(cm.exception.detail["code"], "INVALID_ARGUMENT")
+            self.assertIn("白名单", cm.exception.detail["message"])
 
     def test_core_allows_whitelisted_and_typechecks_geometry(self):
         r = run_async(update_node_core(self.pid, "prompt-1", {"title": "T", "text": "X", "x": 12}))
@@ -104,7 +106,8 @@ class Guards355Tests(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             run_async(update_node_core(self.pid, "prompt-1", {"x": "left"}))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("number", cm.exception.detail)
+        self.assertEqual(cm.exception.detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("number", json.dumps(cm.exception.detail, ensure_ascii=False))
 
     def test_rest_twin_hits_whitelist(self):
         resp = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/prompt-1",
@@ -133,12 +136,14 @@ class Guards355Tests(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             run_async(create_node_core(self.pid, {"id": "prompt-1", "type": "smart-prompt"}))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("#343", cm.exception.detail)
+        # #391：票号剥除，语义（服务端生成 id）保留
+        self.assertEqual(cm.exception.detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("server generates ids", cm.exception.detail["message"])
         # REST 孪生同样报错（#343：调用方 id 一律 400，不分存在/新建）
         dup = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
                                json={"node": {"id": "prompt-1", "type": "smart-prompt"}})
         self.assertEqual(dup.status_code, 400)
-        self.assertIn("#343", dup.text)
+        self.assertIn("server generates ids", dup.text)
         fresh = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
                                  json={"node": {"id": "brand-new-9", "type": "smart-prompt"}})
         self.assertEqual(fresh.status_code, 400, fresh.text)  # #343：新 id 同样拒

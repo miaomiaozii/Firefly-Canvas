@@ -254,7 +254,7 @@ class ApiValidation343Tests(unittest.TestCase):
             json={"node": {"id": "whatever-1", "type": "smart-prompt"}},
         )
         self.assertEqual(r.status_code, 400)
-        self.assertIn("#343", r.text)
+        self.assertIn("caller-specified", r.text)  # #391：detail 形状化，旧 "#343" 文案改按语义断言
 
     def test_create_node_server_generates_id(self):
         r = self.client.post(

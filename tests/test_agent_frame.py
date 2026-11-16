@@ -118,7 +118,7 @@ class CreateNodePlacement(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             run_async(update_node_core(self.pid, "group-1", {"items": ["bogus"]}))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("items", cm.exception.detail)
+        self.assertIn("items", str(cm.exception.detail))  # #391 起 detail 为形状 dict
         self.assertEqual(self._nodes()["group-1"]["items"], [], "store 内 items 未被篡改")
         # 其他字段照常可改（护栏不扩大到整节点）。
         r = run_async(update_node_core(self.pid, "group-1", {"title": "改名"}))
@@ -128,7 +128,7 @@ class CreateNodePlacement(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm2:
             run_async(update_node_core(self.pid, "agent-1", {"items": ["x"]}))
         self.assertEqual(cm2.exception.status_code, 400)
-        self.assertIn("白名单", cm2.exception.detail)
+        self.assertIn("白名单", str(cm2.exception.detail))  # #391：detail 形状 dict，hint 里保留「白名单」文案
 
 
 class _FakeStore:

@@ -38,6 +38,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.core import ensure_agent_same_origin
+from app.services.agent_errors import (
+    agent_error,
+    agent_error_response_payload,
+    format_agent_error_text,
+    translate_detail,
+)
 from app.project_sessions import open_project_ids
 from app.routers.api_agent_tools import (
     _app_main,
@@ -369,7 +375,10 @@ async def _impl_search_projects(project_id, agent_node_id, args):
     from app.routers.api_search import get_searcher
     query = str(args.get("query") or "").strip()
     if not query:
-        raise HTTPException(status_code=400, detail="query required")
+        # #391：统一形状（状态码 400 不变），文案进 message，不再经通用翻译丢信息
+        from app.services.agent_errors import agent_error
+        raise agent_error(400, "INVALID_ARGUMENT", "query 不能为空",
+                          "传 query 参数（search.projects 需要搜索词）")
     limit = int(args.get("limit") or 50)
     store = _app_main.FIREFLY_PROJECT_STORE
     return await asyncio.to_thread(get_searcher(store).search, query, limit=limit)
@@ -383,12 +392,12 @@ async def _impl_trigger(project_id, agent_node_id, args):
     try:
         from app.routers.api_agent_tools import enforce_generation_limit
         enforce_generation_limit(project_id, agent_node_id, count=1)
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
     try:
         return await trigger_generation_core(project_id, str(args.get("node_id") or ""))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_status(project_id, agent_node_id, args):
@@ -434,15 +443,15 @@ async def _impl_viewport_state(project_id, agent_node_id, args):
 async def _impl_view(project_id, agent_node_id, args):
     try:
         return await canvas_view_core(project_id, str(args.get("scope") or "page"), args.get("node_ids"), args.get("max_px"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_view_media(project_id, agent_node_id, args):
     try:
         return await view_media_core(project_id, str(args.get("node_id") or ""), args.get("max_px"), args.get("frames"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_edit_crop(project_id, agent_node_id, args):
@@ -451,8 +460,8 @@ async def _impl_edit_crop(project_id, agent_node_id, args):
     await _confirm_gate(project_id, agent_node_id, "canvas.edit_crop", args, f"裁剪节点 {node_id} 的图像并覆写节点图（原资源保留在资源库）")
     try:
         return await crop_node_image_core(project_id, node_id, args.get("rect"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_batch_edit(project_id, agent_node_id, args):
@@ -465,8 +474,8 @@ async def _impl_batch_edit(project_id, agent_node_id, args):
         from app.routers.api_agent_tools import enforce_generation_limit
         enforce_generation_limit(project_id, agent_node_id, count=max(1, len(node_ids)))
         return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_edit_rotate(project_id, agent_node_id, args):
@@ -475,8 +484,8 @@ async def _impl_edit_rotate(project_id, agent_node_id, args):
     await _confirm_gate(project_id, agent_node_id, "canvas.edit_rotate", args, f"旋转节点 {node_id} 的图像并覆写节点图（原资源保留在资源库）")
     try:
         return await rotate_node_image_core(project_id, node_id, args.get("angle"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_edit_flip(project_id, agent_node_id, args):
@@ -485,8 +494,8 @@ async def _impl_edit_flip(project_id, agent_node_id, args):
     await _confirm_gate(project_id, agent_node_id, "canvas.edit_flip", args, f"镜像节点 {node_id} 的图像并覆写节点图（原资源保留在资源库）")
     try:
         return await flip_node_image_core(project_id, node_id, args.get("direction"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_edit_outpaint(project_id, agent_node_id, args):
@@ -495,8 +504,8 @@ async def _impl_edit_outpaint(project_id, agent_node_id, args):
     await _confirm_gate(project_id, agent_node_id, "canvas.edit_outpaint", args, f"红底扩图节点 {node_id}：扩大画布（#ff0044 填充外区）并覆写节点图（原资源保留在资源库）")
     try:
         return await outpaint_node_image_core(project_id, node_id, args.get("outpaint_size"), args.get("offset"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 async def _impl_edit_erase(project_id, agent_node_id, args):
@@ -505,8 +514,8 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
     await _confirm_gate(project_id, agent_node_id, "canvas.edit_erase", args, f"擦除节点 {node_id} 选区图像并覆写节点图（原资源保留在资源库）")
     try:
         return await erase_node_image_core(project_id, node_id, args.get("rect"), args.get("prompt"))
-    except HTTPException as exc:
-        raise ValueError(str(exc.detail)) from exc
+    except HTTPException:
+        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
 TOOL_IMPLS = {
@@ -571,6 +580,16 @@ def _initialize_response(payload: dict, msg_id, sid: str) -> JSONResponse:
     return _rpc_response(200, msg_id, sid, result=result)
 
 
+def _mcp_error_result(name: str, detail: dict) -> dict:
+    """#391：MCP isError 统一形状——text 单行可读，structuredContent 结构化。
+    与 REST 共用 translate_detail，两路同形（spec §错误形状）。"""
+    return {
+        "content": [{"type": "text", "text": format_agent_error_text(detail)}],
+        "isError": True,
+        "structuredContent": detail,
+    }
+
+
 async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Response:
     params = payload.get("params") or {}
     if not isinstance(params, dict):
@@ -590,7 +609,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"Unknown tool: {name}"})
         return _rpc_response(
             200, msg_id, sid,
-            result={"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True},
+            result=_mcp_error_result(name, translate_detail(400, f"Unknown tool: {name}")),
         )
     started = time.time()
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
@@ -615,17 +634,29 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"timeout after {slow_timeout}s"})
         return _rpc_response(
             200, msg_id, sid,
-            result={"content": [{"type": "text", "text": f"工具 {name} 超时（慢操作契约 {int(slow_timeout)} 秒）。先调用 canvas.list_nodes 查看画布状态，再调低 max_px 或改用 selection 作用域缩小批量后重试。"}], "isError": True},
+            result=_mcp_error_result(name, agent_error(
+                504, "TOOL_TIMEOUT",
+                f"工具 {name} 超时（慢操作契约 {int(slow_timeout)} 秒）",
+                "先调用 canvas.list_nodes 查看画布状态，再调低 max_px 或改用 selection 作用域缩小批量后重试。",
+                retryable=True).detail),
         )
+    except HTTPException as exc:  # #391：核心函数抛出的带形状错误（agent_error）在此落地
+        mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": str(exc.detail)})
+        return _rpc_response(200, msg_id, sid,
+                             result=_mcp_error_result(name, agent_error_response_payload(exc)))
     except (McpToolError, ValueError) as exc:
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": str(exc)})
-        return _rpc_response(200, msg_id, sid, result={"content": [{"type": "text", "text": str(exc)}], "isError": True})
+        return _rpc_response(200, msg_id, sid,
+                             result=_mcp_error_result(name, translate_detail(400, str(exc))))
     except Exception as exc:
         logger.exception("MCP tool %s failed", name)
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": str(exc)})
+        from app.services.agent_errors import agent_error as _ae
         return _rpc_response(
             200, msg_id, sid,
-            result={"content": [{"type": "text", "text": f"工具 {name} 执行失败：{exc}"}], "isError": True},
+            result=_mcp_error_result(name, _ae(500, "INTERNAL_ERROR",
+                                               f"工具 {name} 执行失败：{exc}",
+                                               "服务端内部错误；如重复出现请报告用户，不要盲目重试。").detail),
         )
     mcp_event_recorder.record({
         "session": sid,

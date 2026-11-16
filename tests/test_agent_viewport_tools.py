@@ -68,7 +68,10 @@ class AgentViewportToolsTests(unittest.TestCase):
             json={},
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("node_id", response.json()["detail"].lower())
+        # #391：detail 统一形状；code=INVALID_ARGUMENT，参数名进 message/hint
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("node_id", detail["message"] + detail["hint"])
 
     def test_set_zoom(self):
         """viewport.zoom sets the zoom level."""
@@ -88,7 +91,10 @@ class AgentViewportToolsTests(unittest.TestCase):
             json={},
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("level", response.json()["detail"].lower())
+        # #391：detail 统一形状
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("level", detail["message"] + detail["hint"])
 
     def test_get_viewport_state(self):
         """viewport.state returns the current viewport state."""

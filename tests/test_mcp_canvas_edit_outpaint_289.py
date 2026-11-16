@@ -22,6 +22,8 @@ if str(ROOT) not in sys.path:
 
 import main  # noqa: F401
 from local_edit import OUTPAINT_FILL, outpaint_rgba, reduced_aspect_ratio
+from fastapi import HTTPException
+
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
@@ -248,7 +250,7 @@ class EditOutpaintGateTests(McpTestBase):
     def test_size_smaller_than_source_is_error_with_next_step(self):
         outcome, _confirms, original = self._run_gated_outpaint(
             True, {"node_id": "img-1", "outpaint_size": {"width": 12, "height": 16}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("canvas.get_node", str(outcome))  # 下一步建议
         self.assertEqual(self._node()["images"][0]["asset_id"], original)
 
@@ -256,7 +258,7 @@ class EditOutpaintGateTests(McpTestBase):
         outcome, _confirms, original = self._run_gated_outpaint(
             True, {"node_id": "img-1", "outpaint_size": {"width": 24, "height": 16},
                    "offset": {"x": 50, "y": 0}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("越界", str(outcome))
         self.assertIn("canvas.get_node", str(outcome))  # 下一步建议
         self.assertEqual(self._node()["images"][0]["asset_id"], original)
@@ -264,7 +266,7 @@ class EditOutpaintGateTests(McpTestBase):
     def test_non_numeric_outpaint_size_is_error_with_next_step(self):
         outcome, _confirms, original = self._run_gated_outpaint(
             True, {"node_id": "img-1", "outpaint_size": {"width": "abc", "height": 16}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("canvas.get_node", str(outcome))
         self.assertEqual(self._node()["images"][0]["asset_id"], original)
 
@@ -276,13 +278,13 @@ class EditOutpaintGateTests(McpTestBase):
             base_revision=int(canvas.get("revision") or 0))
         outcome, _confirms, _original = self._run_gated_outpaint(
             True, {"node_id": "empty-1", "outpaint_size": {"width": 24, "height": 16}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("media.upload", str(outcome))
 
     def test_missing_node_is_error_with_next_step(self):
         outcome, _confirms, _original = self._run_gated_outpaint(
             True, {"node_id": "ghost", "outpaint_size": {"width": 24, "height": 16}})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("ghost", str(outcome))
         self.assertIn("canvas.list_nodes", str(outcome))
 

@@ -19,6 +19,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main  # noqa: F401
+from fastapi import HTTPException
+
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
@@ -167,14 +169,14 @@ class EditTransformGateTests(McpTestBase):
     def test_invalid_angle_is_error_with_next_step(self):
         outcome, _confirms, original = self._run_gated(
             "_impl_edit_rotate", "canvas.edit_rotate", True, {"node_id": "img-1", "angle": 45})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("90/180/270", str(outcome))
         self.assertEqual(self._node_image_asset(), original)
 
     def test_invalid_direction_is_error_with_next_step(self):
         outcome, _confirms, original = self._run_gated(
             "_impl_edit_flip", "canvas.edit_flip", True, {"node_id": "img-1", "direction": "diagonal"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("horizontal", str(outcome))
         self.assertIn("vertical", str(outcome))
         self.assertEqual(self._node_image_asset(), original)
@@ -187,13 +189,13 @@ class EditTransformGateTests(McpTestBase):
             base_revision=int(canvas.get("revision") or 0))
         outcome, _confirms, _original = self._run_gated(
             "_impl_edit_flip", "canvas.edit_flip", True, {"node_id": "empty-1", "direction": "horizontal"})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("media.upload", str(outcome))
 
     def test_missing_node_is_error_with_next_step(self):
         outcome, _confirms, _original = self._run_gated(
             "_impl_edit_rotate", "canvas.edit_rotate", True, {"node_id": "ghost", "angle": 90})
-        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError))
+        self.assertIsInstance(outcome, (api_mcp.McpToolError, ValueError, HTTPException))
         self.assertIn("ghost", str(outcome))
         self.assertIn("canvas.list_nodes", str(outcome))
 

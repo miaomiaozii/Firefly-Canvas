@@ -120,13 +120,17 @@ class RestGeneration351Tests(_Base):
         r = self.client.post(f"/api/projects/{self.pid}/generate/trigger?agent_node_id=agent-1",
                              json={"node_id": "prompt-1"}, headers=self._headers())
         self.assertEqual(r.status_code, 409)
+        # #391：统一形状，票号已剥，语义保留
         self.assertIn("拒绝", r.text)
+        self.assertEqual(r.json()["detail"]["code"], "CONFIRM_REJECTED")
 
     def test_agent_trigger_requires_agent_node_id(self):
         r = self.client.post(f"/api/projects/{self.pid}/generate/trigger",
                              json={"node_id": "prompt-1"}, headers=self._headers())
         self.assertEqual(r.status_code, 400)
-        self.assertIn("#357", r.text)
+        # #357 语义保留（文案），#391：票号不再出现在响应里，code 显式
+        self.assertIn("agent_node_id", r.text)
+        self.assertEqual(r.json()["detail"]["code"], "CONFIRM_MISSING_NODE_ID")
 
     def test_agent_batch_edit_gated(self):
         self._approve(approved=False, reason="rejected")
@@ -218,7 +222,8 @@ class McpGeneration351Tests(_Base):
         self._fake_build()
         api_agent_tools.GENERATION_SESSION_LIMIT = 1
         self._run_impl("generate.trigger", {"node_id": "prompt-1"})
-        with self.assertRaises(ValueError) as cm:
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as cm:
             self._run_impl("generate.trigger", {"node_id": "prompt-1"})
         self.assertIn("超限", str(cm.exception))
 
@@ -232,7 +237,8 @@ class McpGeneration351Tests(_Base):
             base_revision=int(self.store.canvas(self.pid).get("revision") or 0))
         self._run_impl("canvas.batch_edit", {"node_ids": ["prompt-1", "prompt-2"], "prompt": "z"})
         self._run_impl("generate.trigger", {"node_id": "prompt-1"})  # 2+1=3 恰好达上限
-        with self.assertRaises(ValueError):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
             self._run_impl("generate.trigger", {"node_id": "prompt-1"})  # 第 4 张超上限→拒
 
     def test_node_delete_resets_generation_count(self):

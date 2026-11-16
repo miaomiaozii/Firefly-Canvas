@@ -94,7 +94,10 @@ class AgentMediaToolsTests(unittest.TestCase):
             json={"file_path": "/nonexistent/file.png"},
         )
         self.assertEqual(response.status_code, 404)
-        self.assertIn("not available", response.json()["detail"])
+        # #391：统一形状；#355 不泄漏存在性的语义保留在文案里
+        detail = response.json()["detail"]
+        self.assertIn(detail["code"], ("NOT_FOUND", "ASSET_NOT_FOUND"))
+        self.assertIn("not available", detail["message"])
 
     def test_upload_media_missing_file_path(self):
         """media.upload returns 400 when file_path is missing."""
@@ -103,7 +106,9 @@ class AgentMediaToolsTests(unittest.TestCase):
             json={},
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("file_path", response.json()["detail"].lower())
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("file_path", detail["message"] + detail["hint"])
 
     def test_list_media_after_upload(self):
         """media.list shows uploaded media."""

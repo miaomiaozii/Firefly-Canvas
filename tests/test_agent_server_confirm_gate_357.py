@@ -79,7 +79,9 @@ class ServerConfirmGate357Tests(unittest.TestCase):
         r = self.client.delete(f"/api/projects/{self.pid}/canvas/nodes/image-1",
                                headers=self._agent_headers())
         self.assertEqual(r.status_code, 400)
-        self.assertIn("#357", r.text)
+        # #391：票号剥除；agent_node_id 语义保留
+        self.assertIn("agent_node_id", r.text)
+        self.assertEqual(r.json()["detail"]["code"], "CONFIRM_MISSING_NODE_ID")
         ids = {n.get("id") for n in self.store.canvas(self.pid)["nodes"]}
         self.assertIn("image-1", ids, "400 拒绝时节点不得被删")
 
@@ -142,7 +144,9 @@ class ServerConfirmGate357Tests(unittest.TestCase):
         r = self.client.delete(f"/api/projects/{self.pid}/media/whatever.png",
                                headers=self._agent_headers())
         self.assertEqual(r.status_code, 400)
-        self.assertIn("#357", r.text)
+        # #391：票号剥除；agent_node_id 语义保留
+        self.assertIn("agent_node_id", r.text)
+        self.assertEqual(r.json()["detail"]["code"], "CONFIRM_MISSING_NODE_ID")
 
     # ── 超时口径 >60s（两侧一致）────────────────────────────────────
     def test_confirm_timeouts_exceed_60s(self):

@@ -16,6 +16,7 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
+from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import OnlineImageRequest, AIReference
 from app.services.misc import build_online_image_result
@@ -41,11 +42,15 @@ def _validate_project(project_id: str):
     """Validate that the project exists and return the store."""
     store = _app_main.FIREFLY_PROJECT_STORE
     if store is None:
-        raise HTTPException(status_code=500, detail="Project store not initialized")
+        raise agent_error(500, "SERVER_NOT_READY",
+                          "Project store not initialized",
+                          "服务端未就绪；请用户重启服务后重试，不要反复调工具。")
     try:
         store.open_project(project_id)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        raise agent_error(404, "PROJECT_NOT_FOUND",
+                          f"Project not found: {project_id}",
+                          "项目不存在；确认 X-Agent-Project 头的 ID，或先让用户打开项目。")
 
 
 async def _apply_mutations(project_id: str, mutations: list):
@@ -71,9 +76,12 @@ async def _apply_mutations(project_id: str, mutations: list):
             # Retry with the latest revision (up to 8 attempts).
             if attempt < 7:
                 continue
-            raise HTTPException(status_code=409, detail="Canvas mutation failed after retries")
+            raise agent_error(409, "CANVAS_CONFLICT",
+                              "Canvas mutation failed after retries",
+                              "画布并发冲突（已自动重试 8 次）；先调用 canvas.list_nodes 查看最新状态再重新提交。")
         except Exception as e:
-            raise HTTPException(status_code=409, detail=str(e))
+            raise agent_error(409, "CANVAS_CONFLICT", str(e),
+                              "画布写入冲突；先调用 canvas.list_nodes 查看最新状态再重试。") from e
 
 
 async def _broadcast_canvas_updated(project_id: str, source: str = "") -> None:
@@ -134,7 +142,8 @@ def _find_node(project_id: str, node_id: str) -> dict:
     for node in canvas.get("nodes", []):
         if isinstance(node, dict) and str(node.get("id", "")) == node_id:
             return node
-    raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+    raise agent_error(404, "NODE_NOT_FOUND", f"Node not found: {node_id}",
+                      "先调用 canvas.list_nodes 查看画布上的真实节点 ID。")
 
 
 @router.get("/nodes")
@@ -243,7 +252,8 @@ async def delete_edge_core(project_id: str, from_node: str, to_node: str) -> dic
             target_edge = edge
             break
     if target_edge is None:
-        raise HTTPException(status_code=404, detail=f"Edge not found: {from_node} -> {to_node}")
+        raise agent_error(404, "EDGE_NOT_FOUND", f"Edge not found: {from_node} -> {to_node}",
+                          "这条连线不存在；先调用 canvas.list_nodes 查看现有连线。")
 
     await _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
     return {"success": True, "from": from_node, "to": to_node}
@@ -333,22 +343,23 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
     """
     _validate_project(project_id)
     if not isinstance(node, dict):
-        raise HTTPException(status_code=400, detail="node must be an object")
+        raise agent_error(400, "INVALID_ARGUMENT", "node must be an object",
+                          "canvas.create_node 的 node 参数需是对象。")
 
     # Ensure node has required fields
     # #355 W2：caller 传了已存在于画布的 id → 报错，不再静默 upsert 覆盖。
     # #343 升位：MCP/pi 工具建节点一律不接受调用方指定 id（服务端生成）——
     # 任意 id 会流入宿主 argv（--name/--session-dir），传任何非空 id 直接 400。
     if str(node.get("id") or ""):
-        raise HTTPException(
-            status_code=400,
-            detail="create_node does not accept caller-specified node id (#343); "
-                   "the server generates ids",
-        )
+        raise agent_error(
+            400, "INVALID_ARGUMENT",
+            "create_node does not accept caller-specified node id; the server generates ids",
+            "不要传 node.id；去掉 id 字段重试，服务端会生成并返回真实 id。")
     if not node.get("id"):
         node["id"] = f"node-{uuid.uuid4().hex[:12]}"
     if not node.get("type"):
-        raise HTTPException(status_code=400, detail="node.type is required")
+        raise agent_error(400, "INVALID_ARGUMENT", "node.type is required",
+                          "建节点必须带 type（如 smart-image / prompt / smart-group）。")
     _explicit_pos = ("x" in node) or ("y" in node)
     if "x" not in node:
         node["x"] = 0
@@ -393,17 +404,20 @@ def _find_chat_frame(project_id: str, agent_node_id: str) -> dict | None:
 async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:
     """Update an existing node's properties (`updates` is a flat field dict)."""
     if not isinstance(updates, dict):
-        raise HTTPException(status_code=400, detail="updates must be an object")
+        raise agent_error(400, "INVALID_ARGUMENT", "updates must be an object",
+                          "canvas.update_node 的 updates 需是 {字段: 值} 对象。")
     # #355 W1：可更新字段白名单（清单在 manifest，两路共用）；白名单外一律 400。
     illegal = sorted(k for k in updates if k not in _UPDATABLE_NODE_FIELDS)
     if illegal:
-        raise HTTPException(
-            status_code=400,
-            detail="update_node 字段白名单外的键被拒: " + ",".join(illegal),
-        )
+        raise agent_error(
+            400, "INVALID_ARGUMENT",
+            "update_node 字段白名单外的键被拒: " + ",".join(illegal),
+            "只白名单内字段可改（x/y/w/h/title/locked 等）；先调用 canvas.get_node 查看当前字段。",
+            details={"rejected_keys": illegal})
     for key in ("x", "y", "w", "h"):
         if key in updates and (isinstance(updates[key], bool) or not isinstance(updates[key], (int, float))):
-            raise HTTPException(status_code=400, detail=f"{key} must be a number")
+            raise agent_error(400, "INVALID_ARGUMENT", f"{key} must be a number",
+                              f"{key} 需是数字；重新传入。")
     # Get current node
     target_node = _find_node(project_id, node_id)
 
@@ -411,7 +425,9 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
     # （create_node_core 同事务追加 items）；任何 canvas.update_node/REST 覆写 items 直接拒绝，
     # 防 LLM 重排打乱网格/丢成员。Refs #323。
     if "items" in updates and target_node.get("type") == "smart-group" and target_node.get("chatFrame") is True:
-        raise HTTPException(status_code=400, detail="会话框 items 由服务端落位链维护，canvas.update_node 不可覆写")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "会话框 items 由服务端落位链维护，canvas.update_node 不可覆写",
+                          "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
 
     # Apply updates（#355：已过白名单，不再需要逐键身份过滤）
     for key, value in updates.items():
@@ -426,14 +442,16 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
     """Create a connection between two nodes. `edge` needs `from` and `to`."""
     _validate_project(project_id)
     if not isinstance(edge, dict):
-        raise HTTPException(status_code=400, detail="edge must be an object")
+        raise agent_error(400, "INVALID_ARGUMENT", "edge must be an object",
+                          "canvas.create_edge 的 edge 需是含 from/to 的对象。")
 
     if not edge.get("id"):
         edge["id"] = f"edge-{uuid.uuid4().hex[:12]}"
     if not edge.get("kind"):
         edge["kind"] = "flow"  # #356 D12：缺省归服务端（两路一致）；前端总传 kind 不受影响
     if not edge.get("from") or not edge.get("to"):
-        raise HTTPException(status_code=400, detail="edge.from and edge.to are required")
+        raise agent_error(400, "INVALID_ARGUMENT", "edge.from and edge.to are required",
+                          "连线需要两个端点 node id；先调用 canvas.list_nodes 获取。")
 
     await _apply_mutations(project_id, [{"op": "upsert_edge", "edge": edge}])
     return {"success": True, "edge_id": edge["id"]}
@@ -455,10 +473,11 @@ def enforce_generation_limit(project_id: str, agent_node_id: str, count: int = 1
     with CANVAS_TASK_LOCK:
         used = int(_GENERATION_COUNTS.get(key, 0))
         if used + count > GENERATION_SESSION_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail=(f"#351：本 agent 会话生成额度 {used}/{GENERATION_SESSION_LIMIT}，"
-                        f"本次需 {count} 张，超限拒绝；请新开会话或由用户重置"))
+            raise agent_error(
+                429, "BUDGET_EXCEEDED",
+                (f"本 agent 会话生成额度 {used}/{GENERATION_SESSION_LIMIT}，"
+                 f"本次需 {count} 张，超限拒绝"),
+                "额度已用尽；请新开会话或由用户重置额度后继续。")
         _GENERATION_COUNTS[key] = used + count
 
 
@@ -490,14 +509,16 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
     """Trigger generation on a node, returns task ID (Request-free core)."""
     _validate_project(project_id)
     if not node_id:
-        raise HTTPException(status_code=400, detail="node_id is required")
+        raise agent_error(400, "INVALID_ARGUMENT", "node_id is required",
+                          "先调用 canvas.list_nodes 获取节点 ID。")
 
     target_node = _find_node(project_id, node_id)
 
     node_type = str(target_node.get("type", ""))
     prompt = str(target_node.get("prompt", "") or target_node.get("text", ""))
     if not prompt:
-        raise HTTPException(status_code=400, detail=f"Node {node_id} has no prompt")
+        raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
+                          "先给节点写 prompt（canvas.update_node 或连提示词节点），再触发生成。")
 
     # Route through model routing (ADR 0006): the router picks provider + model
     # from the node's generation parameters; no hardcoded provider/size.
@@ -519,7 +540,9 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
             gen_request, _app_main.load_api_providers(), provider_id="", model=""
         )
     except ModelRoutingError as exc:
-        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        raise agent_error(400, "INVALID_ARGUMENT", exc.to_dict()["message"],
+                          "换一个可用的 provider/model 或调整参数后重试。",
+                          details={"routing": exc.to_dict()}) from exc
 
     # Convert reference asset IDs to image references for the provider call.
     reference_images = []
@@ -529,7 +552,8 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
                 _app_main.project_image_references, project_id, reference_asset_ids
             )
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise agent_error(400, "ASSET_NOT_FOUND", str(exc),
+                              "参考图资产不可用；先调用 media.list 确认 asset id。") from exc
         reference_images = [
             AIReference(
                 url=str(r.get("url") or ""),
@@ -763,7 +787,8 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
             "updated_at": task.get("updated_at"),
         }
 
-    raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    raise agent_error(404, "TASK_NOT_FOUND", f"Task not found: {task_id}",
+                      "任务不存在或已被清理；用 generate.trigger 重新发起并保存返回的 task_id。")
 
 
 @generate_router.get("/tasks/{task_id}/wait")
@@ -793,7 +818,8 @@ async def upload_media_core(project_id: str, file_path: str) -> dict:
     """
     _validate_project(project_id)
     if not file_path:
-        raise HTTPException(status_code=400, detail="file_path is required")
+        raise agent_error(400, "INVALID_ARGUMENT", "file_path is required",
+                          "media.upload 需要本地文件路径 file_path。")
 
     store = _app_main.FIREFLY_PROJECT_STORE
     allowed_roots = []
@@ -815,15 +841,20 @@ async def upload_media_core(project_id: str, file_path: str) -> dict:
     try:
         source = Path(str(file_path)).resolve()
     except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail=not_available)
+        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                          "文件不存在或路径不可读；确认路径在允许目录内后重试。")
     if not any(source == root or source.is_relative_to(root) for root in allowed_roots):
         # 越界：与「不存在」同一句，不区分。
-        raise HTTPException(status_code=404, detail=not_available)
+        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                          "路径不在允许目录内；只能导入当前项目目录或用户选定目录里的文件。")
     if not source.is_file():
-        raise HTTPException(status_code=404, detail=not_available)
+        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                          "文件不存在；检查路径后重试。")
     mime = mimetypes.guess_type(source.name)[0] or ""
     if not mime.startswith("image/"):
-        raise HTTPException(status_code=400, detail="only image files can be uploaded via media.upload")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "only image files can be uploaded via media.upload",
+                          "只能导入图片；其它文件类型请让用户在界面里操作。")
 
     try:
         record = store.import_media_file(
@@ -834,7 +865,8 @@ async def upload_media_core(project_id: str, file_path: str) -> dict:
             source_info={"locator": str(source), "name": source.name, "type": "local_output"}
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise agent_error(500, "INTERNAL_ERROR", str(e),
+                          "导入失败；检查文件后重试，反复失败请报告用户。") from e
 
     return {"success": True, "asset_id": record["asset_id"], "media": record}
 
@@ -866,7 +898,8 @@ async def delete_media_core(project_id: str, asset_id: str) -> dict:
     try:
         store.delete_media(project_id, asset_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise agent_error(500, "INTERNAL_ERROR", str(e),
+                          "删除失败；先调用 media.list 确认资产还在，再重试一次。") from e
     return {"success": True, "asset_id": asset_id}
 
 
@@ -899,7 +932,8 @@ async def focus_node_core(project_id: str, node_id: str) -> dict:
     """
     _validate_project(project_id)
     if not node_id:
-        raise HTTPException(status_code=400, detail="node_id is required")
+        raise agent_error(400, "INVALID_ARGUMENT", "node_id is required",
+                          "先调用 canvas.list_nodes 获取节点 ID。")
 
     # Get the node's position
     target_node = _find_node(project_id, node_id)
@@ -923,7 +957,8 @@ async def set_zoom_core(project_id: str, level) -> dict:
     """Set the canvas zoom level (Request-free core). See focus_node_core."""
     _validate_project(project_id)
     if level is None:
-        raise HTTPException(status_code=400, detail="level is required")
+        raise agent_error(400, "INVALID_ARGUMENT", "level is required",
+                          "viewport.set_zoom 需要数字 level（1.0 = 100%）。")
 
     # Store the viewport state
     current = VIEWPORT_STATE.get(project_id, {})
@@ -989,7 +1024,8 @@ async def request_confirmation_core(
     Returns {"approved": bool, "reason": "rejected" | "timeout" | None}.
     """
     if not node_id:
-        raise HTTPException(status_code=400, detail="node_id is required")
+        raise agent_error(400, "CONFIRM_MISSING_NODE_ID", "node_id is required",
+                          "确认门需要发起节点：调用时带 ?agent_node_id=<节点>。")
 
     from app.services.agent_host import agent_host_manager, SAFETY_FLOOR_TOOLS
 
@@ -1097,11 +1133,14 @@ def _video_frame_or_none(path: str, width: int):
 def _find_node_for_view(project_id: str, node_id: str) -> dict:
     """_find_node with the #266 error-text contract (next-step hint)."""
     if not node_id:
-        raise HTTPException(status_code=400, detail="node_id 必填；先调用 canvas.list_nodes 获取节点 ID。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "node_id 必填",
+                          "先调用 canvas.list_nodes 获取节点 ID。")
     try:
         return _find_node(project_id, node_id)
     except HTTPException:
-        raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在；先调用 canvas.list_nodes 查看画布状态。") from None
+        raise agent_error(404, "NODE_NOT_FOUND", f"节点 {node_id} 不存在",
+                          "先调用 canvas.list_nodes 查看画布状态。") from None
 
 
 async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, max_px=None) -> dict:
@@ -1114,20 +1153,23 @@ async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, 
 
     scope = str(scope or "page").strip().lower()
     if scope not in ("page", "selection"):
-        raise HTTPException(status_code=400, detail="scope 必须是 page 或 selection；先调用 canvas.list_nodes 获取节点 ID。")
+        raise agent_error(400, "INVALID_ARGUMENT", "scope 必须是 page 或 selection",
+                          "先调用 canvas.list_nodes 获取节点 ID，选区传 scope=selection + node_ids。")
     px = clamp_view_max_px(max_px)
     canvas = _open_canvas(project_id)
     nodes = [n for n in canvas.get("nodes", []) if isinstance(n, dict)]
     if scope == "selection":
         wanted = [str(x) for x in (node_ids or []) if str(x).strip()]
         if not wanted:
-            raise HTTPException(status_code=400, detail="selection 作用域需要 node_ids；先调用 canvas.list_nodes 获取节点 ID。")
+            raise agent_error(400, "INVALID_ARGUMENT", "selection 作用域需要 node_ids",
+                              "先调用 canvas.list_nodes 获取节点 ID。")
         by_id = {str(n.get("id", "")): n for n in nodes}
         selected = []
         for nid in wanted:
             node = by_id.get(nid)
             if node is None:
-                raise HTTPException(status_code=404, detail=f"节点 {nid} 不存在；先调用 canvas.list_nodes 查看画布状态。")
+                raise agent_error(404, "NODE_NOT_FOUND", f"节点 {nid} 不存在",
+                                  "先调用 canvas.list_nodes 查看画布状态。")
             selected.append(node)
     else:
         selected = nodes
@@ -1167,8 +1209,10 @@ async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, 
             })
     if not items:
         if scope == "selection":
-            raise HTTPException(status_code=404, detail="选区节点没有可查看的媒体；先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
-        raise HTTPException(status_code=400, detail="画布上没有可查看的媒体节点；先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
+            raise agent_error(404, "ASSET_NOT_FOUND", "选区节点没有可查看的媒体",
+                              "先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
+        raise agent_error(400, "ASSET_NOT_FOUND", "画布上没有可查看的媒体节点",
+                          "先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
     sheet = await asyncio.to_thread(compose_contact_sheet, [(it["node_id"], it.pop("tile")) for it in items], px)
     import base64
 
@@ -1209,14 +1253,16 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
         n_frames = 4
     images = [it for it in (node.get("images") or []) if isinstance(it, dict) and str(it.get("asset_id") or "")]
     if not images:
-        raise HTTPException(status_code=400, detail=f"节点 {node_id} 没有可查看的媒体；先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
+        raise agent_error(404, "ASSET_NOT_FOUND", f"节点 {node_id} 没有可查看的媒体",
+                          "先调用 media.upload 导入图片，或先调用 canvas.list_nodes 查看节点状态。")
     image_items = [it for it in images if str(it.get("kind") or "") != "video"]
     picked = image_items[0] if image_items else images[0]
     is_video = str(picked.get("kind") or "") == "video"
     try:
         record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
     except Exception:
-        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
+        raise agent_error(404, "ASSET_NOT_FOUND", f"节点 {node_id} 的媒体资源不存在",
+                          "先调用 media.list 查看资源库。") from None
     path = str(record.get("path") or "")
     if is_video:
         from app.services.generation import generate_video_preview_image
@@ -1224,12 +1270,14 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
         duration = await asyncio.to_thread(video_duration_seconds, path)
         sheet = await asyncio.to_thread(video_contact_sheet, path, generate_video_preview_image, duration, n_frames, max(256, px // 2), px)
         if sheet is None:
-            raise HTTPException(status_code=400, detail=f"视频抽帧失败（节点 {node_id}）；请检查服务器已安装 ffmpeg 且媒体文件可播放，然后重试；也可先调用 canvas.list_nodes 查看节点状态。")
+            raise agent_error(400, "MEDIA_UNREADABLE", f"视频抽帧失败（节点 {node_id}）",
+                              "请检查服务器已安装 ffmpeg 且媒体文件可播放，然后重试；也可先调用 canvas.list_nodes 查看节点状态。")
         kind, frames_used = "video", len(video_frame_times(duration, n_frames))
     else:
         src = await asyncio.to_thread(_load_image_or_none, path)
         if src is None:
-            raise HTTPException(status_code=400, detail=f"节点 {node_id} 的媒体无法读取；请检查媒体文件是否损坏，或先调用 canvas.list_nodes 查看节点状态。")
+            raise agent_error(400, "MEDIA_UNREADABLE", f"节点 {node_id} 的媒体无法读取",
+                              "请检查媒体文件是否损坏，或先调用 canvas.list_nodes 查看节点状态。")
         sheet, kind, frames_used = fit_tile(src, px, px), "image", 1
     import base64
 
@@ -1256,11 +1304,13 @@ async def _load_node_image(project_id: str, node_id: str, picked: dict):
     try:
         record = await asyncio.to_thread(store.media_record, project_id, str(picked["asset_id"]))
     except Exception:
-        raise HTTPException(status_code=404, detail=f"节点 {node_id} 的媒体资源不存在；先调用 media.list 查看资源库。") from None
+        raise agent_error(404, "ASSET_NOT_FOUND", f"节点 {node_id} 的媒体资源不存在",
+                          "先调用 media.list 查看资源库。") from None
     path = str(record.get("path") or "")
     source = await asyncio.to_thread(_load_image_or_none, path)
     if source is None:
-        raise HTTPException(status_code=400, detail=f"节点 {node_id} 的图像无法读取；请检查媒体文件是否损坏后重试。")
+        raise agent_error(400, "MEDIA_UNREADABLE", f"节点 {node_id} 的图像无法读取",
+                          "请检查媒体文件是否损坏后重试。")
     return source
 
 
@@ -1312,12 +1362,16 @@ async def batch_edit_core(project_id: str, node_ids, prompt) -> dict:
     """
     _validate_project(project_id)
     if not isinstance(node_ids, list) or not node_ids or not all(isinstance(n, str) and n for n in node_ids):
-        raise HTTPException(status_code=400, detail="node_ids 必须是非空节点 ID 数组；先调用 canvas.list_nodes 获取节点 ID。")
+        raise agent_error(400, "INVALID_ARGUMENT", "node_ids 必须是非空节点 ID 数组",
+                          "先调用 canvas.list_nodes 获取节点 ID。")
     if len(node_ids) > BATCH_EDIT_MAX_NODES:
-        raise HTTPException(status_code=400, detail=f"node_ids 单次最多 {BATCH_EDIT_MAX_NODES} 个节点（本次 {len(node_ids)}）；请拆成多批重试。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"node_ids 单次最多 {BATCH_EDIT_MAX_NODES} 个节点（本次 {len(node_ids)}）",
+                          "请拆成多批重试。")
     prompt = str(prompt or "").strip()
     if not prompt:
-        raise HTTPException(status_code=400, detail="prompt 必须是非空字符串；请填写批量 prompt 后重试。")
+        raise agent_error(400, "INVALID_ARGUMENT", "prompt 必须是非空字符串",
+                          "请填写批量 prompt 后重试。")
     tasks = []
     for node_id in node_ids:
         node = _find_node_for_view(project_id, node_id)
@@ -1334,7 +1388,8 @@ def _node_image_for_edit(node: dict, node_id: str) -> dict:
     images = [it for it in (node.get("images") or [])
               if isinstance(it, dict) and str(it.get("asset_id") or "") and str(it.get("kind") or "") != "video"]
     if not images:
-        raise HTTPException(status_code=400, detail=f"节点 {node_id} 没有可编辑的图像；先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
+        raise agent_error(400, "ASSET_NOT_FOUND", f"节点 {node_id} 没有可编辑的图像",
+                          "先调用 canvas.list_nodes 查看节点媒体，或先调用 media.upload 导入图片。")
     return images[0]
 
 
@@ -1351,20 +1406,25 @@ async def crop_node_image_core(project_id: str, node_id, rect) -> dict:
     node_id = str(node_id or "")
     node = _find_node_for_view(project_id, node_id)
     if not isinstance(rect, dict):
-        raise HTTPException(status_code=400, detail="rect 必须是 {x, y, width, height}（原图像素坐标）；先调用 canvas.get_node 查看节点媒体。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "rect 必须是 {x, y, width, height}（原图像素坐标）",
+                          "先调用 canvas.get_node 查看节点媒体。")
     try:
         x = float(rect.get("x") or 0)
         y = float(rect.get("y") or 0)
         w = float(rect.get("width") or 0)
         h = float(rect.get("height") or 0)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="rect 参数必须是数字；请检查 x/y/width/height 后重试。") from None
+        raise agent_error(400, "INVALID_ARGUMENT", "rect 参数必须是数字",
+                          "请检查 x/y/width/height 后重试。") from None
     picked = _node_image_for_edit(node, node_id)
     source = await _load_node_image(project_id, node_id, picked)
     try:
         left, top, right, bottom = validate_rect([x, y, x + w, y + h], source.size)
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"选区越界（图像 {source.width}x{source.height}）；先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 的 x/y/width/height 后重试。") from None
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"选区越界（图像 {source.width}x{source.height}）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 的 x/y/width/height 后重试。") from None
     cropped = await asyncio.to_thread(crop_rect, source, [left, top, right, bottom])
     filename = f"edit-crop-{int(_time.time() * 1000)}.png"
     result = await _replace_node_image(project_id, node, node_id, picked, cropped, filename)
@@ -1385,9 +1445,13 @@ async def rotate_node_image_core(project_id: str, node_id, angle) -> dict:
     try:
         angle = int(angle)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="angle 必须是 90/180/270 之一（逆时针）；先调用 canvas.get_node 查看节点媒体。") from None
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "angle 必须是 90/180/270 之一（逆时针）",
+                          "先调用 canvas.get_node 查看节点媒体。") from None
     if angle not in (90, 180, 270):
-        raise HTTPException(status_code=400, detail=f"angle 必须是 90/180/270 之一（本次 {angle}）；先调用 canvas.get_node 查看节点媒体。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"angle 必须是 90/180/270 之一（本次 {angle}）",
+                          "先调用 canvas.get_node 查看节点媒体。")
     picked = _node_image_for_edit(node, node_id)
     source = await _load_node_image(project_id, node_id, picked)
     edited = await asyncio.to_thread(rotate_image, source, angle)
@@ -1409,7 +1473,9 @@ async def flip_node_image_core(project_id: str, node_id, direction) -> dict:
     node = _find_node_for_view(project_id, node_id)
     direction = str(direction or "").strip().lower()
     if direction not in ("horizontal", "vertical"):
-        raise HTTPException(status_code=400, detail=f"direction 必须是 horizontal（左右）或 vertical（上下）之一（本次 {direction!r}）；先调用 canvas.get_node 查看节点媒体。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"direction 必须是 horizontal（左右）或 vertical（上下）之一（本次 {direction!r}）",
+                          "先调用 canvas.get_node 查看节点媒体。")
     picked = _node_image_for_edit(node, node_id)
     source = await _load_node_image(project_id, node_id, picked)
     edited = await asyncio.to_thread(flip_image, source, direction)
@@ -1442,17 +1508,25 @@ async def outpaint_node_image_core(project_id: str, node_id, outpaint_size, offs
         off_x = int((offset or {}).get("x") or 0)
         off_y = int((offset or {}).get("y") or 0)
     except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="outpaint_size 必须是 {width, height} 正整数（offset 为 {x, y} 非负整数）；先调用 canvas.get_node 查看节点媒体尺寸，再按目标扩图范围传 outpaint_size。") from None
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "outpaint_size 必须是 {width, height} 正整数（offset 为 {x, y} 非负整数）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸，再按目标扩图范围传 outpaint_size。") from None
     if target_width <= 0 or target_height <= 0 or off_x < 0 or off_y < 0:
-        raise HTTPException(status_code=400, detail=f"outpaint_size 宽/高必须为正（本次 {target_width}x{target_height}），offset 必须为非负（本次 {off_x},{off_y}）；先调用 canvas.get_node 查看节点媒体尺寸后重试。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"outpaint_size 宽/高必须为正（本次 {target_width}x{target_height}），offset 必须为非负（本次 {off_x},{off_y}）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸后重试。")
     source = await _load_node_image(project_id, node_id, picked)
     try:
         outpainted = await asyncio.to_thread(outpaint_rgba, source, target_width, target_height, (off_x, off_y))
     except ValueError as exc:
         detail = str(exc)
         if "offset" in detail:
-            raise HTTPException(status_code=400, detail=f"offset ({off_x},{off_y}) 越界（原图 {source.width}x{source.height}，目标画布 {target_width}x{target_height}）；offset 须满足 0≤x、0≤y 且 x+原图宽≤目标宽、y+原图高≤目标高，先调用 canvas.get_node 查看尺寸后重试。") from None
-        raise HTTPException(status_code=400, detail=f"目标画布必须完整含住原图（原图 {source.width}x{source.height}，目标 {target_width}x{target_height}）；先调用 canvas.get_node 查看节点媒体尺寸，再放大 outpaint_size 后重试。") from None
+            raise agent_error(400, "INVALID_ARGUMENT",
+                              f"offset ({off_x},{off_y}) 越界（原图 {source.width}x{source.height}，目标画布 {target_width}x{target_height}）",
+                              "offset 须满足 0≤x、0≤y 且 x+原图宽≤目标宽、y+原图高≤目标高，先调用 canvas.get_node 查看尺寸后重试。") from None
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"目标画布必须完整含住原图（原图 {source.width}x{source.height}，目标 {target_width}x{target_height}）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸，再放大 outpaint_size 后重试。") from None
     outpaint_size = {
         "width": target_width,
         "height": target_height,
@@ -1486,30 +1560,40 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
 
     prompt = str(prompt or "").strip()
     if not prompt:
-        raise HTTPException(status_code=400, detail="prompt 必填（描述要擦除什么、如何填补，如 erase the red cup）；先调用 canvas.view 查看节点图像内容，再补充 prompt 重试。整节点删除请用 canvas.delete_node。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "prompt 必填（描述要擦除什么、如何填补，如 erase the red cup）",
+                          "先调用 canvas.view 查看节点图像内容，再补充 prompt 重试。整节点删除请用 canvas.delete_node。")
     node_id = str(node_id or "")
     node = _find_node_for_view(project_id, node_id)
     if not isinstance(rect, dict):
-        raise HTTPException(status_code=400, detail="rect 必须是 {x, y, width, height}（原图像素坐标）；先调用 canvas.get_node 查看节点媒体。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          "rect 必须是 {x, y, width, height}（原图像素坐标）",
+                          "先调用 canvas.get_node 查看节点媒体。")
     try:
         x = float(rect.get("x") or 0)
         y = float(rect.get("y") or 0)
         w = float(rect.get("width") or 0)
         h = float(rect.get("height") or 0)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="rect 参数必须是数字；请检查 x/y/width/height 后重试。") from None
+        raise agent_error(400, "INVALID_ARGUMENT", "rect 参数必须是数字",
+                          "请检查 x/y/width/height 后重试。") from None
     if w <= 0 or h <= 0 or x < 0 or y < 0:
-        raise HTTPException(status_code=400, detail=f"rect 宽/高必须为正、原点必须为非负（本次 ({x},{y}) {w}x{h}）；先调用 canvas.get_node 查看节点媒体尺寸后重试。")
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"rect 宽/高必须为正、原点必须为非负（本次 ({x},{y}) {w}x{h}）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸后重试。")
     picked = _node_image_for_edit(node, node_id)
     source = await _load_node_image(project_id, node_id, picked)
     try:
         crop_box = validate_rect([x, y, x + w, y + h], source.size)
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"选区越界（图像 {source.width}x{source.height}，选区 ({x},{y}) {w}x{h}）；先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 后重试。") from None
+        raise agent_error(400, "INVALID_ARGUMENT",
+                          f"选区越界（图像 {source.width}x{source.height}，选区 ({x},{y}) {w}x{h}）",
+                          "先调用 canvas.get_node 查看节点媒体尺寸，再检查 rect 后重试。") from None
     model_input = await asyncio.to_thread(encode_png, crop_rect(source, crop_box))
     adapter = _app_main.local_edit_adapter
     if adapter is None:
-        raise HTTPException(status_code=500, detail="local_edit_adapter 未初始化；请检查服务启动配置后重试。")
+        raise agent_error(500, "SERVER_NOT_READY", "local_edit_adapter 未初始化",
+                          "请检查服务启动配置后重试。")
     request_data = {
         'project_id': project_id,
         'mode': 'modify',
@@ -1532,7 +1616,8 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"局部编辑模型调用失败：{exc}；请检查 bailian 凭据/网络后重试（原图未改动）。") from exc
+        raise agent_error(502, "UPSTREAM_MODEL_ERROR", f"局部编辑模型调用失败：{exc}",
+                          "请检查 bailian 凭据/网络后重试（原图未改动）。") from exc
     model_image = await asyncio.to_thread(as_rgba, adapter_result)
     result_image = await asyncio.to_thread(composite_rect, source, model_image, crop_box, 0)
     filename = f"edit-erase-{int(time.time() * 1000)}.png"
@@ -1573,15 +1658,17 @@ async def _server_confirm_gate(request: Request, project_id: str, tool: str,
         return
     agent_node_id = request.query_params.get("agent_node_id", "")
     if not agent_node_id:
-        raise HTTPException(status_code=400, detail=(
-            "#357：agent 写操作必须携带 ?agent_node_id=<发起节点>（确认门需要归属节点以投影到其会话）"))
+        raise agent_error(400, "CONFIRM_MISSING_NODE_ID",
+                          "agent 写操作必须携带 ?agent_node_id=<发起节点>（确认门需要归属节点以投影到其会话）",
+                          "重新发起请求并在查询串里带 agent_node_id=<你的节点 ID>。")
     decision = await request_confirmation_core(
         project_id, agent_node_id, tool, args or {}, message,
         AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)
     if decision.get("approved"):
         return
     if decision.get("reason") == "rejected":
-        raise HTTPException(status_code=409, detail=f"用户在画布上拒绝了操作：{tool}")
-    raise HTTPException(status_code=409, detail=(
-        f"确认超时（{int(AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)} 秒）：{tool} 未获确认。"
-        "画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。"))
+        raise agent_error(409, "CONFIRM_REJECTED", f"用户在画布上拒绝了操作：{tool}",
+                          "用户拒绝了这个操作；不要重试同一参数，先问用户想要什么。", retryable=False)
+    raise agent_error(409, "CONFIRM_PENDING",
+                      f"确认超时（{int(AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)} 秒）：{tool} 未获确认",
+                      "画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。")

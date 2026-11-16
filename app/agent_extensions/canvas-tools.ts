@@ -24,11 +24,23 @@ async function callApi(path: string, method: string, body?: any) {
         const response = await fetch(url, options);
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.detail || `HTTP ${response.status}`);
+            // #391：detail 是统一形状 {code,message,hint,retryable,details}——拼成单行，
+            // 不再让对象经模板字符串变成 [object Object]（旧 bug：Error(对象).message 被
+            // 下一层 `${e.message}` 字符串化）。服务端未升级时 detail 仍可能是字符串，
+            // 同样走此路径。
+            const d = data && data.detail;
+            const text = d && typeof d === "object"
+                ? `[${d.code || "HTTP " + response.status}] ${d.message || ""}`
+                    + (d.hint ? ` — 下一步：${d.hint}` : "")
+                : (d || `HTTP ${response.status}`);
+            const err = new Error(text);
+            (err as any).__apiError = true;   // 标记：API 错误不再被下面包裹
+            throw err;
         }
         return data;
     } catch (e: any) {
-        throw new Error(`API call failed: ${e.message}`);
+        if (e && e.__apiError) throw e;                     // API 错误原样上抛
+        throw new Error(`API call failed: ${e.message}`);   // 网络/解析失败才包外层
     }
 }
 
