@@ -863,79 +863,126 @@ function sendAgentAbort(nodeId, projectId) {
     });
 }
 
-function setAgentModel(nodeId, projectId, model) {
-    const state = getAgentTuiState(nodeId);
-    state.model = model;
-    // Optimistically update the local node (source of truth for rendering)
-    const node = canvasState.nodes.find(n => n.id === nodeId);
-    if (node) node.model = model;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: model }),
-    }).then(async response => {
-        if (!response.ok) {
-            // #348: 模型切换失败以前静默（乐观更新已改本地，服务端拒绝无提示）。
-            let detail = `HTTP ${response.status}`;
-            try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
-            throw new Error(detail);
-        }
-    }).catch(e => {
-        console.error('Failed to set agent model:', e);
-        window.ffToast?.error?.(`Agent 模型切换失败：${e?.message || e}`);
-    });
-    renderAgentNode(nodeId);
+// #392：四个人工设置共享节点级顺序，跨设置的旧完成也不能重建新 UI/清新会话。
+// token 只属于当前 TUI 生命周期；cleanup 后同 id 的新条目不继承在途响应。
+function agentSettingsHistoryFingerprint(state) {
+    // #408 adds live thoughts/turns and buffered seq events outside messages/tools.
+    return JSON.stringify([state.messages, [...state.toolActivities], state.thinking || [],
+        state._turnSeq || 0, state.lastSeq || 0, state._replayBuffer || []]);
 }
 
-function setAgentAutonomy(nodeId, projectId, autonomy) {
+function beginAgentSettingsRequest(nodeId, resetHistory = false) {
     const state = getAgentTuiState(nodeId);
-    state.autonomy = autonomy;
-    // Optimistically update the local node (source of truth for rendering)
-    const node = canvasState.nodes.find(n => n.id === nodeId);
-    if (node) node.autonomy = autonomy;
-    fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/autonomy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autonomy: autonomy }),
-    }).then(async response => {
+    state.settingsRequestSeq = (state.settingsRequestSeq || 0) + 1;
+    return {
+        state, seq: state.settingsRequestSeq,
+        hadNode: canvasState.nodes.some(n => n.id === nodeId),
+        beforeNode: JSON.parse(JSON.stringify(canvasState.nodes.find(n => n.id === nodeId) || null)),
+        history: resetHistory ? agentSettingsHistoryFingerprint(state) : null,
+    };
+}
+
+function resetAgentSettingsHistory(request) {
+    const state = request.state;
+    // 回包前有新消息、工具、D2 思考/轮次或缓冲事件时保留新活动。
+    if (request.history !== agentSettingsHistoryFingerprint(state)) return;
+    state.messages = [];
+    state.toolActivities.clear();
+    // #408: a confirmed branch boundary also invalidates display and replay state.
+    resetAgentTimeline(state);
+    state.lastSeq = 0;
+    state._replayBuffer = [];
+    state._replayInFlight = false;
+}
+
+function isCurrentAgentSettingsRequest(nodeId, request) {
+    return agentTuiState.get(nodeId) === request.state && !request.state.closing
+        && request.state.settingsRequestSeq === request.seq
+        && (!request.hadNode || canvasState.nodes.some(n => n.id === nodeId));
+}
+
+function receiveAgentSettingsResponse(nodeId, request, data, fields = []) {
+    if (!isCurrentAgentSettingsRequest(nodeId, request) || !data.canvas
+        || typeof canvasCore.receiveAgentSettingsCanvas !== 'function') return false;
+    return canvasCore.receiveAgentSettingsCanvas(data.canvas, request.beforeNode ? {
+        before: request.beforeNode, fields, addedBranchId: data.branch?.id,
+    } : null) === true && isCurrentAgentSettingsRequest(nodeId, request);
+}
+
+async function setAgentModel(nodeId, projectId, model) {
+    const request = beginAgentSettingsRequest(nodeId);
+    // #392：设置值只由权威画布接收器采用；不能让并行 autosave 保存未确认的值。
+    renderAgentNode(nodeId);
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/model`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: model, user_edit: true }),
+        });
         if (!response.ok) {
-            // #348: 自主级别切换失败以前静默（同 setAgentModel）。
             let detail = `HTTP ${response.status}`;
             try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
             throw new Error(detail);
         }
-    }).catch(e => {
+        const data = await response.json();
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
+        if (data.persisted === false) {
+            // #285：纯会话成功是运行态事实，不是假造的节点/归属；画布存在时仍走统一接收。
+            if (data.canvas) receiveAgentSettingsResponse(nodeId, request, data);
+            if (!isCurrentAgentSettingsRequest(nodeId, request) || typeof data.model !== 'string') return;
+            request.state.model = data.model;
+            request.state.sessionModel = data.model;
+        } else {
+            if (!receiveAgentSettingsResponse(nodeId, request, data, ['model'])) return;
+            delete request.state.sessionModel;
+        }
+        renderAgentNode(nodeId);
+    } catch (e) {
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
+        console.error('Failed to set agent model:', e);
+        window.ffToast?.error?.(`Agent 模型切换失败：${e?.message || e}`);
+    }
+}
+
+async function setAgentAutonomy(nodeId, projectId, autonomy) {
+    const request = beginAgentSettingsRequest(nodeId);
+    renderAgentNode(nodeId);
+    try {
+        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/autonomy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ autonomy: autonomy, user_edit: true }),
+        });
+        if (!response.ok) {
+            let detail = `HTTP ${response.status}`;
+            try { detail = String((await response.json()).detail || detail); } catch (_e) { /* #348: 非 JSON 错误体，detail 保留 HTTP 状态码 */ }
+            throw new Error(detail);
+        }
+        const data = await response.json();
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['autonomy'])) return;
+        renderAgentNode(nodeId);
+    } catch (e) {
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to set agent autonomy:', e);
         window.ffToast?.error?.(`Agent 自主级别切换失败：${e?.message || e}`);
-    });
-    renderAgentNode(nodeId);
+    }
 }
 
 async function forkAgentSession(nodeId, projectId, entryId, name) {
-    const state = getAgentTuiState(nodeId);
-    const node = canvasState.nodes.find(n => n.id === nodeId);
+    const request = beginAgentSettingsRequest(nodeId, true);
     try {
         const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ entry_id: entryId, name: name }),
+            body: JSON.stringify({ entry_id: entryId, name: name, user_edit: true }),
         });
         if (!response.ok) throw new Error('Fork failed');
         const data = await response.json();
-        // Update local node with new branches
-        if (node) {
-            node.branches = data.branches;
-            node.current_branch = data.current_branch;
-        }
-        // Clear records and all presentation metadata at the branch boundary.
-        state.messages = [];
-        state.toolActivities.clear();
-        resetAgentTimeline(state);
-        state.lastSeq = 0;
-        state._replayBuffer = [];
-        state._replayInFlight = false;
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['branches', 'current_branch'])) return;
+        resetAgentSettingsHistory(request);
         renderAgentNode(nodeId);
     } catch (e) {
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to fork agent session:', e);
         // #348: 用户触发的 fork 失败——选择器已关，不提示用户会以为成功。
         window.ffToast?.error?.(`Fork 失败：${e && e.message ? e.message : String(e)}`);
@@ -943,29 +990,20 @@ async function forkAgentSession(nodeId, projectId, entryId, name) {
 }
 
 async function switchAgentBranch(nodeId, projectId, branchId) {
-    const state = getAgentTuiState(nodeId);
-    const node = canvasState.nodes.find(n => n.id === nodeId);
+    const request = beginAgentSettingsRequest(nodeId, true);
     try {
         const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/switch-branch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ branch_id: branchId }),
+            body: JSON.stringify({ branch_id: branchId, user_edit: true }),
         });
         if (!response.ok) throw new Error('Switch branch failed');
         const data = await response.json();
-        // Update local node
-        if (node) {
-            node.current_branch = data.current_branch;
-        }
-        // Clear records and all presentation metadata at the branch boundary.
-        state.messages = [];
-        state.toolActivities.clear();
-        resetAgentTimeline(state);
-        state.lastSeq = 0;
-        state._replayBuffer = [];
-        state._replayInFlight = false;
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['current_branch'])) return;
+        resetAgentSettingsHistory(request);
         renderAgentNode(nodeId);
     } catch (e) {
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to switch agent branch:', e);
         // #348: 用户触发的分支切换失败——不提示用户会以为已切换。
         window.ffToast?.error?.(`切换分支失败：${e && e.message ? e.message : String(e)}`);
@@ -1002,21 +1040,23 @@ function agentForkPickerDialog(messages) {
 }
 
 async function showForkPicker(nodeId, projectId) {
-    const state = getAgentTuiState(nodeId);
+    const request = beginAgentSettingsRequest(nodeId);
     try {
         const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork-messages`);
         if (!response.ok) throw new Error('Failed to get fork messages');
         const data = await response.json();
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         const messages = data.messages || [];
         if (messages.length === 0) {
             // No forkable messages
             return;
         }
         const picked = await agentForkPickerDialog(messages);
-        if (!picked) return;
+        if (!picked || !isCurrentAgentSettingsRequest(nodeId, request)) return;
         const message = messages[picked.index];
         await forkAgentSession(nodeId, projectId, message.entryId, picked.name || '');
     } catch (e) {
+        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to show fork picker:', e);
         // #348: 用户点开 Fork 选择器但拉取消息失败——不提示用户会以为没有可 fork 的消息。
         window.ffToast?.error?.(`打开 Fork 选择器失败：${e && e.message ? e.message : String(e)}`);
@@ -1370,8 +1410,8 @@ function agentNodeBodyHtml(node) {
         </div>`;
     }
 
-    // Model select options — node is the source of truth for the persisted value
-    const currentModel = node.model || '';
+    // 持久值来自 live node；只有明确 persisted:false 的成功响应可以提供纯会话覆盖。
+    const currentModel = state.sessionModel !== undefined ? state.sessionModel : (node.model || '');
     let modelOptionsHtml = `<option value="" ${!currentModel ? 'selected' : ''}>默认</option>`;
     const chatModels = getChatModels();
     for (const model of chatModels) {

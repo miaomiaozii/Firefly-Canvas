@@ -51,13 +51,13 @@
 //   - 每次事件都调 renderAgentNode（渲染不漏）；
 //   - sendAgentPrompt / sendAgentConfirm 的 WS 与 HTTP 双路径载荷形状；
 //   - steer/follow_up/abort 的 wsPayload 与系统消息、abort 把 status 复位 idle；
-//   - setAgentModel / setAgentAutonomy 的乐观更新（state + node 两处都要写）；
+//   - setAgentModel / setAgentAutonomy：严格人工载荷、拒绝乐观持久写入、权威画布接收 seam；
 //   - connectAgentWebSocket 回调面：onmessage 派发到真实 handleAgentEvent、畸形 JSON 走
 //     console.error 不外抛、onerror→error、onclose→socket 复位 null 并进入 #280 退避
 //     （重连中/启动失败/重连停止）、构造器抛错→null 且计入失败、https location 切 wss；
 //   - sendAgentSteer / sendAgentFollowUp 的 HTTP 回退（WS 未连：URL/body 精确；onSuccess 不
 //     执行——#221 缺口，断言钉现状）；
-//   - forkAgentSession / switchAgentBranch：成功写回 node.branches/current_branch 且清空
+//   - forkAgentSession / switchAgentBranch：成功经权威画布接收 seam 后清空
 //     messages/toolActivities、失败零副作用；showForkPicker 的 <dialog> 选择→fork(entry_id,
 //     name)（#317：两次 prompt() 换成一个 dialog）、空列表/取消/无选中轮次不分叉、
 //     分支名留空仍分叉（服务端自动命名）；
@@ -167,6 +167,9 @@ function loadAgentTuiModule({
     const renders = [];
     const bodyHtmlCalls = [];
     const consoleErrors = [];
+    // #392：只记录权威接收边界，不在 TUI 夹具复制 merge/revision 算法。
+    const receivedCanvases = [];
+    ctx.receiveAgentSettingsCanvas = canvas => { receivedCanvases.push(canvas); return true; };
     const alerts = [];   // #323 票 E：alert 必须为 0（票面禁止 alert），记录器兼作断言
     // #323 票 E：toast 是 canvas-core.js 的真实函数（不是 hub 自由名，无法用 ctx.toast 桩盖住）——
     // 注册真 #toast 元素让真 toast 跑通，断言走 element.textContent。
@@ -215,7 +218,7 @@ function loadAgentTuiModule({
     for (const node of nodes) {
         ctx.canvasState.nodes.push(node);
     }
-    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, consoleErrors, alerts };
+    return { ctx, harness, ws, fetchCalls, renders, bodyHtmlCalls, consoleErrors, alerts, receivedCanvases };
 }
 
 const fn = (ctx, name) => globalFunction(ctx, name);
@@ -874,24 +877,37 @@ test('sendAgentConfirm: WS 断开时走 HTTP，载荷仍带 confirm_id/approved'
     assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { confirm_id: 'k1', approved: false });
 });
 
-// ── 乐观更新：state 与 node 两处都要写 ───────────────────────────────
-test('setAgentModel / setAgentAutonomy 同时更新 state 和节点（渲染以节点为准）', () => {
-    const { ctx, fetchCalls } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
-    fn(ctx, 'setAgentModel')('n1', 'proj/2', 'gpt-x');
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").model')), 'gpt-x');
-    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'gpt-x',
-        '节点是渲染的真值来源，漏写会导致下拉框回弹');
-    // 实测：模型/自治端点**不做** encodeURIComponent（与 prompt/confirm/abort 端点不一致）。
+// ── #392：请求与权威接收（不再把未确认设置发布到持久节点）──────────────
+test('setAgentModel / setAgentAutonomy 通过权威接收器，不做乐观节点写；纯会话保留运行态', async () => {
+    const modelCanvas = { revision: 1, nodes: [{ id: 'n1', type: 'agent', model: 'gpt-x' }] };
+    const autonomyCanvas = { revision: 2, nodes: [{ id: 'n1', type: 'agent', model: 'gpt-x', autonomy: 'autonomous' }] };
+    const { ctx, fetchCalls, receivedCanvases } = loadAgentTuiModule({
+        nodes: [{ id: 'n1', type: 'agent', model: 'old', autonomy: 'cautious' }],
+        fetchResponse: [
+            { ok: true, json: async () => ({ success: true, model: 'gpt-x', persisted: true, canvas: modelCanvas }) },
+            { ok: true, json: async () => ({ success: true, autonomy: 'autonomous', canvas: autonomyCanvas }) },
+            { ok: true, json: async () => ({ success: true, model: 'gpt-y', persisted: false }) },
+        ],
+    });
+    const pendingModel = fn(ctx, 'setAgentModel')('n1', 'proj/2', 'gpt-x');
+    assert.equal(evaluate(ctx, 'getAgentTuiState("n1").model'), '');
+    assert.equal(evaluate(ctx, 'canvasState.nodes[0].model'), 'old', 'autosave 不能偷存未确认的模型');
+    // 保留模型/自治端点现有 encodeURI 行为。
     assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj/2/agent-nodes/n1/model');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { model: 'gpt-x' });
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { model: 'gpt-x', user_edit: true });
+    await pendingModel;
+    assert.deepEqual(receivedCanvases, [modelCanvas]);
 
-    fn(ctx, 'setAgentAutonomy')('n1', 'p1', 'autonomous');
-    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'autonomous');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { autonomy: 'autonomous' });
+    const pendingAutonomy = fn(ctx, 'setAgentAutonomy')('n1', 'p1', 'autonomous');
+    assert.equal(evaluate(ctx, 'canvasState.nodes[0].autonomy'), 'cautious');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { autonomy: 'autonomous', user_edit: true });
+    await pendingAutonomy;
+    assert.deepEqual(receivedCanvases, [modelCanvas, autonomyCanvas]);
+    assert.equal(evaluate(ctx, 'canvasState.nodes[0].autonomy'), 'cautious', '记录器不实现 merge；TUI 也不得直写');
 
-    // 节点不存在时不能抛（state 仍更新）。
-    fn(ctx, 'setAgentModel')('ghost', 'p1', 'gpt-y');
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("ghost").model')), 'gpt-y');
+    await fn(ctx, 'setAgentModel')('ghost', 'p1', 'gpt-y');
+    assert.equal(evaluate(ctx, 'getAgentTuiState("ghost").model'), 'gpt-y');
+    assert.equal(ctx.canvasState.nodes.length, 1, '纯会话不制造画布节点');
 });
 
 // ── 清理路径（#217 同族：节点删除后必须清干净）─────────────────────────
@@ -1202,7 +1218,7 @@ test('renderMarkdown: 先转义再套 Markdown 结构，代码块优先于行内
 });
 
 // ── fork / switch-branch / 分叉选择器（fetch 数据驱动）──────────────────────
-test('forkAgentSession: 成功写回 node.branches/current_branch 且清空 messages/toolActivities；失败零副作用', async () => {
+test('forkAgentSession: 成功接收权威 canvas 后清空 messages/toolActivities；失败零副作用', async () => {
     const seed = (fetchResponse) => {
         const m = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }], fetchResponse });
         fn(m.ctx, 'handleAgentEvent')('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'old' } });
@@ -1211,13 +1227,14 @@ test('forkAgentSession: 成功写回 node.branches/current_branch 且清空 mess
     };
 
     // 成功。
-    const ok = seed({ ok: true, json: async () => ({ branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1' }) });
+    const canvas = { revision: 1, nodes: [{ id: 'n1', type: 'agent', branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1' }] };
+    const ok = seed({ ok: true, json: async () => ({ success: true, branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1', canvas }) });
     await fn(ok.ctx, 'forkAgentSession')('n1', 'proj/9', 'entry-7', '新分支');
     assert.equal(fromContext(ok.fetchCalls.at(-1).url), '/api/projects/proj/9/agent-nodes/n1/fork');
-    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { entry_id: 'entry-7', name: '新分支' });
+    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { entry_id: 'entry-7', name: '新分支', user_edit: true });
+    assert.deepEqual(ok.receivedCanvases, [canvas]);
     assert.deepEqual(fromContext(evaluate(ok.ctx, 'canvasState.nodes[0]')),
-        { id: 'n1', type: 'agent', branches: [{ id: 'b1', name: '分叉' }], current_branch: 'b1' },
-        'node 是渲染真值，必须写回');
+        { id: 'n1', type: 'agent' }, 'TUI 不复制权威接收器的节点合并');
     assert.deepEqual(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").messages')), [], '新分支从头开始，旧消息清空');
     assert.equal(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").toolActivities.size')), 0, '工具活动一并清空');
 
@@ -1230,7 +1247,7 @@ test('forkAgentSession: 成功写回 node.branches/current_branch 且清空 mess
     assert.ok(bad.consoleErrors.some(m => m.startsWith('Failed to fork agent session:')));
 });
 
-test('switchAgentBranch: 成功更新 current_branch 并清空会话；失败零副作用', async () => {
+test('switchAgentBranch: 成功接收 canvas 并清空会话；失败零副作用', async () => {
     const seed = (fetchResponse) => {
         const m = loadAgentTuiModule({
             nodes: [{ id: 'n1', type: 'agent', branches: [{ id: 'b1', name: '主' }, { id: 'b2', name: '侧' }], current_branch: 'b1' }],
@@ -1239,11 +1256,13 @@ test('switchAgentBranch: 成功更新 current_branch 并清空会话；失败零
         fn(m.ctx, 'handleAgentEvent')('n1', { type: 'turn_end', message: { content: [{ type: 'text', text: 'x' }] } });
         return m;
     };
-    const ok = seed({ ok: true, json: async () => ({ current_branch: 'b2' }) });
+    const canvas = { revision: 2, nodes: [{ id: 'n1', type: 'agent', current_branch: 'b2' }] };
+    const ok = seed({ ok: true, json: async () => ({ success: true, current_branch: 'b2', canvas }) });
     await fn(ok.ctx, 'switchAgentBranch')('n1', 'p1', 'b2');
     assert.equal(fromContext(ok.fetchCalls.at(-1).url), '/api/projects/p1/agent-nodes/n1/switch-branch');
-    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { branch_id: 'b2' });
-    assert.equal(fromContext(evaluate(ok.ctx, 'canvasState.nodes[0].current_branch')), 'b2');
+    assert.deepEqual(JSON.parse(fromContext(ok.fetchCalls.at(-1).opts.body)), { branch_id: 'b2', user_edit: true });
+    assert.deepEqual(ok.receivedCanvases, [canvas]);
+    assert.equal(fromContext(evaluate(ok.ctx, 'canvasState.nodes[0].current_branch')), 'b1', '仅接收器可更新持久分支');
     assert.deepEqual(fromContext(evaluate(ok.ctx, 'getAgentTuiState("n1").messages')), [], '切分支清空旧会话');
 
     const bad = seed({ ok: false, json: async () => ({}) });
@@ -1295,7 +1314,7 @@ test('showForkPicker: <dialog> 选轮次与分支名后分叉（entry_id + name�
     await picking;
     const forkCall = ok.fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
-    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e2', name: '分叉线' });
+    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e2', name: '分叉线', user_edit: true });
     assert.equal(dlg.open, false, 'close 后弹层收起');
 
     // 空消息列表：直接返回，不建弹层不分叉。
@@ -1339,7 +1358,7 @@ test('showForkPicker: <dialog> 选轮次与分支名后分叉（entry_id + name�
     fillForkDialog(blank.harness, blank.harness.dialogs[0], { index: 0, name: '   ' });
     await blankPicking;
     assert.equal(blank.fetchCalls.length, 2, '留空分支名仍发 fork');
-    assert.deepEqual(JSON.parse(fromContext(blank.fetchCalls.at(-1).opts.body)), { entry_id: 'e9', name: '' });
+    assert.deepEqual(JSON.parse(fromContext(blank.fetchCalls.at(-1).opts.body)), { entry_id: 'e9', name: '', user_edit: true });
 });
 
 // ── #325 票 G：外部 CLI 接管（snippet 端点消费 + 头部按钮 + 弹层内容）──────
@@ -1563,17 +1582,18 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     const msgs2 = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
     assert.equal(msgs2.at(-1).text, '❌ 已取消');
 
-    // model / autonomy：change 触发端点 + 节点乐观写。
+    // model / autonomy：change 声明人工意图，确认前不触碰节点。
     tree.modelSel.value = 'm2';
     tree.modelSel.dispatchEvent(ev('change'));
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/model');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { model: 'm2' });
-    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'm2');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { model: 'm2', user_edit: true });
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'm0');
 
     tree.autonomySel.value = 'autonomous';
     tree.autonomySel.dispatchEvent(ev('change'));
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/autonomy');
-    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'autonomous');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { autonomy: 'autonomous', user_edit: true });
+    assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'cautious');
 
     // branch：空值不发，非空 → switch-branch。
     tree.branchSel.value = '';
@@ -1583,7 +1603,7 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     tree.branchSel.dispatchEvent(ev('change'));
     assert.equal(fetchCalls.length, beforeBranch + 1, '空分支不发送');
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/switch-branch');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { branch_id: 'b2' });
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { branch_id: 'b2', user_edit: true });
 
     // fork 按钮 → showForkPicker（异步 fire-and-forget）：#317 起走画布自有 <dialog>。
     tree.forkBtn.dispatchEvent(ev('click'));
@@ -1594,7 +1614,7 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     await new Promise(r => setImmediate(r));
     const forkCall = fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
-    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e1', name: '线' });
+    assert.deepEqual(JSON.parse(fromContext(forkCall.opts.body)), { entry_id: 'e1', name: '线', user_edit: true });
 
     // 工具行：点击切换 expanded。
     fn(ctx, 'handleAgentEvent')('n1', { type: 'tool_execution_start', toolName: 'search', toolCallId: 'c1', args: { q: 1 } });
@@ -2513,7 +2533,8 @@ test('#408 D2 历史替换/branch/fork 重置元数据，迟到的旧回放不�
     let resolveReplay;
     const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('/events?')
         ? new Promise(resolve => { resolveReplay = resolve; })
-        : { ok: true, json: async () => ({ current_branch: 'new', branches: [] }) } });
+        : { ok: true, json: async () => ({ current_branch: 'new', branches: [],
+            canvas: { revision: 2, nodes: [{ ...d2Node(), current_branch: 'new', branches: [] }] } }) } });
     const state = fn(ctx, 'getAgentTuiState')('n1');
     fn(ctx, 'handleAgentEvent')('n1', d2Tool('old'));
     state.toolGroupExpanded = { 'tools:old': true }; state.scrollState = { atBottom: false, scrollTop: 10 };

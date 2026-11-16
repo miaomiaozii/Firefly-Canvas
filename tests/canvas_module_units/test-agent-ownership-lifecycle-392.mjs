@@ -105,6 +105,126 @@ test('R3: stale dedicated adoption never replaces a newer canvas or its pending 
     assert.equal(e.node().userTouchedAt,3456);
 });
 
+test('confirmed human settings undo and redo only their own fields and metadata',async()=>{
+    for(const [endpoint,handler,args,fields] of [
+        ['model','setAgentModel',['new-model'],{model:'new-model'}],
+        ['autonomy','setAgentAutonomy',['standard'],{autonomy:'standard'}],
+        ['fork','forkAgentSession',['entry-1','named'],{branches:[{id:'original'},{id:'branch-2'}],current_branch:'branch-2'}],
+        ['switch-branch','switchAgentBranch',['branch-2'],{current_branch:'branch-2'}],
+    ]){
+        const initial=seed();Object.assign(initial.nodes[0],{type:'smart-agent',model:'old-model',autonomy:'cautious',branches:[{id:'original'}],current_branch:'original'});
+        const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+        const remote=copy(initial);remote.revision=5;remote.updated_at=500;
+        Object.assign(remote.nodes[0],fields,{userTouchedAt:5000});
+        remote.nodes.push({id:'remote-sibling',type:'smart-prompt',text:'keep remote'});
+        e.ctx.fetch=async()=>({ok:true,status:200,json:async()=>({success:true,persisted:true,canvas:remote,...fields,...(endpoint==='fork'?{branch:{id:'branch-2'}}:{})})});
+        await e.call(handler,'prompt',initial.project_id,...args);
+        assert.equal(evaluate(e.ctx,'undoStack.length'),1,endpoint+' must have a confirmed action');
+        await e.call('performUndo');
+        for(const key of Object.keys(fields)) assert.deepEqual(fromContext(e.node()[key]),initial.nodes[0][key],endpoint+' undo '+key);
+        assert.equal(e.node().userTouchedAt,null);
+        assert.equal(e.node().createdBy,'agent');assert.equal(e.node().agentNodeId,'agent');assert.equal(e.node().promptEditedByUser,false);
+        assert.equal(e.live().nodes.some(n=>n.id==='remote-sibling'),true,'unrelated remote addition is not undone');
+        await e.call('performRedo');
+        for(const [key,value] of Object.entries(fields)) assert.deepEqual(fromContext(e.node()[key]),value,endpoint+' redo '+key);
+        assert.equal(e.node().userTouchedAt,5000);
+    }
+    for(const ok of [true,false]){
+        const initial=seed();Object.assign(initial.nodes[0],{type:'smart-agent',model:'same'});
+        const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+        e.ctx.fetch=async()=>({ok,status:ok?200:409,json:async()=>({success:ok,persisted:true,canvas:initial,model:'same'})});
+        await e.call('setAgentModel','prompt',initial.project_id,'same');
+        assert.equal(evaluate(e.ctx,'undoStack.length'),0,'failed and same-value settings have no undo step');
+        assert.equal(e.node().userTouchedAt,null);
+    }
+});
+
+test('already accepted branch transitions clear old history even when HTTP authority is now stale',async()=>{
+    const initial=seed();Object.assign(initial.nodes[0],{type:'agent',current_branch:'original',branches:[{id:'original'},{id:'branch-2'}]});
+    const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+    const state=e.call('getAgentTuiState','prompt');state.messages.push({role:'assistant',text:'old branch'});state.toolActivities.set('old-tool',{status:'done'});
+    let release;
+    const remote=copy(initial);remote.revision=5;remote.updated_at=500;Object.assign(remote.nodes[0],{current_branch:'branch-2',userTouchedAt:5000});
+    e.ctx.fetch=async()=>{await new Promise(resolve=>{release=resolve;});return {ok:true,status:200,json:async()=>({success:true,current_branch:'branch-2',canvas:remote})};};
+    const switching=e.call('switchAgentBranch','prompt',initial.project_id,'branch-2');
+    e.call('applyMergedServerCanvas',remote);
+    const later=copy(remote);later.revision=6;later.updated_at=600;later.nodes.push({id:'unrelated',text:'new authority'});
+    e.call('applyMergedServerCanvas',later);
+    release();await switching;
+    assert.equal(e.live().revision,6,'receipt must not adopt the stale canvas');
+    assert.equal(e.node().current_branch,'branch-2');
+    assert.equal(state.messages.length,0,'the accepted branch cannot keep the old branch transcript');
+    assert.equal(state.toolActivities.size,0);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1,'late receipt still completes only its own confirmed action');
+    await e.call('performUndo');assert.equal(e.node().current_branch,'original');
+    assert.equal(e.live().nodes.some(n=>n.id==='unrelated'),true);
+});
+
+test('fork receipt and undo preserve a concurrent branch append and its protection',async()=>{
+    const initial=seed();Object.assign(initial.nodes[0],{type:'agent',current_branch:'original',branches:[{id:'original'}]});
+    const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+    const state=e.call('getAgentTuiState','prompt');state.messages.push({role:'assistant',text:'old branch'});
+    const remote=copy(initial);remote.revision=5;remote.updated_at=500;Object.assign(remote.nodes[0],{branches:[{id:'original'},{id:'own-fork'}],current_branch:'own-fork',userTouchedAt:5000});
+    let release;e.ctx.fetch=async()=>{await new Promise(resolve=>{release=resolve;});return {ok:true,status:200,json:async()=>({success:true,branch:{id:'own-fork'},canvas:remote})};};
+    const forking=e.call('forkAgentSession','prompt',initial.project_id,'entry-1','own');
+    e.call('applyMergedServerCanvas',remote);
+    const later=copy(remote);later.revision=6;later.updated_at=600;later.nodes[0].branches.push({id:'concurrent'});later.nodes[0].userTouchedAt=6000;
+    e.call('applyMergedServerCanvas',later);release();await forking;
+    assert.equal(state.messages.length,0,'later branch append does not block the confirmed transition');
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);
+    await e.call('performUndo');
+    assert.deepEqual(fromContext(e.node().branches).map(b=>b.id),['original','concurrent']);
+    assert.equal(e.node().current_branch,'original');assert.equal(e.node().userTouchedAt,6000);
+    await e.call('performRedo');
+    assert.deepEqual(new Set(fromContext(e.node().branches).map(b=>b.id)),new Set(['original','own-fork','concurrent']));
+    assert.equal(e.node().current_branch,'own-fork');assert.equal(e.node().userTouchedAt,6000);
+});
+
+test('human action projection uses the real durable storage boundary',()=>{
+    const e=editor();Object.assign(e.node(),{type:'local-edit',_leBusy:false,dockCollapsed:false});
+    const project=node=>JSON.parse(e.ctx.FireflyProjectCanvasMutations.durableSnapshotFromCanvas(e.call('canvasForStorage')).nodes[node.id]);
+    const action=e.call('beginSmartHumanEdit',[e.node()],{project,prompt:true,at:1234});
+    e.node()._leBusy=true;e.node().dockCollapsed=true;e.node().running=true;
+    assert.equal(e.call('finishSmartHumanEdit',action,[e.node()]),false,'UI-only changes cannot take over a node');
+    assert.equal(e.node().userTouchedAt,null);
+    const changed=e.call('beginSmartHumanEdit',[e.node()],{project,prompt:true,at:1235});
+    e.node().text='';
+    assert.equal(e.call('finishSmartHumanEdit',changed,[e.node()]),true);
+    assert.equal(e.node().userTouchedAt,1235);assert.equal(e.node().promptEditedByUser,true);
+});
+
+test('human Agent settings adopt authority through the real receiver without swallowing pending edits',async()=>{
+    const initial=seed();
+    initial.nodes.push({id:'agent-settings',type:'smart-agent',model:'old-model',createdBy:'agent',agentNodeId:'creator',userTouchedAt:null,promptEditedByUser:false});
+    const e=editor(initial);
+    e.ctx.agentTuiState=new Map();
+    e.ctx.renderAgentNode=()=>{}; // DOM boundary only; actual request/receiver/pending logic is loaded.
+    e.edit('unsaved prompt',{userTouchedAt:3456,promptEditedByUser:true});
+    const remote=copy(initial);remote.revision=5;remote.updated_at=500;
+    Object.assign(remote.nodes[1],{model:'new-model',userTouchedAt:5000});
+    const sent=[];
+    e.ctx.fetch=async(url,options)=>{
+        sent.push({url,body:JSON.parse(options.body)});
+        return {ok:true,status:200,json:async()=>url.endsWith('/model')
+            ? {success:true,persisted:true,model:'new-model',canvas:remote}
+            : {saved:true,revision:6,updated_at:600}};
+    };
+    await e.call('setAgentModel','agent-settings',initial.project_id,'new-model');
+    assert.equal(e.live().nodes.find(n=>n.id==='agent-settings').model,'new-model');
+    assert.equal(e.live().nodes.find(n=>n.id==='agent-settings').userTouchedAt,5000);
+    assert.equal(e.node().text,'unsaved prompt');
+    assert.equal(evaluate(e.ctx,'smartCanvasServerShadow').nodes.find(n=>n.id==='prompt').text,'before');
+    assert.equal(e.call('receiveAgentSettingsCanvas',initial),false,'old authority cannot roll back the accepted revision');
+    const wrongProject=copy(remote);wrongProject.project_id='another-project';wrongProject.revision=8;
+    assert.equal(e.call('receiveAgentSettingsCanvas',wrongProject),false,'late response cannot enter another project');
+    assert.equal(e.live().revision,5);
+    assert.equal(await e.call('saveCanvas'),true);
+    const mutation=sent[1].body.mutations.find(m=>m.node?.id==='prompt');
+    assert.equal(mutation.node.text,'unsaved prompt');
+    assert.equal(mutation.node.promptEditedByUser,true);
+    assert.equal(sent[0].body.user_edit,true);
+});
+
 test('R4: old ack keeps compensating undo, later ack clears only accepted intent',async()=>{
     const e=editor();
     e.call('pushUndo');

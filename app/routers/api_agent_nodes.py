@@ -11,7 +11,11 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
-from app.routers.api_agent_tools import _find_node, _apply_mutations, _open_canvas, reset_generation_counts
+from app.services.agent_errors import agent_error
+from app.routers.api_agent_tools import (
+    _find_node, _snapshot_node, _apply_mutations, _apply_mutations_from_snapshot,
+    _open_canvas, reset_generation_counts,
+)
 
 # Resolve the main module without re-importing it (isolated-module test design).
 import sys as _sys
@@ -81,13 +85,49 @@ def _apply_node_host(project_id: str, node_id: str, session) -> None:
             session.ext_session_id = ext
 
 
-async def _update_node_field(project_id: str, node_id: str, field: str, value: Any):
-    """Update a single field on a node and persist (reuses retry-on-conflict helper)."""
-    node = _find_node(project_id, node_id)
-    node[field] = value
-    node["updated_at"] = _app_main.now_ms()
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
-    return node
+def _settings_user_edit(body: dict) -> bool:
+    """Settings accept an explicit author flag, never client ownership or time."""
+    reserved = {"createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser",
+                "created_at", "updated_at", "createdAt", "updatedAt"}
+    if reserved.intersection(body):
+        raise agent_error(400, "INVALID_ARGUMENT", "Ownership and timestamps are server-owned",
+                          "Remove ownership and timestamp fields; use user_edit=true for a manual change.")
+    user_edit = body.get("user_edit", False)
+    if type(user_edit) is not bool:
+        raise agent_error(400, "INVALID_ARGUMENT", "user_edit must be a boolean",
+                          "Omit user_edit or send the JSON boolean true or false.")
+    return user_edit
+
+
+async def _update_node_settings(project_id: str, node_id: str, build_fields, *, user_edit: bool = False):
+    """Rebuild the settings patch from each CAS snapshot, preserving ownership."""
+    _open_canvas(project_id)  # Preserve project-not-found behavior before the CAS loop.
+
+    def build(canvas):
+        node = _snapshot_node(canvas, node_id)
+        fields = build_fields(node)
+        if all(key in node and node[key] == value for key, value in fields.items()):
+            return []
+        updated = {**node, **fields, "updated_at": _app_main.now_ms()}
+        if user_edit:
+            updated["userTouchedAt"] = updated["updated_at"]
+        return [{"op": "upsert_node", "node": updated}]
+
+    await _apply_mutations_from_snapshot(project_id, build, source="")
+
+
+async def _update_node_field(project_id: str, node_id: str, field: str, value: Any, *, user_edit: bool = False):
+    await _update_node_settings(project_id, node_id, lambda _node: {field: value}, user_edit=user_edit)
+
+
+def _settings_canvas(project_id: str, *, allow_missing: bool = False):
+    """Return a fresh coherent snapshot; only session-only models allow absence."""
+    try:
+        return _open_canvas(project_id)
+    except HTTPException as exc:
+        if not allow_missing or exc.status_code != 404:
+            raise
+        return None
 
 
 async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: str) -> None:
@@ -326,6 +366,7 @@ async def set_agent_model(
     If the session is running, switches the model via pi RPC set_model command.
     Always persists the model to the node's attributes.
     """
+    user_edit = _settings_user_edit(body)
     model = body.get("model", "")
     # #343：模型名会进宿主 argv（--model / -m），不合白名单直接 400。
     from app.services.agent_host import validate_spawn_arg as _v343
@@ -333,9 +374,15 @@ async def set_agent_model(
         _v343("model", model, model=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # #285：会话优先。WS spawn 的会话不在持久画布 nodes 里，此前
-    # _update_node_field 先执行且找不到节点直接 404（用户实测 "Node not found:
-    # agent_probe2"），后面的 set_model 永远执行不到——选模型“无效”的根因。
+    # Session-only model changes remain supported, but a durable target deleted
+    # during CAS is an error, not a successful session-only request.
+    persisted = True
+    try:
+        _find_node(project_id, node_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        persisted = False
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if session.is_running:
         await agent_host_manager.set_model(session, model)
@@ -343,14 +390,8 @@ async def set_agent_model(
         # Update session model for next spawn
         session.model = model
 
-    # 持久化 best-effort：节点不在画布（纯会话）时不报错，只记 persisted=False。
-    persisted = True
-    try:
-        await _update_node_field(project_id, node_id, "model", model)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        persisted = False
+    if persisted:
+        await _update_node_field(project_id, node_id, "model", model, user_edit=user_edit)
 
     return {
         "success": True,
@@ -358,6 +399,7 @@ async def set_agent_model(
         "model": model,
         "is_running": session.is_running,
         "persisted": persisted,
+        "canvas": _settings_canvas(project_id, allow_missing=not persisted),
     }
 
 
@@ -375,12 +417,13 @@ async def set_agent_autonomy(
     scope changes immediately (next tool call); the system prompt suffix takes
     effect on next spawn.
     """
+    user_edit = _settings_user_edit(body)
     autonomy = body.get("autonomy", "")
     if autonomy not in ("cautious", "standard", "autonomous"):
         raise HTTPException(status_code=400, detail=f"Invalid autonomy level: {autonomy}")
 
     # Persist to node attributes
-    node = await _update_node_field(project_id, node_id, "autonomy", autonomy)
+    await _update_node_field(project_id, node_id, "autonomy", autonomy, user_edit=user_edit)
 
     # Update session autonomy (affects confirm gate scope immediately)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -390,6 +433,7 @@ async def set_agent_autonomy(
         "success": True,
         "node_id": node_id,
         "autonomy": autonomy,
+        "canvas": _settings_canvas(project_id),
     }
 
 
@@ -535,29 +579,27 @@ async def fork_session(
     entry_id: str = Body(...),
     name: str = Body(default=""),
     x_agent_project: str = Header(default=""),
+    request: Request = None,
 ):
     """Fork the conversation from a specific user message.
 
     Creates a new branch and persists the branch list to the node's attributes.
     """
+    user_edit = _settings_user_edit(await request.json() if request is not None else {})
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if not session.is_running:
         raise HTTPException(status_code=400, detail="Agent is not running")
 
-    # Get existing branches from node attributes
-    node = _find_node(project_id, node_id)
-    branches = node.get("branches") or []
-
-    # Track the original branch on the first fork (so it can be switched back to)
-    if not branches:
-        branches.append({
-            "id": "branch-original",
-            "name": "原始",
-            "session_file": session.session_file,
-            "session_id": session.session_id,
-            "fork_from_entry_id": None,
-            "created_at": _app_main.now_ms(),
-        })
+    _find_node(project_id, node_id)  # Fail before RPC if the target is already gone.
+    # Capture the pre-fork host identity once; the RPC changes the session.
+    original = {
+        "id": "branch-original",
+        "name": "原始",
+        "session_file": session.session_file,
+        "session_id": session.session_id,
+        "fork_from_entry_id": None,
+        "created_at": _app_main.now_ms(),
+    }
 
     # Perform the fork
     fork_info = await agent_host_manager.fork(session, entry_id)
@@ -575,20 +617,23 @@ async def fork_session(
         "fork_from_entry_id": entry_id,
         "created_at": _app_main.now_ms(),
     }
-    branches.append(branch)
+    def build_fields(node):
+        branches = list(node.get("branches") or [])
+        if not branches:
+            branches.append(original)
+        branches.append(branch)
+        return {"branches": branches, "current_branch": branch_id}
 
-    # Persist updated branches list and current_branch
-    node["branches"] = branches
-    node["current_branch"] = branch_id
-    node["updated_at"] = _app_main.now_ms()
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
-
+    await _update_node_settings(project_id, node_id, build_fields, user_edit=user_edit)
+    canvas = _settings_canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
     return {
         "success": True,
         "node_id": node_id,
         "branch": branch,
-        "branches": branches,
-        "current_branch": branch_id,
+        "branches": node["branches"],
+        "current_branch": node["current_branch"],
+        "canvas": canvas,
     }
 
 
@@ -596,10 +641,17 @@ async def fork_session(
 async def switch_branch(
     project_id: str,
     node_id: str,
-    branch_id: str = Body(...),
+    branch_id: Any = Body(...),
     x_agent_project: str = Header(default=""),
+    request: Request = None,
 ):
-    """Switch to a different conversation branch."""
+    """Switch branches; accept the legacy JSON string as well as an object."""
+    body = branch_id if isinstance(branch_id, dict) else {}
+    user_edit = _settings_user_edit(body)
+    branch_id = body.get("branch_id", "") if body else branch_id
+    if not isinstance(branch_id, str) or not branch_id:
+        raise agent_error(400, "INVALID_ARGUMENT", "branch_id must be a non-empty string",
+                          "Send the ID of an existing branch.")
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if not session.is_running:
         raise HTTPException(status_code=400, detail="Agent is not running")
@@ -620,16 +672,22 @@ async def switch_branch(
     if session_file:
         await agent_host_manager.switch_branch(session, session_file)
 
-    # Update current_branch in node attributes
-    node["current_branch"] = branch_id
-    node["updated_at"] = _app_main.now_ms()
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    def build_fields(node):
+        if not any(b.get("id") == branch_id for b in node.get("branches") or []):
+            raise agent_error(404, "NOT_FOUND", f"Branch not found: {branch_id}",
+                              "Read the latest canvas and choose an existing branch.")
+        return {"current_branch": branch_id}
 
+    await _update_node_settings(project_id, node_id, build_fields, user_edit=user_edit)
+    canvas = _settings_canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
+    branch = next((b for b in node.get("branches") or [] if b.get("id") == branch_id), branch)
     return {
         "success": True,
         "node_id": node_id,
-        "current_branch": branch_id,
+        "current_branch": node["current_branch"],
         "branch": branch,
+        "canvas": canvas,
     }
 
 

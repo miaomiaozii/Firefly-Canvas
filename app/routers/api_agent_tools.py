@@ -61,7 +61,7 @@ async def _apply_mutations(project_id: str, mutations: list):
     return await _apply_mutations_from_snapshot(project_id, lambda _canvas: mutations)
 
 
-async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Callable[[dict], list]):
+async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Callable[[dict], list], *, source: str = "agent"):
     """Rebuild read-modify-write patches from the same snapshot used for CAS.
 
     #243: after a successful commit, broadcast ``canvas_updated`` so every
@@ -80,7 +80,7 @@ async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Calla
             if not mutations:
                 return None
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
-            await _broadcast_canvas_updated(project_id, source="agent")
+            await _broadcast_canvas_updated(project_id, source=source)
             return result
         except RevisionConflict:
             # Revision conflict: another writer updated the canvas.

@@ -430,3 +430,20 @@ JimengPendingSignal）、canvas-image-editor.js 删 jimengImageEditMode 等编�
 全降（reverse_names -5、reverse_core_refs -8、core_dominant_names -4、
 core_dominant_core_refs -7），每模块棘轮同步收紧（generation-tasks 116→101、
 cascade 153→152、image-editor 89→87）。纯还债，无新耦合。
+
+### #392 A2 2b-1：反向行显式分类，不改计数（2026-11-17）
+
+A2 2a 相对之前的 253 个反向名字净增 2，到 a3fbcc4 为 255。保留真实职责：
+
+| 名字 | owner | 分类与理由 |
+|---|---|---|
+| `finalizePendingCanvasUndo` | `canvas-undo.js` | `hub`：撤销动作封口，不能为减数搬进纯 core |
+| `reconcileCanvasDeltaMediaReferences` | `canvas-media-history.js` | `util`：媒体物化身份到动作差量的纯变换 |
+| `refreshProjectMediaLibraryItems` | `canvas-undo.js` | `hub`：刷新权威项目媒体列表，有 I/O |
+
+`reverse_rows` 增加可见的 `category`；未分类仍明示 `unclassified`。分类不参与筛选、
+分组或计数，既有 `reverse_names`、引用总数及 pinned/棘轮断言均不改。
+**reverse 255，比 a3fbcc4 之前的 253 多 2，已分类，未消除。** 存量 pinned 漂移不在 A2 修。
+
+四个 Agent 设置响应通过 `receiveAgentSettingsCanvas`（`hub`）进入既有权威接收和 pending
+重放，不另造合并算法。该接口增加的引用按原口径计数，不因走 `canvasCore` 或已分类而豁免。

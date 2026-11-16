@@ -150,6 +150,22 @@ class CanvasCouplingReportTests(unittest.TestCase):
         )
 
 
+    def test_reverse_rows_expose_ownership_classification_without_filtering_counts(self):
+        rev = _cached_reverse()
+        rows = {row["name"]: row for row in rev["reverse_rows"]}
+        expected = {
+            "finalizePendingCanvasUndo": ("canvas-undo.js", "hub"),
+            "reconcileCanvasDeltaMediaReferences": ("canvas-media-history.js", "util"),
+            "refreshProjectMediaLibraryItems": ("canvas-undo.js", "hub"),
+        }
+        for name, (owner, category) in expected.items():
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]["owner"], owner)
+                self.assertEqual(rows[name]["category"], category)
+        self.assertEqual(rev["reverse_names"], len(rev["reverse_rows"]))
+        self.assertEqual(rev["reverse_core_refs"], sum(row["core_refs"] for row in rev["reverse_rows"]))
+        self.assertTrue(all("category" in row for row in rev["reverse_rows"]))
+
     def test_reverse_coupling_is_measurable_and_pinned(self):
         # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：

@@ -135,6 +135,11 @@ CATEGORY_BY_NAME = {
     "smartGroupContainingNode": "hub",
     "smartGroupImageRefs": "hub",
     "smartRecoverableImageTask": "hub",
+    # #392: classify the actual owner responsibilities, never filter the counts.
+    "finalizePendingCanvasUndo": "hub",
+    "reconcileCanvasDeltaMediaReferences": "util",
+    "refreshProjectMediaLibraryItems": "hub",
+    "receiveAgentSettingsCanvas": "hub",
     # --- 纯工具：应该下沉到 canvas-core.js，不该留在 smart-canvas.js ---
     "parseSizeValue": "util",
     # --- 共享可变状态 ---
@@ -435,7 +440,8 @@ def reverse_coupling() -> dict[str, object]:
                 continue
             own = _refs(own_tokens, name, 1 if name in own_declared else 0)
             rows.append(
-                {"name": name, "owner": module, "core_refs": in_core, "owner_refs": own}
+                {"name": name, "owner": module, "core_refs": in_core, "owner_refs": own,
+                 "category": CATEGORY_BY_NAME.get(name, "unclassified")}
             )
 
     dominant = [r for r in rows if r["core_refs"] > r["owner_refs"]]

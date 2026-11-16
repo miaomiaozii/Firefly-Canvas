@@ -15,9 +15,10 @@ function createImageNodeAt(point, images=[], options={}){
 }
 
 function createNode(x, y, images=[], options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
     const nodeImages = (images || []).map(img => ({...img}));
-    const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages, created_at:Date.now()};
+    const node = {...ownership, id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, title:nodeImages.length > 1 ? 'Group' : nodeImages.length ? 'Image' : tr('smart.createImportNode'), images:nodeImages};
     node.scale = nodeImages.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.mediaNodeDefaultScale(node);
     if(options.title) node.title = String(options.title);
     if(options.runMeta) canvasCore.attachRunMeta(node, options.runMeta);
@@ -33,9 +34,11 @@ function createNode(x, y, images=[], options={}){
 }
 
 function createPromptNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
     const providerId = canvasCore.resolveChatProviderId();
     const node = {
+        ...ownership,
         id:uid('prompt'),
         type:NODE_TYPE_PROMPT,
         x,
@@ -51,8 +54,7 @@ function createPromptNode(x, y, options={}){
         llmModel:canvasCore.resolveChatModel('', providerId),
         llmSystemEnabled:false,
         llmSystemPrompt:'You are a helpful prompt assistant.',
-        llmInstruction:'',
-        created_at:Date.now()
+        llmInstruction:''
     };
     if(options.title) node.title = String(options.title); // #256：OCR 落点可自定义标题
     if(options.sourceNodeId) node.source_node_id = String(options.sourceNodeId);
@@ -65,8 +67,10 @@ function createPromptNode(x, y, options={}){
 }
 
 function createConversationNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
     const node = {
+        ...ownership,
         id:uid('conversation'),
         type:NODE_TYPE_CONVERSATION,
         x,
@@ -74,8 +78,7 @@ function createConversationNode(x, y, options={}){
         w:390,
         h:430,
         title:'Conversation',
-        messages:[],
-        created_at:Date.now()
+        messages:[]
     };
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
@@ -85,8 +88,10 @@ function createConversationNode(x, y, options={}){
 }
 
 function createAgentNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
     const node = {
+        ...ownership,
         id:uid('agent'),
         type:NODE_TYPE_AGENT,
         x,
@@ -94,8 +99,7 @@ function createAgentNode(x, y, options={}){
         w:382,
         h:360,
         title:'Agent',
-        agentGoal:'',
-        created_at:Date.now()
+        agentGoal:''
     };
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
@@ -105,9 +109,10 @@ function createAgentNode(x, y, options={}){
 }
 
 function createLocalEditNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('local-edit'), type:NODE_TYPE_LOCAL_EDIT, x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
-        original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[], created_at:Date.now()};
+    const node = {...ownership, id:uid('local-edit'), type:NODE_TYPE_LOCAL_EDIT, x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
+        original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[]};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     canvasCore.render();
@@ -133,8 +138,9 @@ function createLocalEditNodeFromImage(nodeId, imageIndex=null){
 }
 
 function createLoopNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('loop'), type:NODE_TYPE_LOOP, x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:'', created_at:Date.now()};
+    const node = {...ownership, id:uid('loop'), type:NODE_TYPE_LOOP, x, y, w:340, h:168, title:'Loop', count:1, mode:'serial', showPrompt:false, imageInput:false, loopStart:1, imageBatchSize:1, variablePrompt:''};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     canvasCore.render();
@@ -143,8 +149,9 @@ function createLoopNode(x, y, options={}){
 }
 
 function createSmartGroupNode(x, y, options={}){
+    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
-    const node = {id:uid('group'), type:NODE_TYPE_GROUP, x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[], created_at:Date.now()};
+    const node = {...ownership, id:uid('group'), type:NODE_TYPE_GROUP, x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[]};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     canvasCore.render();

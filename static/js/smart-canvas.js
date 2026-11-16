@@ -10443,6 +10443,48 @@ function extractConversationSelection(){
     closeConversationExtractionMenu();
     flushImportantProjectMutation();
 }
+// #392: explicit Agent settings use the same authoritative receive/pending path.
+// A late request from a previous project must not enter the current editor.
+function receiveAgentSettingsCanvas(nextCanvas, edit=null){
+    if(!nextCanvas || !canvas || nextCanvas.id !== canvas.id
+        || nextCanvas.project_id !== canvas.project_id) return false;
+    const fields = (edit?.fields || []).filter(key => ['model','autonomy','branches','current_branch'].includes(key));
+    const remote = edit?.before && (nextCanvas.nodes || []).find(node => node.id === edit.before.id);
+    const sameField = (left, right, key) => key === 'branches' && edit.addedBranchId
+        ? [left, right].every(node => node.branches?.some(branch => branch.id === edit.addedBranchId))
+        : smartCanvasDataEqual(left[key], right[key]);
+    if(!applyMergedServerCanvas(nextCanvas)){
+        // A broadcast may already have accepted this operation and a later
+        // unrelated revision. Confirm its receipt against the pure authority,
+        // never adopt the stale HTTP canvas or leave the old branch UI behind.
+        const accepted = remote && smartCanvasServerShadow?.nodes?.find(node => node.id === remote.id);
+        if(!smartCanvasResponseIsStale(nextCanvas) || !accepted || !fields.length
+            || fields.some(key => !sameField(accepted, remote, key))) return false;
+    }
+    if(!edit?.before) return true;
+    const live = canvasState.nodes.find(node => node.id === edit.before.id);
+    // A later local action owns its own overlapping fields and protection.
+    if(!remote || !live || fields.some(key => !sameField(live, remote, key))) return false;
+    const before = {id:live.id}, after = {id:live.id};
+    for(const key of fields){
+        if(Object.prototype.hasOwnProperty.call(edit.before, key)) before[key] = smartCanvasDataClone(edit.before[key]);
+        if(Object.prototype.hasOwnProperty.call(remote, key)) after[key] = smartCanvasDataClone(remote[key]);
+        // Fork undo removes its own branch, never concurrent branch appends.
+        if(key === 'branches' && edit.addedBranchId && Array.isArray(live.branches)){
+            after.branches = smartCanvasDataClone(live.branches);
+            before.branches = after.branches.filter(branch => branch.id !== edit.addedBranchId);
+        }
+    }
+    if(smartCanvasDataEqual(before, after)) return true; // no-op, not a history step
+    if(smartCanvasDataEqual(live.userTouchedAt, remote.userTouchedAt)){
+        if(Object.prototype.hasOwnProperty.call(edit.before, 'userTouchedAt')) before.userTouchedAt = edit.before.userTouchedAt;
+        if(Object.prototype.hasOwnProperty.call(remote, 'userTouchedAt')) after.userTouchedAt = remote.userTouchedAt;
+    }
+    // Record only this confirmed action, after receive/replay. A full pre-request
+    // snapshot would also undo unrelated remote nodes or pending local content.
+    pushUndo({actionDeltaVersion:1, actionDelta:smartCanvasActionDelta({nodes:[before]}, {nodes:[after]})});
+    return true;
+}
 function applyConversationCanvasResponse(nextCanvas){
     if(!nextCanvas || typeof nextCanvas !== 'object') return false;
     const currentRevision = Number(canvas?.revision || 0);

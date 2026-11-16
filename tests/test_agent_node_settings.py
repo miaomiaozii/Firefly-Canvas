@@ -14,8 +14,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -591,6 +593,217 @@ class TestDefaultBehaviorRegression(unittest.TestCase):
         data = response.json()
         self.assertFalse(data["approved"], "Default (cautious) should wait for user")
         self.assertEqual(data["reason"], "timeout")
+
+
+class SettingsHost:
+    """Offline host boundary: no process, Pi configuration or network."""
+
+    def __init__(self):
+        self.effects = []
+        self.session = SimpleNamespace(is_running=True, model="old-model", autonomy="cautious",
+                                       session_file="original.jsonl", session_id="original")
+
+    async def get_or_create_session(self, *args):
+        self.effects.append("session")
+        return self.session
+
+    async def set_model(self, session, model):
+        self.effects.append("model")
+        session.model = model
+
+    async def fork(self, session, entry_id):
+        self.effects.append("fork")
+        session.session_file = "forked.jsonl"
+        session.session_id = "forked"
+        return {"session_file": "forked.jsonl", "session_id": "forked"}
+
+    async def switch_branch(self, session, session_file):
+        self.effects.append("switch")
+        session.session_file = session_file
+
+
+class TestAgentSettingsOwnership(unittest.TestCase):
+    """Approved seams: settings HTTP requests and public canvas persistence."""
+
+    def setUp(self):
+        from app.routers import api_agent_nodes
+        self.temp = tempfile.TemporaryDirectory(prefix="firefly-settings-392-")
+        self.store = ProjectStore(Path(self.temp.name) / "projects", snapshot_delay=0)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        self.project_id = self.store.create_project("Settings ownership")['id']
+        self.node = {"id": "settings-agent", "type": "smart-agent", "x": 0, "y": 0,
+                     "model": "old-model", "autonomy": "cautious", "prompt": "keep prompt",
+                     "createdBy": "agent", "agentNodeId": "creator", "userTouchedAt": None,
+                     "promptEditedByUser": False, "updated_at": 17,
+                     "branches": [{"id": "original", "session_file": "original.jsonl"},
+                                  {"id": "other", "session_file": "other.jsonl"}],
+                     "current_branch": "original"}
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": self.node}], base_revision=0)
+        self.host = SettingsHost()
+        self.host_patch = patch.object(api_agent_nodes, "agent_host_manager", self.host)
+        self.host_patch.start()
+        self.client = TestClient(main.app, base_url="http://127.0.0.1:3115",
+                                 headers={"origin": "http://127.0.0.1:3115"})
+
+    def tearDown(self):
+        self.client.close()
+        self.host_patch.stop()
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp.cleanup()
+
+    def post_setting(self, endpoint, body, node_id="settings-agent"):
+        return self.client.post(f"/api/projects/{self.project_id}/agent-nodes/{node_id}/{endpoint}", json=body)
+
+    def test_manual_model_change_preserves_provenance_and_returns_authoritative_canvas(self):
+        broadcasts = []
+
+        async def broadcast(project_id, updated_at, source=""):
+            broadcasts.append(source)
+
+        with patch.object(main.manager, "broadcast_canvas_updated", broadcast), patch.object(main, "now_ms", return_value=123456):
+            response = self.post_setting("model", {"model": "new-model", "user_edit": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        persisted = self.store.canvas(self.project_id)
+        node = next(n for n in persisted["nodes"] if n["id"] == "settings-agent")
+        self.assertEqual(node["userTouchedAt"], 123456)
+        self.assertEqual((node["createdBy"], node["agentNodeId"], node["promptEditedByUser"]),
+                         ("agent", "creator", False))
+        self.assertEqual(node["prompt"], "keep prompt")
+        self.assertEqual(node["model"], "new-model")
+        self.assertTrue(data["success"])
+        self.assertTrue(data["persisted"])
+        self.assertEqual(data["model"], "new-model")
+        self.assertEqual(data["canvas"], persisted)
+        self.assertEqual(broadcasts, [""])
+
+    def test_manual_settings_stamp_only_actual_changes_not_automatic_or_noop(self):
+        for endpoint, automatic, manual, server_time in (("model", "automatic-model", "manual-model", 456789),
+                                                         ("autonomy", "standard", "autonomous", 987654)):
+            with self.subTest(endpoint=endpoint):
+                response = self.post_setting(endpoint, {endpoint: automatic, "user_edit": False})
+                self.assertEqual(response.status_code, 200, response.text)
+                node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "settings-agent")
+                previous_touch = node["userTouchedAt"]
+                self.assertEqual(previous_touch, None if endpoint == "model" else 456789)
+                with patch.object(main, "now_ms", return_value=server_time):
+                    response = self.post_setting(endpoint, {endpoint: manual, "user_edit": True})
+                self.assertEqual(response.status_code, 200, response.text)
+                canvas = self.store.canvas(self.project_id)
+                node = next(n for n in canvas["nodes"] if n["id"] == "settings-agent")
+                self.assertEqual(node["userTouchedAt"], server_time)
+                self.assertEqual((node["createdBy"], node["agentNodeId"], node["promptEditedByUser"]),
+                                 ("agent", "creator", False))
+                self.assertEqual(response.json()["canvas"], canvas)
+                response = self.post_setting(endpoint, {endpoint: manual, "user_edit": True})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["canvas"], canvas)
+                self.assertEqual(self.store.canvas(self.project_id), canvas)
+                response = self.post_setting(endpoint, {endpoint: automatic})
+                self.assertEqual(response.status_code, 200, response.text)
+                node = next(n for n in response.json()["canvas"]["nodes"] if n["id"] == "settings-agent")
+                self.assertEqual(node["userTouchedAt"], server_time)
+
+    def test_session_only_model_does_not_create_canvas_identity(self):
+        before = self.store.canvas(self.project_id)
+        response = self.post_setting("model", {"model": "session-model", "user_edit": True}, node_id="session-only")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["persisted"])
+        self.assertTrue(response.json()["is_running"])
+        self.assertEqual(response.json()["model"], "session-model")
+        self.assertEqual(response.json()["canvas"], before)
+        self.assertEqual(self.store.canvas(self.project_id), before)
+        # A fake stopped host session needs no concrete AgentSession members.
+        self.host.session.is_running = False
+        response = self.client.post("/api/projects/no-such-project/agent-nodes/session-only/model",
+                                    json={"model": "offline-model", "user_edit": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["persisted"])
+        self.assertIsNone(response.json()["canvas"])
+        self.assertEqual(self.host.session.model, "offline-model")
+
+    def test_tool_broadcast_stays_agent_while_settings_use_empty_source(self):
+        broadcasts = []
+
+        async def broadcast(project_id, updated_at, source=""):
+            broadcasts.append(source)
+
+        with patch.object(main.manager, "broadcast_canvas_updated", broadcast):
+            response = self.client.patch(f"/api/projects/{self.project_id}/canvas/nodes/settings-agent",
+                                         json={"title": "tool title"})
+            self.assertEqual(response.status_code, 200, response.text)
+            for endpoint, body in (("model", {"model": "new-model"}),
+                                   ("autonomy", {"autonomy": "standard"}),
+                                   ("fork", {"entry_id": "entry-1", "name": "manual"}),
+                                   ("switch-branch", {"branch_id": "other"})):
+                response = self.post_setting(endpoint, {**body, "user_edit": True})
+                self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(broadcasts, ["agent", "", "", "", ""])
+        node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "settings-agent")
+        self.assertEqual(node["title"], "tool title")
+
+    def test_first_automatic_fork_keeps_original_host_identity_without_user_touch(self):
+        node = {**self.node, "branches": [], "promptEditedByUser": True}
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}], base_revision=1)
+        with patch.object(main, "now_ms", return_value=2468):
+            response = self.post_setting("fork", {"entry_id": "entry-1", "name": "automatic"})
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["branches"][0], {"id": "branch-original", "name": "原始",
+                         "session_file": "original.jsonl", "session_id": "original",
+                         "fork_from_entry_id": None, "created_at": 2468})
+        self.assertEqual(len(data["branches"]), 2)
+        self.assertEqual(data["branch"]["session_file"], "forked.jsonl")
+        self.assertEqual(data["branch"]["fork_from_entry_id"], "entry-1")
+        canvas = self.store.canvas(self.project_id)
+        self.assertEqual(data["canvas"], canvas)
+        persisted = next(n for n in canvas["nodes"] if n["id"] == "settings-agent")
+        self.assertEqual((persisted["createdBy"], persisted["agentNodeId"], persisted["userTouchedAt"], persisted["promptEditedByUser"]),
+                         ("agent", "creator", None, True))
+        response = self.post_setting("fork", {"entry_id": "entry-2", "name": "automatic again", "user_edit": False})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()["branches"]), 3)
+        self.assertIsNone(response.json()["canvas"]["nodes"][0]["userTouchedAt"])
+
+    def test_cancelled_fork_and_failed_host_rpc_leave_durable_values_and_touch_unchanged(self):
+        async def cancelled(session, entry_id):
+            return {"cancelled": True}
+
+        async def failed(*args):
+            raise HTTPException(status_code=502, detail="offline fake host failure")
+
+        before = self.store.canvas(self.project_id)
+        with patch.object(self.host, "fork", cancelled):
+            response = self.post_setting("fork", {"entry_id": "entry-1", "name": "cancelled", "user_edit": True})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.store.canvas(self.project_id), before)
+        for endpoint, method, body in (("model", "set_model", {"model": "new-model"}),
+                                        ("switch-branch", "switch_branch", {"branch_id": "other"})):
+            with self.subTest(endpoint=endpoint), patch.object(self.host, method, failed):
+                response = self.post_setting(endpoint, {**body, "user_edit": True})
+                self.assertEqual(response.status_code, 502, response.text)
+                self.assertEqual(self.store.canvas(self.project_id), before)
+
+    def test_contract_rejects_invalid_edit_context_before_host_effects(self):
+        requests = [("model", {"model": "new-model"}),
+                    ("autonomy", {"autonomy": "standard"}),
+                    ("fork", {"entry_id": "entry-1", "name": "new branch"}),
+                    ("switch-branch", {"branch_id": "other"})]
+        invalid = [{"user_edit": value} for value in (None, "true", "false", 0, 1, [], {})]
+        invalid += [{key: value} for key, value in (("createdBy", "user"), ("agentNodeId", "injected"),
+                    ("userTouchedAt", 123), ("promptEditedByUser", True), ("updated_at", 123),
+                    ("created_at", 123))]
+        before = self.store.canvas(self.project_id)
+        for endpoint, body in requests:
+            for injection in invalid:
+                with self.subTest(endpoint=endpoint, injection=injection):
+                    response = self.post_setting(endpoint, {**body, **injection})
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertEqual(response.json()["detail"]["code"], "INVALID_ARGUMENT")
+                    self.assertFalse(self.host.effects)
+                    self.assertEqual(self.store.canvas(self.project_id), before)
 
 
 if __name__ == "__main__":

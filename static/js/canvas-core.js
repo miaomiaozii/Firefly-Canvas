@@ -198,7 +198,9 @@ function smartNodeOwnership(node){
     };
 }
 
-function smartNewNodeOwnership(node, {createdBy='user', agentNodeId=null}={}){
+function smartNewNodeOwnership(node, creation={}){
+    if(!smartCanvasDataObject(creation)) throw new TypeError('Node creation context must be an object');
+    const {createdBy='user', agentNodeId=null} = creation;
     if(createdBy !== 'user' && createdBy !== 'agent') throw new TypeError('Invalid node creation source');
     if(createdBy === 'agent' && (typeof agentNodeId !== 'string' || !agentNodeId.trim())) throw new TypeError('Agent creation requires a nonblank Agent node ID');
     return {
@@ -220,26 +222,63 @@ function smartHumanEditedNode(before, after, {prompt=false, at}={}){
         if(Object.prototype.hasOwnProperty.call(before || {}, key)) result[key] = smartCanvasDataClone(before[key]);
         else delete result[key];
     });
-    // Match the durable-node seam without depending on the higher mutations
-    // module. Unknown persisted fields still count; known runtime/preview fields
-    // do not (the returned clone keeps them, this is comparison only).
-    const transientKeys = ['running', 'pending', 'queued', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'];
-    const mediaContent = item => smartCanvasDataObject(item)
-        ? Object.fromEntries(Object.keys(item).filter(key => !['_naturalSizeLoading', 'layout_w', 'layout_h'].includes(key)).map(key => [key, item[key]])) : item;
-    const content = node => {
-        const clean = Object.fromEntries(Object.keys(node || {}).filter(key => !ownershipKeys.includes(key) && !transientKeys.includes(key)).map(key => [key, node[key]]));
-        if(Array.isArray(clean.images)) clean.images = clean.images.map(mediaContent);
-        if(clean.inputImage) clean.inputImage = mediaContent(clean.inputImage);
-        return clean;
-    };
-    if(smartCanvasDataEqual(content(before), content(after))) return result;
+    if(smartCanvasDataEqual(smartHumanEditContent(before), smartHumanEditContent(after))) return result;
     const timestamp = at === undefined ? Date.now() : at;
     if(typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0) throw new TypeError('Human edit timestamp must be nonnegative epoch milliseconds');
     result.userTouchedAt = timestamp;
-    const promptKeys = ['text', 'prompt', 'promptDraftHtml', 'promptDraftText', 'llmSystemPrompt', 'llmInstruction', 'variablePrompt', 'variablePrompts'];
-    const promptContent = node => Object.fromEntries(promptKeys.filter(key => Object.prototype.hasOwnProperty.call(node || {}, key)).map(key => [key, node[key]]));
-    if(prompt && !smartCanvasDataEqual(promptContent(before), promptContent(after))) result.promptEditedByUser = true;
+    if(prompt && !smartCanvasDataEqual(smartHumanEditContent(before, {prompt:true}), smartHumanEditContent(after, {prompt:true}))) result.promptEditedByUser = true;
     return result;
+}
+
+// Default durable comparison shared with the phase 2a helper. An injected
+// storage projection is already durable: exclude ownership, not its other keys.
+function smartHumanEditContent(node, {transient=true, prompt=false}={}){
+    const ownershipKeys = ['createdBy', 'agentNodeId', 'userTouchedAt', 'promptEditedByUser'];
+    const transientKeys = ['running', 'pending', 'queued', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'];
+    const promptKeys = ['text', 'prompt', 'promptDraftHtml', 'promptDraftText', 'llmSystemPrompt', 'llmInstruction', 'variablePrompt', 'variablePrompts'];
+    const clean = Object.fromEntries(Object.keys(node || {}).filter(key => !ownershipKeys.includes(key)
+        && (!transient || !transientKeys.includes(key)) && (!prompt || promptKeys.includes(key))).map(key => [key, node[key]]));
+    if(transient){
+        const mediaContent = item => smartCanvasDataObject(item)
+            ? Object.fromEntries(Object.keys(item).filter(key => !['_naturalSizeLoading', 'layout_w', 'layout_h'].includes(key)).map(key => [key, item[key]])) : item;
+        if(Array.isArray(clean.images)) clean.images = clean.images.map(mediaContent);
+        if(clean.inputImage) clean.inputImage = mediaContent(clean.inputImage);
+    }
+    return clean;
+}
+
+// Explicit action scope, not a canvas-wide diff. No pending/save/undo side effects.
+// `fields` lists top-level persisted node fields, AFTER the injected node projection.
+function smartHumanEditFields(node, fields){
+    const content = smartHumanEditContent(node, {transient:false});
+    return fields === undefined ? content : Object.fromEntries(fields
+        .filter(key => Object.prototype.hasOwnProperty.call(content, key)).map(key => [key, content[key]]));
+}
+// The caller must inject its actual storage projector; guessing here would
+// stamp UI caches (for example _leBusy) that never reach durable storage.
+function beginSmartHumanEdit(nodes, {prompt=false, at, fields, project}={}){
+    if(fields !== undefined && (!Array.isArray(fields) || fields.some(key => typeof key !== 'string' || !key))) throw new TypeError('Human edit fields must be node field names');
+    if(typeof project !== 'function') throw new TypeError('Human edit projection must be a function');
+    return {targets:nodes.map(node => ({id:node.id, before:smartCanvasDataClone(smartHumanEditFields(project(node), fields))})), prompt:prompt === true, at, fields:smartCanvasDataClone(fields), project};
+}
+function finishSmartHumanEdit(action, liveNodes){
+    const edits = [];
+    for(const target of action.targets){
+        const node = liveNodes.find(item => item.id === target.id);
+        if(!node) continue;
+        const after = smartHumanEditFields(action.project(node), action.fields);
+        if(smartCanvasDataEqual(target.before, after)) continue;
+        const prompt = action.prompt && !smartCanvasDataEqual(smartHumanEditContent(target.before, {prompt:true, transient:false}), smartHumanEditContent(after, {prompt:true, transient:false}));
+        edits.push({node, prompt});
+    }
+    if(!edits.length) return false;
+    const timestamp = action.at === undefined ? Date.now() : action.at;
+    if(typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0) throw new TypeError('Human edit timestamp must be nonnegative epoch milliseconds');
+    edits.forEach(({node, prompt}) => {
+        node.userTouchedAt = timestamp;
+        if(prompt) node.promptEditedByUser = true;
+    });
+    return true;
 }
 
 // #392: pure action deltas. Paths use [collection, {id}, ...fieldNames],
