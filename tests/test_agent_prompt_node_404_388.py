@@ -82,6 +82,77 @@ class TestPromptNode404_388(unittest.TestCase):
         self.assertTrue(r.json().get("success"))
         spawn.assert_not_called()  # 已 running 不再 spawn（原语义保持）
 
+    def test_ws_prompt_ghost_node_no_spawn(self):
+        # #388 补充（review 裁定）：WS 兜底 prompt 路径同样不得为不存在节点 spawn。
+        class _Session:
+            node_id = "ghost-ws"
+            is_running = False
+            session_id = "s"
+            status = "stopped"
+            model = ""
+            autonomy = "cautious"
+            agent_cli = "pi"
+            ext_session_id = ""
+            event_handlers = []
+
+        async def _fake_goc(*a, **k):
+            return _Session()
+
+        with patch.object(api_agent_nodes.agent_host_manager,
+                          "get_or_create_session", _fake_goc), \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "spawn_session") as spawn, \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "send_prompt") as send:
+            with self.client.websocket_connect(
+                    f"/api/projects/{self.project_id}/agent-nodes/ghost-ws/stream",
+                    headers={"origin": "http://127.0.0.1", "host": "127.0.0.1"}) as ws:
+                ws.receive_json()  # session 首帧
+                ws.send_json({"type": "prompt", "message": "hello"})
+                msg = ws.receive_json()
+        self.assertEqual(msg.get("type"), "error", msg)
+        spawn.assert_not_called()
+        send.assert_not_called()
+
+    def test_ws_prompt_existing_agent_node_still_spawns(self):
+        # #317 语义保持：canvas 上有 agent 节点且会话未 running → WS 兜底仍可拉起。
+        class _Session:
+            node_id = "agent-real"
+            is_running = False
+            session_id = "s"
+            status = "stopped"
+            model = ""
+            autonomy = "cautious"
+            agent_cli = "pi"
+            ext_session_id = ""
+            event_handlers = []
+
+        calls = []
+
+        async def _fake_goc(*a, **k):
+            return _Session()
+
+        async def _fake_spawn(session):
+            calls.append("spawn")
+            return True
+
+        async def _fake_send(session, message, images):
+            calls.append("send")
+
+        with patch.object(api_agent_nodes.agent_host_manager,
+                          "get_or_create_session", _fake_goc), \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "spawn_session", _fake_spawn), \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "send_prompt", _fake_send):
+            with self.client.websocket_connect(
+                    f"/api/projects/{self.project_id}/agent-nodes/agent-real/stream",
+                    headers={"origin": "http://127.0.0.1", "host": "127.0.0.1"}) as ws:
+                ws.receive_json()
+                ws.send_json({"type": "prompt", "message": "hello"})
+                ws.close()
+        self.assertEqual(calls, ["spawn", "send"])
+
 
 if __name__ == "__main__":
     unittest.main()

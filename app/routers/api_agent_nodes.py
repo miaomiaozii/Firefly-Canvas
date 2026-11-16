@@ -691,6 +691,13 @@ async def agent_event_stream(
                 message = command.get("message", "")
                 images = command.get("images", [])
                 if message:
+                    # #388：WS 兜底路径同样不得为不存在节点创建/spawn（与 REST /prompt 同口径）。
+                    try:
+                        _find_node(project_id, node_id)
+                    except Exception:
+                        await websocket.send_json({"type": "error",
+                                                   "message": f"Node not found: {node_id}"})
+                        continue
                     if not session.is_running: # #317：WS 兜底路径也按需拉起（主路径是 REST /prompt）
                         if not await agent_host_manager.spawn_session(session):
                             await websocket.send_json({"type": "error", "message": "Failed to start agent session"})
