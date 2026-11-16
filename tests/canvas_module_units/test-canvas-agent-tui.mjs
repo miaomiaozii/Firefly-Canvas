@@ -1052,19 +1052,20 @@ test('agentNodeBodyHtml: #322 思考 inline 折叠——默认收起不展开，
     evaluate(ctx, 'const s = getAgentTuiState("n1"); s.thinking = [{text:"<i>私密</i>"}]');
     const collapsed = fromContext(body({ id: 'n1', type: 'agent' }));
     assert.ok(collapsed.includes('agent-tui-thought'), 'live thinking 必须渲染为 inline details（默认收起）');
-    assert.ok(!collapsed.includes('agent-tui-thought agent-tui-thought-live" open'), '默认不得带 open');
+    assert.doesNotMatch(collapsed, /<details[^>]*agent-tui-thought[^>]*\sopen(?:\s|>)/, '默认不得带 open');
     assert.ok(collapsed.includes('&lt;i&gt;私密&lt;/i&gt;'), collapsed);
     evaluate(ctx, 'getAgentTuiState("n1").thinkingVisible = true');
     const opened = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.ok(opened.includes('agent-tui-thought agent-tui-thought-live" open'), opened);
+    assert.match(opened, /<details[^>]*agent-tui-thought-live[^>]*\sopen>/);
     // 已归档思考（role=thinking 消息）同样 inline details，默认收起
     evaluate(ctx, 'getAgentTuiState("n1").thinking = []; getAgentTuiState("n1").thinkingVisible = false; getAgentTuiState("n1").messages.push({role:"thinking", text:"旧思考<b>"})');
     const arc = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.ok(arc.includes('<details class="agent-tui-thought">'), arc);
+    assert.match(arc, /<details class="agent-tui-thought"[^>]*>/);
+    assert.ok(!arc.includes('思考中'), '清空 live thinking 后不得残留旧条目');
     assert.ok(arc.includes('旧思考&lt;b&gt;'), arc);
 });
 
-test('agentNodeBodyHtml: #322 工具段按轮分组折叠（已执行 N 步 · 总 X.Xs）+ 耗时展示', () => {
+test('agentNodeBodyHtml: #322/D2 工具段分轮、首调用稳定 key、默认折叠 + 耗时展示', () => {
     const { ctx } = loadAgentTuiModule();
     const body = fn(ctx, 'agentNodeBodyHtml');
     evaluate(ctx, `(() => {
@@ -1074,16 +1075,17 @@ test('agentNodeBodyHtml: #322 工具段按轮分组折叠（已执行 N 步 · �
         s.toolActivities.set("b1", {name:"shell",status:"done",args:null,result:"y",isError:false,turn:2,duration_ms:500});
     })()`);
     const html = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.ok(html.includes('data-tool-group="1"'), html);
-    assert.ok(html.includes('已执行 2 步 · 总 1.5s'), html);
-    assert.ok(html.includes('data-tool-group="2"'), html);
-    assert.ok(html.includes('已执行 1 步 · 总 0.5s'), html);
+    assert.ok(html.includes('data-tool-group="tools:a1"'), html);
+    assert.ok(html.includes('执行了 2 个步骤 · 总 1.5s'), html);
+    assert.ok(html.includes('data-tool-group="tools:b1"'), html);
+    assert.ok(html.includes('执行了 1 个步骤 · 总 0.5s'), html);
     assert.ok(html.includes('agent-tui-tool-duration">1.2s'), html);
-    // 运行中的段：默认展开且文案切换
+    // D2：运行中也默认折叠，不能丢失步骤数。
     evaluate(ctx, 'getAgentTuiState("n1").toolActivities.set("c9", {name:"shell",status:"running",args:null,result:null,isError:false,turn:3,duration_ms:null})');
     const running = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.ok(running.includes(' open data-tool-group="3"'), running);
-    assert.ok(running.includes('执行中 1 步…'), running);
+    assert.match(running, /<details class="agent-tui-tool-group agent-tui-tool-group-running" data-tool-group="tools:c9">/);
+    assert.ok(running.includes('1 个步骤执行中…'), running);
+    assert.ok(!running.includes('执行了 1 个步骤 · 执行中…'), '进行中的调用不能计入已执行数量');
 });
 
 test('agentNodeBodyHtml: #322 todo 工具卡渲染 checklist（☐/▶/☑），无列表数据不渲染', () => {
@@ -1446,7 +1448,7 @@ function buildAgentControlTree(harness) {
     const bodyEl = harness.makeElement('div');
     const toolRow = harness.makeElement('div');
     toolRow.setAttribute('data-tool-call-id', 'c1');
-    el.querySelectorAll = (sel) => (sel === '[data-tool-call-id]' ? [toolRow] : []);
+    el.querySelectorAll = (sel) => ({ '[data-tool-call-id]': [toolRow], '[data-agent-abort]': [abort] }[sel] || []);
     el.querySelector = (sel) => ({
         '[data-agent-tui-input]': input,
         '[data-agent-thinking]': thinking,
@@ -2307,4 +2309,552 @@ test('#407 D1-v2 按钮 HTML：展开/收起文案读内存 Set，不读矛盾�
     const floating = fn(ctx, 'agentDockButtonsHtml')(node);
     assert.ok(floating.includes('data-agent-dock-side="left"') && floating.includes('data-agent-dock-side="right"'));
     assert.ok(!floating.includes('data-agent-dock-collapse') && !floating.includes('data-agent-dock-undock'));
+});
+
+// D2 fixtures prove the consumer/reload boundary only: there is no agentRun producer.
+const d2Node = () => ({ id: 'n1', type: 'smart-agent', title: 'Agent' });
+const d2Drain = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
+const d2Text = (text, thinking = false) => ({ type: 'message_update', assistantMessageEvent: { type: thinking ? 'thinking_delta' : 'text_delta', delta: text } });
+const d2Tool = id => ({ type: 'tool_execution_start', toolCallId: id, toolName: `tool-${id}`, args: {} });
+
+for (const state of ['空闲', '澄清', '计划预览', '执行中', '批量确认', '失败自处理', '等待用户', '已停止', '完成']) {
+    test(`#408 D2 agentRun 消费/JSON reload fixture: ${state}`, () => {
+        const { ctx } = loadAgentTuiModule();
+        const node = { ...d2Node(), agentRun: { state, plan_id: 'p1', batch_id: 'b1', step: 2, total: 8 } };
+        const before = JSON.stringify(node);
+        const render = fn(ctx, 'agentProgressHtml');
+        const html = render(node);
+        assert.equal(render(JSON.parse(before)), html, '仅证明 JSON 快照刷新消费');
+        assert.equal(JSON.stringify(node), before, '消费端不得写业务快照');
+        if (state === '空闲') assert.equal(html, '');
+        else {
+            assert.ok(html.includes(`${state} · 2/8`));
+            assert.ok(html.includes('width:25%'));
+            assert.ok(html.includes('data-agent-progress="n1"'));
+            assert.ok(!html.includes('主图') && !html.includes('A+') && !html.includes('failure_count'));
+        }
+    });
+}
+
+test('#408 D2 缺失/非法快照隐藏，非法计数只显示真实状态、不推算比例', () => {
+    const { ctx } = loadAgentTuiModule();
+    const render = fn(ctx, 'agentProgressHtml');
+    for (const agentRun of [undefined, null, [], '执行中', {}, { state: 'busy', step: 1, total: 2 }, { state: '执行中<script>' }]) {
+        assert.equal(render({ ...d2Node(), agentRun }), '');
+    }
+    for (const [step, total] of [[null, 2], [undefined, 2], [NaN, 2], [Infinity, 2], ['1', 2], [1.1, 2], [-1, 2], [3, 2], [0, 0], [0, -1], [0, Infinity], [0, '2']]) {
+        const html = render({ ...d2Node(), agentRun: { state: '执行中', step, total } });
+        assert.match(html, /agent-tui-progress-label">执行中<\/span>/);
+        assert.ok(!html.includes('agent-tui-progress-fill'));
+        assert.doesNotMatch(html, /\d+\/\d+/);
+    }
+    const st = fn(ctx, 'getAgentTuiState')('n1');
+    st.status = 'busy'; st.retryCount = 5; st._turnSeq = 9;
+    st.toolActivities.set('x', { status: 'running' });
+    assert.equal(render(d2Node()), '', '工具/重连/回合数不是计划进度');
+});
+
+test('#408 D2 时间线按消息/工具/思考交错，连续组、原位更新、回合和系统边界', () => {
+    const { ctx } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const events = [
+        { type: 'agent_start' }, { type: 'user_prompt', text: '用户甲' }, d2Text('助手甲'),
+        d2Tool('a'), d2Tool('b'), d2Text('思考甲', true), d2Text('思考乙', true),
+        d2Tool('c'), d2Text('助手乙'), d2Tool('d'),
+    ];
+    events.forEach(event => handle('n1', event));
+    const timeline = () => fromContext(fn(ctx, 'agentTimelineSync')(state).map(entry => entry.kind === 'tools' ? entry.items.map(item => item.toolCallId).join(',') : entry.message.text));
+    assert.deepEqual(timeline(), ['用户甲', '助手甲', 'a,b', '思考甲思考乙', 'c', '助手乙', 'd']);
+    const keys = fromContext(state.timeline.map(entry => entry.key));
+    handle('n1', { type: 'tool_execution_update', toolCallId: 'a', update: 'later' });
+    handle('n1', { type: 'tool_execution_end', toolCallId: 'a', result: 'done', duration_ms: 0 });
+    handle('n1', d2Tool('a')); // repeated start must not erase completion/expansion
+    assert.equal(state.toolActivities.get('a').status, 'done');
+    assert.deepEqual(fromContext(state.timeline.map(entry => entry.key)), keys);
+    handle('n1', { type: 'turn_end', message: { content: [{ type: 'text', text: '助手乙' }] } });
+    assert.equal(state.messages.filter(message => message.text === '助手乙').length, 1, '工具结束不能导致 turn_end 重复正文');
+    fn(ctx, 'sendAgentSteer')('n1', 'p', '系统边界');
+    handle('n1', d2Tool('e'));
+    handle('n1', { type: 'agent_start' });
+    handle('n1', d2Tool('f'));
+    assert.deepEqual(fromContext(state.timeline.filter(entry => entry.kind === 'tools').map(entry => entry.key)), ['tools:a', 'tools:c', 'tools:d', 'tools:e', 'tools:f']);
+    const html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    const positions = ['用户甲', '助手甲', 'data-tool-call-id="a"', '思考甲思考乙', 'data-tool-call-id="c"', '助手乙'].map(text => html.indexOf(text));
+    assert.ok(positions.every((position, i) => position >= 0 && (!i || position > positions[i - 1])));
+    assert.doesNotMatch(html, /<details[^>]*agent-tui-tool-group[^>]*\sopen>/);
+});
+
+test('#408 D2 思考归档位置/手动展开跨流式刷新保留，全局 brain 开关仍可重置', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    handle('n1', d2Text('<think>', true));
+    let html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.ok(html.includes('思考中') && html.includes('&lt;think&gt;'));
+    assert.doesNotMatch(html, /思考(?:中|了)\s*\d/);
+    const key = state.timeline[0].key;
+    const tree = buildAgentControlTree(harness);
+    const thought = harness.makeElement('details');
+    thought.setAttribute('data-agent-thought', key);
+    const originalQuery = tree.el.querySelectorAll;
+    tree.el.querySelectorAll = selector => selector === '[data-agent-thought]' ? [thought] : originalQuery(selector);
+    fn(ctx, 'bindAgentNodeControls')(tree.el, d2Node());
+    thought.open = true; thought.dispatchEvent(ev('toggle'));
+    handle('n1', d2Text(' more', true));
+    html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.match(html, /data-agent-thought="entry:1" open>/);
+    handle('n1', d2Tool('a'));
+    handle('n1', { type: 'turn_end' });
+    html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.equal((html.match(/data-agent-thought=/g) || []).length, 1);
+    assert.ok(html.includes('思考了') && !html.includes('思考中'));
+    assert.match(html, /data-agent-thought="entry:1" open>/);
+    assert.ok(html.indexOf('data-agent-thought') < html.indexOf('data-tool-group'));
+    tree.thinking.dispatchEvent(ev('click'));
+    tree.thinking.dispatchEvent(ev('click'));
+    html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.doesNotMatch(html, /<details[^>]*agent-tui-thought[^>]*\sopen>/);
+});
+
+for (const duration of [undefined, null, NaN, Infinity, -1, '10', {}, 0, 1500]) {
+    test(`#408 D2 工具 duration 不把 ${String(duration)} 伪装成 0`, () => {
+        const { ctx } = loadAgentTuiModule();
+        const handle = fn(ctx, 'handleAgentEvent');
+        handle('n1', d2Tool('a'));
+        handle('n1', { type: 'tool_execution_end', toolCallId: 'a', duration_ms: duration });
+        const html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+        const known = typeof duration === 'number' && Number.isFinite(duration) && duration >= 0;
+        assert.equal(html.includes('agent-tui-tool-duration'), known);
+        assert.equal(html.includes(' · 总 '), known);
+        if (duration === 0) assert.ok(html.includes('总 0.0s'));
+        handle('n1', d2Tool('b'));
+        handle('n1', { type: 'tool_execution_end', toolCallId: 'b', isError: true });
+        const partial = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+        assert.ok(!partial.includes(' · 总 '), '部分计时不得显示总时长');
+        assert.ok(partial.includes('agent-tui-tool-error') && partial.includes('1 失败'));
+    });
+}
+
+test('#408 D2 组/工具展开、长输出与 todo 原内容保留；跳转仅现存 args ID', () => {
+    const { ctx, harness } = loadAgentTuiModule({ nodes: [d2Node(), { id: 'target' }] });
+    const handle = fn(ctx, 'handleAgentEvent');
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    handle('n1', { ...d2Tool('a'), args: { node_id: 'target', node_ids: ['missing', 'target', null] } });
+    handle('n1', { type: 'tool_execution_end', toolCallId: 'a', result: '<result>' + 'x'.repeat(601), duration_ms: 1 });
+    let html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.equal((html.match(/data-agent-step-jump=/g) || []).length, 1);
+    assert.ok(html.includes('data-agent-step-jump="target"'));
+    assert.ok(html.includes('agent-tui-tool-result-clamped') && html.includes('&lt;result&gt;'));
+    assert.deepEqual(fromContext(fn(ctx, 'agentToolNodeIds')(null)), []);
+    const el = harness.makeElement('div');
+    const group = harness.makeElement('details'); group.setAttribute('data-tool-group', 'tools:a');
+    const output = harness.makeElement('button'); output.setAttribute('data-expand-output', 'a');
+    const jump = harness.makeElement('button'); jump.setAttribute('data-agent-step-jump', 'target');
+    el.querySelectorAll = selector => ({ '[data-tool-group]': [group], '[data-expand-output]': [output], '[data-agent-step-jump]': [jump] }[selector] || []);
+    const focused = []; ctx.focusRevealNode = id => focused.push(id);
+    fn(ctx, 'bindAgentNodeControls')(el, d2Node());
+    group.open = true; group.dispatchEvent(ev('toggle'));
+    output.dispatchEvent(ev('click'));
+    handle('n1', { type: 'tool_execution_update', toolCallId: 'a', update: 'stream' });
+    html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.match(html, /open data-tool-group="tools:a"/);
+    assert.ok(!html.includes('agent-tui-tool-result-clamped'));
+    assert.equal(state.toolActivities.get('a').resultExpanded, true);
+    jump.dispatchEvent(ev('click'));
+    ctx.canvasState.nodes.pop();
+    jump.dispatchEvent(ev('click'));
+    assert.deepEqual(focused, ['target']);
+    assert.ok(!fn(ctx, 'agentNodeBodyHtml')(d2Node()).includes('data-agent-step-jump='));
+});
+
+test('#408 D2 进度停止和 footer 停止均绑定，失败保留真实快照/提示，不写已停止', async () => {
+    const node = { ...d2Node(), agentRun: { state: '执行中', step: 1, total: 5 } };
+    const { ctx, harness, fetchCalls } = loadAgentTuiModule({ nodes: [node], fetchResponse: { ok: false, status: 503, json: async () => ({}) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    state.reconnectStopped = true;
+    const buttons = [harness.makeElement('button'), harness.makeElement('button')];
+    const el = harness.makeElement('div');
+    el.querySelectorAll = selector => selector === '[data-agent-abort]' ? buttons : [];
+    fn(ctx, 'bindAgentNodeControls')(el, node);
+    for (const button of buttons) { button.dispatchEvent(ev('click')); await d2Drain(); }
+    assert.equal(fetchCalls.filter(call => call.url.endsWith('/abort')).length, 2);
+    assert.equal(state.messages.filter(message => message.text.includes('停止请求未送达')).length, 2);
+    assert.ok(!state.messages.some(message => message.text.includes('aborted')));
+    assert.deepEqual(node.agentRun, { state: '执行中', step: 1, total: 5 });
+    assert.ok(fn(ctx, 'agentNodeBodyHtml')(node).includes('执行中 · 1/5'));
+});
+
+test('#408 D2 seq 去重、刷新全回放重建与增量回放不重复/不重排', async () => {
+    const records = [{ type: 'agent_start' }, { type: 'user_prompt', text: 'history' }, d2Text('think', true), d2Tool('a'), d2Tool('b'), { type: 'tool_execution_end', toolCallId: 'a', duration_ms: 0 }, { type: 'agent_end' }].map((event, i) => ({ seq: i + 1, event }));
+    const { ctx } = loadAgentTuiModule({ fetchResponse: { ok: true, json: async () => ({ events: records }) } });
+    ctx.document.hidden = true; ctx.document.title = 'Canvas';
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p1';
+    fn(ctx, 'agentAppendMessage')(state, { role: 'system', text: 'stale' });
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    fn(ctx, 'handleAgentEvent')('n1', { ...d2Tool('b'), seq: 5 }); // buffered duplicate
+    await d2Drain();
+    assert.equal(state.lastSeq, 7);
+    assert.equal(ctx.document.title, 'Canvas', '历史 agent_end 不是后台新完成');
+    const html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.ok(!html.includes('stale'));
+    assert.equal((html.match(/data-tool-call-id=/g) || []).length, 2);
+    assert.equal((html.match(/data-agent-thought=/g) || []).length, 1);
+    state.toolGroupExpanded['tools:a'] = true;
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    await d2Drain();
+    assert.equal(state.timeline.length, 3);
+    assert.equal(state.toolGroupExpanded['tools:a'], true, '增量补拉不清手动展开');
+    fn(ctx, 'handleAgentEvent')('n1', { ...d2Tool('a'), seq: 4 });
+    assert.equal(state.toolActivities.get('a').status, 'done');
+});
+
+test('#408 D2 历史替换/branch/fork 重置元数据，迟到的旧回放不能污染新分支', async () => {
+    let resolveReplay;
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('/events?')
+        ? new Promise(resolve => { resolveReplay = resolve; })
+        : { ok: true, json: async () => ({ current_branch: 'new', branches: [] }) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    fn(ctx, 'handleAgentEvent')('n1', d2Tool('old'));
+    state.toolGroupExpanded = { 'tools:old': true }; state.scrollState = { atBottom: false, scrollTop: 10 };
+    state.messages = [{ role: 'assistant', text: 'restored' }]; state.toolActivities.clear();
+    const html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.ok(html.includes('restored') && !html.includes('tools:old'));
+    assert.deepEqual(fromContext(state.toolGroupExpanded), {});
+    state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    await fn(ctx, 'switchAgentBranch')('n1', 'p', 'new');
+    resolveReplay({ ok: true, json: async () => ({ events: [{ seq: 99, event: d2Tool('late') }] }) });
+    await d2Drain();
+    assert.equal(state.timeline.length, 0); assert.equal(state.toolActivities.size, 0); assert.equal(state.lastSeq, 0);
+    fn(ctx, 'handleAgentEvent')('n1', d2Text('new branch', true));
+    await fn(ctx, 'forkAgentSession')('n1', 'p', 'entry', 'fork');
+    assert.equal(state.timeline.length, 0); assert.equal(state.thinking.length, 0); assert.equal(state.scrollState, null);
+});
+
+// Minimal DOM/event geometry surface. No scrolling/follow product logic is duplicated here.
+function d2ScrollDom(harness, { top = 700, height = 1000, client = 200, rows = [['entry:1', 600, 100], ['entry:2', 700, 100], ['entry:3', 800, 100]] } = {}) {
+    const el = harness.makeElement('div');
+    const body = harness.makeElement('div');
+    const messages = harness.makeElement('div');
+    const latest = harness.makeElement('button');
+    const listeners = new Map();
+    body.scrollTop = top; body.scrollHeight = height; body.clientHeight = client; body.isConnected = true;
+    body.getBoundingClientRect = () => ({ top: 0, bottom: body.clientHeight, height: body.clientHeight });
+    const rowElements = rows.map(([key, y, h]) => {
+        const row = harness.makeElement('div'); row.y = y; row.h = h;
+        row.setAttribute('data-agent-entry-key', key);
+        row.getBoundingClientRect = () => ({ top: row.y - body.scrollTop, bottom: row.y + row.h - body.scrollTop, height: row.h });
+        return row;
+    });
+    body.querySelectorAll = selector => selector === '[data-agent-entry-key]' ? rowElements : [];
+    body.addEventListener = (type, listener) => { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); };
+    body.removeEventListener = (type, listener) => listeners.get(type)?.delete(listener);
+    body.dispatchEvent = event => [...(listeners.get(event.type) || [])].forEach(listener => listener(event));
+    el.querySelector = selector => ({ '[data-agent-tui-body]': body, '[data-agent-tui-messages]': messages, '[data-agent-back-latest]': latest }[selector] || null);
+    return { el, body, messages, latest, rows: rowElements, listeners };
+}
+
+function d2Observers(ctx) {
+    const sizes = [], mutations = [];
+    class Observer {
+        constructor(callback) { this.callback = callback; this.targets = []; this.disconnected = false; }
+        observe(target) { this.targets.push(target); }
+        disconnect() { this.disconnected = true; }
+        fire() { if (!this.disconnected) this.callback([]); }
+    }
+    ctx.ResizeObserver = class extends Observer { constructor(callback) { super(callback); sizes.push(this); } };
+    ctx.MutationObserver = class extends Observer { constructor(callback) { super(callback); mutations.push(this); } };
+    return { sizes, mutations };
+}
+
+for (const distance of [47, 48, 49]) {
+    test(`#408 D2 OLD layout ${distance}px 边界；追加增高不能反推 follow`, () => {
+        const { ctx, harness } = loadAgentTuiModule();
+        const state = fn(ctx, 'getAgentTuiState')('n1');
+        const old = d2ScrollDom(harness, { top: 800 - distance });
+        fn(ctx, 'captureAgentScroll')(state, old.body);
+        assert.equal(state.scrollState.atBottom, distance <= 48);
+        const next = d2ScrollDom(harness, { top: 0, height: 1400 });
+        fn(ctx, 'bindAgentScroll')(next.el, state);
+        harness.flushRafs();
+        assert.equal(next.body.scrollTop, distance <= 48 ? 1200 : 751);
+        assert.equal(state.scrollState.atBottom, distance <= 48);
+    });
+}
+
+test('#408 D2 detached 首可见项+偏移锚点跨重建/展开/图片加载/resize，回到最新恢复 follow', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const observers = d2Observers(ctx);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const old = d2ScrollDom(harness, { top: 720 });
+    fn(ctx, 'captureAgentScroll')(state, old.body);
+    assert.deepEqual(fromContext(state.scrollState.anchor), { key: 'entry:2', offset: -20 });
+    const next = d2ScrollDom(harness, { top: 0, height: 1600, rows: [['entry:1', 800, 100], ['entry:2', 900, 100], ['entry:3', 1000, 100]] });
+    state.scrollState.unread = true;
+    fn(ctx, 'bindAgentScroll')(next.el, state);
+    harness.flushRafs();
+    assert.equal(next.body.scrollTop, 920); assert.equal(next.latest.hidden, false);
+    next.body.dispatchEvent(ev('mousedown')); // before expansion
+    next.rows.forEach(row => { row.y += 80; });
+    next.body.dispatchEvent(ev('toggle'));
+    harness.flushRafs();
+    assert.equal(next.body.scrollTop, 1000);
+    next.rows.forEach(row => { row.y += 30; });
+    next.body.dispatchEvent(ev('load'));
+    observers.sizes[0].fire(); observers.sizes[0].fire();
+    assert.equal(harness.rafQueue.length, 1, '布局事件合并，不能触发 render/rAF 自循环');
+    harness.flushRafs();
+    assert.equal(next.body.scrollTop, 1030);
+    assert.equal(harness.rafQueue.length, 0);
+    next.body.clientHeight = 150; observers.sizes[0].fire(); harness.flushRafs();
+    assert.equal(next.body.scrollTop, 1030);
+    next.latest.dispatchEvent(ev('click'));
+    assert.equal(next.body.scrollTop, 1450); assert.equal(state.scrollState.atBottom, true); assert.equal(next.latest.hidden, true);
+    next.body.scrollHeight += 500; observers.sizes[0].fire(); harness.flushRafs();
+    assert.equal(next.body.scrollTop, 1950, '回最新后继续随内容尺寸跟随');
+});
+
+test('#408 D2 用户滚动与程序/原生布局 scroll 不混淆；detached 新流式内容才显示回最新', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const tree = d2ScrollDom(harness, { top: 800 });
+    fn(ctx, 'bindAgentScroll')(tree.el, state); harness.flushRafs();
+    tree.body.scrollHeight = 1400;
+    tree.body.dispatchEvent(ev('scroll')); // append/native anchoring, not user intent
+    assert.equal(state.scrollState.atBottom, true);
+    tree.body.dispatchEvent(ev('wheel'));
+    tree.body.scrollTop = 650; tree.body.dispatchEvent(ev('scroll'));
+    assert.equal(state.scrollState.atBottom, false); assert.equal(tree.latest.hidden, true);
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    fn(ctx, 'handleAgentEvent')('n1', d2Text('new content'));
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    fn(ctx, 'updateAgentBackLatest')(state);
+    assert.equal(tree.latest.hidden, false);
+    fn(ctx, 'restoreAgentScroll')(state, tree.body);
+    tree.body.dispatchEvent(ev('scroll'));
+    assert.equal(state.scrollState.atBottom, false);
+    tree.body.dispatchEvent(ev('wheel'));
+    tree.body.scrollTop = 1152; tree.body.dispatchEvent(ev('scroll'));
+    assert.equal(state.scrollState.atBottom, true); assert.equal(tree.latest.hidden, true);
+    harness.advanceTimers(); // user-intent lease expires; later focus/native scroll is not user intent.
+    tree.body.scrollTop = 700; tree.body.dispatchEvent(ev('scroll'));
+    assert.equal(state.scrollState.atBottom, true);
+});
+
+test('#408 D2 只展开 UI 不算新内容，detached 回最新不应误亮', () => {
+    const { ctx } = loadAgentTuiModule();
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', d2Tool('a'));
+    handle('n1', { type: 'tool_execution_end', toolCallId: 'a', result: 'x'.repeat(700) });
+    state.scrollState = { scrollTop: 120, atBottom: false, anchor: null, unread: false };
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    state.toolGroupExpanded = { 'tools:a': true };
+    state.toolActivities.get('a').expanded = true; state.toolActivities.get('a').resultExpanded = true;
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.equal(state.scrollState.unread, false);
+    handle('n1', { type: 'tool_execution_update', toolCallId: 'a', update: 'new update' });
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.equal(state.scrollState.unread, true);
+});
+
+test('#408 D2 找不到锚点回退 old scrollTop；重绑定/DOM detach/cleanup 清理观察器 rAF 和监听', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const { sizes, mutations } = d2Observers(ctx);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const old = d2ScrollDom(harness);
+    fn(ctx, 'captureAgentScroll')(state, old.body);
+    const next = d2ScrollDom(harness, { top: 0, rows: [] });
+    fn(ctx, 'bindAgentScroll')(next.el, state);
+    assert.equal(next.body.scrollTop, 700);
+    const third = d2ScrollDom(harness);
+    fn(ctx, 'bindAgentScroll')(third.el, state);
+    assert.equal(sizes[0].disconnected, true); assert.equal(mutations[0].disconnected, true);
+    assert.equal([...next.listeners.values()].reduce((sum, set) => sum + set.size, 0), 0);
+    third.body.isConnected = false; mutations[1].fire();
+    assert.equal(state.scrollBinding, null); assert.equal(harness.rafQueue.length, 0);
+    const last = d2ScrollDom(harness);
+    fn(ctx, 'bindAgentScroll')(last.el, state);
+    fn(ctx, 'cleanupAgentTuiState')('n1');
+    assert.equal(sizes[2].disconnected, true); assert.equal(mutations[2].disconnected, true);
+    assert.equal(harness.rafQueue.length, 0);
+    assert.equal([...last.listeners.values()].reduce((sum, set) => sum + set.size, 0), 0);
+});
+
+test('#408 D2 IME 延迟重建，草稿/焦点/选区以及 detached 阅读位置保留', () => {
+    const node = d2Node();
+    const { ctx, harness } = loadAgentTuiModule({ nodes: [node] });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const tree = buildAgentControlTree(harness);
+    const scroll = d2ScrollDom(harness, { top: 720 });
+    const query = tree.el.querySelector;
+    tree.el.querySelector = selector => scroll.el.querySelector(selector) || query(selector);
+    const outer = harness.makeElement('div');
+    const container = tree.el;
+    outer.querySelector = selector => selector === '.node-body' ? container : container.querySelector(selector);
+    harness.querySelectorAll('[data-id="n1"]', [outer]);
+    tree.input.selectionStart = 1; tree.input.selectionEnd = 3;
+    tree.input.focus = () => { ctx.document.activeElement = tree.input; };
+    const selections = [];
+    tree.input.setSelectionRange = (start, end) => { selections.push([start, end]); tree.input.selectionStart = start; tree.input.selectionEnd = end; };
+    tree.input.focus();
+    fn(ctx, 'bindAgentNodeControls')(container, node);
+    tree.input.value = '草稿输入'; tree.input.dispatchEvent(ev('input'));
+    tree.input.dispatchEvent(ev('compositionstart'));
+    fn(ctx, 'handleAgentEvent')('n1', d2Text('stream'));
+    assert.equal(state.pendingRerender, true); assert.equal(container.innerHTML, '');
+    ctx.nodeBodyHtml = liveNode => fn(ctx, 'agentNodeBodyHtml')(liveNode);
+    tree.input.dispatchEvent(ev('compositionend'));
+    assert.equal(state.pendingRerender, false); assert.equal(state.draft, '草稿输入');
+    assert.ok(container.innerHTML.includes('草稿输入'));
+    assert.deepEqual(selections, [[1, 3]], '不能强制把 IME 选区移到末尾');
+    // The initial bind follows by default; explicitly test detached rendering capture too.
+    scroll.body.dispatchEvent(ev('wheel')); scroll.body.scrollTop = 720; scroll.body.dispatchEvent(ev('scroll'));
+    fn(ctx, 'renderAgentNode')('n1');
+    assert.equal(scroll.body.scrollTop, 720);
+    assert.equal(ctx.document.activeElement, tree.input);
+    assert.ok(!Object.keys(node).some(key => /scroll|expanded|timeline/i.test(key)));
+});
+
+test('#408 D2 真实重建表面替换 input/body 后，恢复 draft/selection 和偏移锚点', () => {
+    const node = d2Node();
+    const { ctx, harness } = loadAgentTuiModule({ nodes: [node] });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    let current = d2ScrollDom(harness, { top: 720 });
+    let input = harness.makeElement('textarea');
+    input.value = '未发送草稿'; input.selectionStart = 2; input.selectionEnd = 4;
+    ctx.document.activeElement = input;
+    const oldInput = input;
+    const oldBody = current.body;
+    const selections = [];
+    const container = harness.makeElement('div');
+    container.querySelector = selector => selector === '[data-agent-tui-input]' ? input : current.el.querySelector(selector);
+    let markup = '';
+    Object.defineProperty(container, 'innerHTML', { get: () => markup, set: value => {
+        markup = value;
+        oldBody.isConnected = false;
+        current = d2ScrollDom(harness, { top: 0, height: 1600, rows: [['entry:1', 800, 100], ['entry:2', 900, 100]] });
+        input = harness.makeElement('textarea'); input.value = state.draft;
+        input.focus = () => { ctx.document.activeElement = input; };
+        input.setSelectionRange = (start, end) => selections.push([start, end]);
+    } });
+    const outer = harness.makeElement('div');
+    outer.querySelector = selector => selector === '.node-body' ? container : container.querySelector(selector);
+    harness.querySelectorAll('[data-id="n1"]', [outer]);
+    fn(ctx, 'captureAgentScroll')(state, oldBody);
+    fn(ctx, 'bindAgentScroll')(container, state); harness.flushRafs();
+    ctx.nodeBodyHtml = liveNode => fn(ctx, 'agentNodeBodyHtml')(liveNode);
+    fn(ctx, 'renderAgentNode')('n1'); harness.flushRafs();
+    assert.notEqual(input, oldInput); assert.notEqual(current.body, oldBody);
+    assert.equal(input.value, '未发送草稿'); assert.equal(ctx.document.activeElement, input);
+    assert.ok(markup.includes('未发送草稿'));
+    assert.deepEqual(selections, [[2, 4]]);
+    assert.equal(current.body.scrollTop, 920);
+    assert.equal(state.scrollBinding.body, current.body);
+    fn(ctx, 'agentTuiSendInput')(input, 'n1', 'p');
+    assert.equal(input.value, '', 'sender 重建的新输入框不能复活已发送草稿');
+    assert.equal(state.draft, '');
+    assert.ok(state.messages.some(message => message.role === 'user' && message.text === '未发送草稿'));
+});
+
+test('#408 D2 D1 收起期间 streaming/resize 不清掉 detached 阅读锚点', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const observers = d2Observers(ctx);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const tree = d2ScrollDom(harness, { top: 720 });
+    fn(ctx, 'captureAgentScroll')(state, tree.body);
+    fn(ctx, 'bindAgentScroll')(tree.el, state); harness.flushRafs();
+    const before = fromContext(state.scrollState);
+    tree.body.clientHeight = 0; tree.body.scrollHeight = 0; tree.body.scrollTop = 0;
+    observers.sizes[0].fire(); harness.flushRafs();
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    fn(ctx, 'handleAgentEvent')('n1', d2Text('collapsed stream'));
+    fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.equal(state.scrollState.scrollTop, before.scrollTop);
+    assert.deepEqual(fromContext(state.scrollState.anchor), before.anchor);
+    tree.body.clientHeight = 200; tree.body.scrollHeight = 1400;
+    observers.sizes[0].fire(); harness.flushRafs();
+    assert.equal(tree.body.scrollTop, 720);
+});
+
+test('#408 D2 新 turn_start 切断工具组，stopReason aborted 不报完成', () => {
+    const { ctx } = loadAgentTuiModule();
+    ctx.document.hidden = true; ctx.document.title = 'Canvas';
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle('n1', { type: 'agent_start' }); handle('n1', d2Tool('a'));
+    handle('n1', { type: 'turn_start' }); handle('n1', d2Tool('b'));
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    assert.equal(state.timeline.filter(entry => entry.kind === 'tools').length, 2);
+    handle('n1', { type: 'turn_end', message: { stopReason: 'aborted' } });
+    handle('n1', { type: 'agent_end' });
+    assert.equal(ctx.document.title, 'Canvas');
+});
+
+test('#408 D2 WS stop 送达抛错不能写成功，断线后 agent_end 也不报完成', () => {
+    const { ctx } = loadAgentTuiModule();
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const socket = fn(ctx, 'connectAgentWebSocket')('n1', 'p');
+    socket.send = () => { throw new Error('closed meanwhile'); };
+    assert.doesNotThrow(() => fn(ctx, 'sendAgentAbort')('n1', 'p'));
+    assert.ok(state.messages.some(message => message.text.includes('停止请求未送达')));
+    assert.ok(!state.messages.some(message => message.text.includes('aborted')));
+    ctx.document.hidden = true; ctx.document.title = 'Canvas';
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_start' });
+    socket.onclose();
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end' });
+    assert.equal(ctx.document.title, 'Canvas');
+});
+
+test('#408 D2 混合工具组只把结束项计入执行数量，进行项单独列出', () => {
+    const { ctx } = loadAgentTuiModule();
+    evaluate(ctx, `(() => {
+        const state = getAgentTuiState('n1');
+        state.toolActivities.set('ended', {name:'read', status:'done', turn:1, duration_ms:120});
+        state.toolActivities.set('live', {name:'write', status:'running', turn:1, duration_ms:null});
+    })()`);
+    const html = fromContext(fn(ctx, 'agentNodeBodyHtml')({id:'n1', type:'smart-agent'}));
+    assert.ok(html.includes('执行了 1 个步骤 · 1 个步骤执行中…'), html);
+    assert.ok(!html.includes('执行了 2 个步骤'), html);
+    assert.ok(!html.includes(' · 总 '), '部分计时不得写成完整总耗时');
+});
+
+test('#408 D2 已核实工具名做有限语义映射，未知工具不造动作对象', () => {
+    const { ctx } = loadAgentTuiModule();
+    evaluate(ctx, `canvasState.nodes = [{id:'target', title:'主图3 <产品>'}]`);
+    const label = fn(ctx, 'agentToolSummary');
+    assert.equal(fromContext(label({name:'canvas.get_node',args:{node_id:'target'}})), '读取节点 · 主图3 <产品>');
+    assert.equal(fromContext(label({name:'canvas.create_node',args:{title:'新卡'}})), '新建节点 · 新卡');
+    assert.equal(fromContext(label({name:'generate.status',args:{}})), '查看生成状态');
+    assert.equal(fromContext(label({name:'unregistered.tool',args:{node_id:'target'}})), 'unregistered.tool');
+    assert.equal(fromContext(label({name:'canvas.get_node',args:{node_id:'deleted'}})), '读取节点');
+    evaluate(ctx, `getAgentTuiState('n1').toolActivities.set('known',{name:'canvas.get_node',args:{node_id:'target'},status:'done',turn:1})`);
+    const html = fromContext(fn(ctx, 'agentNodeBodyHtml')({id:'n1',type:'smart-agent'}));
+    assert.ok(html.includes('读取节点 · 主图3 &lt;产品&gt;'), html);
+    assert.ok(html.includes('title="canvas.get_node"'), html);
+});
+
+test('#408 D2 后台仅新 agent_end 完成加自有前缀，前台清除；失败/中止/历史/缺 API 不误报', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const handle = fn(ctx, 'handleAgentEvent');
+    ctx.document.hidden = true; ctx.document.title = '画布';
+    handle('n1', { type: 'agent_start' }); handle('n1', { type: 'agent_end' }); handle('n1', { type: 'agent_end' });
+    assert.equal(ctx.document.title, '(✓) 画布');
+    ctx.document.hidden = false; harness.fireDocumentEvent('visibilitychange');
+    assert.equal(ctx.document.title, '画布');
+    ctx.document.hidden = true; ctx.document.title = '(✓) external';
+    handle('n1', { type: 'agent_start' }); handle('n1', { type: 'agent_end' });
+    ctx.document.hidden = false; harness.fireDocumentEvent('visibilitychange');
+    assert.equal(ctx.document.title, '(✓) external', '非自有前缀不能删除');
+    ctx.document.title = '画布'; ctx.document.hidden = true;
+    for (const failure of [{ type: 'process_exited' }, { type: 'error', message: 'bad' }, { type: 'turn_end', message: { stopReason: 'error' } }]) {
+        handle('n1', { type: 'agent_start' }); handle('n1', failure); handle('n1', { type: 'agent_end' });
+        assert.equal(ctx.document.title, '画布');
+    }
+    handle('n1', { type: 'agent_start' });
+    fn(ctx, 'getAgentTuiState')('n1').socket = new ctx.WebSocket('ws:test');
+    fn(ctx, 'sendAgentAbort')('n1', 'p'); handle('n1', { type: 'agent_end' });
+    assert.equal(ctx.document.title, '画布');
+    delete ctx.document.title; delete ctx.document.addEventListener;
+    assert.doesNotThrow(() => { handle('n1', { type: 'agent_start' }); handle('n1', { type: 'agent_end' }); });
 });
