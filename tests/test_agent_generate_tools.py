@@ -334,6 +334,9 @@ class AgentGenerateToolsIsolationTests(unittest.TestCase):
             self.assertFalse((Path(empty_root) / "data" / "api_providers.json").exists())
             env = dict(os.environ)
             env["FIREFLY_RUNTIME_ROOT"] = empty_root
+            # #329 守卫（main.py，11-15 起）要求隔离实例同时显式 FIREFLY_PROJECTS_ROOT，
+            # 否则拒启 exit=2——本测试写于守卫之前，补齐口径（隔离项目库同样落 empty_root）。
+            env["FIREFLY_PROJECTS_ROOT"] = str(Path(empty_root) / "projects")
             env[self.NESTED_ENV_FLAG] = "1"
             process = subprocess.run(
                 [sys.executable, "-m", "unittest", "-b", "tests.test_agent_generate_tools"],
