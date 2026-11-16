@@ -179,6 +179,15 @@
     // {title, message, label, value, placeholder, multiline, okText, cancelText} → Promise<string|null>
     input: function (opts) {
       return new Promise(function (resolve) { open(opts || {}, "input", resolve); });
+    },
+    // #389：外部静默关闭当前对话框——故意不 settle promise（调用方必须保证其后续
+    // 处理会被自身状态守卫短路，如 agent 确认卡的 state.confirm 守卫），否则
+    // Promise 悬挂。用于服务端已把待决确认终结、模态不得再触发决议的场景。
+    close: function () {
+      if (!current) return;
+      document.removeEventListener("keydown", current.onKey, true);
+      current.backdrop.remove();
+      current = null;
     }
   };
 })();

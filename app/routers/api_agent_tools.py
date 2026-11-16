@@ -1011,6 +1011,9 @@ async def request_confirmation_core(
             "params": params,
             "message": message,
         }
+        # #389：先写入回放日志（就地注入 seq，live WS 与回放同一 payload，同 #318 票 C
+        # 单一 fan-out 口径）——确认挂起期间刷新页面才能从 events 回放重建待决确认卡。
+        agent_host_manager._persist_event(session, confirm_event)
         for handler in session.event_handlers:
             try:
                 await handler(session, confirm_event)
@@ -1023,6 +1026,22 @@ async def request_confirmation_core(
         except asyncio.TimeoutError:
             result["approved"] = False
             result["reason"] = "timeout"
+
+        # #389：门结束（批准/拒绝/超时）落终态记录并 live 广播：回放时前端据此关闭
+        # 已决确认卡（「确认结束后不再重放」），live 端同步关掉挂着的 ffDialog。
+        resolved_event = {
+            "type": "confirm_resolved",
+            "confirm_id": confirm_id,
+            "tool": tool,
+            "approved": bool(result["approved"]),
+            "reason": result["reason"],
+        }
+        agent_host_manager._persist_event(session, resolved_event)
+        for handler in session.event_handlers:
+            try:
+                await handler(session, resolved_event)
+            except Exception:
+                pass
 
         return {"approved": result["approved"], "reason": result["reason"]}
     finally:

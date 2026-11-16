@@ -422,6 +422,21 @@ function applyAgentEventBody(nodeId, event) {
             }
             break;
         }
+        case 'confirm_resolved': {
+            // #389：确认门终态记录（live 与刷新回放共用）。已决卡不再重放：清
+            // state.confirm，并静默关掉仍挂着的 ffDialog（close 不 settle promise，
+            // 上面 ask().then 的 state.confirm 守卫保证不会误发决议）。
+            if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
+                state.confirm = null;
+                if (state.status === 'waiting_confirm') state.status = 'idle';
+                if (window.ffDialog && window.ffDialog.close) window.ffDialog.close();
+                const outcome = event.approved ? '已批准'
+                    : (event.reason === 'timeout' ? '已超时' : '已拒绝');
+                state.messages.push({ role: 'system',
+                    text: `Agent 操作确认${outcome}：${event.tool || ''}` });
+            }
+            break;
+        }
         case 'response':
             // Command response, ignore for now
             break;
