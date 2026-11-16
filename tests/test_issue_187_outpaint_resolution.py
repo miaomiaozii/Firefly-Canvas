@@ -16,15 +16,19 @@ Verified causal chain (issue #187, 2026-10-15 field report):
   not silently modify or downgrade them, and when no model fully supports the
   combination the generation must stop and report the incompatible parameter.
 
-These tests pin the server-side contract with the real ``data/api_providers.json``
-(the same call ``_normalize_generation_size_params`` feeds into):
+These tests pin the server-side contract (the same call ``_normalize_generation_size_params``
+feeds into) against the suite's own checked-in capability fixture, never against the
+machine's ``data/api_providers.json`` (#386): "no model supports X" is a statement about
+the registry under test, and real registries legitimately declare arbitrary-capable
+models (``arbitrary_aspect_ratio`` / ``arbitrary_resolution`` / ``"*"`` ratios), so the
+outcome must be identical whether that gitignored file exists or not:
 
 - an outpaint-shaped payload (aspect_ratio from outpaintSize, empty size/width/height)
   carrying the user's resolution must route and preserve that resolution;
-- an aspect ratio no model supports (outpaint "free" mode) must stop with
-  ``aspect_ratio`` reported as incompatible — never a silent 1K fallback;
-- a resolution no model supports (e.g. ``8k``; real data only offers
-  1k/2k/4k/auto) must stop with ``resolution`` reported.
+- an aspect ratio no model in the fixture supports (outpaint "free" mode) must stop
+  with ``aspect_ratio`` reported as incompatible — never a silent 1K fallback;
+- a resolution no model in the fixture supports (e.g. ``8k``; the fixture offers
+  1k/2k/4k only) must stop with ``resolution`` reported.
 """
 
 from __future__ import annotations
@@ -44,77 +48,55 @@ os.environ.setdefault("FIREFLY_TEST_MODE", "1")
 
 from firefly_generation import ImageGenerationRequest, ModelRoutingError, route_image_generation
 
-PROVIDERS_PATH = ROOT / "data" / "api_providers.json"
-# #187：不能硬读 data/api_providers.json——它被 .gitignore:22 排除，
-# tools/quality_gate.py 的隔离 workspace 用 `git ls-files --cached --others --exclude-standard`
-# 复制文件，gitignored 文件不在里面，于是 setUpClass 直接 FileNotFoundError
-# （跟 #175 同一个根因模式）。缺位时退回 checked-in fixture，
-# 并用下面的漂移守卫保证 fixture 不会悄悄过期。
+# #386：本套件只认 checked-in 能力 fixture，绝不读 data/api_providers.json——
+# 它是 .gitignore:22 排除的本机配置。真实注册表里有声明
+# arbitrary_aspect_ratio / arbitrary_resolution / "*" 比例的模型（如 comfyui、bailian），
+# 「没有模型支持 1250:833 / 8k」这条假设在本机有配置时不成立，两个停止场景就从绿翻红；
+# 而 #175 的隔离 workspace 里该文件必然缺位（gate 用 git ls-files 复制，
+# gitignored 文件不在其中）——同一根因的两面：结果必须只由注册表本身决定。
+# 漂移守卫（test_fixture_capability_assumptions_hold）保证 fixture 不会悄悄过期。
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "outpaint_provider_capabilities.json"
 OUTPAINT_PROMPT = "Remove red area and fill the scene"
 
 
-def _capability_models(providers):
-    for provider in providers:
-        for model_id, caps in (provider.get("image_model_capabilities") or {}).items():
-            yield provider, model_id, caps
-
-
-def _supports(providers, *, aspect_ratio=None, resolution=None):
-    for _, _, caps in _capability_models(providers):
-        ratios = caps.get("aspect_ratios") or []
-        resolutions = caps.get("resolutions") or []
-        if (aspect_ratio is None or aspect_ratio in ratios) and (
-            resolution is None or resolution in resolutions
-        ):
-            return True
-    return False
-
-
 class OutpaintResolutionRoutingTests(unittest.TestCase):
-    """Outpaint-shaped requests against the real provider capability registry."""
+    """Outpaint-shaped requests against the suite's own pinned capability registry."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        if PROVIDERS_PATH.exists():
-            cls.providers = json.loads(PROVIDERS_PATH.read_text(encoding="utf-8"))
-            cls.providers_source = "real"
-        else:
-            cls.providers = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-            cls.providers_source = "fixture"
+        # #386: always route against the checked-in fixture. Reading the machine's
+        # data/api_providers.json made the stop-scenarios depend on whether that
+        # gitignored file exists (real registries carry arbitrary-capable models);
+        # results must be identical in both situations.
+        cls.providers = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
-    def test_provider_source_assumptions_hold(self) -> None:
-        # 漂移守卫：本文件所有场景都依赖「有模型支持 21:9+4k」、「无模型支持 8k」。
-        # 真实注册表变了就得同步改 fixture，否则门里跑的是过期的能力假设。
+    def test_fixture_capability_assumptions_hold(self) -> None:
+        # 漂移守卫：停止场景依赖 fixture「没有模型支持 1250:833 自由比例 / 8k 分辨率」，
+        # 保留场景依赖「有模型支持 21:9+4k」。fixture 一旦漂移（比如某模型新增
+        # arbitrary_aspect_ratio / "*" 声明），场景测试会以「assertRaises 没收到异常」
+        # 这种不透明方式失败；这里先按路由器的同一语义检查，失败信息直接可操作。
+        # 走真实路由器而不是列表比对：arbitrary_* / "*" 声明只有路由器会识别。
         #
         # 不能用 skipTest：门的策略把任何 skipped 都当失败
-        # （tools/quality_gate.py:1563 `if summary and any(summary.values()) and status == "passed"`），
-        # 而隔离 workspace 里 gitignored 的真实注册表必然缺位。
-        # fixture 是无条件检查的；真实注册表存在时额外检查一份。
-        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-        sources = [("fixture", fixture)]
-        if PROVIDERS_PATH.exists():
-            sources.append(("real", json.loads(PROVIDERS_PATH.read_text(encoding="utf-8"))))
-        for label, providers in sources:
-            with self.subTest(source=label):
-                self.assertTrue(
-                    _supports(providers, aspect_ratio="21:9", resolution="4k"),
-                    f"{label} 不再支持 21:9 + 4k；同步更新 fixture 和场景",
-                )
-                self.assertFalse(
-                    _supports(providers, resolution="8k"),
-                    f"{label} 出现了 8k；「不支持的 resolution」场景测的不再是它声称的东西",
-                )
-
-    def test_routes_against_the_fixture_when_real_registry_absent(self) -> None:
-        # 显式钉住兜底路径本身可用（门里跑的就是这条）。
-        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-        route = route_image_generation(
-            ImageGenerationRequest(prompt=OUTPAINT_PROMPT, size=None, width=None, height=None, aspect_ratio="21:9", resolution="2k"),
-            fixture,
+        # （tools/quality_gate.py:1563 `if summary and any(summary.values()) and status == "passed"`）。
+        route = self.route(aspect_ratio="21:9", resolution="4k")
+        self.assertEqual(
+            route.request.get("resolution"),
+            "4k",
+            "fixture 不再支持 21:9 + 4k；同步更新 fixture 和场景",
         )
-        self.assertEqual(route.request.get("resolution"), "2k")
-        self.assertEqual(route.request.get("aspect_ratio"), "21:9")
+        for label, incompatible, kwargs in (
+            ("自由比例 1250:833", "aspect_ratio", {"aspect_ratio": "1250:833", "resolution": "4k"}),
+            ("分辨率 8k", "resolution", {"aspect_ratio": "21:9", "resolution": "8k"}),
+        ):
+            with self.subTest(scene=label):
+                with self.assertRaises(ModelRoutingError) as ctx:
+                    self.route(**kwargs)
+                self.assertIn(
+                    incompatible,
+                    list(ctx.exception.incompatible_parameters),
+                    f"fixture 出现了支持「{label}」的模型；「不支持的 {incompatible}」场景测的不再是它声称的东西",
+                )
 
     def route(self, **kwargs: object):
         # Mirrors the payload runApiGeneration sends after outpaint confirmation:
@@ -146,7 +128,7 @@ class OutpaintResolutionRoutingTests(unittest.TestCase):
         self.assertIn("aspect_ratio", list(error.incompatible_parameters))
 
     def test_unsupported_resolution_stops_and_reports_resolution(self) -> None:
-        # '8k' is supported by no model in the real registry (only 1k/2k/4k/auto).
+        # '8k' is supported by no model in the pinned fixture (only 1k/2k/4k).
         with self.assertRaises(ModelRoutingError) as ctx:
             self.route(aspect_ratio="21:9", resolution="8k")
         error = ctx.exception
