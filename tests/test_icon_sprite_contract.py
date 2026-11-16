@@ -1,8 +1,8 @@
-"""#380：图标统一为 SVG sprite（85 个），不再加载 Lucide 运行时。
+"""#380 / #416：图标统一为 SVG sprite（87 个），不再加载 Lucide 运行时。
 
 sprite 的唯一源是 static/smart-canvas.html 顶部的隐藏 <svg id="ffIconSprite">，
 引用方式 <use href="#i-xxx">（HTML 里直接写，JS 里经 canvas-core.js 的 ico('xxx')）。
-总表 85 个 key 写死在下面，改总表要同步改这里（总表本身在 .local/ 下，进不了 git）。
+总表 87 个 key 写死在下面，改总表要同步改这里（总表本身在 .local/ 下，进不了 git）。
 """
 
 import re
@@ -50,6 +50,8 @@ list-checks
 group
 ungroup
 layout-grid
+align-horizontal-justify-center
+align-horizontal-distribute-center
 link
 unlink
 copy
@@ -102,6 +104,13 @@ boxes
 """.split())
 
 
+# #416：仅这两枚布局图标先于 A7 入表；A7（#397）正式引用后逐项删除豁免。
+PENDING_A7_ICONS = frozenset({
+    "align-horizontal-justify-center",
+    "align-horizontal-distribute-center",
+})
+
+
 def sprite_ids(html: str) -> list[str]:
     block = re.search(r'<svg[^>]*id="ffIconSprite"[^>]*>(.*?)</svg>', html, re.S)
     assert block, "smart-canvas.html 里找不到 #ffIconSprite"
@@ -143,12 +152,19 @@ class IconSpriteContractTests(unittest.TestCase):
         ids = sprite_ids(PAGE.read_text(encoding="utf-8"))
         self.assertEqual(len(ids), len(set(ids)), "sprite 里有重复 symbol id")
         self.assertEqual(set(ids), set(SHEET_KEYS), "sprite 与总表不一致（不准增删图标）")
-        self.assertEqual(85, len(ids))
+        self.assertEqual(87, len(ids))
 
     def test_every_sprite_icon_is_referenced(self):
         used = set(referenced_ids())
-        unused = sorted(SHEET_KEYS - used)
+        unused = sorted(SHEET_KEYS - used - PENDING_A7_ICONS)
         self.assertEqual([], unused, f"sprite 里有但代码没引用的图标：{unused}")
+
+    def test_pending_a7_exemptions_are_valid_and_still_needed(self):
+        self.assertLessEqual(PENDING_A7_ICONS, SHEET_KEYS)
+        self.assertEqual(
+            set(), PENDING_A7_ICONS & set(referenced_ids()),
+            "A7（#397）已引用的图标必须从 PENDING_A7_ICONS 删除",
+        )
 
     def test_every_static_use_reference_exists_in_the_sprite(self):
         ids = set(sprite_ids(PAGE.read_text(encoding="utf-8")))
