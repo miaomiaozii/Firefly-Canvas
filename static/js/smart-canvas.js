@@ -712,7 +712,7 @@ async function materializeProjectMediaReferences(value, mediaContext=false){
     for(const [key, child] of Object.entries(value)) clean[key] = await materializeProjectMediaReferences(child, mediaKeys.has(String(key).toLowerCase()));
     return clean;
 }
-function canvasForStorage(){
+function canvasForStorage({preserveLegacyDockCollapsed=false}={}){
     const clean = JSON.parse(JSON.stringify(canvas || {}));
     if(isProjectCanvasData(clean)){
         // Composer defaults and viewport are application/global UI state. Core
@@ -729,6 +729,9 @@ function canvasForStorage(){
     if(Array.isArray(clean.nodes)) clean.nodes = clean.nodes.filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID);
     (clean.nodes || []).forEach(node => {
         delete node._pendingHistoryId;
+        // #407：只有加载时的差异基线保留旧值，保证下次增量保存能删除磁盘残留。
+        // 正常保存始终剥离；这个选项不作用于 live node。
+        if(!preserveLegacyDockCollapsed) delete node.dockCollapsed;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
         if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
         if(node.type === NODE_TYPE_CONVERSATION) delete node.conversationSending;
@@ -867,6 +870,7 @@ function smartImageUsesWorkflowInput(node, ctx=smartLoopContext){
 }
 function normalizeLegacySmartNode(node){
     if(!node || typeof node !== 'object') return node;
+    delete node.dockCollapsed; // #407：不继承旧版本落盘的收起态，刷新按视口重判
     if(node.type === 'smart-container'){
         const fallbackImage = node.inputImage?.url ? stripImageGenerationMeta({
             url:node.inputImage.url,
@@ -6639,7 +6643,8 @@ async function loadCanvas(){
         }
         canvas = data.canvas;
         conversationCanvasLastAcceptedRevision = Number(canvas?.revision || 0);
-        persistedCoreSnapshot = canvas.format === 'firefly-canvas-v1' ? projectCanvasSnapshot(canvasForStorage()) : null;
+        persistedCoreSnapshot = canvas.format === 'firefly-canvas-v1'
+            ? projectCanvasSnapshot(canvasForStorage({preserveLegacyDockCollapsed:true})) : null;
         if(canvas.format === 'firefly-canvas-v1'){
             const backLabel = document.querySelector('.smart-back span');
             if(backLabel) backLabel.textContent = tr('smart.backToProjects');
@@ -9453,6 +9458,7 @@ function rememberInlineVideoActivations(){
     });
 }
 function render(){
+    normalizeAgentDockNodes(canvasState.nodes); // #407：旧多 dock 必须在 world 过滤前取回其它节点
     syncCanvasEmptyState();
     rememberInlineVideoActivations();
     world.classList.toggle('smart-multi-selected', selectedNodeIds().length > 1);

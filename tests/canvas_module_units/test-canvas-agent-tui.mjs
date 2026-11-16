@@ -1937,3 +1937,374 @@ test('#323 E2 agentHeadActionButtonsHtml：参考按钮解绑「参考」/绑定
     assert.ok(out.includes('参考 ×1'), '绑定显示「参考 ×N」');
     assert.ok(out.includes('参考框：参考框A'), 'title 带绑定框名');
 });
+
+// ── #407 D1-v2：唯一停靠、会话级收起态、IME 延迟切换 ─────────────────────
+// 仍用 loadAgentTuiModule 加载完整真实模块，render/scheduleSave 保持零逻辑记录器，
+// 不给 render 补 sync/normalize 等产品行为。因此 render 前的宿主接线留给浏览器回归，
+// 本组直接调用真实 syncAgentDock 验证同步入口的归一化与自动收起。
+// 新增表面积：innerWidth/viewport 是数据；CSS.escape 仅对本组安全 ASCII id 透传，
+// 不模拟特殊字符转义；isNodeSelected 固定返回未选中，不复制选择算法、不覆盖选择行为。
+// harness 不解析 innerHTML，querySelector 返回 null，wrap.firstElementChild 为空而不建
+// node DOM；真实模板和后续 collapse 循环仍执行。布局/CSS/焦点/真实 IME 由浏览器兜底；
+// compositionstart/end 在此派发给真实 bindAgentNodeControls 注册的 handler。
+function loadAgentDockModule({ width = 1440, ...options } = {}) {
+    const m = loadAgentTuiModule(options);
+    m.ctx.innerWidth = width;
+    m.ctx.viewport = { x: -217, y: 113, scale: 0.65 };
+    m.ctx.CSS = { escape: String };
+    m.ctx.isNodeSelected = () => false;
+    const dock = m.harness.element('agentDock');
+    return { ...m, dock };
+}
+
+const dockMemory = ctx => fromContext(evaluate(ctx,
+    '({ collapsed: [...agentDockCollapsed], expanded: [...agentDockUserExpanded] })'));
+
+const dockEffects = renders => renders.filter(r =>
+    ['render', 'scheduleSave', 'centerViewport'].includes(r.kind));
+
+test('#407 D1-v2 agentDockState / ShouldAutoCollapse：左右状态、窄视口与中央留白边界不变', () => {
+    const { ctx } = loadAgentDockModule();
+    const state = fn(ctx, 'agentDockState');
+    assert.equal(state(null), null);
+    assert.equal(state({ dock: 'left' }), 'left');
+    assert.equal(state({ dock: 'right' }), 'right');
+    assert.equal(state({ dock: 'bottom' }), null);
+    assert.equal(state({}), null);
+    for (const [width, w, expected] of [
+        [1440, 382, false], [899, 382, true], [900, 382, false],
+        [1099, 620, true], [1100, 620, false],
+    ]) {
+        ctx.innerWidth = width;
+        assert.equal(fn(ctx, 'agentDockShouldAutoCollapse')({ w }), expected, `视口 ${width} / 面板 ${w}`);
+    }
+});
+
+test('#407 D1-v2 sync：宽默认展开、窄自动收起、变宽不自动展开；只写内存且不保存', () => {
+    const node = { id: 'A', type: 'smart-agent', dock: 'left', x: 12, y: 34 };
+    const { ctx, dock, renders, bodyHtmlCalls } = loadAgentDockModule({ nodes: [node] });
+    const sync = fn(ctx, 'syncAgentDock');
+    const collapsed = fn(ctx, 'agentDockIsCollapsed');
+    assert.equal(evaluate(ctx, 'agentDockCollapsed instanceof Set && agentDockUserExpanded instanceof Set'), true);
+    assert.equal(collapsed('A'), false);
+    sync();
+    assert.equal(collapsed('A'), false, '宽视口默认展开');
+    assert.equal(dock.hidden, false, '真实 sync 识别到停靠节点');
+    assert.equal(ctx.document.querySelector('#agentDock .agent-dock-node[data-id="A"]'), null);
+    assert.equal(dock.children.length, 0, '不解析 HTML、不伪造节点 DOM');
+    assert.ok(bodyHtmlCalls.length > 0, 'querySelector=null 时真实停靠模板仍执行');
+
+    ctx.innerWidth = 800;
+    sync();
+    assert.equal(collapsed('A'), true, '窄视口真实自动收起');
+    assert.deepEqual(dockMemory(ctx), { collapsed: ['A'], expanded: [] });
+    ctx.innerWidth = 1440;
+    sync();
+    assert.equal(collapsed('A'), true, '同一 VM 只自动收、不自动展');
+    assert.equal(Object.hasOwn(node, 'dockCollapsed'), false, '不得写回节点持久化字段');
+    assert.deepEqual(node, { id: 'A', type: 'smart-agent', dock: 'left', x: 12, y: 34 });
+    assert.deepEqual(dockEffects(renders), [], 'sync 自动收起/重同步均不 scheduleSave 或全量 render');
+});
+
+test('#407 D1-v2 手动展开抑制窄视口自动收起；再次收起清展开标记，全程不保存', () => {
+    const node = { id: 'A', type: 'smart-agent', dock: 'right' };
+    const { ctx, renders } = loadAgentDockModule({ width: 800, nodes: [node] });
+    const sync = fn(ctx, 'syncAgentDock');
+    const toggle = fn(ctx, 'agentDockCollapseToggle');
+    sync();
+    toggle('A');
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), false);
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: ['A'] });
+    ctx.innerWidth = 600;
+    sync();
+    sync();
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), false, '手动展开不能被后续 sync 覆盖');
+    toggle('A');
+    sync();
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), true);
+    assert.deepEqual(dockMemory(ctx), { collapsed: ['A'], expanded: [] });
+    assert.deepEqual(node, { id: 'A', type: 'smart-agent', dock: 'right' });
+    assert.deepEqual(dockEffects(renders), [], '手动收/展也不保存');
+});
+
+test('#407 D1-v2 新 VM 不继承收起/手动展开，按当前视口重新决定', () => {
+    const first = loadAgentDockModule({ width: 800, nodes: [{ id: 'A', type: 'smart-agent', dock: 'left' }] });
+    fn(first.ctx, 'syncAgentDock')();
+    assert.equal(fn(first.ctx, 'agentDockIsCollapsed')('A'), true);
+    const afterCollapse = fromContext(first.ctx.canvasState.nodes);
+    fn(first.ctx, 'agentDockCollapseToggle')('A');
+    assert.deepEqual(dockMemory(first.ctx), { collapsed: [], expanded: ['A'] });
+    const afterExpand = fromContext(first.ctx.canvasState.nodes);
+    assert.deepEqual(afterCollapse, afterExpand, '收起与展开不能改变可持久化节点');
+
+    const wide = loadAgentDockModule({ width: 1440, nodes: afterCollapse });
+    assert.deepEqual(dockMemory(wide.ctx), { collapsed: [], expanded: [] });
+    fn(wide.ctx, 'syncAgentDock')();
+    assert.equal(fn(wide.ctx, 'agentDockIsCollapsed')('A'), false, '旧 VM 收起不影响新宽视口');
+    const narrow = loadAgentDockModule({ width: 800, nodes: afterExpand });
+    fn(narrow.ctx, 'syncAgentDock')();
+    assert.equal(fn(narrow.ctx, 'agentDockIsCollapsed')('A'), true, '旧 VM 手动展开不影响新窄视口');
+    assert.deepEqual(dockMemory(narrow.ctx), { collapsed: ['A'], expanded: [] });
+    for (const m of [first, wide, narrow]) {
+        assert.equal(m.ctx.canvasState.nodes.some(n => Object.hasOwn(n, 'dockCollapsed')), false);
+        assert.deepEqual(dockEffects(m.renders), []);
+    }
+});
+
+test('#407 D1-v2 agentDockSet：非 Agent 与缺失 id 不得停靠、替换或保存', () => {
+    const nodes = [
+        { id: 'A', type: 'smart-agent', dock: 'left' },
+        { id: 'image', type: 'smart-image', x: 1, y: 2 },
+        { id: 'task', type: 'agent-task' },
+    ];
+    const { ctx, renders } = loadAgentDockModule({ nodes });
+    const before = fromContext(nodes);
+    for (const id of ['image', 'task', 'ghost']) {
+        fn(ctx, 'agentDockSet')(id, 'right');
+        fn(ctx, 'agentDockSet')(id, null);
+    }
+    assert.deepEqual(nodes, before);
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] });
+    assert.deepEqual(renders, [], '非法目标不能触发 render/scheduleSave');
+});
+
+test('#407 D1-v2 唯一停靠：B 停任一侧都替换 A，原坐标/同一草稿状态/viewport 不动', () => {
+    for (const side of ['left', 'right']) {
+        const a = { id: 'A', type: 'smart-agent', dock: null, x: -850.25, y: 1700 };
+        const b = { id: 'B', type: 'smart-agent', dock: null, x: 345, y: -44.5 };
+        const { ctx, renders } = loadAgentDockModule({ nodes: [a, b] });
+        const viewport = ctx.viewport;
+        const beforeViewport = fromContext(viewport);
+        const aState = fn(ctx, 'getAgentTuiState')('A');
+        const bState = fn(ctx, 'getAgentTuiState')('B');
+        aState.draft = 'A 未发送 <草稿>';
+        bState.draft = 'B 未发送 & 草稿';
+        fn(ctx, 'agentDockSet')('A', 'left');
+        fn(ctx, 'agentDockCollapseToggle')('A');
+        if (side === 'right') fn(ctx, 'agentDockCollapseToggle')('A');
+        assert.ok(evaluate(ctx, 'agentDockCollapsed.has("A") || agentDockUserExpanded.has("A")'));
+
+        fn(ctx, 'agentDockSet')('B', side);
+        assert.equal(a.dock, null, `停 ${side} 的 B 必须取回 A，不是每侧各留一个`);
+        assert.equal(b.dock, side);
+        assert.deepEqual([a.x, a.y, b.x, b.y], [-850.25, 1700, 345, -44.5]);
+        assert.equal(fn(ctx, 'getAgentTuiState')('A'), aState);
+        assert.equal(fn(ctx, 'getAgentTuiState')('B'), bState);
+        assert.equal(aState.draft, 'A 未发送 <草稿>');
+        assert.equal(bState.draft, 'B 未发送 & 草稿');
+        assert.ok(fn(ctx, 'agentNodeBodyHtml')(a).includes('A 未发送 &lt;草稿&gt;'));
+        assert.ok(fn(ctx, 'agentNodeBodyHtml')(b).includes('B 未发送 &amp; 草稿'));
+        assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] }, '替换时遗忘 A 的两种 UI 标记');
+        assert.equal(ctx.viewport, viewport);
+        assert.deepEqual(ctx.viewport, beforeViewport);
+        assert.equal(renders.some(r => r.kind === 'centerViewport'), false);
+        assert.equal([a, b].some(n => Object.hasOwn(n, 'dockCollapsed')), false);
+    }
+});
+
+test('#407 D1-v2 取回按钮：落回原坐标，草稿/viewport 不动，清收起或手动展开标记', () => {
+    for (const expanded of [false, true]) {
+        const node = { id: 'A', type: 'smart-agent', dock: 'right', x: -310, y: 2048.5 };
+        const { ctx, harness, renders } = loadAgentDockModule({ width: 800, nodes: [node] });
+        const viewport = fromContext(ctx.viewport);
+        const state = fn(ctx, 'getAgentTuiState')('A');
+        state.draft = '取回仍保留的草稿';
+        fn(ctx, 'syncAgentDock')();
+        if (expanded) fn(ctx, 'agentDockCollapseToggle')('A');
+        assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), !expanded);
+        const btn = harness.makeElement('button');
+        btn.dataset.agentDockUndock = 'A';
+        const el = harness.makeElement('div');
+        el.querySelectorAll = sel => sel === '[data-agent-dock-undock]' ? [btn] : [];
+        fn(ctx, 'bindAgentHeadControls')(el, node);
+        renders.length = 0;
+        btn.dispatchEvent(ev('click'));
+        assert.deepEqual(node, { id: 'A', type: 'smart-agent', dock: null, x: -310, y: 2048.5 });
+        assert.equal(fn(ctx, 'getAgentTuiState')('A'), state);
+        assert.equal(state.draft, '取回仍保留的草稿');
+        assert.deepEqual(ctx.viewport, viewport);
+        assert.equal(renders.some(r => r.kind === 'centerViewport'), false);
+        assert.ok(renders.some(r => r.kind === 'render'), '真实按钮进入停靠切换路径');
+        assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] });
+    }
+});
+
+test('#407 D1-v2 normalizeAgentDockNodes：按数组首个 Agent 保留唯一 dock，删除全部旧收起字段且幂等', () => {
+    const nodes = [
+        { id: 'image', type: 'smart-image', dock: 'left', dockCollapsed: true, x: 1, y: 2 },
+        { id: 'Z', type: 'smart-agent', dock: 'right', dockCollapsed: true, x: -3, y: 4 },
+        { id: 'A', type: 'smart-agent', dock: 'left', dockCollapsed: false, x: 5, y: -6 },
+        { id: 'B', type: 'smart-agent', dock: 'right', dockCollapsed: true },
+        { id: 'floating', type: 'smart-agent', dock: null, dockCollapsed: false },
+        { id: 'task', type: 'agent-task', dockCollapsed: true },
+    ];
+    const { ctx, renders } = loadAgentDockModule({ nodes });
+    const normalize = fn(ctx, 'normalizeAgentDockNodes');
+    const refs = [...nodes];
+    normalize(nodes);
+    assert.deepEqual(nodes.map(n => n.dock ?? null), [null, 'right', null, null, null, null],
+        '忽略非 Agent 的旧 dock，Z 在 A 前，不得按 id 排序或左右各保留一个');
+    assert.equal(nodes.some(n => Object.hasOwn(n, 'dockCollapsed')), false, '包括浮动/非 Agent 的 false 字段也要删');
+    assert.deepEqual(nodes.slice(0, 3).map(n => [n.x, n.y]), [[1, 2], [-3, 4], [5, -6]]);
+    nodes.forEach((node, index) => assert.equal(node, refs[index], '原地规范化，不替换节点实体'));
+    const normalized = fromContext(nodes);
+    normalize(nodes);
+    assert.deepEqual(nodes, normalized, '重复归一化不继续变更文档');
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] }, '不能把旧收起字段迁移到内存');
+    assert.deepEqual(renders, []);
+});
+
+test('#407 D1-v2 sync 自身归一化旧多 dock 与旧字段，宽视口不继承旧收起且不保存', () => {
+    const nodes = [
+        { id: 'B', type: 'smart-agent', dock: 'right', dockCollapsed: true },
+        { id: 'A', type: 'smart-agent', dock: 'left', dockCollapsed: false },
+        { id: 'image', type: 'smart-image', dock: 'left', dockCollapsed: true },
+    ];
+    const { ctx, renders } = loadAgentDockModule({ nodes });
+    fn(ctx, 'syncAgentDock')();
+    assert.deepEqual(nodes, [
+        { id: 'B', type: 'smart-agent', dock: 'right' },
+        { id: 'A', type: 'smart-agent', dock: null },
+        { id: 'image', type: 'smart-image', dock: null },
+    ]);
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('B'), false);
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] });
+    assert.deepEqual(dockEffects(renders), [], '兼容数据的 sync 不能触发保存');
+});
+
+for (const { label, dock, dockSide } of [
+    { label: '自身停靠', dock: null, dockSide: 'right' },
+    { label: '自身取回', dock: 'left', dockSide: null },
+]) {
+    test(`#407 D1-v2 IME ${label}：pendingDock 为请求对象，真实 compositionend 后才执行`, () => {
+        const node = { id: 'A', type: 'smart-agent', dock, x: -90, y: 420 };
+        // 目标 A composing 的停靠请求也不能提前取回未 composing 的 incumbent B。
+        const other = { id: 'B', type: 'smart-agent', dock: dock === null ? 'left' : null, x: 50, y: -60 };
+        const { ctx, harness, renders } = loadAgentDockModule({ nodes: [node, other] });
+        const tree = buildAgentControlTree(harness);
+        fn(ctx, 'bindAgentNodeControls')(tree.el, node);
+        const state = fn(ctx, 'getAgentTuiState')('A');
+        tree.input.value = '未完成的中文';
+        tree.input.dispatchEvent(ev('input'));
+        tree.input.dispatchEvent(ev('compositionstart'));
+        assert.equal(state.composing, true);
+        const before = fromContext([node, other]);
+        const memory = dockMemory(ctx);
+        const viewport = fromContext(ctx.viewport);
+        fn(ctx, 'agentDockSet')('A', dockSide);
+        assert.deepEqual(fromContext(state.pendingDock), { nodeId: 'A', dockSide });
+        assert.deepEqual([node, other], before, '组合结束前目标与被替换者的 dock/坐标都不得变更');
+        assert.deepEqual(dockMemory(ctx), memory, '组合结束前不清 UI 标记');
+        assert.deepEqual(renders, [], '组合期间不得保存或重渲染');
+        tree.input.value = '完成的中文草稿';
+        tree.input.dispatchEvent(ev('compositionend'));
+        assert.equal(state.composing, false);
+        assert.equal(state.pendingDock, undefined, '请求消费后清槽');
+        assert.equal(node.dock, dockSide);
+        assert.equal(other.dock, null, '组合结束后才取回被替换的 B');
+        assert.deepEqual([node.x, node.y, other.x, other.y], [-90, 420, 50, -60]);
+        assert.equal(fn(ctx, 'getAgentTuiState')('A'), state);
+        assert.equal(state.draft, '完成的中文草稿');
+        assert.deepEqual(ctx.viewport, viewport);
+        assert.ok(renders.some(r => r.kind === 'render'), '组合结束后才真正切换形态');
+        assert.equal(Object.hasOwn(node, 'dockCollapsed'), false);
+    });
+}
+
+test('#407 D1-v2 IME 替换：A composing 时 B 请求挂 A，compositionend 必须执行 B 而非 A', () => {
+    const a = { id: 'A', type: 'smart-agent', dock: 'left', x: -200, y: 300 };
+    const b = { id: 'B', type: 'smart-agent', dock: null, x: 800, y: -900 };
+    const { ctx, harness, renders } = loadAgentDockModule({ nodes: [a, b] });
+    fn(ctx, 'agentDockCollapseToggle')('A');
+    const tree = buildAgentControlTree(harness);
+    fn(ctx, 'bindAgentNodeControls')(tree.el, a);
+    const aState = fn(ctx, 'getAgentTuiState')('A');
+    const bState = fn(ctx, 'getAgentTuiState')('B');
+    bState.draft = 'B 的待发送草稿';
+    tree.input.value = 'A 正在输入';
+    tree.input.dispatchEvent(ev('input'));
+    tree.input.dispatchEvent(ev('compositionstart'));
+    const before = fromContext([a, b]);
+    const memory = dockMemory(ctx);
+    const viewport = fromContext(ctx.viewport);
+    renders.length = 0;
+    fn(ctx, 'agentDockSet')('B', 'right');
+    assert.deepEqual(fromContext(aState.pendingDock), { nodeId: 'B', dockSide: 'right' });
+    assert.equal(bState.pendingDock, undefined, '请求必须挂阻塞者 A，而非未 composing 的 B');
+    assert.deepEqual([a, b], before, 'A/B 都不能在 A 组合结束前改变 dock');
+    assert.deepEqual(dockMemory(ctx), memory, '延迟请求不能提前遗忘 A 的收起态');
+    assert.deepEqual(renders, [], '不能提前 render 杀掉 A 的输入法');
+    tree.input.value = 'A 输入完成的草稿';
+    tree.input.dispatchEvent(ev('compositionend'));
+    assert.equal(aState.pendingDock, undefined);
+    assert.equal(aState.composing, false);
+    assert.equal(a.dock, null);
+    assert.equal(b.dock, 'right', 'compositionend 必须用 request.nodeId，不是事件所属 A');
+    assert.deepEqual([a.x, a.y, b.x, b.y], [-200, 300, 800, -900]);
+    assert.equal(fn(ctx, 'getAgentTuiState')('A'), aState);
+    assert.equal(fn(ctx, 'getAgentTuiState')('B'), bState);
+    assert.equal(aState.draft, 'A 输入完成的草稿');
+    assert.equal(bState.draft, 'B 的待发送草稿');
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] });
+    assert.deepEqual(ctx.viewport, viewport);
+    assert.ok(renders.some(r => r.kind === 'render'));
+    assert.equal([a, b].some(n => Object.hasOwn(n, 'dockCollapsed')), false);
+});
+
+test('#407 D1-v2 agentDockForget：只清目标两个 Set，保留节点/会话草稿，重复调用无副作用', () => {
+    const node = { id: 'A', type: 'smart-agent', dock: 'left' };
+    const { ctx, renders } = loadAgentDockModule({ nodes: [node] });
+    const state = fn(ctx, 'getAgentTuiState')('A');
+    state.draft = '保留草稿';
+    // 故意同时播两个标记，确认 forget 独立删除两者，不依赖互斥状态。
+    evaluate(ctx, 'agentDockCollapsed.add("A"); agentDockCollapsed.add("B"); agentDockUserExpanded.add("A"); agentDockUserExpanded.add("B")');
+    fn(ctx, 'agentDockForget')('A');
+    fn(ctx, 'agentDockForget')('A');
+    fn(ctx, 'agentDockForget')('ghost');
+    assert.deepEqual(dockMemory(ctx), { collapsed: ['B'], expanded: ['B'] });
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), false);
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('B'), true);
+    assert.deepEqual(node, { id: 'A', type: 'smart-agent', dock: 'left' });
+    assert.equal(fn(ctx, 'getAgentTuiState')('A'), state);
+    assert.equal(state.draft, '保留草稿');
+    assert.deepEqual(renders, []);
+});
+
+test('#407 D1-v2 cleanupAgentTuiState：有/无 TUI 条目都清两个停靠 Set，不影响其他节点', () => {
+    const { ctx, ws, renders } = loadAgentDockModule();
+    fn(ctx, 'connectAgentWebSocket')('A', 'p1');
+    evaluate(ctx, 'agentDockCollapsed.add("A"); agentDockCollapsed.add("B"); agentDockUserExpanded.add("A"); agentDockUserExpanded.add("B")');
+    fn(ctx, 'cleanupAgentTuiState')('A');
+    assert.deepEqual(dockMemory(ctx), { collapsed: ['B'], expanded: ['B'] });
+    assert.equal(evaluate(ctx, 'agentTuiState.has("A")'), false);
+    assert.equal(evaluate(ctx, 'agentTuiState.has("B")'), false, 'B 从未建立 TUI 状态');
+    assert.equal(ws.closed.length, 1);
+    fn(ctx, 'cleanupAgentTuiState')('B');
+    assert.deepEqual(dockMemory(ctx), { collapsed: [], expanded: [] });
+    assert.equal(evaluate(ctx, 'agentTuiState.size'), 0);
+    assert.deepEqual(renders, []);
+});
+
+test('#407 D1-v2 按钮 HTML：展开/收起文案读内存 Set，不读矛盾的旧 node.dockCollapsed', () => {
+    const { ctx } = loadAgentDockModule();
+    // 脱离 canvasState 的旧节点入参：故意让旧字段与内存相反，隔离 HTML 的读来源。
+    const node = { id: 'A', type: 'smart-agent', dock: 'left', dockCollapsed: false };
+    evaluate(ctx, 'agentDockCollapsed.add("A")');
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), true);
+    for (const name of ['agentDockButtonsHtml', 'agentHeadActionButtonsHtml']) {
+        const html = fn(ctx, name)(node);
+        assert.match(html, /data-agent-dock-collapse="A"[^>]*aria-label="展开"[^>]*>展开<\/button>/);
+        assert.ok(html.includes('data-agent-dock-undock="A"'));
+        assert.ok(!html.includes('>收起</button>'));
+    }
+    node.dockCollapsed = true;
+    evaluate(ctx, 'agentDockCollapsed.delete("A"); agentDockUserExpanded.add("A")');
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), false);
+    const expanded = fn(ctx, 'agentDockButtonsHtml')(node);
+    assert.match(expanded, /data-agent-dock-collapse="A"[^>]*aria-label="收起"[^>]*>收起<\/button>/);
+    assert.ok(!expanded.includes('>展开</button>'));
+    node.dock = null;
+    const floating = fn(ctx, 'agentDockButtonsHtml')(node);
+    assert.ok(floating.includes('data-agent-dock-side="left"') && floating.includes('data-agent-dock-side="right"'));
+    assert.ok(!floating.includes('data-agent-dock-collapse') && !floating.includes('data-agent-dock-undock'));
+});

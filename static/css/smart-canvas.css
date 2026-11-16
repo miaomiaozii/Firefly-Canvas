@@ -2846,8 +2846,8 @@ body.prompt-flow-active #world > :not(#composer) { visibility:hidden; pointer-ev
 
 /* Foundation history rail: continuous, image-first, and DOM-virtualization friendly. */
 .log-modal {
-    left:16px;
-    right:16px;
+    left:calc(16px + var(--agent-dock-left));
+    right:calc(16px + var(--agent-dock-right));
     bottom:16px;
     width:auto;
     max-width:none;

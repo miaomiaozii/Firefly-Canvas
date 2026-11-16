@@ -76,6 +76,32 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                 self.fail(f"static/js/{name}: node --check 30 秒还没返回，语法检查不能这样挂着")
             self.assertEqual(result.returncode, 0, f"static/js/{name}: {result.stderr.strip()}")
 
+    def test_dock_legacy_normalization_precedes_world_filter(self):
+        # #407：syncAgentDock 在 render 尾部才运行；旧多 dock 若在那里才释放，
+        # 被取回的节点会在这一帧缺席。仅钉宿主接线，算法走真实模块单测/浏览器。
+        source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        render = source[source.index("function render(){"):]
+        self.assertLess(render.index("normalizeAgentDockNodes(canvasState.nodes)"),
+                        render.index("const nodeHtmlEntries = canvasState.nodes"))
+
+    def test_dock_collapsed_is_stripped_at_load_and_storage_boundaries(self):
+        # #407：核心宿主不切函数到 VM 执行；此处只钉两处清理接线，真实保存/刷新由浏览器验证。
+        source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        storage = source[source.index("function canvasForStorage("):source.index("function apiErrorMessage(")]
+        normalize = source[source.index("function normalizeLegacySmartNode(node){"):source.index("function parseSizePair(")]
+        self.assertIn("delete node.dockCollapsed;", storage)
+        self.assertIn("delete node.dockCollapsed;", normalize)
+
+    def test_dock_legacy_field_is_kept_only_in_load_diff_baseline(self):
+        # #407：否则未改动节点在增量保存中无 mutation，磁盘残留永远删不掉。
+        # 这里只钉接线；真实模块/保存服务端往返由隔离浏览器覆盖。
+        source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        self.assertIn("preserveLegacyDockCollapsed=false", source)
+        self.assertIn("if(!preserveLegacyDockCollapsed) delete node.dockCollapsed;", source)
+        load = source[source.index("async function loadCanvas(){"):]
+        self.assertIn("projectCanvasSnapshot(canvasForStorage({preserveLegacyDockCollapsed:true}))", load)
+        self.assertEqual(source.count("canvasForStorage({preserveLegacyDockCollapsed:true})"), 1)
+
     def test_agent_node_path_literals_match_backend_prefix(self):
         # #170：#162 把裸全局 nodes 批量改成 canvasState.nodes 时，顺手污染了模板字符串里的
         # 路径段 agent-nodes/，前端全部 Agent 节点端点因此 404。路径段必须跟后端前缀一致。

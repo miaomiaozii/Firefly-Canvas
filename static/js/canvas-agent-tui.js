@@ -1388,9 +1388,9 @@ function bindAgentNodeControls(el, node){
             }
             // #407 D1：组合期间被推迟的停靠切换，组合结束后补执行（与 pendingRerender 同机制）
             if (state0.pendingDock !== undefined) {
-                const dock = state0.pendingDock;
+                const request = state0.pendingDock;
                 state0.pendingDock = undefined;
-                agentDockSet(nodeId, dock);
+                agentDockSet(request.nodeId, request.dockSide);
             }
         });
         inputEl.addEventListener('keydown', event => {
@@ -1661,8 +1661,8 @@ function bindAgentTaskNodeControls(el, node){
 }
 
 // ============ #407 D1：Agent 节点停靠（左/右贴边，不随画布缩放/平移） ============
-// 数据模型：node.dock ∈ {'left','right'}（无=浮动）、node.dockCollapsed ∈ {true,false}，
-// 两者随画布持久化（canvasForStorage 无字段白名单，深拷贝自动带上，与 node.w 同路）。
+// 数据模型：只有 node.dock ∈ {'left','right'}（无=浮动）和 node.w 随画布持久化。
+// 收起/手动展开只在内存 Set 中，刷新后按当前视口重判；不写节点，不触发保存。
 // 三种形态同一实体：会话/消息/草稿全在 agentTuiState（按 nodeId），停靠只换 DOM 挂载位置，
 // 不动 agentTuiState、不改 node.x/y、不动视口。全量 render() 跳过停靠节点，
 // 消息/流式更新走 renderAgentNode 就地路径（它按 [data-id] 全文档查找，元素在停靠槽里同样工作）——
@@ -1674,6 +1674,34 @@ const AGENT_DOCK_CLEAR_VW = 480;        // 面板宽 + 此值 > 视口宽 → �
 
 function agentDockState(node){
     return node && (node.dock === 'left' || node.dock === 'right') ? node.dock : null;
+}
+
+const agentDockCollapsed = new Set();
+const agentDockUserExpanded = new Set();
+
+function agentDockIsCollapsed(nodeId){
+    return agentDockCollapsed.has(nodeId);
+}
+
+function agentDockForget(nodeId){
+    agentDockCollapsed.delete(nodeId);
+    agentDockUserExpanded.delete(nodeId);
+}
+
+// 旧数据兼容：按 canvasState.nodes 顺序保留首个 Agent 的有效 dock。
+// 必须在 render 过滤 world 节点之前运行，不能等到尾部同步时才释放其它节点。
+function normalizeAgentDockNodes(nodes){
+    let kept = false;
+    (nodes || []).forEach(node => {
+        delete node.dockCollapsed;
+        if(!agentDockState(node)) return;
+        if(!isSmartAgentNode(node) || kept){
+            node.dock = null;
+            agentDockForget(node.id);
+        } else {
+            kept = true;
+        }
+    });
 }
 
 // 停靠宽度与画布内布局同公式（imageLayout 的 Agent 特判：node.w 有效则用，否则 382；下限 330）
@@ -1719,7 +1747,7 @@ function agentDockNodeHtml(node){
     const layout = imageLayout(node.images || [], scale, node) || { width: 382, height: 360 };
     const title = node.title || 'Agent';
     const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
-    return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${node.dockCollapsed ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
+    return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
         <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}${agentChatFrameStatusHtml(node)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}${deleteBtn}</div></div>
         <div class="node-body">${nodeBodyHtml(node, layout)}</div>
         <button type="button" class="dock-collapse-strip" data-agent-dock-expand="${escapeAttr(nodeId)}" title="展开停靠面板" aria-label="展开停靠面板"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="dock-strip-title">${escapeHtml(title)}</span></button>
@@ -1790,7 +1818,7 @@ function bindAgentDockDragOut(el, nodeId){
                 node.x = Math.round(p.x - 20);
                 node.y = Math.round(p.y - 20);
                 node.dock = null;
-                node.dockCollapsed = false;
+                agentDockForget(nodeId);
                 scheduleSave && scheduleSave();
                 render(); // 全量重建：world 里重新出节点，syncAgentDock 卸载停靠元素
             } else {
@@ -1802,30 +1830,41 @@ function bindAgentDockDragOut(el, nodeId){
     });
 }
 
-// 设置停靠侧（null=取回落回浮动）。#314：IME 组合中推迟到 compositionend（pendingDock）。
+// 设置停靠侧（null=按钮取回原坐标）。最多一个 Agent 停靠；替换不改任何 x/y。
+// #314：目标或被取回者正在 IME 组合时，整次切换延后到阻塞者 compositionend。
 function agentDockSet(nodeId, dockSide){
     const node = canvasState.nodes.find(n => n.id === nodeId);
-    if(!node) return;
-    const st = agentTuiState.get(nodeId);
-    if(st && st.composing){ st.pendingDock = dockSide === null ? null : dockSide; return; }
-    const focusInfo = agentDockCaptureFocus(nodeId);
-    node.dock = (dockSide === 'left' || dockSide === 'right') ? dockSide : null;
-    if(node.dock && agentDockShouldAutoCollapse(node)){
-        node.dockCollapsed = true; // 窄视口自动收起（只收不展；收起态随画布持久化）
+    if(!isSmartAgentNode(node)) return;
+    const side = (dockSide === 'left' || dockSide === 'right') ? dockSide : null;
+    const displaced = side ? canvasState.nodes.filter(n => n !== node && isSmartAgentNode(n) && agentDockState(n)) : [];
+    const affected = [node, ...displaced];
+    const blocker = affected.find(n => agentTuiState.get(n.id)?.composing);
+    if(blocker){
+        agentTuiState.get(blocker.id).pendingDock = {nodeId, dockSide:side};
+        return;
     }
-    if(!node.dock) node.dockCollapsed = false;
+    const focus = affected.map(n => ({nodeId:n.id, info:agentDockCaptureFocus(n.id)})).find(item => item.info);
+    displaced.forEach(n => {
+        n.dock = null;
+        agentDockForget(n.id);
+    });
+    node.dock = side;
+    if(!side) agentDockForget(nodeId);
     if(typeof scheduleSave === 'function') scheduleSave();
-    render(); // world 重建（停靠节点被滤除/重新出现）+ 尾部 syncAgentDock 同步停靠槽
-    agentDockRestoreFocus(nodeId, focusInfo);
+    render(); // world 重建 + 尾部 syncAgentDock；收起态仅在同步入口按视口判断
+    if(focus) agentDockRestoreFocus(focus.nodeId, focus.info);
 }
 
 function agentDockCollapseToggle(nodeId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node || !agentDockState(node)) return;
-    node.dockCollapsed = !node.dockCollapsed;
-    if(node.dockCollapsed) agentDockUserExpanded.delete(nodeId);
-    else agentDockUserExpanded.add(nodeId); // 手动展开：窄视口下不再被自动收起覆盖
-    if(typeof scheduleSave === 'function') scheduleSave();
+    if(agentDockIsCollapsed(nodeId)){
+        agentDockCollapsed.delete(nodeId);
+        agentDockUserExpanded.add(nodeId); // 手动展开：本次页面中不再被自动收起覆盖
+    } else {
+        agentDockCollapsed.add(nodeId);
+        agentDockUserExpanded.delete(nodeId);
+    }
     syncAgentDock();
 }
 
@@ -1835,13 +1874,10 @@ function agentDockShouldAutoCollapse(node){
     return agentDockNodeWidth(node) + AGENT_DOCK_CLEAR_VW > vw;
 }
 
-// 用户在窄视口下手动展开过的节点——抑制自动收起，直到用户再手动收起（会话级，不持久化；
-// 刷新后按持久化 dockCollapsed + 当前视口重新判定，与批准方案一致）。
-const agentDockUserExpanded = new Set();
-
 // 停靠槽同步（每次全量 render() 尾部调用）：挂载/卸载停靠元素、宽度/收起态/选中态、
 // 以及 #shell 上的 --agent-dock-left/--agent-dock-right（历史抽屉/小地图/工具栏据此让出空间）。
 function syncAgentDock(){
+    normalizeAgentDockNodes(canvasState.nodes);
     const dock = document.getElementById('agentDock');
     if(!dock) return;
     const dockedNodes = (canvasState.nodes || []).filter(n => agentDockState(n));
@@ -1861,23 +1897,26 @@ function syncAgentDock(){
     });
     // 现有元素同步宽度/收起/选中（render 后 world 里的类不同步到停靠元素，这里补）；
     // 窄视口自动收起（只收不展：收起态是用户/自动选择，宽视口恢复后不自动展开）
-    let leftReserve = 0, rightReserve = 0, collapsedNow = false;
+    let leftReserve = 0, rightReserve = 0;
     dockedNodes.forEach(node => {
-        if(!node.dockCollapsed && !agentDockUserExpanded.has(node.id) && agentDockShouldAutoCollapse(node)){
-            node.dockCollapsed = true;
-            collapsedNow = true;
-        }
+        if(!agentDockUserExpanded.has(node.id) && agentDockShouldAutoCollapse(node)) agentDockCollapsed.add(node.id);
+        const collapsed = agentDockIsCollapsed(node.id);
         const el = agentDockElement(node.id);
         if(el){
-            el.classList.toggle('dock-collapsed', Boolean(node.dockCollapsed));
+            el.classList.toggle('dock-collapsed', collapsed);
             el.classList.toggle('dock-left', node.dock === 'left');
             el.classList.toggle('dock-right', node.dock === 'right');
             el.classList.toggle('selected', isNodeSelected(node.id));
             // 收起态宽度用 CSS 类的 44px——但挂载时写了内联 width（同画布节点模板），内联优先，
             // 所以收起时把内联改成 44，展开时改回节点宽。
-            el.style.width = (node.dockCollapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node)) + 'px';
+            el.style.width = (collapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node)) + 'px';
+            el.querySelectorAll('[data-agent-dock-collapse]').forEach(btn => {
+                btn.textContent = collapsed ? '展开' : '收起';
+                btn.title = collapsed ? '展开停靠面板' : '收起为窄条';
+                btn.setAttribute('aria-label', btn.textContent);
+            });
         }
-        const reserveW = node.dockCollapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node);
+        const reserveW = collapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node);
         if(node.dock === 'left') leftReserve = AGENT_DOCK_GAP + reserveW;
         else rightReserve = AGENT_DOCK_GAP + reserveW;
     });
@@ -1887,7 +1926,6 @@ function syncAgentDock(){
         shellEl.style.setProperty('--agent-dock-right', rightReserve + 'px');
     }
     dock.hidden = dockedNodes.length === 0;
-    if(collapsedNow && typeof scheduleSave === 'function') scheduleSave(); // 自动收起的持久化
 }
 
 // 视口缩放时重判停靠几何（自动收起/展开变量）；syncAgentDock 是幂等的，防抖后直调
@@ -1903,11 +1941,14 @@ window.addEventListener('resize', () => {
 // 清理节点时同步卸载停靠元素（deleteNode 路径兜底：render() 后的 syncAgentDock 也会处理，
 // 这里保证删除帧里停靠槽不残留一帧）
 function agentDockUnmount(nodeId){
+    if(!document.getElementById('agentDock')) return;
     const el = agentDockElement(nodeId);
     if(el) el.remove();
 }
 
 function cleanupAgentTuiState(nodeId) {
+    agentDockForget(nodeId);
+    agentDockUnmount(nodeId);
     const state = agentTuiState.get(nodeId);
     if (state) {
         // #280：先标记再关——onclose 见 closing 不会安排重连；并取消在途退避定时器。
@@ -2047,7 +2088,7 @@ function agentDockButtonsHtml(node){
         return `<button type="button" class="agent-tui-btn agent-dock-btn" data-agent-dock-set="${id}" data-agent-dock-side="left" title="停靠到画布左侧（不随画布缩放/平移）" aria-label="停靠左侧">停左</button>`
              + `<button type="button" class="agent-tui-btn agent-dock-btn" data-agent-dock-set="${id}" data-agent-dock-side="right" title="停靠到画布右侧（不随画布缩放/平移）" aria-label="停靠右侧">停右</button>`;
     }
-    const collapseLabel = node.dockCollapsed ? '展开' : '收起';
+    const collapseLabel = agentDockIsCollapsed(node.id) ? '展开' : '收起';
     return `<button type="button" class="agent-tui-btn agent-dock-btn" data-agent-dock-collapse="${id}" title="${collapseLabel === '展开' ? '展开停靠面板' : '收起为窄条'}" aria-label="${escapeHtml(collapseLabel)}">${escapeHtml(collapseLabel)}</button>`
          + `<button type="button" class="agent-tui-btn agent-dock-btn" data-agent-dock-undock="${id}" title="取回画布（拖节点头也可）" aria-label="取回落回浮动">取回</button>`;
 }
