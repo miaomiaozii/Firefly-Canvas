@@ -1,0 +1,87 @@
+"""#388: POST /agent-nodes/{id}/prompt 对不存在节点必须 404，不创建会话、不 spawn。
+
+票面（GitHub #388）：期望 404 且前后进程计数不变；已存在节点行为不变。
+单测层用 mock 证明 get_or_create_session / spawn_session 从未被调用（等价于
+「不创建会话、不 spawn 进程」）；live 进程计数复测见交付 post。
+"""
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import main
+from firefly_projects import ProjectStore
+from app.routers import api_agent_nodes
+
+
+class TestPromptNode404_388(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="firefly-388-")
+        self.store = ProjectStore(Path(self.temp.name) / "projects", snapshot_delay=0)
+        self.previous_store = main.FIREFLY_PROJECT_STORE
+        main.FIREFLY_PROJECT_STORE = self.store
+        self.project_id = self.store.create_project("票388幽灵节点")["id"]
+        self.store.apply_mutations(self.project_id, [
+            {"op": "upsert_node", "node": {
+                "id": "agent-real", "type": "agent", "kind": "agent",
+                "x": 0, "y": 0, "agentCli": "pi",
+            }},
+        ], base_revision=0)
+        self.store.flush(self.project_id)
+        self.client = TestClient(main.app, base_url="http://127.0.0.1",
+                                 headers={"origin": "http://127.0.0.1"})
+
+    def tearDown(self):
+        self.client.close()
+        self.store.close()
+        main.FIREFLY_PROJECT_STORE = self.previous_store
+        self.temp.cleanup()
+
+    def _prompt(self, node_id):
+        return self.client.post(
+            f"/api/projects/{self.project_id}/agent-nodes/{node_id}/prompt",
+            json={"message": "hello"},
+        )
+
+    def test_prompt_missing_node_404_no_session_no_spawn(self):
+        with patch.object(api_agent_nodes.agent_host_manager,
+                          "get_or_create_session") as goc, \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "spawn_session") as spawn:
+            r = self._prompt("agent-ghost")
+        self.assertEqual(r.status_code, 404, r.text)
+        goc.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_prompt_existing_node_unchanged(self):
+        class _Session:
+            node_id = "agent-real"
+            is_running = True
+
+        async def _fake_goc(*a, **k):
+            return _Session()
+
+        async def _fake_send(session, message, images):
+            return None
+
+        with patch.object(api_agent_nodes.agent_host_manager,
+                          "get_or_create_session", _fake_goc), \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "spawn_session") as spawn, \
+             patch.object(api_agent_nodes.agent_host_manager,
+                          "send_prompt", _fake_send):
+            r = self._prompt("agent-real")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json().get("success"))
+        spawn.assert_not_called()  # 已 running 不再 spawn（原语义保持）
+
+
+if __name__ == "__main__":
+    unittest.main()

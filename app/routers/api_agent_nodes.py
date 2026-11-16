@@ -402,6 +402,9 @@ async def send_agent_prompt(
     x_agent_project: str = Header(default=""),
 ):
     """Send a prompt to the agent."""
+    # #388：节点必须已存在于 canvas——幽灵 node_id 不得 get_or_create+spawn。
+    # （正式创建入口是 POST /agent-nodes，它对不存在节点会 _upsert_agent_canvas_node 落盘。）
+    _find_node(project_id, node_id)  # 404 for missing project/node
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     _apply_node_host(project_id, node_id, session)
     if not session.is_running:
