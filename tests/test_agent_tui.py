@@ -59,6 +59,19 @@ def tearDownModule():
     restore_stub_pi_cli(_PREVIOUS_PI_CLI)
 
 
+def _close_loop(loop):
+    """取消该 loop 上的挂起任务后关闭（修存量红：loop 被前序测试关闭/泄漏）。"""
+    try:
+        pending = [t for t in asyncio.all_tasks(loop) if t.get_loop() is loop]
+        for t in pending:
+            t.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
 class TestAgentHostManager(unittest.TestCase):
     """Test the agent host manager with fake agent process."""
 
@@ -219,15 +232,22 @@ class TestAgentCommandSending(unittest.TestCase):
     """Test sending steer, follow_up, and abort commands."""
 
     def setUp(self):
+        # 修存量红：前序测试（如 351）的 asyncio.run 会关掉线程默认 loop，
+        # get_event_loop() 拿到已关闭 loop。改为每用例新建并负责关闭。
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
         self.project_id = "test-project"
         self.node_id = "agent-1"
         self.manager = AgentHostManager()
-        self.session = asyncio.get_event_loop().run_until_complete(
+        self.session = self.loop.run_until_complete(
             self.manager.get_or_create_session(self.project_id, self.node_id)
         )
         self.process = FakeAgentProcess(script=[{"type": "session", "sessionId": "s1"}])
         self.session.process = self.process
         self.session.status = "running"
+
+    def tearDown(self):
+        _close_loop(self.loop)
 
     def test_send_steer(self):
         """Test that send_steer sends the correct command."""
@@ -265,13 +285,15 @@ class TestAgentCrashRecovery(unittest.TestCase):
     """Test crash detection and auto-respawn."""
 
     def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
         self.project_id = "test-project"
         self.node_id = "agent-crash"
         self.manager = AgentHostManager()
         # The reader task auto-respawns crashed sessions, which would otherwise
         # reach the real spawn_session -> subprocess.Popen path (#179).
         self.spawn_patcher, self.spawn_calls = install_fake_spawn(self.manager)
-        self.session = asyncio.get_event_loop().run_until_complete(
+        self.session = self.loop.run_until_complete(
             self.manager.get_or_create_session(self.project_id, self.node_id)
         )
         # Create a fake process that will "crash"
@@ -283,6 +305,7 @@ class TestAgentCrashRecovery(unittest.TestCase):
 
     def tearDown(self):
         self.spawn_patcher.stop()
+        _close_loop(self.loop)
 
     def test_process_exit_sets_crashed_status(self):
         """Test that when the process exits with non-zero code, status is crashed."""
