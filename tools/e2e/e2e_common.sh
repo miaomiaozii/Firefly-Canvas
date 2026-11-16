@@ -134,6 +134,8 @@ e2e_new_project() {
 
 e2e_run() {
   local name="$1" out i js shot fake
+  # 迭代用过滤器（不进 CI 路径）：FIREFLY_E2E_ONLY=正则，只跑匹配的场景，其余静默跳过。
+  if [ -n "${FIREFLY_E2E_ONLY:-}" ] && ! printf '%s' "$name" | grep -qE "$FIREFLY_E2E_ONLY"; then return 0; fi
   js=$(cat)
   # 真事件守卫（#360）：场景体里不许做合成交互，也不许绕过 UI 直接改应用内部状态。
   # evaluate 只准读断言。#344/#299 那批「假绿」就是从这两处溜进来的：el.click() 绕开
@@ -184,21 +186,33 @@ if ("${FIREFLY_E2E_RESEED:-1}" !== "0" && "${FIREFLY_E2E_PROJECT:-}" === "") {
   if (got !== want) throw new Error('E2E_START_STATE 起点不等于种子: got=' + got + ' want=' + want);
 }
 const __r = await (async () => {
+try {
 $js
+} catch (e) { return { thrown: String(e && e.message || e).slice(0, 300) }; }
 })();
-await page.screenshot();
-return __r;
+// tabbit 已知工具约束（2026-11-16 隔离实例实测）：同一任务里第一次 page.screenshot 之后
+// 再截图（或导航后再截图）必 30s 挂死。截图失败降级为告警，不能让工具挂死
+// 掩盖场景真实结果；能拍到的证据截图照常保存。
+let __shotErr = '';
+try { await page.screenshot({animations: "disabled", timeout: 15000}); } catch(e){ __shotErr = String(e && e.message || e).slice(0,120); }
+return { __shotErr, __result: __r };
 JS
 )
     shot=$(echo "$out" | grep -o '"path":"[^"]*screenshot[^"]*\.png"' | tail -1 | sed 's/"path":"//;s/"$//;s/\\/\//g')
     if [ -n "$shot" ] && [ -f "$shot" ]; then mkdir -p "$EVID_DIR"; cp -f "$shot" "$EVID_DIR/$name-attempt$i.png" 2>/dev/null || true; fi
     if echo "$out" | grep -q '"status":"succeeded"'; then
+      if echo "$out" | grep -q '"thrown"'; then
+        echo "FAIL  $name  场景抛错：$(echo "$out" | grep -o '"thrown":"[^"]*"' | head -1)"
+        E2E_FAIL=$((E2E_FAIL + 1))
+        return
+      fi
       if echo "$out" | grep -q '"skip"'; then
         echo "SKIP  $name  $(echo "$out" | grep -o '"skip":"[^"]*"' | head -1)"
         E2E_SKIP=$((E2E_SKIP + 1))
         return
       fi
       echo "PASS  $name  $(echo "$out" | grep -o '"evidence":"[^"]*"' | head -1)"
+      if echo "$out" | grep -q '__shotErr'; then echo "  SHOT_WARN 证据截图失败（tabbit 截图挂死约束，不影响断言）"; fi
       E2E_PASS=$((E2E_PASS + 1))
       return
     fi

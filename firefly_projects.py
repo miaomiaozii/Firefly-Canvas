@@ -2868,6 +2868,21 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             )
             return result
 
+    def find_canvas_node(self, project_id: str, node_id: str) -> Optional[Dict[str, Any]]:
+        """只读查询画布节点（#375：agent 写回前确认目标结果卡仍在）。
+
+        节点缺失时 complete_media_generation 会在 (0,0) 新建幽灵卡——调用方先用
+        本方法检查，不要依赖写回本身探节点。
+        """
+        try:
+            canvas = self.open_project(_clean_project_id(project_id))["canvas"]
+        except ProjectStoreError:
+            return None
+        for item in canvas.get("nodes") or []:
+            if str(item.get("id") or "") == str(node_id or "").strip():
+                return item
+        return None
+
     def complete_image_generation(
         self,
         project_id: str,

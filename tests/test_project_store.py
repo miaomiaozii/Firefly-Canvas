@@ -1266,6 +1266,41 @@ class ProjectStoreContractTests(unittest.TestCase):
         node = self.store.open_project(project["id"])["canvas"]["nodes"][0]
         self.assertEqual(node, {"id": "prompt-node", "type": "prompt", "text": "保留我"})
 
+    def test_agent_writeback_requires_existing_node_and_pending_task(self):
+        """#375：agent 写回目标卡被用户撤掉后不得复活。
+
+        complete_image_generation(require_pending=True) 对缺失节点必须拒绝写入——
+        不带 require_pending 的默认路径会在 (0,0) 新建幽灵卡（本测试同时钉住两种
+        行为，防止参数被改回去）。api_agent_tools._run_agent_generation 写回前还会
+        用 find_canvas_node 预检，按「用户已丢弃结果」收场。
+        """
+        project = self.store.create_project("幽灵卡守卫")
+        media = self.store.import_media(project["id"], b"img", "img.png", "image/png")
+        self.apply_mutations(project["id"], [
+            {"op": "upsert_node", "node": {"id": "ghost-target", "type": "image", "x": 40, "y": 40}},
+            {"op": "upsert_node", "node": {"id": "keep-me", "type": "image", "x": 340, "y": 40}},
+        ])
+        self.assertIsNotNone(self.store.find_canvas_node(project["id"], "ghost-target"))
+        self.apply_mutations(project["id"], [{"op": "remove_node", "node_id": "ghost-target"}])
+        self.assertIsNone(self.store.find_canvas_node(project["id"], "ghost-target"))
+
+        with self.assertRaisesRegex(InvalidMutation, "生成任务已结束"):
+            self.store.complete_image_generation(
+                project["id"], "ghost-target", [{"asset_id": media["asset_id"], "kind": "image"}],
+                {"id": "generation-ghost", "prompt": "甲"}, task_id="task-ghost", require_pending=True,
+            )
+        nodes = self.store.open_project(project["id"])["canvas"]["nodes"]
+        self.assertNotIn("ghost-target", {item.get("id") for item in nodes})
+
+        # 反面对照（钉住守卫的意义）：不带 require_pending 会在 (0,0) 重建幽灵卡。
+        self.store.complete_image_generation(
+            project["id"], "ghost-target", [{"asset_id": media["asset_id"], "kind": "image"}],
+            {"id": "generation-ghost-2", "prompt": "乙"},
+        )
+        revived = self.store.find_canvas_node(project["id"], "ghost-target")
+        self.assertIsNotNone(revived)
+        self.assertEqual((revived.get("x"), revived.get("y")), (0, 0))
+
     def test_generation_lifecycle_is_registered_and_failure_is_persisted(self):
         project = self.store.create_project("任务生命周期")
         self.apply_mutations(project["id"], [

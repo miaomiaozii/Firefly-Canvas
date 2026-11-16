@@ -64,7 +64,7 @@ async def _apply_mutations(project_id: str, mutations: list):
             canvas = store.canvas(project_id)
             revision = int(canvas.get("revision") or 0)
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
-            await _broadcast_canvas_updated(project_id)
+            await _broadcast_canvas_updated(project_id, source="agent")
             return result
         except RevisionConflict:
             # Revision conflict: another writer updated the canvas.
@@ -76,14 +76,20 @@ async def _apply_mutations(project_id: str, mutations: list):
             raise HTTPException(status_code=409, detail=str(e))
 
 
-async def _broadcast_canvas_updated(project_id: str) -> None:
-    """Best-effort ``canvas_updated`` broadcast after an agent-tools mutation."""
+async def _broadcast_canvas_updated(project_id: str, source: str = "") -> None:
+    """Best-effort ``canvas_updated`` broadcast after an agent-tools mutation.
+
+    #375: forwards a `source` tag ("agent") into the broadcast payload so the
+    front end snapshots its pre-merge state into the canvas undo stack —
+    Ctrl+Z must be able to take an agent mutation back out. Default ("")
+    keeps every non-tool broadcast byte-identical (#371 stance).
+    """
     manager = getattr(_app_main, "manager", None)
     if manager is None:
         return
     try:
         canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
-        await manager.broadcast_canvas_updated(project_id, int(canvas.get("updated_at") or _app_main.now_ms()))
+        await manager.broadcast_canvas_updated(project_id, int(canvas.get("updated_at") or _app_main.now_ms()), source=source)
     except Exception:
         pass  # broadcast is best-effort; never fail the mutation because of it
 
@@ -673,13 +679,24 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
             "source_node_id": node_id,
         }
         store = _app_main.FIREFLY_PROJECT_STORE
+        # #375：目标结果卡可能已被用户 Ctrl+Z 撤掉。store.complete_*_generation 对
+        # 缺失节点会在 (0,0) 新建幽灵卡；写回前先确认节点还在，不在就按「用户已
+        # 丢弃结果」收场（cancelled + 明确 error），不把生成本身判死。
+        if items and store.find_canvas_node(project_id, result_node_id) is None:
+            with CANVAS_TASK_LOCK:
+                CANVAS_TASKS[task_id].update({
+                    "status": "cancelled",
+                    "error": "目标结果卡已被移除，生成结果未写回",
+                    "updated_at": time.time(),
+                })
+            return
         if items:
             canvas = await asyncio.to_thread(
                 store.complete_image_generation, project_id, result_node_id, items,
-                history_record, task_id=task_id)
+                history_record, task_id=task_id, require_pending=True)
             await asyncio.to_thread(store.flush, project_id)
             await _app_main.manager.broadcast_canvas_updated(
-                project_id, int(canvas.get("updated_at") or timestamp))
+                project_id, int(canvas.get("updated_at") or timestamp), source="agent")
             result["result_node_id"] = result_node_id
             result["project_asset_ids"] = [it["asset_id"] for it in items]
             result["history_recorded"] = True
@@ -713,7 +730,7 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
                 failure_record)
             await asyncio.to_thread(store.flush, project_id)
             await _app_main.manager.broadcast_canvas_updated(
-                project_id, int(failed_canvas.get("updated_at") or failure_time))
+                project_id, int(failed_canvas.get("updated_at") or failure_time), source="agent")
         except Exception as inner:  # noqa: BLE001
             from app.core import logger as _logger
             _logger.warning("#351 fail_image_generation cleanup failed task=%s: %s", task_id, inner)

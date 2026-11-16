@@ -276,12 +276,16 @@ class ConnectionManager:
                 logger.warning(f"Broadcast image error: {e}")
                 self.active_connections.remove(connection)
 
-    async def broadcast_canvas_updated(self, canvas_id: str, updated_at: int, client_id: str = ""):
+    async def broadcast_canvas_updated(self, canvas_id: str, updated_at: int, client_id: str = "", source: str = ""):
         data = json.dumps({
             "type": "canvas_updated",
             "canvas_id": canvas_id,
             "updated_at": updated_at,
             "client_id": client_id or "",
+            # #375: 更新来源标记（"agent"=MCP/REST 工具写入）。默认空串，
+            # 默认路径（用户级联/他人标签页）行为零变化；前端据此只对
+            # agent 写入做“合并前入撤回栈”。
+            "source": source or "",
         })
         for connection in self.active_connections[:]:
             try:

@@ -110,7 +110,15 @@
             } catch(_) {}
             await sleep(100);
         }
-        assertion('server canvas persists restored nodes', (saved?.nodes || []).length === base + 2, (saved?.nodes || []).length);
+        const stackDump = await (async () => {
+            try {
+                const r = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/undo-stack`);
+                const j = await r.json();
+                const snaps = j.snapshots || j.stack || j || [];
+                return ' srvTail=' + JSON.stringify((Array.isArray(snaps) ? snaps : []).slice(-4).map(s => (s.nodes || []).length));
+            } catch (e) { return ' srvTail=ERR'; }
+        })();
+        assertion('server canvas persists restored nodes', (saved?.nodes || []).length === base + 2, (saved?.nodes || []).length + ' ids=' + JSON.stringify((saved?.nodes || []).map(n => n.id)) + stackDump);
     }
     window.addEventListener('error', event => {
         if(event?.error?.message) result.errors.push(event.error.message);

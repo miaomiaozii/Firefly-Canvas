@@ -1,4 +1,9 @@
-"""撤销/重做顶栏按钮浏览器测试：按钮状态同步、撤销/重做/删除往返、redo 栈清理、持久化。"""
+"""撤销/重做顶栏按钮浏览器测试：按钮状态同步、撤销/重做/删除往返、redo 栈清理、持久化。
+
+#375 拆成两个独立浏览器会话（各自 store/服务/种子项目）：
+  1) undo_redo_browser_client.js —— 既有主套件，不掺 agent 阶段；
+  2) undo_agent_undo_client.js —— agent 服务端写入的撤回链（合并落盘/撤回落盘/终局一致）。
+合并到单页实测（2026-11-16）会让两阶段的保存动力学互相干扰，末条既有断言拖动。"""
 from __future__ import annotations
 import sys as _bootstrap_sys
 from pathlib import Path as _bootstrap_Path
@@ -19,7 +24,9 @@ if str(ROOT) not in sys.path:
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
 
-CLIENT_SCRIPT = ROOT / 'tests' / 'undo_redo_browser_client.js'
+import os as _os
+CLIENT_SCRIPT = Path(_os.environ.get('FIREFLY_UNDO_CLIENT') or (ROOT / 'tests' / 'undo_redo_browser_client.js'))
+AGENT_CLIENT_SCRIPT = ROOT / 'tests' / 'undo_agent_undo_client.js'
 VIEWPORTS = [(1424, 900)]
 
 
@@ -70,26 +77,32 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
 
 def main():
     browser = harness.find_browser()
-    harness.CLIENT_SCRIPT = CLIENT_SCRIPT
     results = []
     with tempfile.TemporaryDirectory(prefix='firefly-undo-redo-library-') as root:
         for index, viewport in enumerate(VIEWPORTS):
-            store = ProjectStore(Path(root) / f'projects-{index}', snapshot_delay=0)
-            project_id = seed_store(store)
-            app = load_app(Path(root) / f'runtime-{index}', store)
-            server = harness.ConversationBrowserServer(store, app)
-            server.start()
-            try:
-                result = launch(browser, server, viewport, project_id)
-            finally:
-                server.close()
-            results.append(result)
-            print(json.dumps({
-                'viewport': viewport,
-                'pass': result.get('pass'),
-                'errors': result.get('errors') or [],
-                'assertions': len(result.get('assertions') or []),
-            }))
+            sessions = [
+                ('undo-redo-main', CLIENT_SCRIPT),
+                ('undo-redo-agent', AGENT_CLIENT_SCRIPT),
+            ]
+            for session_index, (session_name, client_script) in enumerate(sessions):
+                store = ProjectStore(Path(root) / f'projects-{index}-{session_index}', snapshot_delay=0)
+                project_id = seed_store(store)
+                app = load_app(Path(root) / f'runtime-{index}-{session_index}', store)
+                server = harness.ConversationBrowserServer(store, app, client_script=client_script)
+                server.start()
+                try:
+                    result = launch(browser, server, viewport, project_id)
+                finally:
+                    server.close()
+                result = {**result, 'session': session_name}
+                results.append(result)
+                print(json.dumps({
+                    'session': session_name,
+                    'viewport': viewport,
+                    'pass': result.get('pass'),
+                    'errors': result.get('errors') or [],
+                    'assertions': len(result.get('assertions') or []),
+                }, ensure_ascii=False))
     summary = {
         'pass': all(item.get('pass') for item in results),
         'failures': [item for item in results if not item.get('pass')],

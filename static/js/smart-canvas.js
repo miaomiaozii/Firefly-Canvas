@@ -5096,8 +5096,21 @@ function mergeSmartNodeLists(localNodes, remoteNodes, terminalTaskIds=new Set())
         return mergeSmartNode(local, remote, terminalTaskIds);
     }).filter(Boolean);
 }
-function applyMergedServerCanvas(serverCanvas){
+let pendingAgentMergeUndo = false;
+// #375：标志置位时刻的实时指纹。去抖窗口内用户若自己改过画布（指纹偏移且撤回栈
+// 多了一步），合并时就不再推陈旧快照，否则 Ctrl+Z 会连带撤掉用户改动。
+let pendingAgentMergeFingerprint = '';
+function applyMergedServerCanvas(serverCanvas, options={}){
     if(!serverCanvas || !canvas) return false;
+    // #375: agent 工具写入经广播进来时，合并前留一份快照指纹；合并确实改变了
+    // 画布结构才把它推进撤回栈（Ctrl+Z 能把 agent 写入撤回去）。去抖窗口内多次
+    // agent 写入合并成一步；no-op 合并不进栈（#192 语义不变）。
+    const wantsAgentUndo = Boolean(options.agentUndo);
+    // 注意：必须是字符串指纹，不能存数组引用——merge 会替换 canvasState.nodes 引用，
+    // 合并后再 stringify 存下的引用就失真（structureChanged 恒 false）。
+    const preMergeFingerprint = wantsAgentUndo ? JSON.stringify({nodes: canvasState.nodes, connections: canvas.connections}) : '';
+    // 关键：快照必须在 merge 之前取——它才是「agent 写入前用户所见」的撤回目标。
+    const preMergeSnapshot = wantsAgentUndo ? snapshotForUndo() : null;
     const remoteNodes = hydrateProjectMediaReferences((Array.isArray(serverCanvas.nodes) ? serverCanvas.nodes : []).map(normalizeLegacySmartNode).filter(Boolean));
     const serverRevision = Number(serverCanvas.revision || 0);
     if(serverRevision > 0){
@@ -5139,6 +5152,28 @@ function applyMergedServerCanvas(serverCanvas){
     // #192: 只有合并真正带来了更新的状态才强制历史 rail 重建；no-op 合并不替换 rail 的 DOM。
     if(remoteStateNewer && smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
+    if(wantsAgentUndo && preMergeSnapshot){
+        const postFingerprint = JSON.stringify({nodes: canvasState.nodes, connections: canvas.connections});
+        const structureChanged = postFingerprint !== preMergeFingerprint;
+        // 去抖窗口内若用户自己也改过画布（实时指纹偏离合并前快照），栈顶已有用户自己的
+        // 撤回步骤，再推一份陈旧快照会连带撤掉用户改动——只撤纯 agent 写入。
+        // 必须在 merge 之前比对：merge 自身的 normalize/hydrate 会让「合并后 vs 快照」
+        // 必然假性不等（实测 reasons=[true,false]），不能拿合并后的状态当判据。
+        const liveUntouched = pendingAgentMergeFingerprint === preMergeFingerprint;
+        pendingAgentMergeFingerprint = '';
+        if(structureChanged && liveUntouched && !undoSuppressed){
+            undoStack.push(preMergeSnapshot);
+            if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+            syncUndoRedoButtons();
+            scheduleUndoStackPersist();
+            // 保存基线同步含 agent 节点的合并后状态：增量保存是「基线 vs 当前」差异，
+            // 基线里没有这个节点，撤回时就生成不出 remove_node——服务端删不掉，
+            // 下一次合并又会把它带回来（#375 落盘断言实测就是这个现象）。
+            persistedCoreSnapshot = projectCanvasSnapshot(canvasForStorage());
+            // #375 落盘：撤回必须进服务端，否则下一次 8s 轮询合并会把 agent 节点带回来。
+            scheduleSave();
+        }
+    }
     return true;
 }
 async function mergeReloadCanvasNow(){
@@ -5152,7 +5187,11 @@ async function mergeReloadCanvasNow(){
         const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`);
         if(!res.ok) return;
         const data = await res.json();
-        if(data && data.canvas) applyMergedServerCanvas(data.canvas);
+        // #375: 标志在此消费（而不是触发它的 handleCanvasUpdatedMessage）——
+        // 保存窗口补偿合并、轮询兜底等所有合并路径都经过这里，不逐处穿参。
+        const agentUndo = pendingAgentMergeUndo;
+        pendingAgentMergeUndo = false;
+        if(data && data.canvas) applyMergedServerCanvas(data.canvas, {agentUndo});
     } catch(e) { /* #348: 跨页同步的合并拉取——失败等下次变更/轮询再合并，不提示用户 */ }
 }
 
@@ -5174,6 +5213,12 @@ function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
 }
 function handleCanvasUpdatedMessage(data={}){
     if(!data || data.type !== 'canvas_updated') return;
+    // #375: 来源标记先于全部跳过守卫置位——即使这次广播被「自己发的/时间戳不新/保存中」
+    // 跳过，之后任何一次合并（轮询兜底、保存窗口补偿）把 agent 写入带进来都要进撤回栈。
+    if(data.source === 'agent'){
+        pendingAgentMergeUndo = true;
+        try { pendingAgentMergeFingerprint = JSON.stringify({nodes: canvasState.nodes, connections: canvas.connections}); } catch(e){ pendingAgentMergeFingerprint = ''; }
+    }
     if(!canvasId || data.canvas_id !== canvasId) return;
     if(data.client_id && data.client_id === smartClientId) return; // 自己发的，忽略
     const remoteUpdatedAt = Number(data.updated_at || 0);

@@ -393,6 +393,27 @@ class McpToolBehaviorTests(McpTestBase):
         self.assertTrue(frames, f"tab must receive canvas_updated, got: {tab.sent}")
         self.assertEqual(frames[-1]["canvas_id"], self.project_id)
 
+    def test_agent_mutation_broadcast_carries_agent_source(self):
+        """#375: 工具写入的 canvas_updated 必须带 source=="agent"，前端据此把
+        合并前快照推进撤回栈（Ctrl+Z 才能撤掉 agent 写入）。"""
+        tab = self.open_tab()
+        result = self.tool_result(self.tool_call("canvas.create_node",
+                                                {"node": {"type": "prompt"}},
+                                                request_id=52))
+        self.assertFalse(result["isError"], result)
+        frames = tab.sent_of("canvas_updated")
+        self.assertTrue(frames, f"tab must receive canvas_updated, got: {tab.sent}")
+        self.assertEqual(frames[-1].get("source"), "agent", frames[-1])
+
+    def test_default_broadcast_source_is_empty(self):
+        """#375/#371 口径：不传 source 的默认广播帧 source 为空串——非 agent
+        路径（用户级联/他人标签页）行为零变化，前端不会把它们推进撤回栈。"""
+        tab = self.open_tab()
+        run_async(main.manager.broadcast_canvas_updated(self.project_id, 123))
+        frames = tab.sent_of("canvas_updated")
+        self.assertTrue(frames, f"tab must receive canvas_updated, got: {tab.sent}")
+        self.assertEqual(frames[-1].get("source"), "", frames[-1])
+
     def test_viewport_focus_targets_single_tab(self):
         tab = self.open_tab()
         import json as _json
