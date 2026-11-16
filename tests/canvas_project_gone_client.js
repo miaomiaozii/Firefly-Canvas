@@ -47,9 +47,12 @@
         const projectId = new URLSearchParams(location.search).get('project') || '';
         if(!projectId){ result.errors.push('URL 里没有 project 参数'); return postResult(); }
 
-        // 只盯 PATCH /api/project-library/<id>/canvas —— 票面点名的就是这一条。
+        // #377 附带：项目没了也不该再每 8 秒去摸 /meta。
+        // #382 后区分两种 meta：轮询（普通 fetch）与 WS 重连探测（cache:'no-store'）——
+        // 前者必须停，后者删除后只允许有限几次（探测到 404 即认定没了、停止重连）。
         const patchCalls = [];
-        let metaCalls = 0;   // #377 附带：项目没了也不该再每 8 秒去摸 /meta
+        let metaPollCalls = 0;
+        let metaWsProbeCalls = 0;
         const realFetch = window.fetch;
         window.fetch = function(input, init){
             const url = typeof input === 'string' ? input : (input && input.url) || '';
@@ -59,14 +62,18 @@
                 slot = {status: 0};
                 patchCalls.push(slot);
             }
-            if(/\/api\/canvases\/[^/]+\/meta$/.test(url)) metaCalls += 1;
+            if(/\/api\/canvases\/[^/]+\/meta$/.test(url)){
+                if(init && init.cache === 'no-store') metaWsProbeCalls += 1;
+                else metaPollCalls += 1;
+            }
             const promise = realFetch.apply(window, arguments);
             if(!slot) return promise;
             return promise.then((response) => { slot.status = response.status; return response; });
         };
 
         // 真删项目：走生产路由（回收站 → 彻底删），删完 apply_mutations 就 ProjectNotFound。
-        const metaCallsAtDelete = metaCalls;
+        const metaPollAtDelete = metaPollCalls;
+        const metaProbeAtDelete = metaWsProbeCalls;
         const trashResponse = await realFetch(`/api/project-library/${encodeURIComponent(projectId)}`, {method:'DELETE'});
         const purgeResponse = await realFetch(`/api/project-library/trash/${encodeURIComponent(projectId)}`, {method:'DELETE'});
         result.notes.trash_status = trashResponse.status;
@@ -81,11 +88,14 @@
         edited.text = `${edited.text || ''} #377-edited`;
         window.scheduleSave();
 
-        if(!await waitFor(() => patchCalls.length >= 1 && patchCalls[0].status !== 0, 20000)){
-            result.errors.push('删掉项目后一次 PATCH 都没发，测试链路没跑起来');
-            return postResult();
-        }
-        const firstStatus = patchCalls[0].status;
+        // #382 后存在两条「认定项目没了」的路径，谁先到都不算错：
+        //   0 次 PATCH = WS 重连探测先摸到 meta 404，自动保存被门住；
+        //   1 次 PATCH = 保存先撞上 404（原 #377 链路）。
+        // 旧缺陷的形态是「反复发」——所以断言盯的是上限，不是具体哪条路径。
+        await sleep(7000);
+        window.scheduleSave();
+        if(typeof window.markContentDirty === 'function') window.markContentDirty();
+        await sleep(6000);
 
         // 关键断言：给足时间（真实世界里它是每 20 分钟一次、连打好几天），PATCH 不能变多。
         // 6s 已超过 3s 防抖窗口两轮——旧缺陷在这里会再发一次。
@@ -94,8 +104,9 @@
         if(typeof window.markContentDirty === 'function') window.markContentDirty();
         await sleep(6000);
 
-        assertion('第一次保存必须撞到 404', firstStatus === 404, `status=${firstStatus}`);
-        assertion('PATCH 只发一次（旧缺陷会按防抖/周期反复发）', patchCalls.length === 1,
+        // 关键断言：给足时间（真实世界里它是每 20 分钟一次、连打好几天），PATCH 不能变多。
+        assertion('PATCH 至多一次，且若发出必是 404（0 次 = WS 探测先认定没了；旧缺陷按防抖/周期反复发）',
+                  patchCalls.length <= 1 && (patchCalls.length === 0 || patchCalls[0].status === 404),
                   `count=${patchCalls.length} statuses=${patchCalls.map(c => c.status).join(',')}`);
         assertion('页面必须认定项目已删除', typeof window.canvasProjectDeleted === 'function'
                   && window.canvasProjectDeleted() === true,
@@ -109,7 +120,7 @@
 
         // 手动保存也不能再发 PATCH（票面：不再发 PATCH）。
         const manual = await window.saveCanvas();
-        assertion('手动保存不再发 PATCH 且返回 false', manual === false && patchCalls.length === 1,
+        assertion('手动保存不再发 PATCH 且返回 false', manual === false && patchCalls.length <= 1,
                   `manual=${manual} count=${patchCalls.length}`);
 
         // 内容不能静默丢：导出按钮要能把当前画布（含刚才那次改动）写成文件。
@@ -139,13 +150,16 @@
         await sleep(1500);
         assertion('提示常驻，不会自动消失', Boolean(document.getElementById('canvasGoneNotice')),
                   document.getElementById('canvasGoneNotice') ? '仍在' : '已消失');
-        assertion('全程只发过一次 PATCH', patchCalls.length === 1, `count=${patchCalls.length}`);
+        assertion('全程 PATCH 至多一次', patchCalls.length <= 1, `count=${patchCalls.length}`);
 
         result.notes.patch_statuses = patchCalls.map(c => c.status);
-        result.notes.meta_calls_after_delete = metaCalls - metaCallsAtDelete;
-        assertion('meta 轮询也停掉（不再每 8 秒敲一个不存在的项目）', metaCalls - metaCallsAtDelete === 0,
-                  `meta_after_delete=${metaCalls - metaCallsAtDelete}`);
-        return postResult();
+        result.notes.meta_poll_after_delete = metaPollCalls - metaPollAtDelete;
+        result.notes.meta_ws_probe_after_delete = metaWsProbeCalls - metaProbeAtDelete;
+        assertion('meta 轮询停掉（不再每 8 秒敲一个不存在的项目）', metaPollCalls - metaPollAtDelete === 0,
+                  `meta_poll_after_delete=${metaPollCalls - metaPollAtDelete}`);
+        assertion('WS 重连探测的 meta 调用收敛（删除后有限几次，探测到 404 即停）',
+                  metaWsProbeCalls - metaProbeAtDelete <= 3,
+                  `ws_probe_after_delete=${metaWsProbeCalls - metaProbeAtDelete}`);
         return postResult();
     }
 

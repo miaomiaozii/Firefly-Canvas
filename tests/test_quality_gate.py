@@ -421,6 +421,8 @@ class QualityGateTests(unittest.TestCase):
             "canvas-hidden-visibility-evidence",
             # #377：项目被删后的画布页保存链路证据。
             "canvas-project-gone-evidence",
+            # #382：/ws/stats 断线后对已删项目停止重连的证据。
+            "ws-stats-reconnect-evidence",
         ):
             command = STEP_DEFINITIONS[name](sys.executable)
             runner = repo_root / command[1]
@@ -627,6 +629,8 @@ class QualityGateTests(unittest.TestCase):
             "canvas_hidden_visibility_browser.py",
             # #377：项目被删后不再反复 PATCH 的页面级证据 runner，同一套路。
             "canvas_project_gone_browser.py",
+            # #382：/ws/stats 断线后对已删项目停止重连的页面级证据 runner，同一套路。
+            "ws_stats_reconnect_browser.py",
         ):
             (self.fixture_root / "tests" / runner_name).write_text(
                 "import sys\n"
@@ -2827,7 +2831,7 @@ class QualityGateTests(unittest.TestCase):
         expected = {
             "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
             "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "ws-stats-reconnect-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
@@ -2847,6 +2851,7 @@ class QualityGateTests(unittest.TestCase):
                     "layers-panel-evidence",
                     "canvas-hidden-visibility-evidence",
                     "canvas-project-gone-evidence",
+                    "ws-stats-reconnect-evidence",
                     "video-failure-evidence",
                     "node-flow-cascade-evidence",
                     "fly-fixes-evidence",

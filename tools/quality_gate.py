@@ -465,6 +465,10 @@ STEP_DEFINITIONS = {
     # 浏览器步骤会顶到预算（#346 那条只 6.8s 才能进 domain）。runner 自带临时 ProjectStore 与
     # 临时端口，所以同时进并行组。
     "canvas-project-gone-evidence": lambda python: [python, "tests/canvas_project_gone_browser.py"],
+    # #382：/ws/stats 断线后对已删项目停止重连（包 WebSocket 构造器数请求、真走 HTTP 删项目、
+    # 等超 2 个重连周期验计数停止增长；项目存在时断线仍重连的对照也在内）。实测 ~30s。
+    # 按 #377 先例只接 trial/release（自带临时 ProjectStore 与临时端口，可进并行组）。
+    "ws-stats-reconnect-evidence": lambda python: [python, "tests/ws_stats_reconnect_browser.py"],
     "video-failure-evidence": lambda python: [python, "tests/video_failure_browser.py"],
     # #295：tabbit 端到端套件接进交付门禁（失败自动重跑+证据归档已在 #296 落地，
     # 入口脚本只做编排）。按 #167/#185 先例接进 trial/release；无 tabbit/app 没开时
@@ -556,6 +560,8 @@ MODE_STEPS = {
         "canvas-hidden-visibility-evidence",
         # #377：项目被删后的画布页不能再反复 PATCH（真走 HTTP 删项目、真等防抖窗口、数 PATCH 次数）。
         "canvas-project-gone-evidence",
+        # #382：/ws/stats 断线后对已删项目停止重连。
+        "ws-stats-reconnect-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -584,6 +590,8 @@ MODE_STEPS = {
         "canvas-hidden-visibility-evidence",
         # #377：同 trial。
         "canvas-project-gone-evidence",
+        # #382：同 trial。
+        "ws-stats-reconnect-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",
@@ -619,6 +627,8 @@ BROWSER_EVIDENCE_STEP_NAMES = frozenset(
         "canvas-hidden-visibility-evidence",
         # #377：同上（自带临时 ProjectStore 与临时端口）。
         "canvas-project-gone-evidence",
+        # #382：同上。
+        "ws-stats-reconnect-evidence",
         "video-failure-evidence",
         "node-flow-cascade-evidence",
         "fly-fixes-evidence",

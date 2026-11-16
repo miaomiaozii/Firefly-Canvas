@@ -5211,12 +5211,19 @@ function connectAssetLibrarySyncSocket(){
     const clientId = smartClientId;
     let socket;
     let retryTimer = null;
+    let goneProbeInFlight = false;
+    const scheduleReconnect = () => {
+        // #382：项目已确认没了就不再排重连（旧代码无条件每 3 秒重连，对已删项目刷 404）。
+        if(canvasProjectGone) return;
+        retryTimer = setTimeout(connect, 3000);
+    };
     const connect = () => {
+        if(canvasProjectGone) return;
         try {
             const projectQuery = canvasId ? `&project_id=${encodeURIComponent(canvasId)}` : '';
             socket = new WebSocket(`${protocol}://${host}/ws/stats?client_id=${clientId}${projectQuery}`);
         } catch(e) {
-            retryTimer = setTimeout(connect, 3000);
+            scheduleReconnect();
             return;
         }
         socket.onmessage = event => {
@@ -5226,8 +5233,37 @@ function connectAssetLibrarySyncSocket(){
                 if(data?.type === 'canvas_updated') handleCanvasUpdatedMessage(data);
             } catch(e) { /* #348: 素材同步 WS 的畸形消息——跳过该条，连接不受影响 */ }
         };
-        socket.onclose = () => {
-            retryTimer = setTimeout(connect, 3000);
+        socket.onclose = (event) => {
+            if(canvasProjectGone) return;
+            // #382：1013 = 项目被删/清理，服务端主动断开（ProjectCleanupActive）——认定没了，停止重连。
+            if(event && Number(event.code) === 1013){
+                markCanvasProjectGone();
+                return;
+            }
+            // #382：项目被删后 /ws/stats 升级返回 404，浏览器只报 close 1006（和网络断线无法区分）。
+            // 重连前先摸一次画布 meta 确认项目还活着：404 = 没了 → markCanvasProjectGone
+            //（停自动保存 + 给用户导出/返回出口，复用 #377），之后不再重试；
+            // 200 或网络本身不通 = 普通断线 → 保持原 3 秒重连节奏。
+            if(!canvasId || goneProbeInFlight){
+                scheduleReconnect();
+                return;
+            }
+            goneProbeInFlight = true;
+            fetch(`/api/canvases/${encodeURIComponent(canvasId)}/meta`, {cache: 'no-store'})
+                .then((res) => {
+                    if(res.status === 404){
+                        markCanvasProjectGone();
+                        return;
+                    }
+                    scheduleReconnect();
+                })
+                .catch(() => {
+                    // 网络本身不可达 → 保持原重连策略，等网络恢复
+                    scheduleReconnect();
+                })
+                .finally(() => {
+                    goneProbeInFlight = false;
+                });
         };
         socket.onerror = () => {
             try { socket.close(); } catch(e) { /* #348: 防御性——close 可能再抛，重连由 onclose 定时器安排 */ }
