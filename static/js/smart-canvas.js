@@ -158,6 +158,7 @@ const composerPromptView = {
     returnMode:'manual',
     nodeId:'',
     manualHeight:84,
+    autosizeDisabled:false, // #339：本会话用户手动拖过高度 → 手动值优先，停用自适应
     expandedHeight:84,
     expandedExtra:0,
     scrollTop:0,
@@ -9582,6 +9583,15 @@ function clearPortDragVisual(){
     world.querySelectorAll('.node-port.is-active').forEach(el => el.classList.remove('is-active'));
     world.querySelectorAll('.image-node.port-hover').forEach(el => el.classList.remove('port-hover'));
 }
+// #338/#339：提示词节点 textarea 高度兜底自适应（仅当浏览器不支持 field-sizing:content，
+// 如 Firefox）——Chromium 下由 CSS field-sizing:content 原生完成，此函数直接跳过，双路径不并存。
+const PROMPT_FIELD_SIZING_OK = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
+function autosizePromptNodeText(el){
+    if(!el || PROMPT_FIELD_SIZING_OK) return;
+    // 分组成员/心流模式的文本区有自己的高度规则（height:100%），inline height 会覆盖它们，跳过
+    if(el.closest && el.closest('.smart-group-member-node, .prompt-node-flow')) return;
+    el.style.height = `${Math.max(72, Math.min(160, Math.ceil(Number(el.scrollHeight || 0) + 2)))}px`;
+}
 function bindPromptNodeControls(el, node){
     el.querySelectorAll('.prompt-node-control, .prompt-node-pill').forEach(control => {
         control.addEventListener('mousedown', e => e.stopPropagation());
@@ -9609,6 +9619,7 @@ function bindPromptNodeControls(el, node){
     }
     if(textEl) {
         bindScrollableText(textEl);
+        autosizePromptNodeText(textEl);
         textEl.addEventListener('compositionstart', () => { promptNodeFlowView.compositionActive = true; });
         textEl.addEventListener('compositionend', () => { promptNodeFlowView.compositionActive = false; });
         textEl.addEventListener('keydown', event => {
@@ -9621,6 +9632,7 @@ function bindPromptNodeControls(el, node){
         textEl.oninput = e => {
             const prevExtra = promptNodeSplitExtraHeight(node);
             node.text = e.target.value;
+            autosizePromptNodeText(textEl);
             refreshPromptNodeSegmentsUi(el, node);
             if(node.promptSplitEnabled === true){
                 syncPromptNodeHeightForSplit(node, prevExtra);
@@ -12024,8 +12036,34 @@ function setPromptEditorHeight(value){
     promptInput.style.setProperty('--prompt-h', `${height}px`);
     return height;
 }
+// #338/#339：contenteditable 非滚动盒在内容小于当前高度时 scrollHeight≈clientHeight（测量陷阱，短文本永远缩不回 60）——
+// 先钉到 60px 下限测真实内容高，同帧恢复（无闪）。box-sizing 全局 border-box。
 function promptNaturalHeight(){
-    return Math.max(60, Math.ceil(Number(promptInput?.scrollHeight || 0) + 2));
+    const el = promptInput;
+    if(!el) return 60;
+    const prev = el.style.getPropertyValue('--prompt-h');
+    el.style.setProperty('--prompt-h', '60px');
+    const sh = Math.ceil(Number(el.scrollHeight || 0));
+    if(prev) el.style.setProperty('--prompt-h', prev);
+    else el.style.removeProperty('--prompt-h');
+    return sh <= 60 ? 60 : sh + 2;
+}
+// #338/#339：composer 提示词框高度随内容自适应（60–160px，到上限后内部滚动）。
+// 空内容 scrollHeight≈当前高度（非滚动盒报告 clientHeight），单独判空取 60，避免「短内容不紧凑」。
+// 手动拖过 #promptResize 或节点存有显式 promptH 时保持手动值（autosizeDisabled）。
+const PROMPT_INPUT_AUTOSIZE_MAX = 160;
+function autosizePromptEditor(){
+    if(!promptInput || !composer || !composer.classList.contains('open')) return;
+    if(composerPromptView.mode !== 'manual' || composerPromptView.autosizeDisabled) return;
+    const empty = !(promptInput.textContent || '').trim() && !promptInput.querySelector('img');
+    const height = empty ? 60 : Math.max(60, Math.min(PROMPT_INPUT_AUTOSIZE_MAX, promptNaturalHeight()));
+    const current = parseInt(promptInput.style.getPropertyValue('--prompt-h'), 10) || 84;
+    if(current !== height) setPromptEditorHeight(height);
+}
+function applyPromptManualHeight(){
+    if(!promptInput || !composer || !composer.classList.contains('open')) return;
+    if(composerPromptView.autosizeDisabled) setPromptEditorHeight(composerPromptView.manualHeight);
+    else autosizePromptEditor();
 }
 function syncComposerPromptViewControls(){
     const expanded = composerPromptView.mode === 'expanded';
@@ -12217,7 +12255,7 @@ function exitPromptFlow(){
         const target = Math.min(promptExpandedHeightLimit(), Math.max(composerPromptView.manualHeight, promptNaturalHeight()) + composerPromptView.expandedExtra);
         composerPromptView.expandedHeight = setPromptEditorHeight(target);
     } else {
-        setPromptEditorHeight(composerPromptView.manualHeight);
+        applyPromptManualHeight();
     }
     requestAnimationFrame(() => {
         promptInput.scrollTop = Math.min(scrollTop, Math.max(0, promptInput.scrollHeight - promptInput.clientHeight));
@@ -12231,7 +12269,7 @@ function collapseExpandedPrompt(){
     if(composerPromptView.mode !== 'expanded') return false;
     composerPromptView.mode = 'manual';
     composerPromptView.expandedExtra = 0;
-    setPromptEditorHeight(composerPromptView.manualHeight);
+    applyPromptManualHeight();
     // 清除节点的展开状态
     const node = activeComposerNode();
     if(node) composerPromptView.expandedByNode.delete(node.id);
@@ -12293,6 +12331,7 @@ function bindComposerPromptViewToNode(node){
     composerPromptView.expandedExtra = 0;
     composerPromptView.restoreFlowScroll = false;
     composerPromptView.applyingScrollRestore = false;
+    composerPromptView.autosizeDisabled = false;
     syncComposerPromptViewControls();
     // 恢复展开状态时，更新提示词高度
     if(composerPromptView.mode === 'expanded'){
@@ -12369,9 +12408,11 @@ function updateComposer(){
     setPromptInputLocked(false);
     const storedPromptH = Number(settings.promptH);
     const ph = clampPromptManualHeight(storedPromptH === 124 ? 84 : (storedPromptH || 84));
-    if(storedPromptH !== ph) settings.promptH = ph;
+    if(storedPromptH && storedPromptH !== ph) settings.promptH = ph;
     composerPromptView.manualHeight = ph;
-    if(composerPromptView.mode === 'manual') setPromptEditorHeight(ph);
+    // #338/#339：节点存有显式手动高度 → 沿用；否则高度随内容自适应（60–160，到上限后内部滚动）
+    composerPromptView.autosizeDisabled = Boolean(storedPromptH && storedPromptH !== 84 && storedPromptH !== 124);
+    if(composerPromptView.mode === 'manual') applyPromptManualHeight();
     else if(composerPromptView.mode === 'expanded') refreshExpandedPromptHeight();
     renderInputThumbsRow(node);
     renderInputPromptPreview(node);
@@ -14838,6 +14879,7 @@ window.onmousemove = e => {
         } else {
             settings.promptH = target;
             composerPromptView.manualHeight = target;
+            composerPromptView.autosizeDisabled = true;
             setPromptEditorHeight(target);
             persistActiveSmartSettings();
         }
@@ -16141,7 +16183,10 @@ promptInput.addEventListener('input', () => {
     if(composerPromptView.mode === 'flow') renderPromptFlowContext(currentNode);
     syncRunButtonState(selectedNode());
     scheduleSave();
-    if(!promptCompositionActive) refreshExpandedPromptHeight();
+    if(!promptCompositionActive){
+        refreshExpandedPromptHeight();
+        autosizePromptEditor();
+    }
 });
 promptInput.addEventListener('compositionstart', () => { promptCompositionActive = true; });
 promptInput.addEventListener('compositionend', () => {
