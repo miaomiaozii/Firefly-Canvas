@@ -436,5 +436,23 @@ class TestUiToastNetworkErrorMapping(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"映射用例失败：{proc.stderr.strip()}")
 
 
+class TestI18nCoreZhOnly(unittest.TestCase):
+    """#365：i18n-core 只保留中文——旧 'en'（localStorage / set('en') / document lang）一律落到 zh，
+    toggle 入口删除。node 里用 vm 沙箱执行 static/js/i18n-core.js 的真实代码
+    （harness 是已提交文件，与 ui-toast-network-error-harness.mjs 同一约定）。"""
+
+    def test_legacy_en_migrates_to_zh(self):
+        node = _node_for_syntax_check()
+        self.assertTrue(Path(node).is_file(), f"node 不可用（{node}）：i18n 中文单源测试必须真跑")
+        proc = subprocess.run(
+            [node, "tests/i18n-core-zh-only-harness.mjs"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=ROOT,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"i18n-core 中文单源行为断言失败：{proc.stdout.strip()}\n{proc.stderr.strip()}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

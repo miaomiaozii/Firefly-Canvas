@@ -4,7 +4,13 @@
     const dict = { zh: {}, en: {} };
 
     function lang(){
-        return localStorage.getItem(KEY) || DEFAULT_LANG;
+        // #365：界面只保留中文。localStorage 里的旧值（如 'en'）原地改写成 'zh'——
+        // 不管哪个页面、哪个调用点读语言，看到的都是 zh（i18n-core 先于 global-preferences 加载，
+        // 这是老 en 用户「打开后显示中文」的最早生效点）。
+        if(localStorage.getItem(KEY) !== 'zh'){
+            localStorage.setItem(KEY, 'zh');
+        }
+        return 'zh';
     }
 
     function normalizeEntry(key, entry){
@@ -56,18 +62,16 @@
     }
 
     function set(next){
-        localStorage.setItem(KEY, next === 'en' ? 'en' : 'zh');
+        // #365：英文选项已移除。调用点（如 smart-canvas 的旧偏好推送）还会传语言值，
+        // 传入什么一律写 zh，参数保留只为兼容老调用签名。
+        localStorage.setItem(KEY, 'zh');
         apply();
-    }
-
-    function toggle(){
-        set(lang() === 'en' ? 'zh' : 'en');
     }
 
     function entries(){
         return JSON.parse(JSON.stringify(dict));
     }
 
-    window.StudioI18n = { t, apply, set, toggle, lang, register, entries };
+    window.StudioI18n = { t, apply, set, lang, register, entries };
     document.addEventListener('DOMContentLoaded', () => apply());
 })();
