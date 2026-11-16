@@ -302,7 +302,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             return run
 
         def gated(name, args, impl, method, url_path, body=None):
-            """确认门工具：MCP 经门批准后打 core；REST 孪生无门（#357 未开）直打 core。"""
+            """确认门工具（#357 后含 disconnect）：MCP 经门批准后打 core；
+            REST 孪生不带 X-Agent-Project 头 = 浏览器用户路径，不进服务端门（#347 ffDialog 在发起侧）。"""
             def run():
                 client, store, pid_a, pid_b = self._fixture()
                 agent_id = self._materialize_agent(client, store, pid_a)
@@ -383,7 +384,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.update_node": pair("canvas.update_node", {"node_id": "prompt-1", "title": "NT", "text": "NX"}, "PATCH", "/canvas/nodes/prompt-1", {"title": "NT", "text": "NX"}),
             "canvas.delete_node": gated("canvas.delete_node", {"node_id": "image-1"}, "_impl_delete_node", "DELETE", "/canvas/nodes/image-1"),
             "canvas.connect": pair("canvas.connect", {"from_node": "prompt-1", "to_node": "image-1", "kind": "input"}, "POST", "/canvas/edges", {"edge": {"from": "prompt-1", "to": "image-1", "kind": "input"}}),
-            "canvas.disconnect": pair("canvas.disconnect", {"from_node": "prompt-1", "to_node": "image-1"}, "DELETE", "/canvas/edges/prompt-1/image-1"),
+            "canvas.disconnect": gated("canvas.disconnect", {"from_node": "prompt-1", "to_node": "image-1"}, "_impl_disconnect", "DELETE", "/canvas/edges/prompt-1/image-1"),
             "canvas.search_projects": search_run,
             "canvas.view": pair("canvas.view", {"scope": "page"}, "POST", "/canvas/view", {"scope": "page"}),
             "canvas.view_media": pair("canvas.view_media", {"node_id": "image-1"}, "POST", "/canvas/view_media", {"node_id": "image-1"}),

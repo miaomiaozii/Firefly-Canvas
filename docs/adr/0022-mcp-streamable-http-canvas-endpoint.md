@@ -71,3 +71,16 @@ MCP 端点对外暴露，外部会话具现为画布上的 Agent 节点。关联
   将来若需非 loopback 开放，必须先实现 token 鉴权并修订本 ADR。
 - 超时契约（wait 类工具可阻塞数分钟、客户端 600s）成为对外交付承诺，客户端配置
   示例是文档交付物的一部分。
+
+## 修订（#357，2026-11-16）：确认门移到服务端统一执行入口
+
+- 确认门不再由 `canvas-tools.ts` 客户端预确认（原「先 POST /agent/confirm 再执行」）；
+  改挂在 pi REST 与 MCP 共用的服务端执行入口：`api_agent_tools._server_confirm_gate`
+  （复用 `request_confirmation_core`），pi 写操作 URL 带 `?agent_node_id=` 指明归属节点。
+- 覆盖面：`DELETE /canvas/nodes`、`DELETE /canvas/edges`（新增）、edit_crop/rotate/flip/
+  outpaint/erase、`DELETE /media`——带 `X-Agent-Project` 头的请求一律过门；浏览器用户路径
+  （无该头）不进服务端门（前端 #347 ffDialog 已在发起侧确认）。MCP 侧 `canvas.disconnect`
+  同步入门。
+- 确认等待超时 60s → 90s（`AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS` /
+  `api_mcp.CONFIRM_TIMEOUT_SECONDS`）：写操作（含门等待）必须大于旧 60s 门槛。
+- 本 ADR 上文引用的行号（`:579-580`/`:530`）为撰写时快照，已随 #357 重构漂移。

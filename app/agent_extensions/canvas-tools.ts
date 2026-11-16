@@ -108,30 +108,11 @@ function textResult(payload: any, normalize = false) {
     return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], details: {} };
 }
 
-// 写操作确认门（#242 语义）：先问用户，未批准直接回拒绝结果。
-async function confirmGate(tool: string, params: any, message: string) {
-    return await callApi(`/api/projects/${PROJECT_ID}/agent/confirm`, "POST", {
-        node_id: NODE_ID,
-        tool,
-        params,
-        message,
-    });
-}
-
-function declinedEditResult(confirmData: any) {
-    const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-    return {
-        content: [{ type: "text", text: JSON.stringify({ approved: false, reason }, null, 2) }],
-        details: {},
-    };
-}
-
-function declinedDeleteResult(confirmData: any, what: string) {
-    const reason = confirmData.reason === "timeout" ? "用户未响应（超时）" : "用户取消";
-    return {
-        content: [{ type: "text", text: `删除已取消：${reason}。${what}` }],
-        details: { approved: false, reason: confirmData.reason },
-    };
+// #357：确认门移到服务端（统一执行入口 _server_confirm_gate）——本扩展不再预确认，
+// 只在写操作 URL 上带 ?agent_node_id=（服务端据此把确认事件投影到本节点会话）。
+// 被拒/超时 → 服务端 409，callApi 抛错，pi 侧看到拒绝/超时文本。
+function gateQuery() {
+    return NODE_ID ? `?agent_node_id=${encodeURIComponent(NODE_ID)}` : "";
 }
 
 const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
@@ -163,12 +144,8 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.delete_node": async (_toolCallId, params) => {
-        // Hard confirmation gate: ask the user via the backend confirm endpoint
-        const confirmData = await confirmGate("canvas.delete_node", { node_id: params.node_id }, `删除节点 ${params.node_id}？此操作不可撤销。`);
-        if (!confirmData.approved) {
-            return declinedDeleteResult(confirmData, `节点 ${params.node_id} 未被删除。`);
-        }
-        await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "DELETE");
+        // #357：确认在服务端门里发生（阻塞最长 90s），这里只带身份参数。
+        await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}${gateQuery()}`, "DELETE");
         return { content: [{ type: "text", text: `节点 ${params.node_id} 已删除。` }], details: {} };
     },
 
@@ -180,7 +157,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.disconnect": async (_toolCallId, params) =>
-        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges/${params.from_node}/${params.to_node}`, "DELETE")),
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges/${params.from_node}/${params.to_node}${gateQuery()}`, "DELETE")),
 
     "canvas.search_projects": async (_toolCallId, params) => {
         // D13（#356）：limit 透传（此前声明了但从不拼进查询串，永远 50）。
@@ -208,9 +185,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.edit_crop": async (_toolCallId, params) => {
-        const confirmData = await confirmGate("canvas.edit_crop", { node_id: params.node_id, rect: params.rect }, `裁剪节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
-        if (!confirmData.approved) return declinedEditResult(confirmData);
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop`, "POST", {
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_crop${gateQuery()}`, "POST", {
             node_id: params.node_id,
             rect: params.rect,
         }));
@@ -223,31 +198,21 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         })),
 
     "canvas.edit_rotate": async (_toolCallId, params) => {
-        const confirmData = await confirmGate("canvas.edit_rotate", { node_id: params.node_id, angle: params.angle }, `旋转节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
-        if (!confirmData.approved) return declinedEditResult(confirmData);
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_rotate`, "POST", {
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_rotate${gateQuery()}`, "POST", {
             node_id: params.node_id,
             angle: params.angle,
         }));
     },
 
     "canvas.edit_flip": async (_toolCallId, params) => {
-        const confirmData = await confirmGate("canvas.edit_flip", { node_id: params.node_id, direction: params.direction }, `镜像节点 ${params.node_id} 的图像并覆写节点图？原资源保留在资源库。`);
-        if (!confirmData.approved) return declinedEditResult(confirmData);
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_flip`, "POST", {
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_flip${gateQuery()}`, "POST", {
             node_id: params.node_id,
             direction: params.direction,
         }));
     },
 
     "canvas.edit_outpaint": async (_toolCallId, params) => {
-        const confirmData = await confirmGate("canvas.edit_outpaint", {
-            node_id: params.node_id,
-            outpaint_size: params.outpaint_size,
-            offset: params.offset,
-        }, `红底扩图节点 ${params.node_id}（目标画布 ${params.outpaint_size?.width}x${params.outpaint_size?.height}，外区填 #ff0044）并覆写节点图？原资源保留在资源库。`);
-        if (!confirmData.approved) return declinedEditResult(confirmData);
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_outpaint`, "POST", {
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_outpaint${gateQuery()}`, "POST", {
             node_id: params.node_id,
             outpaint_size: params.outpaint_size,
             offset: params.offset,
@@ -255,13 +220,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.edit_erase": async (_toolCallId, params) => {
-        const confirmData = await confirmGate("canvas.edit_erase", {
-            node_id: params.node_id,
-            rect: params.rect,
-            prompt: params.prompt,
-        }, `擦除节点 ${params.node_id} 选区（${params.rect?.x},${params.rect?.y} ${params.rect?.width}x${params.rect?.height}，"${params.prompt}"）并覆写节点图？将消耗一次外部模型调用（qwen-image-edit），原资源保留在资源库。`);
-        if (!confirmData.approved) return declinedEditResult(confirmData);
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase`, "POST", {
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edit_erase${gateQuery()}`, "POST", {
             node_id: params.node_id,
             rect: params.rect,
             prompt: params.prompt,
@@ -288,12 +247,8 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         textResult(await callApi(`/api/projects/${PROJECT_ID}/media/list`, "GET"), true),
 
     "media.delete": async (_toolCallId, params) => {
-        // Hard confirmation gate: ask the user via the backend confirm endpoint
-        const confirmData = await confirmGate("media.delete", { asset_id: params.asset_id }, `删除媒体文件 ${params.asset_id}？此操作不可撤销。`);
-        if (!confirmData.approved) {
-            return declinedDeleteResult(confirmData, `媒体文件 ${params.asset_id} 未被删除。`);
-        }
-        await callApi(`/api/projects/${PROJECT_ID}/media/${params.asset_id}`, "DELETE");
+        // #357：确认在服务端门里发生。
+        await callApi(`/api/projects/${PROJECT_ID}/media/${params.asset_id}${gateQuery()}`, "DELETE");
         return { content: [{ type: "text", text: `媒体文件 ${params.asset_id} 已删除。` }], details: {} };
     },
 

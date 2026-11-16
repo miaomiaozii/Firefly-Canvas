@@ -33,7 +33,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.delete_node",
-        description: "删除节点（破坏性：需画布确认门批准，阻塞最长 60s）",
+        description: "删除节点（破坏性：需画布确认门批准，阻塞最长 90s）",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
@@ -43,7 +43,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.disconnect",
-        description: "删除节点连线",
+        description: "删除节点连线（破坏性：需画布确认门批准，阻塞最长 90s）",
         parameters: Type.Object({ from_node: Type.String(), to_node: Type.String() }),
     },
     {
@@ -63,7 +63,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.edit_crop",
-        description: "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）",
+        description: "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）",
         parameters: Type.Object({ node_id: Type.String(), rect: Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() }, {description: "选区（原图像素坐标，x/y 左上角 + width/height）"}) }),
     },
     {
@@ -73,22 +73,22 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.edit_rotate",
-        description: "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）",
+        description: "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）",
         parameters: Type.Object({ node_id: Type.String(), angle: Type.Union([Type.Literal(90), Type.Literal(180), Type.Literal(270)], {description: "逆时针旋转角度，90/180/270 之一"}) }),
     },
     {
         name: "canvas.edit_flip",
-        description: "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）",
+        description: "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）",
         parameters: Type.Object({ node_id: Type.String(), direction: Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")], {description: "horizontal=左右镜像，vertical=上下镜像"}) }),
     },
     {
         name: "canvas.edit_outpaint",
-        description: "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）",
+        description: "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）",
         parameters: Type.Object({ node_id: Type.String(), outpaint_size: Type.Object({ width: Type.Integer(), height: Type.Integer() }, {description: "目标画布尺寸（像素；须大于原图像素）"}), offset: Type.Optional(Type.Object({ x: Type.Optional(Type.Integer()), y: Type.Optional(Type.Integer()) }, {description: "原图在新画布中的位置（像素，默认 0,0 左上角）"})) }),
     },
     {
         name: "canvas.edit_erase",
-        description: "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 60s，原资源保留在资源库可恢复）",
+        description: "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）",
         parameters: Type.Object({ node_id: Type.String(), rect: Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() }, {description: "选区（原图像素坐标，x/y 左上角 + width/height）"}), prompt: Type.String({description: "描述要擦除什么、如何填充该区域", minLength: 1}) }),
     },
     {
@@ -118,7 +118,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "media.delete",
-        description: "删除媒体资源（破坏性：需画布确认门批准，阻塞最长 60s）",
+        description: "删除媒体资源（破坏性：需画布确认门批准，阻塞最长 90s）",
         parameters: Type.Object({ asset_id: Type.String() }),
     },
     {

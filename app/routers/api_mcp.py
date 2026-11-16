@@ -52,9 +52,10 @@ from app.routers.api_agent_tools import (
     outpaint_node_image_core,
     erase_node_image_core,
     batch_edit_core,
-    delete_edge,
-    delete_media,
-    delete_node,
+    create_edge_core,
+    delete_edge_core,
+    delete_media_core,
+    delete_node_core,
     focus_node_core,
     get_node,
     get_task_status,
@@ -82,14 +83,14 @@ SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
 #: Confirmation gate blocking wait (ADR 0022: request_confirmation default 60s).
-CONFIRM_TIMEOUT_SECONDS = 60.0
+CONFIRM_TIMEOUT_SECONDS = 90.0  # #357：写操作确认等待 >60s（与 REST 侧 AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS 同口径）
 
 #: Event aggregation interval — dirty flag + 3s timer, ComfyArt
 #: api/bot_turns.py:26 (_PERSIST_INTERVAL_S=3.0) parity (issue #243 追加细节 3).
 PERSIST_INTERVAL_S = 3.0
 
 #: Destructive MCP tools that must pass the materialized confirmation gate.
-CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "media.delete", "canvas.edit_crop", "canvas.edit_rotate", "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_erase"})
+CONFIRMATION_GATED_TOOLS = frozenset({"canvas.delete_node", "canvas.disconnect", "media.delete", "canvas.edit_crop", "canvas.edit_rotate", "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_erase"})
 
 #: #266 慢操作独立超时契约（ComfyArt SLOW_S=90s 模式）：慢视图工具与
 #: generate.wait 的 600s 契约分开，单独 90s 超时；超时返回 isError 带下一步建议。
@@ -342,7 +343,7 @@ async def _impl_update_node(project_id, agent_node_id, args):
 async def _impl_delete_node(project_id, agent_node_id, args):
     node_id = str(args.get("node_id") or "")
     await _confirm_gate(project_id, agent_node_id, "canvas.delete_node", args, f"删除画布节点 {node_id}")
-    return await delete_node(project_id, node_id)
+    return await delete_node_core(project_id, node_id)
 
 
 async def _impl_connect(project_id, agent_node_id, args):
@@ -356,7 +357,10 @@ async def _impl_connect(project_id, agent_node_id, args):
 
 
 async def _impl_disconnect(project_id, agent_node_id, args):
-    return await delete_edge(project_id, str(args.get("from_node") or ""), str(args.get("to_node") or ""))
+    # #357：删连线在 MCP 侧同样过确认门（REST 侧已在统一入口过门）。
+    await _confirm_gate(project_id, agent_node_id, "canvas.delete_edge", args,
+                        f"删除连线 {args.get('from_node')} → {args.get('to_node')}")
+    return await delete_edge_core(project_id, str(args.get("from_node") or ""), str(args.get("to_node") or ""))
 
 
 async def _impl_search_projects(project_id, agent_node_id, args):
@@ -398,7 +402,7 @@ async def _impl_media_list(project_id, agent_node_id, args):
 async def _impl_media_delete(project_id, agent_node_id, args):
     asset_id = str(args.get("asset_id") or "")
     await _confirm_gate(project_id, agent_node_id, "media.delete", args, f"删除媒体资源 {asset_id}")
-    return await delete_media(project_id, asset_id)
+    return await delete_media_core(project_id, asset_id)
 
 
 async def _impl_viewport_focus(project_id, agent_node_id, args):

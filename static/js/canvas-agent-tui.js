@@ -403,6 +403,23 @@ function applyAgentEventBody(nodeId, event) {
             // Confirmation request from agent for destructive operation
             state.confirm = event;
             state.status = 'waiting_confirm';
+            // #357：确认门移到服务端后，画布收到确认事件即弹 ffDialog（与 #347 删除
+            // 确认同一机制、danger 样式）；卡片内联批准/取消按钮保留作模态关闭后的
+            // 兑底——两路都走 sendAgentConfirm，state.confirm 清空后互斥不会双发。
+            if (window.ffDialog && state.confirmModalShown !== event.confirm_id) {
+                state.confirmModalShown = event.confirm_id;
+                window.ffDialog.ask({
+                    title: '确认 Agent 操作',
+                    message: event.message || '请确认操作',
+                    confirmText: '批准',
+                    cancelText: '取消',
+                    danger: true,
+                }).then(ok => {
+                    if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
+                        sendAgentConfirm(nodeId, state.projectId, !!ok);
+                    }
+                });
+            }
             break;
         }
         case 'response':

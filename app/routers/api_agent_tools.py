@@ -182,10 +182,19 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
 
 
 @router.delete("/nodes/{node_id}")
-async def delete_node(project_id: str, node_id: str, x_agent_project: str = Header(default="")):
+async def delete_node(project_id: str, node_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Delete a node from the canvas. #353：若该节点有 agent 宿主会话，同步杀进程并
-    摘除会话（REST 与 MCP 共用本协程，单点覆盖；非 agent 节点 no-op）。"""
+    摘除会话（REST 与 MCP 共用本协程，单点覆盖；非 agent 节点 no-op）。
+    #357：确认门移到服务端——带 X-Agent-Project 的 agent 写操作先过门（409=拒/超时）；
+    浏览器用户路径不进本门（前端 #347 ffDialog 已确认）。"""
     _validate_project(project_id)
+    await _server_confirm_gate(request, project_id, "canvas.delete_node",
+                               {"node_id": node_id}, f"删除画布节点 {node_id}")
+    return await delete_node_core(project_id, node_id)
+
+
+async def delete_node_core(project_id: str, node_id: str) -> dict:
+    """#357：删除节点执行核（无门；REST/MCP 各自门过后调）。"""
     await _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
     try:
         from app.services.agent_host import agent_host_manager
@@ -204,9 +213,17 @@ async def create_edge(project_id: str, request: Request, x_agent_project: str = 
 
 
 @router.delete("/edges/{from_node}/{to_node}")
-async def delete_edge(project_id: str, from_node: str, to_node: str, x_agent_project: str = Header(default="")):
-    """Remove a connection between two nodes."""
+async def delete_edge(project_id: str, from_node: str, to_node: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """Remove a connection between two nodes. #357：agent 调用同样过确认门。"""
     _validate_project(project_id)
+    await _server_confirm_gate(request, project_id, "canvas.delete_edge",
+                               {"from": from_node, "to": to_node},
+                               f"删除连线 {from_node} → {to_node}")
+    return await delete_edge_core(project_id, from_node, to_node)
+
+
+async def delete_edge_core(project_id: str, from_node: str, to_node: str) -> dict:
+    """#357：删连线执行核（无门）。先找边后删，不存在 404。"""
     # Find the edge first
     store = _app_main.FIREFLY_PROJECT_STORE
     opened = store.open_project(project_id)
@@ -239,9 +256,12 @@ async def canvas_view_media(project_id: str, request: Request, x_agent_project: 
 
 
 @router.post("/edit_crop")
-async def canvas_edit_crop(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#266 canvas.edit_crop: 本地裁节点图选区覆写节点图（写操作；调用方先施加确认门）。"""
+async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """#266 canvas.edit_crop: 本地裁节点图选区覆写节点图（写操作）。
+    #357：确认门移到服务端（带 X-Agent-Project 时）；浏览器路径前端 ffDialog 已确认。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "canvas.edit_crop", body,
+                               f"裁剪节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
     return await crop_node_image_core(project_id, body.get("node_id"), body.get("rect"))
 
 
@@ -253,23 +273,32 @@ async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: 
 
 
 @router.post("/edit_rotate")
-async def canvas_edit_rotate(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#266b canvas.edit_rotate: 本地旋转节点图（90/180/270 逆时针）覆写节点图（写操作；调用方先施加确认门）。"""
+async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """#266b canvas.edit_rotate: 本地旋转节点图（90/180/270 逆时针）覆写节点图。
+    #357：agent 调用经服务端确认门。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "canvas.edit_rotate", body,
+                               f"旋转节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
     return await rotate_node_image_core(project_id, body.get("node_id"), body.get("angle"))
 
 
 @router.post("/edit_flip")
-async def canvas_edit_flip(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#266b canvas.edit_flip: 本地镜像节点图（horizontal 左右 / vertical 上下）覆写节点图（写操作；调用方先施加确认门）。"""
+async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """#266b canvas.edit_flip: 本地镜像节点图（horizontal 左右 / vertical 上下）覆写节点图。
+    #357：agent 调用经服务端确认门。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "canvas.edit_flip", body,
+                               f"镜像节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
     return await flip_node_image_core(project_id, body.get("node_id"), body.get("direction"))
 
 
 @router.post("/edit_outpaint")
-async def canvas_edit_outpaint(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#289 canvas.edit_outpaint: 服务端复刻站内红底扩图链（PIL 填 #ff0044 + 贴原图）覆写节点图（写操作；调用方先施加确认门）。"""
+async def canvas_edit_outpaint(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """#289 canvas.edit_outpaint: 服务端复刻站内红底扩图链（PIL 填 #ff0044 + 贴原图）覆写节点图。
+    #357：agent 调用经服务端确认门。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "canvas.edit_outpaint", body,
+                               f"红底扩图节点 {body.get('node_id')}：扩大画布（#ff0044 填充外区）并覆写节点图（原资源保留在资源库）")
     return await outpaint_node_image_core(project_id, body.get("node_id"), body.get("outpaint_size"), body.get("offset"))
 
 
@@ -683,16 +712,21 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
 
 
 @media_router.delete("/{asset_id}")
-async def delete_media(project_id: str, asset_id: str, x_agent_project: str = Header(default="")):
-    """Delete a media file from the project."""
+async def delete_media(project_id: str, asset_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """Delete a media file from the project. #357：agent 调用经服务端确认门。"""
     _validate_project(project_id)
+    await _server_confirm_gate(request, project_id, "media.delete",
+                               {"asset_id": asset_id}, f"删除媒体资源 {asset_id}")
+    return await delete_media_core(project_id, asset_id)
 
+
+async def delete_media_core(project_id: str, asset_id: str) -> dict:
+    """#357：删媒体执行核（无门；REST/MCP 各自门过后调）。"""
     store = _app_main.FIREFLY_PROJECT_STORE
     try:
         store.delete_media(project_id, asset_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     return {"success": True, "asset_id": asset_id}
 
 
@@ -1352,7 +1386,43 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
 
 
 @router.post("/edit_erase")
-async def canvas_edit_erase(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#290 canvas.edit_erase: 按 prompt 擦除节点图选区内容（写操作；调用方先施加确认门）。"""
+async def canvas_edit_erase(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
+    """#290 canvas.edit_erase: 按 prompt 擦除节点图选区内容。
+    #357：agent 调用经服务端确认门。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "canvas.edit_erase", body,
+                               f"擦除节点 {body.get('node_id')} 选区图像并覆写节点图（原资源保留在资源库）")
     return await erase_node_image_core(project_id, body.get("node_id"), body.get("rect"), body.get("prompt"))
+
+
+# ── #357：服务端确认门（ADR 0022 实化门从客户端/网关移到统一执行入口）──────────
+# 判定：带 X-Agent-Project 的请求 = agent 写操作 → 先过门（复用 request_confirmation_core，
+# 含 autonomy=autonomous 自动放行与 SAFETY_FLOOR_TOOLS 兑底）；浏览器用户路径不进本门
+# （前端 #347 ffDialog 已在发起侧确认）。MCP 网关（api_mcp._confirm_gate）同用本 core。
+# 超时 >60s（review 口径：pi 写操作的等待必须大于旧 60s 门槛）。
+AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS = 90.0
+
+
+class AgentConfirmationDenied(Exception):
+    """确认门拒绝/超时（REST 层转 409；MCP 层转 McpToolError）。"""
+
+
+async def _server_confirm_gate(request: Request, project_id: str, tool: str,
+                               args: dict, message: str) -> None:
+    """统一执行入口上的确认门：仅 agent 请求（X-Agent-Project）生效。"""
+    if not request.headers.get("X-Agent-Project", ""):
+        return
+    agent_node_id = request.query_params.get("agent_node_id", "")
+    if not agent_node_id:
+        raise HTTPException(status_code=400, detail=(
+            "#357：agent 写操作必须携带 ?agent_node_id=<发起节点>（确认门需要归属节点以投影到其会话）"))
+    decision = await request_confirmation_core(
+        project_id, agent_node_id, tool, args or {}, message,
+        AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)
+    if decision.get("approved"):
+        return
+    if decision.get("reason") == "rejected":
+        raise HTTPException(status_code=409, detail=f"用户在画布上拒绝了操作：{tool}")
+    raise HTTPException(status_code=409, detail=(
+        f"确认超时（{int(AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)} 秒）：{tool} 未获确认。"
+        "画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。"))

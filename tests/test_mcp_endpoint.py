@@ -333,20 +333,39 @@ class McpToolBehaviorTests(McpTestBase):
 
     def test_connect_and_disconnect(self):
         self.open_tab()
-        for nid in ("conn-a", "conn-b"):
-            self.tool_result(self.tool_call("canvas.create_node",
-                                            {"node": {"type": "prompt", "id": nid}},
-                                            request_id=41))
-        result = self.tool_result(self.tool_call("canvas.connect", {
-            "edge": {"from": "conn-a", "to": "conn-b"}}, request_id=42))
+        result = self.tool_call("canvas.connect", {
+            "edge": {"from": "conn-a", "to": "conn-b"}}, request_id=42)
+        result = self.tool_result(result)
         self.assertFalse(result["isError"], result)
         canvas = self.store.canvas(self.project_id)
         self.assertTrue(any(
             str(e.get("from")) == "conn-a" and str(e.get("to")) == "conn-b"
             for e in canvas.get("connections", [])))
-        result2 = self.tool_result(self.tool_call("canvas.disconnect", {
-            "from_node": "conn-a", "to_node": "conn-b"}, request_id=43))
-        self.assertFalse(result2["isError"], result2)
+        # #357：disconnect 在 MCP 侧同样过服务端确认门——批准后才删。
+        self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=43))
+        agent_node_id = self.materialized_agent_node()["id"]
+        session = run_async(agent_host_manager.get_or_create_session(
+            self.project_id, agent_node_id))
+        session.process = FakeAgentProcess(script=[])
+        outcome = {}
+
+        async def scenario():
+            async def decide(sess, event):
+                if event.get("type") == "confirm":
+                    for handler in list(sess.confirm_handlers):
+                        await handler(event["confirm_id"], True)
+            agent_host_manager.on_event(session, decide)
+            try:
+                outcome["result"] = await api_mcp._impl_disconnect(
+                    self.project_id, agent_node_id,
+                    {"from_node": "conn-a", "to_node": "conn-b"})
+            except Exception as exc:  # noqa: BLE001
+                outcome["error"] = exc
+            finally:
+                session.event_handlers.remove(decide)
+
+        run_async(scenario())
+        self.assertNotIn("error", outcome, str(outcome.get("error")))
         canvas = self.store.canvas(self.project_id)
         self.assertFalse(any(
             str(e.get("from")) == "conn-a" and str(e.get("to")) == "conn-b"
