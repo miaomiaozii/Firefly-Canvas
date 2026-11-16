@@ -9468,6 +9468,8 @@ function render(){
     });
     const nodeHtmlEntries = canvasState.nodes
         .filter(node => node.id !== SMART_LOG_PREVIEW_NODE_ID)
+        // #407 D1：停靠中的 Agent 节点不进 #world（由 syncAgentDock 渲染进停靠槽，不随画布缩放/平移）
+        .filter(node => !(isSmartAgentNode(node) && (node.dock === 'left' || node.dock === 'right')))
         // 分组节点先渲染（DOM 靠前→层级在下），作为成员的背板；成员渲染在后、盖在分组之上，
         // 否则缩小分组把成员挪进卡片区域时会被分组卡片背景遮住而“消失”。
         .slice()
@@ -9570,6 +9572,8 @@ function render(){
     refreshRunTimerPills();
     // #272：画布批注层重绘（钉/气泡；逻辑全在 canvas-annotations.js，这里只接线）
     renderAnnotationLayer();
+    // #407 D1：停靠槽同步（挂载/卸载/宽度/收起态 + #shell 边距变量）
+    syncAgentDock();
     // #317：此处曾有 40 行 `return;` 后永不可达的旧版全量重建逻辑（至 updateSmartMarkedBadge），已删除。
 }
 function measureSmartNodeImages(){
