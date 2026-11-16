@@ -264,6 +264,30 @@ class ApiValidation343Tests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["node_id"].startswith("node-"))
 
+    def test_create_node_stamps_creator_identity(self):
+        # #343 review r9①：工具建节点落盘带发起方身份（agent + session + 来源）。
+        for seed in ({"id": "mcp-agent-x1", "type": "smart-agent",
+                      "mcp_session": "sess-mcp-77", "x": 0, "y": 0},
+                     {"id": "agent-pi-1", "type": "agent", "x": 0, "y": 0}):
+            self.store.apply_mutations(
+                self.pid, [{"op": "upsert_node", "node": seed}],
+                base_revision=int(self.store.canvas(self.pid).get("revision") or 0))
+        for src, expect in (("mcp-agent-x1", "mcp"), ("agent-pi-1", "pi")):
+            with self.subTest(src=src):
+                r = self.client.post(
+                    f"/api/projects/{self.pid}/canvas/nodes",
+                    json={"node": {"type": "smart-prompt", "title": "T"},
+                          "agent_node_id": src},
+                )
+                self.assertEqual(r.status_code, 200)
+                nid = r.json()["node_id"]
+                node = next(n for n in self.store.canvas(self.pid)["nodes"]
+                            if n.get("id") == nid)
+                self.assertEqual(node.get("createdByAgent"), src)
+                self.assertEqual(node.get("createdBySource"), expect)
+                if expect == "mcp":
+                    self.assertEqual(node.get("createdBySession"), "sess-mcp-77")
+
     def test_mcp_create_node_rejects_caller_id(self):
         # MCP 网关层：调用方塞 id（无论 node 对象还是平铺）→ create_node_core 升位拒 400。
         # 直接测 _impl（HTTP tools/call 需打开标签，属 338 网关语义，不在本断言范围）。

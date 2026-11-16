@@ -312,6 +312,23 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         node["y"] = 0
     node["created_at"] = _app_main.now_ms()
 
+    # #343 review r9①：工具建节点必须可归因——落盘盖章发起方身份。
+    # MCP 路：agent_node_id = ensure_external_agent_node 的外部 agent 节点（带 mcp_session）；
+    # pi 路：agent_node_id = 画布 agent 节点，会话身份从宿主 manager 反查。
+    if agent_node_id:
+        node["createdByAgent"] = agent_node_id
+        try:
+            _src = next((n for n in (_app_main.FIREFLY_PROJECT_STORE.canvas(project_id).get("nodes") or [])
+                         if isinstance(n, dict) and str(n.get("id")) == str(agent_node_id)), None)
+        except Exception:
+            _src = None
+        _sess = str((_src or {}).get("mcp_session") or "")
+        _src_type = str((_src or {}).get("type") or "")
+        if _sess:
+            node["createdBySession"] = _sess
+        # smart-agent = MCP 外部 agent 节点（api_mcp.EXTERNAL_AGENT_NODE_TYPE）；agent = pi 卡。
+        node["createdBySource"] = {"smart-agent": "mcp", "agent": "pi"}.get(_src_type, "agent")
+
     mutations = [{"op": "upsert_node", "node": node}]
     if not _explicit_pos and agent_node_id:
         frame = _find_chat_frame(project_id, agent_node_id)
