@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -219,6 +220,11 @@ class DualPathEquivalenceTests(unittest.TestCase):
         for coll in (nodes, edges):
             for item in coll:
                 for k in ("created_at", "updated_at", "revision"):
+                    item.pop(k, None)
+                # 生成运行时/记账键（pending/running/queued/pendingTasks/_generationBatchApplied）：
+                # 终态后一致，但快照时机带时序噪声（r16–r18 两条 SUBFAIL 根因；等待全局任务表
+                # 会引入 20s×N 卡顿）——不参与等价比较，结果节点存在性/内容仍全量比。
+                for k in ("pending", "running", "queued", "pendingTasks", "_generationBatchApplied"):
                     item.pop(k, None)
                 # #343 后双路必然差异字段：服务端生成 id（node-XXXX）两侧不同；
                 # 来源三戳（createdBy*）按设计区分 mcp/pi，不参与等价比较。
