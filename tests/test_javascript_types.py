@@ -52,6 +52,31 @@ def _setup_present() -> bool:
     )
 
 
+def _package_filter(name: str):
+    """Filter that extracts one npm tarball directly into node_modules/<name>/.
+
+    npm tarballs stage their contents under a top-level ``package/`` directory.
+    Instead of renaming that staging directory after extraction (the rename of
+    a just-written directory can hit ``PermissionError: [WinError 5]`` when an
+    antivirus or index service still holds the fresh Temp files — observed in
+    the gate's Temp workspace, #369 review), each member's name is rewritten
+    up front so extraction lands at the final path directly.
+    """
+    prefix = "package/"
+
+    def _filter(member: tarfile.TarInfo, dest_path: str) -> tarfile.TarInfo | bool:
+        member = tarfile.data_filter(member, dest_path)
+        if member is False:
+            return member
+        if member.name == "package" or member.name == prefix:
+            return member.replace(name=name + "/")
+        if member.name.startswith(prefix):
+            return member.replace(name=name + "/" + member.name[len(prefix):])
+        return member
+
+    return _filter
+
+
 def _verify_and_extract(name: str, version: str, integrity: str) -> None:
     tgz = VENDOR_DIR / f"{name}-{version}.tgz"
     if not tgz.is_file():
@@ -76,11 +101,7 @@ def _verify_and_extract(name: str, version: str, integrity: str) -> None:
     if dest.exists():
         shutil.rmtree(dest)
     with tarfile.open(tgz, "r:gz") as tf:
-        tf.extractall(NODE_MODULES, filter="data")
-    # npm tarballs stage their contents under a top-level "package/" directory.
-    staging = NODE_MODULES / "package"
-    if staging.exists():
-        staging.rename(dest)
+        tf.extractall(NODE_MODULES, filter=_package_filter(name))
 
 
 def _ensure_typescript() -> str:
