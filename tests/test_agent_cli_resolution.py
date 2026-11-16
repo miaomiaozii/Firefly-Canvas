@@ -6,7 +6,7 @@
 验收对照：
 - resolve_pi_cli：FIREFLY_PI_CLI 原值优先 → shutil.which(PI_CLI)
   （Windows 上能解析到 pi.cmd 包装器）→ None
-- build_pi_launch_command：.cmd/.bat 包装器用 cmd /c 数组前缀启动
+- build_pi_launch_command：#343 新口径——npm 包装器解成 node.exe+脚本直接启动；解不出回 None（拒绝，不回落 cmd /c）
   （不用 shell=True 字符串拼接）；非包装器原样启动
 - spawn_session：解析失败不启动进程，会话终态 crashed，last_error 给出
   可操作提示（安装 pi / 设置 FIREFLY_PI_CLI），快照投影可见
@@ -100,7 +100,7 @@ class ResolvePiCliTests(unittest.TestCase):
 
 
 class BuildPiLaunchCommandTests(unittest.TestCase):
-    """build_pi_launch_command：包装器加 cmd /c 前缀，其余原样。"""
+    """build_pi_launch_command（#343 新口径）：包装器解成 node+脚本；解不出回 None。"""
 
     def test_unresolved_returns_none(self):
         self.assertIsNone(build_pi_launch_command(None, ["--mode", "rpc"]))
@@ -117,21 +117,44 @@ class BuildPiLaunchCommandTests(unittest.TestCase):
             [r"D:\tools\pi.exe", "--mode", "rpc"],
         )
 
-    def test_cmd_wrapper_prefixed(self):
-        self.assertEqual(
-            build_pi_launch_command(r"C:\Users\me\AppData\Roaming\npm\pi.cmd", ["--mode", "rpc"]),
-            ["cmd", "/c", r"C:\Users\me\AppData\Roaming\npm\pi.cmd", "--mode", "rpc"],
+    def test_npm_cmd_wrapper_resolved_to_node_and_script(self):
+        """npm 规范模板包装器 → [node, 脚本绝对路径, *args]，不再经 cmd.exe。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "pi.cmd").write_text(
+                '@ECHO off\r\nSETLOCAL\r\nCALL :find_dp0\r\n'
+                'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & '
+                '"%_prog%"  "%dp0%\\..\\pkg\\bin\\pi.js" %*\r\n',
+                encoding="utf-8",
+            )
+            script = d / ".." / "pkg" / "bin" / "pi.js"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("// fake", encoding="utf-8")
+            cmd = build_pi_launch_command(str(d / "pi.cmd"), ["--mode", "rpc"])
+        self.assertIsNotNone(cmd)
+        self.assertNotEqual(cmd[0], "cmd")
+        self.assertTrue(cmd[0].lower().endswith("node.exe"))
+        self.assertEqual(os.path.normpath(cmd[1]), os.path.normpath(str(script)))
+        self.assertEqual(cmd[2:], ["--mode", "rpc"])
+
+    def test_non_npm_wrapper_refused_no_cmd_fallback(self):
+        """非 npm 模板的 .cmd/.bat（如测试 stub）：拒绝启动，绝不回落 cmd /c。"""
+        self.assertIsNone(build_pi_launch_command(r"C:\tools\pi.bat", []))
+        self.assertIsNone(
+            build_pi_launch_command(str(Path(__file__).resolve().parent / "stubs" / "pi_cli_stub.cmd"), [])
         )
 
-    def test_bat_wrapper_prefixed(self):
-        self.assertEqual(
-            build_pi_launch_command(r"C:\tools\pi.bat", []),
-            ["cmd", "/c", r"C:\tools\pi.bat"],
-        )
+
+def _stub_path(stubs_dir):
+    # PATH = stubs + node.exe 所在目录（wrapper 解析需要 node，但不引入真实 pi/codex 路径）
+    import shutil
+    node = shutil.which('node')
+    import os
+    return str(stubs_dir) + os.pathsep + (os.path.dirname(node) if node else '')
 
 
 class SpawnCliResolutionTests(unittest.TestCase):
-    """spawn_session 集成：解析失败不启动 + last_error；.cmd 用 cmd /c 前缀。
+    """spawn_session 集成：解析失败不启动 + last_error；#343：非 npm 包装器拒绝启动。
 
     不用 unittest.IsolatedAsyncioTestCase：其内部 asyncio.Runner 会调用
     set_event_loop（标记 policy _set_called），导致后续模块的
@@ -188,14 +211,39 @@ class SpawnCliResolutionTests(unittest.TestCase):
         snapshot = {s["node_id"]: s for s in self._run(self.manager.snapshot_sessions())}
         self.assertIn("FIREFLY_PI_CLI", snapshot["node-missing"]["last_error"])
 
-    def test_cmd_wrapper_spawn_uses_cmd_prefix(self):
+    def test_non_npm_cmd_wrapper_spawn_refused_without_popen(self):
+        """#343：解不出的 .cmd（测试 stub 形态）→ crashed + 不 Popen，绝不经 cmd.exe。"""
         session = self._run(self.manager.get_or_create_session(self.project_id, "node-cmd"))
+        previous_path = os.environ.get("PATH")
+        try:
+            agent_host.PI_CLI = "pi"
+            os.environ["PATH"] = _stub_path(Path(__file__).resolve().parent / "stubs")
+            popen = mock.MagicMock(side_effect=AssertionError("Popen 不应被调用"))
+            with mock.patch.object(agent_host.subprocess, "Popen", popen):
+                self.assertFalse(self._run(self.manager.spawn_session(session)))
+        finally:
+            os.environ["PATH"] = previous_path
+        popen.assert_not_called()
+        self.assertEqual(session.status, "crashed")
+        self.assertIn("npm", session.last_error)
+
+    def test_npm_cmd_wrapper_spawn_launches_node_not_cmd(self):
+        """#343：npm 规范包装器 → Popen 收到 [node.exe, 脚本, ...]，cmd[0] 不是 cmd。"""
+        session = self._run(self.manager.get_or_create_session(self.project_id, "node-npm"))
         with tempfile.TemporaryDirectory() as cli_dir:
-            (Path(cli_dir) / "pi.cmd").write_text("@echo fake pi\n", encoding="utf-8")
+            base = Path(cli_dir)
+            (base / "pi.cmd").write_text(
+                '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & '
+                '"%_prog%"  "%dp0%\\pi-pkg\\bin\\pi.js" %*\r\n',
+                encoding="utf-8",
+            )
+            script = base / "pi-pkg" / "bin" / "pi.js"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("// fake", encoding="utf-8")
             previous_path = os.environ.get("PATH")
             try:
                 agent_host.PI_CLI = "pi"
-                os.environ["PATH"] = cli_dir
+                os.environ["PATH"] = _stub_path(base)
                 fake_process = _FakeProcess()
                 with mock.patch.object(
                     agent_host.subprocess, "Popen", return_value=fake_process
@@ -203,7 +251,6 @@ class SpawnCliResolutionTests(unittest.TestCase):
                     self._run(self.manager.spawn_session(session))
             finally:
                 os.environ["PATH"] = previous_path
-        # 在本测试事件循环内跑完 reader 任务，避免悬挂任务
         if session._reader_task is not None:
             try:
                 self._run(asyncio.wait_for(session._reader_task, timeout=10.0))
@@ -212,9 +259,9 @@ class SpawnCliResolutionTests(unittest.TestCase):
         popen.assert_called_once()
         args, kwargs = popen.call_args
         command = args[0] if args else kwargs["args"]
-        self.assertEqual(command[0], "cmd")
-        self.assertEqual(command[1], "/c")
-        self.assertEqual(os.path.basename(command[2]).lower(), "pi.cmd")
+        self.assertNotEqual(command[0], "cmd")
+        self.assertTrue(command[0].lower().endswith("node.exe"))
+        self.assertEqual(os.path.normpath(command[1]), os.path.normpath(str(script)))
         self.assertIn("--mode", command)
 
 

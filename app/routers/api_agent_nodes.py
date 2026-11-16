@@ -129,6 +129,14 @@ async def create_agent_node(
 
     If model/autonomy are not provided, reads them from the node's attributes.
     """
+    # #343：创建入口严格校验——node_id/model 来自请求 body（可被 agent 工具链
+    # 间接写入），不合白名单直接 400，先于任何会话/落盘/spawn。
+    from app.services.agent_host import validate_spawn_arg as _v343
+    try:
+        _v343("node_id", node_id)
+        _v343("model", model, model=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # Read node attributes if not explicitly provided
     if not model:
         try:
@@ -316,6 +324,12 @@ async def set_agent_model(
     Always persists the model to the node's attributes.
     """
     model = body.get("model", "")
+    # #343：模型名会进宿主 argv（--model / -m），不合白名单直接 400。
+    from app.services.agent_host import validate_spawn_arg as _v343
+    try:
+        _v343("model", model, model=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # #285：会话优先。WS spawn 的会话不在持久画布 nodes 里，此前
     # _update_node_field 先执行且找不到节点直接 404（用户实测 "Node not found:
     # agent_probe2"），后面的 set_model 永远执行不到——选模型“无效”的根因。

@@ -293,11 +293,14 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
 
     # Ensure node has required fields
     # #355 W2：caller 传了已存在于画布的 id → 报错，不再静默 upsert 覆盖。
-    caller_id = str(node.get("id") or "")
-    if caller_id:
-        for existing in _open_canvas(project_id).get("nodes") or []:
-            if isinstance(existing, dict) and str(existing.get("id", "")) == caller_id:
-                raise HTTPException(status_code=400, detail=f"node id already exists: {caller_id}")
+    # #343 升位：MCP/pi 工具建节点一律不接受调用方指定 id（服务端生成）——
+    # 任意 id 会流入宿主 argv（--name/--session-dir），传任何非空 id 直接 400。
+    if str(node.get("id") or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="create_node does not accept caller-specified node id (#343); "
+                   "the server generates ids",
+        )
     if not node.get("id"):
         node["id"] = f"node-{uuid.uuid4().hex[:12]}"
     if not node.get("type"):

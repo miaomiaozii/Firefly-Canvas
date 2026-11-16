@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -61,7 +62,8 @@ def maybe_warm_codex(node_id: str = "") -> bool:
 
     def _run():
         try:
-            subprocess.run([exe, "--version"], capture_output=True, timeout=30)
+            # #343：预热同样不经 cmd.exe（.cmd 包装器解成 node+脚本）。
+            subprocess.run(finalize_spawn_argv([exe, "--version"]), capture_output=True, timeout=30)
         except Exception:
             pass
 
@@ -135,6 +137,71 @@ def _is_batch_wrapper(path: str) -> bool:
     return name.endswith(".cmd") or name.endswith(".bat")
 
 
+# #343：npm .cmd shim 末尾调用行——`"%_prog%"  "%dp0%\..\pkg\bin\x.js" %*`。
+# 只认这一种规范形态（npm 5+ 稳定模板）；解不出回 None，由调用方拒绝启动。
+_NPM_CMD_CALL_RE = re.compile(
+    r'"%_prog%"\s+"%dp0%\\(?P<script>[^"]+?)"\s+%\*', re.IGNORECASE)
+
+# 转发器形态：`CALL "%~dp0pi-stable.cmd" %*`（实测 npm 全局 pi.cmd 入口）。
+_NPM_CMD_FORWARD_RE = re.compile(
+    r'CALL\s+"%~dp0(?P<target>[^"]+?\.cmd)"\s+%\*', re.IGNORECASE)
+
+
+def resolve_npm_cmd_wrapper(wrapper_path: str) -> Optional[List[str]]:
+    """#343：把 npm 的 .cmd/.bat shim 解析成 [node.exe, 脚本绝对路径, ...] 直接启动。
+
+    根因：agent 子进程经 `cmd /c` 启动时，cmd.exe 对参数的解析规则与 Python
+    list2cmdline 不一致（caret/双引号/括号重解析），来自画布节点数据的 argv
+    存在被当命令解析的风险（#343）。解成 node.exe + 脚本路径后不再经过
+    cmd.exe。只认 npm 规范模板（`"%_prog%" "%dp0%\\…" %*`），解不出回 None
+    ——调用方必须拒绝启动，不得静默回落 cmd /c。大小写宽容（%DP0% 等）。"""
+    try:
+        with open(wrapper_path, "r", encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    m = _NPM_CMD_CALL_RE.search(text)
+    if not m:
+        # 转发器形态（实测 npm 全局 pi.cmd = `CALL "%~dp0pi-stable.cmd" %*`）：
+        # 跟随一跳解析目标 .cmd；仍不成回 None（绝不回落 cmd /c）。
+        fwd = _NPM_CMD_FORWARD_RE.search(text)
+        if fwd:
+            target = os.path.join(
+                os.path.dirname(os.path.abspath(wrapper_path)),
+                fwd.group("target").replace("%~dp0", "").replace('"', "").strip(),
+            )
+            if os.path.isfile(target):
+                return resolve_npm_cmd_wrapper(target)
+        return None
+    dp0 = os.path.dirname(os.path.abspath(wrapper_path))
+    script = os.path.normpath(os.path.join(dp0, m.group("script").replace("\\", os.sep)))
+    if not os.path.isfile(script):
+        return None
+    local_node = os.path.join(dp0, "node.exe")
+    node = local_node if os.path.isfile(local_node) else shutil.which("node")
+    if not node:
+        return None
+    return [node, script]
+
+
+# #343：来自数据（节点属性/会话文件/请求 body）的启动参数严格白名单。
+# 违反即拒（创建时与 spawn 前双重置）；合法存量值全在集内：node id
+# （uuid hex32 / 8-4-4-4-12 / node-前缀）、会话 id（uuid）、模型名（字母数字 . _ - /）。
+_SPAWN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_SPAWN_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:+_-]{0,127}$")
+
+
+def validate_spawn_arg(name: str, value: str, *, model: bool = False) -> None:
+    """#343：单个启动参数校验；不合严格白名单抛 ValueError（带参数名）。"""
+    if value is None or value == "":
+        return
+    pattern = _SPAWN_MODEL_RE if model else _SPAWN_ID_RE
+    if not pattern.match(str(value)) or ".." in str(value):
+        raise ValueError(
+            f"#343 spawn guard: {name} rejected (unsafe characters): {str(value)!r:.120}"
+        )
+
+
 def write_system_prompt_file(session_dir: str, prompt: str) -> str:
     """#334：把完整系统提示词原子落盘 <session_dir>/system-prompt.txt，返回路径。
 
@@ -152,20 +219,41 @@ def write_system_prompt_file(session_dir: str, prompt: str) -> str:
     return path
 
 
+def finalize_spawn_argv(cmd: List[str]) -> List[str]:
+    """#343：任何宿主 spawn 前的统一收口——cmd[0] 若是 .cmd/.bat 包装器，必须
+    解成 node.exe + 脚本（直接启动）；解不出拒绝启动（ValueError），绝不静默
+    经 cmd.exe。非包装器原样返回。"""
+    if cmd and _is_batch_wrapper(cmd[0]):
+        base = resolve_npm_cmd_wrapper(cmd[0])
+        if base is None:
+            raise ValueError(
+                f"#343 spawn guard: cannot resolve npm wrapper {cmd[0]!r}; "
+                "refusing to launch via cmd.exe"
+            )
+        return [*base, *cmd[1:]]
+    return list(cmd)
+
+
 def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Optional[List[str]]:
     """构造 pi 启动 argv（解析失败返回 None）。
 
-    解析结果是 .cmd/.bat 包装器时用 ``cmd /c`` 前缀数组形式启动：直接
-    Popen 多参数 .cmd 依赖 CreateProcess 的隐式处理（不可靠），显式
-    cmd /c 安全且避免 shell=True 字符串拼接。包装器进程仍作为
-    session.process 顶层进程，_kill_process_tree 的 taskkill /T /F 覆盖
-    整棵进程树，不会产生 cmd.exe 僵尸。
+    #343：解析结果是 .cmd/.bat 包装器时，解析 npm shim 成 node.exe + 脚本路径
+    直接启动，不再经 `cmd /c`（cmd.exe 参数解析与 list2cmdline 不一致，数据驱动
+    的 argv 有被当命令解析的风险）。只认 npm 规范模板；解不出直接返回 None
+    （拒绝启动，不静默回落 cmd /c）。
     """
     if not resolved_cli:
         return None
-    argv = [resolved_cli, *args]
     if _is_batch_wrapper(resolved_cli):
-        return ["cmd", "/c", *argv]
+        base = resolve_npm_cmd_wrapper(resolved_cli)
+        if base is None:
+            logger.error(
+                "#343: npm 包装器 %s 无法解析成 node+脚本（非 npm 规范模板），"
+                "拒绝经 cmd /c 启动", resolved_cli,
+            )
+            return None
+        return [*base, *args]
+    argv = [resolved_cli, *args]
     return argv
 
 
@@ -372,6 +460,13 @@ class AgentHostManager:
             # 本模块（测试 monkey-patch 面不变），PiAdapter 运行时延迟导入本模块取用。
             from .agent_adapters import SpawnParams
             adapter = self._adapter_for(session)
+            # #343：spawn 前置严格校验——node id、模型名、会话绑定 id 来自数据
+            # （节点属性/请求 body/会话文件），不合白名单直接拒绝，不进 argv。
+            _binding_pref = session.ext_session_id or session.session_id
+            for _name, _val in (("node_id", session.node_id),
+                                ("model", model or session.model),
+                                ("session_id", _binding_pref)):
+                validate_spawn_arg(_name, _val, model=(_name == "model"))
             # #318 票 B：codex 宿主经 MCP 端点操作画布（ADR 0022/0024）；
             # 端口/基址动态取（resolve_agent_api_base，L-1 禁硬编码），&node= 只改归属。
             api_base = resolve_agent_api_base(os.environ)
@@ -810,13 +905,26 @@ class AgentHostManager:
     # ------------------------------------------------------------------
 
     def _codex_validate(self, session: AgentSession) -> bool:
-        """codex 的「启动」= 仅验 CLI 可用性（无进程、无 RPC get_state）。"""
+        """codex 的「启动」= 仅验 CLI 可用性（无进程、无 RPC get_state）。
+
+        #343：同时前置参数白名单校验（node id / 模型名 / 会话 id）——不合直接
+        crashed，不进后续 per-turn argv。"""
         adapter = self._adapters.get("codex")
         if adapter is None or shutil.which(adapter.cli) is None:
             error = "未找到 codex 可执行文件：PATH 中没有 'codex'。请先安装（npm i -g @openai/codex）"
             logger.error(f"Failed to validate codex session {session.node_id}: {error}")
             session.status = "crashed"
             session.last_error = error
+            return False
+        try:
+            for _name, _val in (("node_id", session.node_id),
+                                ("model", session.model),
+                                ("session_id", session.ext_session_id)):
+                validate_spawn_arg(_name, _val, model=(_name == "model"))
+        except ValueError as e:
+            logger.error(f"Failed to validate codex session {session.node_id}: {e}")
+            session.status = "crashed"
+            session.last_error = str(e)
             return False
         session.last_error = ""
         session.status = "running"  # idle_stored 语义：会话可用、当前无进程
@@ -839,6 +947,12 @@ class AgentHostManager:
         """
         if session._turn_open:
             raise RuntimeError(f"Agent {session.node_id} busy：codex 拒收并发 prompt（ADR 0024 不变量）")
+        # #343 per-turn 双保险：validate 只在 spawn/validate 路径跑，每轮参数（model、
+        # ext_session_id 会进 resume argv）再验一次；不合白名单直接拒（上层按轮失败）。
+        for _name, _val in (("node_id", session.node_id),
+                            ("model", session.model),
+                            ("session_id", session.ext_session_id if allow_resume else None)):
+            validate_spawn_arg(_name, _val, model=(_name == "model"))
         from .agent_adapters import SpawnParams
         from .agent_adapters.codex_adapter import CodexAdapter, codex_spawn_env, write_home_mcp_config
 
@@ -880,6 +994,10 @@ class AgentHostManager:
         # -i），插在 stdin 占位 `-` 之前；路径解析失败已在收集层降级，这里不再炸。
         from .agent_adapters.codex_adapter import insert_ref_images
         cmd = insert_ref_images(cmd, ref_paths or [])
+        # #343：per-turn 统一收口——resolved_cli 若是 npm .cmd 包装器，解成
+        # node.exe + 脚本直接启动（不再经 CreateProcess 的隐式 cmd.exe）；
+        # 解不出拒绝启动（抛 ValueError，上层按轮失败处理，不发进程）。
+        cmd = finalize_spawn_argv(cmd)
 
         session.last_error = ""
         session._turn_started_at = time.time()
