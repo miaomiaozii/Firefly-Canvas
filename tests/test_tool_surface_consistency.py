@@ -226,6 +226,10 @@ class DualPathEquivalenceTests(unittest.TestCase):
             for item in coll:
                 for k in ("created_at", "updated_at", "revision"):
                     item.pop(k, None)
+                # #343 后双路必然差异字段：服务端生成 id（node-XXXX）两侧不同；
+                # 来源三戳（createdBy*）按设计区分 mcp/pi，不参与等价比较。
+                for k in ("id", "createdByAgent", "createdBySession", "createdBySource"):
+                    item.pop(k, None)
                 for k, v in list(item.items()):
                     if isinstance(v, str):
                         item[k] = self._canon_text(v)
