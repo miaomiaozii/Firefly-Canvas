@@ -26,7 +26,11 @@
 
     function keyedArray(value){
         return Array.isArray(value)
-            && value.every(item => isObject(item) && String(item.id || item.request_id || item.asset_id || ''));
+            && value.every(item => isObject(item) && (item.output_id || item.id || item.request_id || item.asset_id || collectionSource(item)));
+    }
+
+    function scalarArray(value){
+        return Array.isArray(value) && value.every(item => typeof item === 'string' || typeof item === 'number');
     }
 
     function conversationMessageKey(item){
@@ -37,20 +41,51 @@
             : '';
     }
 
-    function itemKey(item){
-        return conversationMessageKey(item) || String(item?.id || item?.request_id || item?.asset_id || '');
+    function collectionSource(item){
+        return ['url', 'src', 'output', 'output_url', 'outputUrl', 'path', 'uri']
+            .map(key => item?.[key]).find(value => typeof value === 'string' && value.trim()) || '';
+    }
+
+    function itemKey(item, collections){
+        if(typeof item === 'string' || typeof item === 'number') return `${typeof item}:${item}`;
+        const messageKey = conversationMessageKey(item);
+        if(messageKey) return messageKey;
+        for(const key of ['output_id', 'id', 'request_id', 'asset_id']){
+            if(!item?.[key]) continue;
+            if(key === 'asset_id' && collections.some(items => items.filter(value => value?.asset_id === item.asset_id).length > 1)) continue;
+            return `${key}:${item[key]}`;
+        }
+        const source = collectionSource(item);
+        if(source && collections.every(items => items.filter(value => collectionSource(value) === source).length <= 1)) return `url:${source}`;
+        return '';
+    }
+
+    function collectionConflict(){
+        const error = new Error('媒体或成员集合身份不明确，合并冲突；已保留本地更改，请确认冲突后重试保存');
+        error.name = 'CanvasCollectionConflict';
+        return error;
     }
 
     function mergeKeyedArray(base, local, remote){
-        const baseItems = new Map((base || []).map(item => [itemKey(item), item]));
-        const localItems = new Map((local || []).map(item => [itemKey(item), item]));
-        const remoteItems = new Map((remote || []).map(item => [itemKey(item), item]));
-        const order = [];
-        (remote || []).forEach(item => order.push(itemKey(item)));
-        (local || []).forEach(item => {
-            const key = itemKey(item);
-            if(!order.includes(key)) order.push(key);
-        });
+        const collections = [base || [], local || [], remote || []];
+        const keyFor = item => itemKey(item, collections);
+        for(const items of collections){
+            const keys = items.map(keyFor);
+            if(keys.includes('') || new Set(keys).size !== keys.length) throw collectionConflict();
+        }
+        const baseItems = new Map((base || []).map(item => [keyFor(item), item]));
+        const localItems = new Map((local || []).map(item => [keyFor(item), item]));
+        const remoteItems = new Map((remote || []).map(item => [keyFor(item), item]));
+        const baseOrder = (base || []).map(keyFor).filter(key => localItems.has(key));
+        const localOrder = (local || []).map(keyFor);
+        // Prepending/inserting or moving a base member expresses placement.
+        // Merely appending new entries keeps the existing remote-first policy,
+        // so successive journal actions do not reorder earlier remote inserts.
+        const lastBaseIndex = localOrder.reduce((last, key, index) => baseItems.has(key) ? index : last, -1);
+        const locallyReordered = !equal(baseOrder, localOrder.slice(0, lastBaseIndex + 1));
+        const preferred = locallyReordered ? local : remote;
+        const remaining = locallyReordered ? remote : local;
+        const order = [...new Set([...(preferred || []), ...(remaining || [])].map(keyFor))];
         return order.flatMap(key => {
             const baseHas = baseItems.has(key);
             const localHas = localItems.has(key);
@@ -95,20 +130,30 @@
             });
         }
         if(remoteType === types.NODE_TYPE_IMAGE && remote.generationState){
-            ['images', 'pending', 'running', 'generationState', 'error', 'updated_at'].forEach(key => {
+            // images are durable collection edits, not task runtime state.
+            // Their three-way result already retains terminal additions.
+            ['pending', 'running', 'generationState', 'error', 'updated_at'].forEach(key => {
                 if(Object.prototype.hasOwnProperty.call(remote, key)) result[key] = clone(remote[key]);
             });
         }
         return result;
     }
 
-    function mergeThreeWay(base, local, remote){
+    function mergeThreeWay(base, local, remote, field=''){
+        // Identical accepted intent needs no identity matching (e.g. lost ack
+        // followed by a 409/no-op on an old anonymous media collection).
+        if(equal(local, remote)) return clone(local);
         if(equal(local, base)) return clone(remote);
         if(equal(remote, base) || remote === undefined) return clone(local);
         if(Array.isArray(local)){
-            if(keyedArray(local) && keyedArray(remote || []) && keyedArray(base || [])){
+            if((keyedArray(local) && keyedArray(remote || []) && keyedArray(base || []))
+                || (['items','inputNodeIds'].includes(field) && scalarArray(local) && scalarArray(remote || []) && scalarArray(base || []))){
                 return mergeKeyedArray(base || [], local, remote || []);
             }
+            // Both sides changed a structured collection, but at least one
+            // entry cannot be located. Replacing the whole array would silently
+            // discard remote additions (or guessing by index would edit a peer).
+            if(local.some(isObject) || (Array.isArray(remote) && remote.some(isObject))) throw collectionConflict();
             return clone(local);
         }
         if(!isObject(local) || !isObject(remote)) return clone(local);
@@ -120,7 +165,7 @@
                 if(Object.prototype.hasOwnProperty.call(baseObject, key)) delete result[key];
                 return;
             }
-            result[key] = mergeThreeWay(baseObject[key], local[key], remote[key]);
+            result[key] = mergeThreeWay(baseObject[key], local[key], remote[key], key);
         });
         return mergeAgentTerminalState(result, local, remote);
     }
@@ -382,10 +427,23 @@
                 };
             }
             conflictRetries += 1;
+            if(!mutations.length){
+                // A 409 proves in-memory acceptance, not disk durability (the
+                // original PATCH acknowledgement may have been lost). Without
+                // an adapter, retain the library's legacy no-write contract.
+                let saved = true;
+                if(typeof options?.confirmSaved === 'function'){
+                    saved = await options.confirmSaved({
+                        ...response, revision:latest.revision, updated_at:latest.updated_at,
+                    }, clone(canvas)) === true;
+                }
+                return {saved, canvas, serverCanvas:latest, baseline, mutations, conflictRetries, response, confirmedWithoutWrite:true};
+            }
         }
     }
 
     return {
+        mergeCanvasValue:mergeThreeWay,
         flushProjectCanvasMutations,
         rebaseProjectCanvasMutations,
         rebaseProjectCanvasResponse,

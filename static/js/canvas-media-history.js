@@ -245,32 +245,129 @@ function mediaReferenceSource(value){
         .find(item => typeof item === 'string' && item.trim()) || '';
 }
 
+function materializedCollectionConflict(){
+    const error = new Error('媒体集合身份不明确，回填冲突；已保留本地更改，请确认冲突后重试保存');
+    error.name = 'CanvasCollectionConflict';
+    return error;
+}
+
+function materializedItemKey(item, collections){
+    for(const field of ['output_id', 'id', 'asset_id']){
+        if(!item?.[field]) continue;
+        if(field === 'asset_id' && collections.some(items => items.filter(value => value?.asset_id === item.asset_id).length > 1)) continue;
+        return `${field}:${item[field]}`;
+    }
+    const source = mediaReferenceSource(item);
+    if(source && collections.every(items => items.filter(value => mediaReferenceSource(value) === source).length <= 1)){
+        return `url:${source}`;
+    }
+    return '';
+}
+
+function hasMaterializedMediaReference(value){
+    if(!value || typeof value !== 'object') return false;
+    return Boolean(value.asset_id) || Object.values(value).some(hasMaterializedMediaReference);
+}
+
 function reconcileMaterializedMediaReferences(current, before, materialized){
+    // No import/backfill occurred; there is nothing to reconcile, even for an
+    // old anonymous collection. In particular do not manufacture identities.
+    if(JSON.stringify(before) === JSON.stringify(materialized)) return current;
     if(Array.isArray(materialized)){
-        return materialized.map((item, index) => reconcileMaterializedMediaReferences(current?.[index], before?.[index], item));
+        if(!Array.isArray(current) || !Array.isArray(before) || !current.length) return current;
+        const needsBackfill = hasMaterializedMediaReference(materialized);
+        const collections = [before, current, materialized];
+        const maps = collections.map((items, collectionIndex) => {
+            const mapped = new Map();
+            items.forEach((item, index) => {
+                let key = materializedItemKey(item, collections);
+                // materializeProjectMediaReferences preserves the frozen input
+                // order but strips URLs on import. For anonymous legacy media,
+                // pair that response with its request URL, then locate LIVE by
+                // the unique URL. Never zip a response with the live array.
+                const requested = before[index];
+                if(collectionIndex === 2 && item?.asset_id && !item.output_id && !item.id){
+                    const source = mediaReferenceSource(item);
+                    if(source){
+                        const sourceKey = materializedItemKey({url:source}, collections);
+                        if(sourceKey && before.some(value => materializedItemKey(value, collections) === sourceKey)) key = sourceKey;
+                    } else if(!requested?.asset_id && !requested?.output_id && !requested?.id && before.length === materialized.length){
+                        const requestKey = materializedItemKey(requested, [before, current]);
+                        if(requestKey.startsWith('url:')) key = requestKey;
+                    }
+                }
+                if(!key){
+                    if(needsBackfill) throw materializedCollectionConflict();
+                    return;
+                }
+                if(mapped.has(key)) throw materializedCollectionConflict();
+                mapped.set(key, item);
+            });
+            return mapped;
+        });
+        // Iterate the live collection, never the response length/order. New
+        // entries stay live and deleted request entries are not resurrected.
+        return current.map(item => {
+            const key = materializedItemKey(item, collections);
+            return key && maps[0].has(key) && maps[2].has(key)
+                ? reconcileMaterializedMediaReferences(item, maps[0].get(key), maps[2].get(key))
+                : item;
+        });
     }
     if(!materialized || typeof materialized !== 'object') return current;
     if(materialized.asset_id){
+        const identityField = before?.output_id ? 'output_id' : before?.id ? 'id' : '';
+        if(identityField && (current?.[identityField] !== before[identityField] || materialized[identityField] !== before[identityField])) return current;
         const beforeAssetId = String(before?.asset_id || '');
         const currentAssetId = String(current?.asset_id || '');
+        const beforeSource = mediaReferenceSource(before);
+        const currentSource = mediaReferenceSource(current);
         const unchanged = beforeAssetId
-            ? currentAssetId === beforeAssetId
-            : typeof before === 'string'
+            ? currentAssetId === beforeAssetId && (!currentSource || currentSource === beforeSource || currentSource === projectMediaUrl(beforeAssetId))
+            : !currentAssetId && (typeof before === 'string'
                 ? current === before
-                : Boolean(mediaReferenceSource(before)) && mediaReferenceSource(current) === mediaReferenceSource(before);
+                : Boolean(beforeSource) && currentSource === beforeSource);
         if(unchanged){
             const hydrated = hydrateProjectMediaReferences(materialized);
-            return current && typeof current === 'object' && !Array.isArray(current)
-                ? {...current, ...hydrated}
-                : hydrated;
+            if(!current || typeof current !== 'object' || Array.isArray(current)) return hydrated;
+            const result = {...current};
+            Object.entries(hydrated).forEach(([key, value]) => {
+                // A rename, field deletion or metadata edit during the await is
+                // independent of importing the unchanged media reference.
+                if(JSON.stringify(current[key]) === JSON.stringify(before?.[key])) result[key] = value;
+            });
+            return result;
         }
         return current;
     }
-    const result = current && typeof current === 'object' && !Array.isArray(current) ? {...current} : {};
+    if(!current || typeof current !== 'object' || !before || typeof before !== 'object') return current;
+    const result = {...current};
     Object.entries(materialized).forEach(([key, value]) => {
-        result[key] = reconcileMaterializedMediaReferences(current?.[key], before?.[key], value);
+        if(Object.prototype.hasOwnProperty.call(current, key) && Object.prototype.hasOwnProperty.call(before, key)){
+            result[key] = reconcileMaterializedMediaReferences(current[key], before[key], value);
+        }
     });
     return result;
+}
+
+function reconcileCanvasDeltaMediaReferences(delta, frozen, imported){
+    const next = JSON.parse(JSON.stringify(delta));
+    const atPath = (source, path) => path.reduce((value, key) => {
+        if(key && typeof key === 'object'){
+            if(!Array.isArray(value) || !Object.prototype.hasOwnProperty.call(key, 'id')) return undefined;
+            const matches = value.filter(item => String(item?.id) === String(key.id));
+            return matches.length === 1 ? matches[0] : undefined;
+        }
+        return value?.[key];
+    }, source);
+    for(const change of next.changes){
+        const before = atPath(frozen, change.path), after = atPath(imported, change.path);
+        if(before === undefined || after === undefined) continue;
+        for(const side of ['before', 'after']){
+            if(change[`${side}Present`]) change[side] = mediaReferencesForStorage(reconcileMaterializedMediaReferences(change[side], before, after));
+        }
+    }
+    return next;
 }
 
 function syncLiveProjectMediaReferences(storageCanvas, materializedCanvas){

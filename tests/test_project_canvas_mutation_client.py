@@ -172,11 +172,160 @@ console.log(JSON.stringify({{calls, result}}));
         self.assertIn("local", [node["id"] for node in payload["result"]["canvas"]["nodes"]])
 
     def test_save_core_requeues_original_mutations_after_conflict_limit(self):
-        source = canvas_source()
-        self.assertIn(
-            "if(flushResult.mutations.length || lateChangeSet.mutations.length) scheduleStateSave();",
-            source,
-        )
+        # Exercise the real save/merge/journal/scheduler, not an obsolete spelling
+        # of the retry branch. Only browser I/O is replaced by the unit harness.
+        script = r"""
+(async () => {
+const {readFileSync} = await import('node:fs');
+const vm = await import('node:vm');
+const path = await import('node:path');
+const {createCanvasContext, loadModules, evaluate, fromContext, JS_DIR} =
+  await import('./tests/canvas_module_units/harness.mjs');
+function declarations(file) {
+  const lines = readFileSync(path.join(JS_DIR, file), 'utf8').split(/\r?\n/);
+  const functions = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (!/^(?:async )?function \w+\(/.test(lines[index])) continue;
+    const start = index;
+    if (!/}\s*$/.test(lines[index])) {
+      while (++index < lines.length && !/^}/.test(lines[index])) {}
+      if (index === lines.length) throw new Error(`Unterminated declaration: ${lines[start]}`);
+    }
+    functions.push(lines.slice(start, index + 1).join('\n'));
+  }
+  return functions.join('\n');
+}
+const results = [];
+for (const lateEdit of [false, true]) {
+  const initial = {
+    id:'compat-conflict', project_id:'compat-conflict', format:'firefly-canvas-v1',
+    revision:4, updated_at:400, title:'Conflict retry', icon:'sparkles',
+    nodes:[{id:'prompt', type:'smart-prompt', text:'before',
+      userTouchedAt:null, promptEditedByUser:false}], connections:[], history:[]
+  };
+  const {ctx, harness} = createCanvasContext();
+  loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'project-canvas-mutations.js',
+    'canvas-connections.js', 'canvas-media-history.js', 'canvas-undo.js']);
+  vm.runInContext(['canvas-generation-tasks.js', 'canvas-agent-tui.js', 'smart-canvas.js']
+    .map(declarations).join('\n'), ctx);
+  Object.assign(ctx, {
+    canvasState:{nodes:[], selectedId:'prompt', selectedIds:[], selectedImage:{},
+      annotations:[], projectMediaLibrary:{items:[]}},
+    canvasId:initial.id, sourceProjectId:initial.project_id, canvasUsesConnections:true,
+    canvasLoadReady:true, smartClientId:'compat-conflict', contentDirty:false,
+    debouncedSaveTimer:null, canvasSyncInFlight:false, canvasProjectGone:false,
+    pendingRemoteUpdatedAt:0, pendingAgentMergeFingerprint:'', pendingAgentMergeUndo:false,
+    conversationCanvasLastAcceptedRevision:0, smartGenerationNodeRevisions:new Map(),
+    smartNodeRunTokens:new Map(), smartRunTokens:new Map(), SMART_LOG_PREVIEW_NODE_ID:'__preview__',
+    DEBOUNCED_SAVE_MS:3000, viewport:{x:0,y:0,scale:1}, canvasDefaultSmartSettings:{},
+    initialSmartSettings:{}, smartSaveButton:null, smartHistoryModal:null, assetLibraryOpen:false,
+    render(){}, applyViewport(){}, setSmartTitleText(){}, scheduleConnectionLayerRefresh(){},
+    scheduleSmartHistoryWindowRender(){}, resumeSmartPendingTasks(){},
+    resumeSmartPersistencePendingTasks(){}, resumeSmartPendingActionResumes(){},
+    rebuildMarkedAssetIdsFromNodes(){}, updateSmartMarkedBadge(){}, savePromptDraftForCurrent(){},
+    toast(message){harness.toasts.push(String(message));}
+  });
+  evaluate(ctx, `canvas=${JSON.stringify(initial)}; canvasState.nodes=canvas.nodes;`);
+  ctx.persistedCoreSnapshot = ctx.FireflyProjectCanvasMutations.snapshotFromCanvas(initial);
+  ctx.persistedDurableSnapshot = ctx.FireflyProjectCanvasMutations.durableSnapshotFromCanvas(initial);
+  const node = () => evaluate(ctx, 'canvasState.nodes.find(node => node.id === "prompt")');
+  const edit = changes => { Object.assign(node(), changes); ctx.scheduleSave(); };
+  // Discard edit-triggered timers so only the failed save can schedule a retry.
+  // Calling the core directly also avoids saveCanvas's outer failure fallback.
+  const clearEditTimer = () => {
+    ctx.clearTimeout(ctx.debouncedSaveTimer);
+    ctx.debouncedSaveTimer = null;
+    ctx.contentDirty = false;
+  };
+  edit({text:'sent body'});
+  edit({userTouchedAt:1234, promptEditedByUser:true});
+  clearEditTimer();
+  const journal = ctx.smartCanvasPendingState().journal;
+  let expectedEntries = fromContext(journal.entries());
+  const sent = [];
+  let retry = false;
+  ctx.fetch = async (url, options) => {
+    if (options?.method !== 'PATCH') throw new Error(`Unexpected request: ${url}`);
+    const request = JSON.parse(options.body);
+    sent.push(request);
+    if (retry) return {ok:true, status:200,
+      json:async () => ({saved:true, revision:8, updated_at:800})};
+    if (lateEdit && sent.length === 1) {
+      edit({text:'late body', userTouchedAt:2345});
+      clearEditTimer();
+      expectedEntries = fromContext(journal.entries());
+    }
+    const remote = JSON.parse(JSON.stringify(initial));
+    remote.revision = request.base_revision + 1;
+    remote.updated_at = remote.revision * 100;
+    remote.nodes.push({id:'remote-only', type:'smart-prompt', text:'server addition'});
+    return {ok:false, status:409, json:async () => ({detail:{canvas:remote}})};
+  };
+  const failed = await ctx.saveCoreCanvasIncrementally(ctx.canvasForStorage());
+  const activeTimers = harness.timers.filter(timer => !timer.cancelled && !timer.fired);
+  const afterFailure = {
+    failed, expectedEntries, entries:fromContext(journal.entries()), pending:journal.hasPending(),
+    node:fromContext(node()), revision:evaluate(ctx, 'canvas.revision'),
+    baselineNode:JSON.parse(ctx.persistedCoreSnapshot.nodes.prompt),
+    remotePreserved:evaluate(ctx, 'canvas.nodes.some(node => node.id === "remote-only")'),
+    dirty:ctx.contentDirty, timerDelays:activeTimers.map(timer => timer.ms),
+    timerMatches:activeTimers.length === 1 && activeTimers[0].id === ctx.debouncedSaveTimer,
+    sent:JSON.parse(JSON.stringify(sent))
+  };
+  // Fire the actual scheduled callback: it must persist every retained intent
+  // and only then acknowledge the journal and clear the dirty state.
+  retry = true;
+  if (activeTimers.length === 1) {
+    activeTimers[0].fired = true;
+    activeTimers[0].fn();
+    for (let turn = 0; turn < 50 && ctx.canvasSyncInFlight; turn++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  }
+  results.push({lateEdit, afterFailure, sent, pendingAfterRetry:journal.hasPending(),
+    dirtyAfterRetry:ctx.contentDirty, savingAfterRetry:ctx.canvasSyncInFlight,
+    entriesAfterRetry:fromContext(journal.entries())});
+}
+console.log(JSON.stringify(results));
+})().catch(error => {console.error(error); process.exit(1);});
+"""
+        cases = self.run_node(script)
+        self.assertEqual([case["lateEdit"] for case in cases], [False, True])
+        for case in cases:
+            with self.subTest(late_edit=case["lateEdit"]):
+                failed = case["afterFailure"]
+                self.assertFalse(failed["failed"]["saved"])
+                self.assertEqual([request["base_revision"] for request in failed["sent"]], [4, 5, 6])
+                for request in failed["sent"]:
+                    frozen_node = next(mutation["node"] for mutation in request["mutations"]
+                                       if mutation.get("node", {}).get("id") == "prompt")
+                    self.assertEqual(frozen_node["text"], "sent body")
+                    self.assertEqual(frozen_node["userTouchedAt"], 1234)
+                    self.assertTrue(frozen_node["promptEditedByUser"])
+                self.assertEqual(len(failed["expectedEntries"]), 3 if case["lateEdit"] else 2)
+                self.assertEqual(failed["entries"], failed["expectedEntries"])
+                self.assertTrue(failed["pending"])
+                expected_text = "late body" if case["lateEdit"] else "sent body"
+                self.assertEqual(failed["node"]["text"], expected_text)
+                self.assertEqual(failed["node"]["userTouchedAt"], 2345 if case["lateEdit"] else 1234)
+                self.assertTrue(failed["node"]["promptEditedByUser"])
+                self.assertEqual(failed["revision"], 7)
+                self.assertEqual(failed["baselineNode"]["text"], "before")
+                self.assertTrue(failed["remotePreserved"])
+                self.assertTrue(failed["dirty"])
+                self.assertEqual(failed["timerDelays"], [3000])
+                self.assertTrue(failed["timerMatches"])
+                self.assertEqual(len(case["sent"]), 4)
+                self.assertEqual(case["sent"][-1]["base_revision"], 7)
+                saved_node = next(mutation["node"] for mutation in case["sent"][-1]["mutations"]
+                                  if mutation.get("node", {}).get("id") == "prompt")
+                self.assertEqual(saved_node["text"], expected_text)
+                self.assertEqual(saved_node["userTouchedAt"], failed["node"]["userTouchedAt"])
+                self.assertTrue(saved_node["promptEditedByUser"])
+                self.assertFalse(case["pendingAfterRetry"])
+                self.assertEqual(case["entriesAfterRetry"], [])
+                self.assertFalse(case["dirtyAfterRetry"])
+                self.assertFalse(case["savingAfterRetry"])
 
     def test_durable_snapshot_ignores_runtime_node_status_but_keeps_content_edits(self):
         script = f"""

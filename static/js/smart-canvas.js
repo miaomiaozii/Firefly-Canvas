@@ -4842,6 +4842,8 @@ function mergeSmartImageLists(localImgs, remoteImgs){
     const keyFor = (image, fallbackIndex) => {
         const outputId = String(image?.output_id || '').trim();
         if(outputId) return `output:${outputId}`;
+        const id = String(image?.id || '').trim();
+        if(id) return `id:${id}`;
         const assetId = String(image?.asset_id || '').trim();
         if(assetId) return `asset:${assetId}`;
         const url = String(image?.url || '').trim();
@@ -5036,7 +5038,7 @@ function applyLocalNodePosition(merged, local, remote){
     merged.positionUpdatedAt = localPositionAt;
     return merged;
 }
-function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
+function mergeSmartNode(local, remote, terminalTaskIds=new Set(), {authoritativeMedia=false}={}){
     // Remote task broadcasts pass every canvas node through this merge.  Nodes
     // that do not own media/task state must keep their exact persisted shape;
     // otherwise a read-only poll invents images:[] and busy flags that the next
@@ -5046,7 +5048,9 @@ function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     if(!smartNodeUsesGenerationMerge(local) && !smartNodeUsesGenerationMerge(remote)){
         return applyLocalNodePosition({...remote}, local, remote);
     }
-    const images = mergeSmartImageLists(local.images, remote.images);
+    // Receivers replay unsaved collection deltas separately. A historical
+    // union here would resurrect acknowledged images deleted by another tab.
+    const images = authoritativeMedia ? (remote.images || []) : mergeSmartImageLists(local.images, remote.images);
     const localDone = smartNodeHasCompletedResult(local);
     const remoteDone = smartNodeHasCompletedResult(remote);
     let base = remote;
@@ -5057,7 +5061,16 @@ function mergeSmartNode(local, remote, terminalTaskIds=new Set()){
     }else if(!remoteDone && smartNodeInFlight(local)){
         base = local;
     }
-    const merged = applyLocalNodePosition({...base, images}, local, remote);
+    // Content always comes from the authoritative copy. The old full local
+    // base also carried acknowledged prompt/model/ownership fields through a
+    // later broadcast; only transient generation state may bypass the journal.
+    const merged = {...remote, images};
+    if(base === local){
+        ['runStartedAt','runFinishedAt','runElapsedMs','runTimerHidden','_runMetaTargetId'].forEach(key => {
+            if(Object.prototype.hasOwnProperty.call(local, key)) merged[key] = local[key];
+        });
+    }
+    applyLocalNodePosition(merged, local, remote);
     const pendingTasks = mergeSmartPendingTaskLists(local, remote, terminalTaskIds);
     const submissions = mergeSmartSubmissionLists(local, remote, terminalTaskIds);
     if(pendingTasks.length){
@@ -5103,7 +5116,10 @@ let pendingAgentMergeUndo = false;
 // 多了一步），合并时就不再推陈旧快照，否则 Ctrl+Z 会连带撤掉用户改动。
 let pendingAgentMergeFingerprint = '';
 function applyMergedServerCanvas(serverCanvas, options={}){
-    if(!serverCanvas || !canvas) return false;
+    if(!serverCanvas || !canvas || smartCanvasResponseIsStale(serverCanvas)) return false;
+    const previousTitle = canvas.title;
+    finalizePendingCanvasUndo();
+    observeSmartCanvasPending();
     // #375: agent 工具写入经广播进来时，合并前留一份快照指纹；合并确实改变了
     // 画布结构才把它推进撤回栈（Ctrl+Z 能把 agent 写入撤回去）。去抖窗口内多次
     // agent 写入合并成一步；no-op 合并不进栈（#192 语义不变）。
@@ -5123,11 +5139,25 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     }
     canvas.history = mergeSmartHistoryRecordLists(canvas.history || [], serverCanvas.history || []);
     const terminalTaskIds = terminalSmartGenerationTaskIds(canvas.history || []);
-    const mergedNodes = mergeSmartNodeLists(canvasState.nodes, remoteNodes, terminalTaskIds);
+    const locals = new Map(canvasState.nodes.map(node => [String(node.id), node]));
+    // A server deletion is authoritative. Local-only creations return through
+    // the journal; a historical union must not resurrect deleted entities.
+    const mergedNodes = remoteNodes.map(remote => {
+        const local = locals.get(String(remote.id));
+        return local ? mergeSmartNode(local, remote, terminalTaskIds, {authoritativeMedia:true}) : remote;
+    });
     const nodeIds = new Set(mergedNodes.map(n => n.id));
     canvasState.nodes = mergedNodes;
     canvas.nodes = canvasState.nodes;
-    canvas.connections = mergeSmartConnections(canvas.connections, serverCanvas.connections, nodeIds);
+    canvas.connections = (serverCanvas.connections || []).filter(edge => {
+        const from = edge.from ?? edge.source ?? edge.fromNode ?? edge.sourceNodeId;
+        const to = edge.to ?? edge.target ?? edge.toNode ?? edge.targetNodeId;
+        return nodeIds.has(from) && nodeIds.has(to);
+    });
+    for(const key of ['title', 'icon']){
+        if(Object.prototype.hasOwnProperty.call(serverCanvas, key)) canvas[key] = serverCanvas[key];
+    }
+    replaySmartCanvasPending();
     let createdRemoteTaskCards = false;
     canvasState.nodes.forEach(node => {
         if(smartPendingTasks(node).length){
@@ -5144,16 +5174,17 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     canvas.updated_at = Number(serverCanvas.updated_at || canvas.updated_at || 0);
     const serverRev = Number(serverCanvas.revision || 0);
     if(serverRev > 0) canvas.revision = Math.max(serverRev, Number(canvas.revision || 0));
-    if(canvas.title !== serverCanvas.title && serverCanvas.title){
-        canvas.title = serverCanvas.title;
-        setSmartTitleText(canvas.title);
-    }
+    if(canvas.title !== previousTitle) setSmartTitleText(canvas.title);
+    settleSmartCanvasPendingView();
     render();
     if(typeof scheduleConnectionLayerRefresh === 'function') scheduleConnectionLayerRefresh();
     if(recoveredLoopOutputs || createdRemoteTaskCards) scheduleSave();
     // #192: 只有合并真正带来了更新的状态才强制历史 rail 重建；no-op 合并不替换 rail 的 DOM。
     if(remoteStateNewer && smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     resumeSmartPendingTasks();
+    advanceSmartCanvasShadow(serverCanvas);
+    settleSmartCanvasPendingView();
+    finalizePendingCanvasUndo({afterRemote:true});
     if(wantsAgentUndo && preMergeSnapshot){
         const postFingerprint = JSON.stringify({nodes: canvasState.nodes, connections: canvas.connections});
         const structureChanged = postFingerprint !== preMergeFingerprint;
@@ -5164,14 +5195,16 @@ function applyMergedServerCanvas(serverCanvas, options={}){
         const liveUntouched = pendingAgentMergeFingerprint === preMergeFingerprint;
         pendingAgentMergeFingerprint = '';
         if(structureChanged && liveUntouched && !undoSuppressed){
+            if(preMergeSnapshot.actionDeltaVersion === 1){
+                preMergeSnapshot.actionDelta = smartCanvasActionDelta(canvasUndoContents(preMergeSnapshot), canvasUndoContents(snapshotForUndo()));
+            }
             undoStack.push(preMergeSnapshot);
             if(undoStack.length > UNDO_LIMIT) undoStack.shift();
             syncUndoRedoButtons();
             scheduleUndoStackPersist();
-            // 保存基线同步含 agent 节点的合并后状态：增量保存是「基线 vs 当前」差异，
-            // 基线里没有这个节点，撤回时就生成不出 remove_node——服务端删不掉，
-            // 下一次合并又会把它带回来（#375 落盘断言实测就是这个现象）。
-            persistedCoreSnapshot = projectCanvasSnapshot(canvasForStorage());
+            // #375 needs the remote addition in the baseline so undo emits a
+            // remove. advanceSmartCanvasShadow uses only the server copy;
+            // the local pending body must never become an acknowledged value.
             // #375 落盘：撤回必须进服务端，否则下一次 8s 轮询合并会把 agent 节点带回来。
             scheduleSave();
         }
@@ -5809,39 +5842,13 @@ function smartProjectId(){
 // 项目画布变更端点的 409 冲突恢复与成功响应统一走这里（此前 deleteSmartProjectOriginal
 // 一处两份、其他路径各写各的轻量版，已漂移）。
 async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){
-    if(!serverCanvasData) return Number(canvas?.revision || 0);
-    const serverCanvas = hydrateProjectMediaReferences(serverCanvasData);
-    // #144: 不再整体替换本地画布，而是把本地未保存的 mutation rebase 到服务端
-    // 画布上。否则在 autosave 防抖窗口内画的连线/节点（本地独有、尚未落库）
-    // 会被历史删除等返回的服务端画布静默丢弃（数据丢失）。
-    let nextCanvas = serverCanvas;
-    let nextBaseline = null;
-    const adoptMutationClient = window.FireflyProjectCanvasMutations;
-    if(canvas && persistedCoreSnapshot && adoptMutationClient?.rebaseProjectCanvasResponse){
-        try {
-            const localStorageCanvas = await materializeProjectMediaReferences(canvasForStorage());
-            const rebased = adoptMutationClient.rebaseProjectCanvasResponse(serverCanvas, persistedCoreSnapshot, localStorageCanvas);
-            if(!rebased.ignored && rebased.canvas){
-                nextCanvas = rebased.canvas;
-                nextBaseline = rebased.baseline;
-            }
-        } catch(_){ /* #348: rebase 异常回退整体替换，保证不阻断同步（原注释保留） */ }
-    }
-    canvas = nextCanvas;
-    canvas.history = activeTaskLogs !== null
-        ? mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs)
-        : (canvas.history || []);
-    canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-    canvasState.nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.nodes = canvasState.nodes;
+    // No materialize await and no destructive fallback on ignored/error:
+    // all dedicated responses use the same stale guard and pending replay.
+    if(!serverCanvasData || !applyMergedServerCanvas(serverCanvasData)) return Number(canvas?.revision || 0);
+    if(activeTaskLogs !== null) canvas.history = mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs);
+    settleSmartCanvasPendingView();
     rebuildMarkedAssetIdsFromNodes();
-    updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
-    canvas.updated_at = Number(canvas.updated_at || Date.now());
-    canvas.revision = Number(canvas.revision ?? 0);
-    const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-    persistedCoreSnapshot = nextBaseline || projectCanvasSnapshot(savedCanvas);
-    persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
-    render();
+    updateSmartMarkedBadge();
     if(settleMs > 0) await new Promise(resolve => setTimeout(resolve, settleMs));
     return canvas.revision;
 }
@@ -6642,6 +6649,7 @@ async function loadCanvas(){
             return false;
         }
         canvas = data.canvas;
+        const loadedServerCanvas = smartCanvasDataClone(canvas);
         conversationCanvasLastAcceptedRevision = Number(canvas?.revision || 0);
         persistedCoreSnapshot = canvas.format === 'firefly-canvas-v1'
             ? projectCanvasSnapshot(canvasForStorage({preserveLegacyDockCollapsed:true})) : null;
@@ -6698,6 +6706,11 @@ async function loadCanvas(){
         canvasDefaultSmartSettings = cloneSmartSettings(settings);
         updateProviderModels();
         refreshPersistedDurableSnapshot(canvasForStorage());
+        // Classic canvases have no persistedCoreSnapshot. Establish their
+        // untouched server anchor now, not lazily after the first local edit.
+        smartCanvasPendingState.current = null;
+        advanceSmartCanvasShadow(loadedServerCanvas);
+        settleSmartCanvasPendingView();
         applyViewport();
         render();
         frameSmartCanvasContentIfNeeded();
@@ -6969,6 +6982,8 @@ function scheduleDebouncedSave(){
     }, DEBOUNCED_SAVE_MS);
 }
 function scheduleSave(options={}){
+    finalizePendingCanvasUndo();
+    observeSmartCanvasPending();
     // Content mutations start a coalescing window; later mutations keep its
     // due time so a burst can result in at most one automatic save per interval.
     if(options?.state){
@@ -7027,6 +7042,75 @@ async function saveProjectCanvasUntilSettled({maxAttempts=4}={}){
     }
     return false;
 }
+// #392: runtime-only local intent. Observe adjacent durable views, not merely
+// differences from the server shadow: undo-to-null/false during a save is a
+// new compensating intent even if it equals the previous server value.
+function smartCanvasResponseIsStale(server){
+    if(isProjectCanvasData(canvas)) return Number(server?.revision || 0) < Number(canvas?.revision || 0);
+    return Number(server?.updated_at || 0) < Number(canvas?.updated_at || 0);
+}
+function smartCanvasPendingData(source){
+    const clean = mediaReferencesForStorage(source || {});
+    const snapshot = projectCanvasMutationClient().durableSnapshotFromCanvas(clean);
+    const result = {
+        nodes:Object.values(snapshot.nodes).map(value => JSON.parse(value)),
+        connections:Object.values(snapshot.edges).map(value => JSON.parse(value)),
+        ...JSON.parse(snapshot.meta),
+    };
+    if(!isProjectCanvasData(source)){
+        result.settings = clean.settings || {};
+        result.viewport = clean.viewport || {x:0,y:0,scale:1};
+    }
+    return result;
+}
+function smartCanvasPendingState(){
+    const key = `${canvasId}\n${canvas?.project_id || canvas?.project || ''}`;
+    let state = smartCanvasPendingState.current;
+    if(!state || state.key !== key){
+        const snapshot = persistedCoreSnapshot;
+        const server = snapshot ? {
+            ...canvas,
+            nodes:Object.values(snapshot.nodes || {}).map(value => JSON.parse(value)),
+            connections:Object.values(snapshot.edges || {}).map(value => JSON.parse(value)),
+            ...JSON.parse(snapshot.meta || '{}'),
+        } : canvas;
+        state = {key, server:smartCanvasDataClone(mediaReferencesForStorage(server)), journal:createSmartCanvasPendingJournal({mergeValue:projectCanvasMutationClient().mergeCanvasValue}), observed:smartCanvasPendingData(server)};
+        smartCanvasPendingState.current = state;
+        smartCanvasServerShadow = state.server;
+    }
+    return state;
+}
+function observeSmartCanvasPending(){
+    if(!canvas) return;
+    canvas.nodes = canvasState.nodes;
+    const state = smartCanvasPendingState();
+    const current = smartCanvasPendingData(canvasForStorage());
+    state.journal.record(state.observed, current);
+    state.observed = current;
+}
+function replaySmartCanvasPending(){
+    const state = smartCanvasPendingState();
+    const result = state.journal.replay(canvas);
+    state.conflicts = result.conflicts;
+    // Deltas use storage-form asset references. Hydrate only the replayed UI
+    // view, never the authoritative server anchor or the next storage payload.
+    canvas = hydrateProjectMediaReferences(result.canvas);
+    canvasState.nodes = canvas.nodes;
+    if(result.conflicts.length) toast(result.conflicts[0].message);
+    return result;
+}
+function settleSmartCanvasPendingView(){
+    smartCanvasPendingState().observed = smartCanvasPendingData(canvasForStorage());
+}
+function advanceSmartCanvasShadow(serverCanvas){
+    const server = mediaReferencesForStorage(serverCanvas);
+    smartCanvasPendingState().server = smartCanvasDataClone(server);
+    smartCanvasServerShadow = smartCanvasPendingState().server;
+    if(isProjectCanvasData(server)){
+        persistedCoreSnapshot = projectCanvasSnapshot(server);
+        persistedDurableSnapshot = durableSnapshotForCanvas(server);
+    }
+}
 function projectCanvasMutationClient(){
     const client = window.FireflyProjectCanvasMutations;
     if(!client?.snapshotFromCanvas || !client?.mutationsFromCanvas) throw new Error(tr('smart.incrementalModuleMissing'));
@@ -7038,21 +7122,55 @@ function projectCanvasSnapshot(storageCanvas){
 function buildCoreMutations(storageCanvas, previousSnapshot=persistedCoreSnapshot){
     return projectCanvasMutationClient().mutationsFromCanvas(storageCanvas, previousSnapshot);
 }
+function freezeSmartCanvasSave(storageCanvas){
+    finalizePendingCanvasUndo();
+    observeSmartCanvasPending();
+    const state = smartCanvasPendingState();
+    if(state.conflicts?.length){
+        const error = new Error(state.conflicts[0].message);
+        error.name = 'CanvasCollectionConflict';
+        throw error;
+    }
+    return {state, checkpoint:state.journal.checkpoint(), baseline:smartCanvasDataClone(persistedCoreSnapshot),
+        server:smartCanvasDataClone(state.server), revision:Number(storageCanvas.revision || 0)};
+}
+function acceptSmartCanvasSave(batch, serverCanvas){
+    observeSmartCanvasPending();
+    // No acknowledgement on ambiguous media identity. The caller retries with
+    // the same intent; even a server-accepted batch must not erase live edits.
+    batch.state.journal.acknowledge(batch.checkpoint);
+    // A newer response may already have arrived while this request was in
+    // flight. Remove the acknowledged overlay against that pure shadow, not
+    // against a stale ack which the revision guard would simply ignore.
+    applyMergedServerCanvas(smartCanvasResponseIsStale(serverCanvas) ? batch.state.server : serverCanvas);
+    return batch.state.journal.hasPending();
+}
+function reconcileSmartCanvasSaveMedia(batch, frozen, imported){
+    syncLiveProjectMediaReferences(frozen, imported);
+    batch.state.journal.rewriteDeltas(delta => reconcileCanvasDeltaMediaReferences(delta, frozen, imported), {afterSeq:batch.checkpoint.seq});
+    finalizePendingCanvasUndo({materializedMedia:{frozen, imported}});
+    settleSmartCanvasPendingView();
+}
 async function saveCoreCanvasIncrementally(storageCanvas){
+    // Freeze before the FIRST await, including the server shadow and seq.
+    const batch = freezeSmartCanvasSave(storageCanvas);
     const projectStorageCanvas = await materializeProjectMediaReferences(storageCanvas);
-    const changeSet = buildCoreMutations(projectStorageCanvas);
+    const changeSet = buildCoreMutations(projectStorageCanvas, batch.baseline);
     if(!changeSet.mutations.length){
-        syncLiveProjectMediaReferences(storageCanvas, projectStorageCanvas);
-        persistedDurableSnapshot = durableSnapshotForCanvas(projectStorageCanvas);
+        observeSmartCanvasPending();
+        reconcileSmartCanvasSaveMedia(batch, storageCanvas, projectStorageCanvas);
+        // A server response during import invalidates a no-write confirmation.
+        if(Number(batch.state.server?.revision || 0) !== batch.revision) return {saved:false, hasLateChanges:true};
+        const hasLateChanges = acceptSmartCanvasSave(batch, batch.server);
         setProjectSaveState('saved', tr('smart.projectSaved'));
-        return {saved:true, hasLateChanges:false};
+        return {saved:true, hasLateChanges};
     }
     setProjectSaveState('saving', tr('smart.projectSaving'));
     const mutationClient = window.FireflyProjectCanvasMutations;
     if(!mutationClient?.flushProjectCanvasMutations) throw new Error(tr('smart.incrementalModuleMissing'));
     const flushResult = await mutationClient.flushProjectCanvasMutations({
-        canvas:{...projectStorageCanvas, revision:canvas.revision ?? 0},
-        baseline:persistedCoreSnapshot,
+        canvas:{...projectStorageCanvas, revision:batch.revision},
+        baseline:batch.baseline,
         mutations:changeSet.mutations,
         maxConflictRetries:2,
         confirmSaved:async accepted => {
@@ -7060,7 +7178,7 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/flush`, {method:'POST'});
             if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.canvasFlushFailed')));
             const result = await response.json();
-            return Number(result.revision || 0) >= Number(accepted.revision || 0);
+            return result.saved !== false && Number(result.revision || 0) >= Number(accepted.revision || 0);
         },
         send:async (baseRevision, mutations) => {
             // Empty-canvas guard (H39 incident): declare force_empty only when the
@@ -7102,8 +7220,8 @@ async function saveCoreCanvasIncrementally(storageCanvas){
         markCanvasProjectGone();
         return {saved:false, hasLateChanges:false};
     }
-    // #62 C-4: 悬空媒体引用自愈——本地状态永远存不上时，放弃本次不可保存的修改，
-    // 以服务端画布为准 rebase（服务端画布不含悬空引用），一次性提示用户。
+    // #62 C-4 / #392: recover only confirmed dangling media. A rejected
+    // mutation is not an acknowledgement of unrelated body/ownership edits.
     if(flushResult.response?.invalidMutation){
         const projectId = canvas.project_id || canvas.project || canvasId;
         try {
@@ -7112,21 +7230,22 @@ async function saveCoreCanvasIncrementally(storageCanvas){
                 const body = await res.json().catch(() => ({}));
                 const serverCanvas = body?.canvas || body;
                 if(serverCanvas && Array.isArray(serverCanvas.nodes)){
-                    canvas = {...serverCanvas};
-                    const restoredNodes = filterDanglingProjectMediaImages(
-                        (serverCanvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean)
-                    );
-                    canvasState.nodes = restoredNodes.nodes;
-                    canvas.nodes = canvasState.nodes;
-                    canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(serverCanvas.history || []));
-                    canvas.connections = Array.isArray(serverCanvas.connections) ? serverCanvas.connections : [];
-                    persistedCoreSnapshot = projectCanvasSnapshot(serverCanvas);
-                    persistedDurableSnapshot = durableSnapshotForCanvas(serverCanvas);
-                    applyViewport();
-                    render();
-                    setProjectSaveState('saved', tr('smart.projectSaved'));
-                    toast(tr('smart.toastDanglingMediaDropped'));
-                    return {saved:true, hasLateChanges:false};
+                    applyMergedServerCanvas(serverCanvas);
+                    // A fresh library is required before pruning; a failed or
+                    // ambiguous lookup must not turn into a whole-node reset.
+                    if(await refreshProjectMediaLibraryItems()){
+                        const restoredNodes = filterDanglingProjectMediaImages(canvasState.nodes, {libraryKnownLoaded:true});
+                        if(restoredNodes.dropped > 0){
+                            canvasState.nodes = restoredNodes.nodes;
+                            canvas.nodes = canvasState.nodes;
+                            observeSmartCanvasPending();
+                            scheduleStateSave();
+                            render();
+                            toast(tr('smart.toastDanglingMediaDropped'));
+                        }
+                    }
+                    setProjectSaveState('error', tr('smart.projectConflict'));
+                    return {saved:false, hasLateChanges:true};
                 }
             }
         } catch(_){ /* 自愈失败落入下方错误路径 */ }
@@ -7139,21 +7258,9 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             throw new Error(tr('smart.backgroundSaveTimeout'));
         }
         if(flushResult.conflictLimitReached && flushResult.serverCanvas){
-            const lateChangeSet = buildCoreMutations(canvasForStorage(), changeSet.next);
-            const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
-            canvas = localView.canvas;
-            canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-            canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
-            canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-            persistedCoreSnapshot = projectCanvasSnapshot(flushResult.serverCanvas);
-            persistedDurableSnapshot = durableSnapshotForCanvas(flushResult.serverCanvas);
-            applyViewport();
-            render();
-            // The original mutation batch is still unsaved when the conflict
-            // retry budget is exhausted, even if no edits arrived during the
-            // request. Keep the dirty work scheduled for a later user-visible
-            // retry instead of silently treating the local canvas as clean.
-            if(flushResult.mutations.length || lateChangeSet.mutations.length) scheduleStateSave();
+            // No checkpoint ack on exhausted 409: every local intent remains.
+            applyMergedServerCanvas(flushResult.serverCanvas);
+            scheduleStateSave();
         }
         setProjectSaveState('error', tr('smart.projectConflict'));
         toast(flushResult.conflictLimitReached
@@ -7161,24 +7268,9 @@ async function saveCoreCanvasIncrementally(storageCanvas){
             : tr('smart.canvasConflict'));
         return {saved:false, hasLateChanges:false};
     }
-    syncLiveProjectMediaReferences(storageCanvas, flushResult.canvas);
-    let hasLateChanges = false;
-    if(flushResult.conflictRetries > 0){
-        const lateChangeSet = buildCoreMutations(canvasForStorage(), changeSet.next);
-        hasLateChanges = lateChangeSet.mutations.length > 0;
-        const localView = mutationClient.rebaseProjectCanvasMutations(flushResult.canvas, changeSet.next, lateChangeSet.mutations);
-        canvas = localView.canvas;
-        canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-        canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
-        canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-        applyViewport();
-        render();
-    } else {
-        canvas.updated_at = flushResult.canvas.updated_at || canvas.updated_at;
-        canvas.revision = flushResult.canvas.revision ?? canvas.revision;
-    }
-    persistedCoreSnapshot = projectCanvasSnapshot(flushResult.canvas);
-    persistedDurableSnapshot = durableSnapshotForCanvas(flushResult.canvas);
+    observeSmartCanvasPending();
+    reconcileSmartCanvasSaveMedia(batch, storageCanvas, projectStorageCanvas);
+    const hasLateChanges = acceptSmartCanvasSave(batch, flushResult.canvas);
     setProjectSaveState('saved', tr('smart.projectSaved'));
     if(hasLateChanges) scheduleStateSave();
     return {saved:true, hasLateChanges};
@@ -7233,6 +7325,7 @@ async function saveCanvas({automatic=false}={}){
         }
         return result?.saved === true;
     }
+    const batch = freezeSmartCanvasSave(storageCanvas);
     canvasSyncInFlight = true;
     try {
         const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`, {
@@ -7252,8 +7345,10 @@ async function saveCanvas({automatic=false}={}){
         });
         if(res.ok){
             const data = await res.json();
-            if(data.canvas && data.canvas.updated_at) canvas.updated_at = data.canvas.updated_at;
-            markAutosaveSaved();
+            const accepted = data.canvas || {...storageCanvas, updated_at:data.updated_at ?? storageCanvas.updated_at};
+            const hasLateChanges = acceptSmartCanvasSave(batch, accepted);
+            if(hasLateChanges) contentDirty = true;
+            else markAutosaveSaved();
             return true;
         } else if(res.status === 409) {
             // 冲突：别人先保存了。合并对方的状态（节点 id 合并、图片取并集，谁都不丢），
@@ -10359,12 +10454,7 @@ function applyConversationCanvasResponse(nextCanvas){
     if(Number.isFinite(responseRevision) && responseRevision < acceptedRevision){
         return false;
     }
-    const mutationClient = projectCanvasMutationClient();
-    const localCanvas = canvasForStorage();
-    const baseline = persistedCoreSnapshot || mutationClient.snapshotFromCanvas(nextCanvas);
-    const responseState = mutationClient.rebaseProjectCanvasResponse(nextCanvas, baseline, localCanvas);
-    if(responseState.ignored) return false;
-    canvas = responseState.canvas;
+    if(!applyMergedServerCanvas(nextCanvas)) return false;
     conversationCanvasLastAcceptedRevision = Math.max(
         Number(conversationCanvasLastAcceptedRevision || 0),
         Number(canvas?.revision || 0),
@@ -10374,11 +10464,8 @@ function applyConversationCanvasResponse(nextCanvas){
     canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
     canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
     canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-    if(canvas.format === 'firefly-canvas-v1'){
-        persistedCoreSnapshot = responseState.serverSnapshot;
-        persistedDurableSnapshot = durableSnapshotForCanvas(nextCanvas);
-    }
-    if(responseState.mutations.length) scheduleSave();
+    settleSmartCanvasPendingView();
+    if(smartCanvasPendingState().journal.hasPending()) scheduleSave();
     return true;
 }
 if(params.get('browserTest') === '1') window.__issue13ApplyConversationCanvasResponse = applyConversationCanvasResponse;

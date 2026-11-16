@@ -49,7 +49,9 @@
         return (evalCanvas()?.nodes || []).filter(n => !['seed-image','seed-prompt'].includes(n.id));
     }
     async function run(){
-        if(!await waitFor(() => document.querySelector('#smartTitle')?.textContent.includes('Undo Redo Suite'), 15000)) return;
+        const loaded = await waitFor(() => document.querySelector('#smartTitle')?.textContent.includes('Undo Redo Suite'), 15000);
+        assertion('project title loaded', loaded, document.querySelector('#smartTitle')?.textContent);
+        if(!loaded) return;
         assertion('undo button present', Boolean(undoBtn()), Boolean(undoBtn()));
         assertion('redo button present', Boolean(redoBtn()), Boolean(redoBtn()));
         assertion('undo disabled initially', undoBtn()?.disabled === true, undoBtn()?.disabled);

@@ -61,6 +61,8 @@ let settings = {
 };
 
 let canvas = null;
+// Pure authoritative copy shared by receive and undo; never a replayed view.
+let smartCanvasServerShadow = null;
 function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
 
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
@@ -180,6 +182,351 @@ function registerSmartPendingActionPersister(persister){
 }
 function smartPendingActionPersister(){
     return smartPendingActionPersisterFn;
+}
+
+// #392: read-only defaults match app/services/agent_node_state.py::_ownership.
+// Identifiers remain opaque; bool/string timestamps are not numeric timestamps.
+function smartNodeOwnership(node){
+    const agentId = typeof node?.agentNodeId === 'string' && node.agentNodeId.trim() ? node.agentNodeId : null;
+    const isAgent = node?.createdBy === 'agent' && agentId !== null;
+    const touched = node?.userTouchedAt;
+    return {
+        createdBy:isAgent ? 'agent' : 'user',
+        agentNodeId:isAgent ? agentId : null,
+        userTouchedAt:typeof touched === 'number' && Number.isFinite(touched) && touched >= 0 ? touched : null,
+        promptEditedByUser:node?.promptEditedByUser === true,
+    };
+}
+
+function smartNewNodeOwnership(node, {createdBy='user', agentNodeId=null}={}){
+    if(createdBy !== 'user' && createdBy !== 'agent') throw new TypeError('Invalid node creation source');
+    if(createdBy === 'agent' && (typeof agentNodeId !== 'string' || !agentNodeId.trim())) throw new TypeError('Agent creation requires a nonblank Agent node ID');
+    return {
+        ...smartCanvasDataClone(node || {}),
+        createdBy,
+        agentNodeId:createdBy === 'agent' ? agentNodeId : null,
+        userTouchedAt:null,
+        promptEditedByUser:false,
+        created_at:Date.now(),
+    };
+}
+
+// Explicit caller seam only: never called implicitly by save/render/clone.
+// `at` is epoch milliseconds (Date.now), consistent with browser created_at.
+function smartHumanEditedNode(before, after, {prompt=false, at}={}){
+    const result = smartCanvasDataClone(after || {});
+    const ownershipKeys = ['createdBy', 'agentNodeId', 'userTouchedAt', 'promptEditedByUser'];
+    ownershipKeys.forEach(key => {
+        if(Object.prototype.hasOwnProperty.call(before || {}, key)) result[key] = smartCanvasDataClone(before[key]);
+        else delete result[key];
+    });
+    // Match the durable-node seam without depending on the higher mutations
+    // module. Unknown persisted fields still count; known runtime/preview fields
+    // do not (the returned clone keeps them, this is comparison only).
+    const transientKeys = ['running', 'pending', 'queued', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'];
+    const mediaContent = item => smartCanvasDataObject(item)
+        ? Object.fromEntries(Object.keys(item).filter(key => !['_naturalSizeLoading', 'layout_w', 'layout_h'].includes(key)).map(key => [key, item[key]])) : item;
+    const content = node => {
+        const clean = Object.fromEntries(Object.keys(node || {}).filter(key => !ownershipKeys.includes(key) && !transientKeys.includes(key)).map(key => [key, node[key]]));
+        if(Array.isArray(clean.images)) clean.images = clean.images.map(mediaContent);
+        if(clean.inputImage) clean.inputImage = mediaContent(clean.inputImage);
+        return clean;
+    };
+    if(smartCanvasDataEqual(content(before), content(after))) return result;
+    const timestamp = at === undefined ? Date.now() : at;
+    if(typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0) throw new TypeError('Human edit timestamp must be nonnegative epoch milliseconds');
+    result.userTouchedAt = timestamp;
+    const promptKeys = ['text', 'prompt', 'promptDraftHtml', 'promptDraftText', 'llmSystemPrompt', 'llmInstruction', 'variablePrompt', 'variablePrompts'];
+    const promptContent = node => Object.fromEntries(promptKeys.filter(key => Object.prototype.hasOwnProperty.call(node || {}, key)).map(key => [key, node[key]]));
+    if(prompt && !smartCanvasDataEqual(promptContent(before), promptContent(after))) result.promptEditedByUser = true;
+    return result;
+}
+
+// #392: pure action deltas. Paths use [collection, {id}, ...fieldNames],
+// or {edge:[source,target,sourcePort,targetPort]} for legacy ID-less edges.
+// Never array offsets. All other arrays are indivisible value leaves.
+function smartCanvasDataClone(value){
+    if(Array.isArray(value)) return value.map(smartCanvasDataClone);
+    if(value && typeof value === 'object'){
+        return Object.fromEntries(Object.keys(value).map(key => [key, smartCanvasDataClone(value[key])]));
+    }
+    return value;
+}
+function smartCanvasDataObject(value){
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function smartCanvasDataEqual(left, right){
+    if(Object.is(left, right)) return true;
+    if(Array.isArray(left) !== Array.isArray(right)) return false;
+    if(!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length && keys.every(key =>
+        Object.prototype.hasOwnProperty.call(right, key) && smartCanvasDataEqual(left[key], right[key]));
+}
+function smartCanvasEntitySelector(entity, legacy=false){
+    if(!legacy && entity.id !== undefined && entity.id !== null && entity.id !== '') return {id:entity.id};
+    return {edge:[
+        entity.from ?? entity.source ?? entity.fromNode ?? entity.sourceNodeId ?? '',
+        entity.to ?? entity.target ?? entity.toNode ?? entity.targetNodeId ?? '',
+        entity.fromPort ?? entity.sourcePort ?? '',
+        entity.toPort ?? entity.targetPort ?? '',
+    ]};
+}
+function canvasUndoContents(snapshot){
+    return {nodes:snapshot.nodes, connections:snapshot.connections || [], annotations:snapshot.annotations || []};
+}
+function smartCanvasActionDelta(beforeCanvas, afterCanvas){
+    const changes = [];
+    function leaf(before, after, path, beforePresent, afterPresent){
+        const change = {path, beforePresent, afterPresent};
+        if(beforePresent) change.before = smartCanvasDataClone(before);
+        if(afterPresent) change.after = smartCanvasDataClone(after);
+        changes.push(change);
+    }
+    function visit(before, after, path, beforePresent, afterPresent){
+        if(beforePresent === afterPresent && smartCanvasDataEqual(before, after)) return;
+        const entityPresenceChange = path.length === 2 && (path[0] === 'nodes' || path[0] === 'connections') && (!beforePresent || !afterPresent);
+        const oldObject = beforePresent && smartCanvasDataObject(before);
+        const newObject = afterPresent && smartCanvasDataObject(after);
+        if(!entityPresenceChange && (oldObject || newObject)){
+            // Empty-object presence markers keep missing/null distinct, while
+            // every nested array still reaches the injected collection resolver.
+            if(!oldObject) leaf(before, {}, path, beforePresent, true);
+            const oldFields = oldObject ? before : {};
+            const newFields = newObject ? after : {};
+            const keys = new Set([...Object.keys(oldFields), ...Object.keys(newFields)]);
+            keys.forEach(key => visit(oldFields[key], newFields[key], [...path, key],
+                Object.prototype.hasOwnProperty.call(oldFields, key), Object.prototype.hasOwnProperty.call(newFields, key)));
+            if(!newObject) leaf({}, after, path, true, afterPresent);
+            return;
+        }
+        leaf(before, after, path, beforePresent, afterPresent);
+    }
+    const before = beforeCanvas || {};
+    const after = afterCanvas || {};
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    keys.forEach(key => {
+        if((key === 'nodes' || key === 'connections') && (Array.isArray(before[key]) || Array.isArray(after[key]))){
+            const beforeArray = Array.isArray(before[key]);
+            const afterArray = Array.isArray(after[key]);
+            // Container markers contain only []; entities remain separate ID
+            // operations, even on the first action of an empty legacy canvas.
+            if(!beforeArray) visit(before[key], [], [key], Object.prototype.hasOwnProperty.call(before, key), true);
+            const index = items => {
+                const mapped = new Map();
+                for(const item of items){
+                    const identity = smartCanvasDataObject(item) ? JSON.stringify(smartCanvasEntitySelector(item)) : '';
+                    if(!identity || (key === 'nodes' && !Object.prototype.hasOwnProperty.call(JSON.parse(identity), 'id')) || mapped.has(identity)){
+                        const error = new Error('Canvas entity identity is missing or ambiguous; no action was recorded.');
+                        error.name = 'CanvasCollectionConflict';
+                        throw error;
+                    }
+                    mapped.set(identity, item);
+                }
+                return mapped;
+            };
+            const oldItems = index(beforeArray ? before[key] : []);
+            const newItems = index(afterArray ? after[key] : []);
+            new Set([...oldItems.keys(), ...newItems.keys()]).forEach(identity => {
+                visit(oldItems.get(identity), newItems.get(identity), [key, JSON.parse(identity)], oldItems.has(identity), newItems.has(identity));
+            });
+            if(!afterArray) visit([], after[key], [key], true, Object.prototype.hasOwnProperty.call(after, key));
+        } else {
+            visit(before[key], after[key], [key], Object.prototype.hasOwnProperty.call(before, key), Object.prototype.hasOwnProperty.call(after, key));
+        }
+    });
+    return {version:1, changes};
+}
+function applySmartCanvasDelta(sourceCanvas, delta, {direction='forward', mergeValue, remoteCanvas}={}){
+    const result = smartCanvasDataClone(sourceCanvas || {});
+    const conflicts = [];
+    // One lookup per collection, not a full entity scan for each field. Sets
+    // retain ambiguity; the endpoint index includes subsequently assigned IDs.
+    const entityIndexes = new Map();
+    const remoteEntityIndexes = new Map();
+    const identityFields = new Set(['id', 'from', 'source', 'fromNode', 'sourceNodeId', 'to', 'target', 'toNode', 'targetNodeId', 'fromPort', 'sourcePort', 'toPort', 'targetPort']);
+    function updateIndex(index, item, add){
+        for(const [map, selector] of [[index.primary, smartCanvasEntitySelector(item)], [index.legacy, smartCanvasEntitySelector(item, true)]]){
+            const identity = JSON.stringify(selector);
+            if(add){
+                if(!map.has(identity)) map.set(identity, new Set());
+                map.get(identity).add(item);
+            } else {
+                const matches = map.get(identity);
+                matches?.delete(item);
+                if(!matches?.size) map.delete(identity);
+            }
+        }
+    }
+    function indexFor(collection, remote=false){
+        const source = (remote ? remoteCanvas : result)?.[collection];
+        const indexes = remote ? remoteEntityIndexes : entityIndexes;
+        let index = indexes.get(collection);
+        if(index && index.source === source) return index;
+        index = {source, items:Array.isArray(source) ? source : [], primary:new Map(), legacy:new Map()};
+        index.items.forEach(item => updateIndex(index, item, true));
+        indexes.set(collection, index);
+        return index;
+    }
+    const orderedChanges = direction === 'backward' ? [...delta.changes].reverse() : delta.changes;
+    changes: for(const change of orderedChanges){
+        const present = direction === 'backward' ? change.beforePresent : change.afterPresent;
+        const value = direction === 'backward' ? change.before : change.after;
+        const path = change.path;
+        let target = result;
+        let offset = 0;
+        let entityIndex = null;
+        let entity = null;
+        if(path.length === 1 && (path[0] === 'nodes' || path[0] === 'connections')){
+            if(present && Array.isArray(value) && Array.isArray(result[path[0]])) continue;
+            if((!present || !Array.isArray(value)) && Array.isArray(result[path[0]]) && result[path[0]].length){
+                conflicts.push({name:'CanvasCollectionConflict', path:smartCanvasDataClone(path), message:'Restoring collection presence would remove unrelated remote entities.'});
+                continue;
+            }
+        }
+        if((path[0] === 'nodes' || path[0] === 'connections') && smartCanvasDataObject(path[1])){
+            entityIndex = indexFor(path[0]);
+            const items = entityIndex.items;
+            const identity = JSON.stringify(path[1]);
+            // ID-less legacy intent may meet a subsequently assigned server ID.
+            // Endpoint fallback is allowed only if it still has a unique match.
+            const matches = (path[1].edge ? entityIndex.legacy : entityIndex.primary).get(identity);
+            if(matches?.size > 1){
+                conflicts.push({name:'CanvasCollectionConflict', path:smartCanvasDataClone(path), message:'Remote entity identity is ambiguous; action remains pending.'});
+                continue;
+            }
+            entity = matches?.values().next().value;
+            if(path.length === 2){
+                let restored = value;
+                if(present && typeof mergeValue === 'function'){
+                    const remoteIndex = indexFor(path[0], true);
+                    const remoteMatches = (path[1].edge ? remoteIndex.legacy : remoteIndex.primary).get(identity);
+                    if(remoteMatches?.size > 1){
+                        conflicts.push({name:'CanvasCollectionConflict', path:smartCanvasDataClone(path), message:'Remote restoration identity is ambiguous; action remains pending.'});
+                        continue;
+                    }
+                    const remote = remoteMatches?.values().next().value || entity;
+                    if(remote) restored = mergeValue(direction === 'backward' ? change.after : change.before, value, remote);
+                }
+                if(present && !Array.isArray(result[path[0]])){
+                    result[path[0]] = items;
+                    entityIndex.source = items;
+                }
+                if(entity){
+                    updateIndex(entityIndex, entity, false);
+                    const position = items.indexOf(entity);
+                    if(!present) items.splice(position, 1);
+                    else {
+                        items[position] = smartCanvasDataClone(restored);
+                        updateIndex(entityIndex, items[position], true);
+                    }
+                } else if(present){
+                    const added = smartCanvasDataClone(restored);
+                    items.push(added);
+                    updateIndex(entityIndex, added, true);
+                }
+                continue;
+            }
+            if(!entity){
+                conflicts.push({name:'CanvasEntityMissing', path:smartCanvasDataClone(path), message:'Remote entity was deleted; field intent remains pending.'});
+                continue;
+            }
+            target = entity;
+            offset = 2;
+        }
+        for(let i = offset; i < path.length - 1; i++){
+            if(!smartCanvasDataObject(target)){
+                if(!present) continue changes; // A child under null/false is already absent.
+                conflicts.push({name:'CanvasPathConflict', path:smartCanvasDataClone(path), message:'Remote parent is no longer an object; field intent remains pending.'});
+                continue changes;
+            }
+            const key = path[i];
+            if(!Object.prototype.hasOwnProperty.call(target, key)){
+                if(!present) continue changes;
+                Object.defineProperty(target, key, {value:{}, enumerable:true, writable:true, configurable:true});
+            }
+            target = target[key];
+        }
+        if(!smartCanvasDataObject(target)){
+            if(!present) continue;
+            conflicts.push({name:'CanvasPathConflict', path:smartCanvasDataClone(path), message:'Remote parent is no longer an object; field intent remains pending.'});
+            continue;
+        }
+        const key = path[path.length - 1];
+        const base = direction === 'backward' ? change.after : change.before;
+        if(present && smartCanvasDataObject(value) && !Object.keys(value).length && smartCanvasDataObject(target[key])) continue;
+        // Object presence markers run after their children on removal. Only an
+        // empty remainder may restore missing/null/false; remote siblings win.
+        if((!present || !smartCanvasDataObject(value)) && smartCanvasDataObject(base)
+            && smartCanvasDataObject(target[key]) && Object.keys(target[key]).length) continue;
+        const removingArray = Array.isArray(base) && (!present || !Array.isArray(value)) && Array.isArray(target[key]);
+        const arrayValue = removingArray ? [] : value;
+        let next = value;
+        if((removingArray || (present && Array.isArray(value))) && !(path.length === 1 && (key === 'nodes' || key === 'connections'))){
+            if(typeof mergeValue === 'function'){
+                try {
+                    next = mergeValue(smartCanvasDataClone(base), smartCanvasDataClone(arrayValue), smartCanvasDataClone(target[key]), key);
+                } catch(error){
+                    if(error?.name !== 'CanvasCollectionConflict') throw error;
+                    conflicts.push({name:error.name, path:smartCanvasDataClone(path), message:String(error.message || 'Collection identity is ambiguous.')});
+                    continue;
+                }
+            } else if(!smartCanvasDataEqual(target[key], base) && !smartCanvasDataEqual(target[key], arrayValue)){
+                conflicts.push({name:'CanvasCollectionConflict', path:smartCanvasDataClone(path), message:'Concurrent collection edit requires an injected mergeValue resolver.'});
+                continue;
+            }
+        }
+        const keepRemoteMembers = removingArray && Array.isArray(next) && next.length > 0;
+        if(removingArray && !keepRemoteMembers) next = value;
+        const reindex = entityIndex && path.length === 3 && identityFields.has(key);
+        if(reindex) updateIndex(entityIndex, entity, false);
+        if(present || keepRemoteMembers) Object.defineProperty(target, key, {value:smartCanvasDataClone(next), enumerable:true, writable:true, configurable:true});
+        else delete target[key];
+        if(reindex) updateIndex(entityIndex, entity, true);
+        if(path.length === 1) entityIndexes.delete(key);
+    }
+    return {canvas:result, conflicts};
+}
+
+// Runtime-only, caller-owned journal: record adjacent action snapshots, NOT a
+// server shadow comparison. A later compensating action must survive an old ack
+// even when its after value happens to equal the old server shadow.
+function createSmartCanvasPendingJournal({mergeValue}={}){
+    let seq = 0;
+    let pending = [];
+    return {
+        record(beforeCanvas, afterCanvas, {actionId}={}){
+            const delta = smartCanvasActionDelta(beforeCanvas, afterCanvas);
+            if(!delta.changes.length) return null;
+            const entry = {seq:++seq, delta};
+            if(actionId !== undefined) entry.actionId = smartCanvasDataClone(actionId);
+            pending.push(entry);
+            return smartCanvasDataClone(entry);
+        },
+        checkpoint(){ return {seq}; },
+        acknowledge(token){
+            if(!Number.isSafeInteger(token?.seq) || token.seq < 0) throw new TypeError('Invalid canvas journal checkpoint');
+            pending = pending.filter(entry => entry.seq > token.seq);
+        },
+        replay(serverCanvas){
+            let replayed = smartCanvasDataClone(serverCanvas || {});
+            const conflicts = [];
+            for(const entry of pending){
+                const applied = applySmartCanvasDelta(replayed, entry.delta, {mergeValue});
+                replayed = applied.canvas;
+                applied.conflicts.forEach(conflict => conflicts.push({...conflict, seq:entry.seq, actionId:smartCanvasDataClone(entry.actionId)}));
+            }
+            return {canvas:replayed, conflicts};
+        },
+        rewriteDeltas(rewrite, {afterSeq=0}={}){
+            // Import is an identity reconciliation, not a new user action.
+            // Publish only after every frozen delta has transformed safely.
+            pending = pending.map(entry => entry.seq > afterSeq
+                ? {...entry, delta:rewrite(smartCanvasDataClone(entry.delta))} : entry);
+        },
+        hasPending(){ return pending.length > 0; },
+        entries(){ return smartCanvasDataClone(pending); },
+    };
 }
 
 // #201 轨道 1（ADR 0020）：显式接口 window.canvasCore。

@@ -270,7 +270,7 @@ _CLIENT_SCRIPT_UNSET = object()
 
 
 class ConversationBrowserServer:
-    def __init__(self, store: ProjectStore, app, *, client_script: Path | None | object = _CLIENT_SCRIPT_UNSET):
+    def __init__(self, store: ProjectStore, app, *, client_script: Path | None | object = _CLIENT_SCRIPT_UNSET, port: int = 0):
         self.store = store
         self.app = app
         self.results: list[dict] = []
@@ -480,7 +480,7 @@ class ConversationBrowserServer:
             def do_DELETE(self):
                 self.forward_to_production()
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, name="issue-13-conversation-browser", daemon=True)
 
     async def run_lifespan(self):
@@ -563,10 +563,10 @@ def remove_profile(profile: Path):
         time.sleep(0.15)
 
 
-def load_production_app(root: Path, store: ProjectStore):
-    """Load the shipped ASGI app against only temporary runtime/project roots."""
-    runtime_root = (root / "runtime").resolve()
-    projects_root = (root / "unused-projects").resolve()
+def load_production_app(root: Path, store: ProjectStore, *, runtime_root: Path | None = None, projects_root: Path | None = None):
+    """Load the shipped ASGI app against only isolated runtime/project roots."""
+    runtime_root = (runtime_root if runtime_root is not None else root / "runtime").resolve()
+    projects_root = (projects_root if projects_root is not None else root / "unused-projects").resolve()
     runtime_root.mkdir(parents=True, exist_ok=True)
     projects_root.mkdir(parents=True, exist_ok=True)
     os.environ["FIREFLY_RUNTIME_ROOT"] = str(runtime_root)

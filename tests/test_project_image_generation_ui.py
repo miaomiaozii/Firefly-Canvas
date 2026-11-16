@@ -329,17 +329,16 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("@keyframes generation-result-enter", self.styles)
 
     def test_history_is_sorted_newest_first_at_every_server_boundary(self):
-        normalized = "canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));"
-        merged = "canvas.history = mergeSmartActiveHistoryTaskLogs("
-        self.assertGreaterEqual(self.source.count(normalized), 4)
-        # #76（P2-2）：项目画布变更的 409/成功模板统一走 adoptServerCanvas（内部经
-        # mergeSmartActiveHistoryTaskLogs 合并，该函数内部 sortSmartHistoryLogs），
-        # 因此直连调用点从 3+ 收敛为 2（deleteCanvasLogEntry 遗留路径 + 原图恢复）。
-        self.assertGreaterEqual(self.source.count(merged), 2)
-        self.assertIn("async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settleMs = 0} = {}){", self.source)
-        self.assertIn("async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0} = {}){", self.source)
-        self.assertIn("return sortSmartHistoryLogs([", self.source)
-        self.assertIn("canvas.history = sortSmartHistoryLogs(canvas.history);", self.source)
+        # #392: shared receive now owns sorting. Verify real receive/adopt/save
+        # behavior rather than the number of duplicated normalization statements.
+        result = subprocess.run(
+            ["node", "--test", "--test-reporter=tap", "--test-name-pattern", "history stays",
+             "tests/canvas_module_units/test-agent-ownership-lifecycle-392.mjs"],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("# pass 1", result.stdout)
+        self.assertIn("# fail 0", result.stdout)
 
     def test_history_pending_card_is_immediate_animated_and_never_persisted(self):
         self.assertIn("function beginSmartPendingHistoryLog(node, defaults={}){", self.source)

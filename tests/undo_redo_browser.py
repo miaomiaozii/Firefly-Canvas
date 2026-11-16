@@ -13,9 +13,13 @@ if _REPO_ROOT not in _bootstrap_sys.path:
 from tools.process_tree import kill_process_tree
 
 import json
+import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -24,19 +28,27 @@ if str(ROOT) not in sys.path:
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
 
-import os as _os
-CLIENT_SCRIPT = Path(_os.environ.get('FIREFLY_UNDO_CLIENT') or (ROOT / 'tests' / 'undo_redo_browser_client.js'))
+CLIENT_SCRIPT = Path(os.environ.get('FIREFLY_UNDO_CLIENT') or (ROOT / 'tests' / 'undo_redo_browser_client.js'))
 AGENT_CLIENT_SCRIPT = ROOT / 'tests' / 'undo_agent_undo_client.js'
 VIEWPORTS = [(1424, 900)]
+PORT = 3115
+RUNTIME_ROOT = Path(os.environ['FIREFLY_RUNTIME_ROOT']).resolve() if os.environ.get('FIREFLY_RUNTIME_ROOT') else None
+PROJECTS_ROOT = Path(os.environ['FIREFLY_PROJECTS_ROOT']).resolve() if os.environ.get('FIREFLY_PROJECTS_ROOT') else None
+if (RUNTIME_ROOT is None) != (PROJECTS_ROOT is None):
+    raise RuntimeError('Both FIREFLY_RUNTIME_ROOT and FIREFLY_PROJECTS_ROOT must be set together')
 
 
-def seed_store(store: ProjectStore) -> str:
-    project = store.create_project('Undo Redo Suite')
+def seed_store(store: ProjectStore, *, agent: bool = False) -> str:
+    # ProjectStore generates UUID-only ids; prefix just this fixture's allocation.
+    project_id = f'e2e-tabbit-undo-{uuid.uuid4().hex}'
+    with patch('firefly_projects.uuid.uuid4', return_value=SimpleNamespace(hex=project_id)):
+        project = store.create_project('e2e-tabbit-Undo Redo Suite')
     store.apply_mutations(
         project['id'],
         [
             {"op": "upsert_node", "node": {"id": "seed-image", "type": "smart-image", "x": 20, "y": 120, "w": 180, "h": 140, "title": 'Seed Image', "images": []}},
             {"op": "upsert_node", "node": {"id": "seed-prompt", "type": "smart-prompt", "x": 20, "y": 330, "w": 316, "h": 240, "text": 'seed prompt'}},
+            *([{"op": "upsert_node", "node": {"id": "seed-agent", "type": "smart-agent", "x": 1100, "y": 600, "w": 382, "h": 360, "title": 'Seed Agent', "agentGoal": ''}}] if agent else []),
         ],
         base_revision=0,
     )
@@ -45,7 +57,18 @@ def seed_store(store: ProjectStore) -> str:
 
 
 def load_app(root: Path, store: ProjectStore):
-    return harness.load_production_app(root, store)
+    # Rendering the seed Agent queries chat-models; never discover the user's Pi providers.
+    os.environ['FIREFLY_PI_AGENT_DIR'] = str((root / 'pi-agent').resolve())
+    app = harness.load_production_app(root, store, runtime_root=RUNTIME_ROOT, projects_root=PROJECTS_ROOT)
+    production = app.state.issue13_module
+    actual_runtime = Path(production.RUNTIME_ROOT).resolve()
+    actual_projects = production.FIREFLY_PROJECT_STORE.root.resolve()
+    if actual_runtime != (RUNTIME_ROOT or app.state.issue13_runtime_root) or actual_projects != store.root.resolve():
+        raise AssertionError(f'Unexpected production roots: {actual_runtime}, {actual_projects}')
+    if PROJECTS_ROOT is not None and actual_projects != PROJECTS_ROOT:
+        raise AssertionError(f'Unexpected project library: {actual_projects}')
+    print(json.dumps({'runtime_root': str(actual_runtime), 'projects_root': str(actual_projects), 'pi_agent_dir': os.environ['FIREFLY_PI_AGENT_DIR']}, ensure_ascii=False), flush=True)
+    return app
 
 
 def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
@@ -53,7 +76,7 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
     import subprocess
     import urllib.parse
 
-    profile = Path(tempfile.mkdtemp(prefix='firefly-undo-redo-profile-'))
+    profile = Path(tempfile.mkdtemp(prefix='e2e-tabbit-undo-profile-', dir=RUNTIME_ROOT.parent if RUNTIME_ROOT else None))
     before = len(server.results)
     query = urllib.parse.urlencode({'project': project_id, 'browserTest': '1'})
     url = f'{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(project_id)}&{query}'
@@ -78,23 +101,30 @@ def launch(browser: Path, server, viewport: tuple[int, int], project_id: str):
 def main():
     browser = harness.find_browser()
     results = []
-    with tempfile.TemporaryDirectory(prefix='firefly-undo-redo-library-') as root:
+    print(f'browser={browser}', flush=True)
+    with tempfile.TemporaryDirectory(prefix='e2e-tabbit-undo-library-', dir=RUNTIME_ROOT.parent if RUNTIME_ROOT else None) as root:
         for index, viewport in enumerate(VIEWPORTS):
             sessions = [
                 ('undo-redo-main', CLIENT_SCRIPT),
                 ('undo-redo-agent', AGENT_CLIENT_SCRIPT),
             ]
             for session_index, (session_name, client_script) in enumerate(sessions):
-                store = ProjectStore(Path(root) / f'projects-{index}-{session_index}', snapshot_delay=0)
-                project_id = seed_store(store)
-                app = load_app(Path(root) / f'runtime-{index}-{session_index}', store)
-                server = harness.ConversationBrowserServer(store, app, client_script=client_script)
-                server.start()
+                store = ProjectStore(PROJECTS_ROOT or Path(root) / f'projects-{index}-{session_index}', snapshot_delay=0)
                 try:
-                    result = launch(browser, server, viewport, project_id)
+                    project_id = seed_store(store, agent=session_name == 'undo-redo-agent')
+                    app = load_app(Path(root) / f'runtime-{index}-{session_index}', store)
+                    server = harness.ConversationBrowserServer(store, app, client_script=client_script, port=PORT)
+                    server.start()
+                    try:
+                        if server.httpd.server_address != ('127.0.0.1', PORT):
+                            raise AssertionError(f'Unexpected listener: {server.httpd.server_address}')
+                        print(f'{session_name}: {server.base_url} project={project_id} client={client_script}', flush=True)
+                        result = launch(browser, server, viewport, project_id)
+                    finally:
+                        server.close()
                 finally:
-                    server.close()
-                result = {**result, 'session': session_name}
+                    store.close()
+                result = {**result, 'session': session_name, 'project_id': project_id, 'client_script': str(client_script)}
                 results.append(result)
                 print(json.dumps({
                     'session': session_name,
@@ -104,7 +134,13 @@ def main():
                     'assertions': len(result.get('assertions') or []),
                 }, ensure_ascii=False))
     summary = {
-        'pass': all(item.get('pass') for item in results),
+        'issue': 375,
+        'browser': str(browser),
+        'base_url': f'http://127.0.0.1:{PORT}',
+        'runtime_root': str(RUNTIME_ROOT) if RUNTIME_ROOT else None,
+        'projects_root': str(PROJECTS_ROOT) if PROJECTS_ROOT else None,
+        'runs': results,
+        'pass': len(results) == len(VIEWPORTS) * 2 and all(item.get('pass') and item.get('assertions') for item in results),
         'failures': [item for item in results if not item.get('pass')],
     }
     print(json.dumps(summary))

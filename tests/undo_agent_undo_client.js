@@ -8,6 +8,7 @@
     // 再走 mergeReloadCanvasNow 真实合并——harness 的 HTTP 前置不转发 WS 升级。
     const query = new URLSearchParams(location.search);
     const projectId = query.get('project') || '';
+    const SEED_IDS = ['seed-image', 'seed-prompt', 'seed-agent'];
     const result = {
         kind: 'final',
         result_id: `undo-agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
@@ -47,13 +48,19 @@
         return Boolean(card);
     }
     function createdNodes(){
-        return (evalCanvas()?.nodes || []).filter(n => !['seed-image','seed-prompt'].includes(n.id));
+        return (evalCanvas()?.nodes || []).filter(n => !SEED_IDS.includes(n.id));
     }
     async function run(){
-        if(!await waitFor(() => document.querySelector('#smartTitle')?.textContent.includes('Undo Redo Suite'), 15000)) return;
-        if(!await waitFor(() => (evalCanvas()?.nodes || []).length === 2, 10000)){
-            result.errors.push('seed nodes missing');
-        }
+        const loaded = await waitFor(() => document.querySelector('#smartTitle')?.textContent.includes('Undo Redo Suite'), 15000);
+        assertion('project title loaded', loaded, document.querySelector('#smartTitle')?.textContent);
+        if(!loaded) return;
+        const seeded = await waitFor(() => {
+            const nodes = evalCanvas()?.nodes || [];
+            return nodes.length === SEED_IDS.length && SEED_IDS.every(id => nodes.some(n => n.id === id));
+        }, 10000);
+        assertion('seed nodes present', seeded, (evalCanvas()?.nodes || []).map(n => n.id));
+        assertion('legal initiating Agent node present', (evalCanvas()?.nodes || []).some(n => n.id === 'seed-agent' && n.type === 'smart-agent'), 'seed-agent');
+        if(!seeded) return;
         // 用户自己的两步：给撤回链一个真实的「agent 写入前」状态。两次创建之间留 1.5s：
         // capture/commit 型创建共用一个 pending 快照，不留间隔两步会合并成一步，
         // 「合并前快照」会少一个用户节点（实测 2026-11-16）。
@@ -91,11 +98,12 @@
         const writeResp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/canvas/nodes`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'x-agent-project': projectId},
-            body: JSON.stringify({node: {type: 'image', title: 'agent probe', x: 900, y: 120, w: 180, h: 140}}),
+            body: JSON.stringify({agent_node_id: 'seed-agent', node: {type: 'image', title: 'agent probe', x: 900, y: 120, w: 180, h: 140}}),
         });
         const writeStatus = writeResp.status;
-        const agentProbeId = String(((await writeResp.json().catch(() => ({}))) || {}).node_id || '');
-        assertion('agent node write accepted', [200, 201].includes(writeStatus) && agentProbeId.startsWith('node-'), `${writeStatus} ${agentProbeId}`);
+        const writeJson = await writeResp.json().catch(() => ({}));
+        const agentProbeId = String(writeJson.node_id || '');
+        assertion('agent node write accepted', [200, 201].includes(writeStatus) && agentProbeId.startsWith('node-'), `${writeStatus} ${JSON.stringify(writeJson)}`);
         const metaResp = await fetch(`/api/canvases/${encodeURIComponent(projectId)}/meta`);
         const metaJson = await metaResp.json().catch(() => ({}));
         const handler = evalFn('handleCanvasUpdatedMessage');
@@ -107,6 +115,8 @@
         await (evalFn('waitForCanvasRefresh') || evalFn('mergeReloadCanvasNow'))();
         const agentVisible = await waitFor(() => (evalCanvas()?.nodes || []).some(n => n.id === agentProbeId), 8000);
         assertion('agent node merged into canvas', agentVisible, agentVisible);
+        const agentProbe = (evalCanvas()?.nodes || []).find(n => n.id === agentProbeId);
+        assertion('agent node retains initiating ownership', agentProbe?.createdBy === 'agent' && agentProbe?.agentNodeId === 'seed-agent', {createdBy: agentProbe?.createdBy, agentNodeId: agentProbe?.agentNodeId});
         assertion('undo enabled after agent merge', undoBtn()?.disabled === false, undoBtn()?.disabled);
         undoBtn()?.click();
         const agentUndone = await waitFor(() => !(evalCanvas()?.nodes || []).some(n => n.id === agentProbeId), 8000);
@@ -152,7 +162,7 @@
         }
         const serverIds = (saved?.nodes || []).map(n => n.id);
         assertion('server has no agent node after settle', !serverIds.includes(agentProbeId), JSON.stringify(serverIds));
-        assertion('server canvas persists user nodes', USER_IDS.every(id => serverIds.includes(id)) && serverIds.length === 4, JSON.stringify(serverIds) + ' local=' + JSON.stringify((evalCanvas()?.nodes || []).map(n => n.id)) + ' want=' + JSON.stringify(USER_IDS));
+        assertion('server canvas persists user nodes', USER_IDS.every(id => serverIds.includes(id)) && SEED_IDS.every(id => serverIds.includes(id)) && serverIds.length === SEED_IDS.length + USER_IDS.length, JSON.stringify(serverIds) + ' local=' + JSON.stringify((evalCanvas()?.nodes || []).map(n => n.id)) + ' want=' + JSON.stringify([...SEED_IDS, ...USER_IDS]));
     }
     window.addEventListener('error', event => {
         if(event?.error?.message) result.errors.push(event.error.message);
