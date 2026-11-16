@@ -359,13 +359,13 @@
 
             const drag = document.createElement('span');
             drag.className = 'layer-drag';
-            drag.innerHTML = '<i data-lucide="grip-vertical" class="w-3.5 h-3.5"></i>';
+            drag.innerHTML = '<svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-grip-vertical"/></svg>';
 
             const vis = document.createElement('button');
             vis.type = 'button';
             vis.className = 'image-edit-btn secondary layer-vis';
             vis.title = t('canvas.layersVisibility');
-            vis.innerHTML = `<i data-lucide="${layer.visible === false ? 'eye-off' : 'eye'}" class="w-3.5 h-3.5"></i>`;
+            vis.innerHTML = `${ico('eye', layer.visible === false ? 'w-3.5 h-3.5 is-hidden-state' : 'w-3.5 h-3.5')}`;
             vis.addEventListener('click', () => toggleLayer(layer.id));
 
             const name = document.createElement('span');
@@ -376,21 +376,21 @@
             up.type = 'button';
             up.className = 'image-edit-btn secondary layer-nudge';
             up.title = t('canvas.layersMoveUp');
-            up.innerHTML = '<i data-lucide="chevron-up" class="w-3.5 h-3.5"></i>';
+            up.innerHTML = '<svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-chevron-up"/></svg>';
             up.addEventListener('click', () => nudgeLayer(layer.id, 1));
 
             const down = document.createElement('button');
             down.type = 'button';
             down.className = 'image-edit-btn secondary layer-nudge';
             down.title = t('canvas.layersMoveDown');
-            down.innerHTML = '<i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>';
+            down.innerHTML = '<svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-chevron-down"/></svg>';
             down.addEventListener('click', () => nudgeLayer(layer.id, -1));
 
             const del = document.createElement('button');
             del.type = 'button';
             del.className = 'image-edit-btn secondary layer-del';
             del.title = t('canvas.layersRemove');
-            del.innerHTML = '<i data-lucide="x" class="w-3.5 h-3.5"></i>';
+            del.innerHTML = '<svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-x"/></svg>';
             if (layer.base) del.disabled = true;
             del.addEventListener('click', () => removeLayer(layer.id));
 

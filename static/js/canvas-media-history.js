@@ -391,14 +391,14 @@ function renderSmartTrashItems(items){
         return `<div class="smart-trash-item" data-trash-asset="${escapeHtml(assetId)}" data-trash-deletion="${escapeHtml(deletionId)}">
             <div class="smart-trash-thumb-wrap" data-trash-preview="${escapeHtml(assetId)}" title="${escapeHtml(tr('smart.trashPreview'))}">
                 ${thumbUrl ? `<img class="smart-trash-thumb" loading="lazy" src="${escapeAttr(thumbUrl)}" alt="${escapeHtml(name)}">` : ''}
-                <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+                ${ico(isVideo ? 'film' : 'node-image', 'smart-trash-icon')}
             </div>
             <div class="smart-trash-meta">
                 <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
                 <div class="smart-trash-sub">${escapeHtml(formatTrashTime(item?.deleted_at))}${days > 0 ? ` · ${escapeHtml(tr('smart.trashExpiresIn').replace('{n}', String(days)))}` : ''}</div>
             </div>
-            <button class="asset-mini-btn" type="button" data-trash-restore title="${escapeHtml(tr('smart.trashRestore'))}"><i data-lucide="rotate-ccw"></i></button>
-            <button class="asset-mini-btn danger" type="button" data-trash-forever title="${escapeHtml(tr('smart.trashDeleteForever'))}"><i data-lucide="trash-2"></i></button>
+            <button class="asset-mini-btn" type="button" data-trash-restore title="${escapeHtml(tr('smart.trashRestore'))}"><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+            <button class="asset-mini-btn danger" type="button" data-trash-forever title="${escapeHtml(tr('smart.trashDeleteForever'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>
         </div>`;
     }).join('');
     canvasCore.refreshIcons();
@@ -445,7 +445,7 @@ function openTrashMediaPreview(item){
     restoreBtn.className = 'smart-trash-detail-restore';
     restoreBtn.title = tr('smart.trashRestore');
     restoreBtn.setAttribute('aria-label', tr('smart.trashRestore'));
-    restoreBtn.innerHTML = `<i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('smart.trashRestore'))}</span>`;
+    restoreBtn.innerHTML = `<svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span>${escapeHtml(tr('smart.trashRestore'))}</span>`;
     restoreBtn.onclick = event => {
         event.preventDefault();
         event.stopPropagation();
@@ -559,7 +559,6 @@ function syncMarkedImageButtons(){
         el.classList.toggle('image-marked', marked);
         if(el.dataset.markedTitle) el.title = marked ? tr('smart.unmarkImage') : tr('smart.markImage');
     });
-    if(window.lucide) lucide.createIcons();
 }
 // #89 第四轮：生成详情/生图历史的 output 项 → 画布节点 {nodeId,index}（优先 asset_id 匹配，回退 url）。
 
@@ -701,7 +700,6 @@ function renderSmartMarkedPanel(){
     const items = markedImageItems();
     if(!items.length){
         list.innerHTML = `<div class="smart-marked-empty">${tr('smart.markedEmpty')}</div>`;
-        if(window.lucide) lucide.createIcons();
         return;
     }
     // 列表内的图必然都是已标记状态：星标按钮直接渲染填充态（image-marked）。
@@ -712,8 +710,8 @@ function renderSmartMarkedPanel(){
         <div class="smart-marked-item" data-asset-id="${escapeAttr(item.asset_id)}">
             <img class="smart-marked-thumb" src="${escapeAttr(item.url)}" alt="">
             <span class="smart-marked-name" title="${escapeAttr(markedName(item, i))}">${escapeHtml(markedName(item, i))}</span>
-            <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><i data-lucide="download"></i></button>
-            <button class="mini-x smart-marked-unmark image-marked" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><i data-lucide="star"></i></button>
+            <button class="mini-x smart-marked-download" type="button" title="${escapeAttr(tr('smart.nodeDownload'))}" data-i="${i}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg></button>
+            <button class="mini-x smart-marked-unmark image-marked" type="button" title="${escapeHtml(tr('smart.unmarkImage'))}" data-asset-id="${escapeAttr(item.asset_id)}"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg></button>
         </div>`).join('');
     list.querySelectorAll('.smart-marked-download').forEach(btn => btn.addEventListener('click', e => {
         e.preventDefault(); e.stopPropagation();
@@ -723,7 +721,6 @@ function renderSmartMarkedPanel(){
         e.preventDefault(); e.stopPropagation();
         setMarkedImage(btn.dataset.assetId, false);
     }));
-    if(window.lucide) lucide.createIcons();
 }
 
 function toggleSmartMarkedPanel(open){
@@ -1421,32 +1418,32 @@ function ensureSmartHistoryDetail(){
     box.innerHTML = `<article class="smart-log-detail" role="dialog" aria-modal="true" aria-labelledby="smartHistoryDetailTitle">
         <div class="smart-log-detail-stage preview-stage" aria-label="${escapeAttr(tr('smart.generationDetailPreview'))}">
             <div class="smart-log-detail-frame preview-frame"><img class="smart-log-detail-image" alt="${escapeAttr(tr('canvas.originalImage'))}" draggable="false"></div>
-            <button class="smart-log-detail-output-nav is-previous" type="button" data-smart-log-detail-output-nav="previous" title="${escapeAttr(tr('smart.generationPreviousOutput'))}" aria-label="${escapeAttr(tr('smart.generationPreviousOutput'))}"><i data-lucide="chevron-left"></i></button>
-            <button class="smart-log-detail-output-nav is-next" type="button" data-smart-log-detail-output-nav="next" title="${escapeAttr(tr('smart.generationNextOutput'))}" aria-label="${escapeAttr(tr('smart.generationNextOutput'))}"><i data-lucide="chevron-right"></i></button>
+            <button class="smart-log-detail-output-nav is-previous" type="button" data-smart-log-detail-output-nav="previous" title="${escapeAttr(tr('smart.generationPreviousOutput'))}" aria-label="${escapeAttr(tr('smart.generationPreviousOutput'))}"><svg class="ico" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+            <button class="smart-log-detail-output-nav is-next" type="button" data-smart-log-detail-output-nav="next" title="${escapeAttr(tr('smart.generationNextOutput'))}" aria-label="${escapeAttr(tr('smart.generationNextOutput'))}"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
             <div class="smart-log-detail-zoom-tools" aria-label="${escapeAttr(tr('smart.previewZoomControls'))}">
-                <button type="button" data-smart-log-detail-zoom="out" title="${escapeAttr(tr('smart.previewZoomOut'))}" aria-label="${escapeAttr(tr('smart.previewZoomOut'))}"><i data-lucide="minus"></i></button>
+                <button type="button" data-smart-log-detail-zoom="out" title="${escapeAttr(tr('smart.previewZoomOut'))}" aria-label="${escapeAttr(tr('smart.previewZoomOut'))}"><svg class="ico" aria-hidden="true"><use href="#i-zoom-out"/></svg></button>
                 <output class="smart-log-detail-zoom-label" aria-live="polite">100%</output>
-                <button type="button" data-smart-log-detail-zoom="in" title="${escapeAttr(tr('smart.previewZoomIn'))}" aria-label="${escapeAttr(tr('smart.previewZoomIn'))}"><i data-lucide="plus"></i></button>
-                <button type="button" data-smart-log-detail-zoom="reset" title="${escapeAttr(tr('smart.previewZoomReset'))}" aria-label="${escapeAttr(tr('smart.previewZoomReset'))}"><i data-lucide="rotate-ccw"></i></button>
+                <button type="button" data-smart-log-detail-zoom="in" title="${escapeAttr(tr('smart.previewZoomIn'))}" aria-label="${escapeAttr(tr('smart.previewZoomIn'))}"><svg class="ico" aria-hidden="true"><use href="#i-zoom-in"/></svg></button>
+                <button type="button" data-smart-log-detail-zoom="reset" title="${escapeAttr(tr('smart.previewZoomReset'))}" aria-label="${escapeAttr(tr('smart.previewZoomReset'))}"><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
             </div>
             <span class="smart-log-detail-preview-hint">${escapeHtml(tr('smart.generationDetailPreviewHint'))}</span>
         </div>
         <aside class="smart-log-detail-info">
-            <header class="smart-log-detail-head"><h2 id="smartHistoryDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button></header>
+            <header class="smart-log-detail-head"><h2 id="smartHistoryDetailTitle">${escapeHtml(tr('smart.generationDetail'))}</h2><button class="smart-log-lightbox-close" type="button" title="${escapeAttr(tr('common.close'))}" aria-label="${escapeAttr(tr('common.close'))}"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></header>
             <dl class="smart-log-detail-meta"><div><dt>${escapeHtml(tr('smart.generationModel'))}</dt><dd class="smart-log-detail-model"></dd></div><div><dt>${escapeHtml(tr('smart.generationTime'))}</dt><dd class="smart-log-detail-time"></dd></div></dl>
             <section class="smart-log-detail-outputs" aria-labelledby="smartHistoryDetailOutputsTitle"><div class="smart-log-detail-output-head"><h3 id="smartHistoryDetailOutputsTitle">${escapeHtml(tr('smart.generationOutputs'))}</h3><output class="smart-log-detail-output-position" aria-live="polite"></output></div><div class="smart-log-detail-output-strip" role="group"></div></section>
             <section class="smart-log-detail-modes" aria-label="${escapeAttr(tr('canvas.editImage'))}">
-                <button type="button" data-smart-log-detail-mode="preview"><i data-lucide="eye"></i><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="crop"><i data-lucide="crop"></i><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="outpaint"><i data-lucide="expand"></i><span>${escapeHtml(tr('canvas.modeOutpaint'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="mask"><i data-lucide="brush"></i><span>${escapeHtml(tr('canvas.modeMask'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="brush"><i data-lucide="paintbrush"></i><span>${escapeHtml(tr('canvas.modeBrush'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="resize"><i data-lucide="minimize-2"></i><span>${escapeHtml(tr('canvas.modeResize'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="grid"><i data-lucide="grid-3x3"></i><span>${escapeHtml(tr('canvas.modeGrid'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="preview"><svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="crop"><svg class="ico" aria-hidden="true"><use href="#i-crop"/></svg><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="outpaint"><svg class="ico" aria-hidden="true"><use href="#i-expand"/></svg><span>${escapeHtml(tr('canvas.modeOutpaint'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="mask"><svg class="ico" aria-hidden="true"><use href="#i-inpaint"/></svg><span>${escapeHtml(tr('canvas.modeMask'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="brush"><svg class="ico" aria-hidden="true"><use href="#i-paintbrush"/></svg><span>${escapeHtml(tr('canvas.modeBrush'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="resize"><svg class="ico" aria-hidden="true"><use href="#i-minimize-2"/></svg><span>${escapeHtml(tr('canvas.modeResize'))}</span></button>
+                <button type="button" data-smart-log-detail-mode="grid"><svg class="ico" aria-hidden="true"><use href="#i-grid-3x3"/></svg><span>${escapeHtml(tr('canvas.modeGrid'))}</span></button>
             </section>
-            <button type="button" class="smart-log-detail-mark image-mark" data-smart-log-detail-mark data-marked-asset="" data-marked-title="1" title="${escapeAttr(tr('smart.markImage'))}"><i data-lucide="star"></i></button>
+            <button type="button" class="smart-log-detail-mark image-mark" data-smart-log-detail-mark data-marked-asset="" data-marked-title="1" title="${escapeAttr(tr('smart.markImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg></button>
             <section class="smart-log-detail-prompt-wrap"><h3>${escapeHtml(tr('smart.generationPromptDetail'))}</h3><div class="smart-log-detail-prompt" tabindex="0"></div></section>
-            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button" data-upscale-tier="2k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy2k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-4k" type="button" data-upscale-tier="4k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy4k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-8k" type="button" data-upscale-tier="8k"><i data-lucide="copy"></i><span>${escapeHtml(tr('smart.copy8k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-delete-original" type="button"><i data-lucide="image-minus"></i><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
+            <div class="smart-log-detail-actions"><button class="smart-log-detail-download" type="button"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button class="smart-log-detail-copy-2k" type="button" data-upscale-tier="2k"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${escapeHtml(tr('smart.copy2k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-4k" type="button" data-upscale-tier="4k"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${escapeHtml(tr('smart.copy4k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-copy-8k" type="button" data-upscale-tier="8k"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${escapeHtml(tr('smart.copy8k'))}</span><em class="smart-log-detail-upscale-size"></em></button><button class="smart-log-detail-delete-original" type="button"><svg class="ico" aria-hidden="true"><use href="#i-unused"/></svg><span>${escapeHtml(tr('canvas.deleteSelectedOriginal'))}</span></button></div>
         </aside>
     </article>`;
     document.body.appendChild(box);
@@ -1862,7 +1859,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const pending = log.status === 'pending';
         let thumbHtml = '';
         if(originalDeleted){
-            thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><i data-lucide="image-off"></i><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
+            thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><svg class="ico" aria-hidden="true"><use href="#i-image-off"/></svg><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
         } else if(first){
             const outputCards = outputs.map(item => {
                 const outputIndex = item.outputIndex;
@@ -1878,7 +1875,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
                     : `title="${escapeAttr(label || tr('canvas.originalImage'))}" alt="output" draggable="false"`;
                 const preview = kind === 'video' ? smartVideoPreviewHtml(item, 512, attrs) : smartPreviewImgHtml(item, 512, attrs);
                 const actionsHtml = item.asset_id && canvas?.format === 'firefly-canvas-v1'
-                    ? `<button type="button" class="log-media-download-original" data-history-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><i data-lucide="download"></i><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-history-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`
+                    ? `<button type="button" class="log-media-download-original" data-history-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-history-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg></button>`
                     : '';
                 return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-history-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-history-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
             }).join('');
@@ -1907,13 +1904,13 @@ function smartHistoryLogCardHtml(log, historyIndex){
                 const salvageItem = salvageableOutputs[0];
                 const salvageLabel = imageResolutionLabel(salvageItem);
                 const salvagePreview = smartPreviewImgHtml(salvageItem, 512, `alt="${escapeAttr(salvageLabel || tr('canvas.originalImage'))}" draggable="false"`);
-                thumbHtml = `<div class="log-thumb-square log-thumb-partial-failed"><div class="log-output-gallery" role="group" aria-label="${escapeAttr(tr('canvas.originalImage'))}">${salvagePreview}</div>${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}<div class="log-failed-flag"><i data-lucide="triangle-alert"></i><span>${escapeHtml(tr('canvas.failed'))}</span></div></div>`;
+                thumbHtml = `<div class="log-thumb-square log-thumb-partial-failed"><div class="log-output-gallery" role="group" aria-label="${escapeAttr(tr('canvas.originalImage'))}">${salvagePreview}</div>${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}<div class="log-failed-flag"><svg class="ico" aria-hidden="true"><use href="#i-triangle-alert"/></svg><span>${escapeHtml(tr('canvas.failed'))}</span></div></div>`;
             } else {
-            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-failed-placeholder"><i data-lucide="${cancelled ? 'circle-x' : 'image-off'}"></i>${log.progress ? generationStageProgressHtml({...log.progress, failed}) : ''}</div></div>`;
+            thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-failed-placeholder">${ico(cancelled ? 'x' : 'image-off')}${log.progress ? generationStageProgressHtml({...log.progress, failed}) : ''}</div></div>`;
             }
         }
         const promptPreview = prompt
-            ? `<button class="log-prompt-preview long-content-trigger" type="button" data-long-content-open="history-prompt" aria-haspopup="dialog" title="${escapeAttr(tr('smart.historyPromptFull'))}" aria-label="${escapeAttr(tr('smart.historyPromptFull'))}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span><i data-lucide="book-open-text"></i></button>`
+            ? `<button class="log-prompt-preview long-content-trigger" type="button" data-long-content-open="history-prompt" aria-haspopup="dialog" title="${escapeAttr(tr('smart.historyPromptFull'))}" aria-label="${escapeAttr(tr('smart.historyPromptFull'))}"><span class="log-prompt-label">${escapeHtml(tr('canvas.prompt'))}</span><span class="log-prompt-text">${escapeHtml(prompt)}</span><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg></button>`
             : `<div class="log-prompt-preview is-empty">${escapeHtml(tr('canvas.noPromptMeta'))}</div>`;
         // 只要记录上仍存活原图就保留「彻底删除记录和原图」按钮：单张原图删除（occurrence 删除）
         // 会给记录写入 deletedOutputTombstones 并出现「恢复原图」按钮，此时不能连带隐藏彻底删除
@@ -1934,18 +1931,18 @@ function smartHistoryLogCardHtml(log, historyIndex){
                  </div>
                  <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
                  ${promptPreview}
-                 ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
-                 ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><i data-lucide="book-open-text"></i></button>` : ''}
+                 ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><svg class="ico" aria-hidden="true"><use href="#i-unlink"/></svg><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
+                 ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg></button>` : ''}
              </div>
              <div class="log-buttons">
-                  ${pending && projectTask ? `<button type="button" data-history-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('canvas.historyCancelTask'))}</span></button>` : ''}
-                  ${failed && projectTask ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><i data-lucide="rotate-cw"></i><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
-                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><i data-lucide="send"></i><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
-                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-history-delete-original="${String(first.output_id || '').trim()}" data-history-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><i data-lucide="image-minus"></i><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
-                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-history-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><i data-lucide="rotate-ccw"></i><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
-                  ${!pending ? `<button type="button" data-history-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><i data-lucide="copy"></i><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
-                  <button type="button" data-history-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
-                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-history-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
+                  ${pending && projectTask ? `<button type="button" data-history-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg><span>${escapeHtml(tr('canvas.historyCancelTask'))}</span></button>` : ''}
+                  ${failed && projectTask ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-redo-2"/></svg><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
+                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
+                  ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-history-delete-original="${String(first.output_id || '').trim()}" data-history-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><svg class="ico" aria-hidden="true"><use href="#i-unused"/></svg><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
+                  ${!pending && deletedOriginalAssetId ? `<button type="button" data-history-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
+                  ${!pending ? `<button type="button" data-history-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
+                  <button type="button" data-history-delete="record" title="${escapeAttr(tr('canvas.deleteLog'))}" aria-label="${escapeAttr(tr('canvas.deleteLog'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg><span>${escapeHtml(tr('canvas.deleteLog'))}</span></button>
+                  ${destructiveRecordDelete ? `<button type="button" class="danger" data-history-delete="media" title="${escapeAttr(tr('canvas.deleteLogAndMedia'))}" aria-label="${escapeAttr(tr('canvas.deleteLogAndMedia'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg><span>${escapeHtml(tr('canvas.deleteLogAndMedia'))}</span></button>` : ''}
                   <span class="log-duration">${escapeHtml(formatRunDuration(smartHistoryRunMs(log)))}</span>` : ''}
               </div>
          </div>`;
@@ -2404,7 +2401,7 @@ function updateSmartHistoryDrawerCollapseUi(){
     if(smartHistoryCollapse){
         smartHistoryCollapse.title = canvasState.smartHistoryDrawerCollapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse');
         smartHistoryCollapse.setAttribute('aria-label', smartHistoryCollapse.title);
-        smartHistoryCollapse.innerHTML = `<i data-lucide="${canvasState.smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>`;
+        smartHistoryCollapse.innerHTML = `${ico(canvasState.smartHistoryDrawerCollapsed ? 'chevron-up' : 'chevron-down', 'w-4 h-4')}`;
         canvasCore.refreshIcons();
     }
 }

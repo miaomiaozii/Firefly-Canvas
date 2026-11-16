@@ -18,7 +18,6 @@
             } catch(e) { /* #348: 早期主题应用的防御性回退（隐私模式下 localStorage 可抛）——主题静默回落 light，theme.js 加载后仍会接管 */ }
         })();
     </script>
-    <script src="/static/vendor/js/lucide.js?v=20261116.113502.375"></script>
     <script src="/static/js/theme.js?v=20261116.113502.375"></script>
     <!-- #348：统一 toast，所有后续脚本可用 window.ffToast -->
     <script src="/static/js/ui-toast.js?v=20261116.113502.375"></script>
@@ -33,6 +32,94 @@
     <link rel="stylesheet" href="/static/css/canvas-search.css?v=20261116.113502.375">
 </head>
 <body>
+    <!-- #380：图标 sprite（唯一源；id = i-<总表 key>，用 use 元素 href 指向 symbol id 引用） -->
+<svg xmlns="http://www.w3.org/2000/svg" id="ffIconSprite" width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-generate" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z"/></symbol>
+<symbol id="i-node-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 15l4.5-4.5 4 4M13.5 13l2.5-2.5 5 5"/><circle cx="16" cy="8.5" r="1.25"/></symbol>
+<symbol id="i-film" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></symbol>
+<symbol id="i-file-audio" viewBox="0 0 24 24"><path d="M4 6.835V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-.343"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M2 19a2 2 0 0 1 4 0v1a2 2 0 0 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 0 1-4 0v-1a2 2 0 0 1 4 0"/></symbol>
+<symbol id="i-text-cursor-input" viewBox="0 0 24 24"><path d="M12 20h-1a2 2 0 0 1-2-2 2 2 0 0 1-2 2H6"/><path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7"/><path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1"/><path d="M6 4h1a2 2 0 0 1 2 2 2 2 0 0 1 2-2h1"/><path d="M9 6v12"/></symbol>
+<symbol id="i-messages-square" viewBox="0 0 24 24"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+<symbol id="i-loop" viewBox="0 0 24 24"><path d="M17 4l3 3-3 3"/><path d="M4 12V10a3 3 0 0 1 3-3h13"/><path d="M7 20l-3-3 3-3"/><path d="M20 12v2a3 3 0 0 1-3 3H4"/><path d="M11 12h2"/></symbol>
+<symbol id="i-workflow" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></symbol>
+<symbol id="i-dice-5" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M16 8h.01"/><path d="M8 8h.01"/><path d="M8 16h.01"/><path d="M16 16h.01"/><path d="M12 12h.01"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></symbol>
+<symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></symbol>
+<symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></symbol>
+<symbol id="i-git-branch" viewBox="0 0 24 24"><path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></symbol>
+<symbol id="i-corner-up-right" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></symbol>
+<symbol id="i-inpaint" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="2.5 2.5"/><path d="M8 16l2.5-.6 6-6-1.9-1.9-6 6z"/></symbol>
+<symbol id="i-paintbrush" viewBox="0 0 24 24"><path d="m14.622 17.897-10.68-2.913"/><path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z"/><path d="M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15"/></symbol>
+<symbol id="i-eraser" viewBox="0 0 24 24"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></symbol>
+<symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
+<symbol id="i-expand" viewBox="0 0 24 24"><path d="m15 15 6 6"/><path d="m15 9 6-6"/><path d="M21 16v5h-5"/><path d="M21 8V3h-5"/><path d="M3 16v5h5"/><path d="m3 21 6-6"/><path d="M3 8V3h5"/><path d="M9 9 3 3"/></symbol>
+<symbol id="i-grid-3x3" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></symbol>
+<symbol id="i-scan-line" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol>
+<symbol id="i-ref" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="2.5"/></symbol>
+<symbol id="i-columns-2" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+<symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol>
+<symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></symbol>
+<symbol id="i-sliders-horizontal" viewBox="0 0 24 24"><path d="M10 5H3"/><path d="M12 19H3"/><path d="M14 3v4"/><path d="M16 17v4"/><path d="M21 12h-9"/><path d="M21 19h-5"/><path d="M21 5h-7"/><path d="M8 10v4"/><path d="M8 12H3"/></symbol>
+<symbol id="i-list-ordered" viewBox="0 0 24 24"><path d="M11 5h10"/><path d="M11 12h10"/><path d="M11 19h10"/><path d="M4 4h1v5"/><path d="M4 9h2"/><path d="M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02"/></symbol>
+<symbol id="i-split" viewBox="0 0 24 24"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+<symbol id="i-list-checks" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+<symbol id="i-group" viewBox="0 0 24 24"><path d="M3 7V5c0-1.1.9-2 2-2h2"/><path d="M17 3h2c1.1 0 2 .9 2 2v2"/><path d="M21 17v2c0 1.1-.9 2-2 2h-2"/><path d="M7 21H5c-1.1 0-2-.9-2-2v-2"/><rect width="7" height="5" x="7" y="7" rx="1"/><rect width="7" height="5" x="10" y="12" rx="1"/></symbol>
+<symbol id="i-ungroup" viewBox="0 0 24 24"><rect width="8" height="6" x="5" y="4" rx="1"/><rect width="8" height="6" x="11" y="14" rx="1"/></symbol>
+<symbol id="i-layout-grid" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="i-unlink" viewBox="0 0 24 24"><path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71"/><path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71"/><line x1="8" x2="8" y1="2" y2="5"/><line x1="2" x2="5" y1="8" y2="8"/><line x1="16" x2="16" y1="19" y2="22"/><line x1="19" x2="22" y1="16" y2="16"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+<symbol id="i-grip-vertical" viewBox="0 0 24 24"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
+<symbol id="i-maximize-2" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></symbol>
+<symbol id="i-minimize-2" viewBox="0 0 24 24"><path d="m14 10 7-7"/><path d="M20 10h-6V4"/><path d="m3 21 7-7"/><path d="M4 14h6v6"/></symbol>
+<symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/></symbol>
+<symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="8" x2="14" y1="11" y2="11"/></symbol>
+<symbol id="i-focus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></symbol>
+<symbol id="i-undo-2" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></symbol>
+<symbol id="i-redo-2" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></symbol>
+<symbol id="i-library" viewBox="0 0 24 24"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+<symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"/><path d="M3 20V4"/></symbol>
+<symbol id="i-skip-forward" viewBox="0 0 24 24"><path d="M21 4v16"/><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"/></symbol>
+<symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
+<symbol id="i-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+<symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
+<symbol id="i-file-plus-2" viewBox="0 0 24 24"><path d="M11.35 22H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v5.35"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M14 19h6"/><path d="M17 16v6"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></symbol>
+<symbol id="i-unused" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5" stroke-dasharray="3 2.5"/><path d="M9 12h6"/></symbol>
+<symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+<symbol id="i-archive-restore" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h2"/><path d="M20 8v11a2 2 0 0 1-2 2h-2"/><path d="m9 15 3-3 3 3"/><path d="M12 12v9"/></symbol>
+<symbol id="i-archive-x" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="m9.5 17 5-5"/><path d="m9.5 12 5 5"/></symbol>
+<symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+<symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+<symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+<symbol id="i-loader-2" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+<symbol id="i-image-off" viewBox="0 0 24 24"><line x1="2" x2="22" y1="2" y2="22"/><path d="M10.41 10.41a2 2 0 1 1-2.83-2.83"/><line x1="13.5" x2="6" y1="13.5" y2="21"/><line x1="18" x2="21" y1="12" y2="15"/><path d="M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59"/><path d="M21 15V5a2 2 0 0 0-2-2H9"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-keyboard" viewBox="0 0 24 24"><path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/></symbol>
+<symbol id="i-plug-zap" viewBox="0 0 24 24"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="m2 22 3-3"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m18 3-4 4h6l-4 4"/></symbol>
+<symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 24 24"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+<symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+<symbol id="i-boxes" viewBox="0 0 24 24"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></symbol>
+</svg>
     <div id="shell" class="shell">
         <div id="world" class="world">
             <div id="composer" class="composer">
@@ -44,16 +131,16 @@
                                 <option value="volcengine" data-i18n="smart.engineVolcengine">火山引擎</option>
                             </select>
                             <div id="apiKindToggle" class="kind-toggle" style="display:none">
-                                <button type="button" data-kind="image" class="active"><i data-lucide="image"></i><span data-i18n="smart.kindImage">图片</span></button>
-                                <button type="button" data-kind="video"><i data-lucide="film"></i><span data-i18n="smart.kindVideo">视频</span></button>
+                                <button type="button" data-kind="image" class="active"><svg class="ico" aria-hidden="true"><use href="#i-node-image"/></svg><span data-i18n="smart.kindImage">图片</span></button>
+                                <button type="button" data-kind="video"><svg class="ico" aria-hidden="true"><use href="#i-film"/></svg><span data-i18n="smart.kindVideo">视频</span></button>
                             </div>
                         </div>
                         <div class="composer-view-actions" aria-label="提示词视图">
                             <button id="composerExpandBtn" class="composer-view-btn" type="button" aria-pressed="false" aria-label="展开全文" data-i18n-title="smart.promptExpand" title="展开全文">
-                                <i data-lucide="panel-top-open"></i><span data-i18n="smart.promptExpand">展开全文</span>
+                                <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg><span data-i18n="smart.promptExpand">展开全文</span>
                             </button>
                             <button id="composerFlowBtn" class="composer-view-btn" type="button" aria-pressed="false" aria-label="进入心流模式" data-i18n-title="smart.promptFlowEnter" title="进入心流模式">
-                                <i data-lucide="focus"></i><span data-i18n="smart.promptFlowEnter">心流模式</span>
+                                <svg class="ico" aria-hidden="true"><use href="#i-focus"/></svg><span data-i18n="smart.promptFlowEnter">心流模式</span>
                             </button>
                         </div>
                     </div>
@@ -63,7 +150,7 @@
                     <div class="prompt-row">
                         <div id="promptInput" class="prompt-input" contenteditable="true" data-i18n-placeholder="smart.promptPlaceholder" data-placeholder="描述你想生成或编辑的图片..."></div>
                         <button id="composerTemplateBtn" class="composer-template-btn" type="button" title="模板库" aria-label="模板库" data-i18n-title="smart.promptTemplateLibrary">
-                            <i data-lucide="library"></i><span data-i18n="smart.promptTemplateLibrary">模板库</span>
+                            <svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span data-i18n="smart.promptTemplateLibrary">模板库</span>
                         </button>
                         <div id="mentionPicker" class="mention-picker"></div>
                         <div id="promptResize" class="prompt-resize" data-i18n-title="smart.promptResize" title="拖拽调整文本框高度"></div>
@@ -72,41 +159,41 @@
                         <div id="dynamicParams" class="dynamic-params"></div>
                     </div>
                     <div class="composer-actions">
-                        <button id="runBtn" class="run-btn" type="button"><i data-lucide="sparkles"></i><span data-i18n="smart.run">运行</span></button>
+                        <button id="runBtn" class="run-btn" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span data-i18n="smart.run">运行</span></button>
                     </div>
                 </div>
             </div>
         </div>
         <nav class="smart-top-left smart-toolbar" role="toolbar" aria-label="画布工具栏">
-            <button class="smart-back" type="button" onclick="backToProjectList()" aria-label="返回项目列表" title="返回项目列表"><i data-lucide="arrow-left"></i><span data-i18n="canvas.backToList">返回项目列表</span></button>
-            <button id="smartUndoButton" class="smart-undo" type="button" aria-label="撤销" aria-keyshortcuts="Control+Z" data-i18n-title="smart.undoShortcut" title="撤销（Ctrl+Z）" disabled><i data-lucide="undo-2"></i><span data-i18n="smart.undo">撤销</span></button>
-            <button id="smartRedoButton" class="smart-redo" type="button" aria-label="重做" aria-keyshortcuts="Control+Shift+Z" data-i18n-title="smart.redoShortcut" title="重做（Ctrl+Shift+Z）" disabled><i data-lucide="redo-2"></i><span data-i18n="smart.redo">重做</span></button>
-            <button id="smartSettingsLink" class="smart-settings" type="button" aria-label="全局设置" title="全局设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="smartSettingsModal"><i data-lucide="settings"></i><span data-i18n="smart.globalSettings">全局设置</span></button>
-            <button id="smartShortcutToggle" class="smart-shortcut-toggle" type="button" onclick="toggleSmartCanvasShortcuts()" title="快捷键" aria-label="快捷键" aria-expanded="false" data-i18n-title="smart.shortcuts"><i data-lucide="keyboard"></i><span data-i18n="smart.shortcuts">快捷键</span></button>
-            <button id="smartHistoryToggle" class="smart-log-toggle" type="button" onclick="openSmartCanvasLog()" title="生成历史" aria-label="生成历史" data-i18n-title="canvas.generationHistory"><i data-lucide="list-todo"></i><span data-i18n="canvas.generationHistory">生成历史</span></button>
-            <button id="assetToggle" class="asset-toggle" type="button" aria-label="素材抽屉" title="素材抽屉"><i data-lucide="library"></i><span data-i18n="smart.assetLibrary">素材抽屉</span></button>
-            <button id="smartSaveButton" class="smart-save" type="button" aria-label="保存" aria-keyshortcuts="Control+S" data-i18n-title="smart.saveNowShortcut" title="保存项目（Ctrl+S）"><i data-lucide="save"></i><span data-i18n="smart.saveNow">保存</span></button>
-            <button id="smartArrangeBtn" class="smart-arrange" type="button" title="整理选中节点" aria-label="整理选中节点"><i data-lucide="layout-grid"></i><span data-i18n="smart.arrangeSelected">整理选中</span></button>
-            <button id="smartBatchRenameBtn" class="smart-arrange" type="button" title="批量重命名选中节点（F2）" aria-label="批量重命名选中节点" aria-keyshortcuts="F2" data-i18n-title="smart.shortcutBatchRename"><i data-lucide="pencil-ruler"></i><span data-i18n="smart.batchRename">批量重命名</span></button>
-            <button id="smartExcelExportBtn" class="smart-arrange" type="button" title="导出选中节点的输出媒体（zip，按任务 ID 命名）" aria-label="导出选中节点的输出媒体"><i data-lucide="download"></i><span data-i18n="smart.exportSelected">导出选中结果</span></button>
-            <button id="smartMarkedToggle" class="smart-arrange" type="button" title="已标记图片" aria-label="已标记图片"><i data-lucide="star"></i><span data-i18n="smart.markedImages">已标记</span><b id="smartMarkedCount" class="smart-marked-count" hidden>0</b></button>
-            <button id="smartSearchToggle" class="smart-search-toggle" type="button" title="跨项目搜索" aria-label="跨项目搜索" aria-haspopup="dialog" aria-expanded="false" aria-controls="canvasSearchPanel"><i data-lucide="search"></i><span data-i18n="smart.search">跨项目搜索</span></button>
+            <button class="smart-back" type="button" onclick="backToProjectList()" aria-label="返回项目列表" title="返回项目列表"><svg class="ico" aria-hidden="true"><use href="#i-arrow-left"/></svg><span data-i18n="canvas.backToList">返回项目列表</span></button>
+            <button id="smartUndoButton" class="smart-undo" type="button" aria-label="撤销" aria-keyshortcuts="Control+Z" data-i18n-title="smart.undoShortcut" title="撤销（Ctrl+Z）" disabled><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span data-i18n="smart.undo">撤销</span></button>
+            <button id="smartRedoButton" class="smart-redo" type="button" aria-label="重做" aria-keyshortcuts="Control+Shift+Z" data-i18n-title="smart.redoShortcut" title="重做（Ctrl+Shift+Z）" disabled><svg class="ico" aria-hidden="true"><use href="#i-redo-2"/></svg><span data-i18n="smart.redo">重做</span></button>
+            <button id="smartSettingsLink" class="smart-settings" type="button" aria-label="全局设置" title="全局设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="smartSettingsModal"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="smart.globalSettings">全局设置</span></button>
+            <button id="smartShortcutToggle" class="smart-shortcut-toggle" type="button" onclick="toggleSmartCanvasShortcuts()" title="快捷键" aria-label="快捷键" aria-expanded="false" data-i18n-title="smart.shortcuts"><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg><span data-i18n="smart.shortcuts">快捷键</span></button>
+            <button id="smartHistoryToggle" class="smart-log-toggle" type="button" onclick="openSmartCanvasLog()" title="生成历史" aria-label="生成历史" data-i18n-title="canvas.generationHistory"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg><span data-i18n="canvas.generationHistory">生成历史</span></button>
+            <button id="assetToggle" class="asset-toggle" type="button" aria-label="素材抽屉" title="素材抽屉"><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span data-i18n="smart.assetLibrary">素材抽屉</span></button>
+            <button id="smartSaveButton" class="smart-save" type="button" aria-label="保存" aria-keyshortcuts="Control+S" data-i18n-title="smart.saveNowShortcut" title="保存项目（Ctrl+S）"><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg><span data-i18n="smart.saveNow">保存</span></button>
+            <button id="smartArrangeBtn" class="smart-arrange" type="button" title="整理选中节点" aria-label="整理选中节点"><svg class="ico" aria-hidden="true"><use href="#i-layout-grid"/></svg><span data-i18n="smart.arrangeSelected">整理选中</span></button>
+            <button id="smartBatchRenameBtn" class="smart-arrange" type="button" title="批量重命名选中节点（F2）" aria-label="批量重命名选中节点" aria-keyshortcuts="F2" data-i18n-title="smart.shortcutBatchRename"><svg class="ico" aria-hidden="true"><use href="#i-paintbrush"/></svg><span data-i18n="smart.batchRename">批量重命名</span></button>
+            <button id="smartExcelExportBtn" class="smart-arrange" type="button" title="导出选中节点的输出媒体（zip，按任务 ID 命名）" aria-label="导出选中节点的输出媒体"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="smart.exportSelected">导出选中结果</span></button>
+            <button id="smartMarkedToggle" class="smart-arrange" type="button" title="已标记图片" aria-label="已标记图片"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="smart.markedImages">已标记</span><b id="smartMarkedCount" class="smart-marked-count" hidden>0</b></button>
+            <button id="smartSearchToggle" class="smart-search-toggle" type="button" title="跨项目搜索" aria-label="跨项目搜索" aria-haspopup="dialog" aria-expanded="false" aria-controls="canvasSearchPanel"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><span data-i18n="smart.search">跨项目搜索</span></button>
         </nav>
         <div id="canvasSearchPanel" class="canvas-search-panel" role="dialog" aria-label="跨项目搜索" hidden>
             <div class="canvas-search-head">
                 <input id="canvasSearchInput" type="search" placeholder="跨项目搜索（标题/prompt/正文）" aria-label="搜索关键词" autocomplete="off">
-                <button id="canvasSearchClose" type="button" aria-label="关闭搜索"><i data-lucide="x"></i></button>
+                <button id="canvasSearchClose" type="button" aria-label="关闭搜索"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
             </div>
             <div id="canvasSearchResults" class="canvas-search-results"></div>
             <div id="canvasSearchMeta" class="canvas-search-meta" hidden></div>
         </div>
         <div id="smartMarkedPanel" class="smart-marked-panel" hidden>
             <div class="smart-marked-head">
-                <span class="smart-marked-title"><i data-lucide="star"></i><span data-i18n="smart.markedImages">已标记图片</span></span>
+                <span class="smart-marked-title"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="smart.markedImages">已标记图片</span></span>
                 <div class="smart-marked-head-actions">
-                    <button id="smartMarkedDownloadAll" class="smart-marked-download-all" type="button" title="一键下载全部已标记图片（zip）" aria-label="下载全部已标记图片"><i data-lucide="download"></i><span data-i18n="smart.markedDownloadAll">全部下载</span></button>
-                    <button id="smartMarkedRecords" class="smart-marked-records-toggle" type="button" title="下载记录（本机回查）" aria-label="下载记录"><i data-lucide="history"></i><span data-i18n="smart.downloadRecords">下载记录</span></button>
-                    <button id="smartMarkedClose" class="smart-marked-close" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+                    <button id="smartMarkedDownloadAll" class="smart-marked-download-all" type="button" title="一键下载全部已标记图片（zip）" aria-label="下载全部已标记图片"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="smart.markedDownloadAll">全部下载</span></button>
+                    <button id="smartMarkedRecords" class="smart-marked-records-toggle" type="button" title="下载记录（本机回查）" aria-label="下载记录"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg><span data-i18n="smart.downloadRecords">下载记录</span></button>
+                    <button id="smartMarkedClose" class="smart-marked-close" type="button" title="关闭" aria-label="关闭"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
                 </div>
             </div>
             <div id="smartMarkedList" class="smart-marked-list"></div>
@@ -114,24 +201,24 @@
             <div id="smartMarkedExport" class="smart-marked-export">
                 <label class="smart-marked-export-label" for="smartMarkedExportDir" data-i18n="smart.exportDirLabel">服务器导出目录</label>
                 <input id="smartMarkedExportDir" class="smart-marked-export-input" type="text" placeholder="留空=zip 下载；如 exports/2026-09" spellcheck="false" autocomplete="off">
-                <button id="smartMarkedExportBtn" class="smart-marked-export-btn" type="button" title="将含星标图的节点输出媒体导出（按任务 ID 命名）" aria-label="导出星标节点"><i data-lucide="folder-down"></i><span data-i18n="smart.exportMarked">导出星标节点</span></button>
+                <button id="smartMarkedExportBtn" class="smart-marked-export-btn" type="button" title="将含星标图的节点输出媒体导出（按任务 ID 命名）" aria-label="导出星标节点"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="smart.exportMarked">导出星标节点</span></button>
                 <div id="smartMarkedExportFiles" class="smart-marked-export-files" hidden></div>
             </div>
         </div>
         <div id="smartTitle" class="smart-title" title="重命名画布项目" aria-label="重命名画布项目">
             <span id="smartTitleText" class="smart-title-text" data-i18n="smart.title">核心画布</span>
-            <button id="smartTitleEdit" class="smart-title-edit" type="button" title="重命名画布项目" aria-label="重命名画布项目"><i data-lucide="pencil"></i></button>
+            <button id="smartTitleEdit" class="smart-title-edit" type="button" title="重命名画布项目" aria-label="重命名画布项目"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></button>
             <!-- #89 返工：保存状态收进标题 flex 行（此前绝对定位到屏幕最右，宽屏时看不见） -->
             <div id="projectSaveState" class="project-save-state" hidden aria-live="polite"></div>
         </div>
         <section id="canvasEmptyState" class="canvas-empty-state" aria-labelledby="canvasEmptyTitle" hidden>
             <div class="canvas-empty-card">
-                <div class="canvas-empty-icon"><i data-lucide="sparkles"></i></div>
+                <div class="canvas-empty-icon"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg></div>
                 <h1 id="canvasEmptyTitle" data-i18n="smart.canvasEmptyTitle">从这里开始</h1>
                 <p data-i18n="smart.canvasEmptySubtitle">新建图片节点，输入提示词即可在线生成；也可以先导入参考图。</p>
                 <div class="canvas-empty-actions">
-                    <button id="canvasEmptyCreate" class="canvas-empty-primary" type="button"><i data-lucide="plus"></i><span data-i18n="smart.canvasEmptyCreate">新建图片节点</span></button>
-                    <button id="canvasEmptyImport" class="canvas-empty-secondary" type="button"><i data-lucide="upload"></i><span data-i18n="smart.canvasEmptyImport">导入图片</span></button>
+                    <button id="canvasEmptyCreate" class="canvas-empty-primary" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg><span data-i18n="smart.canvasEmptyCreate">新建图片节点</span></button>
+                    <button id="canvasEmptyImport" class="canvas-empty-secondary" type="button"><svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg><span data-i18n="smart.canvasEmptyImport">导入图片</span></button>
                 </div>
                 <div class="canvas-empty-hint" data-i18n="smart.canvasEmptyHint">双击空白处或右键，可创建提示词、对话、局部编辑等节点</div>
             </div>
@@ -139,49 +226,49 @@
         <div id="createMenu" class="create-menu">
             <div class="create-menu-grid">
                 <button class="create-card" type="button" data-create-type="image">
-                    <span class="create-card-icon"><i data-lucide="upload-cloud"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createUploadTitle">上传</div>
                         <div class="create-card-sub" data-i18n="smart.createImportNodeSub">图片、音频、视频都能导入</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="group">
-                    <span class="create-card-icon"><i data-lucide="group"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-group"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createGroupTitle">分组</div>
                         <div class="create-card-sub" data-i18n="smart.createGroupSub">把提示词、图片、循环收进同一组</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="prompt">
-                    <span class="create-card-icon"><i data-lucide="text-cursor-input"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-text-cursor-input"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createPromptTitle">提示词</div>
                         <div class="create-card-sub" data-i18n="smart.createPromptSub">手写或用 LLM 生成文本</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="conversation">
-                    <span class="create-card-icon"><i data-lucide="messages-square"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-messages-square"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createConversationTitle">对话</div>
                         <div class="create-card-sub" data-i18n="smart.createConversationSub">保存项目内多轮文本与多模态交流</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="agent">
-                    <span class="create-card-icon"><i data-lucide="bot"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-bot"/></svg></span>
                     <span>
                         <div class="create-card-title">Agent</div>
                         <div class="create-card-sub" data-i18n="smart.createAgentSub">先展示计划，确认后创建提示词或执行在线图片/视频</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="local-edit" aria-label="局部编辑节点">
-                    <span class="create-card-icon"><i data-lucide="lasso"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-inpaint"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createLocalEditTitle">局部编辑</div>
                         <div class="create-card-sub" data-i18n="smart.createLocalEditSub">矩形局部修改或自由形状局部保留</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="loop">
-                    <span class="create-card-icon"><i data-lucide="repeat-2"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-loop"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createLoopTitle">循环</div>
                         <div class="create-card-sub" data-i18n="smart.createLoopSub">控制运行轮数、批次和变量</div>
@@ -189,7 +276,7 @@
                 </button>
                 <!-- #256：右键图片节点才可见（openCreateMenu 按 imageNodeId 切换 hidden） -->
                 <button class="create-card" type="button" data-create-type="ocr" hidden>
-                    <span class="create-card-icon"><i data-lucide="type"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-scan-line"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.createOcrTitle">提取文字</div>
                         <div class="create-card-sub" data-i18n="smart.createOcrSub">OCR 识别图片文字，落可编辑 prompt 节点</div>
@@ -197,14 +284,14 @@
                 </button>
                 <!-- #253：节点操作卡——重命名右键落在节点上才可见；整理排版选中>=2 才可见（openCreateMenu 切换 hidden） -->
                 <button class="create-card" type="button" data-create-type="rename" hidden>
-                    <span class="create-card-icon"><i data-lucide="pencil"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.menuRename">重命名</div>
                         <div class="create-card-sub" data-i18n="smart.menuRenameSub">就地快速重命名（Tab 同效）</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="tidy" hidden>
-                    <span class="create-card-icon"><i data-lucide="layout-grid"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-layout-grid"/></svg></span>
                     <span>
                         <div class="create-card-title" data-i18n="smart.menuTidy">整理排版</div>
                         <div class="create-card-sub" data-i18n="smart.menuTidySub">自动整理选中节点（Shift+A）</div>
@@ -212,7 +299,7 @@
                 </button>
                 <!-- #323 票 E：仅右键智能分组才可见（openCreateMenu 按 groupId 切换 hidden，标题随当前 refFrame 态换文案） -->
                 <button class="create-card" type="button" data-create-type="ref-frame" hidden>
-                    <span class="create-card-icon"><i data-lucide="frame"></i></span>
+                    <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-ref"/></svg></span>
                     <span>
                         <div class="create-card-title">设为参考框</div>
                         <div class="create-card-sub">Agent 卡「参考」按钮可循环绑定参考框</div>
@@ -224,7 +311,7 @@
         <div id="promptPresetPanel" class="prompt-preset-panel">
             <div class="prompt-preset-panel-head">
                 <span>提示词预设</span>
-                <button id="promptPresetClose" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+                <button id="promptPresetClose" type="button" title="关闭" aria-label="关闭"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
             </div>
             <div id="promptPresetStatus" class="prompt-preset-status"></div>
             <div class="prompt-preset-fields">
@@ -246,11 +333,11 @@
                     <strong>提示词模板库</strong>
                     <span>内置标准库 + 我的预设</span>
                 </div>
-                <button id="promptTemplateClose" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+                <button id="promptTemplateClose" type="button" title="关闭" aria-label="关闭"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
             </div>
             <select id="promptTemplateLibrarySelect" class="prompt-template-library-select" title="选择提示词库"></select>
             <div class="prompt-template-search">
-                <i data-lucide="search"></i>
+                <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>
                 <input id="promptTemplateSearch" type="search" placeholder="搜索模板...">
             </div>
             <div id="promptTemplateCats" class="prompt-template-cats"></div>
@@ -262,36 +349,36 @@
             </div>
         </div>
         <button id="smartEdgeReveal" class="smart-edge-reveal" type="button" title="点击定位到新结果" aria-label="点击定位到新结果">
-            <i data-lucide="sparkles"></i><span id="smartEdgeRevealLabel" data-i18n="smart.edgeRevealLabel">新结果已生成</span>
+            <svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span id="smartEdgeRevealLabel" data-i18n="smart.edgeRevealLabel">新结果已生成</span>
         </button>
         <aside id="assetPanel" class="asset-panel">
             <div class="asset-head">
-                <div class="asset-title"><i data-lucide="library"></i><span data-i18n="smart.assetLibrary">素材抽屉</span></div>
-                <button id="assetCloseBtn" class="asset-mini-btn" type="button" title="收起" aria-label="收起素材抽屉" data-i18n-title="common.close"><i data-lucide="chevron-right"></i></button>
+                <div class="asset-title"><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span data-i18n="smart.assetLibrary">素材抽屉</span></div>
+                <button id="assetCloseBtn" class="asset-mini-btn" type="button" title="收起" aria-label="收起素材抽屉" data-i18n-title="common.close"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
             </div>
             <div class="asset-tabs"><button class="asset-tab active" type="button" data-asset-tab="image" data-i18n="smart.assetImages">图片资产</button></div>
             <div id="assetImageControls">
                 <select id="assetLibrarySelect" class="asset-category-select asset-library-select" title="选择全局资源库"></select>
                 <div class="asset-category-row">
                     <select id="assetCategorySelect" class="asset-category-select"></select>
-                    <button id="assetAddCategoryBtn" class="asset-mini-btn" type="button" title="新建文件夹" data-i18n-title="smart.assetNewFolder"><i data-lucide="folder-plus"></i></button>
-                    <button id="assetRenameCategoryBtn" class="asset-mini-btn" type="button" title="重命名文件夹" data-i18n-title="smart.assetRenameFolder"><i data-lucide="pencil"></i></button>
-                    <button id="assetBatchToggleBtn" class="asset-mini-btn" type="button" title="多选" data-i18n-title="smart.batchSelect" hidden><i data-lucide="list-checks"></i></button>
-                    <button id="assetDetectUnusedBtn" class="asset-mini-btn" type="button" title="检测未使用" data-i18n-title="smart.detectUnused" hidden><i data-lucide="search-x"></i></button>
+                    <button id="assetAddCategoryBtn" class="asset-mini-btn" type="button" title="新建文件夹" data-i18n-title="smart.assetNewFolder"><svg class="ico" aria-hidden="true"><use href="#i-folder-plus"/></svg></button>
+                    <button id="assetRenameCategoryBtn" class="asset-mini-btn" type="button" title="重命名文件夹" data-i18n-title="smart.assetRenameFolder"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                    <button id="assetBatchToggleBtn" class="asset-mini-btn" type="button" title="多选" data-i18n-title="smart.batchSelect" hidden><svg class="ico" aria-hidden="true"><use href="#i-list-checks"/></svg></button>
+                    <button id="assetDetectUnusedBtn" class="asset-mini-btn" type="button" title="检测未使用" data-i18n-title="smart.detectUnused" hidden><svg class="ico" aria-hidden="true"><use href="#i-unused"/></svg></button>
                 </div>
             </div>
             <div id="assetBatchBar" class="asset-batch-bar" hidden>
                 <label class="asset-batch-selectall"><input type="checkbox" id="assetBatchSelectAll"><span data-i18n="smart.selectAll">全选</span></label>
                 <span id="assetBatchCount" class="asset-batch-count"></span>
-                <button id="assetBatchDeleteBtn" class="asset-mini-btn danger" type="button" title="批量删除" data-i18n-title="smart.batchDelete" disabled><i data-lucide="trash-2"></i></button>
-                <button id="assetBatchCloseBtn" class="asset-mini-btn" type="button" title="退出多选" data-i18n-title="common.cancel"><i data-lucide="x"></i></button>
+                <button id="assetBatchDeleteBtn" class="asset-mini-btn danger" type="button" title="批量删除" data-i18n-title="smart.batchDelete" disabled><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>
+                <button id="assetBatchCloseBtn" class="asset-mini-btn" type="button" title="退出多选" data-i18n-title="common.cancel"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
             </div>
             <div id="assetDropZone" class="asset-drop-zone" data-i18n="smart.assetDropHint">把画布图片拖到这里保存到当前文件夹</div>
             <div id="assetGrid" class="asset-grid"></div>
         </aside>
         <div id="assetDialogBackdrop" class="asset-dialog-backdrop" hidden>
             <div class="asset-dialog">
-                <div class="asset-dialog-title"><i data-lucide="folder-pen"></i><span id="assetDialogTitle">命名</span></div>
+                <div class="asset-dialog-title"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span id="assetDialogTitle">命名</span></div>
                 <textarea id="assetDialogInput" class="asset-dialog-input" rows="1" autocomplete="off"></textarea>
                 <div class="asset-dialog-actions">
                     <button id="assetDialogCancel" class="asset-dialog-btn secondary" type="button" data-i18n="common.cancel">取消</button>
@@ -301,7 +388,7 @@
         </div>
         <div id="smartBatchRenameBackdrop" class="asset-dialog-backdrop" hidden>
             <div class="asset-dialog smart-batch-rename-dialog">
-                <div class="asset-dialog-title"><i data-lucide="pencil-ruler"></i><span data-i18n="smart.batchRename">批量重命名</span></div>
+                <div class="asset-dialog-title"><svg class="ico" aria-hidden="true"><use href="#i-paintbrush"/></svg><span data-i18n="smart.batchRename">批量重命名</span></div>
                 <label class="smart-batch-rename-field"><span data-i18n="smart.batchRenamePrefix">前缀</span><input id="smartBatchRenamePrefix" type="text" maxlength="60" placeholder="Image_" autocomplete="off"></label>
                 <div class="smart-batch-rename-row">
                     <label class="smart-batch-rename-field"><span data-i18n="smart.batchRenamePad">编号位数</span>
@@ -323,7 +410,7 @@
         </div>
         <div id="smartTrashBackdrop" class="asset-dialog-backdrop" hidden>
             <div class="asset-dialog smart-trash-dialog">
-                <div class="asset-dialog-title"><i data-lucide="archive-restore"></i><span data-i18n="smart.trashTitle">项目回收区</span></div>
+                <div class="asset-dialog-title"><svg class="ico" aria-hidden="true"><use href="#i-archive-restore"/></svg><span data-i18n="smart.trashTitle">项目回收区</span></div>
                 <div id="smartTrashList" class="smart-trash-list"></div>
                 <div class="asset-dialog-actions">
                     <button id="smartTrashPurgeBtn" class="asset-dialog-btn danger" type="button" data-i18n="canvas.clearProjectTrash">清空回收区</button>
@@ -333,7 +420,7 @@
         </div>
         <div id="smartUnusedBackdrop" class="asset-dialog-backdrop" hidden>
             <div class="asset-dialog smart-trash-dialog">
-                <div class="asset-dialog-title"><i data-lucide="search-x"></i><span data-i18n="smart.unusedTitle">未使用媒体</span></div>
+                <div class="asset-dialog-title"><svg class="ico" aria-hidden="true"><use href="#i-unused"/></svg><span data-i18n="smart.unusedTitle">未使用媒体</span></div>
                 <div id="smartUnusedList" class="smart-trash-list"></div>
                 <div class="asset-dialog-actions">
                     <button id="smartUnusedCleanBtn" class="asset-dialog-btn danger" type="button" data-i18n="smart.unusedClean">清理全部</button>
@@ -354,10 +441,10 @@
                         <div class="log-hint" data-i18n="canvas.generationHistoryHint">查看原图与提示词；拖动图片，或一键送回画布</div>
                     </div>
                     <div class="log-head-actions">
-                        <button id="smartTrashOpenBtn" class="preview-icon-btn" type="button" onclick="openSmartTrashPanel()" title="回收区" data-i18n-title="smart.trashOpen" aria-label="回收区" aria-busy="false" hidden><i data-lucide="archive-restore" class="w-4 h-4"></i></button>
-                        <button id="smartHistoryPurgeTrash" class="preview-icon-btn danger" type="button" onclick="purgeSmartProjectMediaTrash()" title="清空回收区" data-i18n-title="canvas.clearProjectTrash" aria-label="清空回收区" aria-busy="false" hidden><i data-lucide="archive-x" class="w-4 h-4"></i></button>
-                        <button id="smartHistoryCollapse" class="preview-icon-btn" type="button" onclick="toggleSmartHistoryDrawerCollapsed()" title="折叠" aria-label="折叠"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
-                        <button class="preview-icon-btn" type="button" onclick="closeSmartCanvasLog()" title="关闭" aria-label="关闭生成历史" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
+                        <button id="smartTrashOpenBtn" class="preview-icon-btn" type="button" onclick="openSmartTrashPanel()" title="回收区" data-i18n-title="smart.trashOpen" aria-label="回收区" aria-busy="false" hidden><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-archive-restore"/></svg></button>
+                        <button id="smartHistoryPurgeTrash" class="preview-icon-btn danger" type="button" onclick="purgeSmartProjectMediaTrash()" title="清空回收区" data-i18n-title="canvas.clearProjectTrash" aria-label="清空回收区" aria-busy="false" hidden><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-archive-x"/></svg></button>
+                        <button id="smartHistoryCollapse" class="preview-icon-btn" type="button" onclick="toggleSmartHistoryDrawerCollapsed()" title="折叠" aria-label="折叠"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
+                        <button class="preview-icon-btn" type="button" onclick="closeSmartCanvasLog()" title="关闭" aria-label="关闭生成历史" data-i18n-title="common.close"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-x"/></svg></button>
                     </div>
                 </div>
                 <div id="smartHistoryList" class="log-list"></div>
@@ -371,7 +458,7 @@
                         <div class="long-content-reader-hint" data-i18n="smart.longContentHint">只读视图 · Esc 关闭</div>
                     </div>
                     <button id="longContentReaderClose" class="long-content-reader-close" type="button" data-i18n-title="smart.longContentClose" title="关闭全文" aria-label="关闭全文">
-                        <i data-lucide="x"></i><span data-i18n="smart.longContentClose">关闭全文</span>
+                        <svg class="ico" aria-hidden="true"><use href="#i-x"/></svg><span data-i18n="smart.longContentClose">关闭全文</span>
                     </button>
                 </div>
                 <div id="longContentReaderBody" class="long-content-reader-body" role="document" tabindex="0" aria-readonly="true"></div>
@@ -381,10 +468,10 @@
             <div class="smart-settings-panel" role="document">
                 <div class="smart-settings-head">
                     <div>
-                        <div id="smartSettingsTitle" class="smart-settings-title"><i data-lucide="settings"></i><span data-i18n="smart.globalSettings">全局设置</span></div>
+                        <div id="smartSettingsTitle" class="smart-settings-title"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span data-i18n="smart.globalSettings">全局设置</span></div>
                         <div class="smart-settings-hint">设置悬浮在核心画布上，不会离开或重建画布。</div>
                     </div>
-                    <button id="smartSettingsClose" class="preview-icon-btn" type="button" title="关闭" aria-label="关闭" data-i18n-title="common.close"><i data-lucide="x"></i></button>
+                    <button id="smartSettingsClose" class="preview-icon-btn" type="button" title="关闭" aria-label="关闭" data-i18n-title="common.close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
                 </div>
                 <iframe id="smartSettingsFrame" title="全局设置" loading="lazy" referrerpolicy="same-origin"></iframe>
             </div>
@@ -392,8 +479,8 @@
         <div id="smartShortcutModal" class="shortcut-modal" onclick="closeSmartCanvasShortcuts()">
             <div class="shortcut-panel" onclick="event.stopPropagation()">
                 <div class="shortcut-head">
-                    <div class="shortcut-title"><i data-lucide="keyboard"></i><span data-i18n="smart.shortcuts">快捷键</span></div>
-                    <button class="preview-icon-btn" type="button" onclick="closeSmartCanvasShortcuts()" title="关闭" aria-label="关闭快捷键" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    <div class="shortcut-title"><svg class="ico" aria-hidden="true"><use href="#i-keyboard"/></svg><span data-i18n="smart.shortcuts">快捷键</span></div>
+                    <button class="preview-icon-btn" type="button" onclick="closeSmartCanvasShortcuts()" title="关闭" aria-label="关闭快捷键" data-i18n-title="common.close"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-x"/></svg></button>
                 </div>
                 <div class="shortcut-list">
                     <div class="shortcut-item"><span class="shortcut-keys"><kbd>Ctrl</kbd></span><span data-i18n="smart.shortcutBoxSelect">按住并拖拽框选节点</span></div>
@@ -431,16 +518,16 @@
                         <div id="imageEditSub" class="image-edit-sub" data-i18n="canvas.editImageSub">选择裁剪、遮罩或画笔模式</div>
                     </div>
                     <div class="image-edit-mode">
-                        <button type="button" data-image-edit-mode="preview" class="active"><i data-lucide="eye" class="w-3.5 h-3.5"></i><span data-i18n="smart.modePreview">预览</span></button>
-                        <button type="button" data-image-edit-mode="crop"><i data-lucide="crop" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeCrop">裁剪</span></button>
-                        <button type="button" data-image-edit-mode="outpaint"><i data-lucide="expand" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeOutpaint">Expand</span></button>
-                        <button type="button" data-image-edit-mode="mask"><i data-lucide="brush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeMask">遮罩</span></button>
-                        <button type="button" data-image-edit-mode="brush"><i data-lucide="paintbrush" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeBrush">画笔</span></button>
-                        <button type="button" data-image-edit-mode="resize"><i data-lucide="minimize-2" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeResize">缩放</span></button>
-                        <button type="button" data-image-edit-mode="grid"><i data-lucide="grid-3x3" class="w-3.5 h-3.5"></i><span data-i18n="canvas.modeGrid">宫格切分</span></button>
-                        <button type="button" data-image-edit-mode="layers"><i data-lucide="layers" class="w-3.5 h-3.5"></i><span data-i18n="canvas.layersMode">图层</span></button>
+                        <button type="button" data-image-edit-mode="preview" class="active"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-eye"/></svg><span data-i18n="smart.modePreview">预览</span></button>
+                        <button type="button" data-image-edit-mode="crop"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-crop"/></svg><span data-i18n="canvas.modeCrop">裁剪</span></button>
+                        <button type="button" data-image-edit-mode="outpaint"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-expand"/></svg><span data-i18n="canvas.modeOutpaint">Expand</span></button>
+                        <button type="button" data-image-edit-mode="mask"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-inpaint"/></svg><span data-i18n="canvas.modeMask">遮罩</span></button>
+                        <button type="button" data-image-edit-mode="brush"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-paintbrush"/></svg><span data-i18n="canvas.modeBrush">画笔</span></button>
+                        <button type="button" data-image-edit-mode="resize"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-minimize-2"/></svg><span data-i18n="canvas.modeResize">缩放</span></button>
+                        <button type="button" data-image-edit-mode="grid"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-grid-3x3"/></svg><span data-i18n="canvas.modeGrid">宫格切分</span></button>
+                        <button type="button" data-image-edit-mode="layers"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-layers"/></svg><span data-i18n="canvas.layersMode">图层</span></button>
                     </div>
-                    <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-x"/></svg></button>
                 </div>
                 <div id="imageCropTools" class="image-edit-tools crop-ratio-tools">
                     <span class="image-edit-sub">比例</span>
@@ -469,27 +556,27 @@
                     <button class="crop-ratio-btn" type="button" data-outpaint-ratio="9:21">9:21</button>
                 </div>
                 <div id="imagePreviewTools" class="image-edit-tools">
-                    <button id="imagePreviewMarkBtn" class="image-edit-btn secondary" type="button" onclick="toggleImagePreviewMark()" data-marked-asset="" data-marked-title="1" title="标记" hidden><i data-lucide="star" class="w-4 h-4"></i><span data-i18n="smart.markImage">标记</span></button>
+                    <button id="imagePreviewMarkBtn" class="image-edit-btn secondary" type="button" onclick="toggleImagePreviewMark()" data-marked-asset="" data-marked-title="1" title="标记" hidden><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="smart.markImage">标记</span></button>
                     <span id="previewMetaHint" class="image-edit-sub" style="margin-left:auto"></span>
                 </div>
                 <div id="imageMaskTools" class="image-edit-tools">
                     <label><span data-i18n="canvas.brushSize">笔刷</span> <input id="maskBrushSize" type="range" min="4" max="160" value="42"></label>
-                    <button id="maskUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><i data-lucide="undo-2" class="w-4 h-4"></i></button>
-                    <button id="maskRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><i data-lucide="redo-2" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><i data-lucide="eraser" class="w-4 h-4"></i><span data-i18n="canvas.clear">清空</span></button>
+                    <button id="maskUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+                    <button id="maskRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-eraser"/></svg><span data-i18n="canvas.clear">清空</span></button>
                     <span class="image-edit-sub" data-i18n="canvas.maskHint">白色区域为要编辑的遮罩</span>
                 </div>
                 <div id="imageBrushTools" class="image-edit-tools">
-                    <button class="image-edit-btn primary" type="button" data-brush-tool="free" onclick="setBrushTool('free')" title="自由画笔"><i data-lucide="paintbrush" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="rect" onclick="setBrushTool('rect')" title="矩形"><i data-lucide="square" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="ellipse" onclick="setBrushTool('ellipse')" title="椭圆"><i data-lucide="circle" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="label" onclick="setBrushTool('label')" title="数字标签"><i data-lucide="list-ordered" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="text" onclick="setBrushTool('text')" title="文字标签"><i data-lucide="type" class="w-4 h-4"></i></button>
+                    <button class="image-edit-btn primary" type="button" data-brush-tool="free" onclick="setBrushTool('free')" title="自由画笔"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-paintbrush"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="rect" onclick="setBrushTool('rect')" title="矩形"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-square"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="ellipse" onclick="setBrushTool('ellipse')" title="椭圆"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-circle"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="label" onclick="setBrushTool('label')" title="数字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-list-ordered"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="text" onclick="setBrushTool('text')" title="文字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-scan-line"/></svg></button>
                     <label><span data-i18n="canvas.color">颜色</span> <input id="paintBrushColor" type="color" value="#ff2d55"></label>
                     <label><span data-i18n="canvas.brushSize">笔刷</span> <input id="paintBrushSize" type="range" min="2" max="80" value="14"></label>
-                    <button id="brushUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><i data-lucide="undo-2" class="w-4 h-4"></i></button>
-                    <button id="brushRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><i data-lucide="redo-2" class="w-4 h-4"></i></button>
-                    <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><i data-lucide="eraser" class="w-4 h-4"></i><span data-i18n="canvas.clear">清空</span></button>
+                    <button id="brushUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+                    <button id="brushRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-eraser"/></svg><span data-i18n="canvas.clear">清空</span></button>
                 </div>
                 <div id="imageResizeTools" class="image-edit-tools image-resize-tools">
                     <label><span>倍数</span> <input id="imageResizeScaleRange" type="range" min="0.05" max="1" step="0.05" value="0.5"></label>
@@ -534,21 +621,21 @@
                     <div id="gridCustomControls" class="grid-split-control" style="display:none;align-items:center;gap:6px">
                         <button id="gridOrientH" class="image-edit-btn primary" type="button" onclick="setGridCustomOrientation('h')" data-i18n="canvas.gridOrientH" data-i18n-title="canvas.gridOrientHTitle" title="点击图片放置水平线">水平</button>
                         <button id="gridOrientV" class="image-edit-btn secondary" type="button" onclick="setGridCustomOrientation('v')" data-i18n="canvas.gridOrientV" data-i18n-title="canvas.gridOrientVTitle" title="点击图片放置竖直线">垂直</button>
-                        <button id="gridUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoGridCustomLine()" data-i18n-title="canvas.gridUndo" title="撤销上一条线" disabled style="opacity:.4"><i data-lucide="undo-2" class="w-3.5 h-3.5"></i></button>
-                        <button class="image-edit-btn secondary" type="button" onclick="clearGridCustomLines()" data-i18n-title="canvas.gridClearLines" title="清除所有自定义线"><i data-lucide="eraser" class="w-3.5 h-3.5"></i></button>
+                        <button id="gridUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoGridCustomLine()" data-i18n-title="canvas.gridUndo" title="撤销上一条线" disabled style="opacity:.4"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+                        <button class="image-edit-btn secondary" type="button" onclick="clearGridCustomLines()" data-i18n-title="canvas.gridClearLines" title="清除所有自定义线"><svg class="ico w-3.5 h-3.5" aria-hidden="true"><use href="#i-eraser"/></svg></button>
                     </div>
                     <label class="grid-gap-control"><span data-i18n="canvas.gridGap">间隔(px)</span> <input id="gridGapSize" type="range" min="0" max="240" step="1" value="0"><span id="gridGapValue" class="grid-gap-value">0</span></label>
                     <span id="gridSplitCount" class="image-edit-sub"></span>
                 </div>
                 <div id="imageLayersTools" class="image-edit-tools image-layers-tools" style="gap:6px">
-                    <button id="layerAddBlankBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.addBlankLayer()"><i data-lucide="square" class="w-4 h-4"></i><span data-i18n="canvas.layersAddBlank">空白图层</span></button>
-                    <button id="layerImportBrushBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.importBrushLayer()"><i data-lucide="paintbrush" class="w-4 h-4"></i><span data-i18n="canvas.layersImportBrush">导入笔刷</span></button>
+                    <button id="layerAddBlankBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.addBlankLayer()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-square"/></svg><span data-i18n="canvas.layersAddBlank">空白图层</span></button>
+                    <button id="layerImportBrushBtn" class="image-edit-btn secondary" type="button" onclick="CanvasLayers.importBrushLayer()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-paintbrush"/></svg><span data-i18n="canvas.layersImportBrush">导入笔刷</span></button>
                     <div id="layerList" class="layer-list" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;min-width:220px"></div>
-                    <button id="layerExportBtn" class="image-edit-btn primary" type="button" onclick="CanvasLayers.exportCompositePng()"><i data-lucide="image-down" class="w-4 h-4"></i><span data-i18n="canvas.layersExport">导出合成 PNG</span></button>
+                    <button id="layerExportBtn" class="image-edit-btn primary" type="button" onclick="CanvasLayers.exportCompositePng()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.layersExport">导出合成 PNG</span></button>
                 </div>
                 <div id="imageEditStage" class="image-edit-stage">
-                    <button id="previewPrevBtn" class="preview-nav-btn prev" type="button" onclick="navigatePreviewImage(-1)" title="上一张"><i data-lucide="chevron-left"></i></button>
-                    <button id="previewNextBtn" class="preview-nav-btn next" type="button" onclick="navigatePreviewImage(1)" title="下一张"><i data-lucide="chevron-right"></i></button>
+                    <button id="previewPrevBtn" class="preview-nav-btn prev" type="button" onclick="navigatePreviewImage(-1)" title="上一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+                    <button id="previewNextBtn" class="preview-nav-btn next" type="button" onclick="navigatePreviewImage(1)" title="下一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
                     <div class="image-edit-stage-inner">
                         <div id="previewStage" class="preview-stage" style="display:none">
                             <div id="previewFrame" class="preview-frame">
@@ -587,25 +674,25 @@
                         </div>
                     </div>
                     <div class="preview-download-overlay">
-                        <button id="previewDownloadBtn" class="compare-toggle" type="button" onclick="downloadPreviewImage()"><i data-lucide="download" class="w-4 h-4"></i><span data-i18n="canvas.download">Download</span></button>
-                        <button id="previewDownloadAllBtn" class="compare-toggle" type="button" onclick="downloadPreviewGroup()" style="display:none"><i data-lucide="archive" class="w-4 h-4"></i><span>下载全部</span></button>
+                        <button id="previewDownloadBtn" class="compare-toggle" type="button" onclick="downloadPreviewImage()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.download">Download</span></button>
+                        <button id="previewDownloadAllBtn" class="compare-toggle" type="button" onclick="downloadPreviewGroup()" style="display:none"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span>下载全部</span></button>
                     </div>
                     <div class="preview-tools-overlay">
                         <div id="compareThumbs" class="compare-thumbs" style="display:none"></div>
                         <div class="preview-action-row">
-                            <button id="compareToggleBtn" class="compare-toggle" type="button" onclick="togglePreviewCompare()" style="display:none"><i data-lucide="columns-2" class="w-4 h-4"></i><span data-i18n="smart.compareSource">对比原图</span></button>
+                            <button id="compareToggleBtn" class="compare-toggle" type="button" onclick="togglePreviewCompare()" style="display:none"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-columns-2"/></svg><span data-i18n="smart.compareSource">对比原图</span></button>
                         </div>
                     </div>
                 </div>
                 <div class="image-edit-actions">
                     <span id="imageEditZoomLabel" style="color:#94a3b8;font-size:11px;font-weight:800;padding:0 4px;margin-right:auto;cursor:pointer;user-select:none" title="双击重置缩放" ondblclick="resetImageEditZoom()">100%</span>
                     <div id="videoFrameTools" class="video-frame-tools" style="display:none">
-                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('first')"><i data-lucide="skip-back" class="w-4 h-4"></i><span>导出首帧</span></button>
-                        <button class="image-edit-btn primary" type="button" onclick="exportVideoFrame('current')"><i data-lucide="image-down" class="w-4 h-4"></i><span>导出当前帧</span></button>
-                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('last')"><i data-lucide="skip-forward" class="w-4 h-4"></i><span>导出尾帧</span></button>
+                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('first')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-back"/></svg><span>导出首帧</span></button>
+                        <button class="image-edit-btn primary" type="button" onclick="exportVideoFrame('current')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span>导出当前帧</span></button>
+                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('last')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-forward"/></svg><span>导出尾帧</span></button>
                     </div>
                     <button id="imageEditCancelBtn" class="image-edit-btn secondary" type="button" onclick="closeImageEditor()" data-i18n="common.cancel">取消</button>
-                    <button id="imageEditApplyBtn" class="image-edit-btn primary" type="button" onclick="applyImageEdit()"><i data-lucide="crop" class="w-4 h-4"></i><span data-i18n="canvas.applyCrop">应用裁剪</span></button>
+                    <button id="imageEditApplyBtn" class="image-edit-btn primary" type="button" onclick="applyImageEdit()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-crop"/></svg><span data-i18n="canvas.applyCrop">应用裁剪</span></button>
                 </div>
             </div>
         </div>
@@ -616,7 +703,7 @@
     <div id="smartRecoveryModal" class="smart-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="smartRecoveryTitle" aria-hidden="true">
         <div class="smart-recovery-panel" role="document">
             <div class="smart-recovery-head">
-                <div id="smartRecoveryTitle" class="smart-recovery-title"><i data-lucide="file-warning"></i><span data-i18n="smart.recoveryTitle">画布加载失败</span></div>
+                <div id="smartRecoveryTitle" class="smart-recovery-title"><svg class="ico" aria-hidden="true"><use href="#i-triangle-alert"/></svg><span data-i18n="smart.recoveryTitle">画布加载失败</span></div>
                 <div id="smartRecoveryHint" class="smart-recovery-hint" data-i18n="smart.recoveryHint">项目文件可能已损坏。编辑器已暂停打开，以免覆盖损坏文件。</div>
             </div>
             <div id="smartRecoveryList" class="smart-recovery-list" aria-live="polite"></div>

@@ -65,6 +65,8 @@ function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; 
 
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
 
+// #380：图标统一 SVG sprite（<symbol> 内联在 smart-canvas.html 顶部），id = i-<总表 key>。
+function ico(id, cls){ return `<svg class="ico${cls ? ' ' + cls : ''}" aria-hidden="true"><use href="#i-${id}"/></svg>`; }
 function escapeHtml(str){ return String(str == null ? '' : str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 
 const escapeAttr = escapeHtml;

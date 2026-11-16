@@ -7,8 +7,8 @@ function isSmartAgentNode(node){
     return Boolean(node && node.type === NODE_TYPE_AGENT);
 }
 
-// #316：Agent 卡内图标统一 lucide SVG（与画布其它节点同一视觉语言，emoji 跨系统渲染不一致）
-function agentIco(name){ return `<i data-lucide="${name}"></i>`; }
+// #316：Agent 卡内图标统一 SVG sprite 图标（与画布其它节点同一视觉语言，emoji 跨系统渲染不一致）
+function agentIco(name){ return ico(name); }
 
 function isSmartAgentTaskNode(node){
     return Boolean(node && node.type === NODE_TYPE_TASK);
@@ -1099,7 +1099,7 @@ function agentNodeBodyHtml(node) {
             let icon = agentIco('settings');
             if (activity.status === 'done') icon = agentIco('check');
             else if (activity.status === 'error') icon = agentIco('x');
-            else if (activity.status === 'running') icon = agentIco('hourglass');
+            else if (activity.status === 'running') icon = agentIco('loader-2');
             const argsFull = activity.args ? JSON.stringify(activity.args, null, 2) : '';
             const resultFull = activity.result != null ? String(activity.result) : '';
             const expandedClass = activity.expanded ? ' agent-tui-tool-expanded' : '';
@@ -1184,7 +1184,7 @@ function agentNodeBodyHtml(node) {
     const pendingImages = state.pendingImages || [];
     let pendingHtml = '';
     if (state.attachWorking) { // #317：附件处理进度提示（长转码不再静默）
-        pendingHtml += `<div class="agent-tui-attach-working">${agentIco('hourglass')} ${escapeHtml(tr('smart.agentAttachWorking').replace('{name}', state.attachWorking))}</div>`;
+        pendingHtml += `<div class="agent-tui-attach-working">${agentIco('loader-2')} ${escapeHtml(tr('smart.agentAttachWorking').replace('{name}', state.attachWorking))}</div>`;
     }
     if (pendingImages.length) {
         const chips = pendingImages.map((img, idx) => `
@@ -1235,7 +1235,7 @@ function agentNodeBodyHtml(node) {
                     <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">${agentIco('paperclip')}</button>
                     <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" aria-pressed="${state.thinkingVisible ? 'true' : 'false'}">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中）；#317：aria-pressed -->
                     <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('hourglass')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('loader-2')}</button>
                     <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('square')}</button>
                 </div>
                 <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令">发送</button>
@@ -1609,7 +1609,6 @@ function renderAgentNode(nodeId) {
     const bodyContainer = el.querySelector('.node-body');
     if (bodyContainer) {
         bodyContainer.innerHTML = body;
-        if (window.lucide) lucide.createIcons(); // #316：本路径不经 render() 的全局补水，需自行 hydrate 卡内 lucide 图标
         // Re-bind controls
         bindAgentNodeControls(bodyContainer, node);
         // Scroll to bottom（#314：目标改为真滚动容器 .agent-tui-body；阅读位置非底部时恢复原位）

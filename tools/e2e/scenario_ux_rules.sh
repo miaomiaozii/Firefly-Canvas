@@ -93,7 +93,7 @@ if (j.fails.length) throw new Error('MIN_HIT: ' + j.fails.join(' | '));
 return { evidence: 'targets=' + j.checked + ' min>=20px OK' };
 JS
 
-# U4 纯图标按钮必须有可访问名：button/a 无文字且含图标（lucide/svg/img）→ 需 aria-label/title/alt
+# U4 纯图标按钮必须有可访问名：button/a 无文字且含图标（svg/img）→ 需 aria-label/title/alt
 e2e_run u4-icon-accessible-name <<'JS'
 const r = await page.evaluate(() => {
   const fails = []; let checked = 0;
@@ -102,7 +102,7 @@ const r = await page.evaluate(() => {
     const s = getComputedStyle(el);
     if (s.display === 'none' || s.visibility !== 'visible') return;
     const text = (el.textContent || '').replace(/[\s\u200b]/g, '');
-    const hasIcon = !!el.querySelector('[data-lucide], svg, img');
+    const hasIcon = !!el.querySelector('svg, img');
     if (!hasIcon || text.length) return; // 只查纯图标
     checked++;
     const name = (el.getAttribute('aria-label') || '').trim()

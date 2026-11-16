@@ -264,7 +264,7 @@ function canvasDownloadRecordsHtml({ limit = 8 } = {}){
             title += ` · ${tr('smart.downloadRequestedList')}: ${list.join(', ')}${more}`;
         }
         return `<div class="smart-marked-export-file" title="${escapeHtml(title)}">` +
-            `<i data-lucide="${r.status === 'failed' ? 'triangle-alert' : 'check'}" aria-hidden="true"></i>` +
+            `${ico(r.status === 'failed' ? 'triangle-alert' : 'check')}` +
             `<span>${escapeHtml(line)}</span></div>`;
     }).join('');
 }

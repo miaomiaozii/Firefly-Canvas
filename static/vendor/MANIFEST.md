@@ -3,10 +3,6 @@
 This folder contains the small set of third-party assets used by the project list,
 global settings, and core canvas so the app can load without CDN access.
 
-## JavaScript
-
-- `js/lucide.js`: local mirror of `https://unpkg.com/lucide@latest`
-
 ## CSS
 
 - `css/fonts.css`: local `@font-face` declarations used by all pages.

@@ -418,7 +418,6 @@ function syncIconButtonAccessibility(root=document){
     });
 }
 function refreshIcons(root=document){
-    if(window.lucide) lucide.createIcons();
     syncIconButtonAccessibility(root);
 }
 
@@ -1466,7 +1465,7 @@ function smartNodeInputThumbsHtml(images, opts={}){
     const items = refs.slice(0, limit).map((img, index) => {
         const label = opts.labelPrefix ? `${opts.labelPrefix}${index + 1}` : (window.StudioI18n?.lang?.() === 'en' ? `Image ${index + 1}` : `图${index + 1}`);
         const media = isAudioMediaItem(img)
-            ? `<div class="media-thumb audio-thumb"><i data-lucide="file-audio"></i><span>${escapeHtml(img.name || 'Audio')}</span></div>`
+            ? `<div class="media-thumb audio-thumb"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg><span>${escapeHtml(img.name || 'Audio')}</span></div>`
             : isVideoMediaItem(img)
             ? smartVideoPreviewHtml(img, 256, 'alt=""')
             : smartPreviewImgHtml(img, 256, 'alt=""');
@@ -2545,7 +2544,7 @@ function volcengineVideoModels(){
 function renderVideoProviderControl(providers){
     const current = (providers || []).find(p => p.id === settings.videoProvider) || videoProviderById(settings.videoProvider);
     return `<div class="smart-control provider-control">
-        <button class="smart-pill" type="button"><i data-lucide="plug-zap"></i><span class="sub">${escapeHtml(current?.name || settings.videoProvider || tr('smart.platform'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(current?.name || settings.videoProvider || tr('smart.platform'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.videoPlatform'))}</div>
             <div class="model-list">
@@ -2557,7 +2556,7 @@ function renderVideoProviderControl(providers){
 function modelSearchInputHtml(param, count){
     const countText = Number(count) > 0 ? ` <span class="model-search-count">${Number(count)}</span>` : '';
     return `<label class="model-search-row">
-        <i data-lucide="search"></i>
+        <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>
         <input type="search" class="model-search-input" data-model-search="${escapeHtml(param)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(tr('smart.searchModel'))}" aria-label="${escapeHtml(tr('smart.searchModel'))}">
         ${countText}
     </label>`;
@@ -2592,7 +2591,7 @@ function renderVideoRoutingControl(){
 }
 function renderVideoModelControl(models){
     return `<div class="smart-control model-control">
-        <button class="smart-pill" type="button"><i data-lucide="film"></i><span class="sub">${escapeHtml(settings.videoModel || tr('smart.model'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-film"/></svg><span class="sub">${escapeHtml(settings.videoModel || tr('smart.model'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.videoModel'))}</div>
             ${searchableModelOptions(models, 'videoModel', settings.videoModel, tr('smart.noVideoModel'))}
@@ -2603,7 +2602,7 @@ function renderVideoDurationControl(){
     const v = Math.max(1, Math.min(60, Number(settings.videoDuration) || 5));
     const quick = [3, 4, 5, 6, 8, 10, 12, 15];
     return `<div class="smart-control duration-control" title="${escapeHtml(tr('smart.videoDurationTip'))}">
-        <button class="smart-pill" type="button"><i data-lucide="timer"></i><span>${v}s</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-loader-2"/></svg><span>${v}s</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.videoDuration'))}</div>
             <div class="duration-grid">
@@ -2624,7 +2623,7 @@ function renderVideoAspectControl(){
     const value = settings.videoAspect || '16:9';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control aspect-control">
-        <button class="smart-pill" type="button"><i data-lucide="scan"></i><span>${escapeHtml(labelMap[value] || value)}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-scan-line"/></svg><span>${escapeHtml(labelMap[value] || value)}</span></button>
         <div class="smart-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.videoAspect'))}</div>
             <div class="ratio-grid">
@@ -2638,7 +2637,7 @@ function renderVideoResolutionControl(){
     const value = settings.videoResolution || '';
     const labelMap = Object.fromEntries(options);
     return `<div class="smart-control resolution-control">
-        <button class="smart-pill" type="button"><i data-lucide="monitor"></i><span>${escapeHtml(labelMap[value] || value || tr('smart.videoResAuto'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-monitor"/></svg><span>${escapeHtml(labelMap[value] || value || tr('smart.videoResAuto'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.videoResolution'))}</div>
             <div class="model-list">
@@ -2658,9 +2657,9 @@ function renderVideoTrustedAssetControl(){
     if(!on) return html;
     const src = ['library','cloud','manual'].includes(settings.videoTrustedSource) ? settings.videoTrustedSource : 'library';
     html += `<div class="trusted-source-row">
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'library' ? 'active' : ''}" data-trusted-source="library" title="${escapeHtml(tr('smart.trustedSrcLibrary'))}"><i data-lucide="library"></i><span>${escapeHtml(tr('smart.trustedSrcLibraryLabel'))}</span></button>
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'cloud' ? 'active' : ''}" data-trusted-source="cloud" title="${escapeHtml(tr('smart.trustedSrcCloud'))}"><i data-lucide="upload-cloud"></i><span>${escapeHtml(tr('smart.trustedSrcCloudLabel'))}</span></button>
-        <button type="button" class="smart-pill trusted-src-pill ${src === 'manual' ? 'active' : ''}" data-trusted-source="manual" title="${escapeHtml(tr('smart.trustedSrcManual'))}"><i data-lucide="link"></i><span>${escapeHtml(tr('smart.trustedSrcManualLabel'))}</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'library' ? 'active' : ''}" data-trusted-source="library" title="${escapeHtml(tr('smart.trustedSrcLibrary'))}"><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span>${escapeHtml(tr('smart.trustedSrcLibraryLabel'))}</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'cloud' ? 'active' : ''}" data-trusted-source="cloud" title="${escapeHtml(tr('smart.trustedSrcCloud'))}"><svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg><span>${escapeHtml(tr('smart.trustedSrcCloudLabel'))}</span></button>
+        <button type="button" class="smart-pill trusted-src-pill ${src === 'manual' ? 'active' : ''}" data-trusted-source="manual" title="${escapeHtml(tr('smart.trustedSrcManual'))}"><svg class="ico" aria-hidden="true"><use href="#i-link"/></svg><span>${escapeHtml(tr('smart.trustedSrcManualLabel'))}</span></button>
     </div>`;
     return html;
 }
@@ -2880,7 +2879,6 @@ function renderDynamicParams(){
     updatePromptPlaceholder();
     persistActiveSmartSettings();
     if(activeComposerNode()?.id) requestAnimationFrame(() => positionComposerForNode(activeComposerNode()));
-    if(window.lucide) lucide.createIcons();
 }
 function renderApiParams(){
     const providers = imageProviders();
@@ -3006,13 +3004,13 @@ function renderRhConfigControl(ref){
         ${entries.map(entry => {
             const id = runningHubEntryId(entry, kind);
             const key = runningHubEntryKey(kind, id);
-            const icon = kind === 'model' ? 'box' : 'sparkles';
+            const icon = kind === 'model' ? 'boxes' : 'generate';
             const labelText = runningHubEntryLabel(entry, kind);
-            return `<button type="button" class="direct-option rh-entry-option ${key === selected ? 'active' : ''}" data-smart-param="rhConfigKey" data-smart-value="${escapeHtml(key)}" data-model-option="${escapeHtml(`${key} ${labelText}`.toLocaleLowerCase())}"><i data-lucide="${icon}"></i><span>${escapeHtml(labelText)}</span></button>`;
+            return `<button type="button" class="direct-option rh-entry-option ${key === selected ? 'active' : ''}" data-smart-param="rhConfigKey" data-smart-value="${escapeHtml(key)}" data-model-option="${escapeHtml(`${key} ${labelText}`.toLocaleLowerCase())}">${ico(icon)}<span>${escapeHtml(labelText)}</span></button>`;
         }).join('')}
     ` : '';
     return `<div class="smart-control rh-config-control">
-        <button class="smart-pill" type="button"><i data-lucide="workflow"></i><span class="sub">${escapeHtml(ref ? runningHubEntryLabel(ref.entry, ref.kind) : tr('smart.rhConfig'))}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-workflow"/></svg><span class="sub">${escapeHtml(ref ? runningHubEntryLabel(ref.entry, ref.kind) : tr('smart.rhConfig'))}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
         <div class="smart-popover compact-popover rh-picker-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.rhConfig'))}</div>
             ${modelSearchInputHtml('rhConfigKey', models.length + apps.length)}
@@ -3027,7 +3025,7 @@ function renderRhPaymentControl(){
     const value = settings.rhPayment === 'wallet' ? 'wallet' : 'free';
     const labels = {free:tr('smart.rhFreeKey'), wallet:tr('smart.rhWalletKey')};
     return `<div class="smart-control rh-payment-control">
-        <button class="smart-pill" type="button"><i data-lucide="key-round"></i><span>${escapeHtml(labels[value])}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-key-round"/></svg><span>${escapeHtml(labels[value])}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
         <div class="smart-popover compact-popover rh-picker-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.rhKey'))}</div>
             <div class="model-list">
@@ -3040,7 +3038,7 @@ function renderRhMachineControl(){
     const value = settings.rhInstanceType === 'plus' ? 'plus' : '';
     const labels = {'':'24G', plus:'48G'};
     return `<div class="smart-control rh-machine-control">
-        <button class="smart-pill" type="button"><i data-lucide="cpu"></i><span>${escapeHtml(labels[value])}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-cpu"/></svg><span>${escapeHtml(labels[value])}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
         <div class="smart-popover compact-popover rh-picker-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.rhMachine'))}</div>
             <div class="model-list">
@@ -3131,7 +3129,7 @@ function videoAspectIconClass(value){
 function renderProviderControl(providers){
     const current = (providers || []).find(p => p.id === settings.provider_id) || apiProviderById(settings.provider_id);
     return `<div class="smart-control provider-control">
-        <button class="smart-pill" type="button"><i data-lucide="plug-zap"></i><span class="sub">${escapeHtml(current?.name || settings.provider_id || tr('smart.platform'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(current?.name || settings.provider_id || tr('smart.platform'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.apiPlatform'))}</div>
             <div class="model-list">
@@ -3154,7 +3152,7 @@ function renderAnglePresetControl(){
     const value = options.some(([key]) => key === settings.anglePreset) ? settings.anglePreset : 'none';
     const label = Object.fromEntries(options)[value];
     return `<div class="smart-control angle-preset-control">
-        <button class="smart-pill" type="button"><i data-lucide="orbit"></i><span>${escapeHtml(label)}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-boxes"/></svg><span>${escapeHtml(label)}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.angleTitle'))}</div>
             <div class="model-list">
@@ -3166,7 +3164,7 @@ function renderAnglePresetControl(){
 function renderModelControl(models){
     const labelFor = providerModelNameLookup(settings.provider_id === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === settings.provider_id));
     return `<div class="smart-control model-control">
-        <button class="smart-pill" type="button"><i data-lucide="sparkles"></i><span class="sub">${escapeHtml(labelFor(settings.model) || tr('smart.model'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="sub">${escapeHtml(labelFor(settings.model) || tr('smart.model'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.imageModel'))}</div>
             ${searchableModelOptions(models, 'model', settings.model, tr('smart.noImageModel'), labelFor)}
@@ -3180,7 +3178,7 @@ function msModelLabel(key){
 }
 function renderMsFunctionControl(){
     return `<div class="smart-control provider-control">
-        <button class="smart-pill" type="button"><i data-lucide="sparkles"></i><span class="sub">${escapeHtml(msModelLabel(settings.msgenModel) || 'Modelscope')}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="sub">${escapeHtml(msModelLabel(settings.msgenModel) || 'Modelscope')}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.msFunction'))}</div>
             <div class="model-list">
@@ -3194,7 +3192,7 @@ function renderMsCustomModelPill(){
     const models = modelscopeImageModels();
     const label = settings.msCustomModel || tr('smart.customModel');
     return `<div class="smart-control model-control">
-        <button class="smart-pill" type="button"><i data-lucide="boxes"></i><span class="sub">${escapeHtml(label)}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-boxes"/></svg><span class="sub">${escapeHtml(label)}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.msCustomModel'))}</div>
             ${searchableModelOptions(models, 'msCustomModel', settings.msCustomModel, tr('smart.noMsModel'))}
@@ -3249,7 +3247,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
     ];
     if(!prefix && !apiImageUsesExplicitResolution(settings)){
         return `<div class="smart-control size-picker-control resolution-free">
-            <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeAspect'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(ratioLabel(prefix))}</span></span></button>
+            <button class="smart-pill size-picker-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-scan-line"/></svg><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeAspect'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(ratioLabel(prefix))}</span></span></button>
             <div class="smart-popover size-picker-popover resolution-free">
                 <div class="smart-popover-title">${escapeHtml(tr('smart.sizeTitleAspect'))}</div>
                 <div class="size-picker-pane size-picker-preset resolution-free">
@@ -3263,7 +3261,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
     const wKey = prefix ? `${prefix}CustomWidth` : 'customWidth';
     const hKey = prefix ? `${prefix}CustomHeight` : 'customHeight';
     return `<div class="smart-control size-picker-control ${scope === 'auto' ? 'auto-mode' : ''} ${scope === 'custom' ? 'custom-mode' : ''}">
-        <button class="smart-pill size-picker-pill" type="button"><i data-lucide="scan-line"></i><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeSize'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(sizePickerLabel(prefix))}</span></span></button>
+        <button class="smart-pill size-picker-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-scan-line"/></svg><span class="size-picker-label"><span class="size-picker-type">${escapeHtml(tr('smart.sizeTypeSize'))}</span><span class="size-picker-dot"></span><span class="size-picker-value">${escapeHtml(sizePickerLabel(prefix))}</span></span></button>
         <div class="smart-popover size-picker-popover">
             <div class="size-picker-head">
                 <div class="smart-popover-title">${escapeHtml(tr('smart.sizeTitlePicker'))}</div>
@@ -3298,7 +3296,7 @@ function renderQualityControl(){
     const value = settings.quality || 'auto';
     const labels = {auto:tr('smart.qualityAuto'), low:tr('smart.qualityLow'), medium:tr('smart.qualityMid'), high:tr('smart.qualityHigh')};
     return `<div class="smart-control quality-control">
-        <button class="smart-pill" type="button"><i data-lucide="sliders-horizontal"></i><span>${escapeHtml(labels[value] || value)}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(labels[value] || value)}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.quality'))}</div>
             <div class="seg-row">
@@ -3310,7 +3308,7 @@ function renderQualityControl(){
 function renderCountVisualControl(){
     const value = Number(settings.count || 1);
     return `<div class="smart-control count-control">
-        <button class="smart-pill" type="button"><i data-lucide="copy"></i><span>${value}${window.StudioI18n?.lang?.() !== 'en' ? ' ' + escapeHtml(tr('smart.countUnit')) : ''}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${value}${window.StudioI18n?.lang?.() !== 'en' ? ' ' + escapeHtml(tr('smart.countUnit')) : ''}</span></button>
         <div class="smart-popover compact-popover" style="min-width:170px">
             <div class="smart-popover-title">${escapeHtml(tr('smart.count'))}</div>
             <div class="count-grid">
@@ -3657,7 +3655,7 @@ function renderRhSettingField(field){
     if(options?.length){
         const curLabel = String(value || options[0] || label);
         return `<div class="smart-control rh-dropdown-control" title="${escapeHtml(label)}">
-            <button class="smart-pill" type="button"><span class="sub">${escapeHtml(curLabel)}</span><i data-lucide="chevron-down" class="pill-caret"></i></button>
+            <button class="smart-pill" type="button"><span class="sub">${escapeHtml(curLabel)}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
             <div class="smart-popover compact-popover rh-picker-popover rh-param-popover">
                 <div class="smart-popover-title">${escapeHtml(label)}</div>
                 <div class="model-list rh-param-list">
@@ -3673,7 +3671,7 @@ function renderRhSettingField(field){
         return `<div class="num-with-dice" title="${escapeHtml(label)}">
             <span class="num-label">${escapeHtml(label)}</span>
             ${inputHtml}
-            <button type="button" class="dice-btn ${active ? 'active' : ''}" data-rh-random="${escapeHtml(key)}" title="${escapeHtml(active ? tr('smart.diceOn') : tr('smart.diceOff'))}"><i data-lucide="dice-5"></i></button>
+            <button type="button" class="dice-btn ${active ? 'active' : ''}" data-rh-random="${escapeHtml(key)}" title="${escapeHtml(active ? tr('smart.diceOn') : tr('smart.diceOff'))}"><svg class="ico" aria-hidden="true"><use href="#i-dice-5"/></svg></button>
         </div>`;
     }
     return `<div class="num-compact ${type === 'text' ? 'rh-text-param' : ''}" title="${escapeHtml(label)}"><span class="num-label">${escapeHtml(label)}</span>${inputHtml}</div>`;
@@ -4289,8 +4287,8 @@ function renderPromptTemplatePanel(options={}){
                     <span>${escapeHtml(tr('smart.tplGroupHint'))}</span>
                 </div>
                 <div class="prompt-template-group-tools">
-                    <button type="button" data-template-cat-new><i data-lucide="plus"></i><span>${escapeHtml(tr('smart.tplAdd'))}</span></button>
-                    <button type="button" class="primary" data-template-group-edit><i data-lucide="check"></i><span>${escapeHtml(tr('smart.tplDone'))}</span></button>
+                    <button type="button" data-template-cat-new><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg><span>${escapeHtml(tr('smart.tplAdd'))}</span></button>
+                    <button type="button" class="primary" data-template-group-edit><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>${escapeHtml(tr('smart.tplDone'))}</span></button>
                 </div>
             </div>
             <div class="prompt-template-group-list">
@@ -4300,8 +4298,8 @@ function renderPromptTemplatePanel(options={}){
                             <span>${escapeHtml(promptTemplateCategoryLabel(group.id))}</span>
                             <small>${groupCounts[group.id] || 0}</small>
                         </button>
-                        <button type="button" class="group-tool" data-template-cat-edit="${escapeHtml(group.id)}" title="${escapeAttr(tr('smart.tplRename'))}"><i data-lucide="pencil"></i></button>
-                        <button type="button" class="group-tool danger" data-template-cat-delete="${escapeHtml(group.id)}" title="${escapeAttr(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>
+                        <button type="button" class="group-tool" data-template-cat-edit="${escapeHtml(group.id)}" title="${escapeAttr(tr('smart.tplRename'))}"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                        <button type="button" class="group-tool danger" data-template-cat-delete="${escapeHtml(group.id)}" title="${escapeAttr(tr('common.delete'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>
                     </div>
                 `).join('')}
             </div>
@@ -4316,7 +4314,7 @@ function renderPromptTemplatePanel(options={}){
                     </button>
                 `).join('')}
             </div>
-            <button type="button" class="prompt-template-manage-groups" data-template-group-edit><i data-lucide="settings-2"></i><span>${escapeHtml(tr('smart.tplManageGroups'))}</span></button>
+            <button type="button" class="prompt-template-manage-groups" data-template-group-edit><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span>${escapeHtml(tr('smart.tplManageGroups'))}</span></button>
         </div>
     `;
     const items = allTemplates.filter(item => {
@@ -4338,8 +4336,8 @@ function renderPromptTemplatePanel(options={}){
     promptTemplateBody.innerHTML = `
         <div class="prompt-template-list">
             <div class="prompt-template-list-tools">
-                <button type="button" data-template-save-current><i data-lucide="bookmark-plus"></i><span>${escapeHtml(tr('smart.tplSaveCurrent'))}</span></button>
-                <button type="button" data-template-new><i data-lucide="file-plus-2"></i><span>${escapeHtml(tr('smart.tplNewTemplate'))}</span></button>
+                <button type="button" data-template-save-current><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg><span>${escapeHtml(tr('smart.tplSaveCurrent'))}</span></button>
+                <button type="button" data-template-new><svg class="ico" aria-hidden="true"><use href="#i-file-plus-2"/></svg><span>${escapeHtml(tr('smart.tplNewTemplate'))}</span></button>
             </div>
             ${items.length ? items.map(item => `<button type="button" class="prompt-template-card ${item.id === selected?.id ? 'active' : ''}" data-template-id="${escapeHtml(item.id)}">
                 <span class="prompt-template-card-top">
@@ -4359,8 +4357,8 @@ function renderPromptTemplatePanel(options={}){
                     </div>
                     ${editMode ? '' : `
                         <div class="prompt-template-icon-actions">
-                            <button type="button" ${!canEditCurrentLibrary ? 'disabled' : ''} data-template-edit title="${escapeAttr(tr('smart.tplEditTemplate'))}"><i data-lucide="pencil"></i><span>${escapeHtml(tr('common.edit'))}</span></button>
-                            <button type="button" ${!canEditCurrentLibrary ? 'disabled' : ''} class="danger" data-template-delete title="${escapeAttr(tr('smart.tplDeleteTemplate'))}"><i data-lucide="trash-2"></i><span>${escapeHtml(tr('common.delete'))}</span></button>
+                            <button type="button" ${!canEditCurrentLibrary ? 'disabled' : ''} data-template-edit title="${escapeAttr(tr('smart.tplEditTemplate'))}"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span>${escapeHtml(tr('common.edit'))}</span></button>
+                            <button type="button" ${!canEditCurrentLibrary ? 'disabled' : ''} class="danger" data-template-delete title="${escapeAttr(tr('smart.tplDeleteTemplate'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg><span>${escapeHtml(tr('common.delete'))}</span></button>
                         </div>
                     `}
                 </div>
@@ -4393,12 +4391,12 @@ function renderPromptTemplatePanel(options={}){
             `}
             <div class="prompt-template-actions">
                 ${editMode ? `
-                    <button type="button" data-template-edit-cancel><i data-lucide="x"></i><span>${escapeHtml(tr('common.cancel'))}</span></button>
-                    <button type="button" class="danger" data-template-delete><i data-lucide="trash-2"></i><span>${escapeHtml(tr('common.delete'))}</span></button>
-                    <button type="button" class="primary" data-template-edit-save><i data-lucide="save"></i><span>${escapeHtml(tr('common.save'))}</span></button>
+                    <button type="button" data-template-edit-cancel><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg><span>${escapeHtml(tr('common.cancel'))}</span></button>
+                    <button type="button" class="danger" data-template-delete><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg><span>${escapeHtml(tr('common.delete'))}</span></button>
+                    <button type="button" class="primary" data-template-edit-save><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg><span>${escapeHtml(tr('common.save'))}</span></button>
                 ` : `
-                    <button type="button" data-template-apply="positive"><i data-lucide="corner-down-left"></i><span>${escapeHtml(tr('smart.tplApplyPositive'))}</span></button>
-                    <button type="button" class="primary" data-template-apply="full"><i data-lucide="wand-sparkles"></i><span>${escapeHtml(tr('smart.tplApplyFull'))}</span></button>
+                    <button type="button" data-template-apply="positive"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg><span>${escapeHtml(tr('smart.tplApplyPositive'))}</span></button>
+                    <button type="button" class="primary" data-template-apply="full"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span>${escapeHtml(tr('smart.tplApplyFull'))}</span></button>
                 `}
             </div>
             ` : `<div class="prompt-template-empty">${escapeHtml(tr('smart.tplPickOrCreate'))}</div>`}
@@ -5380,10 +5378,10 @@ function assetThumbHtml(item){
     const thumb = item.thumbnail || item.thumb || item.preview || item.url || '';
     const kind = assetMediaKind(item);
     if(kind === 'video'){
-        return `<div class="asset-thumb-wrap">${smartVideoPreviewHtml(item, 256, 'class="asset-thumb" loading="lazy" decoding="async" alt=""')}<span class="asset-video-badge"><i data-lucide="film"></i>VIDEO</span></div>`;
+        return `<div class="asset-thumb-wrap">${smartVideoPreviewHtml(item, 256, 'class="asset-thumb" loading="lazy" decoding="async" alt=""')}<span class="asset-video-badge"><svg class="ico" aria-hidden="true"><use href="#i-film"/></svg>VIDEO</span></div>`;
     }
     if(kind === 'audio'){
-        return `<div class="asset-thumb-wrap media-thumb audio-thumb asset-thumb"><i data-lucide="file-audio"></i><span>${escapeHtml(item.name || 'Audio')}</span></div>`;
+        return `<div class="asset-thumb-wrap media-thumb audio-thumb asset-thumb"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg><span>${escapeHtml(item.name || 'Audio')}</span></div>`;
     }
     // 网格缩略图用较小尺寸 + 懒加载/异步解码：素材多时滚动不再一次性加载解码全部图片。
     return smartPreviewImgHtml({...item, url:thumb}, 256, 'class="asset-thumb" loading="lazy" decoding="async" alt=""');
@@ -5433,10 +5431,10 @@ function renderAssetLibrary(){
             ${assetThumbHtml(item)}
             <div class="asset-meta">
                 <span class="asset-name" ${localMode ? `data-rename-local-asset="${escapeHtml(item.id)}"` : ''} title="${escapeHtml(assetLabels[i])}">${escapeHtml(assetLabels[i])}</span>
-                ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="${escapeHtml(tr('smart.select'))}">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><i data-lucide="copy-plus"></i></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`
-                    : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
-                       <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><i data-lucide="pencil"></i></button>
-                       <button class="asset-mini-btn" type="button" data-delete-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><i data-lucide="trash-2"></i></button>`}
+                ${projectMode ? `${assetBatchMode ? `<input type="checkbox" class="asset-batch-check" data-batch-asset="${escapeHtml(item.id)}" ${assetBatchSelected.has(item.id) ? 'checked' : ''} aria-label="${escapeHtml(tr('smart.select'))}">` : ''}<span class="asset-owned-badge">${escapeHtml(tr('smart.projectOwned'))}</span><button class="asset-mini-btn" type="button" data-save-project-global="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.saveToGlobal'))}"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button><button class="asset-mini-btn" type="button" data-delete-project-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`
+                    : localMode ? `<button class="asset-mini-btn" type="button" data-rename-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                       <button class="asset-mini-btn" type="button" data-delete-local-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>` : `<button class="asset-mini-btn" type="button" data-rename-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('smart.assetRename'))}"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                       <button class="asset-mini-btn" type="button" data-delete-asset="${escapeHtml(item.id)}" title="${escapeHtml(tr('common.delete'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`}
             </div>
         </div>
     `).join('') : `<div class="asset-empty">${escapeHtml(projectMode ? tr('smart.projectMediaEmpty') : (localMode ? tr('smart.localAssetEmpty') : (smartClass ? tr('smart.smartClassEmpty') : tr('smart.assetEmpty'))))}</div>`;
@@ -6183,7 +6181,7 @@ async function openSmartUnusedPanel(){
             const name = String(item?.name || assetId);
             const isVideo = String(item?.kind || '') === 'video' || String(item?.mime_type || '').startsWith('video/');
             return `<div class="smart-trash-item" data-unused-asset="${escapeHtml(assetId)}">
-                <i data-lucide="${isVideo ? 'video' : 'image'}" class="smart-trash-icon"></i>
+                ${ico(isVideo ? 'film' : 'node-image', 'smart-trash-icon')}
                 <div class="smart-trash-meta">
                     <div class="smart-trash-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
                     <div class="smart-trash-sub">${escapeHtml(formatAssetSize(item?.size))}</div>
@@ -7567,9 +7565,9 @@ function audioRefsOnly(refs){
     return (refs || []).filter(ref => ref?.url && mediaKindForItem(ref) === 'audio');
 }
 function thumbMediaHtml(img){
-    if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="media-thumb file-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="${escapeAttr(mediaKindForItem(img))}"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i><span>${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</span></div>`;
-    if(isAudioMediaItem(img)) return `<div class="media-thumb audio-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="audio"><i data-lucide="file-audio"></i><span>${escapeHtml(img.name || 'Audio')}</span></div>`;
-    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
+    if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="media-thumb file-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="${escapeAttr(mediaKindForItem(img))}">${ico('file')}<span>${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</span></div>`;
+    if(isAudioMediaItem(img)) return `<div class="media-thumb audio-thumb" data-media-url="${escapeAttr(img.url || '')}" data-media-kind="audio"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg><span>${escapeHtml(img.name || 'Audio')}</span></div>`;
+    if(isVideoMediaItem(img)) return `<div class="media-thumb video-thumb">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, 512, 'alt=""')}<button class="smart-video-play thumb-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg></button>`}</div>`;
     return smartPreviewImgHtml(img, 512, 'draggable="false"');
 }
 function imageResolutionLabel(img){
@@ -7663,9 +7661,9 @@ function updateImageResolutionBadgeElement(itemEl, img){
     badge.textContent = label;
 }
 function singleMediaHtml(img, w, h){
-    if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="${isTextMediaItem(img) ? 'file-text' : 'file'}"></i></div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
-    if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><i data-lucide="file-audio"></i></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
-    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, smartNodePreviewTier(w, h), 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><i data-lucide="play"></i></button>`}</div>`;
+    if(isFileMediaItem(img) || isTextMediaItem(img)) return `<div class="node-img media-card media-file-card" style="width:${w}px;height:${h}px"><div class="media-card-icon">${ico('file')}</div><div class="media-card-title">${escapeHtml(img.name || (isTextMediaItem(img) ? 'Text' : 'File'))}</div><div class="media-card-sub">${isTextMediaItem(img) ? 'TEXT' : 'FILE'}</div></div>`;
+    if(isAudioMediaItem(img)) return `<div class="node-img media-card media-audio-card" style="width:${w}px;height:${h}px"><div class="media-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg></div><div class="media-card-title">${escapeHtml(img.name || 'Audio')}</div><div class="media-card-sub">AUDIO</div><audio src="${escapeAttr(img.url || '')}" data-url="${escapeAttr(img.url || '')}" controls preload="metadata"></audio></div>`;
+    if(isVideoMediaItem(img)) return `<div class="node-img media-card media-video-card" style="width:${w}px;height:${h}px">${isInlineVideoActive(img) ? smartVideoPlayerHtml(img.url || '') : `${smartVideoPreviewHtml(img, smartNodePreviewTier(w, h), 'alt=""')}<button class="smart-video-play" type="button" title="${escapeHtml(tr('smart.play'))}"><svg class="ico" aria-hidden="true"><use href="#i-play"/></svg></button>`}</div>`;
     return smartPreviewImgHtml(img, smartNodePreviewTier(w, h), `class="node-img" draggable="false" style="width:${w}px;height:${h}px"`);
 }
 // #238: tier for a canvas node of CSS size w×h under current zoom/dpr.
@@ -7849,7 +7847,7 @@ function imageMarkButtonHtml(item, index){
     const assetId = String(item?.asset_id || '');
     if(!assetId) return '';
     const marked = getMarkedAssetIds().includes(assetId);
-    return `<button class="mini-x image-mark${marked ? ' image-marked' : ''}" type="button" data-image-index="${index}" title="${escapeHtml(tr(marked ? 'smart.unmarkImage' : 'smart.markImage'))}"><i data-lucide="star"></i></button>`;
+    return `<button class="mini-x image-mark${marked ? ' image-marked' : ''}" type="button" data-image-index="${index}" title="${escapeHtml(tr(marked ? 'smart.unmarkImage' : 'smart.markImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg></button>`;
 }
 // #89 第四轮：同步所有带 data-marked-asset 的星位按钮（画布缩略图/生图历史/生成详情/预览大图）。
 function toggleImagePreviewMark(){
@@ -8488,8 +8486,8 @@ function conversationConnectedReferences(node){
     return references;
 }
 function conversationReferenceHtml(reference){
-    const icon = reference.kind === 'video' ? 'film' : reference.kind === 'audio' ? 'file-audio' : 'image';
-    return `<span class="conversation-node-reference" data-reference-kind="${escapeHtml(reference.kind)}" title="${escapeHtml(reference.name)}"><i data-lucide="${icon}"></i><span>${escapeHtml(reference.name)}</span></span>`;
+    const icon = reference.kind === 'video' ? 'film' : reference.kind === 'audio' ? 'file-audio' : 'node-image';
+    return `<span class="conversation-node-reference" data-reference-kind="${escapeHtml(reference.kind)}" title="${escapeHtml(reference.name)}">${ico(icon)}<span>${escapeHtml(reference.name)}</span></span>`;
 }
 function conversationNodeBodyHtml(node){
     const messages = (Array.isArray(node.messages) ? node.messages : []).filter(item => item && typeof item === 'object');
@@ -8557,20 +8555,20 @@ function promptNodeBodyHtml(node){
             </div>
             ${upstreamPromptHtml}
             <div class="prompt-node-llm-actions">
-                <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="${node.running ? 'loader-2' : 'play'}"></i><span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
-                <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button"><i data-lucide="${node.llmSystemEnabled ? 'toggle-right' : 'toggle-left'}"></i><span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
+                <button class="prompt-node-run prompt-node-control" type="button" ${node.running ? 'disabled' : ''}>${ico(node.running ? 'loader-2' : 'play')}<span>${node.running ? escapeHtml(tr('common.running')) : escapeHtml(tr('common.run'))}</span></button>
+                <button class="prompt-node-pill prompt-node-control prompt-system-toggle ${node.llmSystemEnabled ? 'active' : ''}" type="button">${ico(node.llmSystemEnabled ? 'check' : 'x')}<span>${escapeHtml(node.llmSystemEnabled ? tr('smart.promptLlmDisableSystem') : tr('smart.promptLlmEnableSystem'))}</span></button>
             </div>
             ${node.llmSystemEnabled ? `<textarea class="prompt-node-control prompt-llm-system" placeholder="${escapeHtml(tr('smart.promptLlmSystemPlaceholder'))}">${escapeHtml(systemPrompt || 'You are a helpful prompt assistant.')}</textarea>` : ''}
         </div>` : '';
     return `<div class="prompt-node-card">
         <div class="prompt-node-view-actions">
-            <button class="prompt-node-flow-toggle prompt-node-control" type="button" aria-pressed="false" title="${escapeAttr(tr('smart.promptNodeFlowEnter'))}" aria-label="${escapeAttr(tr('smart.promptNodeFlowEnter'))}"><i data-lucide="maximize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span></button>
+            <button class="prompt-node-flow-toggle prompt-node-control" type="button" aria-pressed="false" title="${escapeAttr(tr('smart.promptNodeFlowEnter'))}" aria-label="${escapeAttr(tr('smart.promptNodeFlowEnter'))}"><svg class="ico" aria-hidden="true"><use href="#i-maximize-2"/></svg><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span></button>
         </div>
         <textarea class="prompt-node-text prompt-node-control" placeholder="${escapeHtml(tr('smart.promptPlaceholderNode'))}">${escapeHtml(node.text || '')}</textarea>
         <div class="prompt-node-tools">
-            <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><i data-lucide="library"></i><span>${escapeHtml(tr('smart.promptTemplateLibrary'))}</span></button>
-            <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><i data-lucide="split"></i><span>${escapeHtml(tr('smart.separator'))}</span></button>
-            <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><i data-lucide="sparkles"></i><span>LLM</span></button>
+            <button class="prompt-node-pill prompt-node-control prompt-preset-edit ${templateActive ? 'active' : ''}" type="button"><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span>${escapeHtml(tr('smart.promptTemplateLibrary'))}</span></button>
+            <button class="prompt-node-pill prompt-node-control prompt-split-toggle ${node.promptSplitEnabled ? 'active' : ''}" type="button"><svg class="ico" aria-hidden="true"><use href="#i-split"/></svg><span>${escapeHtml(tr('smart.separator'))}</span></button>
+            <button class="prompt-node-pill prompt-llm-toggle ${node.llmEnabled ? 'active' : ''}" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span>LLM</span></button>
         </div>
         ${node.promptSplitEnabled ? `<div class="prompt-node-split-row">
             <label class="prompt-node-split-control prompt-node-control"><span>${escapeHtml(tr('smart.separator'))}</span><input class="prompt-node-separator" type="text" value="${escapeHtml(node.promptSeparator)}" maxlength="8" placeholder=";"></label>
@@ -8681,8 +8679,8 @@ function smartLoopBodyHtml(node){
             </div>
         </div>
         <div class="loop-smart-row">
-            <button class="loop-smart-control loop-smart-toggle ${node.imageInput ? 'active' : ''}" type="button" data-loop-toggle="image"><i data-lucide="image"></i><span>${escapeHtml(tr('canvas.loopImageToggle'))}</span></button>
-            <button class="loop-smart-control loop-smart-toggle ${node.showPrompt ? 'active' : ''}" type="button" data-loop-toggle="prompt"><i data-lucide="text-cursor-input"></i><span>${escapeHtml(tr('canvas.loopPromptToggle'))}</span></button>
+            <button class="loop-smart-control loop-smart-toggle ${node.imageInput ? 'active' : ''}" type="button" data-loop-toggle="image"><svg class="ico" aria-hidden="true"><use href="#i-node-image"/></svg><span>${escapeHtml(tr('canvas.loopImageToggle'))}</span></button>
+            <button class="loop-smart-control loop-smart-toggle ${node.showPrompt ? 'active' : ''}" type="button" data-loop-toggle="prompt"><svg class="ico" aria-hidden="true"><use href="#i-text-cursor-input"/></svg><span>${escapeHtml(tr('canvas.loopPromptToggle'))}</span></button>
         </div>
         ${node.imageInput ? `<div class="loop-smart-panel">
             ${loopThumbs}
@@ -8709,13 +8707,13 @@ function smartLoopBodyHtml(node){
             <div class="loop-smart-row loop-smart-prompt-actions">
                 <button class="loop-smart-control loop-smart-token loop-smart-counter-token" type="button" data-loop-token="《计数》">${escapeHtml(tr('canvas.counterToken'))}</button>
                 <span class="loop-smart-note">${escapeHtml(promptHint)}</span>
-                <button class="loop-smart-control loop-smart-add-prompt" type="button" data-loop-prompt-add="1" title="${escapeHtml(tr('smart.addNew'))}" aria-label="${escapeHtml(tr('smart.addNew'))}"><i data-lucide="plus"></i></button>
+                <button class="loop-smart-control loop-smart-add-prompt" type="button" data-loop-prompt-add="1" title="${escapeHtml(tr('smart.addNew'))}" aria-label="${escapeHtml(tr('smart.addNew'))}"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
             </div>
         </div>` : ''}
         <div class="loop-smart-footer">
             ${loopNumberControlHtml({label:tr('canvas.loopImageStart'), value:node.loopStart, key:'loopStart', max:9999, quick:[1,2,3,4,5,6,8,10]})}
             ${loopNumberControlHtml({label:tr('canvas.loopCount'), value:node.count, key:'count', max:100, quick:[1,2,3,4,5,6,8,10]})}
-            <button class="loop-smart-control loop-smart-run ${loopRunning ? 'is-stop' : ''}" type="button" data-loop-run="${escapeHtml(node.id)}" ${loopStopping ? 'disabled' : ''}><i data-lucide="${loopRunning ? 'square' : 'workflow'}"></i><span>${escapeHtml(loopRunning ? smartCascadeStopText(loopStopping) : tr('smart.loopRunAll'))}</span></button>
+            <button class="loop-smart-control loop-smart-run ${loopRunning ? 'is-stop' : ''}" type="button" data-loop-run="${escapeHtml(node.id)}" ${loopStopping ? 'disabled' : ''}>${ico(loopRunning ? 'square' : 'workflow')}<span>${escapeHtml(loopRunning ? smartCascadeStopText(loopStopping) : tr('smart.loopRunAll'))}</span></button>
         </div>
     </div>`;
 }
@@ -8741,8 +8739,8 @@ function smartGroupBodyHtml(node){
             const innerH = Math.max(24, Number(groupThumbLayout.innerH || groupThumbLayout.height || SMART_GROUP_DEFAULT_HEIGHT));
             const canDelete = ref.nodeId === node.id;
             return `<div class="smart-group-card has-thumbs">
-                <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-                <div class="image-wrap smart-group-single-thumb ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>
+                <div class="smart-group-summary"><svg class="ico" aria-hidden="true"><use href="#i-group"/></svg><span>${escapeHtml(summary)}</span></div>
+                <div class="image-wrap smart-group-single-thumb ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="--node-img-w:${innerW}px;--node-img-h:${innerH}px">${singleMediaHtml(ref.item, innerW, innerH)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>
             </div>`;
         }
         const groupMaxVisibleRows = (groupThumbLayout.compactMembers || []).length ? Number(groupThumbLayout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS;
@@ -8750,16 +8748,16 @@ function smartGroupBodyHtml(node){
         const thumbW = BATCH_THUMB.WIDTH;
         const maxHeight = Math.max(44, Number(groupThumbLayout.gridHeight));
         return `<div class="smart-group-card has-thumbs">
-            <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
+            <div class="smart-group-summary"><svg class="ico" aria-hidden="true"><use href="#i-group"/></svg><span>${escapeHtml(summary)}</span></div>
             <div class="thumb-grid smart-group-thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${groupThumbLayout.cols}; --thumb-size:${thumbW}px; --thumb-max-height:${maxHeight}px">${refThumbs.map(ref => {
                 const canDelete = ref.nodeId === node.id;
-                return `<div class="thumb-item ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, thumbW)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
+                return `<div class="thumb-item ${canvasState.selectedImage.nodeId === ref.nodeId && Number(canvasState.selectedImage.index) === Number(ref.index) ? 'image-selected' : ''}" data-ref-node-id="${escapeAttr(ref.nodeId)}" data-ref-image-index="${ref.index}" data-image-index="${ref.index}" data-media-signature="${escapeAttr(`${mediaKindForItem(ref.item)}:${ref.item?.url || ''}`)}" style="${thumbItemStyle(ref.item, thumbW)}">${thumbMediaHtml(ref.item)}${imageNameBadgeHtml(ref.item)}${imageResolutionBadgeHtml(ref.item)}${canDelete ? `<button class="mini-x image-delete" type="button" data-image-index="${ref.index}" title="${escapeHtml(tr('smart.deleteImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>` : ''}${imageMarkButtonHtml(ref.item, ref.index)}</div>`;
             }).join('')}</div>
         </div>`;
     }
     return `<div class="smart-group-card">
-        <div class="smart-group-summary"><i data-lucide="group"></i><span>${escapeHtml(summary)}</span></div>
-        ${members.length ? '' : `<div class="smart-group-empty"><i data-lucide="plus"></i><span>${escapeHtml(tr('smart.groupDropHint'))}</span></div>`}
+        <div class="smart-group-summary"><svg class="ico" aria-hidden="true"><use href="#i-group"/></svg><span>${escapeHtml(summary)}</span></div>
+        ${members.length ? '' : `<div class="smart-group-empty"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg><span>${escapeHtml(tr('smart.groupDropHint'))}</span></div>`}
     </div>`;
 }
 // #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
@@ -8827,7 +8825,7 @@ function localEditBodyHtml(node){
     // 三轮 UI 精修：角色行从「3 行标签+芯片」压缩为「单行 3 芯片」（图标+角色名+状态），
     // 节点高度显著下降，4:3 原图下默认高度不再出现内部滚条。
     const roleChip = (role, icon, label, filled, statusText) =>
-        `<button type="button" class="local-edit-role-chip${node.localEditActiveRole === role ? ' active' : ''}${filled ? ' filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint') + ' ' + statusText)}"><i data-lucide="${icon}" aria-hidden="true"></i><span class="local-edit-role-name">${escapeHtml(label)}</span><span class="local-edit-role-status">${escapeHtml(statusText)}</span></button>`;
+        `<button type="button" class="local-edit-role-chip${node.localEditActiveRole === role ? ' active' : ''}${filled ? ' filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint') + ' ' + statusText)}">${ico(icon)}<span class="local-edit-role-name">${escapeHtml(label)}</span><span class="local-edit-role-status">${escapeHtml(statusText)}</span></button>`;
     const notConnectedText = tr('smart.localEditRoleNotConnected');
     const originalStatus = originalNode ? (originalNode.title || originalNode.id) : notConnectedText;
     const referenceCount = (roleMap.referenceNodes || []).length;
@@ -8846,7 +8844,7 @@ function localEditBodyHtml(node){
         : '';
     return `<div class="local-edit-card" data-local-edit-node="${escapeAttr(node.id)}">
         <div class="local-edit-heading">
-            <span class="local-edit-heading-title"><i data-lucide="lasso"></i>${escapeHtml(tr('smart.localEditTitle'))}</span>
+            <span class="local-edit-heading-title"><svg class="ico" aria-hidden="true"><use href="#i-inpaint"/></svg>${escapeHtml(tr('smart.localEditTitle'))}</span>
             <div class="local-edit-mode" role="group" aria-label="${escapeHtml(tr('smart.localEditMode'))}">
                 <button type="button" data-local-edit-mode="modify" class="${node.mode === 'modify' ? 'active' : ''}">${escapeHtml(tr('smart.localModify'))}</button>
                 <button type="button" data-local-edit-mode="retain" class="${node.mode === 'retain' ? 'active' : ''}">${escapeHtml(tr('smart.localRetain'))}</button>
@@ -8854,9 +8852,9 @@ function localEditBodyHtml(node){
         </div>
         <div class="local-edit-scroll">
             <div class="local-edit-roles">
-                ${roleChip('original', 'image', tr('smart.originalImage'), Boolean(originalNode), originalStatus)}
-                ${roleChip('references', 'images', tr('smart.referenceLabel'), referenceCount > 0, referenceStatus)}
-                ${roleChip('prompt', 'type', tr('smart.promptLabel'), promptConnected, promptStatus)}
+                ${roleChip('original', 'node-image', tr('smart.originalImage'), Boolean(originalNode), originalStatus)}
+                ${roleChip('references', 'node-image', tr('smart.referenceLabel'), referenceCount > 0, referenceStatus)}
+                ${roleChip('prompt', 'scan-line', tr('smart.promptLabel'), promptConnected, promptStatus)}
             </div>
             <div class="local-edit-stage-wrap">
                 ${stage}
@@ -8968,7 +8966,7 @@ function renderBatchTaskDetail(){
             const statusClass = row.status === 'active' ? (row.phaseKey === 'queued' ? 'is-queued' : 'is-running') : `is-${row.status}`;
             const shortId = row.taskId.length > 30 ? `${row.taskId.slice(0, 22)}…${row.taskId.slice(-6)}` : row.taskId;
             const cancelBtn = (row.status === 'active' && row.isProject)
-                ? `<button type="button" class="batch-task-detail-cancel" data-batch-task-cancel="${escapeAttr(row.taskId)}"><i data-lucide="square"></i><span>${escapeHtml(tr('smart.batchTaskCancel'))}</span></button>`
+                ? `<button type="button" class="batch-task-detail-cancel" data-batch-task-cancel="${escapeAttr(row.taskId)}"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg><span>${escapeHtml(tr('smart.batchTaskCancel'))}</span></button>`
                 : '';
             return `<div class="batch-task-detail-row${activeCell ? ' is-active' : ''}" data-batch-task-row="${index}">
                 <span class="batch-task-detail-idx">${index + 1}/${rows.length}</span>
@@ -9023,7 +9021,7 @@ function openBatchTaskDetail(nodeId, cellIndex=0){
     backdrop.innerHTML = `<div class="batch-task-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="smartBatchTaskDetailTitle">
         <div class="batch-task-detail-head">
             <h3 id="smartBatchTaskDetailTitle">${escapeHtml(tr('smart.batchTaskDetailTitle'))}<span class="batch-task-detail-cell" data-batch-task-detail-cell></span></h3>
-            <button type="button" class="batch-task-detail-close" data-batch-task-detail-close aria-label="${escapeAttr(tr('common.close'))}"><i data-lucide="x"></i></button>
+            <button type="button" class="batch-task-detail-close" data-batch-task-detail-close aria-label="${escapeAttr(tr('common.close'))}"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <p class="batch-task-detail-sub" data-batch-task-detail-sub></p>
         <div class="batch-task-detail-list" data-batch-task-detail-list></div>
@@ -9067,7 +9065,7 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     let cancelBtnHtml = '';
     let elapsedHtml = '';
     if(taskInfo?.taskId){
-        cancelBtnHtml = `<button type="button" class="generation-cancel-btn" data-node-cancel-task="${escapeAttr(taskInfo.taskId)}" title="${escapeAttr(tr('smart.nodeCancelTaskTitle'))}"><i data-lucide="square"></i><span>${escapeHtml(tr('smart.nodeCancelTask'))}</span></button>`;
+        cancelBtnHtml = `<button type="button" class="generation-cancel-btn" data-node-cancel-task="${escapeAttr(taskInfo.taskId)}" title="${escapeAttr(tr('smart.nodeCancelTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg><span>${escapeHtml(tr('smart.nodeCancelTask'))}</span></button>`;
         if(Number(taskInfo.startedAt) > 0) elapsedHtml = `<span class="generation-placeholder-elapsed" data-elapsed-since="${Number(taskInfo.startedAt)}"></span>`;
     }
     const copy = `<div class="generation-placeholder-panel"><span class="generation-placeholder-copy"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span>${elapsedHtml}</span>${generationStageProgressHtml(normalizedProgress)}${cancelBtnHtml}</div>`;
@@ -9167,11 +9165,11 @@ function nodeBodyHtml(node, layout){
         const batchSlots = !node.pending && Number(node?._batchTotal) > 1 ? Math.min(8, Number(node._batchTotal)) : 0;
         const missingSlots = isBatchSpec && fixedCellH > 0 ? Math.max(0, batchSlots - imgs.length) : 0;
         const emptySlotHtml = Array.from({length: missingSlots}).map(() => `<div class="thumb-empty-slot" style="--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px" aria-hidden="true"></div>`).join('');
-        return `<div class="thumb-grid" data-thumb-scroll="1" style="${gridColStyle}--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
+        return `<div class="thumb-grid" data-thumb-scroll="1" style="${gridColStyle}--thumb-cols:${layout.cols}; --thumb-size:${layout.thumb}px; --thumb-max-height:${maxHeight}px${gridGapStyle}">${imgs.map((img, i) => `<div class="thumb-item has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === i ? 'image-selected' : ''}" data-image-index="${i}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${thumbItemStyleFor(img)}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${i}" title="${escapeHtml(tr('smart.deleteImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>${imageMarkButtonHtml(img, i)}</div>`).join('')}${emptySlotHtml}</div>`;
     }
-    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><i data-lucide="trash-2"></i></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
+    if(imgs[0]) return `<div class="image-wrap has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === 0 ? 'image-selected' : ''}" data-image-index="0" data-output-id="${escapeAttr(imgs[0]?.output_id || '')}" data-asset-id="${escapeAttr(imgs[0]?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(imgs[0])}:${imgs[0]?.url || ''}`)}" style="--node-img-w:${layout.width}px;--node-img-h:${layout.height}px">${singleMediaHtml(imgs[0], layout.width, layout.height)}${imageNameBadgeHtml(imgs[0], {outside:true})}${imageResolutionBadgeHtml(imgs[0])}<button class="mini-x image-delete" type="button" data-image-index="0" title="${escapeHtml(tr('smart.deleteImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>${imageMarkButtonHtml(imgs[0], 0)}</div>`;
     return `<div class="node-drop" data-upload-action="files">
-        <span class="upload-node-main"><i data-lucide="upload-cloud"></i></span>
+        <span class="upload-node-main"><svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg></span>
         <span class="upload-node-title">${escapeHtml(tr('smart.createImportNode'))}</span>
         <span class="upload-node-sub">${escapeHtml(tr('smart.uploadNodeHint'))}</span>
     </div>`;
@@ -9188,12 +9186,12 @@ function failedGenerationBodyHtml(node, tasks, layout){
     const recovered = tasks.length > 1 ? trf('smart.includingPrevFailed', {n: tasks.length - 1}) : '';
     return `<div class="loading-cell single generation-failed" style="width:${layout.width}px;height:${layout.height}px" role="status" aria-label="${escapeHtml(tr('smart.generationFailed'))}">
         <div class="generation-failed-panel">
-            <span class="generation-failed-icon"><i data-lucide="alert-triangle"></i></span>
+            <span class="generation-failed-icon"><svg class="ico" aria-hidden="true"><use href="#i-triangle-alert"/></svg></span>
             <span class="generation-failed-title">${escapeHtml(tr('smart.generationFailed'))}${escapeHtml(recovered)}</span>
             <span class="generation-failed-error">${escapeHtml(error)}</span>
             <div class="generation-failed-actions">
-                <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><i data-lucide="refresh-cw"></i><span>${escapeHtml(tr('smart.regenerate'))}</span></button>
-                <button type="button" class="generation-failed-url" data-image-task-url="${escapeAttr(node.id)}"><i data-lucide="link"></i><span>${escapeHtml(tr('smart.manualUrlFill'))}</span></button>
+                <button type="button" class="generation-failed-retry" data-image-task-retry="${escapeAttr(node.id)}"><svg class="ico" aria-hidden="true"><use href="#i-refresh-cw"/></svg><span>${escapeHtml(tr('smart.regenerate'))}</span></button>
+                <button type="button" class="generation-failed-url" data-image-task-url="${escapeAttr(node.id)}"><svg class="ico" aria-hidden="true"><use href="#i-link"/></svg><span>${escapeHtml(tr('smart.manualUrlFill'))}</span></button>
             </div>
         </div>
     </div>`;
@@ -9206,10 +9204,10 @@ function imageTaskRecoverBodyHtml(node, task, layout){
     const sub = failedCount > 1 ? trf('smart.moreTasksToQuery', {n: failedCount}) : trf('smart.taskIdLabel', {id: task.recoverTaskId || ''});
     return `<div class="task-pending-cell loading-cell single" style="width:100%;height:100%">
         <div class="task-pending-overlay">
-            <div class="task-pending-spinner"><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i></div>
+            <div class="task-pending-spinner">${ico(querying ? 'loader-2' : 'refresh-cw')}</div>
             <div class="task-pending-text">${escapeHtml(title)}</div>
             <div class="task-pending-sub">${escapeHtml(sub)}</div>
-            <button class="task-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}><i data-lucide="${querying ? 'loader-2' : 'refresh-cw'}"></i><span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
+            <button class="task-pending-query" type="button" data-image-task-query="${escapeAttr(node.id)}" data-task-id="${escapeAttr(task.taskId)}" ${querying ? 'disabled' : ''}>${ico(querying ? 'loader-2' : 'refresh-cw')}<span>${querying ? tr('smart.queryingEllipsis') : tr('smart.queryResult')}</span></button>
         </div>
     </div>`;
 }
@@ -9241,8 +9239,8 @@ function smartNodeToolbarHtml(node){
         {key:'detail', icon:'info', label:tr('smart.nodeDetail'), enabled:kind === 'image'},
         {key:'crop', icon:'crop', label:tr('smart.nodeToolbarCrop'), enabled:canEditImage},
         {key:'outpaint', icon:'expand', label:tr('smart.nodeToolbarOutpaint'), enabled:canEditImage},
-        {key:'mask', icon:'brush', label:tr('smart.nodeToolbarMask'), enabled:canEditImage},
-        {key:'local-edit', icon:'lasso', label:tr('smart.localEditTitle'), enabled:canEditImage},
+        {key:'mask', icon:'inpaint', label:tr('smart.nodeToolbarMask'), enabled:canEditImage},
+        {key:'local-edit', icon:'inpaint', label:tr('smart.localEditTitle'), enabled:canEditImage},
         {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
         {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage || Boolean(source?.asset_id)},
@@ -9250,7 +9248,7 @@ function smartNodeToolbarHtml(node){
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
         <button type="button" data-smart-node-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
-            <i data-lucide="${escapeAttr(action.icon)}"></i><span>${escapeHtml(action.label)}</span>
+            ${ico(escapeAttr(action.icon))}<span>${escapeHtml(action.label)}</span>
         </button>`).join('')}</div>`;
 }
 function duplicateSmartNodeMediaToCanvas(node, imageIndex){
@@ -9357,12 +9355,12 @@ function smartGroupToolbarHtml(node){
         {key:'arrange', icon:'layout-grid', label:tr('smart.groupToolbarArrange'), enabled:hasContent},
         {key:'preview', icon:'eye', label:tr('smart.modePreview'), enabled:imageCount > 0},
         {key:'grid', icon:'grid-3x3', label:tr('smart.nodeToolbarGridJoin'), enabled:imageCount > 1},
-        {key:'download', icon:'archive', label:tr('smart.groupToolbarDownload'), enabled:imageCount > 0},
+        {key:'download', icon:'download', label:tr('smart.groupToolbarDownload'), enabled:imageCount > 0},
         {key:'ungroup', icon:'ungroup', label:tr('smart.groupToolbarUngroup'), enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-group-menu="1">${actions.map(action => `
         <button type="button" data-smart-group-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
-            <i data-lucide="${escapeAttr(action.icon)}"></i><span>${escapeHtml(action.label)}</span>
+            ${ico(escapeAttr(action.icon))}<span>${escapeHtml(action.label)}</span>
         </button>`).join('')}</div>`;
 }
 function runSmartGroupToolbarAction(nodeId, action){
@@ -9500,11 +9498,11 @@ function render(){
         const isPending = Boolean(node.pending || isQueued);
         const body = nodeBodyHtml(node, layout);
         // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
-        const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button>`;
+        const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
         const hint = isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
         const deletedInputCount = Array.isArray(node.deletedInputTombstones) ? node.deletedInputTombstones.length : 0;
         const deletedInputMarker = deletedInputCount
-            ? `<div class="node-upstream-deleted-marker" role="status"><i data-lucide="unlink"></i><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
+            ? `<div class="node-upstream-deleted-marker" role="status"><svg class="ico" aria-hidden="true"><use href="#i-unlink"/></svg><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
             : '';
         const agentCardStatus = isAgent ? agentCardStatusHtml(node.id) : '';
         // #323 监理钉B3：主 render() 路径同步注入会话框状态段（与 renderAgentNode 两路一致）。
@@ -9515,7 +9513,7 @@ function render(){
         const agentHeadButtons = isAgent ? agentHeadActionButtonsHtml(node) : '';
         const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
             <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}${agentChatStatus}</div><div class="node-actions">${agentHeadButtons}${deleteBtn}</div></div>
-            ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><i data-lucide="trash-2"></i></button></div>` : ''}
+            ${!isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
             ${deletedInputMarker}
@@ -10247,7 +10245,7 @@ function ensureConversationExtractionMenu(){
     menu.dataset.extractPromptSelection = '';
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-hidden', 'true');
-    menu.innerHTML = '<button type="button" role="menuitem" tabindex="0" aria-label="' + escapeHtml(tr('smart.extractSelectedText')) + '" data-extract-prompt-action><i data-lucide="text-cursor-input"></i><span>' + escapeHtml(tr('smart.extractSelectedText')) + '</span></button>';
+    menu.innerHTML = '<button type="button" role="menuitem" tabindex="0" aria-label="' + escapeHtml(tr('smart.extractSelectedText')) + '" data-extract-prompt-action><svg class="ico" aria-hidden="true"><use href="#i-text-cursor-input"/></svg><span>' + escapeHtml(tr('smart.extractSelectedText')) + '</span></button>';
     menu.addEventListener('mousedown', event => event.stopPropagation());
     menu.addEventListener('click', event => {
         event.stopPropagation();
@@ -12035,8 +12033,8 @@ function syncPromptNodeFlowControl(element, active){
     button.title = tr(active ? 'smart.promptNodeFlowExit' : 'smart.promptNodeFlowEnter');
     button.setAttribute('aria-label', button.title);
     button.innerHTML = active
-        ? `<i data-lucide="minimize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
-        : `<i data-lucide="maximize-2"></i><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span>`;
+        ? `<svg class="ico" aria-hidden="true"><use href="#i-minimize-2"/></svg><span>${escapeHtml(tr('smart.promptNodeFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
+        : `<svg class="ico" aria-hidden="true"><use href="#i-maximize-2"/></svg><span>${escapeHtml(tr('smart.promptNodeFlowEnter'))}</span>`;
     refreshIcons();
 }
 function enterPromptNodeFlow(nodeId, trigger=null){
@@ -12158,8 +12156,8 @@ function syncComposerPromptViewControls(){
         composerExpandBtn.title = tr(expanded ? 'smart.promptCollapse' : 'smart.promptExpand');
         composerExpandBtn.setAttribute('aria-label', composerExpandBtn.title);
         composerExpandBtn.innerHTML = expanded
-            ? `<i data-lucide="panel-top-close"></i><span>${escapeHtml(tr('smart.promptCollapse'))}</span>`
-            : `<i data-lucide="panel-top-open"></i><span>${escapeHtml(tr('smart.promptExpand'))}</span>`;
+            ? `<svg class="ico" aria-hidden="true"><use href="#i-chevron-up"/></svg><span>${escapeHtml(tr('smart.promptCollapse'))}</span>`
+            : `<svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg><span>${escapeHtml(tr('smart.promptExpand'))}</span>`;
     }
     if(composerFlowBtn){
         composerFlowBtn.classList.toggle('active', flow);
@@ -12167,8 +12165,8 @@ function syncComposerPromptViewControls(){
         composerFlowBtn.title = tr(flow ? 'smart.promptFlowExit' : 'smart.promptFlowEnter');
         composerFlowBtn.setAttribute('aria-label', composerFlowBtn.title);
         composerFlowBtn.innerHTML = flow
-            ? `<i data-lucide="minimize-2"></i><span>${escapeHtml(tr('smart.promptFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
-            : `<i data-lucide="focus"></i><span>${escapeHtml(tr('smart.promptFlowEnter'))}</span>`;
+            ? `<svg class="ico" aria-hidden="true"><use href="#i-minimize-2"/></svg><span>${escapeHtml(tr('smart.promptFlowExit'))}</span><small>${escapeHtml(tr('smart.promptFlowEscape'))}</small>`
+            : `<svg class="ico" aria-hidden="true"><use href="#i-focus"/></svg><span>${escapeHtml(tr('smart.promptFlowEnter'))}</span>`;
     }
     refreshIcons();
 }
@@ -12510,7 +12508,7 @@ function renderInputPromptPreview(node){
     const text = node ? [groupText, inputPromptTextFor(node).trim()].filter(Boolean).join('\n\n') : '';
     inputPromptPreview.classList.toggle('has-text', Boolean(text));
     inputPromptPreview.innerHTML = text
-        ? `<div class="input-prompt-preview-head"><div class="input-prompt-preview-label">${escapeHtml(tr('smart.inputUpstream'))}</div><button class="long-content-trigger input-prompt-preview-open" type="button" data-long-content-open="input-prompt" title="${escapeAttr(tr('smart.connectionPromptFull'))}" aria-label="${escapeAttr(tr('smart.connectionPromptFull'))}"><i data-lucide="book-open-text"></i><span>${escapeHtml(tr('smart.readFullContent'))}</span></button></div><div class="input-prompt-preview-text">${escapeHtml(text)}</div>`
+        ? `<div class="input-prompt-preview-head"><div class="input-prompt-preview-label">${escapeHtml(tr('smart.inputUpstream'))}</div><button class="long-content-trigger input-prompt-preview-open" type="button" data-long-content-open="input-prompt" title="${escapeAttr(tr('smart.connectionPromptFull'))}" aria-label="${escapeAttr(tr('smart.connectionPromptFull'))}"><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span>${escapeHtml(tr('smart.readFullContent'))}</span></button></div><div class="input-prompt-preview-text">${escapeHtml(text)}</div>`
         : '';
     const openButton = inputPromptPreview.querySelector('[data-long-content-open="input-prompt"]');
     if(openButton){
@@ -12550,7 +12548,7 @@ function renderInputThumbsRow(node){
     inputThumbsRow.dataset.thumbsSig = thumbsSignature;
     inputThumbsRow.classList.toggle('has-items', Boolean(node));
     if(!node){ inputThumbsRow.innerHTML = ''; return; }
-    const addButton = `<button class="input-thumb-add ${addActive ? 'active' : ''}" type="button" data-input-add-reference title="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}" aria-label="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}"><i data-lucide="image-plus"></i></button>`;
+    const addButton = `<button class="input-thumb-add ${addActive ? 'active' : ''}" type="button" data-input-add-reference title="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}" aria-label="${escapeHtml(addActive ? tr('smart.collapseRefs') : tr('smart.addRefImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-node-image"/></svg></button>`;
     if(!dedup.length){
         inputThumbsRow.innerHTML = `<div class="input-thumb-list empty"></div><div class="input-thumb-actions">${addButton}</div>`;
         bindInputThumbReferenceActions();
@@ -12566,7 +12564,7 @@ function renderInputThumbsRow(node){
             ? tr('smart.inputSelf')
             : (smartImageMode(node) === 'workflow' ? tr('smart.inputUpstreamWorkflow') : tr('smart.inputUpstream'));
         const inner = kind === 'audio'
-            ? `<div class="input-thumb-audio"><i data-lucide="file-audio"></i></div>`
+            ? `<div class="input-thumb-audio"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg></div>`
             : isVid
             ? smartVideoPreviewHtml(img, 256, 'draggable="false" alt=""')
             : smartPreviewImgHtml(img, 256, 'draggable="false"');
@@ -13237,7 +13235,7 @@ function mentionTokenHtml(img){
 }
 function mentionTokenMediaHtml(img, kind=mediaKindForItem(img)){
     if(kind === 'audio'){
-        return `<div class="mention-audio-thumb"><i data-lucide="file-audio"></i></div>`;
+        return `<div class="mention-audio-thumb"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg></div>`;
     }
     if(kind === 'video'){
         return smartVideoPreviewHtml(img, 256, 'alt=""');
@@ -13247,7 +13245,7 @@ function mentionTokenMediaHtml(img, kind=mediaKindForItem(img)){
 function mentionOptionMediaHtml(img){
     const kind = mediaKindForItem(img);
     if(kind === 'audio'){
-        return `<div class="media-thumb audio-thumb mention-option-audio"><i data-lucide="file-audio"></i><span>${escapeHtml(img.alias || img.name || 'Audio')}</span></div>`;
+        return `<div class="media-thumb audio-thumb mention-option-audio"><svg class="ico" aria-hidden="true"><use href="#i-file-audio"/></svg><span>${escapeHtml(img.alias || img.name || 'Audio')}</span></div>`;
     }
     return kind === 'video' ? smartVideoPreviewHtml(img, 256, 'alt=""') : smartPreviewImgHtml(img, 256, 'alt=""');
 }
@@ -13718,10 +13716,10 @@ function renderMentionPicker(source){
         <div class="mention-picker-shell">
             <div class="mention-source-tabs">
                 <button class="mention-source-tab ${mentionSource === 'input' ? 'active' : ''}" type="button" data-mention-source="input" title="${escapeHtml(tr('smart.mentionInput'))}" ${hasInput ? '' : 'disabled'}>
-                    <i data-lucide="image"></i><span>${escapeHtml(tr('smart.mentionInput'))}</span>
+                    <svg class="ico" aria-hidden="true"><use href="#i-node-image"/></svg><span>${escapeHtml(tr('smart.mentionInput'))}</span>
                 </button>
                 <button class="mention-source-tab ${mentionSource === 'asset' ? 'active' : ''}" type="button" data-mention-source="asset" title="${escapeHtml(tr('smart.mentionAssets'))}" ${hasAssets ? '' : 'disabled'}>
-                    <i data-lucide="library"></i><span>${escapeHtml(tr('smart.mentionAssets'))}</span>
+                    <svg class="ico" aria-hidden="true"><use href="#i-library"/></svg><span>${escapeHtml(tr('smart.mentionAssets'))}</span>
                 </button>
             </div>
             ${librarySelect}
@@ -14830,7 +14828,7 @@ function renderMarkedExportFiles(files, dir){
     if(!files?.length){ el.hidden = true; el.innerHTML = ''; return; }
     el.innerHTML = files.map(f => {
         const name = String(f).split(/[\\/]/).pop();
-        return `<div class="smart-marked-export-file" title="${escapeAttr(f)}"><i data-lucide="check" aria-hidden="true"></i><span>${escapeHtml(name)}</span></div>`;
+        return `<div class="smart-marked-export-file" title="${escapeAttr(f)}"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>${escapeHtml(name)}</span></div>`;
     }).join('');
     el.hidden = false;
     refreshIcons(el);
@@ -14892,7 +14890,6 @@ document.getElementById('smartMarkedRecords')?.addEventListener('click', e => {
     if(box.hidden){
         box.innerHTML = canvasDownloadRecordsHtml();
         box.hidden = false;
-        if(window.lucide) lucide.createIcons();
     }else{
         box.hidden = true;
     }
@@ -16695,7 +16692,6 @@ window.onload = async () => {
     loadPromptTemplateOverrides();
     await loadPromptTemplates();
     if(window.StudioI18n) window.StudioI18n.apply();
-    if(window.lucide) lucide.createIcons();
     await loadAutosavePreferences();
     connectAssetLibrarySyncSocket();
     await loadConfig();

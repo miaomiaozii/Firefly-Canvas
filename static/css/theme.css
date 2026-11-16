@@ -1647,3 +1647,7 @@ body.studio-theme-dark .shell .comfy-random-btn.active svg {
     fill: none !important;
     stroke: #0f172a !important;
 }
+
+/* #380：统一图标规格（SVG sprite，见 smart-canvas.html 顶部 #ffIconSprite）。语义尺寸类按级联覆盖本基类。 */
+.ico { width:1.15em; height:1.15em; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; vertical-align:-.125em; flex:none; }
+.ico.is-hidden-state { opacity:.4; }

@@ -559,21 +559,21 @@ function setImageEditMode(mode, userTouched=false){
         if(imageEditMode === 'resize'){
             document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
             document.getElementById('imageEditSub').textContent = tr('smart.zoomImageSub');
-            applyBtn.innerHTML = `<i data-lucide="minimize-2" class="w-4 h-4"></i><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
+            applyBtn.innerHTML = `<svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-minimize-2"/></svg><span>${escapeHtml(tr('smart.applyZoom'))}</span>`;
         } else if(imageEditMode === 'layers'){
             // #255 图层模式：导出走图层面板自己的按钮，隐藏主应用按钮。
             document.getElementById('imageEditTitle').textContent = tr('canvas.layersTitle');
             document.getElementById('imageEditSub').textContent = tr('canvas.layersHint');
             applyBtn.style.display = 'none';
         } else {
-            const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'brush' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
+            const icon = imageEditMode === 'crop' ? 'crop' : imageEditMode === 'outpaint' ? 'expand' : imageEditMode === 'mask' ? 'inpaint' : imageEditMode === 'brush' ? 'paintbrush' : 'grid-3x3';
             const labelKey = imageEditMode === 'crop' ? 'canvas.applyCrop' : imageEditMode === 'outpaint' ? 'canvas.applyOutpaint' : imageEditMode === 'mask' ? 'canvas.applyMask' : imageEditMode === 'brush' ? 'canvas.applyBrush' : 'canvas.applyGrid';
             const titleKey = imageEditMode === 'crop' ? 'canvas.cropImage' : imageEditMode === 'outpaint' ? 'canvas.outpaintImage' : imageEditMode === 'mask' ? 'canvas.maskEdit' : imageEditMode === 'brush' ? 'canvas.brushEdit' : 'canvas.modeGrid';
             const subKey = imageEditMode === 'crop' ? 'canvas.cropHint' : imageEditMode === 'outpaint' ? 'canvas.outpaintHint' : imageEditMode === 'mask' ? 'canvas.maskHint2' : imageEditMode === 'brush' ? 'canvas.brushHint' : 'canvas.gridHint';
             document.getElementById('imageEditTitle').textContent = tr(titleKey);
             document.getElementById('imageEditSub').textContent = tr(subKey);
             const applyLabel = imageEditMode === 'grid' && gridOperationMode === 'join' ? tr('smart.outputGridJoin') : tr(labelKey);
-            applyBtn.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i><span>${applyLabel}</span>`;
+            applyBtn.innerHTML = `${ico(icon, 'w-4 h-4')}<span>${applyLabel}</span>`;
         }
         if(imageEditMode === 'crop'){
             requestAnimationFrame(() => {

@@ -425,7 +425,6 @@ function openBatchRenameDialog(){
     const prefixEl = document.getElementById('smartBatchRenamePrefix');
     if(prefixEl && !String(prefixEl.value || '').trim()) prefixEl.value = 'Image_';
     backdrop.hidden = false;
-    if(window.lucide) lucide.createIcons();
     renderBatchRenamePreview();
     if(!batchRenameEscapeRelease) batchRenameEscapeRelease = window.FireflyEscapeStack?.push(() => closeBatchRenameDialog(), 'batch-rename') || (() => {});
     prefixEl?.focus({preventScroll:true});
