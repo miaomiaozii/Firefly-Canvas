@@ -457,7 +457,9 @@ def enforce_generation_limit(project_id: str, agent_node_id: str, count: int = 1
 
 
 def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
-    """#351：会话/节点销毁时清计数（drop_node_session、删除节点两处调用）。"""
+    """#351：会话/节点销毁时清计数（canvas delete_node_core 与 agent-nodes
+    DELETE stop_agent_node 两处调用；本模块注释曾称 drop_node_session 也调——
+    与调用点不符，已改实）。"""
     with CANVAS_TASK_LOCK:
         for key in [k for k in _GENERATION_COUNTS
                     if k[0] == project_id and (not agent_node_id or k[1] == agent_node_id)]:

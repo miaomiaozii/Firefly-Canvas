@@ -244,6 +244,36 @@ class McpGeneration351Tests(_Base):
         # 节点销毁 → 额度清零 → 再次触发不再被限额拦（仍受门控，已批准）
         self._run_impl("generate.trigger", {"node_id": "prompt-1"})
 
+    def test_agent_node_delete_rebuild_resets_quota(self):
+        # #351 review 裁定：DELETE /agent-nodes/{id} 后同 node_id 重建，额度从 0 开始。
+        self._approve()
+        self._fake_build()
+        api_agent_tools.GENERATION_SESSION_LIMIT = 1
+        url = f"/api/projects/{self.pid}/generate/trigger?agent_node_id=agent-1"
+        r = self.client.post(url, headers=self._headers(), json={"node_id": "prompt-1"})
+        self.assertEqual(r.status_code, 200)
+        r = self.client.post(url, headers=self._headers(), json={"node_id": "prompt-1"})
+        self.assertEqual(r.status_code, 429)
+        # 单测不拉真 pi/codex 进程：桩掉宿主会话获取（DELETE 处理器内仅 stop）
+        from app.services import agent_host as _ah
+
+        class _NoSession:
+            is_running = False
+
+        async def _fake_goc(project_id, node_id):
+            return _NoSession()
+
+        _prev = _ah.agent_host_manager.get_or_create_session
+        _ah.agent_host_manager.get_or_create_session = _fake_goc
+        try:
+            d = self.client.delete(f"/api/projects/{self.pid}/agent-nodes/agent-1",
+                                   headers=self._headers())
+            self.assertEqual(d.status_code, 200)
+            r = self.client.post(url, headers=self._headers(), json={"node_id": "prompt-1"})
+            self.assertEqual(r.status_code, 200, f"重建后应重新获得额度: {r.text}")
+        finally:
+            _ah.agent_host_manager.get_or_create_session = _prev
+
 
 if __name__ == "__main__":
     unittest.main()

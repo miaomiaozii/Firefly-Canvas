@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
-from app.routers.api_agent_tools import _find_node, _apply_mutations, _open_canvas
+from app.routers.api_agent_tools import _find_node, _apply_mutations, _open_canvas, reset_generation_counts
 
 # Resolve the main module without re-importing it (isolated-module test design).
 import sys as _sys
@@ -215,6 +215,9 @@ async def stop_agent_node(
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if session.is_running:
         await agent_host_manager.stop_session(session)
+    # #351 review 裁定：DELETE agent 节点必须清该节点的会话生成额度计数，
+    # 同 node_id 重建后额度从 0 开始（否则与 429 文案「请新开会话」矛盾）。
+    reset_generation_counts(project_id, node_id)
     return {"success": True, "node_id": node_id, "status": "stopped"}
 
 
