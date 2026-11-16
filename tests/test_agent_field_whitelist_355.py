@@ -128,21 +128,20 @@ class Guards355Tests(unittest.TestCase):
 
     # ---------------------------------------------------------------- W2 id conflict
     def test_create_node_existing_id_rejected(self):
+        # #343 升位后：任何调用方 id（含已存在 id）一律 400「服务端生成」；
+        # #355 W2 的「已存在 id 报错」语义被其包络（更严：连不存在的新 id 也不接受）。
         with self.assertRaises(HTTPException) as cm:
             run_async(create_node_core(self.pid, {"id": "prompt-1", "type": "smart-prompt"}))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("already exists", cm.exception.detail)
-        # 显式新 id 仍可用
-        r = run_async(create_node_core(self.pid, {"id": "brand-new-1", "type": "smart-prompt"}))
-        self.assertTrue(r["success"])
-        # REST 孪生同样报错（先测冲突 id，再测新 id 可用）
+        self.assertIn("#343", cm.exception.detail)
+        # REST 孪生同样报错（#343：调用方 id 一律 400，不分存在/新建）
         dup = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
                                json={"node": {"id": "prompt-1", "type": "smart-prompt"}})
         self.assertEqual(dup.status_code, 400)
-        self.assertIn("already exists", dup.text)
+        self.assertIn("#343", dup.text)
         fresh = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
                                  json={"node": {"id": "brand-new-9", "type": "smart-prompt"}})
-        self.assertEqual(fresh.status_code, 200, fresh.text)
+        self.assertEqual(fresh.status_code, 400, fresh.text)  # #343：新 id 同样拒
 
     # ---------------------------------------------------------------- W3 media paths
     def test_media_upload_under_own_project_dir_ok(self):

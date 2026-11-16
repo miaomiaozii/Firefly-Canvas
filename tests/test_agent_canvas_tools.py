@@ -101,9 +101,8 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_create_node(self):
-        """canvas.create_node creates a new node."""
+        """canvas.create_node creates a new node.（#343 升位：id 服务端生成，不再接受调用方 id）"""
         new_node = {
-            "id": "video-1",
             "type": "smart-video",
             "title": "Test Video",
             "x": 500,
@@ -116,10 +115,11 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertEqual(data["node_id"], "video-1")
+        self.assertTrue(data["node_id"].startswith("node-"))
 
         # Verify the node was created
-        response = self.client.get(f"/api/projects/{self.project_id}/canvas/nodes/video-1")
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/canvas/nodes/{data['node_id']}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["type"], "smart-video")
 
