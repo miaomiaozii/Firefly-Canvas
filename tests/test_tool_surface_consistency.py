@@ -24,7 +24,10 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +40,7 @@ from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.project_sessions import register_project_session, unregister_project_session
 from app.routers import api_mcp
 from app.services import agent_tools_manifest
+from app.services.agent_errors import translate_detail
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess, install_stub_pi_cli, restore_stub_pi_cli
 
@@ -117,6 +121,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
     def setUp(self):
         self._dirs = []
+        self._stores = []
         self._tabs = []
         self._prev_store = main.FIREFLY_PROJECT_STORE
 
@@ -129,6 +134,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             main.manager.connection_clients.pop(tab, None)
             main.manager.user_connections.pop(tab.client_id, None)
         main.FIREFLY_PROJECT_STORE = self._prev_store
+        for store in self._stores:
+            store.close()
         for d in self._dirs:
             d.cleanup()
 
@@ -151,14 +158,23 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
     def _fixture(self):
         """一个干净的 (client, store, pid_a, pid_b)：a 走 MCP，b 走 REST 孪生。"""
-        tmp = tempfile.TemporaryDirectory(prefix="firefly-356-consistency-")
+        tmp = tempfile.TemporaryDirectory(prefix="e2e-tabbit-356-consistency-")
         self._dirs.append(tmp)
         store = ProjectStore(Path(tmp.name) / "projects", snapshot_delay=0)
+        self._stores.append(store)
         main.FIREFLY_PROJECT_STORE = store
+        # All generation in this equivalence suite is offline and deterministic.
+        for patcher in (
+            patch("app.routers.api_agent_tools._run_agent_generation", new=AsyncMock()),
+            patch.object(main, "route_image_generation", return_value=SimpleNamespace(
+                provider_id="offline", model="stub-model")),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         client = TestClient(main.app, base_url="http://127.0.0.1:8124")
         pids = []
         for tag in ("A", "B"):
-            p = store.create_project(f"Consistency {tag}")
+            p = store.create_project(f"e2e-tabbit-consistency-{tag}")
             store.apply_mutations(p["id"], copy.deepcopy(self.SEED), base_revision=0)
             self._open_tab(p["id"])
             pids.append(p["id"])
@@ -176,6 +192,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
         if "error" in body:
             return {"ok": False, "text": str(body["error"].get("message", ""))}
         result = body["result"]
+        if result.get("isError"):
+            return {"ok": False, "error": result["structuredContent"]}
         texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
         images = [c for c in result.get("content", []) if c.get("type") == "image"]
         payload = {"ok": not result.get("isError"), "text": "\n".join(texts)}
@@ -187,7 +205,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
         resp = client.request(method, url, json=json_body)
         if resp.status_code >= 400:
             detail = resp.json().get("detail") if "json" in resp.headers.get("content-type", "") else resp.text
-            return {"ok": False, "text": str(detail)}
+            return {"ok": False, "error": translate_detail(resp.status_code, detail)}
         try:
             return {"ok": True, "text": json.dumps(resp.json())}
         except ValueError:
@@ -208,6 +226,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
     def _canon_payload(self, payload):
         out = {"ok": payload["ok"], "text": self._canon_text(payload.get("text", ""))}
+        if "error" in payload:
+            out["error"] = self._canon_text(json.dumps(payload["error"], sort_keys=True))
         # #350 后拍板 c 作废：MCP 不再 upsert agent 节点，返回值不再剔除任何节点。
         if "image_len" in payload:
             out["image_len"] = payload["image_len"]
@@ -227,7 +247,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 for k in ("pending", "running", "queued", "pendingTasks", "_generationBatchApplied"):
                     item.pop(k, None)
                 # #343 后双路必然差异字段：服务端生成 id（node-XXXX）两侧不同，不参与等价比较。
-                # （createdBy* 三戳系超范围改动，已 revert，不再剥离。）
+                # #392 ownership/protection fields stay in the comparison.
                 item.pop("id", None)
                 for k, v in list(item.items()):
                     if isinstance(v, str):
@@ -265,15 +285,17 @@ class DualPathEquivalenceTests(unittest.TestCase):
             agent_host_manager.on_event(session, approve_handler)
             try:
                 outcome["result"] = await impl(pid, agent_node_id, args)
+            except HTTPException as exc:
+                outcome["error"] = translate_detail(exc.status_code, exc.detail)
             except Exception as exc:  # noqa: BLE001
-                outcome["error"] = str(exc)
+                outcome["error"] = translate_detail(500, str(exc))
             finally:
                 if approve_handler in session.event_handlers:
                     session.event_handlers.remove(approve_handler)
 
         run_async(scenario())
         if "error" in outcome:
-            return {"ok": False, "text": outcome["error"]}
+            return {"ok": False, "error": outcome["error"]}
         return {"ok": True, "text": json.dumps(outcome["result"])}
 
     # -- 遍历 ------------------------------------------------------------
@@ -288,13 +310,22 @@ class DualPathEquivalenceTests(unittest.TestCase):
             with self.subTest(tool=name):
                 run_case()
 
+    def test_error_comparison_keeps_structured_contract(self):
+        detail = {"code": "INVALID_ARGUMENT", "message": "bad fields", "hint": "use summary", "retryable": False}
+        original = self._canon_payload({"ok": False, "error": detail})
+        for key, value in {"code": "NODE_NOT_FOUND", "message": "other", "hint": "next", "retryable": True,
+                           "details": {"group_id": "group"}}.items():
+            with self.subTest(key=key):
+                self.assertNotEqual(original, self._canon_payload({"ok": False, "error": {**detail, key: value}}))
+
     def _cases(self):
         def pair(name, args, method, url_path, body=None):
             """通用形状：A 走 MCP tools/call，B 走 REST 孪生；比返回值 + 画布终态。"""
             def run():
                 client, store, pid_a, pid_b = self._fixture()
                 a = self._mcp_call(client, pid_a, name, args)
-                b = self._rest(client, method, f"/api/projects/{pid_b}{url_path}", body)
+                rest_body = {**body, "agent_node_id": "agent-consistency"} if name == "canvas.create_node" else body
+                b = self._rest(client, method, f"/api/projects/{pid_b}{url_path}", rest_body)
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
@@ -307,7 +338,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 client, store, pid_a, pid_b = self._fixture()
                 agent_id = self._materialize_agent(client, store, pid_a)
                 a = self._gated_impl(store, pid_a, agent_id, getattr(api_mcp, impl), args)
-                b = self._rest(client, method, f"/api/projects/{pid_b}{url_path}", body)
+                # Same initiating context, even while this test bypasses the REST gate.
+                rest_path = f"{url_path}?agent_node_id={agent_id}" if name in {"canvas.batch_edit", "generate.trigger"} else url_path
+                b = self._rest(client, method, f"/api/projects/{pid_b}{rest_path}", body)
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")

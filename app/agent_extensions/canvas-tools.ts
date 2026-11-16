@@ -128,8 +128,25 @@ function gateQuery() {
 }
 
 const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
-    "canvas.list_nodes": async (_toolCallId, params) =>
-        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes`, "GET")),
+    "canvas.list_nodes": async (_toolCallId, params) => {
+        const query = new URLSearchParams();
+        if (params.group_id !== undefined) query.append("group_id", params.group_id);
+        if (params.created_by !== undefined) query.append("created_by", params.created_by);
+        if (params.fields !== undefined) {
+            // Omission means all blocks; an explicit [] must remain summary-only.
+            // TypeBox guards normal calls. Do not drop invalid values if bypassed:
+            // send them to server validation, never silently turn them into defaults.
+            if (Array.isArray(params.fields)) {
+                for (const field of params.fields.length ? params.fields : ["summary"]) {
+                    query.append("fields", typeof field === "string" ? field : JSON.stringify(field));
+                }
+            } else {
+                query.append("fields", JSON.stringify(params.fields));
+            }
+        }
+        const suffix = query.toString();
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes${suffix ? `?${suffix}` : ""}`, "GET"));
+    },
 
     "canvas.get_node": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "GET")),

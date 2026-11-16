@@ -13,8 +13,8 @@ export interface CanvasToolDef {
 export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     {
         name: "canvas.list_nodes",
-        description: "列出画布上所有节点（含连边摘要）",
-        parameters: Type.Object({}),
+        description: "列出画布节点与组索引（含连边、创建来源和人工保护摘要）；可按 group_id 直接成员或 created_by 原创建来源筛选。fields 省略时返回 summary/prompt/refs/run 全部四块，[] 只返回 summary；summary 始终返回。",
+        parameters: Type.Object({ group_id: Type.Optional(Type.String({description: "组框 ID，仅列出该组的直接成员（不递归）"})), created_by: Type.Optional(Type.Union([Type.Literal("agent"), Type.Literal("user")], {description: "按原创建来源筛选，不按当前接管者筛选"})), fields: Type.Optional(Type.Array(Type.Union([Type.Literal("summary"), Type.Literal("prompt"), Type.Literal("refs"), Type.Literal("run")]), {description: "返回块：省略=全部；[]=仅 summary；summary 始终返回"})) }),
     },
     {
         name: "canvas.get_node",

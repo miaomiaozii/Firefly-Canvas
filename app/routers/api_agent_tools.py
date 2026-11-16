@@ -11,6 +11,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 import json
 import uuid
+from typing import Callable
+
+from app.services.agent_node_state import ownership_fields, project_nodes
 
 import sys as _sys
 import os as _os
@@ -54,7 +57,12 @@ def _validate_project(project_id: str):
 
 
 async def _apply_mutations(project_id: str, mutations: list):
-    """Apply canvas mutations with retry on revision conflict.
+    """Apply fixed mutations (new identities/removals, not stale node updates)."""
+    return await _apply_mutations_from_snapshot(project_id, lambda _canvas: mutations)
+
+
+async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Callable[[dict], list]):
+    """Rebuild read-modify-write patches from the same snapshot used for CAS.
 
     #243: after a successful commit, broadcast ``canvas_updated`` so every
     other open tab re-syncs in real time (ADR 0022 known gap: agent-tools
@@ -68,17 +76,22 @@ async def _apply_mutations(project_id: str, mutations: list):
             # Get the current revision directly from the canvas
             canvas = store.canvas(project_id)
             revision = int(canvas.get("revision") or 0)
+            mutations = build_mutations(canvas)
+            if not mutations:
+                return None
             result = store.apply_mutations(project_id, mutations, base_revision=revision)
             await _broadcast_canvas_updated(project_id, source="agent")
             return result
         except RevisionConflict:
             # Revision conflict: another writer updated the canvas.
-            # Retry with the latest revision (up to 8 attempts).
+            # Rebuild against the latest snapshot (up to 8 attempts).
             if attempt < 7:
                 continue
             raise agent_error(409, "CANVAS_CONFLICT",
                               "Canvas mutation failed after retries",
                               "画布并发冲突（已自动重试 8 次）；先调用 canvas.list_nodes 查看最新状态再重新提交。")
+        except HTTPException:
+            raise  # Keep validation/not-found errors from the latest snapshot.
         except Exception as e:
             raise agent_error(409, "CANVAS_CONFLICT", str(e),
                               "画布写入冲突；先调用 canvas.list_nodes 查看最新状态再重试。") from e
@@ -147,32 +160,35 @@ def _find_node(project_id: str, node_id: str) -> dict:
 
 
 @router.get("/nodes")
-async def list_nodes(project_id: str, x_agent_project: str = Header(default="")):
-    """List all nodes on the canvas with summary info."""
-    canvas = _open_canvas(project_id)
-    nodes = canvas.get("nodes", [])
-    connections = canvas.get("connections", [])
+async def list_nodes(project_id: str, request: Request = None, x_agent_project: str = Header(default="")):
+    """Read v2 projections; repeated fields query keys select optional blocks."""
+    query = request.query_params if request is not None else {}
+    return await list_nodes_core(
+        project_id, group_id=query.get("group_id"), created_by=query.get("created_by"),
+        fields=query.getlist("fields") if "fields" in query else None,
+    )
 
-    # Build summary for each node
-    summaries = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = str(node.get("id", ""))
-        # Find connections for this node
-        incoming = [e for e in connections if isinstance(e, dict) and str(e.get("to", "")) == node_id]
-        outgoing = [e for e in connections if isinstance(e, dict) and str(e.get("from", "")) == node_id]
-        summaries.append({
-            "id": node_id,
-            "type": str(node.get("type", "")),
-            "title": str(node.get("title", "") or node.get("text", "")[:50]),
-            "x": node.get("x", 0),
-            "y": node.get("y", 0),
-            "incoming": [str(e.get("from", "")) for e in incoming],
-            "outgoing": [str(e.get("to", "")) for e in outgoing],
-            "status": str(node.get("status", "") or node.get("generationState", "")),
-        })
-    return {"nodes": summaries, "count": len(summaries)}
+
+async def list_nodes_core(project_id: str, group_id=None, fields=None, created_by=None) -> dict:
+    """Request-free read shared by REST and MCP; never backfill legacy data."""
+    return project_nodes(_open_canvas(project_id), group_id=group_id, fields=fields, created_by=created_by)
+
+
+def _snapshot_node(canvas: dict, node_id: str) -> dict:
+    for node in canvas.get("nodes", []):
+        if isinstance(node, dict) and str(node.get("id", "")) == node_id:
+            return node
+    raise agent_error(404, "NODE_NOT_FOUND", f"Node not found: {node_id}",
+                      "先调用 canvas.list_nodes 查看画布上的真实节点 ID。")
+
+
+def _creation_context(request: Request, agent_node_id="") -> str:
+    """Existing transport context, not a new authentication mechanism."""
+    ownership_fields(agent_node_id)  # Reject invalid identity types/blank strings.
+    if request.headers.get("X-Agent-Project", "") and not agent_node_id:
+        raise agent_error(400, "INVALID_ARGUMENT", "agent_node_id is required for Agent creation",
+                          "请传入发起本次操作的 Agent 节点 ID。")
+    return agent_node_id
 
 
 @router.get("/nodes/{node_id}")
@@ -186,7 +202,8 @@ async def create_node(project_id: str, request: Request, x_agent_project: str = 
     """Create a new node on the canvas. 可选 `agent_node_id`（#356 D11）：传了则
     未显式给 x/y 的新节点按该 agent 的会话 frame 网格自动落位（与 MCP 路径同行为）。"""
     body = await request.json()
-    return await create_node_core(project_id, body.get("node", {}), agent_node_id=str(body.get("agent_node_id") or ""))
+    return await create_node_core(project_id, body.get("node", {}),
+                                  agent_node_id=_creation_context(request, body.get("agent_node_id", "")))
 
 
 @router.patch("/nodes/{node_id}")
@@ -294,7 +311,8 @@ async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: 
     if request.headers.get("X-Agent-Project", ""):
         enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
                                  count=max(1, len(node_ids)))
-    return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"))
+    return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"),
+                                 agent_node_id=_creation_context(request, request.query_params.get("agent_node_id", "")))
 
 
 @router.post("/edit_rotate")
@@ -346,6 +364,12 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         raise agent_error(400, "INVALID_ARGUMENT", "node must be an object",
                           "canvas.create_node 的 node 参数需是对象。")
 
+    reserved = sorted(key for key in ownership_fields() if key in node)
+    if reserved:
+        raise agent_error(400, "INVALID_ARGUMENT", "Creation metadata is server-owned",
+                          "不要传归属或人工编辑保护字段；服务端按本次调用上下文写入。",
+                          details={"rejected_keys": reserved})
+    node = {**node, **ownership_fields(agent_node_id)}
     # Ensure node has required fields
     # #355 W2：caller 传了已存在于画布的 id → 报错，不再静默 upsert 覆盖。
     # #343 升位：MCP/pi 工具建节点一律不接受调用方指定 id（服务端生成）——
@@ -367,31 +391,33 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         node["y"] = 0
     node["created_at"] = _app_main.now_ms()
 
-    mutations = [{"op": "upsert_node", "node": node}]
-    if not _explicit_pos and agent_node_id:
-        frame = _find_chat_frame(project_id, agent_node_id)
-        if frame is not None:
-            from app.services import agent_frame as _frame_mod
-            index = len(frame.get("items") or [])
-            dx, dy, new_h = _frame_mod.compute_frame_slot(frame, index)
-            node["x"] = int(frame.get("x") or 0) + dx
-            node["y"] = int(frame.get("y") or 0) + dy
-            grown = {**frame,
-                     "items": [*(frame.get("items") or []), node["id"]],
-                     "h": max(int(frame.get("h") or 0), new_h)}
-            mutations.append({"op": "upsert_node", "node": grown})
+    def build(canvas):
+        created = dict(node)  # Mint identity/time once; recompute placement on retries.
+        mutations = [{"op": "upsert_node", "node": created}]
+        if not _explicit_pos and agent_node_id:
+            frame = _find_chat_frame(project_id, agent_node_id, canvas=canvas)
+            if frame is not None:
+                from app.services import agent_frame as _frame_mod
+                items = list(frame.get("items") or [])
+                dx, dy, new_h = _frame_mod.compute_frame_slot(frame, len(items))
+                created["x"] = int(frame.get("x") or 0) + dx
+                created["y"] = int(frame.get("y") or 0) + dy
+                grown = {**frame, "items": [*items, node["id"]],
+                         "h": max(int(frame.get("h") or 0), new_h)}
+                mutations.append({"op": "upsert_node", "node": grown})
+        return mutations
 
-    await _apply_mutations(project_id, mutations)
+    await _apply_mutations_from_snapshot(project_id, build)
     return {"success": True, "node_id": node["id"]}
 
 
-def _find_chat_frame(project_id: str, agent_node_id: str) -> dict | None:
+def _find_chat_frame(project_id: str, agent_node_id: str, *, canvas: dict | None = None) -> dict | None:
     """agent 节点 → chatFrameId → 存在的 smart-group（链上任一环缺失= None）。"""
-    store = _app_main.FIREFLY_PROJECT_STORE
-    try:
-        canvas = store.canvas(project_id)
-    except Exception:
-        return None
+    if canvas is None:
+        try:
+            canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+        except Exception:
+            return None
     nodes = {str(n.get("id")): n for n in (canvas.get("nodes") or []) if isinstance(n, dict)}
     agent = nodes.get(str(agent_node_id))
     frame_id = str((agent or {}).get("chatFrameId") or "")
@@ -418,23 +444,20 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
         if key in updates and (isinstance(updates[key], bool) or not isinstance(updates[key], (int, float))):
             raise agent_error(400, "INVALID_ARGUMENT", f"{key} must be a number",
                               f"{key} 需是数字；重新传入。")
-    # Get current node
-    target_node = _find_node(project_id, node_id)
+    _validate_project(project_id)
+    updated_at = _app_main.now_ms()
 
-    # #323 监理钉B1：会话框（chatFrame=true 的 smart-group）成员关系由服务端落位链独占维护
-    # （create_node_core 同事务追加 items）；任何 canvas.update_node/REST 覆写 items 直接拒绝，
-    # 防 LLM 重排打乱网格/丢成员。Refs #323。
-    if "items" in updates and target_node.get("type") == "smart-group" and target_node.get("chatFrame") is True:
-        raise agent_error(400, "INVALID_ARGUMENT",
-                          "会话框 items 由服务端落位链维护，canvas.update_node 不可覆写",
-                          "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
+    def build(canvas):
+        target_node = _snapshot_node(canvas, node_id)
+        # Session-frame membership is maintained only by the placement chain.
+        if "items" in updates and target_node.get("type") == "smart-group" and target_node.get("chatFrame") is True:
+            raise agent_error(400, "INVALID_ARGUMENT",
+                              "会话框 items 由服务端落位链维护，canvas.update_node 不可覆写",
+                              "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
+        patched = {**target_node, **updates, "updated_at": updated_at}
+        return [{"op": "upsert_node", "node": patched}]
 
-    # Apply updates（#355：已过白名单，不再需要逐键身份过滤）
-    for key, value in updates.items():
-        target_node[key] = value
-    target_node["updated_at"] = _app_main.now_ms()
-
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": target_node}])
+    await _apply_mutations_from_snapshot(project_id, build)
     return {"success": True, "node_id": node_id}
 
 
@@ -502,12 +525,14 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
     if request.headers.get("X-Agent-Project", ""):
         enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
                                  count=max(1, int(body.get("n") or 1)))
-    return await trigger_generation_core(project_id, body.get("node_id"))
+    return await trigger_generation_core(project_id, body.get("node_id"),
+                                         agent_node_id=_creation_context(request, request.query_params.get("agent_node_id", "")))
 
 
-async def trigger_generation_core(project_id: str, node_id: str) -> dict:
+async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "") -> dict:
     """Trigger generation on a node, returns task ID (Request-free core)."""
     _validate_project(project_id)
+    creation = ownership_fields(agent_node_id)
     if not node_id:
         raise agent_error(400, "INVALID_ARGUMENT", "node_id is required",
                           "先调用 canvas.list_nodes 获取节点 ID。")
@@ -586,6 +611,7 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
         "id": result_node_id,
         "type": "smart-image",
         "title": f"生成结果 · {prompt[:24]}",
+        **creation,
         "x": src_x + src_w + 60.0,
         "y": src_y,
         "created_at": _app_main.now_ms(),
@@ -1324,25 +1350,27 @@ async def _replace_node_image(project_id: str, node: dict, node_id: str, picked:
     store = _app_main.FIREFLY_PROJECT_STORE
     asset = await asyncio.to_thread(store.import_media, project_id, encode_png(edited), filename, "image/png")
     new_asset_id = str(asset["asset_id"])
-    # 覆写节点图（其余 image 条目保留；原资源仍在资源库，可恢复）
-    images = [dict(it) for it in (node.get("images") or [])]
-    replaced = False
-    for it in images:
-        if str(it.get("asset_id") or "") == str(picked["asset_id"]):
-            it["asset_id"] = new_asset_id
-            it["kind"] = "image"
-            it["name"] = filename
-            replaced = True
-            break
-    if not replaced:
-        images.insert(0, {"asset_id": new_asset_id, "kind": "image", "name": filename})
-    node["images"] = images
-    if node.get("output_asset_id"):
-        node["output_asset_id"] = new_asset_id
-    if extra_node_fields:
-        node.update(extra_node_fields)
-    node["updated_at"] = _app_main.now_ms()
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
+    updated_at = _app_main.now_ms()
+
+    def build(canvas):
+        # Re-read even on the first attempt: encoding/import may have yielded to
+        # a human edit or generation completion since the image was selected.
+        current = _snapshot_node(canvas, node_id)
+        images = [dict(it) for it in (current.get("images") or []) if isinstance(it, dict)]
+        replaced = False
+        for it in images:
+            if str(it.get("asset_id") or "") == str(picked["asset_id"]):
+                it.update(asset_id=new_asset_id, kind="image", name=filename)
+                replaced = True
+                break
+        if not replaced:
+            images.insert(0, {"asset_id": new_asset_id, "kind": "image", "name": filename})
+        patched = {**current, **(extra_node_fields or {}), "images": images, "updated_at": updated_at}
+        if current.get("output_asset_id"):
+            patched["output_asset_id"] = new_asset_id
+        return [{"op": "upsert_node", "node": patched}]
+
+    await _apply_mutations_from_snapshot(project_id, build)
     return {
         "success": True,
         "node_id": node_id,
@@ -1353,7 +1381,7 @@ async def _replace_node_image(project_id: str, node: dict, node_id: str, picked:
     }
 
 
-async def batch_edit_core(project_id: str, node_ids, prompt) -> dict:
+async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str = "") -> dict:
     """#266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成，结果放各自旁边。
 
     非本地处理：逐节点把 batch prompt 写入节点（upsert），再走既有 trigger_generation_core
@@ -1373,12 +1401,16 @@ async def batch_edit_core(project_id: str, node_ids, prompt) -> dict:
         raise agent_error(400, "INVALID_ARGUMENT", "prompt 必须是非空字符串",
                           "请填写批量 prompt 后重试。")
     tasks = []
+    ownership_fields(agent_node_id)  # Validate before any writes/side effects.
     for node_id in node_ids:
-        node = _find_node_for_view(project_id, node_id)
-        node["prompt"] = prompt
-        node["updated_at"] = _app_main.now_ms()
-        await _apply_mutations(project_id, [{"op": "upsert_node", "node": node}])
-        triggered = await trigger_generation_core(project_id, node_id)
+        updated_at = _app_main.now_ms()
+
+        def build(canvas):
+            node = _snapshot_node(canvas, node_id)
+            return [{"op": "upsert_node", "node": {**node, "prompt": prompt, "updated_at": updated_at}}]
+
+        await _apply_mutations_from_snapshot(project_id, build)
+        triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id)
         tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
     return {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}
 

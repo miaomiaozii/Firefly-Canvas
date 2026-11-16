@@ -1,0 +1,400 @@
+"""#392 stage 1 transport contracts; no providers, agents or HTTP server.
+
+Exercise the shared cores through real REST/MCP routes with temporary projects.
+"""
+import asyncio
+import copy
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+
+from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP, NODE_TYPE_IMAGE, NODE_TYPE_PROMPT
+from app.services.agent_errors import is_agent_error_shape, translate_detail
+from app.services.agent_tools_manifest import TOOLS
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+class ListSchema392Tests(unittest.TestCase):
+    def test_list_schema_has_optional_filters_and_enum_array_without_defaults(self):
+        tool = next(tool for tool in TOOLS if tool["name"] == "canvas.list_nodes")
+        schema = tool["inputSchema"]
+        self.assertEqual(schema["required"], [])
+        self.assertIs(schema["additionalProperties"], False)
+        props = schema["properties"]
+        self.assertEqual(set(props), {"group_id", "created_by", "fields"})
+        self.assertEqual(props["group_id"]["type"], "string")
+        self.assertEqual(props["created_by"]["enum"], ["agent", "user"])
+        self.assertEqual(props["fields"]["type"], "array")
+        self.assertEqual(props["fields"]["items"], {
+            "type": "string", "enum": ["summary", "prompt", "refs", "run"],
+        })
+        self.assertTrue(all("default" not in value for value in props.values()))
+        self.assertIn("省略", tool["description"])
+        self.assertIn("[]", tool["description"])
+        self.assertIn("summary", tool["description"])
+
+
+class _Transport392(unittest.TestCase):
+    def setUp(self):
+        import main
+        from app.routers import api_agent_tools, api_mcp
+        from firefly_projects import ProjectStore
+
+        self.main, self.tools, self.mcp = main, api_agent_tools, api_mcp
+        temp = tempfile.TemporaryDirectory(prefix="e2e-tabbit-a2-transports-")
+        self.addCleanup(temp.cleanup)
+        self.store = ProjectStore(Path(temp.name) / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
+        self.pid = self.store.create_project("e2e-tabbit-a2-392-transports")["id"]
+        self.start_patch(main, "FIREFLY_PROJECT_STORE", self.store)
+        self.start_patch(api_mcp, "resolve_project", Mock(return_value=self.pid))
+        # No actual WS tabs or agent sessions needed for transport calls.
+        self.broadcast = self.start_patch(api_agent_tools, "_broadcast_canvas_updated", AsyncMock())
+        self.start_patch(api_mcp, "mcp_event_recorder", Mock())
+        self.client = TestClient(main.app, base_url="http://127.0.0.1:8125")
+        self.addCleanup(self.client.close)
+
+    def start_patch(self, obj, name, value):
+        patcher = patch.object(obj, name, value)
+        result = patcher.start()
+        self.addCleanup(patcher.stop)
+        return result
+
+    def canvas(self):
+        return self.store.canvas(self.pid)
+
+    def seed(self, *nodes):
+        return self.store.apply_mutations(self.pid, [
+            {"op": "upsert_node", "node": node} for node in nodes
+        ], base_revision=int(self.canvas().get("revision") or 0))
+
+    def call(self, name, args, node="", legacy_args=False):
+        response = self.client.post("/api/mcp", params={"project": self.pid, "node": node}, json={
+            "jsonrpc": "2.0", "id": 392, "method": "tools/call", "params": {
+                "name": name, "args" if legacy_args else "arguments": args,
+            },
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertNotIn("error", body, body)
+        return body["result"]
+
+    def read_result(self, result):
+        self.assertFalse(result["isError"], result)
+        return json.loads(result["content"][0]["text"])
+
+    def rest_list(self, params):
+        return self.client.get(f"/api/projects/{self.pid}/canvas/nodes", params=params,
+                               headers={"X-Agent-Project": self.pid})
+
+
+class McpListArguments392Tests(_Transport392):
+    def test_preserves_all_arguments_including_empty_arrays_and_invalid_types(self):
+        cases = [
+            {},
+            {"fields": []},
+            {"fields": ["prompt", "run", "prompt"], "group_id": "group /&中文", "created_by": "agent"},
+            {"fields": ["summary"], "created_by": "user"},
+            {"fields": "prompt", "group_id": 12, "created_by": False},
+            {"fields": ["unknown"], "group_id": "", "created_by": "robot"},
+            {"fields": {"bad": True}},
+        ]
+        for args in cases:
+            with self.subTest(args=args), patch.object(self.mcp, "list_nodes_core", new=AsyncMock(
+                return_value={"nodes": [], "groups": [], "count": 0},
+            )) as core, patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
+                self.read_result(self.call("canvas.list_nodes", args))
+                core.assert_awaited_once_with(self.pid, group_id=args.get("group_id"),
+                                             fields=args.get("fields"), created_by=args.get("created_by"))
+                carrier.assert_not_awaited()
+
+    def test_explicit_null_rejected_before_core_with_shared_error_shape(self):
+        with patch.object(self.mcp, "list_nodes_core", new=AsyncMock()) as core:
+            result = self.call("canvas.list_nodes", {"fields": None})
+        core.assert_not_awaited()
+        self.assertTrue(result["isError"])
+        detail = result["structuredContent"]
+        self.assertTrue(is_agent_error_shape(detail))
+        self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("INVALID_ARGUMENT", result["content"][0]["text"])
+        self.assertNotIn("[object Object]", result["content"][0]["text"])
+
+
+class ListReadIntegration392Tests(_Transport392):
+    def setUp(self):
+        super().setUp()
+        self.seed(
+            {"id": "prompt-user", "type": NODE_TYPE_PROMPT, "text": "user prompt", "x": 0, "y": 0},
+            {"id": "image-agent", "type": NODE_TYPE_IMAGE, "prompt": "agent prompt", "x": 20, "y": 0,
+             "createdBy": "agent", "agentNodeId": "owner", "userTouchedAt": 1234,
+             "promptEditedByUser": True, "reference_asset_ids": []},
+            {"id": "group-392", "type": NODE_TYPE_GROUP, "items": ["prompt-user", "image-agent"]},
+            {"id": "empty-392", "type": NODE_TYPE_GROUP, "items": []},
+        )
+
+    def test_rest_mcp_and_request_free_core_equivalent_without_read_side_effects(self):
+        cases = [
+            ({}, []),
+            ({"fields": []}, [("fields", "summary")]),
+            ({"fields": ["prompt", "run", "prompt"]}, [
+                ("fields", "prompt"), ("fields", "run"), ("fields", "prompt"),
+            ]),
+            ({"group_id": "group-392", "created_by": "agent", "fields": ["refs"]}, [
+                ("group_id", "group-392"), ("created_by", "agent"), ("fields", "refs"),
+            ]),
+            ({"group_id": "empty-392"}, [("group_id", "empty-392")]),
+            ({"created_by": "user"}, [("created_by", "user")]),
+        ]
+        before = copy.deepcopy(self.canvas())
+        with patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
+            for index, (args, query) in enumerate(cases):
+                with self.subTest(args=args):
+                    expected = run(self.tools.list_nodes_core(self.pid, **args))
+                    rest = self.rest_list(query)
+                    self.assertEqual(rest.status_code, 200, rest.text)
+                    self.assertEqual(rest.json(), expected)
+                    result = self.call("canvas.list_nodes", args, node="owner" if index % 2 else "",
+                                       legacy_args=bool(index % 2))
+                    self.assertEqual(self.read_result(result), expected)
+            carrier.assert_not_awaited()
+        self.assertEqual(self.canvas(), before, "readonly adapters must not materialize or backfill")
+        self.broadcast.assert_not_awaited()
+
+    def test_rest_mcp_errors_have_same_codes_details_and_do_not_materialize(self):
+        cases = [
+            ({"fields": ["unknown"]}, [("fields", "unknown")], 400, "INVALID_ARGUMENT"),
+            ({"fields": ["prompt,run"]}, [("fields", "prompt,run")], 400, "INVALID_ARGUMENT"),
+            ({"created_by": "robot"}, [("created_by", "robot")], 400, "INVALID_ARGUMENT"),
+            ({"group_id": ""}, [("group_id", "")], 400, "INVALID_ARGUMENT"),
+            ({"group_id": "missing"}, [("group_id", "missing")], 404, "NODE_NOT_FOUND"),
+            ({"group_id": "prompt-user"}, [("group_id", "prompt-user")], 400, "INVALID_ARGUMENT"),
+        ]
+        before = copy.deepcopy(self.canvas())
+        for args, query, status, code in cases:
+            with self.subTest(args=args):
+                rest = self.rest_list(query)
+                self.assertEqual(rest.status_code, status, rest.text)
+                expected = translate_detail(status, rest.json()["detail"])
+                self.assertEqual(expected["code"], code)
+                result = self.call("canvas.list_nodes", args)
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"], expected)
+                if "group_id" in args and args["group_id"]:
+                    self.assertEqual(expected["details"]["group_id"], args["group_id"])
+        for args in ({"fields": None}, {"fields": "prompt"}, {"fields": 1}, {"fields": [None]},
+                     {"group_id": 1}, {"created_by": []}):
+            with self.subTest(mcp_only=args):
+                result = self.call("canvas.list_nodes", args)
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["code"], "INVALID_ARGUMENT")
+        self.assertEqual(self.canvas(), before)
+        self.broadcast.assert_not_awaited()
+
+
+class McpReservedMetadata392Tests(_Transport392):
+    def test_create_rejects_reserved_keys_including_null_in_flat_and_legacy_shapes(self):
+        from app.services.agent_node_state import ownership_fields
+
+        before = copy.deepcopy(self.canvas())
+        for key in ownership_fields():
+            for value in (None, False, "forged", 1234):
+                for shape in ("flat", "nested", "mixed"):
+                    with self.subTest(key=key, value=value, shape=shape):
+                        node = {"type": NODE_TYPE_IMAGE, key: value}
+                        args = node if shape == "flat" else {"node": node} if shape == "nested" else {
+                            "node": {"type": NODE_TYPE_IMAGE}, key: value,
+                        }
+                        result = self.call("canvas.create_node", args, node="owner")
+                        self.assertTrue(result["isError"], result)
+                        self.assertEqual(result["structuredContent"]["code"], "INVALID_ARGUMENT")
+                        self.assertEqual(result["structuredContent"]["details"]["rejected_keys"], [key])
+        self.assertEqual(self.canvas(), before)
+        self.broadcast.assert_not_awaited()
+
+    def test_update_cannot_silently_strip_null_reserved_metadata(self):
+        from app.services.agent_node_state import ownership_fields
+
+        self.seed({"id": "source", "type": NODE_TYPE_IMAGE, **ownership_fields("owner")})
+        before = copy.deepcopy(self.canvas())
+        for key in ownership_fields():
+            for nested in (False, True):
+                with self.subTest(key=key, nested=nested):
+                    args = {"node_id": "source", "updates": {key: None}} if nested else {
+                        "node_id": "source", key: None,
+                    }
+                    result = self.call("canvas.update_node", args, node="owner")
+                    self.assertTrue(result["isError"], result)
+                    self.assertEqual(result["structuredContent"]["code"], "INVALID_ARGUMENT")
+        self.assertEqual(self.canvas(), before)
+        self.broadcast.assert_not_awaited()
+
+
+class GenerationIdentity392Tests(_Transport392):
+    def test_trigger_and_batch_forward_explicit_resolved_node_not_argument_override(self):
+        self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
+        for name, args, core_name, core_args, count in [
+            ("generate.trigger", {"node_id": "source", "agent_node_id": "forged"},
+             "trigger_generation_core", (self.pid, "source"), 1),
+            ("canvas.batch_edit", {"node_ids": ["source", "source-2"], "prompt": "edit", "agent_node_id": "forged"},
+             "batch_edit_core", (self.pid, ["source", "source-2"], "edit"), 2),
+        ]:
+            with self.subTest(tool=name), patch.object(self.mcp, core_name, new=AsyncMock(
+                return_value={"ok": True},
+            )) as core, patch.object(self.mcp, "_confirm_gate", new=AsyncMock()) as gate, patch.object(
+                self.tools, "enforce_generation_limit",
+            ) as limit, patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
+                self.assertEqual(self.read_result(self.call(name, args, node="owner")), {"ok": True})
+                core.assert_awaited_once_with(*core_args, agent_node_id="owner")
+                self.assertEqual(gate.await_args.args[:3], (self.pid, "owner", name))
+                limit.assert_called_once_with(self.pid, "owner", count=count)
+                carrier.assert_not_awaited()
+
+    def test_external_generation_tools_use_self_owned_carrier_as_context(self):
+        with patch.object(self.mcp, "trigger_generation_core", new=AsyncMock(
+            return_value={"task_id": "stub-task"},
+        )) as trigger, patch.object(self.mcp, "batch_edit_core", new=AsyncMock(
+            return_value={"tasks": []},
+        )) as batch, patch.object(self.mcp, "_confirm_gate", new=AsyncMock()), patch.object(
+            self.tools, "enforce_generation_limit",
+        ):
+            self.read_result(self.call("generate.trigger", {"node_id": "source"}))
+            self.read_result(self.call("canvas.batch_edit", {"node_ids": ["source"], "prompt": "edit"}))
+        nodes = self.canvas()["nodes"]
+        self.assertEqual(len(nodes), 1)
+        carrier = nodes[0]
+        self.assertEqual(carrier["createdBy"], "agent")
+        self.assertEqual(carrier["agentNodeId"], carrier["id"])
+        self.assertIsNone(carrier["userTouchedAt"])
+        self.assertIs(carrier["promptEditedByUser"], False)
+        trigger.assert_awaited_once_with(self.pid, "source", agent_node_id=carrier["id"])
+        batch.assert_awaited_once_with(self.pid, ["source"], "edit", agent_node_id=carrier["id"])
+
+
+class McpCarrierCas392Tests(_Transport392):
+    def test_new_carrier_is_self_owned_and_same_session_is_idempotent(self):
+        node_id = run(self.mcp.ensure_external_agent_node(self.pid, "session-one"))
+        before = copy.deepcopy(self.canvas())
+        node = before["nodes"][0]
+        self.assertEqual(node["id"], node_id)
+        self.assertEqual(node["createdBy"], "agent")
+        self.assertEqual(node["agentNodeId"], node_id)
+        self.assertIsNone(node["userTouchedAt"])
+        self.assertIs(node["promptEditedByUser"], False)
+        self.assertEqual(run(self.mcp.ensure_external_agent_node(self.pid, "session-one")), node_id)
+        self.assertEqual(self.canvas(), before)
+
+    def test_rebind_keeps_existing_ownership_protection_and_legacy_missing_fields(self):
+        for metadata in ({}, {"createdBy": "user", "agentNodeId": None, "userTouchedAt": 111,
+                              "promptEditedByUser": True},
+                         {"createdBy": "agent", "agentNodeId": "original-owner", "userTouchedAt": 222,
+                          "promptEditedByUser": True}):
+            with self.subTest(metadata=metadata):
+                self.seed({"id": "carrier", "type": NODE_TYPE_AGENT, "mcp_session": "old-session",
+                           "title": "keep title", "agentGoal": "keep goal", **metadata})
+                before = copy.deepcopy(self.canvas()["nodes"][0])
+                self.assertEqual(run(self.mcp.ensure_external_agent_node(self.pid, "new-session")), "carrier")
+                after = copy.deepcopy(self.canvas()["nodes"][0])
+                self.assertEqual(after.pop("mcp_session"), "new-session")
+                before.pop("mcp_session")
+                after.pop("updated_at", None)
+                before.pop("updated_at", None)
+                self.assertEqual(after, before)
+
+    def test_rebind_conflict_rebuilds_from_latest_carrier_not_stale_upsert(self):
+        self.seed({"id": "carrier", "type": NODE_TYPE_AGENT, "mcp_session": "old-session",
+                   "createdBy": "agent", "agentNodeId": "original-owner", "userTouchedAt": None,
+                   "promptEditedByUser": False, "title": "before", "agentGoal": "before"})
+        original = self.store.apply_mutations
+        attempts = []
+
+        def interleave(project_id, mutations, *, base_revision, **kwargs):
+            attempts.append(copy.deepcopy(mutations))
+            if len(attempts) == 1:
+                latest = self.canvas()
+                node = {**latest["nodes"][0], "title": "human title", "agentGoal": "human goal",
+                        "userTouchedAt": 9876, "promptEditedByUser": True, "latestField": ["retain"]}
+                original(project_id, [{"op": "upsert_node", "node": node}], base_revision=latest["revision"])
+            # First attempt now really conflicts in ProjectStore's CAS implementation.
+            return original(project_id, mutations, base_revision=base_revision, **kwargs)
+
+        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+            self.assertEqual(run(self.mcp.ensure_external_agent_node(self.pid, "new-session")), "carrier")
+        self.assertEqual(len(attempts), 2)
+        node = self.canvas()["nodes"][0]
+        self.assertEqual(node["mcp_session"], "new-session")
+        self.assertEqual(node["createdBy"], "agent")
+        self.assertEqual(node["agentNodeId"], "original-owner")
+        self.assertEqual(node["userTouchedAt"], 9876)
+        self.assertIs(node["promptEditedByUser"], True)
+        self.assertEqual(node["title"], "human title")
+        self.assertEqual(node["agentGoal"], "human goal")
+        self.assertEqual(node["latestField"], ["retain"])
+        self.assertNotIn("latestField", attempts[0][0]["node"])
+        self.assertEqual(attempts[1][0]["node"]["latestField"], ["retain"])
+        self.broadcast.assert_awaited_once()
+
+    def test_creation_conflict_reuses_minted_id_timestamp_and_ownership(self):
+        original = self.store.apply_mutations
+        attempts = []
+
+        def interleave(project_id, mutations, *, base_revision, **kwargs):
+            attempts.append(copy.deepcopy(mutations))
+            if len(attempts) == 1:
+                original(project_id, [{"op": "upsert_node", "node": {
+                    "id": "unrelated", "type": NODE_TYPE_PROMPT, "text": "concurrent addition",
+                }}], base_revision=base_revision)
+            return original(project_id, mutations, base_revision=base_revision, **kwargs)
+
+        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+            node_id = run(self.mcp.ensure_external_agent_node(self.pid, "this-session"))
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1], "CAS retries must not mint new identity/creation time")
+        node = attempts[1][0]["node"]
+        self.assertEqual(node["id"], node_id)
+        self.assertEqual(node["agentNodeId"], node_id)
+        self.assertEqual(node["createdBy"], "agent")
+        self.assertEqual({node["id"] for node in self.canvas()["nodes"]}, {"unrelated", node_id})
+        self.broadcast.assert_awaited_once()
+
+    def test_concurrent_carrier_creation_is_reused_on_retry_without_duplicate(self):
+        original = self.store.apply_mutations
+        attempts = []
+
+        def interleave(project_id, mutations, *, base_revision, **kwargs):
+            attempts.append(copy.deepcopy(mutations))
+            if len(attempts) == 1:
+                original(project_id, [{"op": "upsert_node", "node": {
+                    "id": "concurrent-carrier", "type": NODE_TYPE_AGENT, "mcp_session": "concurrent",
+                    "createdBy": "user", "agentNodeId": None, "userTouchedAt": 123,
+                    "promptEditedByUser": True,
+                }}], base_revision=base_revision)
+            return original(project_id, mutations, base_revision=base_revision, **kwargs)
+
+        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+            node_id = run(self.mcp.ensure_external_agent_node(self.pid, "this-session"))
+        self.assertEqual(node_id, "concurrent-carrier")
+        self.assertEqual(len(attempts), 2)
+        nodes = self.canvas()["nodes"]
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["mcp_session"], "this-session")
+        self.assertEqual(nodes[0]["createdBy"], "user")
+        self.assertIsNone(nodes[0]["agentNodeId"])
+        self.assertEqual(nodes[0]["userTouchedAt"], 123)
+        self.assertIs(nodes[0]["promptEditedByUser"], True)
+        self.broadcast.assert_awaited_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

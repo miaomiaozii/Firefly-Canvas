@@ -48,7 +48,7 @@ from app.project_sessions import open_project_ids
 from app.routers.api_agent_tools import (
     _app_main,
     _find_node,
-    _open_canvas,
+    _validate_project,
     canvas_view_core,
     create_edge_core,
     create_node_core,
@@ -67,7 +67,7 @@ from app.routers.api_agent_tools import (
     get_task_status,
     get_viewport_state,
     list_media,
-    list_nodes,
+    list_nodes_core,
     request_confirmation_core,
     set_zoom_core,
     trigger_generation_core,
@@ -76,6 +76,7 @@ from app.routers.api_agent_tools import (
     view_media_core,
     wait_for_task_core,
 )
+from app.services.agent_node_state import ownership_fields
 from app.services.canvas_view import VIEW_SLOW_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -191,36 +192,45 @@ async def ensure_external_agent_node(project_id: str, mcp_session_id: str) -> st
     this node is the confirmation-gate binding for destructive tools and
     makes external-session activity observable on the canvas.
     """
-    canvas = _open_canvas(project_id)
-    for node in canvas.get("nodes", []):
-        if (
-            isinstance(node, dict)
-            and str(node.get("type", "")) == EXTERNAL_AGENT_NODE_TYPE
-            and node.get("mcp_session")
-        ):
-            if node.get("mcp_session") != mcp_session_id:
-                node["mcp_session"] = mcp_session_id
-                node["updated_at"] = _app_main.now_ms()
-                await _apply_mutation_broadcast(project_id, [{"op": "upsert_node", "node": node}])
-            return str(node.get("id", ""))
-    node = {
-        "id": f"mcp-agent-{uuid.uuid4().hex[:12]}",
+    from app.routers.api_agent_tools import _apply_mutations_from_snapshot
+
+    _validate_project(project_id)
+    # Mint once, not on each CAS attempt. A concurrent carrier creation is
+    # detected in the next snapshot and reused instead of making a duplicate.
+    new_node_id = f"mcp-agent-{uuid.uuid4().hex[:12]}"
+    now = _app_main.now_ms()
+    new_node = {
+        "id": new_node_id,
         "type": EXTERNAL_AGENT_NODE_TYPE,
         "title": "MCP 外部 Agent",
         "x": 80,
         "y": 80,
         "mcp_session": mcp_session_id,
-        "created_at": _app_main.now_ms(),
+        "created_at": now,
+        **ownership_fields(new_node_id),
     }
-    await _apply_mutation_broadcast(project_id, [{"op": "upsert_node", "node": node}])
-    return node["id"]
+    bound_node_id = new_node_id
 
+    def build_mutations(canvas):
+        nonlocal bound_node_id
+        for node in canvas.get("nodes", []):
+            if (
+                isinstance(node, dict)
+                and str(node.get("type", "")) == EXTERNAL_AGENT_NODE_TYPE
+                and node.get("mcp_session")
+            ):
+                bound_node_id = str(node.get("id", ""))
+                if node.get("mcp_session") == mcp_session_id:
+                    return []
+                # Rebind only session metadata on the latest node. Never
+                # reinitialize ownership/protection or replay a stale upsert.
+                rebound = {**node, "mcp_session": mcp_session_id, "updated_at": now}
+                return [{"op": "upsert_node", "node": rebound}]
+        bound_node_id = new_node_id
+        return [{"op": "upsert_node", "node": new_node}]
 
-async def _apply_mutation_broadcast(project_id: str, mutations: list) -> None:
-    """Apply mutations with the shared retry+broadcast helper."""
-    from app.routers.api_agent_tools import _apply_mutations
-
-    await _apply_mutations(project_id, mutations)
+    await _apply_mutations_from_snapshot(project_id, build_mutations)
+    return bound_node_id
 
 
 async def _confirm_gate(project_id: str, agent_node_id: str, tool: str, args: dict, message: str) -> None:
@@ -325,7 +335,14 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 
 
 async def _impl_list_nodes(project_id, agent_node_id, args):
-    return await list_nodes(project_id)
+    # None means omitted/all in the shared core; JSON null is not omission.
+    if "fields" in args and args["fields"] is None:
+        raise agent_error(400, "INVALID_ARGUMENT", "fields 必须是数组，不能为 null",
+                          "省略 fields 返回全部；传 [] 只返回 summary。")
+    return await list_nodes_core(
+        project_id, group_id=args.get("group_id"), fields=args.get("fields"),
+        created_by=args.get("created_by"),
+    )
 
 
 async def _impl_get_node(project_id, agent_node_id, args):
@@ -337,6 +354,9 @@ async def _impl_create_node(project_id, agent_node_id, args):
     node = args.get("node")
     if not isinstance(node, dict) or not node:
         node = {k: v for k, v in args.items() if v is not None}
+    # Presence is rejected by the core, even for null or mixed legacy/flat args.
+    # Do not erase evidence of a reserved-field override while adapting shapes.
+    node = {**node, **{key: args[key] for key in ownership_fields() if key in args}}
     return await create_node_core(project_id, node, agent_node_id=agent_node_id or "")
 
 
@@ -345,6 +365,7 @@ async def _impl_update_node(project_id, agent_node_id, args):
     updates = args.get("updates")
     if not isinstance(updates, dict) or not updates:
         updates = {k: v for k, v in args.items() if k != "node_id" and v is not None}
+    updates = {**updates, **{key: args[key] for key in ownership_fields() if key in args}}
     return await update_node_core(project_id, str(args.get("node_id") or ""), updates)
 
 
@@ -395,7 +416,8 @@ async def _impl_trigger(project_id, agent_node_id, args):
     except HTTPException:
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
     try:
-        return await trigger_generation_core(project_id, str(args.get("node_id") or ""))
+        return await trigger_generation_core(project_id, str(args.get("node_id") or ""),
+                                             agent_node_id=agent_node_id or "")
     except HTTPException:
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
@@ -473,7 +495,8 @@ async def _impl_batch_edit(project_id, agent_node_id, args):
     try:
         from app.routers.api_agent_tools import enforce_generation_limit
         enforce_generation_limit(project_id, agent_node_id, count=max(1, len(node_ids)))
-        return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"))
+        return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"),
+                                     agent_node_id=agent_node_id or "")
     except HTTPException:
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 

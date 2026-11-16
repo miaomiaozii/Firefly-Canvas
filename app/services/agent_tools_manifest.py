@@ -2,9 +2,10 @@
 """Agent 工具面单一来源清单（#356，ADR 0022）。
 
 MCP streamable-HTTP 端（app/routers/api_mcp.py）直接 import 本模块的 TOOLS；
-pi 扩展（app/agent_extensions/canvas-tools.ts）的工具注册段由
-tools/gen_canvas_tools.py 从本清单 codegen 生成（文件内标记区，重跑 diff 为空
-进 pytest：tests/test_tool_surface_consistency.py）。两边共享同一实现：MCP 路径
+pi 扩展的工具定义由 tools/gen_canvas_tools.py 从本清单生成到独立文件
+app/agent_extensions/canvas-tools.generated.ts（重跑 diff 为空进 pytest：
+tests/test_tool_surface_consistency.py）；canvas-tools.ts 保留手写执行器。
+两边共享同一实现：MCP 路径
 直达 core，pi 路径经 REST 孪生（app/routers/api_agent_tools.py）打同一批 core。
 
 统一口径（#356 拍板 D11/D12/D13）：
@@ -50,7 +51,11 @@ UPDATABLE_NODE_FIELDS = frozenset({
 })
 
 TOOLS = [
-    {"name": "canvas.list_nodes", "description": "列出画布上所有节点（含连边摘要）", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
+    {"name": "canvas.list_nodes", "description": "列出画布节点与组索引（含连边、创建来源和人工保护摘要）；可按 group_id 直接成员或 created_by 原创建来源筛选。fields 省略时返回 summary/prompt/refs/run 全部四块，[] 只返回 summary；summary 始终返回。", "inputSchema": {"type": "object", "properties": {
+        "group_id": {"type": "string", "description": "组框 ID，仅列出该组的直接成员（不递归）"},
+        "created_by": {"type": "string", "enum": ["agent", "user"], "description": "按原创建来源筛选，不按当前接管者筛选"},
+        "fields": {"type": "array", "items": {"type": "string", "enum": ["summary", "prompt", "refs", "run"]}, "description": "返回块：省略=全部；[]=仅 summary；summary 始终返回"},
+    }, "required": [], "additionalProperties": False}},
     {"name": "canvas.get_node", "description": "获取单个节点详情", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     # #356 D11：平铺形状；x/y 缺省=服务端 frame 自动布局；id 服务端铸造。#355 将在
     # 此条目收紧 properties（字段白名单）。
