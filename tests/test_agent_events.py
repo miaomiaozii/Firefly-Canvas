@@ -30,6 +30,9 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         os.environ["PYTHONUTF8"] = "1"
         self.mgr = AgentHostManager()
         self.mgr._get_project_dir = lambda pid: self.tmp.name
+        # #387：_persist_event 现在要求 live 目录有 project.json（真实项目恒有）；
+        # 假项目目录补上这个标记文件，保持 #318 回放用例语义。
+        (Path(self.tmp.name) / "project.json").write_text("{}", encoding="utf-8")
 
     def tearDown(self):
         if self._old_utf8env is None:

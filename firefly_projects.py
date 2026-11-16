@@ -847,6 +847,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             with self._lock:
                 directory = self.root / project_id
                 if not (directory / "project.json").is_file():
+                    # #387：live 目录只剩宿主写回的 agent-events/ 等残留（无
+                    # project.json）时顺手清掉，不留「怎么删都删不掉」的 409 死角。
+                    if directory.is_dir():
+                        shutil.rmtree(directory)
                     raise ProjectNotFound("项目不存在")
                 self.flush(project_id)
                 timer = self._timers.pop(project_id, None)
@@ -882,7 +886,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 if not (source / "project.json").is_file():
                     raise ProjectStoreError("项目回收站中不存在该项目")
                 if target.exists():
-                    raise ProjectStoreError("项目库中已存在同名项目，无法恢复")
+                    # #387：目标处只有残留垃圾（无 project.json）→ 清掉继续恢复，
+                    # 不再永久报「已存在同名项目」（旧行为=删除后无法恢复/反复 409）。
+                    if not (target / "project.json").is_file():
+                        shutil.rmtree(target)
+                    else:
+                        raise ProjectStoreError("项目库中已存在同名项目，无法恢复")
                 metadata = _read_json(source / "project.json")
                 trash_metadata = _read_json(source / "trash.json")
                 if (

@@ -1476,7 +1476,13 @@ class AgentHostManager:
     def _persist_event(self, session: AgentSession, event: dict) -> None:
         """追加归一化事件（就地注入 seq）。永不抛——失败只降级为无回放。"""
         try:
-            path = self._events_log_path(session)
+            # #387：项目已移入回收区/删除（live 目录无 project.json）时不得把
+            # agent-events/ 写回原位——否则宿主退出尾巴/竞态窗口会在原目录重建残留。
+            project_dir = self._get_project_dir(session.project_id)
+            if not os.path.isfile(os.path.join(project_dir, "project.json")):
+                return
+            path = os.path.join(
+                project_dir, "agent-events", f"{session.node_id}.jsonl")
             self._init_event_seq(session, path)
             session._event_seq += 1
             session._events_log_count += 1

@@ -2715,8 +2715,26 @@ def duplicate_project_snapshot(project_id: str):
             store = _app_main.FIREFLY_PROJECT_STORE
         return store.duplicate_project(project_id)
 
+def _clean_leftover_live_dir(project_id: str) -> None:
+    """#387：live 目录存在但无 project.json = 宿主写回的残留垃圾（agent-events/ 等），
+    不是活动项目——在所有生命周期守卫之前清掉，消除「有残留→保守判定→永久 409」链。
+    永不抛；正常项目（有 project.json）绝不会被碰。"""
+    try:
+        with PROJECT_LIBRARY_SWITCH_LOCK:
+            store = _app_main.FIREFLY_PROJECT_STORE
+        if store is None:
+            return
+        directory = Path(store.root) / str(project_id)
+        if directory.is_dir() and not (directory / "project.json").is_file():
+            shutil.rmtree(directory, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def project_lifecycle_store_call(method_name: str, project_id: str, *, block_active_import: bool=False):
     with project_lifecycle_lock(project_id):
+        # #387：守卫前先清残留目录（残留曾被 project_has_active_* 误判为活动任务→409）
+        _clean_leftover_live_dir(project_id)
         if block_active_import and project_has_active_media_import(project_id):
             raise ProjectMediaImportActive('项目仍有媒体正在导入，请等待完成后再删除')
         if block_active_import and project_has_active_image_generation(project_id):
@@ -2941,19 +2959,22 @@ async def restore_trashed_project(project_id: str, request: Request):
 async def purge_trashed_project(project_id: str, request: Request):
     ensure_same_origin_request(request)
     try:
+        # #387：先停宿主再动盘——旧顺序（store 移目录后才 cleanup）给了运行中
+        # 会话在移走后的 live 路径重建 agent-events/ 的窗口，导致残留/反复 409。
+        await agent_host_manager.cleanup_project(project_id)
         result = await asyncio.to_thread(project_lifecycle_store_call, 'purge_trashed_project', project_id, block_active_import=True)
     except ProjectMediaImportActive as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    # Kill any running agent sessions for the purged project (US-27)
-    await agent_host_manager.cleanup_project(project_id)
     return result
 
 @router.delete('/api/project-library/{project_id}')
 async def trash_firefly_project(project_id: str, request: Request):
     ensure_same_origin_request(request)
     try:
+        # #387：先停宿主再动盘（同上：消除移目录后宿主写回 agent-events/ 的窗口）。
+        await agent_host_manager.cleanup_project(project_id)
         result = await asyncio.to_thread(project_lifecycle_store_call, 'trash_project', project_id, block_active_import=True)
     except ProjectMediaImportActive as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2961,8 +2982,6 @@ async def trash_firefly_project(project_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    # Kill any running agent sessions for the trashed project (US-27)
-    await agent_host_manager.cleanup_project(project_id)
     return result
 
 @router.get('/api/project-library/{project_id}/media/unused')
