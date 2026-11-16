@@ -1,0 +1,52 @@
+1918 TEXT 触发生成失败，但这次是**另一个原因**（前两次的 "Node not found" 是误导）：
+
+```
+#357：agent 写操作必须携带 ?agent_node_id=<发起节点>
+（确认门需要归属节点以投影到其会话）
+```
+
+现在的状态：
+- 节点没问题：`prompt-351` / 「萤火虫」 / prompt 与 provider+model 齐全
+- 卡点在工具层：`genera
+1928 TEXT 请调用工具 generate.trigger，参数 node_id=prompt-351，为该节点生成图片。除此之外不要做别的事。
+2292 TEXT 这条调用我已经发过 3 次了，结果不会变：`generate.trigger` 的 schema 只有 `node_id`，而服务端 #357 要求写操作带发起 agent 的 node_id —— 参数在我这边补不出来，再发一次只是刷错误日志。
+
+要往前走只需要你一句话：**「发起节点是 agent_uzd4lssxv99s」** 或 **「是 agent-codex-343」**，我带 `ag
+2301 TEXT 服务端刚部署了修复（之前的 400/404 都是缺参数 bug，已修）。现在请立刻实际调用一次 generate.trigger，参数 node_id=prompt-351。这次是修复后的首次真实验证，不需要再确认我，直接调用工具。
+2385 TEXT 服务端既然已修，前提变了，发一次真实验证：
+2386 tool_execution_start generate.trigger {"node_id": "prompt-351"}
+2387 tool_execution_end generate.trigger "{'content': [{'type': 'text', 'text': 'API call failed: 确认超时（90 秒）：generate.trigger 未获确认。画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。'}], 'details': {}}"
+2389 TEXT API call failed: 确认超时（90 秒）：generate.trigger 未获确认。画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。
+2854 TEXT 这次越过了参数层，卡在**确认门超时**（90s 无人批准 / 画布标签页可能没开）。
+
+关键点：错误里说"确认仍在等待"是可能状态之一——也就是说这一枪有可能已经排队了。我先做一次廉价只读检查，确认有没有产物落地，避免盲目重试导致重复消耗生成额度。
+2855 tool_execution_start media.list "None"
+2856 tool_execution_end media.list "{'content': [{'type': 'text', 'text': '{\\n  \"items\": [\\n    {\\n      \"asset_id\": \"72b762f77e91896716ed407422f79a5b5f9793f4839dea951c054ed014bfa0ea\",\\n      \"filename\": \"72b762f77e91896716ed407422f79a5b5f9793f4839dea951c054ed014bfa0ea.png\",\\n      \"name\": \"示例图A.png\",\\n      \"mim
+2858 TEXT {
+  "items": [
+    {
+      "asset_id": "72b762f77e91896716ed407422f79a5b5f9793f4839dea951c054ed014bfa0ea",
+      "filename": "72b762f77e91896716ed407422f79a5b5f9793f4839dea951c054ed014bfa0ea.png",
+   
+3291 TEXT 验证结论：**参数 bug 确实修好了**（这次走到了确认门），但生成没发生。
+
+- 资源库里只有 `示例图A.png`（`uicheck/img1.png`，本地导入的旧资源），没有任何「萤火虫」新产物 → 这一枪没落地，也没有排队成功。
+- 阻塞点是环境层：确认门 90s 没人批准。要么画布标签页没开，要么这个会话不是 autonomous（自动放行）模式。
+
+再发一次只会再等 90s 然后同
+3300 TEXT 刚才 409 是我在确认弹窗里点得太慢导致门超时，不是你的调用问题。请再调用一次 generate.trigger node_id=prompt-351，这次我会立刻批准。调用后等待工具返回即可。
+3333 tool_execution_start generate.trigger {"node_id": "prompt-351"}
+3334 tool_execution_end generate.trigger "{'content': [{'type': 'text', 'text': '{\\n  \"task_id\": \"agent_img_c1421e4d1d9148c999ec6e54d993640b\",\\n  \"type\": \"image\",\\n  \"node_id\": \"prompt-351\",\\n  \"result_node_id\": \"node-6007ecdfc1fb\"\\n}'}], 'details': {}}"
+3336 TEXT {
+  "task_id": "agent_img_c1421e4d1d9148c999ec6e54d993640b",
+  "type": "image",
+  "node_id": "prompt-351",
+  "result_node_id": "node-6007ecdfc1fb"
+}
+3603 TEXT 确认门这次通过了，生成已启动：
+
+- `task_id`: `agent_img_c1421e4d1d9148c999ec6e54d993640b`
+- 源节点: `prompt-351`（萤火虫）
+- 结果节点: `node-6007ecdfc1fb`
+
+按你说的"等工具返回即可"，我就停在这里，没有轮询、没有聚焦。要我等它跑完（`generate.wait`）并把视口聚焦到 `node-600
