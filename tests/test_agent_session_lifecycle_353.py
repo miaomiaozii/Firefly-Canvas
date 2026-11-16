@@ -72,6 +72,7 @@ class LifecycleBase(unittest.TestCase):
         self._sessions_backup = dict(self.manager.sessions)
         self.addCleanup(self._restore_sessions)
         self.loop = _loop()
+        self.addCleanup(self.loop.close)
 
     def _restore_store(self):
         main.FIREFLY_PROJECT_STORE = self._previous_store
@@ -120,14 +121,10 @@ def _new_session(project_id, node_id):
 
 
 def _loop():
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop
+    # 绝不调 asyncio.set_event_loop：会在主线程永久标 _set_called=True，
+    # 后续测试（test_agent_host_kill/test_quality_gate 等 380+ 条）的
+    # get_event_loop() 就从「自动新建」变成 RuntimeError: no current event loop。
+    return asyncio.new_event_loop()
 
 
 class DropNodeSessionTests(LifecycleBase):
