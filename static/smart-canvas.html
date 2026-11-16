@@ -164,6 +164,8 @@
                 </div>
             </div>
         </div>
+        <!-- #407 D1：Agent 节点停靠槽——与 #world 平级，不随画布缩放/平移；内容同步逻辑在 canvas-agent-tui.js 的 syncAgentDock -->
+        <aside id="agentDock" class="agent-dock" aria-label="Agent 停靠面板" hidden></aside>
         <nav class="smart-top-left smart-toolbar" role="toolbar" aria-label="画布工具栏">
             <button class="smart-back" type="button" onclick="backToProjectList()" aria-label="返回项目列表" title="返回项目列表"><svg class="ico" aria-hidden="true"><use href="#i-arrow-left"/></svg><span data-i18n="canvas.backToList">返回项目列表</span></button>
             <button id="smartUndoButton" class="smart-undo" type="button" aria-label="撤销" aria-keyshortcuts="Control+Z" data-i18n-title="smart.undoShortcut" title="撤销（Ctrl+Z）" disabled><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span data-i18n="smart.undo">撤销</span></button>
