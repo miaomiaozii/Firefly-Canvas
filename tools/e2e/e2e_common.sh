@@ -97,7 +97,7 @@ e2e_start() {
 
   E2E_FP_BEFORE="$(mktemp "${TMPDIR:-/tmp}/e2e-fp-XXXXXX.json")"
   "$PY" "$HARNESS" fingerprint --out "$E2E_FP_BEFORE" || { echo "FATAL: 项目库指纹扫描失败"; exit 97; }
-  E2E_SEED_JSON=$("$PY" "$HARNESS" seed-json --nodes 3) || { echo "FATAL: 读不到种子定义"; exit 97; }
+  E2E_SEED_JSON=$("$PY" "$HARNESS" seed-json --nodes 3 $(e2e_agent_seed_args)) || { echo "FATAL: 读不到种子定义"; exit 97; }
 
   if [ -n "${FIREFLY_E2E_PROJECT:-}" ]; then
     # 只读模式：拿已有项目跑（专给 UX 类 inspect 场景复现真实画布）。不建不删，
@@ -113,11 +113,18 @@ e2e_start() {
   e2e_note "== $E2E_SUITE @ $E2E_URL （隔离项目 $E2E_PID，跑完删除）=="
 }
 
+# #376：E2E_AGENT_NODE=1 时种子追加一个 Agent 节点（smart-agent，id e2e-a1）。
+# 仅 e2e_qa.sh 需要（s3/s4 真实对话场景）；其他套件的 DOM 断言面向原 3 个普通节点，
+# 种子不变，互不影响。
+e2e_agent_seed_args() {
+  if [ "${E2E_AGENT_NODE:-}" = "1" ]; then echo "--agent-node"; fi
+}
+
 e2e_new_project() {
   # 每个场景一个全新项目：起点由构造保证（3 个种子节点），不用重置去和应用的防抖
   # 自动保存抢写——实测重置会被残留的自动保存覆回去（删掉的节点又回来了）。
   local created
-  created=$("$PY" "$HARNESS" create --base "$BASE" --nodes 3 | tail -1)
+  created=$("$PY" "$HARNESS" create --base "$BASE" --nodes 3 $(e2e_agent_seed_args) 2>/dev/null | tail -1)
   [ -z "$created" ] && return 1
   E2E_PID="$created"
   E2E_PIDS+=("$created")

@@ -97,9 +97,14 @@ def projects_root() -> Path:
     return default_projects_root()
 
 
-def seed_mutations(prefix: str, nodes: int, edge: bool) -> list[dict]:
+def seed_mutations(prefix: str, nodes: int, edge: bool, agent_node: bool = False) -> list[dict]:
     """播种节点（+ 可选首尾连线）。刻意不用 type=image：那是服务端生成态，
-    普通 upsert 携 pendingTasks 会被拒（firefly_projects.py:3406）。"""
+    普通 upsert 携 pendingTasks 会被拒（firefly_projects.py:3406）。
+
+    agent_node（#376）：追加一个 Agent 节点（type=smart-agent，服务端权威最小形状，
+    参照 app/routers/api_agent_nodes.py _upsert_agent_canvas_node），供 e2e_qa.sh
+    的 s3/s4 真实对话场景使用。位置 x=440（e2e-n1 右侧 80px 空隙，不重叠、不碰
+    其他套件 M4 框选区）；DOM 渲染顺序在普通节点之后，.image-node 首匹配仍是 e2e-n1。"""
     mutations = []
     for index in range(1, max(0, nodes) + 1):
         mutations.append({
@@ -123,6 +128,21 @@ def seed_mutations(prefix: str, nodes: int, edge: bool) -> list[dict]:
                 "kind": "flow",
             },
         })
+    if agent_node:
+        mutations.append({
+            "op": "upsert_node",
+            "node": {
+                "id": f"{prefix}-a1",
+                "type": "smart-agent",
+                "kind": "agent",
+                "title": "e2e Agent",
+                "agentCli": "pi",
+                "x": 440,
+                "y": 120,
+                "w": 300,
+                "h": 300,
+            },
+        })
     return mutations
 
 
@@ -134,14 +154,14 @@ def cmd_create(args: argparse.Namespace) -> int:
     project_id = str(project.get("id") or "")
     if not project_id:
         raise SystemExit(f"建项目没返回 id：{json.dumps(created, ensure_ascii=False)[:300]}")
-    mutations = seed_mutations("e2e", args.nodes, args.edge)
+    mutations = seed_mutations("e2e", args.nodes, args.edge, getattr(args, "agent_node", False))
     if mutations:
         _request("PATCH", f"{args.base}/api/project-library/{project_id}/canvas",
                  {"mutations": mutations, "base_revision": 0, "client_id": "e2e-harness"})
     if args.state_file:
         Path(args.state_file).parent.mkdir(parents=True, exist_ok=True)
         Path(args.state_file).write_text(project_id, encoding="utf-8")
-    print(f"SEEDED project={project_id} name={name} nodes={args.nodes} edge={int(args.edge)}")
+    print(f"SEEDED project={project_id} name={name} nodes={args.nodes} edge={int(args.edge)} agent_node={int(getattr(args, 'agent_node', False))}")
     print(project_id)
     return 0
 
@@ -149,8 +169,45 @@ def cmd_create(args: argparse.Namespace) -> int:
 def cmd_seed_json(args: argparse.Namespace) -> int:
     """把种子变更集以 JSON 输出——场景 preamble 在页内自愈时要用同一份种子，
     几何（坐标/尺寸）只能在 Python 里定义一份。"""
-    print(json.dumps(seed_mutations("e2e", args.nodes, args.edge), ensure_ascii=False, separators=(",", ":")))
+    print(json.dumps(seed_mutations("e2e", args.nodes, args.edge, getattr(args, "agent_node", False)), ensure_ascii=False, separators=(",", ":")))
     return 0
+
+
+def _stop_agent_nodes(base: str, project_id: str) -> int:
+    """#376：删项目前先停 Agent 会话。有真实对话过的项目会 spawn pi 宿主进程，
+    宿主存活期间：① 入回收区被 409（「项目仍有对话任务待完成或待恢复」：
+    PROJECT_CONVERSATION_TASKS 句柄未 done，api_project_library.py:2729）；
+    ② 更隐蔽的是 trash_project 移动文件后宿主会在原 live 目录重建
+    agent-events/ 子目录，此后 canvas.json 读不到的保守判定（同函数
+    except→True）让该项目永久 409，只能手工删残留目录。停会话走
+    DELETE /api/projects/{pid}/agent-nodes/{nid}（stop_agent_node，杀 pi
+    宿主进程树）。画布路径 live 与回收区（.project-trash/）都要找——
+    孤立环境里 harness 进程需要与服务器同 FIREFLY_PROJECTS_ROOT 才找得到。
+    返回停掉的节点数（读不到画布/无 Agent 节点 = 0，不报错）。"""
+    root = projects_root()
+    candidates = [
+        root / project_id / "canvas.json",
+        root / ".project-trash" / project_id / "canvas.json",
+    ]
+    agent_ids = []
+    for canvas_file in candidates:
+        try:
+            canvas = json.loads(canvas_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        nodes = canvas.get("nodes") if isinstance(canvas, dict) else None
+        agent_ids = [str(n.get("id")) for n in (nodes or [])
+                     if isinstance(n, dict) and n.get("type") in ("smart-agent", "agent-task") and n.get("id")]
+        if agent_ids:
+            break
+    for nid in agent_ids:
+        try:
+            _request("DELETE", f"{base}/api/projects/{project_id}/agent-nodes/{nid}",
+                     timeout=30.0)
+        except (SystemExit, OSError):
+            # 会话本来就不在跑/已停/节点已删：忽略，下面的删除重试轮询会给出最终结论
+            pass
+    return len(agent_ids)
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
@@ -158,29 +215,40 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     if not project_id:
         print("CLEANUP residue  未给出 --project-id")
         return 1
+    # #376：先停 Agent 会话再删（有真实对话过的场景会 spawn 宿主进程，不停就会 409）
+    stopped = _stop_agent_nodes(args.base, project_id)
+    if stopped:
+        print(f"CLEANUP agent-stopped {project_id} nodes={stopped}")
     last_error = ""
-    for method, url in (
-        ("DELETE", f"{args.base}/api/project-library/{project_id}"),
-        ("DELETE", f"{args.base}/api/project-library/trash/{project_id}"),
-    ):
-        try:
-            _request(method, url)
-        except SystemExit as exc:
-            # 404 = 已不在该层（正常：没进回收区时 purge 会 404），其余留作证据
-            last_error = str(exc.code) if hasattr(exc, "code") else str(exc)
-            if "404" not in last_error:
-                break
-    live = _request("GET", f"{args.base}/api/project-library").get("projects") or []
-    trashed = _request("GET", f"{args.base}/api/project-library/trash").get("projects") or []
-    still_live = [p for p in live if str(p.get("id")) == project_id]
-    still_trashed = [p for p in trashed if str(p.get("id")) == project_id]
-    if still_live or still_trashed:
+    deadline = time.time() + 45.0
+    while True:
+        for method, url in (
+            ("DELETE", f"{args.base}/api/project-library/{project_id}"),
+            ("DELETE", f"{args.base}/api/project-library/trash/{project_id}"),
+        ):
+            try:
+                _request(method, url)
+            except SystemExit as exc:
+                # 404 = 已不在该层（正常：没进回收区时 purge 会 404），其余留作证据
+                last_error = str(exc.code) if hasattr(exc, "code") else str(exc)
+                if "404" not in last_error:
+                    break
+        live = _request("GET", f"{args.base}/api/project-library").get("projects") or []
+        trashed = _request("GET", f"{args.base}/api/project-library/trash").get("projects") or []
+        still_live = [p for p in live if str(p.get("id")) == project_id]
+        still_trashed = [p for p in trashed if str(p.get("id")) == project_id]
+        if not still_live and not still_trashed:
+            print(f"CLEANUP ok {project_id}")
+            return 0
+        # #376：会话状态是异步落终态的（stop_session 杀进程树后任务状态才翻），
+        # 409 等 45s 重试窗口，别把异步落盘当回归
+        if time.time() + 3.0 < deadline:
+            time.sleep(3.0)
+            continue
         where = "库内" if still_live else "回收区"
         print(f"CLEANUP residue {project_id} 仍在{where}（{last_error}）——请手工清理 "
               f"并检查 {projects_root()} 下是否有残留目录")
         return 1
-    print(f"CLEANUP ok {project_id}")
-    return 0
 
 
 def scan_fingerprints(exclude: set[str]) -> dict[str, dict]:
@@ -250,12 +318,15 @@ def main() -> int:
     create = sub.add_parser("create", parents=[common], help="建测试项目并播种")
     create.add_argument("--nodes", type=int, default=3)
     create.add_argument("--no-edge", dest="edge", action="store_false", default=True)
+    create.add_argument("--agent-node", dest="agent_node", action="store_true", default=False,
+                        help="#376：追加一个 smart-agent 节点（e2e Q 套 s3/s4 真实对话场景用）")
     create.add_argument("--state-file", default=str(STATE_FILE))
     create.set_defaults(func=cmd_create)
 
     seed = sub.add_parser("seed-json", parents=[common], help="输出种子变更集 JSON（页内自愈用）")
     seed.add_argument("--nodes", type=int, default=3)
     seed.add_argument("--no-edge", dest="edge", action="store_false", default=True)
+    seed.add_argument("--agent-node", dest="agent_node", action="store_true", default=False)
     seed.set_defaults(func=cmd_seed_json)
 
 
