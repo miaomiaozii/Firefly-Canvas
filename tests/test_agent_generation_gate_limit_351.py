@@ -58,12 +58,21 @@ class _Base(unittest.TestCase):
         self._prev_build = api_agent_tools.build_online_image_result
         self._prev_limit = api_agent_tools.GENERATION_SESSION_LIMIT
         self._prev_outdir = None
+        from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
+        self._tasks = CANVAS_TASKS
+        self._tasks_lock = CANVAS_TASK_LOCK
+        self._task_keys = set(CANVAS_TASKS)
 
     def tearDown(self):
         api_agent_tools.request_confirmation_core = self._prev_core
         api_mcp.request_confirmation_core = self._prev_mcp_core
         api_agent_tools.build_online_image_result = self._prev_build
         api_agent_tools.GENERATION_SESSION_LIMIT = self._prev_limit
+        # 防泄漏：本测试造的生成任务不得残留在全局任务表（曾污染 test_global_tasks 空控制台钉）
+        with self._tasks_lock:
+            for key in list(self._tasks):
+                if key not in self._task_keys:
+                    del self._tasks[key]
         main.FIREFLY_PROJECT_STORE = self._prev_store
         self._ctx.__exit__(None, None, None)
         self.temp_dir.cleanup()

@@ -30,7 +30,7 @@ from app.routers.api_agent_nodes import (
     _apply_node_host,
     send_agent_prompt,
 )
-from app.routers.api_agent_tools import delete_node
+from app.routers.api_agent_tools import delete_node_core
 from app.services import agent_host
 from app.services.agent_adapters.pi_adapter import PiAdapter, SpawnParams
 
@@ -139,7 +139,7 @@ class DropNodeSessionTests(LifecycleBase):
         sdir.mkdir(parents=True)
         (sdir / "pi-ext-d1.jsonl").write_text('{"hello":1}', encoding="utf-8")
 
-        result = self._run(delete_node(self.project_id, "agent-d1"))
+        result = self._run(delete_node_core(self.project_id, "agent-d1"))
         self.assertTrue(result["success"])
         # 进程被终止
         self.assertTrue(proc.terminated or proc.killed,
@@ -170,7 +170,7 @@ class DropNodeSessionTests(LifecycleBase):
         self._agent_node("img-2", type="image", kind="image")
         # 无 agent 会话时删除不炸、不误摘他人
         self._live_session("agent-keep")
-        result = self._run(delete_node(self.project_id, "img-2"))
+        result = self._run(delete_node_core(self.project_id, "img-2"))
         self.assertTrue(result["success"])
         self.assertIn(f"{self.project_id}:agent-keep", self.manager.sessions)
 
