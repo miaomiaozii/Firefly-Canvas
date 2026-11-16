@@ -8,6 +8,12 @@
 1. 逐页扫描：每个 `[hidden]` 元素计算样式都是 `none`（并钉住 hidden 元素数量下限，防止空扫假绿）。
 2. 层叠回归：#346 删掉的零散补丁（`.x[hidden]{display:none}`）在新全局规则下仍然隐藏得住。
 3. 跨项目搜索面板（#337 那一例）：顶栏开 → Esc 关 → 再开 → × 关，每一态都按计算样式判定。
+4. 设置页模型选择器（#372）：这页源码里 `hidden` 出现 0 次，全部运行时加上，
+   交互前扫描必为 0 个元素——原来下限只钉了首页/画布页，这页是沉默的空扫。
+   现在走完一个真实键盘交互：临时服务商（PUT /api/providers 注入已知模型列表，
+   不依赖外部服务）→ 模型搜索框真键盘输入过滤 → 非匹配 `.model-option` 计算样式必须
+   `display:none` → 清空恢复 → 再过滤，最后让页面停在过滤态跑扫描并钉下限。
+   预交互扫描不钉下限（本来就该是 0），下限只作用于交互后扫描。
 
 Direct runner — not collected by unittest discover. Run:
     PYTHONUTF8=1 python tests/canvas_hidden_visibility_browser.py [--artifacts-dir DIR]
@@ -56,8 +62,12 @@ DELETED_HIDDEN_PATCHES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# 扫描到 0 个 hidden 元素也算通过，所以钉下限：这三页本来就有这些隐藏控件，扫少了说明页面没加载到位。
+# 扫描到 0 个 hidden 元素也算通过，所以钉下限：这两页本来就有这些隐藏控件，扫少了说明页面没加载到位。
 MIN_HIDDEN_ELEMENTS = {"/": 10, "/static/smart-canvas.html": 20}
+
+# #372：设置页的 [hidden] 全是运行时加的（交互前扫不到），下限只钉在交互后扫描——
+# 交互循环最后让页面停在「搜索过滤中」态，5 个模型选项里 4 个非匹配项必须处于隐藏态。
+SETTINGS_MIN_HIDDEN_AFTER_CYCLE = 4
 
 HIDDEN_SWEEP_JS = """(() => {
   const nodes = [...document.querySelectorAll('[hidden]')];
@@ -105,6 +115,51 @@ PANEL_STATE_JS = """(() => {
     display: getComputedStyle(panel).display,
     visible: getComputedStyle(panel).display !== 'none',
     ariaExpanded: document.querySelector('#smartSearchToggle')?.getAttribute('aria-expanded') || null,
+  };
+})()"""
+
+# #372：设置页交互前注入一个带已知模型列表的临时服务商——
+# 模型选择器（.model-picker）只有在 available_models 非空时才渲染搜索框和选项；
+# base_url 指向永不连的端口，渲染路径不发起任何外部请求。
+SETTINGS_SEED_PROVIDERS_JS = """(async () => {
+  const provider = {
+    id: 'e2e-hidden-guard',
+    name: 'e2e hidden guard',
+    base_url: 'http://127.0.0.1:9',
+    protocol: 'openai',
+    enabled: true,
+    image_models: ['guard-model-a'],
+    available_models: {
+      image_models: ['guard-model-a', 'guard-model-b', 'guard-model-c', 'guard-model-d', 'guard-model-e'],
+      chat_models: [],
+      video_models: []
+    }
+  };
+  const res = await fetch('/api/providers', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify([provider])
+  });
+  if (!res.ok) throw new Error('seed /api/providers failed: ' + res.status);
+})()"""
+
+SETTINGS_PICKER_STATE_JS = """(() => {
+  // .model-picker-search 只在「有可用模型」的选择器里渲染——用它做锚点，
+  // 与页面上其他无模型的（隐藏）选择器无关。
+  const search = document.querySelector('.model-picker-search');
+  if (!search) {
+    return {exists: false};
+  }
+  const picker = search.closest('.model-picker');
+  const options = [...picker.querySelectorAll('.model-option')];
+  return {
+    exists: true,
+    pickerDisplay: getComputedStyle(picker).display,
+    options: options.map((el) => ({
+      text: el.textContent,
+      hiddenAttribute: el.hidden,
+      display: getComputedStyle(el).display
+    }))
   };
 })()"""
 
@@ -172,12 +227,75 @@ def assert_states(states: dict[str, dict], failures: list[str]) -> None:
             )
 
 
+def settings_model_picker_cycle(browser: NativeBrowser, artifact_root: Path) -> dict:
+    """#372：设置页唯一会批量产生运行时 [hidden] 的交互——模型选择器搜索过滤。
+
+    真键盘：聚焦 .model-picker-search → 输入 'guard-model-a'（5 个选项里只有同名项
+    匹配）→ 4 个非匹配 .model-option 被加 [hidden]；Ctrl+A + Backspace 清空后恢复；
+    再输入一次让页面停在过滤态，后续扫描的下限（SETTINGS_MIN_HIDDEN_AFTER_CYCLE）靠它。
+    模仿 search_panel_cycle：每态按计算样式快照，最后留截图。"""
+    states: dict[str, dict] = {}
+    browser.evaluate(SETTINGS_SEED_PROVIDERS_JS, await_promise=True)
+    browser.reload(timeout=30)
+    browser.wait_for("!!document.querySelector('.model-picker-search')", timeout=20)
+    states["loaded"] = browser.evaluate(SETTINGS_PICKER_STATE_JS)
+    browser.native_click(".model-picker-search")
+    browser.native_type("guard-model-a")
+    browser.wait_for(
+        "[...document.querySelectorAll('.model-option')].filter(o => o.hidden).length === 4",
+        timeout=10,
+    )
+    states["filtered"] = browser.evaluate(SETTINGS_PICKER_STATE_JS)
+    browser.capture_screenshot(artifact_root / "settings-model-filter.png")
+    browser.native_press("a", modifiers=("Control",))
+    browser.native_press("Backspace")
+    browser.wait_for(
+        "[...document.querySelectorAll('.model-option')].filter(o => o.hidden).length === 0",
+        timeout=10,
+    )
+    states["cleared"] = browser.evaluate(SETTINGS_PICKER_STATE_JS)
+    browser.native_type("guard-model-a")
+    browser.wait_for(
+        "[...document.querySelectorAll('.model-option')].filter(o => o.hidden).length === 4",
+        timeout=10,
+    )
+    states["refiltered"] = browser.evaluate(SETTINGS_PICKER_STATE_JS)
+    return states
+
+
+def assert_settings_states(states: dict[str, dict], failures: list[str]) -> None:
+    # query 非空 = 过滤态：只有文本含 query 的选项可见，其余必须隐藏且计算样式 display:none
+    # ——后者就是 #346 全局 [hidden] 规则在设置页生效与否的直接判定。
+    for name, query in (("loaded", ""), ("filtered", "guard-model-a"), ("cleared", ""), ("refiltered", "guard-model-a")):
+        snapshot = states.get(name) or {}
+        if not snapshot.get("exists"):
+            failures.append(f"settings picker state {name}: .model-picker-search 不存在（服务商模型列表没渲染）")
+            continue
+        for option in snapshot.get("options") or []:
+            should_hide = bool(query) and query not in (option.get("text") or "")
+            if bool(option.get("hiddenAttribute")) is not should_hide:
+                failures.append(
+                    f"settings picker state {name}: {option.get('text')} hiddenAttribute="
+                    f"{option.get('hiddenAttribute')}（期望隐藏={should_hide}）"
+                )
+            if option.get("display") == "none" and not should_hide:
+                failures.append(
+                    f"settings picker state {name}: {option.get('text')} 应可见但计算 display=none"
+                )
+            if should_hide and option.get("display") != "none":
+                failures.append(
+                    f"settings picker state {name}: {option.get('text')} 带 hidden 属性但计算 "
+                    f"display={option.get('display')}（全局 [hidden] 规则在设置页没生效）"
+                )
+
+
 def run(artifacts_dir: Path) -> list[str]:
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
     sweeps: dict[str, dict] = {}
     cascades: dict[str, list[dict]] = {}
     panel_states: dict[str, dict] = {}
+    settings_states: dict[str, dict] = {}
     chrome = find_browser("chrome")
     with tempfile.TemporaryDirectory(prefix="hidden-visibility-") as root:
         store = ProjectStore(Path(root) / "projects", snapshot_delay=0)
@@ -240,6 +358,23 @@ def run(artifacts_dir: Path) -> list[str]:
                                 f"{page}（面板开合一轮后）: [hidden] 仍然显示 display={offender['display']} "
                                 f"{offender['tag']}#{offender['id'] or '-'} .{offender['cls'] or '-'}"
                             )
+                    if page == "/static/global-settings.html":
+                        # #372：这页预交互扫描必为 0（hidden 全是运行时加的），
+                        # 交互循环让页面停在「搜索过滤中」态，下限只钉在交互后扫描。
+                        settings_states = settings_model_picker_cycle(browser, artifacts_dir)
+                        assert_settings_states(settings_states, failures)
+                        final_sweep = browser.evaluate(HIDDEN_SWEEP_JS)
+                        sweeps["/static/global-settings.html:after-cycle"] = final_sweep
+                        for offender in final_sweep["offenders"]:
+                            failures.append(
+                                f"{page}（交互后）: [hidden] 仍然显示 display={offender['display']} "
+                                f"{offender['tag']}#{offender['id'] or '-'} .{offender['cls'] or '-'}"
+                            )
+                        if final_sweep["total"] < SETTINGS_MIN_HIDDEN_AFTER_CYCLE:
+                            failures.append(
+                                f"{page}（交互后）: 只扫到 {final_sweep['total']} 个 [hidden] 元素"
+                                f"（下限 {SETTINGS_MIN_HIDDEN_AFTER_CYCLE}）——交互循环没产生预期隐藏态，不能算通过"
+                            )
                 browser.capture_screenshot(artifacts_dir / "final-frame.png")
             except Exception as error:  # 失败证据要落地，否则只能看到异常字符串
                 write_json(
@@ -256,6 +391,7 @@ def run(artifacts_dir: Path) -> list[str]:
                 write_json(artifacts_dir / "hidden-sweeps.json", sweeps)
                 write_json(artifacts_dir / "deleted-patch-cascades.json", cascades)
                 write_json(artifacts_dir / "search-panel-states.json", panel_states)
+                write_json(artifacts_dir / "settings-picker-states.json", settings_states)
                 write_json(artifacts_dir / "console-errors.json", browser.console_errors)
                 browser.close()
     write_json(artifacts_dir / "result.json", {"failures": failures})
