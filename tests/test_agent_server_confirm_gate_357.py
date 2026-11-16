@@ -155,6 +155,30 @@ class ServerConfirmGate357Tests(unittest.TestCase):
         self.assertNotIn("confirmGate(", src, "#357：pi 扩展预确认必须删除（门在服务端）")
         self.assertIn("agent_node_id=", src, "写操作必须带 ?agent_node_id= 归属参数")
 
+    def test_extension_gated_ops_all_carry_gate_query(self):
+        """服务端 _server_confirm_gate 包裹的每个 REST 写端点，扩展侧 URL 必须带 gateQuery()。
+        曾在 UI 实测发现 generate.trigger/batch_edit 漏带 → 服务端 400。"""
+        src = (ROOT / "app" / "agent_extensions" / "canvas-tools.ts").read_text(encoding="utf-8")
+        gated = ["generate/trigger", "canvas/batch_edit",
+                 "canvas/edit_crop", "canvas/edit_rotate", "canvas/edit_flip",
+                 "canvas/edit_outpaint", "canvas/edit_erase"]
+        import re
+        for path in gated:
+            # 匹配扩展里对该端点的 callApi URL 模板（反引号串）
+            hits = [m.group(0) for m in re.finditer(r"`[^`]*" + re.escape(path) + r"[^`]*`", src)]
+            self.assertTrue(hits, f"扩展未调用 {path}")
+            for url in hits:
+                self.assertIn("gateQuery()", url,
+                              f"#357：扩展对门控端点 {path} 的 URL 缺 gateQuery()：{url}")
+        # 删除类：REST 门在 DELETE /nodes/{id}、/edges/…、/media/{id}
+        del_hits = [m.group(0) for m in re.finditer(
+            r"`[^`]*(?:/nodes/\$\{params\.node_id\}|/edges/\$\{params\.from_node\}|/media/\$\{params\.asset_id\})[^`]*`", src)]
+        for url in del_hits:
+            if url.endswith("${params.node_id}`"):
+                continue  # get_node 的 GET URL（不带门）
+            self.assertIn("gateQuery()", url,
+                          f"#357：扩展对门控删除端点的 URL 缺 gateQuery()：{url}")
+
     def test_tui_confirm_uses_ffdialog(self):
         src = (ROOT / "static" / "js" / "canvas-agent-tui.js").read_text(encoding="utf-8")
         self.assertIn("ffDialog.ask", src,

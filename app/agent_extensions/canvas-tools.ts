@@ -192,7 +192,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.batch_edit": async (_toolCallId, params) =>
-        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit`, "POST", {
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit${gateQuery()}`, "POST", {
             node_ids: params.node_ids,
             prompt: params.prompt,
         })),
@@ -228,7 +228,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "generate.trigger": async (_toolCallId, params) =>
-        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/trigger`, "POST", { node_id: params.node_id })),
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/trigger${gateQuery()}`, "POST", { node_id: params.node_id })),
 
     "generate.status": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}`, "GET"), true),
