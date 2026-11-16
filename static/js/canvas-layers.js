@@ -438,14 +438,12 @@
     }
 
     // ===== i18n（中英） =====
+    // #379：layersMode/layersTitle/layersHint/layersAddBlank/layersImportBrush/layersExport
+    // 六个被 HTML data-i18n / 编辑器 tr() 引用的 key 已迁入 i18n/canvas.js bundle
+    // （validate-i18n.js 只加载 bundle，本地块注册对校验器不可见）；
+    // 这里只剩 canvas-layers.js 内部 t() 用的 8 个 key。
     if (typeof window !== 'undefined' && window.StudioI18n?.register) {
         window.StudioI18n.register({
-            'canvas.layersMode': { zh: '图层', en: 'Layers' },
-            'canvas.layersTitle': { zh: '图层编辑', en: 'Layer editing' },
-            'canvas.layersHint': { zh: '调整图层显隐与顺序，导出合成 PNG', en: 'Toggle and reorder layers, then export a composited PNG' },
-            'canvas.layersAddBlank': { zh: '空白图层', en: 'Add blank layer' },
-            'canvas.layersImportBrush': { zh: '导入笔刷', en: 'Import brush layer' },
-            'canvas.layersExport': { zh: '导出合成 PNG', en: 'Export PNG' },
             'canvas.layersBase': { zh: '底图', en: 'Base image' },
             'canvas.layersBlank': { zh: '空白图层', en: 'Blank layer' },
             'canvas.layersBrush': { zh: '笔刷图层', en: 'Brush layer' },

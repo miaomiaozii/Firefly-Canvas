@@ -344,6 +344,14 @@
         "canvas.videoRoleReference": { zh: "参考", en: "Ref" },
         "canvas.videoRoleFirstFrame": { zh: "首帧", en: "First" },
         "canvas.videoRoleLastFrame": { zh: "尾帧", en: "Last" },
-        "canvas.videoFailed": { zh: "视频生成失败", en: "Video generation failed" }
+        "canvas.videoFailed": { zh: "视频生成失败", en: "Video generation failed" },
+        // #379：从 canvas-layers.js 本地 register 块迁入（校验器只加载 bundle，
+        // 本地块里的 key 对校验器不可见 → Unresolved）。
+        "canvas.layersMode": { zh: "图层", en: "Layers" },
+        "canvas.layersTitle": { zh: "图层编辑", en: "Layer editing" },
+        "canvas.layersHint": { zh: "调整图层显隐与顺序，导出合成 PNG", en: "Toggle and reorder layers, then export a composited PNG" },
+        "canvas.layersAddBlank": { zh: "空白图层", en: "Add blank layer" },
+        "canvas.layersImportBrush": { zh: "导入笔刷", en: "Import brush layer" },
+        "canvas.layersExport": { zh: "导出合成 PNG", en: "Export PNG" }
     });
 })();

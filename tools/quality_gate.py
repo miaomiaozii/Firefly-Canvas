@@ -490,6 +490,14 @@ STEP_DEFINITIONS = {
     # 退出码钉 0：存量未清前不挡门，报告进门跑输出供人工跟进；存量修清后
     # 去掉 --advisory 即可提级为阻塞。
     "doc-link-check": lambda python: [python, "tools/doc_link_check.py", "--advisory"],
+    # #379：i18n 键校验门（父票 #341）：加载 bundle 建字典，扫 static/ 下
+    # data-i18n/tr()/trf()/tf() 引用，引用无注册 zh 则点名报错。接进 fast 门
+    # （实测 ~1-2s，不碰 30s 预算）——此前只手工跑，canvas.layers* 六个 key
+    # 注册在 canvas-layers.js 本地块（校验器不可见）一直漏网。
+    "i18n-validate": lambda python: [
+        trusted_node_executable(),
+        "static/js/i18n/validate-i18n.js",
+    ],
 }
 
 # #370：失败不再中断整个模式。退出码按「最严重」累积，不是「最后看到的那个」：
@@ -518,7 +526,7 @@ def step_exit_code(step: dict) -> int:
 
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"),
+    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
     "domain": (
         "javascript-syntax",
         "surface-contract",

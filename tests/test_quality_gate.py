@@ -603,6 +603,13 @@ class QualityGateTests(unittest.TestCase):
             "sys.exit(0)\n",
             encoding="utf-8",
         )
+        # #379：i18n-validate（fast）跑 static/js/i18n/validate-i18n.js。fixture 最小
+        # 骨架没有 i18n 文件，给一个桩（门只验接线，校验器行为由真门跑验）。
+        (self.fixture_root / "static" / "js" / "i18n").mkdir(parents=True, exist_ok=True)
+        (self.fixture_root / "static" / "js" / "i18n" / "validate-i18n.js").write_text(
+            "console.log('i18n ok: fixture stub');\n",
+            encoding="utf-8",
+        )
         # #167：新接入的两个画布浏览器 runner 在 fixture 里用最小桩，
         # 和 excel_import_browser.py 的桩同一套路（门只验接线，不验产品行为）。
         # #185：node_flow 级联与 fly_fixes 两个 runner 同一套路接入。
@@ -942,7 +949,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -2818,7 +2825,7 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check")),
+            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
             "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
             "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
