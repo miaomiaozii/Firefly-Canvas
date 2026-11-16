@@ -126,6 +126,15 @@ class McpTestBase(unittest.TestCase):
         self.assertNotIn("error", body, body)
         return body["result"]
 
+    def seed_external_agent_node(self, node_id="mcp-agent-seed"):
+        """#350 后契约：共享外部节点不再被只读调用物化——测试直接预置归属节点。"""
+        canvas = self.store.canvas(self.project_id)
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": {
+            "id": node_id, "type": "smart-agent", "title": "MCP 外部 Agent",
+            "mcp_session": "test-mcp-session", "x": 0, "y": 0}}],
+            base_revision=int(canvas.get("revision") or 0))
+        return node_id
+
     def materialized_agent_node(self):
         canvas = self.store.canvas(self.project_id)
         nodes = [n for n in canvas.get("nodes", []) if n.get("type") == "smart-agent"]
@@ -304,13 +313,16 @@ class McpToolBehaviorTests(McpTestBase):
     """Tool execution, materialization, broadcast, viewport, event recorder."""
 
     def test_tools_call_materializes_agent_node_once(self):
+        # #350 后契约：只有写类工具无 node= 时才回退物化共享外部节点，且幂等。
         self.open_tab()
-        first = self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=21))
+        first = self.tool_result(self.tool_call(
+            "canvas.connect", {"edge": {"from": "prompt-1", "to": "image-1"}}, request_id=21))
         self.assertFalse(first["isError"], first)
         node = self.materialized_agent_node()
         self.assertTrue(node.get("mcp_session"), "agent node must carry its MCP session id")
         # a second call reuses (does not duplicate) the materialized node
-        self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=22))
+        self.tool_result(self.tool_call(
+            "canvas.connect", {"edge": {"from": "image-1", "to": "prompt-1"}}, request_id=22))
         canvas = self.store.canvas(self.project_id)
         self.assertEqual(
             len([n for n in canvas["nodes"] if n.get("type") == "smart-agent"]), 1)
@@ -609,6 +621,85 @@ class McpSameOriginTests(McpTestBase):
             headers={"origin": "http://evil.example"},
         )
         self.assertEqual(resp.status_code, 403, resp.text)
+
+
+
+class McpNodeBinding350Tests(McpTestBase):
+    """#350：&node= 精确绑定 + 只读工具绝不 upsert 画布节点。"""
+
+    def test_readonly_call_does_not_upsert_agent_node(self):
+        self.open_tab()
+        before = [n for n in self.store.canvas(self.project_id).get("nodes", [])
+                  if n.get("type") == "smart-agent"]
+        result = self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=90))
+        self.assertFalse(result.get("isError"), result)
+        after = [n for n in self.store.canvas(self.project_id).get("nodes", [])
+                 if n.get("type") == "smart-agent"]
+        self.assertEqual(after, before, "#350：只读工具不得 upsert agent 节点")
+
+    def test_write_without_node_falls_back_to_shared_node_once(self):
+        self.open_tab()
+        for rid in (91, 92):
+            result = self.tool_result(self.tool_call(
+                "canvas.connect",
+                {"edge": {"from": "prompt-1", "to": "image-1"}}, request_id=rid))
+            self.assertFalse(result.get("isError"), result)
+        agents = [n for n in self.store.canvas(self.project_id).get("nodes", [])
+                  if n.get("type") == "smart-agent"]
+        self.assertEqual(len(agents), 1, "#350：无 node= 的写工具回退共享外部节点，且幂等")
+
+    def test_node_param_binds_call_attribution(self):
+        self.open_tab()
+        canvas = self.store.canvas(self.project_id)
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": {
+            "id": "agent-ext-1", "type": "smart-agent", "title": "codex 绑定节点",
+            "x": 0, "y": 0}}], base_revision=int(canvas.get("revision") or 0))
+        resp = self.client.post(
+            f"/api/mcp?project={self.project_id}&node=agent-ext-1",
+            json={"jsonrpc": "2.0", "id": 93, "method": "tools/call",
+                  "params": {"name": "canvas.create_node",
+                             "args": {"node": {"type": "smart-prompt", "title": "bound"}}}})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertNotIn("error", body, body)
+        data = json.loads(body["result"]["content"][0]["text"])
+        node = next(n for n in self.store.canvas(self.project_id).get("nodes", [])
+                    if n.get("id") == data["node_id"])
+        self.assertEqual(node.get("createdByAgent"), "agent-ext-1",
+                         "#350：node= 归属必须落到发起节点")
+        titles = {n.get("title") for n in self.store.canvas(self.project_id).get("nodes", [])}
+        self.assertNotIn("MCP 外部 Agent", titles,
+                         "#350：带 node= 时不得再造共享外部节点")
+
+    def test_node_param_confirm_card_targets_bound_node(self):
+        self.open_tab()
+        # 票面验收：带 node= 的确认卡片归属该节点（request_confirmation_core 收到
+        # 的 agent_node_id 必须是绑定节点，而非外部共享节点）。
+        canvas = self.store.canvas(self.project_id)
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": {
+            "id": "agent-ext-2", "type": "smart-agent", "title": "codex 绑定节点2",
+            "x": 0, "y": 0}}], base_revision=int(canvas.get("revision") or 0))
+        seen = {}
+        import app.routers.api_mcp as _m
+        prev = _m.request_confirmation_core
+
+        async def spy(project_id, agent_node_id, tool, args, message, timeout_seconds=60):
+            seen["agent_node_id"] = agent_node_id
+            return {"approved": False, "reason": "rejected"}
+
+        _m.request_confirmation_core = spy
+        try:
+            resp = self.client.post(
+                f"/api/mcp?project={self.project_id}&node=agent-ext-2",
+                json={"jsonrpc": "2.0", "id": 94, "method": "tools/call",
+                      "params": {"name": "canvas.delete_node",
+                                 "args": {"node_id": "image-1"}}})
+        finally:
+            _m.request_confirmation_core = prev
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(seen.get("agent_node_id"), "agent-ext-2",
+                         "#350：确认门必须绑定到 node= 指定节点")
+
 
 
 if __name__ == "__main__":

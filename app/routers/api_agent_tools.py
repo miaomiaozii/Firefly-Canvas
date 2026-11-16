@@ -202,6 +202,8 @@ async def delete_node_core(project_id: str, node_id: str) -> dict:
     except Exception as exc:
         from app.core import logger as _logger
         _logger.warning("#353 drop_node_session failed for %s: %s", node_id, exc)
+    # #351：节点销毁 → 清该节点的会话生成额度计数。
+    reset_generation_counts(project_id, node_id)
     return {"success": True, "node_id": node_id}
 
 
@@ -267,8 +269,15 @@ async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str
 
 @router.post("/batch_edit")
 async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）。"""
+    """#266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）。
+    #351：agent 调用过确认门并按张数计会话限额。"""
     body = await request.json()
+    node_ids = body.get("node_ids") or []
+    await _server_confirm_gate(request, project_id, "canvas.batch_edit", body,
+                               f"批量生成 {len(node_ids)} 个节点（消耗外部生成额度）")
+    if request.headers.get("X-Agent-Project", ""):
+        enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
+                                 count=max(1, len(node_ids)))
     return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"))
 
 
@@ -452,11 +461,44 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
 # Generate tools
 # =============================================================================
 
+# #351：花钱生成类工具每 agent 会话限额（generate.trigger 计 1，batch_edit 计张数）。
+# 内存计数，键 (project_id, agent_node_id)；节点删除/会话 drop 时清理。
+GENERATION_SESSION_LIMIT = int(os.environ.get("FIREFLY_AGENT_GENERATION_LIMIT", "20"))
+_GENERATION_COUNTS: dict = {}
+
+
+def enforce_generation_limit(project_id: str, agent_node_id: str, count: int = 1) -> None:
+    """#351：超上限抛 HTTPException 429；调用方（agent 入口）负责在门后计数。"""
+    key = (project_id, str(agent_node_id or ""))
+    with CANVAS_TASK_LOCK:
+        used = int(_GENERATION_COUNTS.get(key, 0))
+        if used + count > GENERATION_SESSION_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=(f"#351：本 agent 会话生成额度 {used}/{GENERATION_SESSION_LIMIT}，"
+                        f"本次需 {count} 张，超限拒绝；请新开会话或由用户重置"))
+        _GENERATION_COUNTS[key] = used + count
+
+
+def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
+    """#351：会话/节点销毁时清计数（drop_node_session、删除节点两处调用）。"""
+    with CANVAS_TASK_LOCK:
+        for key in [k for k in _GENERATION_COUNTS
+                    if k[0] == project_id and (not agent_node_id or k[1] == agent_node_id)]:
+            _GENERATION_COUNTS.pop(key, None)
+
 
 @generate_router.post("/trigger")
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """Trigger generation on a node, returns task ID."""
+    """Trigger generation on a node, returns task ID.
+    #351：agent 调用（带 X-Agent-Project）先过服务端确认门 + 会话限额；
+    浏览器用户路径不进本门（用户主动点击，由前端发起）。"""
     body = await request.json()
+    await _server_confirm_gate(request, project_id, "generate.trigger",
+                               body, f"节点 {body.get('node_id', '')} 生成图片（消耗外部生成额度）")
+    if request.headers.get("X-Agent-Project", ""):
+        enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
+                                 count=max(1, int(body.get("n") or 1)))
     return await trigger_generation_core(project_id, body.get("node_id"))
 
 
@@ -526,6 +568,21 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
 
     # Create the task using the existing API
     task_id = f"agent_img_{uuid.uuid4().hex}"
+    # #351（ADR 0012）：结果挂节点 + 项目历史——在源节点右侧新建 smart-image 结果节点，
+    # 走浏览器生成同款 begin/complete/fail 通道（pendingTasks、history、广播全复用）。
+    result_node_id = f"node-{uuid.uuid4().hex[:12]}"
+    src_x = float(target_node.get("x") or 0.0)
+    src_y = float(target_node.get("y") or 0.0)
+    src_w = float(target_node.get("width") or 300.0)
+    result_node = {
+        "id": result_node_id,
+        "type": "smart-image",
+        "title": f"生成结果 · {prompt[:24]}",
+        "x": src_x + src_w + 60.0,
+        "y": src_y,
+        "created_at": _app_main.now_ms(),
+    }
+    await _apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}])
     with CANVAS_TASK_LOCK:
         CANVAS_TASKS[task_id] = {
             "id": task_id,
@@ -534,16 +591,31 @@ async def trigger_generation_core(project_id: str, node_id: str) -> dict:
             "project_id": project_id,
             "node_id": node_id,
             "node_type": node_type,
+            "result_node_id": result_node_id,
             "created_at": time.time(),
             "updated_at": time.time(),
             "result": None,
             "error": "",
         }
+    # pendingTasks 登记（best-effort：失败不阻断生成，complete 时会自建节点）。
+    try:
+        store = _app_main.FIREFLY_PROJECT_STORE
+        rev = int(store.canvas(project_id).get("revision") or 0)
+        await asyncio.to_thread(
+            store.begin_image_generation, project_id, result_node_id,
+            {"taskId": task_id, "count": 1, "providerId": route.provider_id,
+             "model": route.model, "prompt": prompt},
+            base_revision=rev)
+        await asyncio.to_thread(store.flush, project_id)
+    except Exception as exc:  # noqa: BLE001
+        from app.core import logger as _logger
+        _logger.warning("#351 begin_image_generation pending failed task=%s: %s", task_id, exc)
 
     # Run the generation in the background
-    asyncio.create_task(_run_agent_generation(task_id, project_id, node_id, payload))
+    asyncio.create_task(_run_agent_generation(task_id, project_id, node_id, result_node_id, payload))
 
-    return {"task_id": task_id, "type": "image", "node_id": node_id}
+    return {"task_id": task_id, "type": "image", "node_id": node_id,
+            "result_node_id": result_node_id}
 
 
 async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) -> dict:
@@ -579,13 +651,60 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
     }
 
 
-async def _run_agent_generation(task_id: str, project_id: str, node_id: str, payload: dict):
-    """Run generation in the background and update task status."""
+async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
+                                result_node_id: str, payload: dict):
+    """Run generation in the background and update task status.
+
+    #351：成功后把图归档进项目媒体并挂到结果节点（complete_image_generation），
+    写项目生成历史；失败走 fail_image_generation 清理 pendingTasks + 失败历史记录。
+    """
+    started_at = _app_main.now_ms()
     try:
         # Use the existing image generation function
-        result = await build_online_image_result(
-            OnlineImageRequest(**payload)
-        )
+        result = await build_online_image_result(OnlineImageRequest(**payload))
+        from app.services import archive_project_generated_image as archive
+        items = []
+        for idx, raw_item in enumerate(result.get("image_items") or []):
+            try:
+                items.append(await archive(
+                    project_id,
+                    {"type": "url",
+                     "value": str(raw_item.get("url") or ""),
+                     "mime_type": str(raw_item.get("mime_type") or "image/png")},
+                    idx))
+            except Exception as exc:  # noqa: BLE001
+                from app.core import logger as _logger
+                _logger.warning("#351 归档失败 task=%s idx=%s: %s", task_id, idx, exc)
+        timestamp = _app_main.now_ms()
+        history_record = {
+            "id": f"generation-{uuid.uuid4().hex}",
+            "type": "online-image",
+            "status": "succeeded",
+            "prompt": payload.get("prompt", ""),
+            "created_at": started_at,
+            "createdAt": started_at,
+            "completed_at": timestamp,
+            "runMs": max(0, timestamp - started_at),
+            "actual_provider_id": result.get("provider_id", ""),
+            "actual_provider_name": result.get("provider_name", ""),
+            "actual_model": result.get("model", ""),
+            "model": result.get("model", ""),
+            "params": payload.get("params") or {},
+            "outputs": [{"asset_id": it["asset_id"], "kind": "image"} for it in items],
+            "result_node_id": result_node_id,
+            "source_node_id": node_id,
+        }
+        store = _app_main.FIREFLY_PROJECT_STORE
+        if items:
+            canvas = await asyncio.to_thread(
+                store.complete_image_generation, project_id, result_node_id, items,
+                history_record, task_id=task_id)
+            await asyncio.to_thread(store.flush, project_id)
+            await _app_main.manager.broadcast_canvas_updated(
+                project_id, int(canvas.get("updated_at") or timestamp))
+            result["result_node_id"] = result_node_id
+            result["project_asset_ids"] = [it["asset_id"] for it in items]
+            result["history_recorded"] = True
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({
                 "status": "succeeded",
@@ -594,6 +713,32 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str, pay
                 "updated_at": time.time(),
             })
     except Exception as exc:
+        failure_time = _app_main.now_ms()
+        try:
+            store = _app_main.FIREFLY_PROJECT_STORE
+            failure_record = {
+                "id": f"generation-{uuid.uuid4().hex}",
+                "type": "online-image",
+                "status": "failed",
+                "prompt": payload.get("prompt", ""),
+                "created_at": started_at,
+                "createdAt": started_at,
+                "completed_at": failure_time,
+                "runMs": max(0, failure_time - started_at),
+                "outputs": [],
+                "result_node_id": result_node_id,
+                "source_node_id": node_id,
+                "error": str(exc),
+            }
+            failed_canvas = await asyncio.to_thread(
+                store.fail_image_generation, project_id, result_node_id, task_id,
+                failure_record)
+            await asyncio.to_thread(store.flush, project_id)
+            await _app_main.manager.broadcast_canvas_updated(
+                project_id, int(failed_canvas.get("updated_at") or failure_time))
+        except Exception as inner:  # noqa: BLE001
+            from app.core import logger as _logger
+            _logger.warning("#351 fail_image_generation cleanup failed task=%s: %s", task_id, inner)
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({
                 "status": "failed",

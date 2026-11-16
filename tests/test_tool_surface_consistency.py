@@ -109,6 +109,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
         {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
         {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image", "x": 300, "y": 100}},
         {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt-1", "to": "image-1", "kind": "flow"}},
+        # #350：MCP 不再自动物化 agent 节点——归属节点两项目同种，终态全等比较。
+        {"op": "upsert_node", "node": {"id": "agent-consistency", "type": "smart-agent",
+                                       "title": "Agent", "x": 0, "y": 0}},
     ]
 
     def setUp(self):
@@ -161,8 +164,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
         return client, store, pids[0], pids[1]
 
     def _mcp_call(self, client, project, name, args, request_id=None):
+        # #350：&node= 精确绑定归属节点（不再依赖共享外部节点物化）。
         resp = client.post(
-            f"/api/mcp?project={project}",
+            f"/api/mcp?project={project}&node=agent-consistency",
             json={"jsonrpc": "2.0", "id": request_id or uuid.uuid4().hex[:6],
                   "method": "tools/call", "params": {"name": name, "args": args}},
         )
@@ -203,24 +207,14 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
     def _canon_payload(self, payload):
         out = {"ok": payload["ok"], "text": self._canon_text(payload.get("text", ""))}
-        # 拍板 c：MCP 每次 tools/call 会 upsert MCP agent 节点（#350 范围）——
-        # 结果里剔除 smart-agent 节点行并修 count，不对它下断言。
-        try:
-            obj = json.loads(out["text"])
-            if isinstance(obj, dict) and isinstance(obj.get("nodes"), list):
-                obj["nodes"] = [n for n in obj["nodes"] if n.get("type") != "smart-agent"]
-                if "count" in obj:
-                    obj["count"] = len(obj["nodes"])
-                out["text"] = json.dumps(obj, sort_keys=True, ensure_ascii=False)
-        except (ValueError, AttributeError):
-            pass
+        # #350 后拍板 c 作废：MCP 不再 upsert agent 节点，返回值不再剔除任何节点。
         if "image_len" in payload:
             out["image_len"] = payload["image_len"]
         return out
 
     def _canvas_state(self, store, pid):
         canvas = store.canvas(pid)
-        nodes = [n for n in canvas.get("nodes", []) if n.get("type") != "smart-agent"]  # #350 口径
+        nodes = list(canvas.get("nodes", []))  # #350 后全量比较（含 agent 节点）
         edges = list(canvas.get("connections", []))
         for coll in (nodes, edges):
             for item in coll:
@@ -247,10 +241,10 @@ class DualPathEquivalenceTests(unittest.TestCase):
     # -- gated helpers（#242 门：单事件循环 + confirm handler 直接批准）----
 
     def _materialize_agent(self, client, store, pid):
-        self._mcp_call(client, pid, "canvas.list_nodes", {})
+        # #350：agent 节点由 SEED 预置（MCP 不再自动物化）；此处只取归属 id。
         canvas = store.canvas(pid)
         agents = [n for n in canvas.get("nodes", []) if n.get("type") == "smart-agent"]
-        self.assertTrue(agents, "MCP 调用应物化 agent 节点")
+        self.assertTrue(agents, "#350：SEED 应预置归属 agent 节点")
         return agents[0]["id"]
 
     def _gated_impl(self, store, pid, agent_node_id, impl, args):
@@ -389,12 +383,12 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.view": pair("canvas.view", {"scope": "page"}, "POST", "/canvas/view", {"scope": "page"}),
             "canvas.view_media": pair("canvas.view_media", {"node_id": "image-1"}, "POST", "/canvas/view_media", {"node_id": "image-1"}),
             "canvas.edit_crop": gated("canvas.edit_crop", {"node_id": "image-1", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}}, "_impl_edit_crop", "POST", "/canvas/edit_crop", {"node_id": "image-1", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}}),
-            "canvas.batch_edit": pair("canvas.batch_edit", {"node_ids": ["image-1"], "prompt": "p"}, "POST", "/canvas/batch_edit", {"node_ids": ["image-1"], "prompt": "p"}),
+            "canvas.batch_edit": gated("canvas.batch_edit", {"node_ids": ["image-1"], "prompt": "p"}, "_impl_batch_edit", "POST", "/canvas/batch_edit", {"node_ids": ["image-1"], "prompt": "p"}),
             "canvas.edit_rotate": gated("canvas.edit_rotate", {"node_id": "image-1", "angle": 90}, "_impl_edit_rotate", "POST", "/canvas/edit_rotate", {"node_id": "image-1", "angle": 90}),
             "canvas.edit_flip": gated("canvas.edit_flip", {"node_id": "image-1", "direction": "horizontal"}, "_impl_edit_flip", "POST", "/canvas/edit_flip", {"node_id": "image-1", "direction": "horizontal"}),
             "canvas.edit_outpaint": gated("canvas.edit_outpaint", {"node_id": "image-1", "outpaint_size": {"width": 40, "height": 40}}, "_impl_edit_outpaint", "POST", "/canvas/edit_outpaint", {"node_id": "image-1", "outpaint_size": {"width": 40, "height": 40}}),
             "canvas.edit_erase": edit_erase_pin_only,
-            "generate.trigger": pair("generate.trigger", {"node_id": "prompt-1"}, "POST", "/generate/trigger", {"node_id": "prompt-1"}),
+            "generate.trigger": gated("generate.trigger", {"node_id": "prompt-1"}, "_impl_trigger", "POST", "/generate/trigger", {"node_id": "prompt-1"}),
             "generate.status": pair("generate.status", {"task_id": "nope"}, "GET", "/generate/tasks/nope"),
             "generate.wait": pair("generate.wait", {"task_id": "nope", "timeout_seconds": 5}, "GET", "/generate/tasks/nope/wait?timeout=5"),
             "media.upload": tmp_upload_run,

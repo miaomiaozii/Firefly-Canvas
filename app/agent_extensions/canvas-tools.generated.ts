@@ -68,7 +68,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.batch_edit",
-        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成",
+        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。#351：走服务端确认门（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成",
         parameters: Type.Object({ node_ids: Type.Array(Type.String(), {description: "节点 ID 列表（1..10）", minItems: 1, maxItems: 10}), prompt: Type.String({description: "批量 prompt，写入每个节点", minLength: 1}) }),
     },
     {
@@ -93,7 +93,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "generate.trigger",
-        description: "在节点上触发生成，立即返回 task_id（节点需已有 prompt）",
+        description: "在节点上触发生成，立即返回 task_id（节点需已有 prompt）。#351：花钱工具走服务端确认门（阻塞最长 90s，autonomous 自动放行），每 agent 会话有生成次数上限（超限拒绝）；结果自动挂到源节点旁的结果节点并写入项目历史",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {

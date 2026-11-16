@@ -266,8 +266,8 @@ class EditEraseGateTests(McpTestBase):
             self.project_id, [{"op": "upsert_node", "node": node}],
             base_revision=int(canvas.get("revision") or 0))
         # materialize the agent node + its session（同 289 _setup 先例）
-        self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=83))
-        agent_node_id = self.materialized_agent_node()["id"]
+        # #350：只读调用不再物化外部节点——直接预置归属节点。
+        agent_node_id = self.seed_external_agent_node()
         session = run_async(agent_host_manager.get_or_create_session(
             self.project_id, agent_node_id))
         session.process = FakeAgentProcess(script=[])

@@ -85,13 +85,13 @@ TOOLS = [
     # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
     # #266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成（调既有生成通路，非本地处理；结果放各自旁边）
-    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
+    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。#351：走服务端确认门（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
     # #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 是既有能力，flip 同族本地变换）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_rotate", "description": "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "angle": {"type": "integer", "enum": [90, 180, 270], "description": "逆时针旋转角度，90/180/270 之一"}}, "required": ["node_id", "angle"], "additionalProperties": False}},
     {"name": "canvas.edit_flip", "description": "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "direction": {"type": "string", "enum": ["horizontal", "vertical"], "description": "horizontal=左右镜像，vertical=上下镜像"}}, "required": ["node_id", "direction"], "additionalProperties": False}},
     {"name": "canvas.edit_outpaint", "description": "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "outpaint_size": {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}, "required": ["width", "height"], "additionalProperties": False, "description": "目标画布尺寸（像素；须大于原图像素）"}, "offset": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "additionalProperties": False, "description": "原图在新画布中的位置（像素，默认 0,0 左上角）"}}, "required": ["node_id", "outpaint_size"], "additionalProperties": False}},
     {"name": "canvas.edit_erase", "description": "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": PARAM_RECT, "prompt": {"type": "string", "minLength": 1, "description": "描述要擦除什么、如何填充该区域"}}, "required": ["node_id", "rect", "prompt"], "additionalProperties": False}},
-    {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
+    {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）。#351：花钱工具走服务端确认门（阻塞最长 90s，autonomous 自动放行），每 agent 会话有生成次数上限（超限拒绝）；结果自动挂到源节点旁的结果节点并写入项目历史", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"], "additionalProperties": False}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120", "minimum": 1, "maximum": 600}}, "required": ["task_id"], "additionalProperties": False}},
     {"name": "media.upload", "description": "导入本机媒体文件到项目资源库（file_path 为服务器本机路径）", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"], "additionalProperties": False}},
@@ -103,3 +103,12 @@ TOOLS = [
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
+
+# #350：写类工具集——MCP 无 &node= 时才允许回退到共享外部节点（ensure upsert）；
+# 其余只读工具绝不写画布（票面：「MCP 只读工具也 upsert 节点」）。
+WRITE_TOOLS = frozenset({
+    "canvas.batch_edit", "canvas.connect", "canvas.create_node", "canvas.delete_node",
+    "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase", "canvas.edit_flip",
+    "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.update_node",
+    "generate.trigger", "media.delete", "media.upload",
+})

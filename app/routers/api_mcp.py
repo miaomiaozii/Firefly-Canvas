@@ -311,7 +311,7 @@ mcp_event_recorder = McpEventRecorder()
 # freshness 测试钉住（重跑生成器 diff 必须为空）。
 # ---------------------------------------------------------------------------
 
-from app.services.agent_tools_manifest import TOOLS  # noqa: E402
+from app.services.agent_tools_manifest import TOOLS, WRITE_TOOLS  # noqa: E402
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
@@ -374,7 +374,19 @@ async def _impl_search_projects(project_id, agent_node_id, args):
 
 
 async def _impl_trigger(project_id, agent_node_id, args):
-    return await trigger_generation_core(project_id, str(args.get("node_id") or ""))
+    # #351：花钱工具走服务端确认门（cautious/默认必确认；autonomous 自动放行，
+    # SAFETY_FLOOR 不含 generate——用户拍板「按自主级别走门」）+ 会话生成限额。
+    await _confirm_gate(project_id, agent_node_id, "generate.trigger", args,
+                        f"节点 {args.get('node_id', '')} 生成图片（消耗外部生成额度）")
+    try:
+        from app.routers.api_agent_tools import enforce_generation_limit
+        enforce_generation_limit(project_id, agent_node_id, count=1)
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+    try:
+        return await trigger_generation_core(project_id, str(args.get("node_id") or ""))
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
 
 
 async def _impl_status(project_id, agent_node_id, args):
@@ -442,8 +454,14 @@ async def _impl_edit_crop(project_id, agent_node_id, args):
 
 
 async def _impl_batch_edit(project_id, agent_node_id, args):
-    # #266 §59.3：N 节点 + 一句 prompt = N 次生成（调既有生成通路；与 generate.trigger 一致不走确认门）
+    # #266 §59.3：N 节点 + 一句 prompt = N 次生成（调既有生成通路）。
+    # #351：改走确认门 + 按张数计会话生成限额（旧注释「不走门」作废）。
+    node_ids = args.get("node_ids") or []
+    await _confirm_gate(project_id, agent_node_id, "canvas.batch_edit", args,
+                        f"批量生成 {len(node_ids)} 个节点（消耗外部生成额度）")
     try:
+        from app.routers.api_agent_tools import enforce_generation_limit
+        enforce_generation_limit(project_id, agent_node_id, count=max(1, len(node_ids)))
         return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"))
     except HTTPException as exc:
         raise ValueError(str(exc.detail)) from exc
@@ -576,7 +594,16 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     try:
         project_id = resolve_project(str(request.query_params.get("project") or ""))
-        node_id = await ensure_external_agent_node(project_id, sid)
+        # #350（ADR 0024 §3）：&node= 精确绑定归属节点——确认卡片/工具调用都落在
+        # 发起节点上（票面：卡片曾落到看不见的外部节点）。只读工具绝不 upsert 画布
+        # 节点；仅写类工具无 node= 时回退共享外部节点（无 node= 才用共享节点）。
+        node_param = str(request.query_params.get("node") or "")
+        if node_param:
+            node_id = node_param
+        elif name in WRITE_TOOLS:
+            node_id = await ensure_external_agent_node(project_id, sid)
+        else:
+            node_id = ""
         if slow_timeout is not None:
             # #266 慢操作独立超时契约（90s，区别于 generate.wait 的 600s）
             result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
