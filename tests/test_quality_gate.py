@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -295,6 +296,80 @@ class QualityGateTests(unittest.TestCase):
         self.assertNotIn("static/js/smart-canvas.js", joined)
         for mode in ("fast", "domain", "trial", "release"):
             self.assertIn("javascript-syntax", MODE_STEPS[mode])
+
+    def test_javascript_types_step_registered_after_syntax_in_every_mode(self):
+        # #369：类型检查步骤必须紧跟语法步——语法红时类型检查没有意义，
+        # 语法绿才轮到它；四个模式都要：fast 是提交时门，类型错误要在这里免费拦住。
+        step = "javascript-types"
+        self.assertIn(step, STEP_DEFINITIONS)
+        joined = " ".join(STEP_DEFINITIONS[step](sys.executable))
+        self.assertIn("tests.test_javascript_types", joined)
+        for mode in ("fast", "domain", "trial", "release"):
+            steps = MODE_STEPS[mode]
+            self.assertIn(step, steps)
+            self.assertEqual(steps.index(step), steps.index("javascript-syntax") + 1)
+
+    def test_javascript_types_step_installs_offline_and_rejects_bad_js(self):
+        # #369 验收：红绿有效性。最小 fixture 没有类型检查配置，步骤在整条 fast 门
+        # 里是 no-op（接线由 test_fast_mode_…reports_dirty_tree 覆盖）；这里造一个
+        # 带完整类型检查配置的仓库直接跑步骤模块，断言：
+        # (a) vendored tarball 能 integrity 校验 + 解进 node_modules（无 npm、无网络、
+        #     不写本机 npm 缓存/临时目录）；(b) 正确的 @ts-check 文件绿；
+        # (c) 类型错误红、TS 错误码进 stderr。
+        scratch = Path(self.temp_dir.name) / "type-repo"
+        (scratch / "static" / "js").mkdir(parents=True)
+        (scratch / "tests").mkdir()
+        (scratch / "packages" / "npm").mkdir(parents=True)
+        shutil.copy2(ROOT / "package.json", scratch / "package.json")
+        shutil.copy2(ROOT / "jsconfig.json", scratch / "jsconfig.json")
+        shutil.copy2(ROOT / "package-lock.json", scratch / "package-lock.json")
+        for tarball in sorted((ROOT / "packages" / "npm").glob("*.tgz")):
+            shutil.copy2(tarball, scratch / "packages" / "npm" / tarball.name)
+        shutil.copy2(
+            ROOT / "tests" / "test_javascript_types.py",
+            scratch / "tests" / "test_javascript_types.py",
+        )
+        (scratch / "tests" / "__init__.py").write_text("", encoding="utf-8")
+        (scratch / "static" / "js" / "typed.js").write_text(
+            "// @ts-check\n/** @type {number} */\nconst value = 42;\nexport { value };\n",
+            encoding="utf-8",
+        )
+
+        environment = os.environ.copy()
+        # 钉死：步骤不得跑 npm / 写任何 npm 缓存——给一个必须保持不存在的目录。
+        environment["NPM_CONFIG_CACHE"] = str(Path(self.temp_dir.name) / "npm-cache-must-stay-empty")
+        command = [sys.executable, "-m", "unittest", "-b", "tests.test_javascript_types"]
+        green = subprocess.run(
+            command,
+            cwd=scratch,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
+        self.assertTrue((scratch / "node_modules" / "typescript" / "lib" / "tsc.js").is_file())
+        self.assertFalse(Path(environment["NPM_CONFIG_CACHE"]).exists(), "步骤跑了 npm / 写了 npm 缓存")
+        self.assertFalse((ROOT / "node_modules").exists(), "步骤写到了工作仓库的 node_modules")
+
+        (scratch / "static" / "js" / "bad.js").write_text(
+            "// @ts-check\n/** @type {number} */\nconst value = \"not a number\";\nexport { value };\n",
+            encoding="utf-8",
+        )
+        red = subprocess.run(
+            command,
+            cwd=scratch,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        self.assertNotEqual(red.returncode, 0)
+        self.assertIn("TS2322", red.stderr)
 
     def test_canvas_boundaries_evidence_runs_only_in_trial_and_release(self):
         # #167：runner 长期游离在门禁之外，只能手动跑。
@@ -696,6 +771,16 @@ class QualityGateTests(unittest.TestCase):
                 "    def test_contract(self): self.assertTrue(True)\n",
                 encoding="utf-8",
             )
+        # #369：类型检查步骤——fixture 没有类型检查配置（无 package.json/jsconfig），
+        # 真实步骤模块在这种情况下跑一个接线测试 exit 0；桩同一行为。
+        # 门只验接线；红绿有效性由
+        # test_javascript_types_step_installs_offline_and_rejects_bad_js 用完整配置仓库覆盖。
+        (self.fixture_root / "tests" / "test_javascript_types.py").write_text(
+            "import unittest\n\n"
+            "class JavaScriptTypeCheckFixture(unittest.TestCase):\n"
+            "    def test_noop_wiring(self): self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
         write_generation_lifecycle_runner(self.fixture_root)
         write_complete_generation_lifecycle_runner(self.fixture_root)
         write_composer_flow_runner(self.fixture_root)
@@ -953,7 +1038,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -2829,13 +2914,14 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
-            "domain": (180, ("javascript-syntax", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
-            "trial": (300, ("javascript-syntax", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "ws-stats-reconnect-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
+            "fast": (30, ("javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
+            "domain": (180, ("javascript-syntax", "javascript-types", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
+            "trial": (300, ("javascript-syntax", "javascript-types", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "ws-stats-reconnect-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
                 900,
                 (
                     "javascript-syntax",
+                    "javascript-types",
                     "unit-contract-quality-gate",
                     "unit-contract-remainder",
                     "native-browser-evidence",

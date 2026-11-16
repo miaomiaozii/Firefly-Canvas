@@ -403,6 +403,19 @@ STEP_DEFINITIONS = {
         "-b",
         "tests.test_canvas_frontend_sources",
     ],
+    # #369：无构建类型检查——tsc --noEmit，不产文件、不打包，紧跟语法步。
+    # 门全离线（deny 代理、workspace 无 node_modules），步骤模块不碰 npm：
+    # 对 package-lock.json 的 sha512 integrity 校验后把 packages/npm/*.tgz
+    # 用标准库 tarfile 解进 node_modules/，再经受信 node 调仓内 tsc。
+    # 无类型检查配置的仓库（门的最小 fixture）跑一个接线测试后 exit 0，
+    # 同 tabbit-e2e 门内快跳约定（#295：门验接线，有配置处验行为）。
+    "javascript-types": lambda python: [
+        python,
+        "-m",
+        "unittest",
+        "-b",
+        "tests.test_javascript_types",
+    ],
     "excel-api-smoke": lambda python: [
         python,
         "-m",
@@ -530,9 +543,10 @@ def step_exit_code(step: dict) -> int:
 
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
+    "fast": ("javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
     "domain": (
         "javascript-syntax",
+        "javascript-types",
         "surface-contract",
         "project-contract",
         "provider-contract",
@@ -544,6 +558,7 @@ MODE_STEPS = {
     ),
     "trial": (
         "javascript-syntax",
+        "javascript-types",
         "unit-contract-quality-gate",
         "unit-contract-remainder",
         "native-browser-evidence",
@@ -573,6 +588,7 @@ MODE_STEPS = {
     ),
     "release": (
         "javascript-syntax",
+        "javascript-types",
         "unit-contract-quality-gate",
         "unit-contract-remainder",
         "native-browser-evidence",
@@ -1160,9 +1176,23 @@ class _GuardedPopen(_real_popen):
                 and not node_module_argument.startswith("-")
                 and node_module_argument.endswith((".mjs", ".js"))
             )
+            # #369：类型检查步骤跑 `node node_modules/typescript/lib/tsc.js -p
+            # jsconfig.json --noEmit`（门内唯一允许的多参数 node 调用）。精确四参
+            # 匹配：tsc 入口是相对路径（cwd 就是门 workspace，只能落在 workspace 内），
+            # 后三个参数逐一钉死——没有 -e 等价物、没有任意 flag 注入。
+            allowed_typecheck = (
+                len(command_arguments) == 4
+                and isinstance(command_arguments[0], str)
+                and command_arguments[0].replace("\\", "/")
+                == "node_modules/typescript/lib/tsc.js"
+                and command_arguments[1] == "-p"
+                and command_arguments[2] == "jsconfig.json"
+                and command_arguments[3] == "--noEmit"
+            )
             if basename in {"node", "node.exe"} and not (
                 (len(command_arguments) == 2 and operation in {"-e", "--check"})
                 or allowed_node_module
+                or allowed_typecheck
             ):
                 _record("subprocess-executable", f"{basename} {' '.join(command_arguments)}")
                 raise PermissionError("quality gate denied node arguments")
@@ -1687,11 +1717,12 @@ def isolated_environment(
     home_root = run_root / "home"
     temp_root = run_root / "temp"
     pycache_root = run_root / "pycache"
+    npmcache_root = run_root / "npm-cache"
     guard_root = run_root / "guard"
     guard_events = run_root / "guard-events.jsonl"
     retry_events = run_root / "retry-events.jsonl"
     child_events = run_root / "child-events.jsonl"
-    for path in (runtime_root, projects_root, home_root, temp_root, pycache_root, guard_root):
+    for path in (runtime_root, projects_root, home_root, temp_root, pycache_root, npmcache_root, guard_root):
         path.mkdir(parents=True, exist_ok=True)
     (guard_root / "sitecustomize.py").write_text(
         textwrap.dedent(GUARD_SOURCE).lstrip(),
@@ -1740,6 +1771,11 @@ def isolated_environment(
             "TEMP": str(temp_root),
             "TMP": str(temp_root),
             "PYTHONPYCACHEPREFIX": str(pycache_root),
+            # #369：门内 npm 缓存的隔离落点——同 PYTHONPYCACHEPREFIX 的约定：
+            # run_root 下专用目录 + 环境变量，绝不落本机 %LOCALAPPDATA%\npm-cache。
+            # 当前没有步骤跑 npm（tests.test_javascript_types 用标准库 tarfile
+            # 解 vendored tarball），但今后任何门内 npm 调用默认落在这里。
+            "NPM_CONFIG_CACHE": str(npmcache_root),
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
             "PYTHON": sys.executable,

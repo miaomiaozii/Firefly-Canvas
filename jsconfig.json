@@ -1,0 +1,24 @@
+{
+  // #369: 无构建类型检查。tsc --noEmit 只查类型，不产文件、不打包。
+  // 约定：
+  //   - static/js/ 下的新文件一律首行 `// @ts-check`，公共函数用 JSDoc
+  //     `@param` / `@returns` 标注（.js 文件不能写 TS 类型标注，只能 JSDoc）。
+  //   - 共享全局变量的遗留脚本暂不加 @ts-check（会淹没在报错里），
+  //     拆出独立模块时再开查——本票范围「先从新文件和独立模块开始」。
+  //   - 质量门 `javascript-types` 步骤把 packages/npm/*.tgz（对
+  //     package-lock.json 的 sha512 integrity 校验后）用标准库 tarfile
+  //     解进 node_modules/，再 node node_modules/typescript/lib/tsc.js
+  //     -p jsconfig.json --noEmit——无 npm、无网络、无缓存写本机。
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["static/js/**/*.js"]
+}

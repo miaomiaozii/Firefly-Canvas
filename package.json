@@ -1,0 +1,11 @@
+{
+  "name": "firefly-canvas",
+  "private": true,
+  "devDependencies": {
+    "playwright": "1.63.0",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "typecheck": "tsc -p jsconfig.json --noEmit"
+  }
+}
