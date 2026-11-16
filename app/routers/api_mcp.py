@@ -82,8 +82,9 @@ SESSION_HEADER = "Mcp-Session-Id"
 SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
-#: Confirmation gate blocking wait (ADR 0022: request_confirmation default 60s).
-CONFIRM_TIMEOUT_SECONDS = 90.0  # #357：写操作确认等待 >60s（与 REST 侧 AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS 同口径）
+#: Confirmation gate blocking wait (#357: agent 写操作确认等待 90s > 60s，
+#: 与 REST 侧 AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS 同口径；ADR 0022 原 default 60s 已被 #357 覆写)。
+CONFIRM_TIMEOUT_SECONDS = 90.0
 
 #: Event aggregation interval — dirty flag + 3s timer, ComfyArt
 #: api/bot_turns.py:26 (_PERSIST_INTERVAL_S=3.0) parity (issue #243 追加细节 3).
@@ -218,7 +219,8 @@ async def _apply_mutation_broadcast(project_id: str, mutations: list) -> None:
 
 async def _confirm_gate(project_id: str, agent_node_id: str, tool: str, args: dict, message: str) -> None:
     """Materialized confirmation gate (ADR 0022): destructive MCP tool calls
-    block until the user approves/rejects on the canvas (default 60s).
+    block until the user approves/rejects on the canvas (#357 起为 90s，
+    见 CONFIRM_TIMEOUT_SECONDS；ADR 原文 default 60s 已被覆写)。
 
     The confirm event is projected to the materialized Agent node's session;
     a human approves through the canvas TUI of the owning tab. On timeout the
