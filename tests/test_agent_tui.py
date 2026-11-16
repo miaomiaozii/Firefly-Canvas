@@ -814,6 +814,11 @@ class TestAgentStreamSpawnFailure(unittest.TestCase):
         project = self.store.create_project("Stream Spawn Failure")
         project_id = project["id"]
         node_id = "node-spawn-fail"
+        # #388 后续（review 口径）：0ef60e1 后 WS prompt 兜底先查节点存在（_find_node），
+        # 用例先在画布上落 smart-agent 节点（复用 _upsert_agent_canvas_node，形状一致），
+        # 断言不变：spawn 失败仍发 error、且尝试过 spawn。
+        from app.routers.api_agent_nodes import _upsert_agent_canvas_node
+        run_async(_upsert_agent_canvas_node(project_id, node_id, "pi"))
         run_async(agent_host_manager.get_or_create_session(project_id, node_id))
 
         with self.client.websocket_connect(
