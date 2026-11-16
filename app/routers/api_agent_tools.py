@@ -350,17 +350,6 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         node["y"] = 0
     node["created_at"] = _app_main.now_ms()
 
-    # #343 review r9①：工具建节点必须可归因——落盘盖章发起方身份。
-    # MCP 路：agent_node_id = ensure_external_agent_node 的外部 agent 节点（带 mcp_session）；
-    # pi 路：agent_node_id = 画布 agent 节点。辅助函数只读已有 store 调用，不新增 canvas 反向引用口径。
-    if agent_node_id:
-        node["createdByAgent"] = agent_node_id
-        _src_type, _sess = _resolve_agent_source(project_id, agent_node_id)
-        if _sess:
-            node["createdBySession"] = _sess
-        # smart-agent = MCP 外部 agent 节点（api_mcp.EXTERNAL_AGENT_NODE_TYPE）；agent = pi 卡。
-        node["createdBySource"] = {"smart-agent": "mcp", "agent": "pi"}.get(_src_type, "agent")
-
     mutations = [{"op": "upsert_node", "node": node}]
     if not _explicit_pos and agent_node_id:
         frame = _find_chat_frame(project_id, agent_node_id)
@@ -377,19 +366,6 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
 
     await _apply_mutations(project_id, mutations)
     return {"success": True, "node_id": node["id"]}
-
-
-def _resolve_agent_source(project_id: str, agent_node_id: str) -> tuple[str, str]:
-    """发起方 agent 节点 → (type, mcp_session)；查不到回 ("", "")。"""
-    store = _app_main.FIREFLY_PROJECT_STORE
-    try:
-        canvas = store.canvas(project_id)
-    except Exception:
-        return "", ""
-    for n in (canvas.get("nodes") or []):
-        if isinstance(n, dict) and str(n.get("id")) == str(agent_node_id):
-            return str(n.get("type") or ""), str(n.get("mcp_session") or "")
-    return "", ""
 
 
 def _find_chat_frame(project_id: str, agent_node_id: str) -> dict | None:

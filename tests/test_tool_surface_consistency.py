@@ -226,10 +226,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 # 会引入 20s×N 卡顿）——不参与等价比较，结果节点存在性/内容仍全量比。
                 for k in ("pending", "running", "queued", "pendingTasks", "_generationBatchApplied"):
                     item.pop(k, None)
-                # #343 后双路必然差异字段：服务端生成 id（node-XXXX）两侧不同；
-                # 来源三戳（createdBy*）按设计区分 mcp/pi，不参与等价比较。
-                for k in ("id", "createdByAgent", "createdBySession", "createdBySource"):
-                    item.pop(k, None)
+                # #343 后双路必然差异字段：服务端生成 id（node-XXXX）两侧不同，不参与等价比较。
+                # （createdBy* 三戳系超范围改动，已 revert，不再剥离。）
+                item.pop("id", None)
                 for k, v in list(item.items()):
                     if isinstance(v, str):
                         item[k] = self._canon_text(v)

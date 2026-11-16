@@ -665,8 +665,7 @@ class McpNodeBinding350Tests(McpTestBase):
         data = json.loads(body["result"]["content"][0]["text"])
         node = next(n for n in self.store.canvas(self.project_id).get("nodes", [])
                     if n.get("id") == data["node_id"])
-        self.assertEqual(node.get("createdByAgent"), "agent-ext-1",
-                         "#350：node= 归属必须落到发起节点")
+        # #350：归属语义由下方「不得再造共享外部节点」断言承担——createdBy* 盖章系超范围改动已 revert。
         titles = {n.get("title") for n in self.store.canvas(self.project_id).get("nodes", [])}
         self.assertNotIn("MCP 外部 Agent", titles,
                          "#350：带 node= 时不得再造共享外部节点")
