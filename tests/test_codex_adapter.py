@@ -182,7 +182,7 @@ class _FakeWhichMixin:
         def _which(name, path=None):
             if name == "codex":
                 return target
-            return self._real_which(name, path)
+            return self._real_which(name, path=path)
 
         shutil.which = _which
 

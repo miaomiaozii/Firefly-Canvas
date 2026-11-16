@@ -46,9 +46,30 @@ class TestPiArgvSafety(unittest.TestCase):
         self.temp.cleanup()
 
     def test_no_newline_in_any_argv_arg(self):
-        # 钉①：cmd /c 形态（.cmd 包装器，生产常态）下任何 argv 参数不得含换行。
-        cmd = self.adapter.build_argv(_params(str(self.session_dir), resolved_cli="pi.cmd"))
-        self.assertEqual(cmd[:2], ["cmd", "/c"])
+        # 钉①（#343 后契约）：非 wrapper .cmd 拒启（None，不回落 cmd /c）；
+        # 真 npm wrapper 形态下 argv[0]=node.exe，任何 argv 参数不得含换行。
+        self.assertIsNone(
+            self.adapter.build_argv(_params(str(self.session_dir), resolved_cli="pi.cmd")),
+            "无 wrapper 的 pi.cmd 应拒启（绝不 cmd /c 拼串）")
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            (base / "pi.cmd").write_text(
+                '@ECHO off\r\n'
+                'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & '
+                '"%_prog%"  "%dp0%\\pkg\\bin\\pi.js" %*\r\n', encoding="utf-8")
+            (base / "pkg" / "bin").mkdir(parents=True)
+            (base / "pkg" / "bin" / "pi.js").write_text("//", encoding="utf-8")
+            import shutil as _sh
+            prev = _sh.which
+            try:
+                _sh.which = (lambda name, *a, **k: str(base / "pi.cmd")
+                             if name == "pi" else prev(name, *a, **k))
+                cmd = self.adapter.build_argv(_params(str(self.session_dir),
+                                                      resolved_cli=str(base / "pi.cmd")))
+            finally:
+                _sh.which = prev
+        self.assertIsNotNone(cmd, "真 wrapper 应解析成 node.exe 直启")
+        self.assertTrue(cmd[0].lower().endswith("node.exe"), cmd[0])
         for arg in cmd:
             self.assertNotIn("\n", arg, f"argv 参数含换行（cmd 包装器会截断）: {arg[:40]!r}")
 

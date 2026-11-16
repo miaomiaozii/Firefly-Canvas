@@ -257,24 +257,29 @@ class McpProjectArbitrationTests(McpTestBase):
 
     def test_single_open_tab_auto_resolved(self):
         self.open_tab()
-        self.tool_call("canvas.create_node",
-                       {"node": {"type": "prompt", "id": "auto-res-1", "title": "t"}},
-                       request_id=10)
+        import json as _json
+        r0 = self.tool_result(self.tool_call("canvas.create_node",
+                       {"node": {"type": "prompt", "title": "t"}},
+                       request_id=10))
+        nid = _json.loads(r0["content"][0]["text"])["node_id"]  # #343
         result = self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=11))
         self.assertFalse(result["isError"], result)
         text = result["content"][0]["text"]
-        self.assertIn("auto-res-1", text)
+        self.assertIn(nid, text)
 
     def test_explicit_project_wins_over_single_tab(self):
         other = self.store.create_project("Explicit Target")
         self.open_tab()          # tab for self.project
         self.open_tab(project_id=other["id"])  # tab for the explicit target
-        self.tool_call("canvas.create_node",
-                       {"node": {"type": "prompt", "id": "other-node-1"}},
-                       request_id=12, project=other["id"])
-        self.tool_call("canvas.create_node",
-                       {"node": {"type": "prompt", "id": "home-node-1"}},
-                       request_id=12, project=self.project_id)
+        import json as _json
+        ro = self.tool_result(self.tool_call("canvas.create_node",
+                       {"node": {"type": "prompt"}},
+                       request_id=12, project=other["id"]))
+        other_id = _json.loads(ro["content"][0]["text"])["node_id"]  # #343：服务端生成
+        rh = self.tool_result(self.tool_call("canvas.create_node",
+                       {"node": {"type": "prompt"}},
+                       request_id=12, project=self.project_id))
+        home_id = _json.loads(rh["content"][0]["text"])["node_id"]
         # ambiguous without ?project=
         ambiguous = self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=13))
         self.assertTrue(ambiguous["isError"])
@@ -283,8 +288,8 @@ class McpProjectArbitrationTests(McpTestBase):
         result2 = self.tool_result(
             self.tool_call("canvas.list_nodes", {}, request_id=14, project=other["id"]))
         text2 = result2["content"][0]["text"]
-        self.assertIn("other-node-1", text2)
-        self.assertNotIn("home-node-1", text2)
+        self.assertIn(other_id, text2)
+        self.assertNotIn(home_id, text2)
 
     def test_explicit_project_without_tab_errors(self):
         other = self.store.create_project("Never Opened")
@@ -312,16 +317,18 @@ class McpToolBehaviorTests(McpTestBase):
 
     def test_create_node_and_get(self):
         self.open_tab()
+        import json as _json
         result = self.tool_result(self.tool_call("canvas.create_node", {
-            "node": {"type": "prompt", "id": "mcp-node-1", "title": "from mcp", "x": 5, "y": 6}
+            "node": {"type": "prompt", "title": "from mcp", "x": 5, "y": 6}
         }, request_id=31))
+        nid = _json.loads(result["content"][0]["text"])["node_id"]  # #343：id 服务端生成
         self.assertFalse(result["isError"], result)
-        self.assertIn("mcp-node-1", result["content"][0]["text"])
+        self.assertIn(nid, result["content"][0]["text"])  # #343：返回体带服务端生成 id
         canvas = self.store.canvas(self.project_id)
         nodes = {n["id"]: n for n in canvas["nodes"]}
-        self.assertEqual(nodes["mcp-node-1"]["type"], "prompt")
+        self.assertEqual(nodes[nid]["type"], "prompt")
         result2 = self.tool_result(
-            self.tool_call("canvas.get_node", {"node_id": "mcp-node-1"}, request_id=32))
+            self.tool_call("canvas.get_node", {"node_id": nid}, request_id=32))
         self.assertIn("from mcp", result2["content"][0]["text"])
 
     def test_connect_and_disconnect(self):
@@ -348,7 +355,7 @@ class McpToolBehaviorTests(McpTestBase):
     def test_mutation_broadcasts_canvas_updated_to_tab(self):
         tab = self.open_tab()
         result = self.tool_result(self.tool_call("canvas.create_node",
-                                                {"node": {"type": "prompt", "id": "bc-1"}},
+                                                {"node": {"type": "prompt"}},
                                                 request_id=51))
         self.assertFalse(result["isError"], result)
         frames = tab.sent_of("canvas_updated")
@@ -357,12 +364,14 @@ class McpToolBehaviorTests(McpTestBase):
 
     def test_viewport_focus_targets_single_tab(self):
         tab = self.open_tab()
-        self.tool_result(self.tool_call("canvas.create_node",
-                                        {"node": {"type": "prompt", "id": "vp-1", "x": 10, "y": 20}},
+        import json as _json
+        rv = self.tool_result(self.tool_call("canvas.create_node",
+                                        {"node": {"type": "prompt", "x": 10, "y": 20}},
                                         request_id=61))
+        vp_id = _json.loads(rv["content"][0]["text"])["node_id"]  # #343
         other = self.store.create_project("Other Project")
         other_tab = self.open_tab(project_id=other["id"])
-        result = self.tool_result(self.tool_call("viewport.focus", {"node_id": "vp-1"},
+        result = self.tool_result(self.tool_call("viewport.focus", {"node_id": vp_id},
                                                  request_id=62, project=self.project_id))
         self.assertFalse(result["isError"], result)
         body = json.loads(result["content"][0]["text"])
@@ -370,7 +379,7 @@ class McpToolBehaviorTests(McpTestBase):
         cmds = tab.sent_of("canvas_viewport_command")
         self.assertTrue(cmds, f"owning tab must receive the viewport command: {tab.sent}")
         self.assertEqual(cmds[-1]["command"], "focus")
-        self.assertEqual(cmds[-1]["node_id"], "vp-1")
+        self.assertEqual(cmds[-1]["node_id"], vp_id)
         self.assertEqual(cmds[-1]["x"], 10)
         self.assertFalse(other_tab.sent_of("canvas_viewport_command"),
                          "viewport command must be targeted, not broadcast")
@@ -473,9 +482,12 @@ class McpConfirmationGateTests(McpTestBase):
 
     def _setup_delete_scenario(self):
         self.open_tab()
-        self.tool_result(self.tool_call("canvas.create_node",
-                                        {"node": {"type": "prompt", "id": "doomed-1"}},
+        import json as _json
+        res = self.tool_result(self.tool_call("canvas.create_node",
+                                        {"node": {"type": "prompt"}},
                                         request_id=81))
+        # #343：id 服务端生成，取返回值供 delete 断言。
+        self.doomed_id = _json.loads(res["content"][0]["text"])["node_id"]
         # materialize the agent node + its session
         self.tool_result(self.tool_call("canvas.list_nodes", {}, request_id=82))
         agent_node_id = self.materialized_agent_node()["id"]
@@ -509,7 +521,7 @@ class McpConfirmationGateTests(McpTestBase):
             agent_host_manager.on_event(session, decide_handler)
             try:
                 outcome["result"] = await _impl_delete_node(
-                    self.project_id, agent_node_id, {"node_id": "doomed-1"})
+                    self.project_id, agent_node_id, {"node_id": self.doomed_id})
             except Exception as exc:  # noqa: BLE001 — gate raises McpToolError
                 outcome["error"] = exc
             finally:
@@ -526,9 +538,9 @@ class McpConfirmationGateTests(McpTestBase):
     def test_delete_node_approval(self):
         result, _ = self._run_gated_delete(approve=True)
         self.assertTrue(result.get("success"), result)
-        self.assertEqual(result.get("node_id"), "doomed-1")
+        self.assertEqual(result.get("node_id"), self.doomed_id)
         canvas = self.store.canvas(self.project_id)
-        self.assertFalse(any(n.get("id") == "doomed-1" for n in canvas["nodes"]))
+        self.assertFalse(any(n.get("id") == self.doomed_id for n in canvas["nodes"]))
         # the owning tab saw the canvas_updated broadcast
         self.assertTrue(self.tabs[0].sent_of("canvas_updated"))
 
@@ -537,7 +549,7 @@ class McpConfirmationGateTests(McpTestBase):
         self.assertIsInstance(outcome, api_mcp.McpToolError)
         self.assertIn("拒绝", str(outcome))
         canvas = self.store.canvas(self.project_id)
-        self.assertTrue(any(n.get("id") == "doomed-1" for n in canvas["nodes"]),
+        self.assertTrue(any(n.get("id") == self.doomed_id for n in canvas["nodes"]),
                         "rejected deletion must not touch the canvas")
 
     def test_delete_node_timeout(self):
@@ -553,7 +565,7 @@ class McpConfirmationGateTests(McpTestBase):
         self.assertIn("确认超时", str(outcome))
         self.assertLess(elapsed, 15)
         canvas = self.store.canvas(self.project_id)
-        self.assertTrue(any(n.get("id") == "doomed-1" for n in canvas["nodes"]),
+        self.assertTrue(any(n.get("id") == self.doomed_id for n in canvas["nodes"]),
                         "timed-out confirmation must not delete")
 
 

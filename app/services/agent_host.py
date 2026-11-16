@@ -146,6 +146,10 @@ _NPM_CMD_CALL_RE = re.compile(
 _NPM_CMD_FORWARD_RE = re.compile(
     r'CALL\s+"%~dp0(?P<target>[^"]+?\.cmd)"\s+%\*', re.IGNORECASE)
 
+# pip 风格批处理：`python "%~dp0tool.py" %*` → 直启 [python, script]。
+_PY_CMD_CALL_RE = re.compile(
+    r'python\s+"%~dp0(?P<script>[^"]+?\.py)"\s*%*', re.IGNORECASE)
+
 
 def resolve_npm_cmd_wrapper(wrapper_path: str) -> Optional[List[str]]:
     """#343：把 npm 的 .cmd/.bat shim 解析成 [node.exe, 脚本绝对路径, ...] 直接启动。
@@ -162,6 +166,16 @@ def resolve_npm_cmd_wrapper(wrapper_path: str) -> Optional[List[str]]:
         return None
     m = _NPM_CMD_CALL_RE.search(text)
     if not m:
+        # pip/批处理形态：`python "%~dp0X.py" %*`（测试掝子 fake_codex.cmd 即此形态）——
+        # 同样收口成直启 argv（解释器+脚本），绝不 cmd /c 拼串。
+        pym = _PY_CMD_CALL_RE.search(text)
+        if pym:
+            interp = shutil.which("python")
+            script = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(wrapper_path)), pym.group("script")))
+            if interp and os.path.isfile(script):
+                return [interp, script]
+            return None
         # 转发器形态（实测 npm 全局 pi.cmd = `CALL "%~dp0pi-stable.cmd" %*`）：
         # 跟随一跳解析目标 .cmd；仍不成回 None（绝不回落 cmd /c）。
         fwd = _NPM_CMD_FORWARD_RE.search(text)
