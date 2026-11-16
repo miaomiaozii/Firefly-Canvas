@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 import json
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from app.core import (HTTPException, WebSocket, WebSocketDisconnect, _ensure_photoshop_loopback, _os, _sys, json)
+from app.core import (HTTPException, WebSocket, WebSocketDisconnect, _ensure_photoshop_loopback, ensure_agent_same_origin, _os, _sys, json)
 from app.core import _ensure_photoshop_loopback
 from app.project_activity import ProjectCleanupActive
 from app.project_sessions import register_project_session, unregister_project_session
@@ -28,6 +28,12 @@ async def websocket_endpoint(
     client_id: str = None,
     project_id: str = None,
 ):
+    # #342：WS 不过 protect_api_origin HTTP 中间件，同源判定必须在 accept 前做，
+    # 口径与 /api 中间件完全一致（无 Origin 的程序化客户端放行，认证归 #344）。
+    # 此前外部网页可匿名连入收 broadcast（任务状态/ps 回包）并注册 project session。
+    # 直接 raise：starlette 在 accept 前收到 HTTPException 会回 HTTP 403 拒绝升级
+    # （与 stream 路由级依赖同一行为，单测可断 status_code=403）。
+    ensure_agent_same_origin(websocket)
     if str(client_id or '').lower().startswith('ps_'):
         try:
             _ensure_photoshop_loopback(websocket)

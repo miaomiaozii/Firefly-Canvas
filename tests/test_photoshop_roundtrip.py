@@ -138,7 +138,11 @@ class PhotoshopRoundTripApiTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(body["bytes_base64"]), self.source_bytes)
 
     def test_canvas_created_binding_reaches_ps_loopback_socket(self):
-        with self.client.websocket_connect("/ws/stats?client_id=ps_test") as socket:
+        # #342：WS 握手现在也过同源/Host 守卫（accept 前）。starlette WS 握手默认
+        # Host=testserver，真 UXP 不会发这个 Host——显式声明回环 Host，与 HTTP 侧
+        # 夹具（client headers host=127.0.0.1）同口径；Origin 不发（UXP 形态）。
+        with self.client.websocket_connect("/ws/stats?client_id=ps_test",
+                                           headers={"host": "127.0.0.1"}) as socket:
             self.assertEqual(socket.receive_json()["type"], "stats")
             created = self.create_request()
             received = socket.receive_json()
