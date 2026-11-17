@@ -73,3 +73,12 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 1. §3 端点路径：MCP 端点实路径为 **/api/mcp**（api_mcp.py:603），正文 `/mcp` 系笔误；`&node=` 绑定语义不变。
 2. §4 补充（审批策略）：codex 侧 MCP 工具默认审批模式与 exec 非交互语义组合会**自动拒绝** MCP 调用（实测 error: "requires approval, but approval policy is never"）——适配器必须注入 `-c 'mcp_servers.firefly.default_tools_approval_mode="approve"'`。这不削弱安全：画布写类工具的确认闸（ADR 0022）在 Firefly 端点侧执行，与宿主沙盒正交。正确键名是 `default_tools_approval_mode`（值 auto|prompt|writes|approve）；`default_tools_approval_policy` 为无效键（实测被 ignore）。
 3. §1 映射表补充（实测）：`item{mcp_tool_call}` 终态结果在 `item.result.content[]`（非 aggregated_output），错误在 `item.error`；映射器已按此提取。
+
+## #421 / #424：配置与能力合同（实施门 1）
+
+- 对话执行仍是原有 `exec` / 显式 ID `resume`，不改为 app-server。`SpawnParams.reasoning_effort=None` 不覆盖宿主；显式值由 Codex adapter 经已有 TOML 编码器加入 `-c model_reasoning_effort=…`，位于 `resume` 之前。Pi adapter 对应 `--thinking`。本门只提供参数合同，尚未从节点设置接入运行时。
+- `app/services/agent_node_host_settings.py` 提供纯函数 `read_host_fields` / `build_host_settings_fields`：`agentHostSettings` 保存各宿主 model/effort 意图，`agentHostSessions` 保存各宿主绑定/分支；旧顶层字段只是活跃宿主投影。仅无两张映射的旧节点可迁移，旧字段只归原 agentCli（缺省 Pi）。函数不写画布、不分配会话、不改变几何/所有权；事务接入留到下一门。
+- `GET /api/projects/{project_id}/agent-nodes/capabilities` 必须有可信同源信号，在线程中进行有界原生元数据探测。Pi 读取 RPC state / models / available thinking levels；Codex 临时 app-server 只做 initialize / config/read / model/list，不创建 thread/turn。每模型档位来自原生能力，隐藏 ultra；无法确认就返回明确 unavailable，不编造枚举或默认值。
+- 探针只复制白名单配置/认证文件到独立临时 home，不读会话、不回写源文件、不返回凭据/原始错误；子环境剥离凭据环境变量、代理、自定义 CA、会话及 Node 注入。因此来源明确标记 `file-only; sanitized-environment; account-callability-unverified`，不能宣称等于生产完整环境的默认或账号可调用性。配置依赖环境变量的场景须在设置事务接入前明确处理，不能拿此元数据冒充生产回读。
+- 探针在所有出口回收自己的进程树、管道和临时目录；Windows 按实际创建句柄挂载匿名 Job、等待其 active_processes 为零，临时文件仅对共享冲突做有界清理重试。回收失败不报 available。
+- requested（保存意图）、submitted（实际参数）、effective（权威宿主回读）不等价。Codex 配置回显、目录默认、argv、exit 0 都不构成 effective；没有可信回读时必须为 null / 未确认。Pi 实际设置仍须严格 ACK 和 state 回读，本门元数据探针不是该设置事务。

@@ -109,6 +109,8 @@ class CodexAdapter(HostAdapter):
             cmd += ["-c", 'mcp_servers.firefly.default_tools_approval_mode="approve"']
         if params.model:
             cmd += ["-m", params.model]
+        if params.reasoning_effort is not None:
+            cmd += ["-c", "model_reasoning_effort=" + _toml_value(params.reasoning_effort)]
         cmd += ["--skip-git-repo-check", "--json", "-"]  # `-` = prompt 走 stdin
         return cmd
 

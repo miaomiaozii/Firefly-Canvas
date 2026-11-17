@@ -61,6 +61,9 @@ class PiAdapter(HostAdapter):
             else:
                 args.extend(["--model", params.model])
 
+        if params.reasoning_effort is not None:
+            args.extend(["--thinking", params.reasoning_effort])
+
         # 提示词：文件路径优先（#334）；无文件时保留内联（测试/兼容面）。
         if params.system_prompt_file:
             args.extend(["--system-prompt", params.system_prompt_file])

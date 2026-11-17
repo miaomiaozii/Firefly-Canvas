@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -160,6 +161,92 @@ class AgentChatModelsTests(unittest.TestCase):
                 live = existing
         self.assertIsNotNone(live, "端点应已创建/取回会话")
         self.assertEqual(live.model, "bailian/qwen-plus")
+
+    def test_capabilities_read_only_and_off_event_loop(self):
+        import threading
+        from copy import deepcopy
+        from app.routers import api_agent_nodes
+        canvas_before = deepcopy(self.store.canvas(self.project_id))
+        sessions_before = dict(agent_host_manager.sessions)
+        payload = {
+            "host": "codex", "status": "available", "models": [],
+            "defaults": {"model": "native-model", "effort": "low"},
+            "selection": {"model": "native-model", "efforts": ["low", "high"],
+                          "source": {"scope": "native-metadata; account-callability-unverified"}},
+            "error": None,
+        }
+        loop_threads, probe_threads = [], []
+        real_open = api_agent_nodes._open_canvas
+
+        def open_on_loop(project_id):
+            loop_threads.append(threading.get_ident())
+            return real_open(project_id)
+
+        def probe(host, model):
+            probe_threads.append(threading.get_ident())
+            self.assertEqual((host, model), ("codex", "native-model"))
+            return payload
+
+        with patch.object(api_agent_nodes, "_open_canvas", side_effect=open_on_loop), \
+                patch("app.services.agent_model_capabilities.get_capabilities", side_effect=probe):
+            response = self.client.get(
+                f"/api/projects/{self.project_id}/agent-nodes/capabilities",
+                params={"host": "codex", "model": "native-model"},
+                headers={"Origin": "http://127.0.0.1:8123"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+        self.assertEqual(len(loop_threads), 1)
+        self.assertEqual(len(probe_threads), 1)
+        self.assertNotEqual(loop_threads[0], probe_threads[0])
+        self.assertEqual(self.store.canvas(self.project_id), canvas_before)
+        self.assertEqual(agent_host_manager.sessions, sessions_before)
+
+    def test_capabilities_default_host_and_native_failure_are_explicit(self):
+        payload = {
+            "host": "pi", "status": "unavailable", "models": [],
+            "defaults": {"model": "", "effort": None},
+            "selection": {"model": "", "efforts": [], "source": {}},
+            "error": {"code": "cli_missing", "message": "Install the native CLI and retry."},
+        }
+        with patch("app.services.agent_model_capabilities.get_capabilities", return_value=payload) as probe:
+            response = self.client.get(f"/api/projects/{self.project_id}/agent-nodes/capabilities",
+                                       headers={"Origin": "http://127.0.0.1:8123"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+        probe.assert_called_once_with("pi", "")
+
+    def test_capabilities_invalid_client_input_is_actionable(self):
+        with patch("app.services.agent_model_capabilities.get_capabilities",
+                   side_effect=ValueError("host must be pi or codex")):
+            response = self.client.get(
+                f"/api/projects/{self.project_id}/agent-nodes/capabilities", params={"host": "other"},
+                headers={"Origin": "http://127.0.0.1:8123"})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "INVALID_ARGUMENT")
+        self.assertTrue(response.json()["detail"]["hint"])
+
+    def test_capabilities_missing_project_never_starts_probe(self):
+        with patch("app.services.agent_model_capabilities.get_capabilities") as probe:
+            response = self.client.get("/api/projects/e2e-tabbit-missing/agent-nodes/capabilities",
+                                       headers={"Origin": "http://127.0.0.1:8123"})
+        self.assertEqual(response.status_code, 404, response.text)
+        probe.assert_not_called()
+
+    def test_capabilities_headerless_request_never_starts_probe(self):
+        with patch("app.services.agent_model_capabilities.get_capabilities") as probe:
+            response = self.client.get(f"/api/projects/{self.project_id}/agent-nodes/capabilities")
+        self.assertEqual(response.status_code, 403, response.text)
+        probe.assert_not_called()
+
+    def test_capabilities_keeps_same_origin_guard(self):
+        with patch("app.services.agent_model_capabilities.get_capabilities") as probe:
+            response = self.client.get(
+                f"/api/projects/{self.project_id}/agent-nodes/capabilities",
+                headers={"Origin": "https://untrusted.example"},
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+        probe.assert_not_called()
 
 
 if __name__ == "__main__":

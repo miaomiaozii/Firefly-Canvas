@@ -311,6 +311,24 @@ async def get_agent_status(
     }
 
 
+@router.get("/capabilities")
+async def get_agent_capabilities(
+    project_id: str,
+    request: Request,
+    host: str = Query(default="pi"),
+    model: str = Query(default=""),
+):
+    """Read native model capabilities without creating or changing a session."""
+    ensure_same_origin_request(request)  # CLI spawn requires a positive same-origin signal.
+    _open_canvas(project_id)  # Keep the existing project-not-found contract.
+    from app.services.agent_model_capabilities import get_capabilities
+    try:
+        return await asyncio.to_thread(get_capabilities, host, model)
+    except ValueError as exc:
+        raise agent_error(400, "INVALID_ARGUMENT", str(exc),
+                          "选择 pi/codex 和宿主目录中的模型；留空表示跟随宿主。") from exc
+
+
 @router.get("/chat-models")
 async def list_chat_models(project_id: str):
     """#285：只读列出 pi 的会话模型池（~/.pi/agent/models.json + settings.json）。
