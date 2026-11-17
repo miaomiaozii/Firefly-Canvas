@@ -76,6 +76,16 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                 self.fail(f"static/js/{name}: node --check 30 秒还没返回，语法检查不能这样挂着")
             self.assertEqual(result.returncode, 0, f"static/js/{name}: {result.stderr.strip()}")
 
+    def test_agent_refs_selection_notifications_use_the_owning_module_event_boundary(self):
+        source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        dispatch = "window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync', {detail:{locate:focusRevealNode}}));"
+        selection = source[source.index("function syncSelectionUi(){"):source.index("function isNodeSelected(")]
+        render = source[source.index("function render(){"):source.index("function render(){") + 400]
+        self.assertEqual(source.count(dispatch), 2)
+        self.assertTrue(selection.rstrip().endswith(dispatch + "\n}"))
+        self.assertTrue(render.startswith("function render(){\n    " + dispatch))
+        self.assertNotIn("syncAgentInputNodeRefs", source)
+
     def test_dock_legacy_normalization_precedes_world_filter(self):
         # #407：syncAgentDock 在 render 尾部才运行；旧多 dock 若在那里才释放，
         # 被取回的节点会在这一帧缺席。仅钉宿主接线，算法走真实模块单测/浏览器。

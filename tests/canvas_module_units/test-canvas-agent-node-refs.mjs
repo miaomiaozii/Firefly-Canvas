@@ -5,7 +5,10 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const source = fs.readFileSync(new URL('../../static/js/canvas-agent-tui.js', import.meta.url), 'utf8');
 function fixture() {
-    const requests = [], timers = new Map();
+    const requests = [], timers = new Map(), events = new EventTarget();
+    class CustomEvent extends Event {
+        constructor(type, options={}) { super(type); this.detail=options.detail; }
+    }
     const document = {querySelector:()=>null, querySelectorAll:()=>[], getElementById:()=>null, activeElement:null, title:'Test'};
     const canvasState = {nodes:[
         {id:'a',type:'smart-agent',title:'Agent',dock:'right'},
@@ -16,7 +19,7 @@ function fixture() {
     const context = vm.createContext({console,document,canvasState,canvasId:'project',
         NODE_TYPE_AGENT:'smart-agent',NODE_TYPE_TASK:'agent-task',NODE_TYPE_IMAGE:'smart-image',
         NODE_TYPE_PROMPT:'smart-prompt',NODE_TYPE_GROUP:'smart-group',NODE_TYPE_CONVERSATION:'smart-conversation',
-        WebSocket:{OPEN:1}, window:{addEventListener:()=>{}}, tr:key=>key,
+        WebSocket:{OPEN:1}, window:events, Event, CustomEvent, tr:key=>key,
         setTimeout:fn=>{const id=timers.size+1;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
         fetch:async(url,options)=>{const body=JSON.parse(options.body);requests.push({url,body});return {ok:true,json:async()=>({success:true,request_id:body.request_id,input_type:url.split('/').pop(),node_refs:(body.refs||[]).map(r=>({node_id:r.node_id,type:'smart-image',title:'Canonical'}))})};}
     });
@@ -152,6 +155,70 @@ test('failed input rollback cannot undo an accepted prompt or a real newer Agent
         assert.equal(sent[2].type,'follow_up');
     }
 });
+
+test('selection events synchronously update the owning Agent without a direct host call',()=>{
+    const f=fixture();
+    const locate=()=>{};
+    f.context.locate=locate;
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
+    assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["i"]');
+    assert.equal(f.canvasState.agentNodeRefsLocate,locate);
+    f.canvasState.selectedIds=['p','p'];
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["p"]');
+    assert.equal(f.canvasState.agentNodeRefsLocate,locate);
+});
+test('selection notifications target the active Agent rather than another docked Agent',()=>{
+    const f=fixture();
+    f.run("syncAgentInputNodeRefs('b')");
+    f.canvasState.selectedIds=['p'];
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('b')))"),'["p"]');
+    assert.equal(f.run("agentNodeRefsIds(getAgentTuiState('a')).length"),0);
+});
+test('repeat render notifications cannot resurrect references consumed by a real send',async()=>{
+    const f=fixture();
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    await f.run("sendAgentPrompt('a','project','first')");
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    await f.run("sendAgentPrompt('a','project','second')");
+    assert.deepEqual(f.requests[0].body.refs,[{node_id:'i'}]);
+    assert.equal('refs' in f.requests[1].body,false);
+    f.canvasState.selectedIds=['p'];
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["p"]');
+});
+test('selection notifications filter deleted nodes and tolerate the absence of Agents',()=>{
+    const f=fixture();
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.canvasState.nodes=f.canvasState.nodes.filter(n=>n.id!=='i');
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(f.run("agentNodeRefsIds(getAgentTuiState('a')).length"),0);
+    const empty=fixture();
+    empty.canvasState.nodes=empty.canvasState.nodes.filter(n=>n.type!=='smart-agent');
+    empty.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(empty.run('agentTuiState.size'),0);
+});
+test('selection events preserve focused composition, text selection, draft and timeline state',()=>{
+    const f=fixture(),attributes=new Map();
+    const input={value:'正在组合的草稿',selectionStart:2,selectionEnd:4,
+        getAttribute:name=>name==='data-agent-tui-input'?'a':null,
+        setAttribute:(name,value)=>attributes.set(name,value),removeAttribute:name=>attributes.delete(name)};
+    f.context.document.querySelectorAll=selector=>selector==='[data-agent-tui-input]'?[input]:[];
+    f.context.document.activeElement=input;
+    f.run("getAgentTuiState('a').draft='正在组合的草稿';getAgentTuiState('a').composing=true;getAgentTuiState('a').scrollState={scrollTop:123,anchor:{key:'entry:66',offset:-31}}");
+    const scroll=f.run("getAgentTuiState('a').scrollState");
+    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    assert.equal(f.context.document.activeElement,input);
+    assert.equal(input.value,'正在组合的草稿');
+    assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,4);
+    assert.equal(f.run("getAgentTuiState('a').draft"),input.value);
+    assert.equal(f.run("getAgentTuiState('a').composing"),true);
+    assert.equal(f.run("getAgentTuiState('a').scrollState"),scroll);
+    assert.equal(attributes.get('role'),'combobox');
+});
+
 test('legacy queued inputs without a correlation ID or references remain visible on replay',()=>{
     const f=fixture();
     f.run("applyAgentEventBody('a',{type:'queued_input',input_type:'steer',text:'legacy steer'});applyAgentEventBody('a',{type:'queued_input',input_type:'follow_up',text:'legacy follow-up'})");

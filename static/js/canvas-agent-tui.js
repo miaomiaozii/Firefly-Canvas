@@ -2706,6 +2706,11 @@ function syncAgentDock(){
 
 // 视口缩放时重判停靠几何（自动收起/展开变量）；syncAgentDock 是幂等的，防抖后直调
 let agentDockResizeTimer = null;
+// #409: the host publishes selection; the owning TUI consumes it synchronously.
+window.addEventListener('studio-canvas-selection-sync', event => {
+    syncAgentInputNodeRefs('', event.detail?.locate);
+});
+
 window.addEventListener('resize', () => {
     if(agentDockResizeTimer) return;
     agentDockResizeTimer = setTimeout(() => {

@@ -151,6 +151,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
         )
 
 
+    def test_agent_reference_synchronizer_is_classified_at_its_tui_owner(self):
+        self.assertEqual(CATEGORY_BY_NAME.get("syncAgentInputNodeRefs"), "hub")
+        rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
+        self.assertNotIn("syncAgentInputNodeRefs", rows)
+
     def test_storage_projection_service_is_classified_without_filtering_references(self):
         self.assertEqual(CATEGORY_BY_NAME.get("canvasForStorage"), "hub")
         references = count_references(

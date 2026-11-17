@@ -140,6 +140,7 @@ CATEGORY_BY_NAME = {
     "reconcileCanvasDeltaMediaReferences": "util",
     "refreshProjectMediaLibraryItems": "hub",
     "receiveAgentSettingsCanvas": "hub",
+    "syncAgentInputNodeRefs": "hub",  # #409: TUI-owned draft/DOM synchronization, not a pure lower-layer utility.
     "canvasForStorage": "hub",  # #392: canonical storage service; also reads project/default/UI compatibility state.
     # --- 纯工具：应该下沉到 canvas-core.js，不该留在 smart-canvas.js ---
     "parseSizeValue": "util",
