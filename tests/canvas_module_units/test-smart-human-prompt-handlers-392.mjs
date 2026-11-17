@@ -9,6 +9,26 @@ import {createCanvasContext, loadModules, evaluate, fromContext, JS_DIR} from '.
 import {declarations, identity, event, editor} from './smart-human-handlers-harness-392.mjs';
 
 export {declarations, identity, event, editor};
+function bodyClock(e){
+    let now=1234,sequence=1;const timers=new Map();
+    e.ctx.bodyTestNow=()=>now;evaluate(e.ctx,'Date.now=()=>bodyTestNow()');
+    e.ctx.setTimeout=(fn,delay,...args)=>{const id=sequence++;timers.set(id,{at:now+delay,fn,args});return id;};
+    e.ctx.clearTimeout=id=>timers.delete(id);
+    e.ctx.fetch=async()=>({ok:true,json:async()=>({saved:true,revision:1})});
+    return {advance(ms){
+        const until=now+ms;
+        for(;;){
+            const due=[...timers].filter(([,timer])=>timer.at<=until).sort((a,b)=>a[1].at-b[1].at)[0];
+            if(!due)break;
+            now=due[1].at;timers.delete(due[0]);due[1].fn(...due[1].args);
+        }
+        now=until;
+    }};
+}
+function bodyInput(e){
+    const input=e.harness.makeElement('textarea');input.value=e.node().text;
+    e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());return input;
+}
 test('template group/library-only edits and cloud transient URLs never adopt canvas nodes',async()=>{
     const e=editor([{id:'p',type:'smart-prompt',...identity,text:'keep',promptPresetId:'shared'}]);const {ctx}=e;
     Object.assign(ctx,{promptPresets:[{id:'shared',text:'keep',category:'group'}],promptLibraries:[],activePromptLibraryId:'system',builtinPromptTemplates:[],promptTemplateGroups:[{id:'group',name:'Group'}],promptTemplateCategory:'group',promptTemplateOverrides:{editedBuiltins:{}},promptTemplateBody:null,promptTemplateCats:null,promptTemplatePanel:e.harness.makeElement(),ffDialog:{ask:async()=>true}});
@@ -32,12 +52,150 @@ test('a composer template panel cannot migrate its original target after the com
 
 test('a user-origin node retains identity and seals content+ownership together for production undo/redo',async()=>{
     const e=editor([{id:'p',type:'smart-prompt',...identity,createdBy:'user',agentNodeId:null,text:'before'}]);const input=e.harness.makeElement();
-    e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());e.ctx.pushUndo();input.value='after';input.oninput(event(input));
+    e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());
+    input.value='after';input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1,'actual text input and blur must establish their own undo step');
     const paths=fromContext(evaluate(e.ctx,'undoStack[0].actionDelta.changes')).map(change=>change.path.at(-1));
     assert.ok(paths.includes('userTouchedAt'));assert.ok(paths.includes('promptEditedByUser'));
     await e.ctx.performUndo();assert.equal(e.stored()[0].text,'before');assert.equal(e.stored()[0].userTouchedAt,null);assert.equal(e.stored()[0].promptEditedByUser,false);
     await e.ctx.performRedo();assert.equal(e.stored()[0].text,'after');assert.equal(e.stored()[0].userTouchedAt,1234);assert.equal(e.stored()[0].promptEditedByUser,true);
     assert.equal(e.stored()[0].createdBy,'user');assert.equal(e.stored()[0].agentNodeId,null);
+});
+
+test('continuous prompt body typing is one step and a 1000ms pause starts the next step',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,text:'before',userTouchedAt:17,promptEditedByUser:true}]);
+    const clock=bodyClock(e),input=bodyInput(e),before=e.stored();
+    input.value='one';input.oninput(event(input));clock.advance(400);
+    input.value='two';input.oninput(event(input));clock.advance(400);
+    input.value='three';input.oninput(event(input));clock.advance(999);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0,'each keystroke must not be a separate step');
+    clock.advance(1);assert.equal(evaluate(e.ctx,'undoStack.length'),1);
+    assert.equal(e.stored()[0].userTouchedAt,2034,'ending the session does not invent a later edit timestamp');
+    input.value='next session';input.oninput(event(input));clock.advance(1000);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),2);
+    await e.ctx.performUndo();assert.equal(e.stored()[0].text,'three');assert.equal(e.stored()[0].userTouchedAt,2034);
+    await e.ctx.performUndo();assert.deepEqual(e.stored(),before);
+    await e.ctx.performRedo();assert.equal(e.stored()[0].text,'three');assert.equal(e.stored()[0].userTouchedAt,2034);
+    await e.ctx.performRedo();assert.equal(e.stored()[0].text,'next session');assert.equal(e.stored()[0].userTouchedAt,3034);
+    assert.equal(e.stored()[0].createdBy,'agent');assert.equal(e.stored()[0].agentNodeId,'original-agent');
+});
+
+test('same-value and reverted prompt body sessions preserve prior T/P presence and create no step',()=>{
+    for(const prior of [{userTouchedAt:null,promptEditedByUser:false},{userTouchedAt:17,promptEditedByUser:true},{}]){
+        const source={id:'p',type:'smart-prompt',createdBy:'agent',agentNodeId:'original-agent',created_at:42,text:'before',...prior};
+        const e=editor([source]),input=e.harness.makeElement('textarea');input.value='before';
+        e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());
+        const before=e.stored();
+        input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+        assert.equal(evaluate(e.ctx,'undoStack.length'),0);assert.deepEqual(e.stored(),before);
+        input.value='temporary';input.oninput(event(input));
+        input.value='before';input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+        assert.deepEqual(e.stored(),before,'an empty session restores exact prior T/P, including missing fields');
+        assert.equal(evaluate(e.ctx,'undoStack.length'),0);
+    }
+});
+
+test('reverting split prompt body does not leave unrelated persisted geometry',()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,userTouchedAt:1234,promptEditedByUser:true,text:'before',promptSplitEnabled:true}]);
+    const input=e.harness.makeElement('textarea');input.value='before';
+    e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());
+    const before=e.stored();
+    input.value='temporary';input.oninput(event(input));
+    input.value='before';input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+    assert.deepEqual(e.stored(),before,'a body-only empty session must not materialize unrelated w/h');
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0);
+});
+
+test('cancelled composition resumes the preceding edit pause without capturing the composing text',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,text:'before'}]);
+    const clock=bodyClock(e),input=bodyInput(e),before=e.stored();
+    input.value='typed';input.oninput(event(input));clock.advance(300);
+    input.dispatchEvent(event(input,{type:'compositionstart'}));
+    input.value='typed-ni';input.oninput(event(input,{isComposing:true}));clock.advance(1100);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0,'composition must not end the open body step');
+    assert.equal(e.stored()[0].text,'typed');
+    input.value='typed';input.dispatchEvent(event(input,{type:'compositionend'}));
+    clock.advance(999);assert.equal(evaluate(e.ctx,'undoStack.length'),0);
+    clock.advance(1);assert.equal(evaluate(e.ctx,'undoStack.length'),1,'cancelled IME must not leave the prior edit uncommitted forever');
+    await e.ctx.performUndo();assert.deepEqual(e.stored(),before);
+});
+
+test('blur during prompt body composition waits for the final composition value',()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,text:'before'}]),input=bodyInput(e);
+    input.dispatchEvent(event(input,{type:'compositionstart'}));input.value='ni';input.oninput(event(input,{isComposing:true}));
+    input.dispatchEvent(event(input,{type:'blur'}));assert.equal(evaluate(e.ctx,'undoStack.length'),0);
+    input.value='你';input.dispatchEvent(event(input,{type:'compositionend'}));
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);assert.equal(e.stored()[0].text,'你');
+});
+
+test('prompt body undo restores absent legacy T/P and empty sessions preserve a real redo branch',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',createdBy:'agent',agentNodeId:'original-agent',text:'before'}]);
+    let input=bodyInput(e);const before=e.stored();
+    input.value='after';input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+    await e.ctx.performUndo();assert.deepEqual(e.stored(),before);assert.equal(evaluate(e.ctx,'redoStack.length'),1);
+    input=bodyInput(e);input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+    input.value='temporary';input.oninput(event(input));input.value='before';input.oninput(event(input));input.dispatchEvent(event(input,{type:'blur'}));
+    assert.deepEqual(e.stored(),before);assert.equal(evaluate(e.ctx,'undoStack.length'),0);assert.equal(evaluate(e.ctx,'redoStack.length'),1);
+    await e.ctx.performRedo();assert.equal(e.stored()[0].text,'after');assert.equal(e.stored()[0].userTouchedAt,1234);assert.equal(e.stored()[0].promptEditedByUser,true);
+});
+
+test('prompt body session undo preserves unrelated changes from the real server receiver',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,text:'before'},{id:'other',type:'smart-prompt',...identity,text:'remote before'}]);
+    evaluate(e.ctx,declarations('canvas-agent-tui.js'));
+    const server=fromContext(e.ctx.canvasForStorage()),input=bodyInput(e);
+    input.value='local';input.oninput(event(input));
+    server.revision=1;server.nodes[1].text='remote after';server.nodes.push({id:'new',type:'smart-prompt',...identity,text:'new remote'});
+    e.ctx.applyMergedServerCanvas(server);
+    input.value='local after receive';input.oninput(event(input));
+    assert.equal(e.node('p').text,'local after receive','the retained body binding must edit the current receiver node');
+    input.dispatchEvent(event(input,{type:'blur'}));
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);await e.ctx.performUndo();
+    assert.equal(e.node('p').text,'before');assert.equal(e.node('p').userTouchedAt,null);
+    assert.equal(e.node('other').text,'remote after');assert.equal(e.node('new').text,'new remote');
+});
+
+test('prompt body redo restores its own input rather than a later server text edit',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,text:'before'}]);
+    evaluate(e.ctx,declarations('canvas-agent-tui.js'));
+    const input=bodyInput(e);input.value='local';input.oninput(event(input));
+    const accepted=fromContext(e.ctx.canvasForStorage());accepted.revision=1;
+    e.ctx.fetch=async()=>({ok:true,status:200,json:async()=>({canvas:accepted,saved:true,revision:1})});
+    await e.ctx.saveCanvas();
+    const remote=structuredClone(accepted);remote.revision=2;remote.nodes[0].text='later agent text';
+    e.ctx.applyMergedServerCanvas(remote);assert.equal(e.node().text,'later agent text');
+    input.dispatchEvent(event(input,{type:'blur'}));await e.ctx.performUndo();
+    // Existing scalar undo is an explicit write, not a new conflict policy.
+    assert.equal(e.node().text,'before');assert.equal(e.node().userTouchedAt,null);assert.equal(e.node().promptEditedByUser,false);
+    await e.ctx.performRedo();
+    assert.equal(e.node().text,'local','redo must use the actual input after-value, not the later agent value at blur');
+    assert.equal(e.node().userTouchedAt,1234);assert.equal(e.node().promptEditedByUser,true);
+});
+
+test('a late prompt body pause cannot create history in a different project',()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,created_at:42,text:'before'}]);
+    const clock=bodyClock(e),input=bodyInput(e);input.value='typed';input.oninput(event(input));
+    evaluate(e.ctx,"canvas={...canvas,id:'other-project',project_id:'other-project',nodes:[{id:'p',type:'smart-prompt',created_at:42,text:'other project'}]};canvasState.nodes=canvas.nodes");
+    clock.advance(1000);assert.equal(evaluate(e.ctx,'undoStack.length'),0);assert.equal(e.node().text,'other project');
+});
+
+test('prompt body composition commits only the final value and creates its own undo on blur',async()=>{
+    const e=editor([{id:'p',type:'smart-prompt',...identity,created_at:42,text:'before'}]);
+    const input=e.harness.makeElement('textarea');input.value='before';
+    e.ctx.bindPromptNodeControls(e.form({'.prompt-node-text':[input]}),e.node());
+    const before=e.stored();
+    input.dispatchEvent(event(input,{type:'compositionstart'}));
+    input.value='ni';input.oninput(event(input,{isComposing:true}));
+    assert.deepEqual(e.stored(),before,'uncommitted composition must not write content or T/P');
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0);
+    input.value='你';input.dispatchEvent(event(input,{type:'compositionend'}));
+    input.oninput(event(input,{isComposing:false}));
+    input.dispatchEvent(event(input,{type:'blur'}));
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);
+    assert.equal(e.stored()[0].text,'你');assert.equal(e.stored()[0].promptEditedByUser,true);
+    await e.ctx.performUndo();assert.deepEqual(e.stored(),before);
+    await e.ctx.performRedo();
+    assert.equal(e.stored()[0].text,'你');assert.equal(e.stored()[0].userTouchedAt,1234);
+    assert.equal(e.stored()[0].createdBy,'agent');assert.equal(e.stored()[0].agentNodeId,'original-agent');assert.equal(e.stored()[0].created_at,42);
 });
 
 test('prompt-node flow entry/exit are negative and flow typing reuses the durable human text handler',()=>{

@@ -9924,8 +9924,49 @@ function bindPromptNodeControls(el, node){
     if(textEl) {
         bindScrollableText(textEl);
         autosizePromptNodeText(textEl);
-        textEl.addEventListener('compositionstart', () => { promptNodeFlowView.compositionActive = true; });
-        textEl.addEventListener('compositionend', () => { promptNodeFlowView.compositionActive = false; });
+        // One body-writing session ends on blur or a 1000ms non-IME pause.
+        // Keep only this node's text/T/P: unrelated canvas changes are not its undo.
+        const textFields = ['id', 'text', 'userTouchedAt', 'promptEditedByUser'];
+        const textSnapshot = target => Object.fromEntries(textFields
+            .filter(key => Object.prototype.hasOwnProperty.call(target, key)).map(key => [key, target[key]]));
+        const textProject = smartProjectId(), textCreatedAt = node.created_at;
+        const liveTextNode = () => {
+            const live = canvasState.nodes.find(item => item.id === node.id);
+            return smartProjectId() === textProject && live !== undefined && live.created_at === textCreatedAt ? live : null;
+        };
+        let textBefore = null, textAfter = null, textTimer = null;
+        const finishTextEdit = () => {
+            clearTimeout(textTimer);
+            if(textBefore === null) return;
+            const before = textBefore, after = textAfter;
+            textBefore = null;
+            textAfter = null;
+            if(!liveTextNode() || after.text === before.text) return;
+            pushUndo({actionDeltaVersion:1, actionDelta:canvasCore.smartCanvasActionDelta(
+                {nodes:[before]}, {nodes:[after]})});
+        };
+        const waitForTextPause = () => {
+            clearTimeout(textTimer);
+            textTimer = setTimeout(finishTextEdit, 1000);
+        };
+        let textComposing = false, textBlurred = false;
+        textEl.addEventListener('blur', () => {
+            if(textComposing) textBlurred = true;
+            else finishTextEdit();
+        });
+        textEl.addEventListener('compositionstart', () => {
+            textComposing = true;
+            textBlurred = false;
+            promptNodeFlowView.compositionActive = true;
+            clearTimeout(textTimer);
+        });
+        textEl.addEventListener('compositionend', event => {
+            textComposing = false;
+            promptNodeFlowView.compositionActive = false;
+            textEl.oninput(event);
+            if(textBlurred) finishTextEdit();
+            else if(textBefore !== null) waitForTextPause();
+        });
         textEl.addEventListener('keydown', event => {
             if(event.key === 'Escape' && promptNodeFlowView.mode === 'flow' && promptNodeFlowView.nodeId === node.id){
                 event.preventDefault();
@@ -9934,16 +9975,23 @@ function bindPromptNodeControls(el, node){
             }
         });
         textEl.oninput = e => {
-            const prevExtra = promptNodeSplitExtraHeight(node);
-            const action = beginSmartNodeHumanEdit([node], ['text'], true);
-            node.text = e.target.value;
+            const live = liveTextNode();
+            if(!live || textComposing || e.isComposing || e.target.value === live.text) return;
+            if(textBefore === null) textBefore = textSnapshot(live);
+            const action = beginSmartNodeHumanEdit([live], ['text'], true);
+            live.text = e.target.value;
             finishSmartNodeHumanEdit(action);
-            autosizePromptNodeText(textEl);
-            refreshPromptNodeSegmentsUi(el, node);
-            if(node.promptSplitEnabled === true){
-                syncPromptNodeHeightForSplit(node, prevExtra);
-                updateNodeElementDuringResize(node);
+            if(live.text === textBefore.text){
+                for(const key of ['userTouchedAt', 'promptEditedByUser']){
+                    if(Object.prototype.hasOwnProperty.call(textBefore, key)) live[key] = textBefore[key];
+                    else delete live[key];
+                }
             }
+            // Record this input's value; redo must not claim a later server edit.
+            textAfter = textSnapshot(live);
+            waitForTextPause();
+            autosizePromptNodeText(textEl);
+            refreshPromptNodeSegmentsUi(el, live);
             scheduleSave();
         };
     }
