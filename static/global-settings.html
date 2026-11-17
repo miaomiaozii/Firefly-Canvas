@@ -3,27 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title data-i18n="globalSettings.title">萤火画布 · 全局设置</title>
+  <title data-i18n="globalSettings.title">萤火画布 · 设置</title>
+  <link rel="icon" href="/static/img/firefly-logo.ico" type="image/x-icon" sizes="16x16 32x32 48x48 256x256">
+  <link rel="icon" href="/static/img/firefly-logo.svg" type="image/svg+xml" sizes="any">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" sizes="180x180">
   <script>
     // The Smart Canvas settings panel owns its responsive width.  Opt out of
     // the standalone page's desktop UI scale before theme.js initializes so
     // embedded controls keep their intended readable size.
     if (window.self !== window.top) document.documentElement.dataset.studioScale = 'off';
   </script>
-  <script src="/static/js/theme.js?v=1794891526982"></script>
+  <script src="/static/js/theme.js?v=1794895731744"></script>
   <!-- #348：统一 toast，所有后续脚本可用 window.ffToast -->
-  <script src="/static/js/ui-toast.js?v=1794891526982"></script>
-  <script src="/static/js/i18n.js?v=1794891526982"></script>
-  <script src="/static/js/global-preferences.js?v=1794891526982"></script>
-  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=1794891526982">
-  <link rel="stylesheet" href="/static/css/global-settings.css?v=1794891526982">
+  <script src="/static/js/ui-toast.js?v=1794895731744"></script>
+  <script src="/static/js/i18n.js?v=1794895731744"></script>
+  <script src="/static/js/global-preferences.js?v=1794895731744"></script>
+  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=1794895731744">
+  <link rel="stylesheet" href="/static/css/global-settings.css?v=1794895731744">
 </head>
 <body>
   <main class="settings-shell">
     <header class="settings-header">
       <button id="backButton" class="quiet-button" type="button" data-i18n="globalSettings.back">← 返回</button>
       <div>
-        <p class="eyebrow">FIREFLY CANVAS</p>
+        <p class="eyebrow" data-i18n="common.productName">萤火画布</p>
         <h1 data-i18n="globalSettings.heading">全局设置</h1>
         <p class="subtitle" data-i18n="globalSettings.subtitle">跨项目共享的在线服务、项目库与应用偏好。</p>
       </div>
@@ -99,6 +102,6 @@
       <div id="taskConsoleList" class="task-console-list" role="list"></div>
     </section>
   </main>
-  <script src="/static/js/global-settings.js?v=1794891526982"></script>
+  <script src="/static/js/global-settings.js?v=1794895731744"></script>
 </body>
 </html>

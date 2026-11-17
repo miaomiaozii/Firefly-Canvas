@@ -1,6 +1,7 @@
 import re
 import unittest
 from pathlib import Path
+from PIL import Image
 from tests.canvas_frontend_sources import canvas_source
 
 
@@ -8,6 +9,55 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProjectEntryUiTests(unittest.TestCase):
+    def test_three_product_pages_share_brand_titles_and_icon_links(self):
+        links = (
+            '<link rel="icon" href="/static/img/firefly-logo.ico" type="image/x-icon" sizes="16x16 32x32 48x48 256x256">',
+            '<link rel="icon" href="/static/img/firefly-logo.svg" type="image/svg+xml" sizes="any">',
+            '<link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" sizes="180x180">',
+        )
+        for name in ("smart-canvas.html", "project-list.html", "global-settings.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "static" / name).read_text(encoding="utf-8")
+                title = re.search(r"<title(?:\s[^>]*)?>([^<]+)</title>", page).group(1)
+                self.assertTrue(title.startswith("萤火画布"), title)
+                for link in links:
+                    self.assertIn(link, page)
+                self.assertIn('data-i18n="common.productName">萤火画布</', page)
+                self.assertNotIn("FIREFLY CANVAS", page)
+        for name in ("firefly-logo.svg", "firefly-logo.ico", "apple-touch-icon.png"):
+            self.assertTrue((ROOT / "static" / "img" / name).is_file(), name)
+
+    def test_brand_raster_assets_have_the_user_requested_sizes(self):
+        with Image.open(ROOT / "static" / "img" / "firefly-logo.ico") as icon:
+            self.assertEqual(icon.ico.sizes(), {(16, 16), (32, 32), (48, 48), (256, 256)})
+        with Image.open(ROOT / "static" / "img" / "apple-touch-icon.png") as icon:
+            self.assertEqual(icon.format, "PNG")
+            self.assertEqual(icon.size, (180, 180))
+
+    def test_canvas_brand_does_not_replace_the_editable_project_name(self):
+        page = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
+        script = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
+        self.assertIn('<span class="smart-brand" data-i18n="common.productName">萤火画布</span>', page)
+        self.assertIn('id="smartTitleText"', page)
+        self.assertIn('id="smartTitleEdit"', page)
+        title_tag = re.search(r"<title[^>]*>", page).group(0)
+        project_name = re.search(r'<span id="smartTitleText"[^>]*>', page).group(0)
+        self.assertNotIn("data-i18n", title_tag)
+        self.assertNotIn("data-i18n", project_name)
+        self.assertNotIn("next.setAttribute(\'data-i18n\', \'smart.title\')", script)
+        self.assertIn("canvas.title = value;", script)
+        self.assertIn("document.title = `${tr('common.productName')} · ${value}`;", script)
+        self.assertIn("document.title = `${tr('common.productName')} · ${setSmartTitleText(canvas.title)}`;", script)
+
+    def test_fixed_product_page_titles_and_explanatory_copy(self):
+        projects = (ROOT / "static" / "project-list.html").read_text(encoding="utf-8")
+        settings = (ROOT / "static" / "global-settings.html").read_text(encoding="utf-8")
+        canvas = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
+        self.assertIn('>萤火画布 · 项目库</title>', projects)
+        self.assertIn('>萤火画布 · 设置</title>', settings)
+        self.assertIn("项目库现在是空的。新建项目后会直接打开它唯一的画布。", projects)
+        self.assertIn("设置悬浮在画布上，不会离开或重建画布。", canvas)
+
     def test_project_entry_uses_project_library_and_core_canvas(self):
         script = (ROOT / "static" / "js" / "project-list.js").read_text(encoding="utf-8")
         page = (ROOT / "static" / "project-list.html").read_text(encoding="utf-8")

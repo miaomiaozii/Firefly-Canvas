@@ -19,7 +19,7 @@ function fixture() {
     const context = vm.createContext({console,document,canvasState,canvasId:'project',
         NODE_TYPE_AGENT:'smart-agent',NODE_TYPE_TASK:'agent-task',NODE_TYPE_IMAGE:'smart-image',
         NODE_TYPE_PROMPT:'smart-prompt',NODE_TYPE_GROUP:'smart-group',NODE_TYPE_CONVERSATION:'smart-conversation',
-        WebSocket:{OPEN:1}, window:events, Event, CustomEvent, tr:key=>key,
+        WebSocket:{OPEN:1}, window:events, Event, CustomEvent, locate:()=>{}, tr:key=>key,
         setTimeout:fn=>{const id=timers.size+1;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
         fetch:async(url,options)=>{const body=JSON.parse(options.body);requests.push({url,body});return {ok:true,json:async()=>({success:true,request_id:body.request_id,input_type:url.split('/').pop(),node_refs:(body.refs||[]).map(r=>({node_id:r.node_id,type:'smart-image',title:'Canonical'}))})};}
     });
@@ -164,7 +164,7 @@ test('selection events synchronously update the owning Agent without a direct ho
     assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["i"]');
     assert.equal(f.canvasState.agentNodeRefsLocate,locate);
     f.canvasState.selectedIds=['p','p'];
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["p"]');
     assert.equal(f.canvasState.agentNodeRefsLocate,locate);
 });
@@ -172,32 +172,32 @@ test('selection notifications target the active Agent rather than another docked
     const f=fixture();
     f.run("syncAgentInputNodeRefs('b')");
     f.canvasState.selectedIds=['p'];
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('b')))"),'["p"]');
     assert.equal(f.run("agentNodeRefsIds(getAgentTuiState('a')).length"),0);
 });
 test('repeat render notifications cannot resurrect references consumed by a real send',async()=>{
     const f=fixture();
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     await f.run("sendAgentPrompt('a','project','first')");
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     await f.run("sendAgentPrompt('a','project','second')");
     assert.deepEqual(f.requests[0].body.refs,[{node_id:'i'}]);
     assert.equal('refs' in f.requests[1].body,false);
     f.canvasState.selectedIds=['p'];
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('a')))"),'["p"]');
 });
 test('selection notifications filter deleted nodes and tolerate the absence of Agents',()=>{
     const f=fixture();
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     f.canvasState.nodes=f.canvasState.nodes.filter(n=>n.id!=='i');
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(f.run("agentNodeRefsIds(getAgentTuiState('a')).length"),0);
     const empty=fixture();
     empty.canvasState.nodes=empty.canvasState.nodes.filter(n=>n.type!=='smart-agent');
-    empty.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    empty.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(empty.run('agentTuiState.size'),0);
 });
 test('selection events preserve focused composition, text selection, draft and timeline state',()=>{
@@ -209,7 +209,7 @@ test('selection events preserve focused composition, text selection, draft and t
     f.context.document.activeElement=input;
     f.run("getAgentTuiState('a').draft='正在组合的草稿';getAgentTuiState('a').composing=true;getAgentTuiState('a').scrollState={scrollTop:123,anchor:{key:'entry:66',offset:-31}}");
     const scroll=f.run("getAgentTuiState('a').scrollState");
-    f.run("window.dispatchEvent(new Event('studio-canvas-selection-sync'))");
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
     assert.equal(f.context.document.activeElement,input);
     assert.equal(input.value,'正在组合的草稿');
     assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,4);
@@ -217,6 +217,17 @@ test('selection events preserve focused composition, text selection, draft and t
     assert.equal(f.run("getAgentTuiState('a').composing"),true);
     assert.equal(f.run("getAgentTuiState('a').scrollState"),scroll);
     assert.equal(attributes.get('role'),'combobox');
+});
+
+test('focusing another Agent preserves the callback installed by the host selection event',()=>{
+    const f=fixture(),handlers=new Map(),locate=f.context.locate;
+    f.run("window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync',{detail:{locate}}))");
+    const input={addEventListener:(type,handler)=>handlers.set(type,handler)};
+    f.context.el={querySelector:selector=>selector==='[data-agent-tui-input]'?input:null,querySelectorAll:()=>[]};
+    f.run("agentNodeRefsBind(el,canvasState.nodes.find(node=>node.id==='b'))");
+    handlers.get('focus')();
+    assert.equal(f.canvasState.agentNodeRefsLocate,locate);
+    assert.equal(f.run("JSON.stringify(agentNodeRefsIds(getAgentTuiState('b')))"),'["i"]');
 });
 
 test('legacy queued inputs without a correlation ID or references remain visible on replay',()=>{

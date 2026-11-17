@@ -2578,6 +2578,7 @@ body { color:var(--text); background:var(--page); }
 
 .smart-title { left:20px; top:72px; color:var(--text); font-size:10px; letter-spacing:.14em; }
 .smart-title::before { content:none; }
+.smart-brand { flex:0 0 auto; padding-right:6px; border-right:1px solid var(--line); letter-spacing:0; }
 .project-save-state { left:auto; right:auto; top:auto; color:var(--faint); font-size:10px; }
 .project-save-state[data-state="saved"],
 .project-save-state[data-state="error"] { color:var(--muted); }

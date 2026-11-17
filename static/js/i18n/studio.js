@@ -1,7 +1,7 @@
 (function(){
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
-        "projectList.title": { zh: "萤火画布 · 项目", en: "Firefly Canvas · Projects" },
+        "projectList.title": { zh: "萤火画布 · 项目库", en: "Firefly Canvas · Projects" },
         "projectList.heading": { zh: "你的项目", en: "Your projects" },
         "projectList.subtitle": { zh: "一个项目，一张画布，所有创作内容都随项目保存。", en: "One project, one canvas, with every creative asset saved together." },
         "projectList.settings": { zh: "全局设置", en: "Global settings" },
@@ -9,8 +9,8 @@
         "projectList.create": { zh: "新建项目", en: "New project" },
         "projectList.loading": { zh: "正在读取项目库…", en: "Loading project library…" },
         "projectList.emptyTitle": { zh: "从第一张画布开始", en: "Start with your first canvas" },
-        "projectList.emptyBody": { zh: "项目库现在是空的。新建项目后会直接打开它唯一的核心画布。", en: "Your project library is empty. Create a project to open its core canvas." },
-        "projectList.canvasBadge": { zh: "唯一核心画布", en: "Single core canvas" },
+        "projectList.emptyBody": { zh: "项目库现在是空的。新建项目后会直接打开它唯一的画布。", en: "Your project library is empty. Create a project to open its canvas." },
+        "projectList.canvasBadge": { zh: "唯一画布", en: "Single canvas" },
         "projectList.justCreated": { zh: "刚刚创建", en: "Just created" },
         "projectList.region": { zh: "项目列表", en: "Project list" },
         "projectList.newHeading": { zh: "新建项目", en: "New project" },
@@ -80,7 +80,7 @@
         "projectList.versionsRestoreDoneNoPre": { zh: "回滚完成。", en: "Rollback complete." },
         "projectList.versionsRestoreFailed": { zh: "回滚失败", en: "Rollback failed" },
         "projectList.versionsClose": { zh: "关闭", en: "Close" },
-        "globalSettings.title": { zh: "萤火画布 · 全局设置", en: "Firefly Canvas · Global Settings" },
+        "globalSettings.title": { zh: "萤火画布 · 设置", en: "Firefly Canvas · Global Settings" },
         "globalSettings.back": { zh: "← 返回", en: "← Back" },
         "globalSettings.heading": { zh: "全局设置", en: "Global Settings" },
         "globalSettings.subtitle": { zh: "跨项目共享的在线服务、项目库与应用偏好。", en: "Online services, project library, and preferences shared across projects." },

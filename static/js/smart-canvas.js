@@ -54,7 +54,7 @@ function openSmartTitleEdit(){
         const next = document.createElement('span');
         next.id = 'smartTitleText';
         next.className = 'smart-title-text';
-        next.setAttribute('data-i18n', 'smart.title');
+        // The project name is document data, not a translatable placeholder.
         input.replaceWith(next);
         // 更新全局引用：否则第二次重命名时 replaceWith 作用于已脱离文档的旧节点，输入框永远无法打开
         smartTitleText = next;
@@ -63,7 +63,7 @@ function openSmartTitleEdit(){
             if(value && canvas && value !== canvas.title){
                 canvas.title = value;
                 setSmartTitleText(value);
-                document.title = value;
+                document.title = `${tr('common.productName')} · ${value}`;
                 scheduleSave();
             } else if(value){
                 setSmartTitleText(value);
@@ -6745,8 +6745,7 @@ async function loadCanvas(){
             setProjectSaveState('saved', tr('smart.projectSaved'));
         }
         canvasUsesConnections = Object.prototype.hasOwnProperty.call(canvas || {}, 'connections');
-        document.title = canvas.title || tr('canvas.smartCanvas');
-        setSmartTitleText(canvas.title || tr('canvas.smartCanvas'));
+        document.title = `${tr('common.productName')} · ${setSmartTitleText(canvas.title)}`;
         canvasState.nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
         canvas.history = sortSmartHistoryLogs(hydrateProjectMediaReferences(canvas.history || []));
         migrateSmartGroupImageMembers();

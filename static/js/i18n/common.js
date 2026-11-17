@@ -1,6 +1,7 @@
 (function(){
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
+        "common.productName": { zh: "萤火画布" },
         "common.apiSettings": { zh: "API 设置", en: "API Settings" },
         "common.darkMode": { zh: "黑夜模式", en: "Dark Mode" },
         "common.lightMode": { zh: "白天模式", en: "Light Mode" },

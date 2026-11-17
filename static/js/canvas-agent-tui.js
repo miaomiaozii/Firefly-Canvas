@@ -67,8 +67,7 @@ function agentNodeRefsLabel(nodeId, refs) {
     }
     return refs.labels.get(nodeId) || { node_id: nodeId, type: '', title: nodeId };
 }
-function syncAgentInputNodeRefs(nodeId = '', locate = null) {
-    if (typeof locate === 'function') canvasState.agentNodeRefsLocate = locate;
+function syncAgentInputNodeRefs(nodeId) {
     const agents = canvasState.nodes.filter(isSmartAgentNode);
     const target = agents.find(n => n.id === nodeId)
         || agents.find(n => n.id === agentNodeRefsRuntime.activeId)
@@ -90,8 +89,8 @@ function syncAgentInputNodeRefs(nodeId = '', locate = null) {
     agentNodeRefsRefresh(target.id);
 }
 function agentNodeRefsRefresh(nodeId) {
-    // The composer adapter is installed below; never rebuild a focused/IME textarea for selection.
-    if (typeof agentNodeRefsRefreshPanel === 'function') agentNodeRefsRefreshPanel(nodeId);
+    // The hoisted composer adapter updates only references, not the focused/IME textarea.
+    agentNodeRefsRefreshPanel(nodeId);
 }
 function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
     const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
@@ -2708,7 +2707,8 @@ function syncAgentDock(){
 let agentDockResizeTimer = null;
 // #409: the host publishes selection; the owning TUI consumes it synchronously.
 window.addEventListener('studio-canvas-selection-sync', event => {
-    syncAgentInputNodeRefs('', event.detail?.locate);
+    canvasState.agentNodeRefsLocate = event.detail.locate;
+    syncAgentInputNodeRefs('');
 });
 
 window.addEventListener('resize', () => {

@@ -3,21 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title data-i18n="projectList.title">萤火画布 · 项目</title>
-  <script src="/static/js/theme.js?v=1794891526982"></script>
+  <title data-i18n="projectList.title">萤火画布 · 项目库</title>
+  <link rel="icon" href="/static/img/firefly-logo.ico" type="image/x-icon" sizes="16x16 32x32 48x48 256x256">
+  <link rel="icon" href="/static/img/firefly-logo.svg" type="image/svg+xml" sizes="any">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" sizes="180x180">
+  <script src="/static/js/theme.js?v=1794895731744"></script>
   <!-- #348：统一 toast，所有后续脚本可用 window.ffToast -->
-  <script src="/static/js/ui-toast.js?v=1794891526982"></script>
-  <script src="/static/js/ui-dialog.js?v=1794891526982"></script>
-  <script src="/static/js/i18n.js?v=1794891526982"></script>
-  <script src="/static/js/global-preferences.js?v=1794891526982"></script>
-  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=1794891526982">
-  <link rel="stylesheet" href="/static/css/project-list.css?v=1794891526982">
+  <script src="/static/js/ui-toast.js?v=1794895731744"></script>
+  <script src="/static/js/ui-dialog.js?v=1794895731744"></script>
+  <script src="/static/js/i18n.js?v=1794895731744"></script>
+  <script src="/static/js/global-preferences.js?v=1794895731744"></script>
+  <link rel="stylesheet" href="/static/css/studio-foundation.css?v=1794895731744">
+  <link rel="stylesheet" href="/static/css/project-list.css?v=1794895731744">
 </head>
 <body>
   <main class="project-shell">
     <header class="project-header">
       <div>
-        <p class="eyebrow">FIREFLY CANVAS</p>
+        <p class="eyebrow" data-i18n="common.productName">萤火画布</p>
         <h1 data-i18n="projectList.heading">你的项目</h1>
         <p class="subtitle" data-i18n="projectList.subtitle">一个项目，一张画布，所有创作内容都随项目保存。</p>
       </div>
@@ -35,7 +38,7 @@
     <section id="emptyState" class="empty-state" hidden>
       <div class="firefly-mark" aria-hidden="true">✦</div>
       <h2 data-i18n="projectList.emptyTitle">从第一张画布开始</h2>
-      <p data-i18n="projectList.emptyBody">项目库现在是空的。新建项目后会直接打开它唯一的核心画布。</p>
+      <p data-i18n="projectList.emptyBody">项目库现在是空的。新建项目后会直接打开它唯一的画布。</p>
       <button id="emptyCreate" class="button primary" type="button" data-i18n="projectList.create">新建项目</button>
     </section>
     <section id="projectGrid" class="project-grid" aria-label="项目列表" data-i18n-title="projectList.region"></section>
@@ -109,6 +112,6 @@
       </div>
     </div>
   </dialog>
-  <script src="/static/js/project-list.js?v=1794891526982"></script>
+  <script src="/static/js/project-list.js?v=1794895731744"></script>
 </body>
 </html>
