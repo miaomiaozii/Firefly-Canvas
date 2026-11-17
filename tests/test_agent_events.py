@@ -190,15 +190,55 @@ class ReplayContextTests(_Base):
 
     async def test_recent_n_and_under_n(self):
         s = await self.mgr.get_or_create_session("proj-ev", "node-r1")
+        s.agent_cli = "codex"
         self._seed_log("node-r1", 25)
         block, used = self.mgr._build_replay_context(s)
         assert used == ah.EVENTS_REPLAY_TURNS == 20
         assert "问24" in block and "答24" in block
         assert "问4" not in block and "问5" in block  # 只留最近 20
         s2 = await self.mgr.get_or_create_session("proj-ev", "node-r2")
+        s2.agent_cli = "codex"
         self._seed_log("node-r2", 3)
         block2, used2 = self.mgr._build_replay_context(s2)
         assert used2 == 3 and "问0" in block2  # 不足按实际全量
+
+    async def test_replay_isolates_pi_codex_and_hostless_legacy_pi(self):
+        s = await self.mgr.get_or_create_session("proj-ev", "node-hosts")
+        for host, marker in (("pi", "PI_ONLY"), ("codex", "CODEX_ONLY")):
+            s.agent_cli = host
+            for event in (
+                {"type": "user_prompt", "text": marker},
+                {"type": "message_update", "assistantMessageEvent": {
+                    "type": "text_delta", "delta": marker + "_ANSWER"}},
+                {"type": "agent_end"},
+            ):
+                self.mgr._persist_event(s, event)
+        # Historical Pi records genuinely predate the host field; do not relabel
+        # either host's current records to construct the legacy fixture.
+        path = self.log_path("node-hosts")
+        with path.open("a", encoding="utf-8") as log:
+            for seq, event in enumerate((
+                {"type": "user_prompt", "text": "LEGACY_PI_ONLY"},
+                {"type": "message_update", "assistantMessageEvent": {
+                    "type": "text_delta", "delta": "LEGACY_PI_ONLY_ANSWER"}},
+                {"type": "agent_end"},
+            ), start=7):
+                log.write(json.dumps({"seq": seq, "ts": 0, "project_id": s.project_id,
+                                      "node_id": s.node_id, "event": event}) + "\n")
+        saved = path.read_text(encoding="utf-8")
+        for host, expected, excluded in (
+            ("pi", ("PI_ONLY", "LEGACY_PI_ONLY"), "CODEX_ONLY"),
+            ("codex", ("CODEX_ONLY",), "PI_ONLY"),
+        ):
+            s.agent_cli = host
+            block, turns = self.mgr._build_replay_context(s)
+            assert turns == len(expected)
+            assert block == ("<canvas-history-replay host-session-lost rebuilt-by-firefly>\n"
+                             + "".join(f"user: {marker}\nassistant: {marker}_ANSWER\n"
+                                       for marker in expected)
+                             + "</canvas-history-replay>")
+            assert excluded not in block
+        assert path.read_text(encoding="utf-8") == saved  # filtering is read-only
 
     async def test_degrade_retry_carries_context(self):
         self.install_which(FAKE_CODEX_RESUME_FAIL)

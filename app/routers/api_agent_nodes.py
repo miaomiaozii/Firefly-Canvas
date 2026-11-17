@@ -1,9 +1,6 @@
 """Agent nodes API: session lifecycle, WebSocket streaming, command sending."""
 import asyncio
 import json
-import logging
-import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -13,6 +10,7 @@ from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
+from app.services.agent_node_host_settings import AgentHostTransaction
 from app.routers.api_agent_tools import (
     _find_node, _snapshot_node, _apply_mutations, _apply_mutations_from_snapshot,
     _open_canvas, reset_generation_counts,
@@ -25,8 +23,6 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 
 # #240：agent-nodes 全部端点（含 WebSocket stream）接入同源/Host 守卫。
 router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent-nodes"], dependencies=[Depends(ensure_agent_same_origin)])
-
-logger = logging.getLogger(__name__)
 
 # #335: 未知 agentCli 不得静默回落 pi——create 入口直接 400 拒绝。
 AGENT_CLI_WHITELIST = ("pi", "codex")
@@ -50,40 +46,22 @@ def _validated_agent_cli(node: dict) -> str:
 AGENT_AUTONOMY_WHITELIST = ("cautious", "standard", "autonomous")
 
 
-def _apply_node_host(project_id: str, node_id: str, session) -> None:
-    """#318 票 B：宿主选择 = 节点属性 agentCli（"pi" 默认 / "codex"），并恢复
-    extSessionId（resume 链跨重启存活，ADR 0024 不变量）。当前轮进行中的进程
-    不切宿主；未知值回退 pi。best-effort：节点不存在/非 agent 型不改会话。
+def _host_transaction(project_id: str, node_id: str):
+    return AgentHostTransaction(agent_host_manager, project_id, node_id,
+                                find_node=_find_node, update_settings=_update_node_settings, now_ms=_app_main.now_ms)
 
-    #354：model/autonomy 也从节点播种——节点是持久权威源（set_agent_model/
-    set_agent_autonomy 已落 canvas.json），服务器重启后新建会话默认空值，
-    不播种就会用默认模型/cautious spawn。
-    """
+
+def _apply_node_host(project_id: str, node_id: str, session) -> None:
+    """Hydrate canonical host/config/binding without spawning or losing listeners."""
     if session.is_running:
         return
     try:
         node = _find_node(project_id, node_id)
-    except HTTPException:
-        return
-    if not isinstance(node, dict):
-        return
-    # #354：未运行时，会话的 model/autonomy 以节点为准（节点没配则保留会话现值）。
-    node_model = str(node.get("model") or "").strip()
-    if node_model:
-        session.model = node_model
-    node_autonomy = str(node.get("autonomy") or "").strip()
-    if node_autonomy in AGENT_AUTONOMY_WHITELIST:
-        session.autonomy = node_autonomy
-    agent_cli = str(node.get("agentCli") or "").strip() or "pi"
-    if agent_cli not in AGENT_CLI_WHITELIST:
-        # #335: spawn/status 路径的兼容兑底保留，但必须留痕（create 入口已 400 拒绝）。
-        logger.warning("#335 unknown agentCli %r on node %s; falling back to pi", agent_cli, node_id)
-        agent_cli = "pi"
-    session.agent_cli = agent_cli
-    if not session.ext_session_id:
-        ext = str(node.get("extSessionId") or "").strip()
-        if ext:
-            session.ext_session_id = ext
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        return  # Legacy session-only callers do not acquire a canvas identity.
+    _host_transaction(project_id, node_id).hydrate(session, node)
 
 
 def _settings_user_edit(body: dict) -> bool:
@@ -100,7 +78,8 @@ def _settings_user_edit(body: dict) -> bool:
     return user_edit
 
 
-async def _update_node_settings(project_id: str, node_id: str, build_fields, *, user_edit: bool = False):
+async def _update_node_settings(project_id: str, node_id: str, build_fields, *, user_edit: bool = False,
+                                trusted_agent_bindings: bool = False):
     """Rebuild the settings patch from each CAS snapshot, preserving ownership."""
     _open_canvas(project_id)  # Preserve project-not-found behavior before the CAS loop.
 
@@ -114,7 +93,10 @@ async def _update_node_settings(project_id: str, node_id: str, build_fields, *, 
             updated["userTouchedAt"] = updated["updated_at"]
         return [{"op": "upsert_node", "node": updated}]
 
-    await _apply_mutations_from_snapshot(project_id, build, source="")
+    if trusted_agent_bindings:
+        await _apply_mutations_from_snapshot(project_id, build, source="", trusted_agent_bindings=True)
+    else:
+        await _apply_mutations_from_snapshot(project_id, build, source="")
 
 
 async def _update_node_field(project_id: str, node_id: str, field: str, value: Any, *, user_edit: bool = False):
@@ -131,7 +113,7 @@ def _settings_canvas(project_id: str, *, allow_missing: bool = False):
         return None
 
 
-async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: str) -> None:
+async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: str, *, model: str = "") -> None:
     """#332: agent-nodes create must persist the node into canvas.json——此前
     API 建的节点只存在于运行内存，进程重启整体蒸发、agent-events 成孤儿。
     已存在的节点绝不动（位置/字段以画布为准）；缺失时写入最小形状，走既有
@@ -152,6 +134,7 @@ async def _upsert_agent_canvas_node(project_id: str, node_id: str, agent_cli: st
         "x": 80 + (slot % 10) * 80,
         "y": 80 + (slot // 10) * 80,
         "agentCli": agent_cli,
+        "model": model,
         "created_at": now,
         "updated_at": now,
     }}])
@@ -166,6 +149,12 @@ async def create_agent_node(
     agent_cli: str = Body(default="", alias="agentCli"),
     x_agent_project: str = Header(default=""),
 ):
+    async with agent_host_manager.node_lock(project_id, node_id):
+        return await _create_agent_node_locked(project_id, node_id, model, autonomy, agent_cli, x_agent_project)
+
+
+async def _create_agent_node_locked(project_id: str, node_id: str, model: str,
+                                    autonomy: str, agent_cli: str, x_agent_project: str):
     """Create or resume an agent node session.
 
     If model/autonomy are not provided, reads them from the node's attributes.
@@ -211,13 +200,13 @@ async def create_agent_node(
                 "error": "agentCli conflicts with existing node attribute",
                 "node_agent_cli": node_cli,
                 "body_agent_cli": requested_cli,
-                "hint": "PATCH the canvas node to change host, or omit agentCli",
+                "hint": "POST node /settings to change host, or omit agentCli",
             })
         resolved_cli = node_cli
     else:
         resolved_cli = requested_cli or "pi"
         # #332: 节点不在 canvas 时先落盘（先于 spawn），重启不蒸发。
-        await _upsert_agent_canvas_node(project_id, node_id, resolved_cli)
+        await _upsert_agent_canvas_node(project_id, node_id, resolved_cli, model=model)
 
     session = await agent_host_manager.get_or_create_session(project_id, node_id, model, autonomy)
 
@@ -230,7 +219,7 @@ async def create_agent_node(
 
     # If not running, spawn it
     if not session.is_running:
-        success = await agent_host_manager.spawn_session(session, model, autonomy)
+        success = await agent_host_manager.spawn_session(session, session.model, session.autonomy)
         if not success:
             raise HTTPException(status_code=500, detail="Failed to start agent session")
 
@@ -308,6 +297,9 @@ async def get_agent_status(
         "is_running": session.is_running,
         "started_at": session._started_at,
         "last_activity": session._last_activity,
+        "host": session.agent_cli,
+        "requested": {"model": session.model, "effort": session.reasoning_effort},
+        "effort_state": session.effort_state,
     }
 
 
@@ -373,53 +365,26 @@ async def list_chat_models(project_id: str):
     return {"models": models, "current": current}
 
 
-@router.post("/{node_id}/model")
-async def set_agent_model(
-    project_id: str,
-    node_id: str,
-    body: dict = Body(...),
-    x_agent_project: str = Header(default=""),
-):
-    """Set the model for an agent node.
-
-    If the session is running, switches the model via pi RPC set_model command.
-    Always persists the model to the node's attributes.
-    """
+@router.post("/{node_id}/settings")
+async def set_agent_settings(project_id: str, node_id: str, body: dict = Body(...),
+                             x_agent_project: str = Header(default="")):
+    """Atomically validate/save host + model + effort. Busy wire code: agent_busy."""
     user_edit = _settings_user_edit(body)
-    model = body.get("model", "")
-    # #343：模型名会进宿主 argv（--model / -m），不合白名单直接 400。
-    from app.services.agent_host import validate_spawn_arg as _v343
-    try:
-        _v343("model", model, model=True)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    # Session-only model changes remain supported, but a durable target deleted
-    # during CAS is an error, not a successful session-only request.
-    persisted = True
-    try:
-        _find_node(project_id, node_id)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        persisted = False
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if session.is_running:
-        await agent_host_manager.set_model(session, model)
-    else:
-        # Update session model for next spawn
-        session.model = model
+    unknown = body.keys() - {"host", "model", "effort", "user_edit"}
+    if unknown:
+        raise agent_error(400, "INVALID_ARGUMENT", "Unknown settings fields: " + ", ".join(sorted(unknown)))
+    result = await _host_transaction(project_id, node_id).settings(body, user_edit=user_edit)
+    return {**result, "canvas": _settings_canvas(project_id)}
 
-    if persisted:
-        await _update_node_field(project_id, node_id, "model", model, user_edit=user_edit)
 
-    return {
-        "success": True,
-        "node_id": node_id,
-        "model": model,
-        "is_running": session.is_running,
-        "persisted": persisted,
-        "canvas": _settings_canvas(project_id, allow_missing=not persisted),
-    }
+@router.post("/{node_id}/model")
+async def set_agent_model(project_id: str, node_id: str, body: dict = Body(...),
+                          x_agent_project: str = Header(default="")):
+    """Legacy model entry delegates to the exact same validated transaction."""
+    user_edit = _settings_user_edit(body)
+    result = await _host_transaction(project_id, node_id).settings(
+        {"model": body.get("model", "")}, user_edit=user_edit, session_only=True)
+    return {**result, "canvas": _settings_canvas(project_id, allow_missing=not result["persisted"])}
 
 
 @router.post("/{node_id}/autonomy")
@@ -499,6 +464,15 @@ def _prepare_input(project_id: str, node_id: str, input_type: str, body: dict) -
 
 
 async def _send_input(project_id: str, node_id: str, input_type: str, body: dict, session=None) -> dict:
+    # Only admission holds the lock, never the lifetime of inference. Steer,
+    # follow-up, abort and confirm stay usable while native RPCs are pending.
+    if input_type == "prompt":
+        async with agent_host_manager.node_lock(project_id, node_id):
+            return await _send_input_admitted(project_id, node_id, input_type, body, session)
+    return await _send_input_admitted(project_id, node_id, input_type, body, session)
+
+
+async def _send_input_admitted(project_id: str, node_id: str, input_type: str, body: dict, session=None) -> dict:
     resolved = _prepare_input(project_id, node_id, input_type, body)
     if session is None:
         session = await agent_host_manager.get_or_create_session(project_id, node_id)
@@ -633,18 +607,27 @@ async def get_fork_messages(
     if not session.is_running:
         raise HTTPException(status_code=400, detail="Agent is not running")
 
-    messages = await agent_host_manager.get_fork_messages(session)
-    return {"success": True, "node_id": node_id, "messages": messages}
+    async with agent_host_manager.node_lock(project_id, node_id):
+        transaction = _host_transaction(project_id, node_id)
+        if transaction.fields(transaction.current())["agentCli"] != "pi" or session.agent_cli != "pi":
+            raise transaction.error(400, "agent_branch_unsupported", "Branches are supported only by the Pi host.")
+        await transaction.idle(session)
+        messages = await agent_host_manager.get_fork_messages(session)
+        return {"success": True, "node_id": node_id, "messages": messages}
 
 
 @router.get("/{node_id}/events")
 async def get_agent_node_events(
-    project_id: str, node_id: str, since: int = Query(0, ge=0)
+    project_id: str, node_id: str, since: int = Query(0, ge=0), host: Optional[str] = None
 ):
     """#318 票 C：事件回放日志（seq>since 升序）。刷新/重连重建用；
     前端先挂缓冲→GET→按 seq 去重续 live 流（竞态在客户端消解）。"""
+    if host is None:
+        host = _host_transaction(project_id, node_id).fields(_find_node(project_id, node_id))["agentCli"]
+    if host not in AGENT_CLI_WHITELIST:
+        raise agent_error(400, "INVALID_ARGUMENT", "host must be pi or codex")
     try:
-        return agent_host_manager.load_events(project_id, node_id, since)
+        return agent_host_manager.load_events(project_id, node_id, since, host=host)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"events log read failed: {e}")
 
@@ -663,55 +646,10 @@ async def fork_session(
     Creates a new branch and persists the branch list to the node's attributes.
     """
     user_edit = _settings_user_edit(await request.json() if request is not None else {})
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if not session.is_running:
-        raise HTTPException(status_code=400, detail="Agent is not running")
-
-    _find_node(project_id, node_id)  # Fail before RPC if the target is already gone.
-    # Capture the pre-fork host identity once; the RPC changes the session.
-    original = {
-        "id": "branch-original",
-        "name": "原始",
-        "session_file": session.session_file,
-        "session_id": session.session_id,
-        "fork_from_entry_id": None,
-        "created_at": _app_main.now_ms(),
-    }
-
-    # Perform the fork
-    fork_info = await agent_host_manager.fork(session, entry_id)
-    if fork_info.get("cancelled"):
-        raise HTTPException(status_code=409, detail="Fork was cancelled")
-
-    # Build the new branch record
-    import time as _time
-    branch_id = f"branch-{uuid.uuid4().hex[:8]}"
-    branch = {
-        "id": branch_id,
-        "name": name or f"分支 {int(_time.time() * 1000) % 10000}",
-        "session_file": fork_info.get("session_file"),
-        "session_id": fork_info.get("session_id"),
-        "fork_from_entry_id": entry_id,
-        "created_at": _app_main.now_ms(),
-    }
-    def build_fields(node):
-        branches = list(node.get("branches") or [])
-        if not branches:
-            branches.append(original)
-        branches.append(branch)
-        return {"branches": branches, "current_branch": branch_id}
-
-    await _update_node_settings(project_id, node_id, build_fields, user_edit=user_edit)
-    canvas = _settings_canvas(project_id)
-    node = _snapshot_node(canvas, node_id)
-    return {
-        "success": True,
-        "node_id": node_id,
-        "branch": branch,
-        "branches": node["branches"],
-        "current_branch": node["current_branch"],
-        "canvas": canvas,
-    }
+    if not isinstance(entry_id, str) or not entry_id or not isinstance(name, str):
+        raise agent_error(400, "INVALID_ARGUMENT", "entry_id must be non-empty and name must be a string")
+    result = await _host_transaction(project_id, node_id).branch(entry_id=entry_id, name=name, user_edit=user_edit)
+    return {**result, "canvas": _settings_canvas(project_id)}
 
 
 @router.post("/{node_id}/switch-branch")
@@ -729,43 +667,8 @@ async def switch_branch(
     if not isinstance(branch_id, str) or not branch_id:
         raise agent_error(400, "INVALID_ARGUMENT", "branch_id must be a non-empty string",
                           "Send the ID of an existing branch.")
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if not session.is_running:
-        raise HTTPException(status_code=400, detail="Agent is not running")
-
-    # Find the branch in node attributes
-    node = _find_node(project_id, node_id)
-    branches = node.get("branches") or []
-    branch = None
-    for b in branches:
-        if b.get("id") == branch_id:
-            branch = b
-            break
-    if branch is None:
-        raise HTTPException(status_code=404, detail=f"Branch not found: {branch_id}")
-
-    # Switch to the branch's session file
-    session_file = branch.get("session_file")
-    if session_file:
-        await agent_host_manager.switch_branch(session, session_file)
-
-    def build_fields(node):
-        if not any(b.get("id") == branch_id for b in node.get("branches") or []):
-            raise agent_error(404, "NOT_FOUND", f"Branch not found: {branch_id}",
-                              "Read the latest canvas and choose an existing branch.")
-        return {"current_branch": branch_id}
-
-    await _update_node_settings(project_id, node_id, build_fields, user_edit=user_edit)
-    canvas = _settings_canvas(project_id)
-    node = _snapshot_node(canvas, node_id)
-    branch = next((b for b in node.get("branches") or [] if b.get("id") == branch_id), branch)
-    return {
-        "success": True,
-        "node_id": node_id,
-        "current_branch": node["current_branch"],
-        "branch": branch,
-        "canvas": canvas,
-    }
+    result = await _host_transaction(project_id, node_id).branch(branch_id=branch_id, user_edit=user_edit)
+    return {**result, "canvas": _settings_canvas(project_id)}
 
 
 @router.websocket("/{node_id}/stream")
@@ -773,20 +676,26 @@ async def agent_event_stream(
     websocket: WebSocket,
     project_id: str,
     node_id: str,
+    host: Optional[str] = None,
 ):
     """WebSocket endpoint for streaming agent events to the frontend."""
+    if host is not None and host not in AGENT_CLI_WHITELIST:
+        await websocket.close(code=1008, reason="host must be pi or codex")
+        return
     await websocket.accept()
 
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    # #318 票 B：宿主选择读节点属性 agentCli（默认 pi）；session 事件带宿主标签
-    # 供前端渲染（票 D 设置面板的只读展示面）。
-    _apply_node_host(project_id, node_id, session)
+    async with agent_host_manager.node_lock(project_id, node_id):
+        session = await agent_host_manager.get_or_create_session(project_id, node_id)
+        _apply_node_host(project_id, node_id, session)
 
     # #317：浏览画布不再自动拉起 pi 进程——stream 只监听；进程在用户首次发送（REST /prompt，
     # 或 WS prompt 指令兜底路径）时按需 spawn。此前每次渲染→连 WS→spawn，纯浏览也会烧资源/费用。
 
     # Register event handler for this WebSocket connection
     async def ws_event_handler(sess, event):
+        visible_host = session.agent_cli if host is None else host
+        if event.get("host", "pi") != visible_host:
+            return  # Legacy hostless frames belong to Pi, never Codex.
         try:
             await websocket.send_json(event)
         except Exception:
@@ -809,6 +718,9 @@ async def agent_event_stream(
         "autonomy": session.autonomy,
         "agentCli": session.agent_cli,
         "extSessionId": session.ext_session_id,
+        "host": session.agent_cli if host is None else host,
+        "read_only": host is not None and host != session.agent_cli,
+        "effort_state": session.effort_state,
     })
 
     try:
@@ -825,6 +737,11 @@ async def agent_event_stream(
                                            "message": "Agent command must be an object."})
                 continue
             cmd_type = command.get("type", "")
+            if host is not None and host != session.agent_cli:
+                await websocket.send_json({"type": "input_rejected", "code": "agent_host_read_only",
+                                           "message": "Inactive host history is read-only.",
+                                           "request_id": command.get("request_id")})
+                continue
 
             if cmd_type in ("prompt", "steer", "follow_up"):
                 try:

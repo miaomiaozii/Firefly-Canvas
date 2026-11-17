@@ -1,3 +1,4 @@
+import copy
 import json
 import io
 import hashlib
@@ -2795,6 +2796,212 @@ class BackgroundSnapshotLockContentionTests(unittest.TestCase):
             self.assertTrue(store.wait_for_snapshot(project["id"], timeout=0.0))
         finally:
             store.close()
+
+
+def agent_binding_node(node_id="agent-original"):
+    """A deliberately server-internal, already-bound two-host fixture."""
+    return {
+        "id": node_id, "type": "smart-agent", "agentCli": "pi", "model": "pi-model",
+        "agentHostSettings": {
+            "pi": {"model": "pi-model", "effort": "high"},
+            "codex": {"model": "codex-model", "effort": "low"},
+        },
+        "agentHostSessions": {
+            "pi": {"extSessionId": "pi-native", "branches": [{"id": "pi-branch"}], "current_branch": "pi-branch"},
+            "codex": {"extSessionId": "codex-native", "branches": [], "current_branch": ""},
+        },
+        "extSessionId": "pi-native", "branches": [{"id": "pi-branch"}],
+        "current_branch": "pi-branch", "mcp_session": "external-original",
+        "messages": [{"role": "user", "text": "keep my conversation"}],
+        "autonomy": "standard", "x": 10, "y": 20,
+        "createdBy": "user", "agentNodeId": None,
+        "userTouchedAt": 123, "promptEditedByUser": True,
+    }
+
+
+class AgentBindingStoreTests(unittest.TestCase):
+    BINDINGS = ("agentHostSessions", "extSessionId", "branches", "current_branch", "mcp_session")
+    CONTROLLED = BINDINGS + ("agentCli", "agentHostSettings", "model")
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="e2e-tabbit-agent-store-")
+        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        self.pid = self.store.create_project("e2e-tabbit-agent-store-bindings")["id"]
+
+    def tearDown(self):
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def apply(self, *nodes, trusted=False):
+        method = self.store.apply_agent_host_mutations if trusted else self.store.apply_mutations
+        return method(self.pid, [{"op": "upsert_node", "node": node} for node in nodes],
+                      base_revision=self.store.canvas(self.pid)["revision"])
+
+    def nodes(self):
+        return {node["id"]: node for node in self.store.canvas(self.pid)["nodes"]}
+
+    def assert_unbound(self, node):
+        self.assertNotIn("mcp_session", node)
+        self.assertEqual(node["extSessionId"], "")
+        self.assertEqual(node["branches"], [])
+        self.assertEqual(node["current_branch"], "")
+        for binding in node["agentHostSessions"].values():
+            self.assertEqual(binding, {"extSessionId": "", "branches": [], "current_branch": ""})
+
+    def test_new_agent_discards_forged_bindings_and_json_trust_markers(self):
+        for binding_map in (agent_binding_node()["agentHostSessions"], None, "malformed-binding", ["forged"]):
+            with self.subTest(binding_map=binding_map):
+                incoming = agent_binding_node(f"new-{len(self.nodes())}")
+                incoming["agentHostSessions"] = binding_map
+                incoming.update(trusted=True, trusted_agent_bindings=True, source="agent-host")
+                before = copy.deepcopy(incoming)
+                self.store.apply_mutations(self.pid, [{
+                    "op": "upsert_node", "node": incoming,
+                    "trusted": True, "trusted_agent_bindings": True, "source": "mcp",
+                }], base_revision=self.store.canvas(self.pid)["revision"])
+                saved = self.nodes()[incoming["id"]]
+                self.assert_unbound(saved)
+                self.assertEqual(saved["agentHostSettings"], incoming["agentHostSettings"])
+                self.assertEqual(saved["messages"], incoming["messages"])
+                self.assertEqual(saved["createdBy"], "user")
+                self.assertEqual(incoming, before)
+
+    def test_legacy_new_agent_keeps_settings_messages_but_no_external_binding(self):
+        incoming = {"id": "legacy-new", "type": "smart-agent", "agentCli": "codex", "model": "legacy-model",
+                    "extSessionId": "forged", "branches": [{"id": "forged"}],
+                    "current_branch": "forged", "mcp_session": "forged", "messages": ["keep"]}
+        self.apply(incoming)
+        saved = self.nodes()["legacy-new"]
+        self.assert_unbound(saved)
+        self.assertEqual(saved["agentHostSettings"], {"codex": {"model": "legacy-model", "effort": None}})
+        self.assertEqual(saved["messages"], ["keep"])
+        self.assertEqual(saved["agentCli"], "codex")
+        self.assertEqual(saved["model"], "legacy-model")
+
+    def test_existing_agent_preserves_binding_and_active_config_exactly(self):
+        original = agent_binding_node()
+        self.apply(original, trusted=True)
+        for omit in (False, True):
+            with self.subTest(omit=omit):
+                stale = {**copy.deepcopy(original), "title": "ordinary title", "x": 42,
+                         "messages": ["ordinary messages"], "autonomy": "cautious"}
+                if omit:
+                    for field in self.CONTROLLED:
+                        stale.pop(field, None)
+                else:
+                    stale.update(agentCli="codex", model="forged-model", agentHostSettings=None,
+                                 agentHostSessions={"pi": "forged"}, extSessionId="stale",
+                                 branches=["stale"], current_branch="stale", mcp_session="stale")
+                self.apply(stale)
+                self.assertEqual(self.nodes()[original["id"]], {
+                    **original, "title": "ordinary title", "x": 42,
+                    "messages": ["ordinary messages"], "autonomy": "cautious",
+                })
+
+    def test_existing_legacy_upsert_never_migrates_or_repairs_projections(self):
+        for controlled in (
+            {},
+            {"agentCli": None, "model": None, "extSessionId": None, "branches": None, "current_branch": None},
+            {"agentCli": "codex", "model": "legacy", "extSessionId": "legacy-native", "branches": [{"id": "old"}],
+             "current_branch": "old", "mcp_session": "legacy-external"},
+            {**{key: value for key, value in agent_binding_node().items() if key in self.CONTROLLED},
+             "model": None, "extSessionId": {"malformed": "saved"}, "branches": None},
+        ):
+            with self.subTest(controlled=controlled):
+                original = {"id": f"legacy-{len(self.nodes())}", "type": "smart-agent", **controlled}
+                self.apply(original, trusted=True)
+                self.apply({**agent_binding_node(original["id"]), "title": "edited"})
+                self.assertEqual(self.nodes()[original["id"]], {
+                    **{key: value for key, value in agent_binding_node(original["id"]).items() if key not in self.CONTROLLED},
+                    **controlled, "title": "edited",
+                })
+
+    def test_clone_new_id_is_unbound_keeps_config_messages_and_original(self):
+        original = agent_binding_node()
+        self.apply(original, trusted=True)
+        clone = {**copy.deepcopy(original), "id": "clone", "x": 88}
+        self.apply(clone)
+        saved = self.nodes()["clone"]
+        self.assert_unbound(saved)
+        self.assertEqual(saved["agentHostSettings"], original["agentHostSettings"])
+        self.assertEqual(saved["messages"], original["messages"])
+        self.assertEqual(self.nodes()[original["id"]], original)
+        self.apply(clone)  # A stale client can save its copied binding repeatedly.
+        self.assertEqual(self.nodes()["clone"], saved)
+        self.assertIsNot(saved["agentHostSessions"]["pi"], saved["agentHostSessions"]["codex"])
+        self.assertIsNot(saved["agentHostSessions"]["pi"]["branches"], saved["agentHostSessions"]["codex"]["branches"])
+        saved["agentHostSettings"]["pi"]["model"] = "local-only"
+        saved["agentHostSessions"]["pi"]["branches"].append({"id": "local-only"})
+        self.assertEqual(saved["agentHostSettings"]["codex"]["model"], "codex-model")
+        self.assertEqual(saved["agentHostSessions"]["codex"]["branches"], [])
+        self.assertEqual(self.nodes()["clone"]["agentHostSettings"], original["agentHostSettings"])
+
+    def test_deleted_id_ordinary_undo_does_not_resume_native_or_external_session(self):
+        original = agent_binding_node()
+        self.apply(original, trusted=True)
+        self.store.apply_mutations(self.pid, [{"op": "remove_node", "node_id": original["id"]}],
+                                   base_revision=1, force_empty=True)
+        self.assertEqual(self.nodes(), {})
+        self.apply(original)
+        restored = self.nodes()[original["id"]]
+        self.assert_unbound(restored)
+        self.assertEqual(restored["messages"], original["messages"])
+        self.assertEqual(restored["agentHostSettings"], original["agentHostSettings"])
+
+    def test_trusted_native_updates_keep_hosts_independent_and_same_cas_result(self):
+        original = agent_binding_node()
+        result = self.apply(original, trusted=True)
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(result["revision"], 1)
+        updated = copy.deepcopy(original)
+        updated["agentHostSessions"]["pi"]["extSessionId"] = "pi-next"
+        updated["extSessionId"] = "pi-next"
+        with self.assertRaises(RevisionConflict):
+            self.store.apply_agent_host_mutations(self.pid, [{"op": "upsert_node", "node": updated}], base_revision=0)
+        self.assertEqual(self.nodes()[original["id"]], original)
+        self.apply(updated, trusted=True)
+        self.assertEqual(self.nodes()[original["id"]], updated)
+        self.apply(original)
+        self.assertEqual(self.nodes()[original["id"]], updated)
+        self.assertEqual(updated["agentHostSessions"]["codex"], original["agentHostSessions"]["codex"])
+        for method in (self.store.apply_mutations, self.store.apply_agent_host_mutations):
+            self.assertEqual(method(self.pid, [], base_revision=-1), {"project_id": self.pid, "applied": 0, "revision": 3})
+            with self.assertRaises(RevisionConflict):
+                method(self.pid, [{"op": "remove_node", "node_id": original["id"]}], base_revision=3)
+        removed = self.store.apply_agent_host_mutations(self.pid, [{"op": "remove_node", "node_id": original["id"]}],
+                                                        base_revision=3, force_empty=True)
+        self.assertEqual(removed["revision"], 4)
+
+    def test_malformed_new_settings_fail_explicitly_without_changing_canvas(self):
+        for settings in (None, [], {"pi": {"model": "missing-effort"}}, {"unknown": {"model": "", "effort": None}}):
+            with self.subTest(settings=settings):
+                before = self.store.canvas(self.pid)
+                with self.assertRaises(InvalidMutation):
+                    self.apply({**agent_binding_node("malformed"), "agentHostSettings": settings})
+                self.assertEqual(self.store.canvas(self.pid), before)
+
+    def test_persisted_legacy_agent_type_has_the_same_binding_boundary(self):
+        legacy = {**agent_binding_node("legacy-type"), "type": "agent"}
+        self.apply(legacy)
+        self.assert_unbound(self.nodes()["legacy-type"])
+        self.apply(legacy, trusted=True)
+        self.apply({**legacy, "agentCli": "codex", "extSessionId": "forged", "agentHostSessions": None})
+        self.assertEqual(self.nodes()["legacy-type"], legacy)
+        with self.assertRaises(InvalidMutation):
+            self.apply({**legacy, "type": "prompt"})
+
+    def test_agent_type_cannot_launder_binding_authority_through_other_node_type(self):
+        original = agent_binding_node()
+        self.apply(original, trusted=True)
+        for node in ({**original, "type": "prompt"}, {"id": original["id"]}):
+            with self.subTest(node=node), self.assertRaises(InvalidMutation):
+                self.apply(node)
+        self.assertEqual(self.nodes()[original["id"]], original)
+        unrelated = {**agent_binding_node("not-an-agent"), "type": "prompt"}
+        self.apply(unrelated)
+        self.assertEqual(self.nodes()["not-an-agent"], unrelated)
+        self.apply({**unrelated, "type": "smart-agent"})
+        self.assert_unbound(self.nodes()["not-an-agent"])
 
 
 if __name__ == "__main__":

@@ -24,7 +24,9 @@ class TestAgentCliValidation(unittest.TestCase):
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
         self.project_id = self.store.create_project("票335校验")["id"]
-        self.store.apply_mutations(self.project_id, [
+        # Stage a pre-existing corrupt/legacy canvas via the trusted server fixture
+        # seam: ordinary client writes correctly reject bogus-cli before this endpoint.
+        self.store.apply_agent_host_mutations(self.project_id, [
             {"op": "upsert_node", "node": {
                 "id": "n-bogus", "type": "agent", "kind": "agent",
                 "x": 0, "y": 0, "agentCli": "bogus-cli",
@@ -51,7 +53,8 @@ class TestAgentCliValidation(unittest.TestCase):
         )
 
     def test_unknown_agent_cli_rejected_400_before_spawn(self):
-        with patch.object(api_agent_nodes.agent_host_manager, "get_or_create_session") as get_session:
+        with patch.object(api_agent_nodes.agent_host_manager, "get_or_create_session") as get_session, \
+             patch.object(api_agent_nodes.agent_host_manager, "spawn_session") as spawn:
             r = self._post("n-bogus")
         self.assertEqual(r.status_code, 400, r.text)
         body = r.json()
@@ -61,6 +64,7 @@ class TestAgentCliValidation(unittest.TestCase):
         self.assertIn("pi", detail.get("supported", []))
         self.assertIn("codex", detail.get("supported", []))
         get_session.assert_not_called()
+        spawn.assert_not_called()
 
     def test_known_cli_still_creates(self):
         async def _fake_spawn(session, model="", autonomy=""):

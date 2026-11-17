@@ -66,7 +66,7 @@ class LifecycleBase(unittest.TestCase):
         self.addCleanup(self._restore_store)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         main.FIREFLY_PROJECT_STORE = self.store
-        self.project = self.store.create_project("Lifecycle 353")
+        self.project = self.store.create_project("e2e-tabbit-lifecycle-353")
         self.project_id = self.project["id"]
         self.manager = agent_host_manager_singleton()
         self._sessions_backup = dict(self.manager.sessions)
@@ -89,8 +89,10 @@ class LifecycleBase(unittest.TestCase):
                 "x": 0, "y": 0}
         node.update(fields)
         rev = int(self.store.canvas(self.project_id)["revision"])
-        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}],
-                                   base_revision=rev)
+        # This fixture represents an existing server-owned native binding, not
+        # an untrusted canvas clone (which now correctly loses native IDs).
+        self.store.apply_agent_host_mutations(self.project_id, [{"op": "upsert_node", "node": node}],
+                                              base_revision=rev)
         return node
 
     def _filler_node(self, node_id="filler-img"):

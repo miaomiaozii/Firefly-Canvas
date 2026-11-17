@@ -9,7 +9,11 @@ by an arbitrary enum member. selection.source records provenance and the
 metadata-only availability boundary. Codex config/read is configured intent,
 NOT evidence of effective reasoning effort.
 
-Each call takes file-only snapshots into a fresh runtime-owned temporary home.
+Cache misses take file-only snapshots into a fresh runtime-owned temporary home.
+A process-local LRU holds at most 64 results for 60s (unavailable: 5s), keyed by
+host, requested model and source paths/mtime_ns/size, including Codex's login
+fallback candidate. Concurrent requests for one key share one complete probe;
+callers receive independent copies. No snapshot or credentials enter the cache.
 Only settings/models/auth/catalog files are copied, never sessions or bindings;
 credentials are copied as opaque bytes, never parsed, logged or returned. The
 child environment excludes inherited agent/session markers, provider secrets
@@ -25,8 +29,12 @@ Every exit kills the owned process tree and closes its anonymous Windows job.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import Future
 from contextlib import contextmanager
+from copy import deepcopy
 import ctypes
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -35,6 +43,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from threading import Lock
 import time
 
 from app.constants import RUNTIME_ROOT
@@ -44,6 +53,16 @@ from tools.process_tree import ProcessJob, kill_process_tree
 
 
 _PROBE_TIMEOUT = 30.0
+_CACHE_MAX_ENTRIES = 64
+_CACHE_TTL = 60.0
+_CACHE_FAILURE_TTL = 5.0
+_cache: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
+_inflight: dict[tuple, Future] = {}
+_cache_lock = Lock()
+_NATIVE_FILES = {
+    "pi": ("settings.json", "models.json", "auth.json"),
+    "codex": ("config.toml", "auth.json", "models_cache.json"),
+}
 _MAX_FRAME = 2 * 1024 * 1024
 _MAX_OUTPUT = 8 * 1024 * 1024
 _MAX_MODELS = 4096
@@ -120,27 +139,50 @@ def _copy_files(source: Path, target: Path, names: tuple[str, ...]) -> None:
         shutil.copyfile(path, target / name)
 
 
-def _snapshot(host: str, root: Path) -> Path:
-    target = root / "snapshot"
+@dataclass(frozen=True)
+class _NativeSources:
+    home: Path
+    fallback_home: Path | None
+
+
+def _native_sources(host: str) -> _NativeSources:
     if host == "pi":
-        source = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
-        _copy_files(source, target, ("settings.json", "models.json", "auth.json"))
-    else:
-        explicit_home = os.environ.get("CODEX_HOME")
-        source = Path(explicit_home or codex_home_dir())
-        _copy_files(source, target, ("config.toml", "auth.json", "models_cache.json"))
-        if not explicit_home:
-            # Mirror prepare_codex_home's newer global login selection without
-            # writing its persistent home. An explicit CODEX_HOME never borrows
-            # another home's identity, just like the production spawn boundary.
-            global_home = Path.home() / ".codex"
-            try:
-                global_stamp = (global_home / "auth.json").stat().st_mtime_ns
-            except FileNotFoundError:
-                global_stamp = None
-            local_auth = target / "auth.json"
-            if global_stamp is not None and (not local_auth.exists() or global_stamp > (source / "auth.json").stat().st_mtime_ns):
-                _copy_files(global_home, target, ("auth.json",))
+        return _NativeSources(Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent").absolute(), None)
+    explicit_home = os.environ.get("CODEX_HOME")
+    return _NativeSources(Path(explicit_home or codex_home_dir()).absolute(),
+                          None if explicit_home else Path.home() / ".codex")
+
+
+def _source_fingerprint(host: str, sources: _NativeSources) -> tuple:
+    paths = [sources.home / name for name in _NATIVE_FILES[host]]
+    if sources.fallback_home is not None:
+        paths.append(sources.fallback_home / "auth.json")
+    fingerprint = []
+    for path in paths:
+        try:
+            stamp = path.stat()
+        except FileNotFoundError:
+            # Optional files can appear later; absence is part of the key.
+            fingerprint.append((str(path.absolute()), None, None))
+        else:
+            fingerprint.append((str(path.absolute()), stamp.st_mtime_ns, stamp.st_size))
+    return tuple(fingerprint)
+
+
+def _snapshot(host: str, root: Path, sources: _NativeSources) -> Path:
+    target = root / "snapshot"
+    _copy_files(sources.home, target, _NATIVE_FILES[host])
+    if sources.fallback_home is not None:
+        # Mirror prepare_codex_home's newer global login selection without
+        # writing its persistent home. An explicit CODEX_HOME never borrows
+        # another home's identity, just like the production spawn boundary.
+        try:
+            global_stamp = (sources.fallback_home / "auth.json").stat().st_mtime_ns
+        except FileNotFoundError:
+            global_stamp = None
+        local_auth = target / "auth.json"
+        if global_stamp is not None and (not local_auth.exists() or global_stamp > (sources.home / "auth.json").stat().st_mtime_ns):
+            _copy_files(sources.fallback_home, target, ("auth.json",))
     return target
 
 
@@ -158,8 +200,7 @@ def _environment(host: str, folder: Path, snapshot: Path) -> dict[str, str]:
         path.mkdir(parents=True, exist_ok=True)
         env[key] = str(path)
     (folder / "work").mkdir()
-    names = ("settings.json", "models.json", "auth.json") if host == "pi" else ("config.toml", "auth.json", "models_cache.json")
-    _copy_files(snapshot, native, names)
+    _copy_files(snapshot, native, _NATIVE_FILES[host])
     env.update({"NO_COLOR": "1", "TERM": "dumb", "DO_NOT_TRACK": "1", "OTEL_SDK_DISABLED": "true"})
     if host == "pi":
         env.update({"PI_CODING_AGENT_DIR": str(native), "PI_CODING_AGENT_SESSION_DIR": str(native / "sessions"),
@@ -503,8 +544,54 @@ def _temporary_snapshot(parent: Path):
                 time.sleep(0.01)
 
 
+def _new_result(host: str, model: str) -> dict:
+    source = {"scope": "native-metadata; file-only; sanitized-environment; account-callability-unverified"}
+    if host == "pi":
+        source.update({"models": "pi.rpc.get_available_models", "defaults": "pi.rpc.get_state",
+                       "efforts": "pi.rpc.get_available_thinking_levels"})
+    else:
+        source.update({"models": "codex.app-server.model/list", "defaults": "codex.app-server.config/read (configured, not effective)",
+                       "efforts": "codex.app-server.model/list.supportedReasoningEfforts"})
+    return {"host": host, "status": "unavailable", "models": [], "defaults": {"model": "", "effort": None},
+            "selection": {"model": model, "efforts": [], "source": source}, "error": None}
+
+
+def _io_error() -> dict:
+    # Never expose paths, file contents, auth, raw protocol errors or stderr.
+    return {"code": "native_io_error", "message": "Cannot read native metadata or start/clean up the CLI; check installation and file permissions, then retry."}
+
+
+def _probe_capabilities(host: str, model: str, sources: _NativeSources) -> dict:
+    result = _new_result(host, model)
+    try:
+        executable = agent_host.resolve_pi_cli() if host == "pi" else shutil.which("codex")
+        if not executable:
+            raise _Unavailable("cli_missing", "Native CLI not found; install it or correct the server PATH and retry.")
+        try:
+            cli = agent_host.finalize_spawn_argv([executable])
+        except ValueError:
+            raise _Unavailable("cli_wrapper_unsupported", "Native CLI wrapper cannot be launched safely; install a standard npm wrapper or executable.") from None
+        parent = Path(RUNTIME_ROOT) / "agent-capabilities"
+        parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + _PROBE_TIMEOUT
+        with _temporary_snapshot(parent) as root:
+            snapshot = _snapshot(host, root, sources)
+            if host == "pi":
+                _pi_probe(result, cli, root, snapshot, deadline, model)
+            else:
+                _codex_probe(result, cli, root, snapshot, deadline, model)
+        result["status"] = "available"
+    except _Unavailable as error:
+        result["selection"]["efforts"] = []
+        result["error"] = {"code": error.code, "message": error.message}
+    except OSError:
+        result["selection"]["efforts"] = []
+        result["error"] = _io_error()
+    return result
+
+
 def get_capabilities(host: str, model: str = "") -> dict:
-    """Return fresh native metadata or an actionable, sanitized unavailable result.
+    """Return cached native metadata or an actionable, sanitized unavailable result.
 
     Invalid client host/model raises ValueError (router 400). Native failures
     return unavailable, never a guessed model/effort enum. No input effort is
@@ -518,38 +605,39 @@ def get_capabilities(host: str, model: str = "") -> dict:
     agent_host.validate_spawn_arg("model", model, model=True)
     if any(character.isspace() for character in model):
         raise ValueError("model must not contain whitespace")
-    source = {"scope": "native-metadata; file-only; sanitized-environment; account-callability-unverified"}
-    if host == "pi":
-        source.update({"models": "pi.rpc.get_available_models", "defaults": "pi.rpc.get_state",
-                       "efforts": "pi.rpc.get_available_thinking_levels"})
-    else:
-        source.update({"models": "codex.app-server.model/list", "defaults": "codex.app-server.config/read (configured, not effective)",
-                       "efforts": "codex.app-server.model/list.supportedReasoningEfforts"})
-    result = {"host": host, "status": "unavailable", "models": [], "defaults": {"model": "", "effort": None},
-              "selection": {"model": model, "efforts": [], "source": source}, "error": None}
     try:
-        executable = agent_host.resolve_pi_cli() if host == "pi" else shutil.which("codex")
-        if not executable:
-            raise _Unavailable("cli_missing", "Native CLI not found; install it or correct the server PATH and retry.")
-        try:
-            cli = agent_host.finalize_spawn_argv([executable])
-        except ValueError:
-            raise _Unavailable("cli_wrapper_unsupported", "Native CLI wrapper cannot be launched safely; install a standard npm wrapper or executable.") from None
-        parent = Path(RUNTIME_ROOT) / "agent-capabilities"
-        parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + _PROBE_TIMEOUT
-        with _temporary_snapshot(parent) as root:
-            snapshot = _snapshot(host, root)
-            if host == "pi":
-                _pi_probe(result, cli, root, snapshot, deadline, model)
-            else:
-                _codex_probe(result, cli, root, snapshot, deadline, model)
-        result["status"] = "available"
-    except _Unavailable as error:
-        result["selection"]["efforts"] = []
-        result["error"] = {"code": error.code, "message": error.message}
+        sources = _native_sources(host)
+        key = (host, model, _source_fingerprint(host, sources))
     except OSError:
-        # Never expose paths, file contents, auth, raw protocol errors or stderr.
-        result["selection"]["efforts"] = []
-        result["error"] = {"code": "native_io_error", "message": "Cannot read native metadata or start/clean up the CLI; check installation and file permissions, then retry."}
-    return result
+        # No usable key: report the disk failure without probing or caching it.
+        return {**_new_result(host, model), "error": _io_error()}
+    with _cache_lock:
+        cached = _cache.get(key)
+        if cached is not None and time.monotonic() < cached[0]:
+            _cache.move_to_end(key)
+            return deepcopy(cached[1])
+        flight = _inflight.get(key)
+        owner = flight is None
+        if owner:
+            flight = Future()
+            _inflight[key] = flight
+    if not owner:
+        return deepcopy(flight.result())
+    try:
+        result = _probe_capabilities(host, model, sources)
+        ttl = _CACHE_TTL if result["status"] == "available" else _CACHE_FAILURE_TTL
+        with _cache_lock:
+            _cache[key] = (time.monotonic() + ttl, result)
+            _cache.move_to_end(key)
+            while len(_cache) > _CACHE_MAX_ENTRIES:
+                _cache.popitem(last=False)
+        flight.set_result(result)
+        return deepcopy(result)
+    except BaseException as error:
+        # Propagate cancellation/programming failures to every waiter; never
+        # cache them or leave a permanently blocked flight behind.
+        flight.set_exception(error)
+        raise
+    finally:
+        with _cache_lock:
+            del _inflight[key]

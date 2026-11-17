@@ -1,7 +1,7 @@
 """D3-b offline REST/WS -> real host send -> Python stdin worker contracts.
 
-Only spawn is replaced: production session lookup, send_prompt/steer/follow_up,
-send_command, event persistence and replay all run. No model, CLI config, HTTP
+Process boundaries are faked: production session lookup, send_prompt/steer/follow_up,
+send_command, event persistence and replay all run. No model, native CLI config, HTTP
 listener, media/source reads or network. Every worker and test project is owned
 and removed by this fixture under the explicitly isolated QA roots.
 """
@@ -69,7 +69,7 @@ class StdinWorker:
 
 
 @pytest.fixture
-def backend(monkeypatch):
+def backend(monkeypatch, request):
     runtime = os.environ.get("FIREFLY_RUNTIME_ROOT", "")
     projects = os.environ.get("FIREFLY_PROJECTS_ROOT", "")
     # Use this run's isolated QA roots, but also remain safe/portable in ordinary
@@ -85,10 +85,11 @@ def backend(monkeypatch):
         # Some older tests import the service before main. Bind this fixture's
         # real app/store explicitly rather than relying on collection order.
         monkeypatch.setattr(agent_host, "_app_main", main)
-        pid = store.create_project("D3-b owned offline test")['id']
+        pid = store.create_project("e2e-tabbit-history-refs")['id']
         manager = AgentHostManager()
         monkeypatch.setattr(routes, "agent_host_manager", manager)
-        session = AgentSession(pid, "agent", session_id="offline")
+        selected_host = getattr(request, "param", "pi")
+        session = AgentSession(pid, "agent", session_id="offline", agent_cli=selected_host)
         manager.sessions[f"{pid}:agent"] = session
         workers = []
         spawns = []
@@ -116,7 +117,7 @@ def backend(monkeypatch):
             mutate(*({"op": "upsert_node", "node": {"x": 0, "y": 0, **node}} for node in nodes))
 
         upsert(
-            {"id": "agent", "type": NODE_TYPE_AGENT, "agentCli": "pi"},
+            {"id": "agent", "type": NODE_TYPE_AGENT, "agentCli": selected_host},
             {"id": "p", "type": NODE_TYPE_PROMPT, "title": "Stored title", "prompt": "Stored preview"},
             {"id": "image", "type": NODE_TYPE_IMAGE, "title": "Stored image"},
             {"id": "deep", "type": NODE_TYPE_PROMPT, "title": "Not recursively expanded"},
@@ -276,19 +277,39 @@ def test_limits_reject_both_transports_before_any_spawn_send_or_history(backend,
 @pytest.mark.parametrize("invalid", ["foreign_ref", "deleted_ref", "deleted_agent", "non_agent"])
 def test_current_project_and_target_are_revalidated(backend, transport, input_type, invalid):
     b = backend
-    foreign_pid = b.store.create_project("D3-b second owned project")["id"]
+    foreign_pid = b.store.create_project("e2e-tabbit-history-refs-second")["id"]
     b.store.apply_mutations(foreign_pid, [{"op": "upsert_node", "node": {
         "id": "foreign", "type": NODE_TYPE_PROMPT, "title": "Foreign secret"}}], base_revision=0)
-    ref = "p"
-    if invalid == "foreign_ref":
-        ref = "foreign"
-    elif invalid == "deleted_ref":
-        b.mutate({"op": "remove_node", "node_id": "p"})
-    elif invalid == "deleted_agent":
-        b.mutate({"op": "remove_node", "node_id": "agent"})
+    ref = "foreign" if invalid == "foreign_ref" else "p"
+
+    def invalidate_target():
+        if invalid == "deleted_ref":
+            b.mutate({"op": "remove_node", "node_id": "p"})
+        elif invalid == "deleted_agent":
+            b.mutate({"op": "remove_node", "node_id": "agent"})
+        elif invalid == "non_agent":
+            # Deliberately stage legacy/corrupt server state. Ordinary client saves
+            # correctly reject Agent -> non-Agent changes before endpoint validation.
+            b.store.apply_agent_host_mutations(b.pid, [{"op": "upsert_node", "node": {
+                "id": "agent", "type": NODE_TYPE_IMAGE, "x": 0, "y": 0}}],
+                base_revision=b.store.canvas(b.pid)["revision"])
+            b.store.flush(b.pid)
+
+    body = {"message": "no", "refs": [{"node_id": ref}], "request_id": "local"}
+    if transport == "ws":
+        # Connect while the target is valid, then prove each input revalidates it.
+        # Otherwise host hydration rejects a non-Agent before input admission.
+        with b.client.websocket_connect(b.base + "/stream") as ws:
+            assert ws.receive_json()["type"] == "session"
+            invalidate_target()
+            ws.send_json({"type": input_type, **body})
+            reply = ws.receive_json()
+            assert reply["type"] == "input_rejected"
+            assert reply["request_id"] == "local" and reply["input_type"] == input_type
+            status = None
     else:
-        b.upsert({"id": "agent", "type": NODE_TYPE_IMAGE})
-    status, reply = b.send(transport, input_type, {"message": "no", "refs": [{"node_id": ref}], "request_id": "local"})
+        invalidate_target()
+        status, reply = b.send(transport, input_type, body)
     assert status != 200
     detail = reply["detail"] if transport == "rest" else reply
     assert detail["code"] == ("INVALID_ARGUMENT" if invalid == "non_agent" else "NODE_NOT_FOUND"), reply
@@ -354,9 +375,9 @@ def test_legacy_material_refs_and_images_are_not_overwritten(backend, transport)
         "\n\n【参考框素材清单】Material A、Material video（图片已随本消息注入；视频/超限项见跳过原因）")
 
 
-@pytest.mark.parametrize("transport", ["rest", "ws"])
-def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(backend, monkeypatch, transport):
-    b = backend
+def _save_and_check_snapshot_chronology(b, monkeypatch, transport):
+    """Produce history under the already-selected host, never relabel saved logs."""
+    selected_host = b.session.agent_cli
     b.send(transport, "prompt", {"message": "ROUND ONE", "refs": [{"node_id": "p"}], "request_id": "p1"})
     worker = b.workers[-1]
     worker.command()
@@ -374,6 +395,9 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
     assert [e["type"] for e in accepted] == ["user_prompt", "queued_input", "queued_input", "user_prompt"]
     assert "Stored title" in accepted[0]["node_ref_context"]
     assert "Changed between inputs" in accepted[1]["node_ref_context"]
+    records = b.manager.load_events(b.pid, "agent")["events"]
+    assert b.session.agent_cli == selected_host
+    assert records and all(record["host"] == record["event"]["host"] == selected_host for record in records)
     b.mutate({"op": "remove_node", "node_id": "p"}, {"op": "remove_node", "node_id": "image"})
 
     def no_resolution(*args, **kwargs):
@@ -390,6 +414,35 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
                      "assistant: AFTER_STEER\n"
                      "queued_input (follow_up): FOLLOW\n\n" + accepted[2]["node_ref_context"] + "\n"
                      "user: ROUND TWO\nassistant: \n</canvas-history-replay>")
+    other_host = "codex" if selected_host == "pi" else "pi"
+    other_session = AgentSession(b.pid, "agent", agent_cli=other_host)
+    assert b.manager._build_replay_context(other_session) == ("", 0)
+    return block, accepted
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(backend, monkeypatch, transport):
+    assert backend.session.agent_cli == "pi"
+    _save_and_check_snapshot_chronology(backend, monkeypatch, transport)
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+@pytest.mark.parametrize("backend", ["codex"], indirect=True)
+def test_codex_lost_resume_replays_exact_saved_snapshots_in_order(backend, monkeypatch, transport):
+    b = backend
+    # The fixture creates both node and runtime as Codex from the start. Only
+    # its per-turn process boundary is faked; real send/persistence stays in use.
+    assert b.session.agent_cli == "codex"
+    assert next(node for node in b.store.canvas(b.pid)["nodes"] if node["id"] == "agent")["agentCli"] == "codex"
+
+    async def codex_input(session, message, **kwargs):
+        assert session is b.session and session.agent_cli == "codex"
+        assert kwargs == {"ref_paths": []}
+        await b.manager.send_command(session, {"type": "prompt", "message": message})
+
+    with monkeypatch.context() as turn_patch:
+        turn_patch.setattr(b.manager, "_codex_turn", codex_input)
+        block, accepted = _save_and_check_snapshot_chronology(b, monkeypatch, transport)
 
     # Public send_prompt -> real fake Codex CLI -> resumed-model input boundary.
     # Its echo must contain the same ordered block, without re-reading canvas.
@@ -398,7 +451,7 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
     monkeypatch.setattr(agent_host.shutil, "which", lambda name, *a, **kw: stub if name == "codex" else which(name, *a, **kw))
     monkeypatch.setenv("PYTHONUTF8", "1")
     monkeypatch.setenv("FIREFLY_AGENT_API_BASE", "http://127.0.0.1:3299")
-    b.session.agent_cli = "codex"
+    assert b.session.agent_cli == "codex"
     b.session.ext_session_id = "11111111-1111-1111-1111-111111111111"
     emitted = []
     b.manager.on_event(b.session, lambda session, event: emitted.append(event))
@@ -411,8 +464,14 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
             await asyncio.sleep(0.02)
 
     asyncio.run(resumed_input())
+    assert any(event.get("type") == "error" and "重放" in event.get("message", "") for event in emitted)
     echoed = "".join((event.get("assistantMessageEvent") or {}).get("delta", "") for event in emitted)
     assert "canvas-history-replay" in echoed
+    # The newly accepted verification prompt opens one additional round before
+    # resume fails; the two saved rounds must remain byte-for-byte unchanged.
+    expected_replay = block.removesuffix("</canvas-history-replay>") + (
+        "user: ECHO_MODE verify saved chronology\nassistant: \n</canvas-history-replay>")
+    assert expected_replay in echoed
     assert echoed.index("BEFORE_STEER") < echoed.index("queued_input (steer)") < echoed.index("AFTER_STEER") < echoed.index("queued_input (follow_up)")
     assert accepted[0]["node_ref_context"] in echoed and accepted[1]["node_ref_context"] in echoed
 

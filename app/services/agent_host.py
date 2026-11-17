@@ -358,6 +358,14 @@ class AgentSession:
     session_id: Optional[str] = None
     session_file: Optional[str] = None
     model: str = ""
+    reasoning_effort: Optional[str] = None  # requested, not evidence of submission/effect
+    effort_submitted: Optional[str] = None
+    effort_effective: Optional[str] = None
+    _effort_source: Optional[str] = None
+    _generation: int = 0
+    _response_finishing: bool = False
+    _retrying: bool = False
+    _native_state: dict = field(default_factory=dict, repr=False)
     autonomy: str = "cautious"  # cautious | standard | autonomous
     status: str = "stopped"  # stopped, starting, running, busy, waiting_confirm, crashed, aborted
     event_handlers: List[Callable] = field(default_factory=list)
@@ -381,6 +389,8 @@ class AgentSession:
     # （codex thread_id 等），票 B 接线；票 A 仅落字段。
     agent_cli: str = "pi"
     ext_session_id: Optional[str] = None
+    # Legacy nodes may discover old Pi files; explicit empty host maps must not.
+    allow_session_discovery: bool = True
     # #278：最近一次可操作错误（如 pi 未找到），供会话状态可见（#280 使用）
     last_error: str = ""
     _stderr_chunks: deque = field(default_factory=lambda: deque(maxlen=STDERR_MAX_CHUNKS), repr=False)
@@ -389,6 +399,32 @@ class AgentSession:
     @property
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    @property
+    def effort_state(self) -> dict:
+        return {
+            "requested": self.reasoning_effort,
+            "submitted": self.effort_submitted,
+            "effective": None if self.agent_cli == "codex" else self.effort_effective,
+            "source": self._effort_source,
+        }
+
+    @property
+    def is_busy(self) -> bool:
+        """A live idle Pi process is NOT busy. Refresh native queues before settings."""
+        native = self._native_state if self.agent_cli == "pi" and self.is_running else {}
+        return bool(
+            self.status in ("starting", "busy", "waiting_confirm")
+            or self._turn_open or self._stopping or self._response_finishing or self._retrying
+            or (self.agent_cli == "codex" and (self.is_running or (
+                self._reader_task is not None and not self._reader_task.done())))
+            or native.get("isStreaming") or native.get("isCompacting")
+            or native.get("pendingMessageCount", 0)
+        )
 
     @property
     def session_dir(self) -> str:
@@ -407,6 +443,7 @@ class AgentHostManager:
     def __init__(self):
         self.sessions: Dict[str, AgentSession] = {}  # key: f"{project_id}:{node_id}"
         self._lock = asyncio.Lock()
+        self._node_locks: Dict[str, asyncio.Lock] = {}
         self._idle_watchdog_task: Optional[asyncio.Task] = None
         # #318 票 A：宿主 adapter 注册表（默认只有 pi；行为零变化）
         from .agent_adapters import CodexAdapter, PiAdapter
@@ -418,6 +455,11 @@ class AgentHostManager:
 
     def _session_key(self, project_id: str, node_id: str) -> str:
         return f"{project_id}:{node_id}"
+
+    def node_lock(self, project_id: str, node_id: str) -> asyncio.Lock:
+        """Serialize settings, host/branch switches and prompt admission per node."""
+        key = self._session_key(project_id, node_id)
+        return self._node_locks.setdefault(key, asyncio.Lock())
 
     async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "cautious") -> AgentSession:
         """Get existing session or create a new one."""
@@ -436,6 +478,41 @@ class AgentHostManager:
             self.sessions[key] = session
             return session
 
+    @staticmethod
+    def _runtime_matches(session: AgentSession, host: str, generation: int) -> bool:
+        return session.agent_cli == host and session.generation == generation
+
+    def select_runtime(self, session: AgentSession, host: str, model: str = "", *,
+                       reasoning_effort: Optional[str] = None,
+                       ext_session_id: Optional[str] = None,
+                       session_id: Optional[str] = None, session_file: Optional[str] = None,
+                       allow_session_discovery: bool = True) -> None:
+        """Install a persisted host projection AFTER stop/CAS, without replacing listeners.
+
+        The caller owns the node transaction lock and persistence. This never
+        spawns, writes canvas fields, or changes ownership. Stop must be awaited.
+        """
+        if host not in self._adapters:
+            raise ValueError("host must be pi or codex")
+        if session.is_running or session.is_busy or (
+            session._reader_task is not None and not session._reader_task.done()
+        ):
+            raise RuntimeError("Agent runtime has not finished stopping")
+        session._generation += 1
+        session.agent_cli = host
+        session.model = model
+        session.reasoning_effort = reasoning_effort
+        session.ext_session_id = ext_session_id
+        session.session_id = session_id
+        session.session_file = session_file
+        session.allow_session_discovery = allow_session_discovery
+        session.effort_submitted = session.effort_effective = session._effort_source = None
+        session._native_state = {}
+        session._tool_ts = {}
+        session._retrying = False
+        session.status = "stopped"
+        session.last_error = ""
+
     async def spawn_session(self, session: AgentSession, model: str = "", autonomy: str = "", continue_session: bool = False) -> bool:
         """Spawn a pi --mode rpc subprocess for the session.
 
@@ -445,8 +522,12 @@ class AgentHostManager:
             autonomy: Optional autonomy level override (cautious/standard/autonomous).
             continue_session: If True, use --continue to restore previous session.
         """
+        if session._stopping:
+            raise RuntimeError("Agent runtime is stopping")
         if session.is_running:
             return True
+        # Snapshot before any await/adapter callback; requests may change later.
+        spawn_model, spawn_effort = model or session.model, session.reasoning_effort
 
         # #318 票 B：codex = per-turn 进程模型（ADR 0024）——「spawn」仅验证 CLI
         # 可用性并标为宿主会话；进程由 send_prompt 每轮拉起、轮末退出。
@@ -479,7 +560,7 @@ class AgentHostManager:
             # （节点属性/请求 body/会话文件），不合白名单直接拒绝，不进 argv。
             _binding_pref = session.ext_session_id or session.session_id
             for _name, _val in (("node_id", session.node_id),
-                                ("model", model or session.model),
+                                ("model", spawn_model),
                                 ("session_id", _binding_pref)):
                 validate_spawn_arg(_name, _val, model=(_name == "model"))
             # #318 票 B：codex 宿主经 MCP 端点操作画布（ADR 0022/0024）；
@@ -500,7 +581,8 @@ class AgentHostManager:
                 ),
                 tools_path=self._get_canvas_tools_path(),
                 node_id=session.node_id,
-                model=model or session.model,
+                model=spawn_model,
+                reasoning_effort=spawn_effort,
                 continue_session=continue_session,
                 agent_cli=session.agent_cli,
                 ext_session_id=session.ext_session_id,
@@ -509,7 +591,8 @@ class AgentHostManager:
                 # =<启动时间>_<原始id>.jsonl，header id 恒等于后缀），pi 按 header id 精确打开，
                 # 零「最新文件」歧义；无会话文件（首 spawn）不传，由 pi 自选后落盘可拾。
                 pi_session_id=(
-                    self._pi_session_binding(session_dir, session.ext_session_id or session.session_id)
+                    (self._pi_session_binding(session_dir, _binding_pref)
+                     if session.allow_session_discovery else (_binding_pref or str(uuid.uuid4())))
                     if session.agent_cli == "pi" else ""
                 ),
             )
@@ -556,6 +639,10 @@ class AgentHostManager:
                 bufsize=1,
                 env=env,
             )
+            session._generation += 1
+            host, generation = session.agent_cli, session.generation
+            session.effort_submitted = session.effort_effective = session._effort_source = None
+            session._native_state = {}
             session._stopping = False
             session.status = "starting"
             session._started_at = time.time()
@@ -571,11 +658,14 @@ class AgentHostManager:
             session._stderr_thread.start()
 
             # Start reader task
-            session._reader_task = asyncio.create_task(self._read_events(session))
+            session._reader_task = asyncio.create_task(
+                self._read_events(session, session.process, host, generation))
 
             # Wait for session to be ready (get_state)。Node 冷启动慢给足余量；
             # #239: 超时后 run_command 的 finally 必杀整棵进程树，不留僵尸 sidecar。
             state = await self.get_session_state(session, timeout=adapter.startup_timeout_s)
+            if not self._runtime_matches(session, host, generation) or session._stopping:
+                return False
             if state:
                 session.session_id = state.get("sessionId")
                 session.session_file = state.get("sessionFile")
@@ -600,12 +690,18 @@ class AgentHostManager:
                 await self._kill_process_tree(session, reason="spawn failure")
             return False
 
-    async def _read_events(self, session: AgentSession):
-        """Read JSONL events from the pi subprocess and dispatch them."""
-        assert session.process is not None
+    async def _read_events(self, session: AgentSession, process=None,
+                           host: Optional[str] = None, generation: Optional[int] = None):
+        """Read only this process/host/generation, never a later session's pipes."""
+        process = session.process if process is None else process
+        host = session.agent_cli if host is None else host
+        generation = session.generation if generation is None else generation
+        assert process is not None
         try:
             while True:
-                line = await asyncio.to_thread(session.process.stdout.readline)
+                line = await asyncio.to_thread(process.stdout.readline)
+                if not self._runtime_matches(session, host, generation):
+                    break
                 if not line:
                     break  # EOF - process exited
 
@@ -620,26 +716,28 @@ class AgentHostManager:
                     continue
 
                 session._last_activity = time.time()
-                await self._dispatch_event(session, event)
+                await self._dispatch_event(session, event, host=host, generation=generation)
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"Error reading events from agent {session.node_id}: {e}")
         finally:
-            process = session.process
-            if process is None:
-                return
             exit_code = process.poll()
             if exit_code is None:
                 # #239 退出路径：returncode is None —— reader 退出（手动取消/读异常）
                 # 但进程仍活着：必杀整棵进程树并等待退出，不许泄漏。
-                await self._kill_process_tree(session, reason="reader exited with live process")
+                await self._kill_process_tree(session, reason="reader exited with live process", process=process)
                 exit_code = process.poll()
             if exit_code is None:
                 # 理论上不可达：杀后等待超时仍未退出，记异常告警
                 logger.error(f"Agent process {session.node_id} (pid={process.pid}) still alive after kill; giving up")
                 return
+            if not self._runtime_matches(session, host, generation):
+                return
+            session._turn_open = False
+            session._native_state = {}
+            session._retrying = False
             if session._stopping:
                 # stop_session 是终态写入方（aborted/stopped），此处不覆盖 result
                 session.status = "stopped"
@@ -653,8 +751,10 @@ class AgentHostManager:
             logger.warning(f"Agent process {session.node_id} exited with code {exit_code}")
             # Notify handlers
             exit_event = {"type": "process_exited", "exit_code": exit_code, "result": dict(session.result)}
-            self._persist_event(session, exit_event)  # #318 票 C：崩溃/退出也入回放日志
-            for handler in session.event_handlers:
+            self._persist_event(session, exit_event, host=host, generation=generation)
+            for handler in list(session.event_handlers):
+                if not self._runtime_matches(session, host, generation):
+                    return
                 try:
                     out = handler(session, exit_event)
                     if inspect.isawaitable(out):  # #281：同步处理器（capture_response 等）直接调用
@@ -663,7 +763,8 @@ class AgentHostManager:
                     pass
 
             # Auto-respawn if it crashed (non-zero exit) or was running (not manually stopped)
-            if not session._stopping and session.status != "stopped":
+            if (self._runtime_matches(session, host, generation)
+                    and not session._stopping and session.status != "stopped"):
                 if session._respawn_count >= MAX_CONSECUTIVE_RESPAWNS:
                     logger.error(f"Agent {session.node_id} crashed {session._respawn_count}x in a row; stopping auto-respawn")
                 else:
@@ -672,8 +773,13 @@ class AgentHostManager:
                     # Use --continue to restore session state
                     await self.spawn_session(session, continue_session=True)
 
-    async def _dispatch_event(self, session: AgentSession, event: dict):
-        """Dispatch an event to all registered handlers."""
+    async def _dispatch_event(self, session: AgentSession, event: dict, *,
+                              host: Optional[str] = None, generation: Optional[int] = None):
+        """Dispatch current-generation frames only; stale readers cannot mutate state."""
+        host = session.agent_cli if host is None else host
+        generation = session.generation if generation is None else generation
+        if not self._runtime_matches(session, host, generation):
+            return
         # #322 票 D：工具耗时——start 记 monotonic 时锟，end 就地注入 duration_ms，
         # 在 _persist_event 之前 ⇒ live WS 与 events.jsonl 回放都带耗时（单一注入点）。
         _etype = event.get("type", "")
@@ -687,34 +793,52 @@ class AgentHostManager:
                 event["duration_ms"] = round((time.monotonic() - _t0) * 1000)
         # #318 票 C：单一 fan-out——先持久化（就地注入 seq，WS 广播 payload 自动带
         # seq，前端去重/续拉按 seq），再分发。best-effort，永不阻断实时流。
-        self._persist_event(session, event)
+        self._persist_event(session, event, host=host, generation=generation)
         event_type = event.get("type", "")
 
         # Update session status based on event
         if event_type == "agent_start":
+            session._turn_open = True
             session.status = "busy"
             session._turn_started_at = time.time()  # #258：turn 起点（用量时长用）
             session._stall_notified = False  # #286：新 turn 重置停顿提醒
         elif event_type == "agent_end":
+            session._turn_open = False
             session.status = "running"
+            if event.get("willRetry") is True:
+                session._retrying = True
+            # Queue/streaming bits from an earlier get_state are now stale.
+            # Settings refresh them from the native host before accepting idle.
+            session._native_state = {}
         elif event_type == "tool_execution_start":
             session.status = "busy"
+        elif event_type == "auto_retry_start":
+            session._retrying = True
+        elif event_type == "auto_retry_end":
+            session._retrying = False
 
         # #239 错误五元组：LLM 错误事件归一为 (error, llm_error)
         if event_type in ("error", "llm_error"):
             session.result = normalize_result(RESULT_ERROR, ERROR_KIND_LLM_ERROR)
-        # #239: 完成一个真实回合即视为恢复健康，清零连续崩溃计数（崩溃循环永不清零）
-        if event_type == "agent_end":
-            session._respawn_count = 0
-            await self._record_turn_usage(session, event)  # #258：pi sidecar 采集点（best-effort）
-
-        for handler in session.event_handlers:
-            try:
-                out = handler(session, event)
-                if inspect.isawaitable(out):  # #281：同步处理器直接调用，异步才 await（修 NoneType await 错误风暴）
-                    await out
-            except Exception as e:
-                logger.error(f"Error in event handler for agent {session.node_id}: {e}")
+        finishing = event_type == "agent_end"
+        if finishing:
+            session._response_finishing = True
+        try:
+            if finishing:
+                session._respawn_count = 0
+                await self._record_turn_usage(session, event)
+            for handler in list(session.event_handlers):
+                if not self._runtime_matches(session, host, generation):
+                    return
+                try:
+                    out = handler(session, event)
+                    if inspect.isawaitable(out):
+                        await out
+                except Exception as e:
+                    logger.error(f"Error in event handler for agent {session.node_id}: {e}")
+        finally:
+            if finishing and self._runtime_matches(session, host, generation):
+                session._response_finishing = False
 
     async def _record_turn_usage(self, session: AgentSession, event: dict) -> None:
         """#258：agent_end 后把 turn 用量写入 ops.db（pi sidecar 采集点）。
@@ -755,7 +879,7 @@ class AgentHostManager:
         session.process.stdin.flush()
         session._last_activity = time.time()
 
-    async def run_command(self, session: AgentSession, command: dict, timeout: float = RPC_TIMEOUT_SECONDS, *, kill_on_timeout: bool = True) -> Optional[dict]:
+    async def run_command(self, session: AgentSession, command: dict, timeout: float = RPC_TIMEOUT_SECONDS, *, kill_on_timeout: bool = True, strict_id: bool = False) -> Optional[dict]:
         """#239 run_command 语义：发一条 RPC 命令并等待响应（wait_for 硬超时）。
 
         到点未响应即认定 sidecar 挂死：``finally`` 中必杀整棵进程树（await killer +
@@ -768,6 +892,7 @@ class AgentHostManager:
         command_id = command.get("id") or f"cmd-{uuid.uuid4().hex[:8]}"
         command["id"] = command_id
         command_type = command.get("type")
+        process, host, generation = session.process, session.agent_cli, session.generation
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         response = None
@@ -777,16 +902,22 @@ class AgentHostManager:
             nonlocal response
             if response is not None:
                 return
-            if event.get("type") == "response" and (
-                event.get("command") == command_type or event.get("id") == command_id
-            ):
+            if not self._runtime_matches(session, host, generation):
+                return
+            if strict_id:
+                matches = (type(event.get("id")) is str and event["id"] == command_id
+                           and event.get("command") == command_type)
+            else:
+                matches = event.get("command") == command_type or event.get("id") == command_id
+            if event.get("type") == "response" and matches:
                 response = event
 
         session.event_handlers.append(capture_response)
         try:
             await self.send_command(session, command)
             while loop.time() < deadline and response is None:
-                process = session.process
+                if not self._runtime_matches(session, host, generation) or session._stopping:
+                    break
                 if process is not None and process.poll() is not None:
                     break  # 进程已退出，不必等满超时
                 await asyncio.sleep(0.1)
@@ -798,7 +929,7 @@ class AgentHostManager:
             if timed_out and kill_on_timeout:
                 session.result = normalize_result(RESULT_ERROR, ERROR_KIND_TIMEOUT_HARD)
                 logger.error(f"Agent {session.node_id}: RPC '{command_type}' timed out after {timeout}s — killing process tree")
-                await self._kill_process_tree(session, reason=f"rpc '{command_type}' timeout")
+                await self._kill_process_tree(session, reason=f"rpc '{command_type}' timeout", process=process)
         return response
 
     @staticmethod
@@ -987,6 +1118,7 @@ class AgentHostManager:
         allow_resume: bool = True,
         degrade_budget: bool = True,
         ref_paths: list | None = None,
+        settings_snapshot: Optional[tuple[str, Optional[str]]] = None,
     ) -> None:
         """一轮 = 一个 `codex exec --json` 进程（ADR 0024 状态机）。
 
@@ -995,13 +1127,18 @@ class AgentHostManager:
         resume 失败降级：error 事件 UI 可见 + 新会话重发一次（重放上下文属票 C，票 B
         只保证「不静默死」）。
         """
+        if session._stopping:
+            raise RuntimeError("Agent runtime is stopping")
         if session._turn_open:
             raise RuntimeError(f"Agent {session.node_id} busy：codex 拒收并发 prompt（ADR 0024 不变量）")
+        settings_snapshot = settings_snapshot or (session.model, session.reasoning_effort)
+        turn_model, turn_effort = settings_snapshot
+        turn_binding = session.ext_session_id if allow_resume else None
         # #343 per-turn 双保险：validate 只在 spawn/validate 路径跑，每轮参数（model、
         # ext_session_id 会进 resume argv）再验一次；不合白名单直接拒（上层按轮失败）。
         for _name, _val in (("node_id", session.node_id),
-                            ("model", session.model),
-                            ("session_id", session.ext_session_id if allow_resume else None)):
+                            ("model", turn_model),
+                            ("session_id", turn_binding)):
             validate_spawn_arg(_name, _val, model=(_name == "model"))
         from .agent_adapters import SpawnParams
         from .agent_adapters.codex_adapter import CodexAdapter, codex_spawn_env, write_home_mcp_config
@@ -1027,15 +1164,16 @@ class AgentHostManager:
             system_prompt=system_prompt,
             tools_path=self._get_canvas_tools_path(),
             node_id=session.node_id,
-            model=session.model,
+            model=turn_model,
+            reasoning_effort=turn_effort,
             continue_session=False,
             agent_cli="codex",
-            ext_session_id=session.ext_session_id if allow_resume else None,
+            ext_session_id=turn_binding,
             mcp_url=mcp_url,
         )
-        resumed = bool(allow_resume and session.ext_session_id)
+        resumed = bool(turn_binding)
         if resumed:
-            cmd = adapter.build_resume_argv(params, session.ext_session_id)
+            cmd = adapter.build_resume_argv(params, turn_binding)
         else:
             cmd = adapter.build_argv(params)
         if cmd is None:
@@ -1052,6 +1190,8 @@ class AgentHostManager:
         session.last_error = ""
         session._turn_started_at = time.time()
         session._turn_open = True
+        session._generation += 1
+        host, generation = session.agent_cli, session.generation
         try:
             process = await asyncio.to_thread(
                 subprocess.Popen,
@@ -1071,9 +1211,16 @@ class AgentHostManager:
                 env=spawn_env,
             )
         except OSError as e:
-            session._turn_open = False
+            if self._runtime_matches(session, host, generation):
+                session._turn_open = False
             raise RuntimeError(f"codex 拉起失败：{e}")
+        if not self._runtime_matches(session, host, generation) or session._stopping:
+            await self._kill_process_tree(session, reason="runtime changed during codex spawn", process=process)
+            raise RuntimeError("Agent runtime changed during codex spawn")
         session.process = process
+        session.effort_submitted = turn_effort
+        session.effort_effective = None
+        session._effort_source = "codex:argv; effective-unverified"
         session._stopping = False
         session._started_at = time.time()
         session._last_activity = time.time()
@@ -1094,7 +1241,9 @@ class AgentHostManager:
 
         await asyncio.to_thread(_feed_stdin)
         session._reader_task = asyncio.create_task(
-            self._read_codex_turn(session, process, resumed, message, degrade_budget)
+            self._read_codex_turn(session, process, resumed, message, degrade_budget,
+                                  settings_snapshot=settings_snapshot, ref_paths=tuple(ref_paths or ()),
+                                  host=host, generation=generation)
         )
 
     async def _read_codex_turn(
@@ -1104,15 +1253,23 @@ class AgentHostManager:
         resumed: bool,
         message: str,
         degrade_budget: bool,
+        *, settings_snapshot: Optional[tuple[str, Optional[str]]] = None,
+        ref_paths: tuple = (), host: Optional[str] = None, generation: Optional[int] = None,
     ) -> None:
         """codex 单轮 reader：JSONL → 内部词汇（ADR 0024 §1），轮末清进程槽。"""
         from .agent_adapters.codex_adapter import map_codex_event
 
+        host = session.agent_cli if host is None else host
+        generation = session.generation if generation is None else generation
+        settings_snapshot = settings_snapshot or (session.model, session.reasoning_effort)
         saw_thread_id = False
         saw_turn_completed = False
+        cancelled = False
         try:
             while True:
                 line = await asyncio.to_thread(process.stdout.readline)
+                if not self._runtime_matches(session, host, generation):
+                    break
                 if not line:
                     break
                 line = line.strip()
@@ -1128,7 +1285,7 @@ class AgentHostManager:
                     thread_id = str(raw.get("thread_id") or "")
                     if thread_id and thread_id != session.ext_session_id:
                         session.ext_session_id = thread_id
-                        self._persist_ext_session_id(session)
+                        self._persist_ext_session_id(session, host=host)
                 if raw.get("type") == "turn.completed":
                     saw_turn_completed = True
                     session._turn_open = False  # 轮已逻辑结束：新 prompt 可排队下一轮
@@ -1138,23 +1295,30 @@ class AgentHostManager:
                     etype = event.get("type")
                     if etype == "raw_item":
                         # 监理裁定：未知 item 取证仅入库，不广播 live（回放消费方忽略）。
-                        self._persist_event(session, event)
+                        self._persist_event(session, event, host=host, generation=generation)
                         continue
                     if etype == "usage" and not event.get("cumulative"):
                         await self._record_codex_usage(session, event.get("usage") or {})
-                    await self._dispatch_event(session, event)
+                    await self._dispatch_event(session, event, host=host, generation=generation)
+        except asyncio.CancelledError:
+            cancelled = True
         except Exception as e:
             logger.error(f"codex reader died for {session.node_id}: {e}")
         finally:
-            session._turn_open = False
+            if process.poll() is None and (cancelled or session._stopping
+                    or not self._runtime_matches(session, host, generation)):
+                await self._kill_process_tree(session, reason="codex reader exited", process=process)
             try:
-                await asyncio.to_thread(process.wait)
-            except Exception:
-                pass
+                await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=KILL_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                await self._kill_process_tree(session, reason="codex exit timeout", process=process)
+            if not self._runtime_matches(session, host, generation):
+                return
+            session._turn_open = False
+            if session._stopping:
+                return
             if session.process is process:
                 session.process = None
-            if session._reader_task is asyncio.current_task():
-                session._reader_task = None
             exit_code = process.returncode
             session._last_activity = time.time()
             # 评审修正：同一布尔判定只写一次（is_degrade_retry），预热与非降级分支共用。
@@ -1172,12 +1336,15 @@ class AgentHostManager:
                     "type": "error",
                     "message": (f"会话续接失败，已降级重建（已重放最近 {turns_used} 轮上下文）"
                                 if turns_used else "会话续接失败，已降级重建（无可重放历史）"),
-                })
+                }, host=host, generation=generation)
+                if not self._runtime_matches(session, host, generation) or session._stopping:
+                    return
                 retry_message = (
                     f"{context_block}\n\n（以上是画布历史重放，请接着继续）\n{message}"
                     if context_block else message)
                 try:
-                    await self._codex_turn(session, retry_message, allow_resume=False, degrade_budget=False)
+                    await self._codex_turn(session, retry_message, allow_resume=False, degrade_budget=False,
+                                           settings_snapshot=settings_snapshot, ref_paths=list(ref_paths))
                 except Exception as e:
                     logger.error(f"codex degrade retry failed for {session.node_id}: {e}")
                 return
@@ -1185,17 +1352,28 @@ class AgentHostManager:
                 # 实测坑：codex 出错也可能 exit=0——真非零且无 turn.completed 才是硬崩。
                 session.last_error = f"codex 进程异常退出（exit={exit_code}）"
                 await self._dispatch_event(session, {
-                    "type": "error", "message": session.last_error})
+                    "type": "error", "message": session.last_error}, host=host, generation=generation)
+            if not self._runtime_matches(session, host, generation) or session._stopping:
+                return
             # idle_stored：会话仍可用（下轮 resume），不标 crashed（除非上面已 crashed）。
             if session.status != "crashed":
                 session.status = "running"
+            if session._reader_task is asyncio.current_task():
+                session._reader_task = None
 
-    def _persist_ext_session_id(self, session: AgentSession) -> None:
-        """ext_session_id → 节点属性 extSessionId（重启后 resume 链存活；
-        ADR 0024 不变量：落盘先于下次 spawn）。best-effort，失败只记日志。"""
+    def _persist_ext_session_id(self, session: AgentSession, *, host: Optional[str] = None) -> None:
+        """CAS-update the owning host binding and active legacy projection atomically.
+
+        Capture the native identity before store calls. A deleted node is never
+        inserted; a concurrent deletion/switch invalidates base_revision. No
+        ownership/user-edit fields are synthesized. Persistence is best-effort.
+        """
+        from .agent_node_host_settings import read_host_fields
+        host = session.agent_cli if host is None else host
+        binding = session.ext_session_id
         try:
             store_call = getattr(_app_main, "project_store_call", None)
-            if store_call is None or not session.ext_session_id:
+            if store_call is None or not binding:
                 return
             opened = store_call("open_project", session.project_id)
             canvas = opened.get("canvas") or {}
@@ -1204,10 +1382,16 @@ class AgentHostManager:
                 (n for n in nodes if str(n.get("id") or "") == session.node_id), None)
             if not isinstance(node, dict):
                 return
-            updated = dict(node)
-            updated["extSessionId"] = session.ext_session_id
+            fields = read_host_fields(node)
+            fields["agentHostSettings"].setdefault(host, {"model": "", "effort": None})
+            fields["agentHostSessions"].setdefault(
+                host, {"extSessionId": "", "branches": [], "current_branch": ""})
+            fields["agentHostSessions"][host]["extSessionId"] = binding
+            # Reproject from the active host, which may be different from the writer.
+            fields = read_host_fields(fields)
+            updated = {**node, **fields}
             store_call(
-                "apply_mutations",
+                "apply_agent_host_mutations",
                 session.project_id,
                 [{"op": "upsert_node", "node": updated}],
                 base_revision=int(canvas.get("revision") or 0),
@@ -1254,24 +1438,166 @@ class AgentHostManager:
             return
         await self.send_command(session, {"type": "abort"})
 
-    async def set_model(self, session: AgentSession, model: str) -> None:
-        """Switch the model for a running session via pi RPC set_model command.
+    async def _runtime_rpc(self, session: AgentSession, command: dict, *,
+                           timeout: float = RPC_TIMEOUT_SECONDS) -> dict:
+        """Settings RPCs never accept a command-name-only or stale-ID ACK.
 
-        Args:
-            session: The agent session.
-            model: Model identifier (e.g., "vllm-remote/qwen3.8-27b-w8a16-mtp2" or "gpt-4").
+        Native rpc-mode.ts calls setModel/setThinkingLevel session-only (the SDK
+        persists global defaults only with options.persist=true, never sent here).
+        No timeout kill/auto-respawn during a transaction: rollback owns recovery.
         """
-        if "/" in model:
-            provider, model_id = model.split("/", 1)
-            command = {"type": "set_model", "provider": provider, "modelId": model_id}
-        else:
-            command = {"type": "set_model", "modelId": model}
-        if session.agent_cli == "codex":
-            # codex 无 RPC：新模型经下轮 `-m` argv 生效（ADR 0024 per-turn）。
-            session.model = model
-            return
-        await self.send_command(session, command)
-        session.model = model
+        command = {**command, "id": f"settings-{uuid.uuid4().hex}"}
+        host, generation = session.agent_cli, session.generation
+        response = await self.run_command(session, command, timeout=timeout,
+                                          kill_on_timeout=False, strict_id=True)
+        if not self._runtime_matches(session, host, generation) or session._stopping:
+            raise RuntimeError("Agent runtime changed during settings RPC")
+        if response is None:
+            raise TimeoutError(f"Pi {command['type']} did not return an exact-ID ACK")
+        if (response.get("type") != "response" or response.get("command") != command["type"]
+                or type(response.get("id")) is not str or response["id"] != command["id"]
+                or type(response.get("success")) is not bool):
+            raise RuntimeError(f"Pi {command['type']} returned an invalid ACK")
+        if not response["success"]:
+            raise RuntimeError(f"Pi {command['type']} failed: {response.get('error', 'native error')}")
+        return response
+
+    @staticmethod
+    def _runtime_values(state: dict) -> tuple[str, str]:
+        model = state.get("model")
+        level = state.get("thinkingLevel")
+        if (not isinstance(model, dict) or not isinstance(model.get("provider"), str)
+                or not model["provider"] or not isinstance(model.get("id"), str) or not model["id"]
+                or not isinstance(level, str) or not level):
+            raise RuntimeError("Pi get_state returned invalid model/thinkingLevel")
+        return f"{model['provider']}/{model['id']}", level
+
+    @staticmethod
+    def _observe_native_state(session: AgentSession, state: dict) -> None:
+        """Only call after an exact-ID successful get_state response."""
+        session._native_state = dict(state)
+        level = state.get("thinkingLevel")
+        if isinstance(level, str) and level:
+            session.effort_submitted = level
+            session.effort_effective = level
+            session._effort_source = "pi:get_state"
+
+    async def _runtime_state(self, session: AgentSession) -> dict:
+        response = await self._runtime_rpc(session, {"type": "get_state"})
+        state = response.get("data")
+        if not isinstance(state, dict):
+            raise RuntimeError("Pi get_state returned invalid state")
+        self._runtime_values(state)
+        # SDK RpcSessionState: booleans plus the SUM of steering/follow-up queues.
+        if (type(state.get("isStreaming")) is not bool
+                or type(state.get("isCompacting")) is not bool
+                or type(state.get("pendingMessageCount")) is not int
+                or state["pendingMessageCount"] < 0):
+            raise RuntimeError("Pi get_state returned invalid busy/queue state")
+        return state
+
+    async def is_session_busy(self, session: AgentSession, *, refresh: bool = True) -> bool:
+        """Use under the caller's node lock before switch/settings/branch changes.
+
+        Refresh queues even on an otherwise idle Pi. RPC errors propagate, never
+        become 'idle'. The cheap session.is_busy property covers local windows.
+        """
+        if (session.status in ("starting", "busy", "waiting_confirm") or session._turn_open
+                or session._stopping or session._response_finishing or session._retrying):
+            return True
+        if refresh and session.agent_cli == "pi" and session.is_running:
+            state = await self._runtime_state(session)
+            self._observe_native_state(session, state)
+        return session.is_busy
+
+    @staticmethod
+    def _model_command(model: str) -> dict:
+        provider, model_id = model.split("/", 1)
+        return {"type": "set_model", "provider": provider, "modelId": model_id}
+
+    async def apply_runtime_settings(self, session: AgentSession, model: str,
+                                     reasoning_effort: Optional[str]) -> dict:
+        """Apply one validated request; caller owns node lock, capabilities and CAS.
+
+        Running Pi: snapshot native values, exact-ID ACK each mutation, read back
+        the pair, rollback BOTH native values on any error/clamp. Offline/Codex:
+        request only, submitted is unchanged until actual spawn. This API cannot
+        prove a production default from sanitized capability metadata; clearing
+        a historical override is rejected rather than retaining it invisibly.
+        """
+        if not isinstance(model, str):
+            raise ValueError("model must be a string")
+        validate_spawn_arg("model", model, model=True)
+        if reasoning_effort is not None and (
+            not isinstance(reasoning_effort, str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", reasoning_effort)
+            or reasoning_effort.casefold() == "ultra"
+        ):
+            raise ValueError("Invalid reasoning effort")
+        if await self.is_session_busy(session):
+            raise RuntimeError("Agent runtime is busy")
+        if ((not model and session.model) or
+                (reasoning_effort is None and session.reasoning_effort is not None)):
+            raise RuntimeError("Native host default is unverified; previous override was not cleared")
+        if session.agent_cli == "codex" or not session.is_running:
+            session.model, session.reasoning_effort = model, reasoning_effort
+            return session.effort_state
+
+        prior = (session.model, session.reasoning_effort, session.effort_submitted,
+                 session.effort_effective, session._effort_source, dict(session._native_state))
+        host, generation = session.agent_cli, session.generation
+        before = await self._runtime_state(session)
+        self._observe_native_state(session, before)
+        if session.is_busy:
+            raise RuntimeError("Agent runtime is busy (native stream/compaction/queue)")
+        old_model, old_effort = self._runtime_values(before)
+        target_model = model or old_model
+        if "/" not in target_model:
+            target_model = old_model.split("/", 1)[0] + "/" + target_model
+        mutated = False
+        try:
+            if model:
+                mutated = True  # A lost ACK can still have changed native state.
+                ack = await self._runtime_rpc(session, self._model_command(target_model))
+                ack_model = ack.get("data")
+                if (not isinstance(ack_model, dict)
+                        or f"{ack_model.get('provider')}/{ack_model.get('id')}" != target_model):
+                    raise RuntimeError("Pi set_model ACK did not match requested model")
+            if reasoning_effort is not None:
+                mutated = True
+                await self._runtime_rpc(session, {"type": "set_thinking_level", "level": reasoning_effort})
+            after = await self._runtime_state(session)
+            actual_model, actual_effort = self._runtime_values(after)
+            if actual_model != target_model or (reasoning_effort is not None and actual_effort != reasoning_effort):
+                raise RuntimeError("Pi settings readback mismatch (model/effort was clamped or changed)")
+            self._observe_native_state(session, after)
+            session.model, session.reasoning_effort = model, reasoning_effort
+            return session.effort_state
+        except (Exception, asyncio.CancelledError) as failure:
+            rollback_error = None
+            if mutated and self._runtime_matches(session, host, generation) and not session._stopping:
+                try:
+                    await self._runtime_rpc(session, self._model_command(old_model))
+                    await self._runtime_rpc(session, {"type": "set_thinking_level", "level": old_effort})
+                    restored = await self._runtime_state(session)
+                    if self._runtime_values(restored) != (old_model, old_effort):
+                        raise RuntimeError("Pi rollback readback mismatch")
+                except Exception as error:
+                    rollback_error = error
+            if self._runtime_matches(session, host, generation):
+                (session.model, session.reasoning_effort, session.effort_submitted,
+                 session.effort_effective, session._effort_source, session._native_state) = prior
+                if rollback_error is not None:
+                    session.effort_submitted = session.effort_effective = None
+                    session._effort_source = "pi:rollback-unconfirmed"
+                    session.last_error = f"{failure}; runtime rollback failed: {rollback_error}"
+            if rollback_error is not None:
+                raise RuntimeError(session.last_error) from failure
+            raise
+
+    async def set_model(self, session: AgentSession, model: str) -> None:
+        """Legacy entry point, with the same strict settings ACK/readback contract."""
+        await self.apply_runtime_settings(session, model, session.reasoning_effort)
 
     async def get_fork_messages(self, session: AgentSession, timeout: float = RPC_TIMEOUT_SECONDS) -> List[dict]:
         """Get the list of user messages available for forking.
@@ -1323,6 +1649,8 @@ class AgentHostManager:
             raise RuntimeError(f"Could not determine new session file after fork for agent {session.node_id}")
         if session_id:
             session.session_id = session_id
+            session.ext_session_id = session_id
+            self._persist_ext_session_id(session)
         session.session_file = session_file
         return {"cancelled": False, "session_id": session_id, "session_file": session_file}
 
@@ -1354,12 +1682,23 @@ class AgentHostManager:
         """Query the session state."""
         if not session.is_running:
             return None
+        host, generation = session.agent_cli, session.generation
 
         command_id = f"st-{uuid.uuid4().hex[:8]}"
         response = await self.run_command(session, {"id": command_id, "type": "get_state"}, timeout=timeout)
+        if not self._runtime_matches(session, host, generation) or session._stopping:
+            return None
 
         if response and response.get("success"):
-            return response.get("data", {})
+            state = response.get("data", {})
+            # Legacy fork/test callers may still receive name-only responses;
+            # they are NOT authoritative evidence of reasoning effort.
+            if (response.get("id") == command_id and type(response.get("id")) is str
+                    and response.get("command") == "get_state"
+                    and response.get("success") is True and isinstance(state, dict)
+                    and session.agent_cli == "pi"):
+                self._observe_native_state(session, state)
+            return state
         return None
 
     def _drain_stderr(self, session: AgentSession) -> None:
@@ -1374,7 +1713,7 @@ class AgentHostManager:
         except (ValueError, OSError):
             pass
 
-    async def _kill_process_tree(self, session: AgentSession, reason: str = "") -> None:
+    async def _kill_process_tree(self, session: AgentSession, reason: str = "", *, process=None) -> None:
         """#239: 必杀 sidecar 及其整棵任务进程树，并等待退出（killer 与被杀者都 await）。
 
         Windows 用 ``taskkill /PID <pid> /T /F`` 杀整棵进程树（pi 是 .cmd 包装器，
@@ -1382,7 +1721,7 @@ class AgentHostManager:
         及 tools/quality_gate.py stop_process_tree 同一口径）；POSIX 优先 psutil
         （如已安装）杀树，回退直杀顶层。
         """
-        process = session.process
+        process = session.process if process is None else process
         if process is None or process.poll() is not None:
             return
         # fake 测试进程可能没有真实 pid——此时回退直杀顶层（kill()）
@@ -1435,17 +1774,17 @@ class AgentHostManager:
         （Windows taskkill /T /F，await killer + 等待退出），最后清场，无僵尸/树泄漏。
         """
         session._stopping = True
+        process, reader_task = session.process, session._reader_task
 
-        if session._reader_task:
-            reader_task = session._reader_task
-            session._reader_task = None
+        if reader_task is asyncio.current_task():
+            raise RuntimeError("Cannot await runtime stop from its own event reader")
+        if reader_task is not None:
             reader_task.cancel()
             try:
                 await reader_task
             except (asyncio.CancelledError, Exception):
                 pass
 
-        process = session.process
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -1454,7 +1793,9 @@ class AgentHostManager:
             try:
                 await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=STOP_GRACE_SECONDS)
             except asyncio.TimeoutError:
-                await self._kill_process_tree(session, reason="stop grace expired")
+                await self._kill_process_tree(session, reason="stop grace expired", process=process)
+            if process.poll() is None:
+                raise RuntimeError("Agent process did not finish stopping")
 
         # 收尾 stderr drain 线程（管道关闭后其 for 循环自然结束）
         stderr_thread = session._stderr_thread
@@ -1463,8 +1804,13 @@ class AgentHostManager:
         session._stderr_thread = None
 
         session.process = None
+        session._reader_task = None
+        session._turn_open = session._response_finishing = session._retrying = False
+        session._native_state = {}
+        session._generation += 1  # invalidate any executor reads still unwinding
         session.status = "stopped"
         session.result = normalize_result(RESULT_ABORTED, ERROR_KIND_STOPPED)
+        session._stopping = False
         logger.info(f"Agent session {session.node_id} stopped")
 
     async def respawn_session(self, session: AgentSession) -> bool:
@@ -1509,8 +1855,14 @@ class AgentHostManager:
         session._event_seq = seq
         session._events_log_count = count
 
-    def _persist_event(self, session: AgentSession, event: dict) -> None:
-        """追加归一化事件（就地注入 seq）。永不抛——失败只降级为无回放。"""
+    def _persist_event(self, session: AgentSession, event: dict, *,
+                       host: Optional[str] = None, generation: Optional[int] = None) -> None:
+        """Append a current-generation event; stamp live metadata even without disk."""
+        host = session.agent_cli if host is None else host
+        generation = session.generation if generation is None else generation
+        if not self._runtime_matches(session, host, generation):
+            return
+        event["host"], event["generation"] = host, generation
         try:
             # #387：项目已移入回收区/删除（live 目录无 project.json）时不得把
             # agent-events/ 写回原位——否则宿主退出尾巴/竞态窗口会在原目录重建残留。
@@ -1526,7 +1878,8 @@ class AgentHostManager:
             record = {
                 "seq": session._event_seq,
                 "ts": time.time(),
-                "host": session.agent_cli,
+                "host": host,
+                "generation": generation,
                 "project_id": session.project_id,
                 "node_id": session.node_id,
                 "event": event,
@@ -1553,11 +1906,19 @@ class AgentHostManager:
         except OSError as e:
             logger.warning(f"events log truncate failed {session.node_id}: {e}")
 
-    def load_events(self, project_id: str, node_id: str, since: int = 0) -> dict:
-        """GET events：返回 seq>since 行（升序）。文件不存在=空。"""
+    def load_events(self, project_id: str, node_id: str, since: int = 0,
+                    host: Optional[str] = None) -> dict:
+        """Read-only history by host. Hostless legacy records belong only to Pi.
+
+        last_seq is the node cursor, including filtered-out hosts; sequences are
+        never renumbered on host switches. Reading never spawns/selects a host.
+        """
+        if host is not None and host not in self._adapters:
+            raise ValueError("host must be pi or codex")
         path = os.path.join(
             self._get_project_dir(project_id), "agent-events", f"{node_id}.jsonl")
         out = []
+        last_seq = since
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -1568,17 +1929,25 @@ class AgentHostManager:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if int(rec.get("seq") or 0) > since:
+                    seq = int(rec.get("seq") or 0)
+                    last_seq = max(last_seq, seq)
+                    record_host = rec.get("host", "pi")
+                    if seq > since and (host is None or record_host == host):
+                        rec["host"] = record_host
+                        rec.setdefault("generation", 0)
+                        event = rec.get("event")
+                        if isinstance(event, dict):
+                            event["host"] = record_host
+                            event["generation"] = rec["generation"]
                         out.append(rec)
         except FileNotFoundError:
             return {"events": [], "last_seq": since}
         # OSError 上抛——HTTP 语义归路由层（service 层不依赖 fastapi）
-        last_seq = out[-1]["seq"] if out else since
         return {"events": out, "last_seq": last_seq}
 
     def _build_replay_context(self, session: AgentSession) -> tuple:
-        """从回放日志派生最近 EVENTS_REPLAY_TURNS 轮文本（含 user 侧，host 无关：
-        归一化词汇）。返回 (text_block, turns_used)。不足 N 轮按实际全量（监理裁定）。
+        """从活跃宿主回放派生最近 EVENTS_REPLAY_TURNS 轮文本（含 user 侧）。
+        返回 (text_block, turns_used)。不足 N 轮按实际全量（监理裁定）。
         轮界定：user_prompt 开轮，agent_end 收轮（未收尾尾轮也收）。"""
         records = []
         path = self._events_log_path(session)
@@ -1588,7 +1957,9 @@ class AgentHostManager:
                     line = line.strip()
                     if line:
                         try:
-                            records.append(json.loads(line))
+                            record = json.loads(line)
+                            if record.get("host", "pi") == session.agent_cli:
+                                records.append(record)
                         except json.JSONDecodeError:
                             pass
         except FileNotFoundError:

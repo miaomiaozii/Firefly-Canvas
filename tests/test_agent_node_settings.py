@@ -14,7 +14,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -26,12 +25,35 @@ if str(ROOT) not in sys.path:
 
 import main
 from firefly_projects import ProjectStore
-from app.services.agent_host import AgentHostManager, agent_host_manager
+from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
+from app.services import agent_model_capabilities
+from tests.test_agent_host_settings_421_424 import capabilities
 from tests.fake_agent_host import (
     FakeAgentProcess,
     install_stub_pi_cli,
     restore_stub_pi_cli,
 )
+
+
+def native_settings_ack(manager, session):
+    """Native RPC shape: exact IDs, model object ACK and complete idle state."""
+    send = manager.send_command
+    state = {"model": {"provider": "vllm-remote", "id": "initial"}, "thinkingLevel": "medium",
+             "isStreaming": False, "isCompacting": False, "pendingMessageCount": 0}
+
+    async def acknowledge(sess, command):
+        await send(sess, command)
+        data = {}
+        if command["type"] == "set_model":
+            state["model"] = {"provider": command["provider"], "id": command["modelId"]}
+            data = state["model"]
+        elif command["type"] == "set_thinking_level":
+            state["thinkingLevel"] = command["level"]
+        elif command["type"] == "get_state":
+            data = state
+        await manager._dispatch_event(sess, {"type": "response", "command": command["type"],
+                                            "id": command["id"], "success": True, "data": data})
+    return patch.object(manager, "send_command", acknowledge)
 
 
 def run_async(coro):
@@ -63,6 +85,9 @@ class TestAgentModelOverride(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
         self.manager = AgentHostManager()
+        self.capabilities_patch = patch.object(agent_model_capabilities, "get_capabilities", capabilities)
+        self.capabilities_patch.start()
+        self.addCleanup(self.capabilities_patch.stop)
 
     def tearDown(self):
         self.client.close()
@@ -104,19 +129,23 @@ class TestAgentModelOverride(unittest.TestCase):
         session.status = "running"
 
         # Test with provider/model format
-        run_async(self.manager.set_model(session, "vllm-remote/qwen3.8-27b"))
+        with native_settings_ack(self.manager, session):
+            run_async(self.manager.set_model(session, "vllm-remote/qwen3.8-27b"))
         cmd = fake.get_command("set_model")
         self.assertIsNotNone(cmd, "set_model command should have been sent")
         self.assertEqual(cmd["provider"], "vllm-remote")
         self.assertEqual(cmd["modelId"], "qwen3.8-27b")
 
-        # Test with model-only format
+        # Native Pi RPC requires provider + modelId (rpc-mode.js set_model).
+        # Resolve a bare request against the authoritative pre-mutation state.
         fake.reset_script([])
-        run_async(self.manager.set_model(session, "gpt-4"))
+        with native_settings_ack(self.manager, session):
+            run_async(self.manager.set_model(session, "gpt-4"))
         cmd = fake.get_command("set_model")
         self.assertIsNotNone(cmd, "set_model command should have been sent")
         self.assertEqual(cmd["modelId"], "gpt-4")
-        self.assertNotIn("provider", cmd)
+        self.assertEqual(cmd["provider"], "vllm-remote")
+        self.assertEqual(session.model, "gpt-4")
 
     def test_set_model_endpoint(self):
         """POST /model endpoint should update node attribute and send RPC command."""
@@ -143,10 +172,11 @@ class TestAgentModelOverride(unittest.TestCase):
         session.status = "running"
 
         # Call the /model endpoint
-        response = self.client.post(
-            f"/api/projects/{project_id}/agent-nodes/{node_id}/model",
-            json={"model": "vllm-remote/test-model"},
-        )
+        with native_settings_ack(agent_host_manager, session):
+            response = self.client.post(
+                f"/api/projects/{project_id}/agent-nodes/{node_id}/model",
+                json={"model": "vllm-remote/test-model"},
+            )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
@@ -595,13 +625,37 @@ class TestDefaultBehaviorRegression(unittest.TestCase):
         self.assertEqual(data["reason"], "timeout")
 
 
-class SettingsHost:
+class SettingsHost(AgentHostManager):
     """Offline host boundary: no process, Pi configuration or network."""
 
     def __init__(self):
+        super().__init__()
         self.effects = []
-        self.session = SimpleNamespace(is_running=True, model="old-model", autonomy="cautious",
-                                       session_file="original.jsonl", session_id="original")
+        self.session = AgentSession(project_id="fixture", node_id="settings-agent", model="old-model",
+                                    session_file="original.jsonl", session_id="original", ext_session_id="original")
+        self.session.process = FakeAgentProcess(script=[])
+        self.session.status = "running"
+
+    async def is_session_busy(self, session, *, refresh=True):
+        return session.is_busy
+
+    async def _runtime_rpc(self, session, command, **kwargs):
+        if command["type"] == "fork":
+            result = await self.fork(session, command["entryId"])
+        else:
+            await self.switch_branch(session, command["sessionPath"])
+            result = {}
+        return {"data": result}
+
+    async def _runtime_state(self, session):
+        return {"sessionId": session.session_id, "sessionFile": session.session_file,
+                "model": {"provider": "fake", "id": "model"}, "thinkingLevel": "medium",
+                "isStreaming": False, "isCompacting": False, "pendingMessageCount": 0}
+
+    async def apply_runtime_settings(self, session, model, reasoning_effort):
+        await self.set_model(session, model)
+        session.reasoning_effort = reasoning_effort
+        return session.effort_state
 
     async def get_or_create_session(self, *args):
         self.effects.append("session")
@@ -620,6 +674,7 @@ class SettingsHost:
     async def switch_branch(self, session, session_file):
         self.effects.append("switch")
         session.session_file = session_file
+        session.session_id = session.ext_session_id = session_file.removesuffix(".jsonl")
 
 
 class TestAgentSettingsOwnership(unittest.TestCase):
@@ -631,15 +686,18 @@ class TestAgentSettingsOwnership(unittest.TestCase):
         self.store = ProjectStore(Path(self.temp.name) / "projects", snapshot_delay=0)
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
-        self.project_id = self.store.create_project("Settings ownership")['id']
+        self.project_id = self.store.create_project("e2e-tabbit-settings-ownership")['id']
         self.node = {"id": "settings-agent", "type": "smart-agent", "x": 0, "y": 0,
                      "model": "old-model", "autonomy": "cautious", "prompt": "keep prompt",
                      "createdBy": "agent", "agentNodeId": "creator", "userTouchedAt": None,
                      "promptEditedByUser": False, "updated_at": 17,
-                     "branches": [{"id": "original", "session_file": "original.jsonl"},
-                                  {"id": "other", "session_file": "other.jsonl"}],
+                     "branches": [{"id": "original", "session_file": "original.jsonl", "session_id": "original"},
+                                  {"id": "other", "session_file": "other.jsonl", "session_id": "other"}],
                      "current_branch": "original"}
-        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": self.node}], base_revision=0)
+        self.store.apply_agent_host_mutations(self.project_id, [{"op": "upsert_node", "node": self.node}], base_revision=0)
+        self.capabilities_patch = patch.object(agent_model_capabilities, "get_capabilities", capabilities)
+        self.capabilities_patch.start()
+        self.addCleanup(self.capabilities_patch.stop)
         self.host = SettingsHost()
         self.host_patch = patch.object(api_agent_nodes, "agent_host_manager", self.host)
         self.host_patch.start()
@@ -716,7 +774,8 @@ class TestAgentSettingsOwnership(unittest.TestCase):
         self.assertEqual(response.json()["canvas"], before)
         self.assertEqual(self.store.canvas(self.project_id), before)
         # A fake stopped host session needs no concrete AgentSession members.
-        self.host.session.is_running = False
+        self.host.session.process = None
+        self.host.session.status = "stopped"
         response = self.client.post("/api/projects/no-such-project/agent-nodes/session-only/model",
                                     json={"model": "offline-model", "user_edit": True})
         self.assertEqual(response.status_code, 200, response.text)
@@ -746,7 +805,7 @@ class TestAgentSettingsOwnership(unittest.TestCase):
 
     def test_first_automatic_fork_keeps_original_host_identity_without_user_touch(self):
         node = {**self.node, "branches": [], "promptEditedByUser": True}
-        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": node}], base_revision=1)
+        self.store.apply_agent_host_mutations(self.project_id, [{"op": "upsert_node", "node": node}], base_revision=1)
         with patch.object(main, "now_ms", return_value=2468):
             response = self.post_setting("fork", {"entry_id": "entry-1", "name": "automatic"})
         self.assertEqual(response.status_code, 200, response.text)

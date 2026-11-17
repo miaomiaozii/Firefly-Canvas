@@ -229,7 +229,7 @@ async def ensure_external_agent_node(project_id: str, mcp_session_id: str) -> st
         bound_node_id = new_node_id
         return [{"op": "upsert_node", "node": new_node}]
 
-    await _apply_mutations_from_snapshot(project_id, build_mutations)
+    await _apply_mutations_from_snapshot(project_id, build_mutations, trusted_agent_bindings=True)
     return bound_node_id
 
 

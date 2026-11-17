@@ -56,12 +56,17 @@ def _validate_project(project_id: str):
                           "项目不存在；确认 X-Agent-Project 头的 ID，或先让用户打开项目。")
 
 
-async def _apply_mutations(project_id: str, mutations: list):
+async def _apply_mutations(project_id: str, mutations: list, *, trusted_agent_bindings: bool = False):
     """Apply fixed mutations (new identities/removals, not stale node updates)."""
-    return await _apply_mutations_from_snapshot(project_id, lambda _canvas: mutations)
+    return await _apply_mutations_from_snapshot(
+        project_id, lambda _canvas: mutations, trusted_agent_bindings=trusted_agent_bindings,
+    )
 
 
-async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Callable[[dict], list], *, source: str = "agent"):
+async def _apply_mutations_from_snapshot(
+    project_id: str, build_mutations: Callable[[dict], list], *, source: str = "agent",
+    trusted_agent_bindings: bool = False,
+):
     """Rebuild read-modify-write patches from the same snapshot used for CAS.
 
     #243: after a successful commit, broadcast ``canvas_updated`` so every
@@ -79,7 +84,10 @@ async def _apply_mutations_from_snapshot(project_id: str, build_mutations: Calla
             mutations = build_mutations(canvas)
             if not mutations:
                 return None
-            result = store.apply_mutations(project_id, mutations, base_revision=revision)
+            # Only server Python callers can opt in; neither JSON nor source
+            # tags confer binding-write authority on generic canvas tools.
+            apply = store.apply_agent_host_mutations if trusted_agent_bindings else store.apply_mutations
+            result = apply(project_id, mutations, base_revision=revision)
             await _broadcast_canvas_updated(project_id, source=source)
             return result
         except RevisionConflict:

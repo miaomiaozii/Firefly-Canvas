@@ -22,7 +22,8 @@ as one settings patch from their current CAS snapshot.
 from __future__ import annotations
 
 from copy import deepcopy
-
+import asyncio
+import uuid
 
 _HOSTS = ("pi", "codex")
 _SETTINGS_KEYS = {"model", "effort"}
@@ -139,6 +140,308 @@ def read_host_fields(node: dict) -> dict:
     return _fields(host, settings, sessions)
 
 
+class AgentHostTransaction:
+    """Node-lock orchestration; CAS builders below perform NO native operations.
+
+    Persistence is injected by the router's existing ownership/timestamp helper.
+    Conflicting settings abort rather than rebase a stale user intent over a
+    newer one. Geometry/ownership edits can rebase. No path creates a lost node.
+    The lower-case error codes here are the settings API's stable wire contract.
+    """
+
+    def __init__(self, manager, project_id, node_id, *, find_node, update_settings, now_ms):
+        self.manager, self.project_id, self.node_id = manager, project_id, node_id
+        self.find_node, self.update_settings, self.now_ms = find_node, update_settings, now_ms
+
+    @staticmethod
+    def error(status, code, message):
+        from fastapi import HTTPException
+        return HTTPException(status_code=status, detail={
+            "code": code, "message": message, "retryable": status in (409, 502, 503),
+        })
+
+    @classmethod
+    def fields(cls, node):
+        from app.constants import NODE_TYPE_AGENT
+        if node.get("type") not in (NODE_TYPE_AGENT, "agent"):
+            raise cls.error(400, "invalid_agent_settings", "The settings target must be an Agent node.")
+        try:
+            return read_host_fields(node)
+        except ValueError as exc:
+            raise cls.error(400, "invalid_agent_settings", str(exc)) from exc
+
+    def hydrate(self, session, node):
+        """Restore only a stopped runtime; never replace session/listener containers.
+
+        Legacy nodes without either map retain discovery and an already learned
+        native ID. Canonical empty bindings explicitly clear *all* old IDs/files.
+        """
+        fields = self.fields(node)
+        if (session.is_running or session.is_busy
+                or (session._reader_task is not None and not session._reader_task.done())):
+            return fields
+        host = fields["agentCli"]
+        canonical = "agentHostSettings" in node
+        binding = fields["agentHostSessions"][host]
+        setting = fields["agentHostSettings"][host]
+        ext = binding["extSessionId"]
+        branch = next((b for b in binding["branches"] if b.get("id") == binding["current_branch"]), None)
+        same_legacy = not canonical and host == session.agent_cli
+        if same_legacy and not ext:
+            ext = session.ext_session_id
+        self.manager.select_runtime(
+            session, host, setting["model"], reasoning_effort=setting["effort"],
+            ext_session_id=ext or None,
+            session_id=(branch.get("session_id") if branch else ext) or None,
+            session_file=(branch.get("session_file") if branch else None),
+            allow_session_discovery=not canonical,
+        )
+        autonomy = node.get("autonomy")
+        if autonomy in ("cautious", "standard", "autonomous"):
+            session.autonomy = autonomy
+        return fields
+
+    async def idle(self, session):
+        if (session.confirm_handlers or (not session.is_running and session._reader_task is not None
+                                        and not session._reader_task.done())):
+            raise self.error(409, "agent_busy", "Agent is busy; wait for the turn, queue, confirmation or stop to finish.")
+        try:
+            busy = await self.manager.is_session_busy(session)
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            raise self.error(502, "agent_state_unavailable", str(exc)) from exc
+        if busy or session.confirm_handlers:
+            raise self.error(409, "agent_busy", "Agent has a native stream, compaction or pending input.")
+
+    def current(self):
+        return self.find_node(self.project_id, self.node_id)
+
+    def unchanged(self, node, before, *, binding=False):
+        now = self.fields(node)
+        if (now["agentCli"] != before["agentCli"]
+                or now["agentHostSettings"] != before["agentHostSettings"]
+                or (binding and now["agentHostSessions"] != before["agentHostSessions"])):
+            raise self.error(409, "agent_settings_conflict", "Agent settings changed concurrently; read the current node and retry.")
+        return now
+
+    async def capabilities(self, host, model, effort):
+        from app.services import agent_model_capabilities
+        try:
+            result = await asyncio.to_thread(agent_model_capabilities.get_capabilities, host, model)
+        except ValueError as exc:
+            raise self.error(400, "invalid_agent_settings", str(exc)) from exc
+        if model or effort is not None:
+            if result["status"] != "available":
+                raise self.error(503, "agent_capabilities_unavailable", "Native model capabilities are unavailable; no settings were saved.")
+            if model and result["selection"]["model"] != model:
+                raise self.error(400, "invalid_agent_settings", "The native host did not resolve that exact model.")
+            if effort is not None and effort not in result["selection"]["efforts"]:
+                raise self.error(400, "invalid_agent_settings", "The selected model does not support that reasoning effort.")
+        return result
+
+    @staticmethod
+    def runtime_snapshot(session):
+        state = session._native_state
+        native_model = state.get("model")
+        actual_model = (native_model["provider"] + "/" + native_model["id"]
+                        if isinstance(native_model, dict) else session.model)
+        return {
+            "model": session.model, "effort": session.reasoning_effort,
+            "actual_model": actual_model, "actual_effort": state.get("thinkingLevel", session.reasoning_effort),
+            "submitted": session.effort_submitted, "effective": session.effort_effective,
+            "source": session._effort_source,
+        }
+
+    async def restore_settings(self, session, prior):
+        # Defaults in the saved request may be empty, but rollback restores the
+        # observed native pair, never an invented default or omitted reset flag.
+        if session.agent_cli == "pi" and session.is_running:
+            await self.manager.apply_runtime_settings(session, prior["actual_model"], prior["actual_effort"])
+        session.model, session.reasoning_effort = prior["model"], prior["effort"]
+        session.effort_submitted, session.effort_effective = prior["submitted"], prior["effective"]
+        session._effort_source = prior["source"]
+
+    async def settings(self, body, *, user_edit=False, session_only=False):
+        from fastapi import HTTPException
+        from app.services.agent_host import validate_spawn_arg
+        async with self.manager.node_lock(self.project_id, self.node_id):
+            try:
+                node = self.current()
+            except HTTPException as exc:
+                if not session_only or exc.status_code != 404:
+                    raise
+                node = None  # Historical /model supports a non-durable session.
+            session = await self.manager.get_or_create_session(self.project_id, self.node_id)
+            if node is None:
+                before = build_host_settings_fields({"agentCli": session.agent_cli}, session.agent_cli,
+                                                    session.model, session.reasoning_effort)
+            else:
+                before = self.fields(node)
+            host = body.get("host", before["agentCli"])
+            if host not in _HOSTS:
+                raise self.error(400, "invalid_agent_settings", "host must be pi or codex")
+            saved = before["agentHostSettings"].get(host, {"model": "", "effort": None})
+            model = body.get("model", saved["model"])
+            effort = body.get("effort", saved["effort"])
+            model = "" if model is None else model
+            effort = None if effort == "" else effort
+            try:
+                _string(model, "model")
+                _effort(effort, "effort")
+                validate_spawn_arg("model", model, model=True)
+            except ValueError as exc:
+                raise self.error(400, "invalid_agent_settings", str(exc)) from exc
+            # Reject busy before an unavailable/slow metadata probe. The
+            # second check below covers steer/follow-up during that await.
+            await self.idle(session)
+            # Capability defaults come from a sanitized metadata-only probe,
+            # not the production session environment. Do NOT claim equivalence.
+            if (saved["model"] and not model) or (saved["effort"] is not None and effort is None):
+                raise self.error(409, "agent_default_unverified", "The production host default is unverified; the previous override was not cleared.")
+            capabilities = await self.capabilities(host, model, effort)
+            await self.idle(session)
+            if node is not None:
+                self.hydrate(session, node)
+            switching = session.agent_cli != host
+            prior = self.runtime_snapshot(session)
+            old_ext = session.ext_session_id
+            if switching:
+                try:
+                    await self.manager.stop_session(session)  # Includes old reader/callback completion.
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    raise self.error(502, "agent_stop_failed", str(exc)) from exc
+            else:
+                try:
+                    await self.manager.apply_runtime_settings(session, model, effort)
+                except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+                    if session.is_busy or session.confirm_handlers:
+                        raise self.error(409, "agent_busy", "Agent became busy before the settings could be applied.") from exc
+                    raise self.error(502, "agent_settings_failed", str(exc)) from exc
+
+            def build(current):
+                self.unchanged(current, before, binding=switching)
+                fields = build_host_settings_fields(current, host, model, effort)
+                if switching and old_ext:
+                    fields["agentHostSessions"][before["agentCli"]]["extSessionId"] = old_ext
+                return fields
+
+            if node is not None:
+                try:
+                    await self.update_settings(self.project_id, self.node_id, build,
+                                               user_edit=user_edit, trusted_agent_bindings=True)
+                except (Exception, asyncio.CancelledError) as failure:
+                    if not switching:
+                        try:
+                            await self.restore_settings(session, prior)
+                        except (RuntimeError, TimeoutError, ValueError, OSError) as rollback:
+                            session.model, session.reasoning_effort = prior["model"], prior["effort"]
+                            session.effort_submitted = session.effort_effective = None
+                            session._effort_source = "pi:rollback-unconfirmed"
+                            session.last_error = f"Settings were not saved; runtime rollback failed: {rollback}"
+                            raise self.error(502, "agent_rollback_failed", session.last_error) from failure
+                    raise
+            if node is not None:
+                session.allow_session_discovery = False
+            if switching:
+                # Select the committed projection only; no thread/process start.
+                self.hydrate(session, self.current())
+            return {"success": True, "node_id": self.node_id, "host": host, "agentCli": host,
+                    "model": model, "effort": effort, "requested": {"model": model, "effort": effort},
+                    "effort_state": session.effort_state, "capabilities": capabilities,
+                    "is_running": session.is_running, "persisted": node is not None}
+
+    async def native_branch(self, session, command):
+        # Do not use manager.fork's legacy eager ID persistence: a transaction
+        # must commit ID + branches + projections in ONE trusted canvas CAS.
+        ack = await self.manager._runtime_rpc(session, command)
+        data = ack.get("data")
+        if isinstance(data, dict) and data.get("cancelled"):
+            raise self.error(409, "agent_fork_cancelled", "Native branch operation was cancelled")
+        state = await self.manager._runtime_state(session)
+        native_id, path = state.get("sessionId"), state.get("sessionFile")
+        if not isinstance(native_id, str) or not native_id or not isinstance(path, str) or not path:
+            raise RuntimeError("Pi branch did not identify its native session and file")
+        if command["type"] == "switch_session" and path != command["sessionPath"]:
+            raise RuntimeError("Pi branch readback did not match the requested session file")
+        session.session_id = session.ext_session_id = native_id
+        session.session_file = path
+        self.manager._observe_native_state(session, state)
+        return {"session_id": native_id, "session_file": path}
+
+    async def branch(self, *, entry_id=None, name="", branch_id=None, user_edit=False):
+        from fastapi import HTTPException
+        async with self.manager.node_lock(self.project_id, self.node_id):
+            node = self.current()
+            before = self.fields(node)
+            if before["agentCli"] != "pi":
+                raise self.error(400, "agent_branch_unsupported", "Branches are supported only by the Pi host.")
+            session = await self.manager.get_or_create_session(self.project_id, self.node_id)
+            await self.idle(session)
+            if not session.is_running:
+                raise self.error(400, "agent_not_running", "Agent is not running")
+            if session.agent_cli != "pi":
+                raise self.error(409, "agent_settings_conflict", "Runtime host differs from the persisted host.")
+            binding = before["agentHostSessions"]["pi"]
+            original_file, original_id, original_ext = session.session_file, session.session_id, session.ext_session_id
+            branches = deepcopy(binding["branches"])
+            if entry_id is None:
+                selected = next((b for b in branches if b.get("id") == branch_id), None)
+                if selected is None:
+                    raise self.error(404, "agent_branch_not_found", f"Branch not found: {branch_id}")
+                path = selected.get("session_file")
+                if not isinstance(path, str) or not path:
+                    raise self.error(400, "invalid_agent_branch", "Branch has no native session file.")
+            try:
+                if entry_id is not None:
+                    info = await self.native_branch(session, {"type": "fork", "entryId": entry_id})
+                    if not branches:
+                        branches.append({"id": "branch-original", "name": "原始", "session_file": original_file,
+                                         "session_id": original_id, "fork_from_entry_id": None,
+                                         "created_at": self.now_ms()})
+                    branch_id = f"branch-{uuid.uuid4().hex[:8]}"
+                    selected = {"id": branch_id, "name": name or f"分支 {len(branches)}",
+                                "session_file": info["session_file"], "session_id": info["session_id"],
+                                "fork_from_entry_id": entry_id, "created_at": self.now_ms()}
+                    branches.append(selected)
+                else:
+                    info = await self.native_branch(session, {"type": "switch_session", "sessionPath": path})
+                native_id = info["session_id"]
+
+                def build(current):
+                    now = self.unchanged(current, before)
+                    if now["agentHostSessions"] != before["agentHostSessions"]:
+                        raise self.error(409, "agent_settings_conflict", "Agent branches changed concurrently.")
+                    now["agentHostSessions"]["pi"] = {"extSessionId": native_id, "branches": deepcopy(branches),
+                                                        "current_branch": branch_id}
+                    return _fields("pi", now["agentHostSettings"], now["agentHostSessions"])
+
+                await self.update_settings(self.project_id, self.node_id, build,
+                                           user_edit=user_edit, trusted_agent_bindings=True)
+            except (Exception, asyncio.CancelledError) as failure:
+                cancelled = (isinstance(failure, HTTPException) and isinstance(failure.detail, dict)
+                             and failure.detail.get("code") == "agent_fork_cancelled")
+                # A missing ACK can still have changed native state. Restore
+                # even when we never received the new session file/identity.
+                if not cancelled:
+                    try:
+                        if original_file:
+                            await self.native_branch(session, {"type": "switch_session", "sessionPath": original_file})
+                        else:
+                            # Without an original file, stop the unconfirmed
+                            # runtime. The original persisted ID can resume on
+                            # a later prompt; never save the uncertain new ID.
+                            await self.manager.stop_session(session)
+                        session.session_id, session.ext_session_id = original_id, original_ext
+                        session.session_file = original_file
+                    except (RuntimeError, TimeoutError, OSError) as rollback:
+                        session.last_error = f"Branch was not saved; native rollback failed: {rollback}"
+                        raise self.error(502, "agent_rollback_failed", session.last_error) from failure
+                if isinstance(failure, (HTTPException, asyncio.CancelledError)):
+                    raise
+                raise self.error(502, "agent_branch_failed", str(failure)) from failure
+            return {"success": True, "node_id": self.node_id, "branch": selected,
+                    "branches": branches, "current_branch": branch_id}
+
+
 def build_host_settings_fields(node: dict, host: str, model: str, effort: str | None) -> dict:
     """Build one atomic settings patch, preserving every host's session binding.
 
@@ -153,3 +456,44 @@ def build_host_settings_fields(node: dict, host: str, model: str, effort: str | 
     _ensure_host(settings, sessions, host)
     settings[host] = {"model": model, "effort": effort}
     return _fields(host, settings, sessions)
+
+
+# Exact server-owned binding inventory, including the external MCP carrier.
+AGENT_BINDING_FIELDS = (
+    "agentHostSessions", "extSessionId", "branches", "current_branch", "mcp_session",
+)
+# Ordinary canvas saves cannot bypass the idle/settings transaction boundary.
+AGENT_HOST_PROJECTION_FIELDS = ("agentCli", "agentHostSettings", "model")
+
+
+def protect_agent_bindings(node: dict, existing: dict | None) -> dict:
+    """Protect an untrusted Agent upsert without changing other node fields.
+
+    Existing nodes retain the exact authoritative field presence and values,
+    including legacy/null projections: canvas saves do not migrate or repair
+    them. Only settings/native persistence may perform that migration.
+
+    New IDs (also ordinary undo after deletion) keep settings and messages but
+    start UNBOUND. Incoming bindings are discarded *before* schema validation;
+    malformed configuration is still an explicit error, never a legacy fallback.
+    """
+    protected = deepcopy(node)
+    if existing is not None:
+        for field in AGENT_BINDING_FIELDS + AGENT_HOST_PROJECTION_FIELDS:
+            protected.pop(field, None)
+            if field in existing:
+                protected[field] = deepcopy(existing[field])
+        return protected
+
+    for field in AGENT_BINDING_FIELDS:
+        protected.pop(field, None)
+    if "agentHostSettings" in protected:
+        settings = protected["agentHostSettings"]
+        if not isinstance(settings, dict):
+            raise ValueError("agentHostSettings must be a dictionary")
+        protected["agentHostSessions"] = {
+            host: {"extSessionId": "", "branches": [], "current_branch": ""}
+            for host in settings
+        }
+    protected.update(read_host_fields(protected))
+    return protected

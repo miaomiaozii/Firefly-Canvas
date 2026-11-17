@@ -24,6 +24,8 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.services.agent_host import agent_host_manager
+from app.services import agent_model_capabilities
+from tests.test_agent_host_settings_421_424 import capabilities
 from tests.fake_agent_host import install_stub_pi_cli, restore_stub_pi_cli
 
 
@@ -75,7 +77,7 @@ class AgentChatModelsTests(unittest.TestCase):
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1:8123")
-        self.project = self.store.create_project("Chat Models Test")
+        self.project = self.store.create_project("e2e-tabbit-chat-models-test")
         self.project_id = self.project["id"]
         # pi agent 目录夹具
         self.agent_dir = Path(self.temp_dir.name) / "pi-agent"
@@ -86,6 +88,9 @@ class AgentChatModelsTests(unittest.TestCase):
         )
         self.previous_env = os.environ.get("FIREFLY_PI_AGENT_DIR")
         os.environ["FIREFLY_PI_AGENT_DIR"] = str(self.agent_dir)
+        self.capabilities_patch = patch.object(agent_model_capabilities, "get_capabilities", capabilities)
+        self.capabilities_patch.start()
+        self.addCleanup(self.capabilities_patch.stop)
 
     def tearDown(self):
         run_async(agent_host_manager.cleanup_all())

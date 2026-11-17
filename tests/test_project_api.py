@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import tempfile
 import sys
 import unittest
@@ -9,7 +10,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -21,6 +22,7 @@ from PIL import Image
 import main
 from app.project_sessions import register_project_session, unregister_project_session
 from firefly_projects import ProjectStore
+from tests.test_project_store import agent_binding_node
 
 
 class ProjectApiContractTests(unittest.TestCase):
@@ -1910,6 +1912,255 @@ class MediaCleanupEndpointTests(unittest.TestCase):
         url = f"/api/project-library/{project['id']}/trash/media/nope/preview?view=original"
         response = self.client.get("/api/download-output", params={"url": url, "name": ""})
         self.assertEqual(response.status_code, 404)
+
+
+class AgentBindingProjectApiTests(unittest.TestCase):
+    CONTROLLED = ("agentHostSessions", "extSessionId", "branches", "current_branch", "mcp_session",
+                  "agentCli", "agentHostSettings", "model")
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="e2e-tabbit-agent-api-")
+        self.addCleanup(self.temp_dir.cleanup)
+        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0.01)
+        self.addCleanup(self.store.close)
+        store_patch = patch.object(main, "FIREFLY_PROJECT_STORE", self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
+        # No lifespan context, native process or background application services.
+        self.client = TestClient(main.app, base_url="http://127.0.0.1",
+                                 headers={"origin": "http://127.0.0.1"})
+        self.addCleanup(self.client.close)
+        created = self.client.post("/api/project-library", json={"name": "e2e-tabbit-agent-api-bindings"})
+        self.assertEqual(created.status_code, 200, created.text)
+        self.pid = created.json()["project"]["id"]
+        self.url = f"/api/project-library/{self.pid}/canvas"
+
+    def nodes(self):
+        opened = self.client.get(f"/api/project-library/{self.pid}")
+        self.assertEqual(opened.status_code, 200, opened.text)
+        return {node["id"]: node for node in opened.json()["canvas"]["nodes"]}
+
+    def patch_canvas(self, mutations, **extra):
+        return self.client.patch(self.url, json={
+            "mutations": mutations, "base_revision": self.store.canvas(self.pid)["revision"], **extra,
+        })
+
+    def save(self, node, **extra):
+        response = self.patch_canvas([{"op": "upsert_node", "node": node}], **extra)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response
+
+    def seed_server(self, node):
+        self.store.apply_agent_host_mutations(self.pid, [{"op": "upsert_node", "node": node}],
+                                              base_revision=self.store.canvas(self.pid)["revision"])
+
+    def assert_unbound(self, node):
+        self.assertNotIn("mcp_session", node)
+        self.assertEqual(node["extSessionId"], "")
+        self.assertEqual(node["branches"], [])
+        self.assertEqual(node["current_branch"], "")
+        self.assertTrue(node["agentHostSessions"])
+        for binding in node["agentHostSessions"].values():
+            self.assertEqual(binding, {"extSessionId": "", "branches": [], "current_branch": ""})
+
+    def test_canvas_http_discards_all_binding_fields_and_forged_trust_markers(self):
+        for binding_map in (agent_binding_node()["agentHostSessions"], None, "malformed"):
+            with self.subTest(binding_map=binding_map):
+                forged = agent_binding_node(f"forged-{len(self.nodes())}")
+                forged.update(agentHostSessions=binding_map, trusted=True, trusted_agent_bindings=True)
+                response = self.patch_canvas([{
+                    "op": "upsert_node", "node": forged, "trusted": True,
+                    "trusted_agent_bindings": True, "source": "mcp",
+                }], trusted=True, trusted_agent_bindings=True, source="agent-host")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["saved"])
+                saved = self.nodes()[forged["id"]]
+                self.assert_unbound(saved)
+                self.assertEqual(saved["agentHostSettings"], forged["agentHostSettings"])
+                self.assertEqual(saved["messages"], forged["messages"])
+        legacy = {"id": "legacy", "type": "smart-agent", "agentCli": "codex", "model": "legacy-model",
+                  "extSessionId": "forged", "branches": ["forged"], "current_branch": "forged", "mcp_session": "forged"}
+        self.save(legacy)
+        self.assert_unbound(self.nodes()["legacy"])
+        self.assertEqual(self.nodes()["legacy"]["agentHostSettings"], {"codex": {"model": "legacy-model", "effort": None}})
+
+    def test_stale_canvas_http_preserves_both_host_bindings_and_active_projection(self):
+        original = agent_binding_node()
+        self.seed_server(original)
+        for omitted in (False, True):
+            stale = {**copy.deepcopy(original), "title": "canvas edit", "x": 77, "autonomy": "autonomous"}
+            if omitted:
+                for field in self.CONTROLLED:
+                    stale.pop(field, None)
+            else:
+                stale.update(agentCli="codex", model="forged", agentHostSettings=None,
+                             agentHostSessions={"codex": {"extSessionId": "forged"}}, extSessionId="stale",
+                             branches=["stale"], current_branch="stale", mcp_session="stale")
+            self.save(stale)
+            self.assertEqual(self.nodes()[original["id"]], {**original, "title": "canvas edit", "x": 77, "autonomy": "autonomous"})
+
+    def test_ordinary_http_save_preserves_exact_legacy_shape_without_migration(self):
+        legacy = {"id": "legacy-bound", "type": "smart-agent", "agentCli": None, "model": None,
+                  "extSessionId": "legacy-native", "branches": None, "current_branch": None,
+                  "mcp_session": "legacy-mcp", "messages": ["keep"]}
+        self.seed_server(legacy)
+        self.save({"id": legacy["id"], "type": "smart-agent", "title": "move", "messages": ["keep"]})
+        self.assertEqual(self.nodes()[legacy["id"]], {**legacy, "title": "move"})
+        self.assertNotIn("agentHostSettings", self.nodes()[legacy["id"]])
+        self.assertNotIn("agentHostSessions", self.nodes()[legacy["id"]])
+
+    def test_http_clone_and_deleted_id_undo_keep_config_messages_without_resume(self):
+        original = agent_binding_node()
+        self.seed_server(original)
+        clone = {**copy.deepcopy(original), "id": "clone", "x": 88}
+        self.save(clone)
+        self.save(clone)  # Repeated stale save must not restore a copied binding.
+        self.assert_unbound(self.nodes()["clone"])
+        self.assertEqual(self.nodes()["clone"]["agentHostSettings"], original["agentHostSettings"])
+        self.assertEqual(self.nodes()["clone"]["messages"], original["messages"])
+        self.assertEqual(self.nodes()[original["id"]], original)
+        from app.routers import api_project_library
+        with patch.object(api_project_library.agent_host_manager, "drop_node_session", new=AsyncMock()) as drop:
+            removed = self.patch_canvas([{"op": "remove_node", "node_id": original["id"]}])
+        self.assertEqual(removed.status_code, 200, removed.text)
+        drop.assert_awaited_once_with(self.pid, original["id"])
+        self.assertNotIn(original["id"], self.nodes())
+        self.save(original)
+        restored = self.nodes()[original["id"]]
+        self.assert_unbound(restored)
+        self.assertEqual(restored["messages"], original["messages"])
+        self.assertEqual(restored["agentHostSettings"], original["agentHostSettings"])
+
+    def test_trusted_helper_writes_native_binding_but_source_or_json_never_grants_it(self):
+        from app.routers import api_agent_tools as tools
+        original = agent_binding_node()
+        self.seed_server(original)
+        updated = copy.deepcopy(original)
+        updated["agentHostSessions"]["pi"]["extSessionId"] = "native-next"
+        updated["extSessionId"] = "native-next"
+        mutations = [{"op": "upsert_node", "node": updated, "trusted_agent_bindings": True}]
+        for source in ("agent", "agent-host", "mcp", ""):
+            asyncio.run(tools._apply_mutations_from_snapshot(self.pid, lambda _canvas: mutations, source=source))
+            self.assertEqual(self.nodes()[original["id"]], original)
+        result = asyncio.run(tools._apply_mutations(self.pid, mutations, trusted_agent_bindings=True))
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(self.nodes()[original["id"]], updated)
+        self.save(original)
+        self.assertEqual(self.nodes()[original["id"]], updated)
+        self.assertEqual(self.nodes()[original["id"]]["agentHostSessions"]["codex"], original["agentHostSessions"]["codex"])
+
+    def test_trusted_helper_rebuilds_from_real_cas_conflict_without_losing_binding(self):
+        from app.routers import api_agent_tools as tools
+        original = agent_binding_node()
+        self.seed_server(original)
+        apply = self.store.apply_agent_host_mutations
+        attempts = []
+
+        def interleave(pid, mutations, *, base_revision):
+            attempts.append(copy.deepcopy(mutations))
+            if len(attempts) == 1:
+                latest = {**original, "title": "concurrent canvas edit", "x": 66}
+                self.store.apply_mutations(pid, [{"op": "upsert_node", "node": latest}], base_revision=base_revision)
+            return apply(pid, mutations, base_revision=base_revision)
+
+        def build(canvas):
+            current = next(node for node in canvas["nodes"] if node["id"] == original["id"])
+            return [{"op": "upsert_node", "node": {**current, "mcp_session": "trusted-rebind"}}]
+
+        with patch.object(self.store, "apply_agent_host_mutations", side_effect=interleave):
+            asyncio.run(tools._apply_mutations_from_snapshot(self.pid, build, trusted_agent_bindings=True))
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(self.nodes()[original["id"]], {**original, "title": "concurrent canvas edit", "x": 66, "mcp_session": "trusted-rebind"})
+
+    def test_real_mcp_http_creation_and_rebind_keep_legal_binding_and_ownership(self):
+        token = object()
+        register_project_session(token, self.pid)
+        self.addCleanup(unregister_project_session, token)
+
+        def call(session_id, node_type="smart-prompt", **fields):
+            response = self.client.post(f"/api/mcp?project={self.pid}", headers={"Mcp-Session-Id": session_id}, json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "canvas.create_node", "arguments": {"type": node_type, "title": "MCP-created", **fields},
+                },
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertFalse(response.json()["result"]["isError"], response.text)
+            return json.loads(response.json()["result"]["content"][0]["text"])["node_id"]
+
+        prompt_id = call("legal-session-1")
+        carrier = next(node for node in self.nodes().values() if node.get("mcp_session") == "legal-session-1")
+        self.assertEqual(carrier["type"], "smart-agent")
+        self.assertEqual(carrier["createdBy"], "agent")
+        self.assertEqual(carrier["agentNodeId"], carrier["id"])
+        self.assertEqual(self.nodes()[prompt_id]["agentNodeId"], carrier["id"])
+        authoritative = {**agent_binding_node(carrier["id"]), **carrier,
+                         "userTouchedAt": 9876, "promptEditedByUser": True, "title": "human title"}
+        self.seed_server(authoritative)
+        second_prompt_id = call("legal-session-2")
+        rebound = self.nodes()[carrier["id"]]
+        self.assertEqual(rebound["mcp_session"], "legal-session-2")
+        self.assertIn("updated_at", rebound)
+        self.assertEqual({key: value for key, value in rebound.items() if key != "updated_at"},
+                         {**authoritative, "mcp_session": "legal-session-2"})
+        self.assertEqual(self.nodes()[second_prompt_id]["agentNodeId"], carrier["id"])
+        self.assertEqual(len([node for node in self.nodes().values() if node.get("mcp_session")]), 1)
+        self.save({**rebound, "mcp_session": "client-forged", "title": "canvas title"})
+        self.assertEqual(self.nodes()[carrier["id"]]["mcp_session"], "legal-session-2")
+        # A generic MCP create does NOT inherit the carrier's trusted-write flag.
+        forged = agent_binding_node()
+        for key in ("id", "type", "createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+            forged.pop(key)
+        generic_id = call("legal-session-2", "smart-agent", **forged)
+        self.assert_unbound(self.nodes()[generic_id])
+        self.assertEqual(self.nodes()[generic_id]["agentNodeId"], carrier["id"])
+
+    def test_generic_agent_rest_create_update_never_gain_trusted_binding_authority(self):
+        fields = agent_binding_node()
+        for key in ("id", "createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+            fields.pop(key)
+        response = self.client.post(f"/api/projects/{self.pid}/canvas/nodes", json={
+            "node": fields, "trusted_agent_bindings": True, "source": "mcp",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        node_id = response.json()["node_id"]
+        self.assert_unbound(self.nodes()[node_id])
+        before = self.nodes()[node_id]
+        rejected = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/{node_id}", json={
+            "mcp_session": "forged", "trusted_agent_bindings": True,
+        })
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertEqual(self.nodes()[node_id], before)
+        legal = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/{node_id}", json={"title": "ordinary tool edit"})
+        self.assertEqual(legal.status_code, 200, legal.text)
+        self.assertEqual(self.nodes()[node_id], {**before, "title": "ordinary tool edit", "updated_at": self.nodes()[node_id]["updated_at"]})
+
+    def test_legacy_agent_type_is_protected_by_the_real_canvas_http_route(self):
+        legacy = {**agent_binding_node("legacy-type"), "type": "agent"}
+        self.save(legacy)
+        self.assert_unbound(self.nodes()["legacy-type"])
+        self.seed_server(legacy)
+        self.save({**legacy, "extSessionId": "forged", "agentCli": "codex", "agentHostSessions": None})
+        self.assertEqual(self.nodes()["legacy-type"], legacy)
+        rejected = self.patch_canvas([{"op": "upsert_node", "node": {**legacy, "type": "prompt"}}])
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertEqual(self.nodes()["legacy-type"], legacy)
+
+    def test_http_explicit_settings_errors_and_agent_type_laundering_do_not_change_canvas(self):
+        malformed = {**agent_binding_node(), "agentHostSettings": {"pi": {"model": "missing-effort"}}}
+        rejected = self.patch_canvas([{"op": "upsert_node", "node": malformed}])
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertIn("agentHostSettings", rejected.json()["detail"])
+        self.assertEqual(self.nodes(), {})
+        original = agent_binding_node()
+        self.seed_server(original)
+        rejected = self.patch_canvas([{"op": "upsert_node", "node": {**original, "type": "prompt"}}])
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertEqual(self.nodes()[original["id"]], original)
+        unrelated = {**agent_binding_node("ordinary"), "type": "prompt"}
+        self.save(unrelated)
+        self.assertEqual(self.nodes()["ordinary"], unrelated)
+        self.save({**unrelated, "type": "smart-agent"})
+        self.assert_unbound(self.nodes()["ordinary"])
 
 
 if __name__ == "__main__":

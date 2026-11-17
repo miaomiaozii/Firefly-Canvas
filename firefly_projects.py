@@ -13,7 +13,7 @@ import io
 import json
 import mimetypes
 import os
-from app.constants import NODE_TYPE_IMAGE
+from app.constants import NODE_TYPE_AGENT, NODE_TYPE_IMAGE
 import re
 import shutil
 import stat
@@ -2914,6 +2914,35 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         base_revision: int,
         force_empty: bool = False,
     ) -> Dict[str, Any]:
+        """Apply untrusted canvas/tool mutations; JSON cannot grant binding writes."""
+        return self._apply_mutations(
+            project_id, mutations, base_revision=base_revision,
+            force_empty=force_empty, trusted_agent_bindings=False,
+        )
+
+    def apply_agent_host_mutations(
+        self,
+        project_id: str,
+        mutations: Iterable[Dict[str, Any]],
+        *,
+        base_revision: int,
+        force_empty: bool = False,
+    ) -> Dict[str, Any]:
+        """Internal settings/native/MCP writes, with the same canvas CAS contract."""
+        return self._apply_mutations(
+            project_id, mutations, base_revision=base_revision,
+            force_empty=force_empty, trusted_agent_bindings=True,
+        )
+
+    def _apply_mutations(
+        self,
+        project_id: str,
+        mutations: Iterable[Dict[str, Any]],
+        *,
+        base_revision: int,
+        force_empty: bool,
+        trusted_agent_bindings: bool,
+    ) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         items = list(mutations)
         if not items:
@@ -3012,7 +3041,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                             if item_id:
                                 seen_ids.add(item_id)
                     history = merged[-5000:]
-                self._apply_mutation(canvas, normalized)
+                self._apply_mutation(canvas, normalized, trusted_agent_bindings=trusted_agent_bindings)
             if not force_empty and original_node_count and not (canvas.get("nodes") or []):
                 # Re-open to hand back the un-mutated server canvas so the
                 # client can rebase onto the intact state instead of losing it.
@@ -3404,7 +3433,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         self._timers[project_id] = timer
         timer.start()
 
-    def _apply_mutation(self, canvas: Dict[str, Any], mutation: Dict[str, Any]) -> None:
+    def _apply_mutation(
+        self, canvas: Dict[str, Any], mutation: Dict[str, Any], *, trusted_agent_bindings: bool,
+    ) -> None:
         if not isinstance(mutation, dict):
             raise InvalidMutation("变更必须是对象")
         operation = mutation.get("op")
@@ -3427,6 +3458,19 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             incoming_tasks = node.get("pendingTasks")
             existing_type = str(existing.get("type") or "") if isinstance(existing, dict) else ""
             incoming_type = str(node.get("type") or "")
+            # The settings/prompt router also supports the persisted legacy type.
+            agent_node_types = (NODE_TYPE_AGENT, "agent")
+            if not trusted_agent_bindings and (existing_type in agent_node_types or incoming_type in agent_node_types):
+                from app.services.agent_node_host_settings import protect_agent_bindings
+
+                # Otherwise changing type twice could launder forged bindings
+                # through the unrestricted non-Agent upsert path.
+                if existing_type in agent_node_types and incoming_type not in agent_node_types:
+                    raise InvalidMutation("Agent 节点类型不能通过普通画布保存更改")
+                try:
+                    node = protect_agent_bindings(node, existing if existing_type in agent_node_types else None)
+                except ValueError as exc:
+                    raise InvalidMutation(str(exc)) from exc
             server_owned_generation_node = existing_type in {"image", NODE_TYPE_IMAGE} or incoming_type in {"image", NODE_TYPE_IMAGE}
             if server_owned_generation_node and (isinstance(existing_tasks, list) or isinstance(incoming_tasks, list)):
                 if existing_type in {"image", NODE_TYPE_IMAGE}:

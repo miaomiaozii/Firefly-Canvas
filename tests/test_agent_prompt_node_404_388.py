@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.routers import api_agent_nodes
+from app.services.agent_host import AgentSession
 
 
 class TestPromptNode404_388(unittest.TestCase):
@@ -61,12 +62,13 @@ class TestPromptNode404_388(unittest.TestCase):
         spawn.assert_not_called()
 
     def test_prompt_existing_node_unchanged(self):
-        class _Session:
-            node_id = "agent-real"
-            is_running = True
+        session = AgentSession(
+            project_id=self.project_id, node_id="agent-real", status="running",
+            process=Mock(poll=Mock(return_value=None)),
+        )
 
         async def _fake_goc(*a, **k):
-            return _Session()
+            return session
 
         async def _fake_send(session, message, images):
             return None
@@ -84,19 +86,13 @@ class TestPromptNode404_388(unittest.TestCase):
 
     def test_ws_prompt_ghost_node_no_spawn(self):
         # #388 补充（review 裁定）：WS 兜底 prompt 路径同样不得为不存在节点 spawn。
-        class _Session:
-            node_id = "ghost-ws"
-            is_running = False
-            session_id = "s"
-            status = "stopped"
-            model = ""
-            autonomy = "cautious"
-            agent_cli = "pi"
-            ext_session_id = ""
-            event_handlers = []
+        session = AgentSession(
+            project_id=self.project_id, node_id="ghost-ws",
+            session_id="s", ext_session_id="",
+        )
 
         async def _fake_goc(*a, **k):
-            return _Session()
+            return session
 
         with patch.object(api_agent_nodes.agent_host_manager,
                           "get_or_create_session", _fake_goc), \
@@ -116,21 +112,15 @@ class TestPromptNode404_388(unittest.TestCase):
 
     def test_ws_prompt_existing_agent_node_still_spawns(self):
         # #317 语义保持：canvas 上有 agent 节点且会话未 running → WS 兜底仍可拉起。
-        class _Session:
-            node_id = "agent-real"
-            is_running = False
-            session_id = "s"
-            status = "stopped"
-            model = ""
-            autonomy = "cautious"
-            agent_cli = "pi"
-            ext_session_id = ""
-            event_handlers = []
+        session = AgentSession(
+            project_id=self.project_id, node_id="agent-real",
+            session_id="s", ext_session_id="",
+        )
 
         calls = []
 
         async def _fake_goc(*a, **k):
-            return _Session()
+            return session
 
         async def _fake_spawn(session):
             calls.append("spawn")

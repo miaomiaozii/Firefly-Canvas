@@ -82,3 +82,27 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 - 探针只复制白名单配置/认证文件到独立临时 home，不读会话、不回写源文件、不返回凭据/原始错误；子环境剥离凭据环境变量、代理、自定义 CA、会话及 Node 注入。因此来源明确标记 `file-only; sanitized-environment; account-callability-unverified`，不能宣称等于生产完整环境的默认或账号可调用性。配置依赖环境变量的场景须在设置事务接入前明确处理，不能拿此元数据冒充生产回读。
 - 探针在所有出口回收自己的进程树、管道和临时目录；Windows 按实际创建句柄挂载匿名 Job、等待其 active_processes 为零，临时文件仅对共享冲突做有界清理重试。回收失败不报 available。
 - requested（保存意图）、submitted（实际参数）、effective（权威宿主回读）不等价。Codex 配置回显、目录默认、argv、exit 0 都不构成 effective；没有可信回读时必须为 null / 未确认。Pi 实际设置仍须严格 ACK 和 state 回读，本门元数据探针不是该设置事务。
+
+## #421 / #424：节点设置与原生续接（实施门 2）
+
+### 原子设置和运行时边界
+
+- `POST /agent-nodes/{node_id}/settings` 将宿主、模型和思考档位作为一个节点事务；旧 `/model` 委托同一事务。能力验证、运行时变更和画布 CAS 失败不能留下半套设置；CAS 重试只重建字段，不重复执行原生命令。几何/所有权并发变化可保留，设置竞争、节点删除则明确失败，绝不复活节点。
+- 节点锁只覆盖设置/切换/分支事务及 prompt 接收，不覆盖整轮推理。原生流、压缩、排队、确认、重试和未完成 stop 均拒绝设置，错误码 `agent_busy`；活着但空闲的 Pi 进程不是 busy。steer、follow-up、abort 和确认回复不因设置等待而被锁死。
+- 切换先停止旧空闲宿主并等待 reader 结束，再持久化/选择目标宿主；保留同一 `AgentSession` 和监听器容器。恢复使用目标宿主自己的 ID/分支，不把 Pi ID 当作 Codex thread，也不把“选择宿主”当作已经启动了该宿主。
+- Pi 设置使用请求 ID 精确匹配的 ACK 和原生 `get_state` 回读；模型、思考任一失败/钳位则回滚两者，回滚不能确认时显式报错。Codex 每轮（包括 resume 和失败重建）固定本轮 model/effort 快照；`submitted` 只在真正提交 argv 后更新，`effective` 仍为 null，来源明确为未确认。
+- 覆盖值切回“跟随宿主默认”时，文件快照探针不足以证明生产环境默认。本门选择明确拒绝：`agent_default_unverified`，旧设置和画布保持不变；不静默清空覆盖值，也不把目录默认冒充实际生效值。
+- 事件带宿主和运行时 generation；旧 reader 的迟到帧不得写入新宿主或覆盖绑定。历史读口和降级重放只选所需宿主，旧无 host 日志归 Pi；seq 始终是节点级游标，切宿主不重编号。读取历史不启动宿主。
+
+### 绑定属于服务器，不属于画布 JSON
+
+- 精确绑定字段清单：`agentHostSessions`、`extSessionId`、`branches`、`current_branch`、`mcp_session`。普通 Agent upsert 的客户端值一律不具备写权限。已有节点保留服务器原字段的存在性和值；不因一次普通画布保存迁移/修补旧字段。`agentCli`、`agentHostSettings`、`model` 同样保留，防止绕过空闲检查和设置事务。
+- 新 ID、已不存在的 ID 均按无绑定节点建立。保留消息及各宿主 model/effort 意图，重建空的各宿主绑定，并移除外部 MCP 绑定；即使客户端再次提交带旧绑定的副本，也不能覆盖服务器的空绑定/新绑定。非 Agent 改成 Agent 也走新建保护，普通保存不得把已有 Agent 改成非 Agent 来绕过保护。
+- 只有后端内部 `ProjectStore.apply_agent_host_mutations` 可提交受信绑定写入；普通 `apply_mutations` 默认不信任。权限作为服务端调用上下文传递，不来自客户端 JSON、mutation 字段或 actor 字符串。宿主事务、原生 ID 回填以及 MCP 既有合法新建/重绑使用此入口；`api_agent_tools` 只透传内部权限，MCP 的仲裁、确认、所有权和重绑语义不变。
+- Store 的变更只在 Agent upsert 分支，不修改 generation、ownership、outbox 或 pendingTasks 的逻辑。绑定和旧投影在同一锁/CAS 下落盘；客户端缓存不是绑定真源。
+
+### 已知局限：普通删除撤销不恢复原生会话
+
+- 没有可信 clone/恢复标识时，服务器不能区分普通新建、克隆和同 ID 删除后的画布撤销恢复。本门不增加受信恢复事务：**撤销恢复保留 Agent 消息和设置，但不续接原生会话；下次发送新开会话。** 该策略由 review 明确裁定，不是克隆规则的隐式副作用。
+- 规范映射中的空绑定会清空旧内存 ID/文件引用；Pi 使用一个新的显式 `--session-id`，即使旧目录仍有 JSONL 也不走 `--continue` 或最新文件启发式。旧的无映射节点仍保留原来的兼容发现路径。阴性测试覆盖同 ID 删除/恢复、残留旧 Pi 文件、消息/设置保留及新 ID 回填。
+- 本门只接后端合同和旧 UI 冒烟，不声称已实现 r3 工具条、480px 默认宽度或前端设置 undo；这些属于后续阶段门。真 CLI 验证和截图是实施证据，不替代 review 验收。

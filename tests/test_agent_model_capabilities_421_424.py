@@ -1,16 +1,24 @@
-"""#421/#424 gate 1: fake Popen/native RPC only; never run installed CLIs."""
+"""#421/#424 metadata and gate-2 cache: fake native RPC, never installed CLIs."""
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+from threading import Event, Lock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Probe launch helpers live in the runtime, whose application reference binds at
+# import. Bootstrap the fixture app before importing those helpers.
+import main
 from app.services import agent_model_capabilities as cap
 
 
@@ -157,8 +165,28 @@ class NativeProgram:
             process.emit({"id": frame["id"], "result": data})
 
 
+@pytest.fixture(autouse=True)
+def capability_cache(monkeypatch):
+    # Probe/source monkeypatches must never inherit another test's cache/flight.
+    monkeypatch.setattr(cap, "_cache", OrderedDict())
+    monkeypatch.setattr(cap, "_inflight", {})
+    yield
+    assert not cap._inflight
+
+
+@contextmanager
+def preserve_source(path):
+    content, stamp = path.read_bytes(), path.stat()
+    try:
+        yield
+    finally:
+        path.write_bytes(content)
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+
 @pytest.fixture
 def native(monkeypatch, tmp_path):
+    monkeypatch.setattr(cap.agent_host, "_app_main", main)
     program = NativeProgram()
     home, pi_home, codex_home = tmp_path / "user", tmp_path / "pi-source", tmp_path / "codex-source"
     pi_home.mkdir()
@@ -804,13 +832,9 @@ def test_codex_pagination_has_finite_page_budget(native, monkeypatch):
 
 
 @pytest.mark.parametrize("host", ["pi", "codex"])
-def test_output_frame_and_total_output_are_bounded(native, monkeypatch, host):
-    monkeypatch.setattr(cap, "_MAX_FRAME", 20)
-    result = cap.get_capabilities(host)
-    assert_shape(result, host, available=False)
-    assert result["error"]["code"] == "malformed_metadata"
-    monkeypatch.setattr(cap, "_MAX_FRAME", 2 * 1024 * 1024)
-    monkeypatch.setattr(cap, "_MAX_OUTPUT", 20)
+@pytest.mark.parametrize("bound", ["_MAX_FRAME", "_MAX_OUTPUT"])
+def test_output_frame_and_total_output_are_bounded(native, monkeypatch, host, bound):
+    monkeypatch.setattr(cap, bound, 20)
     result = cap.get_capabilities(host)
     assert_shape(result, host, available=False)
     assert result["error"]["code"] == "malformed_metadata"
@@ -853,14 +877,298 @@ def test_native_copy_size_is_bounded(native, monkeypatch):
 
 
 @pytest.mark.parametrize("host", ["pi", "codex"])
-def test_no_shared_cache_mutable_return_or_native_home_reuse(native, host):
+def test_cache_hits_are_deep_copies_without_new_snapshot_or_spawn(native, monkeypatch, host):
     first = cap.get_capabilities(host)
-    first["models"].clear()
+    expected = deepcopy(first)
+    first["models"][0]["name"] = "fake"
     first["selection"]["efforts"].append("fake")
+    first["selection"]["source"].clear()
     first["defaults"]["model"] = "fake"
+    snapshots = []
+    original = cap._snapshot
+
+    def snapshot(*args):
+        snapshots.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(cap, "_snapshot", snapshot)
     second = cap.get_capabilities(host)
-    assert_shape(second, host)
-    assert second["models"] and "fake" not in second["selection"]["efforts"]
-    assert second["defaults"]["model"] != "fake"
-    assert len(native.processes) == 2
+    assert second == expected
+    second["models"].clear()
+    assert cap.get_capabilities(host) == expected
+    assert len(native.processes) == 1
+    assert snapshots == []
+    # Expiry makes a new isolated home, never revives the deleted snapshot.
+    native.clock += cap._CACHE_TTL
+    assert cap.get_capabilities(host) == expected
+    assert len(native.processes) == 2 and len(snapshots) == 1
     assert native.processes[0].kwargs["env"]["HOME"] != native.processes[1].kwargs["env"]["HOME"]
+
+
+@pytest.mark.parametrize("host,model", [("pi", ""), ("codex", ""), ("pi", "native/simple")])
+@pytest.mark.parametrize("outcome", ["available", "rpc_error", "cancel"])
+def test_same_key_simultaneous_threads_share_probe_and_cleanup(native, monkeypatch, host, model, outcome):
+    started, release, waiting = Event(), Event(), Event()
+    waiters, lock = [], Lock()
+
+    class ObservedFlight(Future):
+        def result(self, timeout=None):
+            with lock:
+                waiters.append(self)
+                if len(waiters) == 5:
+                    waiting.set()
+            return super().result(timeout)
+
+    def setup(process):
+        if outcome == "cancel":
+            process.read_error = KeyboardInterrupt()
+        started.set()
+        assert release.wait(5), "test did not release the fake native spawn"
+
+    if outcome == "rpc_error":
+        def hook(process, frame):
+            process.emit({"id": frame["id"], "type": "response", "command": frame.get("type"), "success": False, "error": SECRET})
+            return True
+        native.hook = hook
+    native.setup_process = setup
+    monkeypatch.setattr(cap, "Future", ObservedFlight)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        calls = [pool.submit(cap.get_capabilities, host, model)]
+        try:
+            assert started.wait(5), "fake native probe did not start"
+            calls.extend(pool.submit(cap.get_capabilities, host, model) for _ in range(5))
+            assert waiting.wait(5), "not all concurrent callers joined the flight"
+        finally:
+            release.set()
+        if outcome == "cancel":
+            for call in calls:
+                with pytest.raises(KeyboardInterrupt):
+                    call.result(timeout=5)
+        else:
+            results = [call.result(timeout=5) for call in calls]
+            expected = deepcopy(results[0])
+            for result in results:
+                assert_shape(result, host, available=outcome == "available")
+                assert result == expected
+            results[0]["models"].clear()
+            results[0]["selection"]["source"].clear()
+            if outcome == "rpc_error":
+                results[0]["error"]["message"] = "changed by caller"
+            assert all(result == expected for result in results[1:])
+            assert cap.get_capabilities(host, model) == expected
+    # Pi's selected-model contract needs its default and selected RPC sessions;
+    # single-flight shares that entire discovery, not just its first subprocess.
+    expected_spawns = 2 if model and outcome == "available" else 1
+    assert len(native.processes) == len(native.jobs) == expected_spawns
+    assert not cap._inflight
+    assert native.killed == native.processes
+    assert all(job.closed for job in native.jobs)
+    assert all(process.stdin.closed and process.stdout.closed for process in native.processes)
+    if outcome == "cancel":
+        assert not cap._cache
+        native.setup_process = None
+        assert_shape(cap.get_capabilities(host, model), host)
+        assert len(native.processes) == (3 if model else 2)
+
+
+@pytest.mark.parametrize("host,name", [("pi", "settings.json"), ("pi", "models.json"), ("pi", "auth.json"),
+                                       ("codex", "config.toml"), ("codex", "models_cache.json"), ("codex", "auth.json")])
+@pytest.mark.parametrize("change", ["mtime", "size", "absent"])
+def test_each_native_source_mtime_size_and_absence_invalidate(native, host, name, change):
+    source = (native.pi_home if host == "pi" else native.codex_home) / name
+    with preserve_source(source):
+        cap.get_capabilities(host)
+        stamp = source.stat()
+        if change == "mtime":
+            os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 100_000))
+            assert source.stat().st_size == stamp.st_size
+            assert source.stat().st_mtime_ns != stamp.st_mtime_ns
+        elif change == "size":
+            source.write_bytes(source.read_bytes() + b" ")
+            os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            assert source.stat().st_mtime_ns == stamp.st_mtime_ns
+            assert source.stat().st_size != stamp.st_size
+        else:
+            source.unlink()
+        assert_shape(cap.get_capabilities(host), host)
+        assert_shape(cap.get_capabilities(host), host)
+        assert len(native.processes) == 2
+        # Recreating a previously absent file also changes the key.
+        if change == "absent":
+            source.write_bytes(b"SYNTHETIC_NEW_FILE")
+            assert_shape(cap.get_capabilities(host), host)
+            assert len(native.processes) == 3
+
+
+@pytest.mark.parametrize("host,env", [("pi", "PI_CODING_AGENT_DIR"), ("codex", "CODEX_HOME")])
+def test_native_source_path_changes_invalidate_even_with_identical_file_stats(native, monkeypatch, tmp_path, host, env):
+    home = native.pi_home if host == "pi" else native.codex_home
+    alternative = tmp_path / "alternative-source"
+    shutil.copytree(home, alternative, copy_function=shutil.copy2)
+    for name in cap._NATIVE_FILES[host]:
+        assert (alternative / name).stat().st_mtime_ns == (home / name).stat().st_mtime_ns
+        assert (alternative / name).stat().st_size == (home / name).stat().st_size
+    first = cap.get_capabilities(host)
+    monkeypatch.setenv(env, str(alternative))
+    assert cap.get_capabilities(host) == first
+    assert cap.get_capabilities(host) == first
+    assert len(native.processes) == 2
+
+
+def test_host_and_requested_model_are_separate_cache_keys(native, monkeypatch):
+    # Isolate these two key dimensions from the independently tested file key.
+    monkeypatch.setattr(cap, "_source_fingerprint", lambda host, sources: ())
+    for host, models in (("pi", ("", "native/reasoning")), ("codex", ("", "reasoning"))):
+        for model in models:
+            assert_shape(cap.get_capabilities(host, model), host)
+            assert_shape(cap.get_capabilities(host, model), host)
+    assert len(native.processes) == 4
+    assert len(cap._cache) == 4
+
+
+@pytest.mark.parametrize("change", ["mtime", "size", "absent", "path"])
+def test_codex_used_global_auth_source_is_part_of_key(native, monkeypatch, tmp_path, change):
+    monkeypatch.delenv("CODEX_HOME")
+    monkeypatch.setattr(cap, "codex_home_dir", lambda: str(native.codex_home))
+    local, fallback = native.codex_home / "auth.json", native.home / ".codex" / "auth.json"
+    with preserve_source(local), preserve_source(fallback):
+        local.unlink()
+        cap.get_capabilities("codex")
+        assert native.processes[0].native_files["auth.json"] == fallback.read_bytes()
+        stamp = fallback.stat()
+        if change == "mtime":
+            os.utime(fallback, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 100_000))
+        elif change == "size":
+            fallback.write_bytes(fallback.read_bytes() + b" ")
+            os.utime(fallback, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        elif change == "absent":
+            fallback.unlink()
+        else:
+            new_home = tmp_path / "another-user"
+            (new_home / ".codex").mkdir(parents=True)
+            shutil.copy2(fallback, new_home / ".codex" / "auth.json")
+            monkeypatch.setattr(Path, "home", classmethod(lambda cls: new_home))
+        assert_shape(cap.get_capabilities("codex"), "codex")
+        assert_shape(cap.get_capabilities("codex"), "codex")
+        assert len(native.processes) == 2
+        if change == "absent":
+            assert "auth.json" not in native.processes[-1].native_files
+        elif change == "size":
+            assert native.processes[-1].native_files["auth.json"] == fallback.read_bytes()
+
+
+def test_codex_previously_unused_or_missing_global_login_can_become_selected(native, monkeypatch):
+    monkeypatch.delenv("CODEX_HOME")
+    monkeypatch.setattr(cap, "codex_home_dir", lambda: str(native.codex_home))
+    local, fallback = native.codex_home / "auth.json", native.home / ".codex" / "auth.json"
+    with preserve_source(fallback):
+        stamp = fallback.stat()
+        os.utime(fallback, ns=(stamp.st_atime_ns, local.stat().st_mtime_ns - 1_000_000))
+        cap.get_capabilities("codex")
+        assert native.processes[-1].native_files["auth.json"] == local.read_bytes()
+        os.utime(fallback, ns=(stamp.st_atime_ns, local.stat().st_mtime_ns + 1_000_000))
+        cap.get_capabilities("codex")
+        assert native.processes[-1].native_files["auth.json"] == fallback.read_bytes()
+        fallback.unlink()
+        cap.get_capabilities("codex")
+        assert native.processes[-1].native_files["auth.json"] == local.read_bytes()
+        fallback.write_bytes(b"SYNTHETIC_REPLACEMENT_LOGIN")
+        cap.get_capabilities("codex")
+        assert len(native.processes) == 4
+
+
+def test_explicit_codex_home_cache_ignores_unrelated_global_login(native):
+    fallback = native.home / ".codex" / "auth.json"
+    first = cap.get_capabilities("codex")
+    with preserve_source(fallback):
+        fallback.write_bytes(b"SYNTHETIC_CHANGED_GLOBAL_LOGIN")
+        assert cap.get_capabilities("codex") == first
+        assert len(native.processes) == 1
+        assert native.processes[0].native_files["auth.json"] == SECRET.encode()
+
+
+@pytest.mark.parametrize("host", ["pi", "codex"])
+@pytest.mark.parametrize("failure", ["spawn", "rpc", "cleanup"])
+def test_unavailable_cache_has_short_expiry_then_recovers(native, host, failure):
+    if failure == "spawn":
+        native.spawn_error = OSError(SECRET)
+    elif failure == "cleanup":
+        native.fail_wait = True
+    elif host == "pi":
+        native.pi_effort = "unknown"
+    else:
+        native.config["model_reasoning_effort"] = "unknown"
+    first = cap.get_capabilities(host)
+    assert_shape(first, host, available=False)
+    expected = deepcopy(first)
+    first["error"]["message"] = "caller mutation"
+    first["selection"]["source"].clear()
+    assert len(native.jobs) == 1 and native.jobs[0].closed
+    native.spawn_error, native.fail_wait, native.pi_effort = None, False, "high"
+    native.config["model_reasoning_effort"] = None
+    assert cap._CACHE_FAILURE_TTL < cap._CACHE_TTL
+    native.clock += cap._CACHE_FAILURE_TTL - 0.001
+    assert cap.get_capabilities(host) == expected
+    assert len(native.jobs) == 1
+    native.clock += 0.001
+    assert_shape(cap.get_capabilities(host), host)
+    assert len(native.jobs) == 2
+
+
+def test_missing_cli_result_expires_without_native_file_changes(native, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(cap.agent_host, "resolve_pi_cli", lambda: None)
+        assert cap.get_capabilities("pi")["error"]["code"] == "cli_missing"
+    assert cap.get_capabilities("pi")["error"]["code"] == "cli_missing"
+    assert native.jobs == []
+    native.clock += cap._CACHE_FAILURE_TTL
+    assert_shape(cap.get_capabilities("pi"), "pi")
+    assert len(native.processes) == 1
+
+
+def test_snapshot_copy_failure_is_short_cached_after_temporary_cleanup(native, monkeypatch):
+    with monkeypatch.context() as patch:
+        def denied(*args):
+            raise PermissionError(SECRET)
+        patch.setattr(cap.shutil, "copyfile", denied)
+        result = cap.get_capabilities("pi")
+        assert_shape(result, "pi", available=False)
+        assert result["error"]["code"] == "native_io_error"
+    assert not list((Path(cap.RUNTIME_ROOT) / "agent-capabilities").glob("probe-*"))
+    assert cap.get_capabilities("pi") == result
+    assert native.jobs == []
+    native.clock += cap._CACHE_FAILURE_TTL
+    assert_shape(cap.get_capabilities("pi"), "pi")
+    assert len(native.processes) == 1
+
+
+def test_cache_is_bounded_and_evicts_least_recently_used(native, monkeypatch):
+    monkeypatch.setattr(cap, "_CACHE_MAX_ENTRIES", 2)
+    for model in ("", "reasoning", "", "simple"):
+        assert_shape(cap.get_capabilities("codex", model), "codex")
+        assert len(cap._cache) <= 2
+    assert len(native.processes) == 3
+    assert {key[1] for key in cap._cache} == {"", "simple"}
+    assert_shape(cap.get_capabilities("codex", "reasoning"), "codex")
+    assert len(native.processes) == 4
+    assert {key[1] for key in cap._cache} == {"reasoning", "simple"}
+
+
+@pytest.mark.parametrize("host", ["pi", "codex"])
+def test_source_stat_failure_is_explicit_uncached_and_never_spawns(native, monkeypatch, host):
+    source = native.pi_home / "models.json" if host == "pi" else native.codex_home / "config.toml"
+    original = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError(SECRET)
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", stat)
+        result = cap.get_capabilities(host)
+        assert_shape(result, host, available=False)
+        assert result["error"]["code"] == "native_io_error"
+        assert native.jobs == []
+        assert not cap._cache and not cap._inflight
+    assert_shape(cap.get_capabilities(host), host)

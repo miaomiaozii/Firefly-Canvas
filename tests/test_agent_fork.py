@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -206,7 +207,7 @@ class TestAgentForkAPI(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-agent-fork-tests-")
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
-        self.project = self.store.create_project("Fork Test")
+        self.project = self.store.create_project("e2e-tabbit-fork-test")
         self.project_id = self.project["id"]
 
         # Create an agent node on the canvas
@@ -232,6 +233,29 @@ class TestAgentForkAPI(unittest.TestCase):
 
         # Reset the global agent host manager
         run_async(agent_host_manager.cleanup_all())
+        send = agent_host_manager.send_command
+
+        native = {"sessionId": "test-session-1", "sessionFile": "/tmp/test-session-1.jsonl",
+                  "model": {"provider": "fake", "id": "model"}, "thinkingLevel": "medium",
+                  "isStreaming": False, "isCompacting": False, "pendingMessageCount": 0}
+
+        async def acknowledge_busy_state(session, command):
+            await send(session, command)
+            # Transactional branches now require exact-ID ACK plus native
+            # identity readback; the host-boundary tests still exercise legacy
+            # manual responses independently above.
+            if command["id"].startswith("settings-"):
+                if command["type"] == "fork":
+                    native.update(sessionId="new-session-2", sessionFile="/tmp/new-session-2.jsonl")
+                elif command["type"] == "switch_session":
+                    native.update(sessionId="test-session-1", sessionFile=command["sessionPath"])
+                await agent_host_manager._dispatch_event(session, {
+                    "type": "response", "id": command["id"], "command": command["type"], "success": True,
+                    "data": dict(native) if command["type"] == "get_state" else {}})
+
+        self.rpc_patch = patch.object(agent_host_manager, "send_command", acknowledge_busy_state)
+        self.rpc_patch.start()
+        self.addCleanup(self.rpc_patch.stop)
 
     def tearDown(self):
         run_async(agent_host_manager.cleanup_all())
