@@ -184,6 +184,35 @@ function smartPendingActionPersister(){
     return smartPendingActionPersisterFn;
 }
 
+// #392 D3: pure execution-intent projection, shared by human copy and history.
+// Missing optional arrays are legitimate pre-outbox documents. Present malformed
+// arrays/records are data errors: never turn corruption into permission to copy.
+function smartConversationPendingIntents(node){
+    const intents = [];
+    if(node.pendingActionResumes !== undefined){
+        if(!Array.isArray(node.pendingActionResumes)) throw new TypeError('Invalid pendingActionResumes');
+        for(const record of node.pendingActionResumes){
+            if(!smartCanvasDataObject(record)) throw new TypeError('Invalid pending action record');
+            if(record.kind !== 'conversation') continue;
+            if(!smartCanvasDataObject(record.payload)) throw new TypeError('Invalid conversation intent payload');
+            intents.push({source:'outbox', actionId:record.actionId, payload:smartCanvasDataClone(record.payload)});
+        }
+    }
+    if(node.type === NODE_TYPE_CONVERSATION && node.messages !== undefined){
+        if(!Array.isArray(node.messages)) throw new TypeError('Invalid conversation messages');
+        for(const message of node.messages){
+            if(!smartCanvasDataObject(message)) throw new TypeError('Invalid conversation message');
+            // Same registered-user shape as core.py and the conversation UI:
+            // legacy receipts may omit id, but local-* bubbles are never work.
+            if(message.role === 'user' && message.status === 'pending' && message.request_id
+                && !String(message.id === undefined ? '' : message.id).startsWith('local-')){
+                intents.push({source:'message', requestId:message.request_id, payload:smartCanvasDataClone(message)});
+            }
+        }
+    }
+    return intents;
+}
+
 // #392: read-only defaults match app/services/agent_node_state.py::_ownership.
 // Identifiers remain opaque; bool/string timestamps are not numeric timestamps.
 function smartNodeOwnership(node){

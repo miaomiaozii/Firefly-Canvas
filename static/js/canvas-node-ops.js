@@ -168,7 +168,10 @@ function toggleGroupRefFrame(groupId){
     const group = canvasState.nodes.find(n => n.id === groupId);
     if(!group || !isSmartGroupNode(group)) return false;
     pushUndo();
+    const action = canvasCore.beginSmartHumanEdit([group], {fields:['refFrame'],
+        project:node => canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0]});
     group.refFrame = !group.refFrame;
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     render();
     scheduleSave();
     toast(group.refFrame ? '已设为参考框' : '已取消参考框');
@@ -272,6 +275,23 @@ function deleteNode(id){
     }
     pushUndo();
     const deleteIds = new Set([id]);
+    const incomingTargets = new Set();
+    if(canvas && Array.isArray(canvas.connections)) canvas.connections.forEach(conn => {
+        if(deleteIds.has(conn.from)) incomingTargets.add(conn.to);
+    });
+    const targets = canvasState.nodes.filter(node => !deleteIds.has(node.id) && (
+        incomingTargets.has(node.id)
+        || (Array.isArray(node.inputNodeIds) && node.inputNodeIds.includes(id))
+        || (isSmartGroupNode(node) && Array.isArray(node.items) && node.items.includes(id))
+        || (isHistoryGroupNode(node) && node.historyFor === id)));
+    const action = canvasCore.beginSmartHumanEdit(targets, {
+        fields:['inputNodeIds', 'items', 'historyFor', 'isHistoryGroup', 'title', 'titleTouched', 'connections'],
+        project:node => {
+            const stored = canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}});
+            // Incoming edges are durable canvas content, even on legacy nodes without inputNodeIds.
+            return {...stored.nodes[0], connections:Array.isArray(stored.connections) ? stored.connections.filter(conn => conn.to === node.id) : []};
+        }
+    });
     canvasState.nodes.forEach(node => {
         if(isHistoryGroupNode(node) && node.historyFor === id){
             // #188: 候选池是画布上的独立内容（归档历史图/扩图红底合成图），
@@ -294,6 +314,7 @@ function deleteNode(id){
         if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(inputId => !deleteIds.has(inputId));
         if(isSmartGroupNode(node) && Array.isArray(node.items)) node.items = node.items.filter(itemId => !deleteIds.has(itemId));
     });
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     if(canvasState.selectedId === id) canvasState.selectedId = '';
     canvasState.selectedIds = canvasState.selectedIds.filter(selected => !deleteIds.has(selected));
     if(deleteIds.has(canvasState.selectedImage.nodeId)) canvasState.selectedImage = {nodeId:'', index:-1};
@@ -352,17 +373,38 @@ async function deleteNodeFromButton(id){
 // 断开一条或多条连线（合并到分组的连线会一次性断开其下所有成员连线）。spec 可为索引数组或逗号分隔字符串。
 
 async function renameSmartNodeImage(nodeId, imageIndex){
-    const node = canvasState.nodes.find(n => n.id === nodeId);
-    const index = Math.max(0, Number(imageIndex) || 0);
-    const image = node?.images?.[index];
+    let node = canvasState.nodes.find(n => n.id === nodeId);
+    let index = Math.max(0, Number(imageIndex) || 0);
+    let image = node?.images?.[index];
     if(!node || !image) return;
+    // Dialog IO can outlive a project switch, node recreation, or media reorder.
+    // Null canvas is the existing standalone/legacy module state, not a new fallback.
+    const scope = () => canvas && {id:canvas.id, projectId:canvas.project_id, legacyProject:canvas.project};
+    const originalScope = scope();
+    const createdAt = node.created_at;
+    const mediaKeys = ['output_id', 'id', 'asset_id', 'url'];
+    const mediaIdentity = mediaKeys.map(key => image[key]);
     const current = imageNameLabel(image);
     const name = await openAssetNameDialog({title:tr('smart.renameImage'), value:current, placeholder:tr('smart.imageName'), cancelValue:null});
     if(name === null) return;
     const next = String(name || '').trim();
-    if(!next || next === current) return;
+    if(!next) return;
+    node = canvasState.nodes.find(n => n.id === nodeId);
+    if(!canvasCore.smartCanvasDataEqual(scope(), originalScope) || !node
+        || node.created_at !== createdAt || !Array.isArray(node.images)){
+        toast('图片已改变，未保存重命名。');
+        return;
+    }
+    const matches = node.images.map((image, index) => ({image, index})).filter(({image}) => image
+        && mediaKeys.every((key, index) => image[key] === mediaIdentity[index]));
+    if(matches.length !== 1){ toast('图片已改变，未保存重命名。'); return; }
+    ({image, index} = matches[0]);
+    if(next === imageNameLabel(image)) return;
     pushUndo();
+    const action = canvasCore.beginSmartHumanEdit([node], {fields:['images'],
+        project:target => canvasCore.canvasForStorage({source:{...canvas, nodes:[target], history:[]}}).nodes[0]});
     image.name = next;
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     canvasState.selectedId = node.id;
     canvasState.selectedIds = [];
     canvasState.selectedImage = {nodeId:node.id, index};
@@ -443,8 +485,13 @@ function applyBatchRename(){
     const values = batchRenameFormValues();
     const plan = batchRenamePlan(values.prefix, values.pad, values.start);
     if(plan.length < 2){ closeBatchRenameDialog(); toast(tr('smart.batchRenameNeedMulti')); return; }
+    const changed = plan.filter(entry => entry.node.title !== entry.to);
+    if(!changed.length){ closeBatchRenameDialog(); return; }
     pushUndo();
-    plan.forEach(entry => { entry.node.title = entry.to; });
+    const action = canvasCore.beginSmartHumanEdit(changed.map(entry => entry.node), {fields:['title'],
+        project:node => canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0]});
+    changed.forEach(entry => { entry.node.title = entry.to; });
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     canvasCore.render();
     canvasCore.scheduleSave();
     closeBatchRenameDialog();

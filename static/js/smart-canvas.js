@@ -750,6 +750,13 @@ function beginSmartNodeHumanEdit(nodes, fields, prompt=false){
 function finishSmartNodeHumanEdit(action){
     return canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
 }
+function beginSmartNodeInputEdit(nodes, fields=[]){
+    return canvasCore.beginSmartHumanEdit(nodes.filter(Boolean), {
+        fields:[...fields,'inputNodeIds','localEditInputRoles','imageInput','showPrompt','w','h','incomingConnections'],
+        project:node => ({...canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0],
+            incomingConnections:canvas.connections.filter(conn => conn.to === node.id)})
+    });
+}
 function apiErrorMessage(data, fallback=tr('chat.requestFailed')){
     if(!data) return fallback;
     if(typeof data === 'string') return data || fallback;
@@ -1871,8 +1878,11 @@ function arrangeSelectedSmartNodes(){
     const ids = smartArrangeAtomicIds(explicit.length > 1 ? explicit : connectedSmartClusterIds(explicit[0]));
     if(ids.length < 2) return;
     pushUndo();
+    const action = beginSmartNodeHumanEdit(smartHumanGeometryTargets(ids), ['x','y','w','h','scale']);
     if(!arrangeSmartIdsByConnections(ids)) return;
+    finishSmartNodeHumanEdit(action);
     render();
+    scheduleSave();
     toast(tr('smart.arrangedSelected'));
 }
 let smartNodeMenuPositionFrame = 0;
@@ -7500,11 +7510,16 @@ function cloneSmartNode(node, dx=0, dy=0){
     if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
+function rejectSmartHumanCopy(nodes){
+    if(!nodes.some(node => canvasCore.smartConversationPendingIntents(node).length)) return false;
+    toast('包含未决执行意图的对话，暂不能复制；请等待对话完成后重试。');
+    return true;
+}
 function copySelectedNodes(){
     if(!canvas || isEditableTarget(document.activeElement)) return;
     const ids = selectedNodeIds();
     const copiedNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
-    if(!copiedNodes.length) return;
+    if(!copiedNodes.length || rejectSmartHumanCopy(copiedNodes)) return;
     const idSet = new Set(copiedNodes.map(n => n.id));
     // 复制所有与选中节点相关的连线（包括与外部节点的连线），粘贴时保持连线不断
     const copiedConnections = (canvas.connections || []).filter(c => idSet.has(c.from) || idSet.has(c.to));
@@ -7516,9 +7531,10 @@ function copySelectedNodes(){
 }
 function pasteNodes(){
     if(!canvas || !nodeClipboard?.nodes?.length || isEditableTarget(document.activeElement)) return;
+    const sourceNodes = nodeClipboard.nodes;
+    if(rejectSmartHumanCopy(sourceNodes)) return;
     lastNodePasteAt = Date.now();
     pushUndo();
-    const sourceNodes = nodeClipboard.nodes;
     const xs = sourceNodes.map(n => Number(n.x) || 0);
     const ys = sourceNodes.map(n => Number(n.y) || 0);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
@@ -7528,7 +7544,7 @@ function pasteNodes(){
     const dy = p.y - cy;
     const idMap = new Map();
     const copies = sourceNodes.map(n => {
-        const copy = cloneSmartNode(n, dx, dy);
+        const copy = canvasCore.smartNewNodeOwnership(cloneSmartNode(n, dx, dy));
         idMap.set(n.id, copy.id);
         return copy;
     });
@@ -7545,8 +7561,10 @@ function pasteNodes(){
         from:idMap.get(conn.from) || conn.from,
         to:idMap.get(conn.to) || conn.to
     })).filter(conn => conn.from && conn.to && conn.from !== conn.to);
+    const action = beginSmartNodeInputEdit(canvasState.nodes.filter(node => newConnections.some(conn => conn.to === node.id)));
     canvas.connections = [...(canvas.connections || []), ...newConnections];
     canvasState.nodes.push(...copies);
+    finishSmartNodeHumanEdit(action);
     canvasState.selectedId = copies.length === 1 ? copies[0].id : '';
     canvasState.selectedIds = copies.length > 1 ? copies.map(n => n.id) : [];
     canvasState.selectedImage = {nodeId:'', index:-1};
@@ -7599,11 +7617,11 @@ function pasteAssetsFromInbox(){
 function duplicateForAltDrag(node, preserveConnections=false){
     const ids = (isNodeSelected(node.id) ? selectedNodeIds() : [node.id]);
     const sourceNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
-    if(!sourceNodes.length) return node;
+    if(!sourceNodes.length || rejectSmartHumanCopy(sourceNodes)) return null;
     pushUndo();
     const idMap = new Map();
     const copies = sourceNodes.map(n => {
-        const copy = cloneSmartNode(n, 0, 0);
+        const copy = canvasCore.smartNewNodeOwnership(cloneSmartNode(n, 0, 0));
         idMap.set(n.id, copy.id);
         return copy;
     });
@@ -8287,11 +8305,19 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
     const currentIndex = allOutputs.find(o => String(o.output_id || '') === outputId)?.outputIndex ?? Number(outputIndex);
     const deletionUiState = captureSmartOriginalDeletionUiState(historyId, outputId, currentIndex);
     const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history);
+    const projectId = smartProjectId();
     try {
         if(await settleProjectCanvasBeforeOriginalMutation() !== true){
             throw new Error(tr('smart.projectSaveFailed'));
         }
-        const projectId = canvas.project_id || canvas.project || canvasId;
+        if(projectId !== smartProjectId()) throw new Error(tr('smart.canvasConflict'));
+        // History owner aliases are the same legacy contract used by the delete endpoint.
+        const ownerId = String(log.result_node_id ?? log.resultNodeId ?? log.nodeId ?? log.node_id ?? '');
+        const humanEdit = canvasCore.beginSmartHumanEdit(canvasState.nodes.filter(node => node.id === ownerId), {
+            fields:['output'], project:node => ({id:node.id,
+                output:{images:Array.isArray(node.images) ? node.images.filter(image => image.output_id === outputId).map(mediaItemForStorage) : [],
+                    tombstones:Array.isArray(node.deletedOutputTombstones) ? node.deletedOutputTombstones.filter(item => item.deleted_output_id === outputId) : []}})
+        });
         const deletePayload = () => JSON.stringify({
             asset_id:assetId,
             base_revision:Number(canvas.revision || 0),
@@ -8311,9 +8337,17 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         const data = result.data;
         const deletionId = String(data.deleted?.deletion_id || '');
         if(!deletionId) throw new Error(tr('canvas.originalDeleteFailed'));
-        const undoSnapshot = {projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}};
+        const undoSnapshot = {projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId,
+            ...(options.localActionDelta ? {localActionDelta:options.localActionDelta} : {})}};
+        if(projectId !== smartProjectId()) throw new Error(tr('smart.canvasConflict'));
+        await adoptServerCanvas(data.canvas, {activeTaskLogs});
+        const touchState = () => ({nodes:canvasState.nodes.filter(node => humanEdit.targets.some(target => target.id === node.id)).map(node =>
+            ({id:node.id, ...(Object.prototype.hasOwnProperty.call(node,'userTouchedAt') ? {userTouchedAt:node.userTouchedAt} : {})}))});
+        const beforeTouch = touchState();
+        const touched = finishSmartNodeHumanEdit(humanEdit);
+        if(touched) undoSnapshot.projectOriginalDelete.ownershipDelta = canvasCore.smartCanvasActionDelta(beforeTouch, touchState());
         pushUndo(undoSnapshot);
-        await adoptServerCanvas(data.canvas || canvas, {activeTaskLogs});
+        if(touched) scheduleSave();
         reconcileSmartOriginalDeletionUi(historyId, outputId, deletionUiState);
         render();
         renderSmartCanvasHistory();
@@ -8324,8 +8358,10 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
             action: { label: tr('common.undo'), run: () => restoreSmartProjectOriginalUndo(undoSnapshot)
                 .catch(err => { ffToast.error(err?.message || tr('canvas.originalDeleteFailed')); }) },
         });
+        return undoSnapshot;
     } catch(err){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
+        return null;
     }
 }
 async function restoreSmartProjectOriginalUndo(snapshot){
@@ -8334,6 +8370,21 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     }
     const restoreAssetId = String(snapshot.projectOriginalDelete.assetId || '');
     const restoreDeletionId = String(snapshot.projectOriginalDelete.deletionId || '');
+    // Old media tokens lack projectId; bind their current project before IO.
+    const projectId = snapshot.projectOriginalDelete.projectId || smartProjectId();
+    const actionDeltas = [snapshot.projectOriginalDelete.ownershipDelta, snapshot.projectOriginalDelete.localActionDelta].filter(delta => delta !== undefined);
+    const proposedRestore = () => {
+        let proposed = {...canvas, nodes:canvasState.nodes};
+        for(const delta of actionDeltas){
+            const result = canvasCore.applySmartCanvasDelta(proposed, delta, {
+                direction:'backward', mergeValue:projectCanvasMutationClient().mergeCanvasValue
+            });
+            if(result.conflicts.length) throw new Error(result.conflicts[0].message);
+            proposed = result.canvas;
+        }
+        if(!canvasUndoConversationIntentsAllowed(proposed.nodes)) throw new Error(tr('smart.canvasConflict'));
+        return proposed;
+    };
     if(await settleProjectCanvasBeforeOriginalMutation() !== true){
         throw new Error(tr('smart.projectSaveFailed'));
     }
@@ -8342,11 +8393,9 @@ async function restoreSmartProjectOriginalUndo(snapshot){
     const restoreUiState = restoreHistoryId
         ? captureSmartOriginalDeletionUiState(restoreHistoryId, '')
         : null;
-    const projectId = snapshot.projectOriginalDelete.projectId || canvas.project_id || canvas.project || canvasId;
-    canvas.nodes = canvasState.nodes;
-    const localCanvasBeforeRestore = canvasForStorage();
-    const localBaseline = persistedCoreSnapshot || projectCanvasSnapshot(localCanvasBeforeRestore);
-    const localChanges = buildCoreMutations(localCanvasBeforeRestore, localBaseline);
+    if(projectId !== smartProjectId()) throw new Error(tr('smart.canvasConflict'));
+    // Reject unsafe local history before the first restore side effect.
+    proposedRestore();
     const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history);
     const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/original/restore`, {
         method:'POST',
@@ -8363,35 +8412,22 @@ async function restoreSmartProjectOriginalUndo(snapshot){
         error.permanentUndoFailure = res.status === 404 || res.status === 410;
         throw error;
     }
-    let restoredCanvas = data.canvas || canvas;
-    if(localChanges.mutations.length){
-        const rebased = projectCanvasMutationClient().rebaseProjectCanvasMutations(
-            restoredCanvas,
-            localBaseline,
-            localChanges.mutations,
-        );
-        restoredCanvas = rebased.canvas;
+    if(projectId !== smartProjectId()) throw new Error(tr('smart.canvasConflict'));
+    await adoptServerCanvas(data.canvas, {activeTaskLogs});
+    // Recompute over the unified receiver's current live canvas after IO; a
+    // conflict in either delta must not install half of the local inverse.
+    const restored = proposedRestore();
+    if(actionDeltas.length){
+        observeSmartCanvasPending();
+        canvasState.nodes = restored.nodes;
+        canvas.nodes = canvasState.nodes;
+        canvasCore.rebuildMarkedAssetIdsFromNodeFlags();
+        scheduleSave();
     }
-    canvas = restoredCanvas;
-    canvas = hydrateProjectMediaReferences(canvas);
-    canvas.history = mergeSmartActiveHistoryTaskLogs(canvas.history, activeTaskLogs);
-    canvas.connections = Array.isArray(canvas.connections) ? canvas.connections : [];
-    canvasState.nodes = (canvas.nodes || []).map(hydrateProjectMediaReferences).map(normalizeLegacySmartNode).filter(Boolean);
-    canvas.nodes = canvasState.nodes;
-    rebuildMarkedAssetIdsFromNodes();
-    updateSmartMarkedBadge(); // 刷新后角标立即可见（badge 不再等面板打开才同步）
-    canvas.updated_at = Number(canvas.updated_at || Date.now());
-    canvas.revision = Number(canvas.revision ?? 0);
     if(restoreUiState) reconcileSmartOriginalDeletionUi(restoreHistoryId, '', restoreUiState);
     render();
-    if(localChanges.mutations.length){
-        if(await saveProjectCanvasUntilSettled() !== true) throw new Error(tr('smart.projectSaveFailed'));
-    } else {
-        const savedCanvas = await materializeProjectMediaReferences(canvasForStorage());
-        persistedCoreSnapshot = projectCanvasSnapshot(savedCanvas);
-        persistedDurableSnapshot = durableSnapshotForCanvas(savedCanvas);
-        markAutosaveSaved();
-    }
+    if(smartCanvasPendingState().journal.hasPending()
+        && await saveProjectCanvasUntilSettled() !== true) throw new Error(tr('smart.projectSaveFailed'));
     renderSmartCanvasHistory();
     refreshSmartProjectMediaTrashButton();
 }
@@ -9996,7 +10032,8 @@ function bindPromptNodeControls(el, node){
     if(instructionResizeEl) instructionResizeEl.addEventListener('mousedown', e => {
         if(e.button !== 0) return;
         e.preventDefault(); e.stopPropagation();
-        llmInstructionResizeState = {id:node.id, startY:e.clientY, startH:promptLlmInstructionHeight(node), startNodeH:promptNodeLayoutSize(node).height};
+        llmInstructionResizeState = {id:node.id, startY:e.clientY, startH:promptLlmInstructionHeight(node), startNodeH:promptNodeLayoutSize(node).height,
+            moved:false, humanEdit:beginSmartNodeHumanEdit([node], ['llmInstructionHeight','w','h','scale'])};
         // 拖动期间屏蔽文本框的指针/选区，否则上拉时光标滑到上方输入框会被它抢走（选中文字/失焦）。
         document.body.classList.add('smart-node-resize', 'smart-llm-instr-resize');
         capturePendingUndo();
@@ -10006,7 +10043,8 @@ function bindPromptNodeControls(el, node){
         if(e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
-        promptSplitResizeState = {id:node.id, startY:e.clientY, startH:promptNodeSplitPreviewHeight(node), startNodeH:promptNodeLayoutSize(node).height};
+        promptSplitResizeState = {id:node.id, startY:e.clientY, startH:promptNodeSplitPreviewHeight(node), startNodeH:promptNodeLayoutSize(node).height,
+            moved:false, humanEdit:beginSmartNodeHumanEdit([node], ['promptSplitPreviewHeight','w','h','scale'])};
         document.body.classList.add('smart-node-resize', 'smart-prompt-split-resize');
         capturePendingUndo();
     });
@@ -10292,7 +10330,9 @@ function handlePortDrop(drag, e){
         if(!compatible){ discardPendingUndo(); render(); return; }
         const fromId = drag.fromPort === 'out' ? drag.fromId : targetId;
         const toId = drag.fromPort === 'out' ? targetId : drag.fromId;
+        const action = beginSmartNodeInputEdit([canvasState.nodes.find(node => node.id === toId)]);
         if(connectInputNode(fromId, toId)){
+            finishSmartNodeHumanEdit(action);
             commitPendingUndo();
             render();
             scheduleSave();
@@ -10321,12 +10361,14 @@ function handlePortDrop(drag, e){
         discardPendingUndo(); render(); return;
     }
     const p = screenToWorld(e);
+    const action = beginSmartNodeInputEdit(drag.fromPort === 'in' ? [canvasState.nodes.find(node => node.id === drag.fromId)] : []);
     undoSuppressed = true;
     const newNode = createImageNodeAt(p, [], {select:true, skipUndo:true});
     undoSuppressed = false;
     const fromId = drag.fromPort === 'out' ? drag.fromId : newNode.id;
     const toId = drag.fromPort === 'out' ? newNode.id : drag.fromId;
     connectInputNode(fromId, toId);
+    finishSmartNodeHumanEdit(action);
     commitPendingUndo();
     render();
     scheduleSave();
@@ -10641,6 +10683,27 @@ if(params.get('browserTest') === '1') window.__issue13ApplyConversationCanvasRes
 // Conversation outbox protocol: first send/replay/reload share these registered
 // hooks. Only a pure server canvas proves persistence; only a formal receipt
 // acknowledges an intent. HTTP failure alone proves neither.
+function conversationActionContext(entry){
+    return {projectId:conversationProjectId(), canvasId:canvas.id, nodeId:entry.nodeId,
+        actionId:entry.actionId, payload:smartCanvasDataClone(entry.payload)};
+}
+function assertConversationActionContext(entry, context){
+    const live = canvasState.nodes.find(node => node.id === context.nodeId);
+    const intents = live === undefined ? [] : canvasCore.smartConversationPendingIntents(live);
+    const record = intents.some(intent => intent.source === 'outbox' && intent.actionId === context.actionId
+        && smartCanvasDataEqual(intent.payload, context.payload));
+    const message = conversationMessageForRequest(live, context.payload.requestId);
+    const registered = isRegisteredConversationMessage(message, context.payload.requestId)
+        && String(message.text ?? message.content ?? '') === context.payload.text
+        && (!Object.prototype.hasOwnProperty.call(message,'user_edit') || message.user_edit === (context.payload.humanIntent === true));
+    if(context.projectId !== conversationProjectId() || context.canvasId !== canvas.id
+        || context.nodeId !== entry.nodeId || context.actionId !== entry.actionId
+        || !smartCanvasDataEqual(context.payload, entry.payload) || (!record && !registered)){
+        const error = new Error(tr('smart.canvasConflict'));
+        error.conversationConflict = true;
+        throw error;
+    }
+}
 async function prepareConversationAction(entry){
     const payload = entry.payload || {};
     const v1 = Object.prototype.hasOwnProperty.call(payload, 'conversationProtocol');
@@ -10656,8 +10719,13 @@ async function prepareConversationAction(entry){
     }
     // Mutation acknowledgements may carry a reconstructed local canvas. Read
     // the actual server outbox/receipt even on the first normal send.
-    if(await queryConversationRegistration(entry)){
+    let context = conversationActionContext(entry);
+    assertConversationActionContext(entry, context);
+    const registered = await queryConversationRegistration(entry, context);
+    assertConversationActionContext(entry, context);
+    if(registered){
         entry.registrationConfirmed = true;
+        entry.preparedConversationContext = context;
         return true;
     }
     if(!v1){
@@ -10668,17 +10736,27 @@ async function prepareConversationAction(entry){
         entry.payload = {conversationProtocol:1, projectId:conversationProjectId(), nodeId:entry.nodeId,
             requestId:payload.requestId, text:payload.text, humanIntent:payload.humanIntent === true};
         record.payload = entry.payload;
+        context = conversationActionContext(entry); // explicit legacy protocol migration, same request key
         scheduleSave();
-        if(await flushProjectCanvasBeforeGeneration() !== true) return false;
-        if(await queryConversationRegistration(entry)){
+        const saved = await flushProjectCanvasBeforeGeneration();
+        assertConversationActionContext(entry, context);
+        if(saved !== true) return false;
+        const registered = await queryConversationRegistration(entry, context);
+        assertConversationActionContext(entry, context);
+        if(registered){
             entry.registrationConfirmed = true;
+            entry.preparedConversationContext = context;
             return true;
         }
     }
     // Only this pure server anchor, not the merged view or a successful save call,
     // is evidence that the exact original intent reached durable storage.
     const savedNode = smartCanvasPendingState().server.nodes.find(node => node.id === entry.nodeId);
-    return (savedNode?.pendingActionResumes || []).some(record => conversationEntryRecordMatches(record, entry));
+    const saved = savedNode !== undefined && canvasCore.smartConversationPendingIntents(savedNode)
+        .some(intent => intent.source === 'outbox' && intent.actionId === entry.actionId
+            && smartCanvasDataEqual(intent.payload, entry.payload));
+    if(saved) entry.preparedConversationContext = context;
+    return saved;
 }
 function conversationEntryRecordMatches(record, entry){
     return record?.kind === 'conversation' && record.actionId === entry.actionId
@@ -10735,13 +10813,18 @@ function acceptConversationRegistration(data, entry){
     render();
     return true;
 }
-async function queryConversationRegistration(entry){
-    const payload = entry.payload;
-    const response = await fetch(conversationTaskUrl(payload.projectId || conversationProjectId(), entry.nodeId, payload.requestId), {cache:'no-store'});
+async function queryConversationRegistration(entry, context){
+    assertConversationActionContext(entry, context);
+    const payload = context.payload;
+    const response = await fetch(conversationTaskUrl(context.projectId, context.nodeId, payload.requestId), {cache:'no-store'});
+    assertConversationActionContext(entry, context);
     const data = await response.json();
+    assertConversationActionContext(entry, context);
     if(data.canvas && acceptConversationRegistration(data, entry)) return true;
-    const canvasResponse = await fetch(`/api/project-library/${encodeURIComponent(payload.projectId || conversationProjectId())}`, {cache:'no-store'});
+    const canvasResponse = await fetch(`/api/project-library/${encodeURIComponent(context.projectId)}`, {cache:'no-store'});
+    assertConversationActionContext(entry, context);
     const body = await canvasResponse.json();
+    assertConversationActionContext(entry, context);
     const server = body.canvas;
     if(server && acceptConversationRegistration({canvas:server}, entry)) return true;
     if(!canvasResponse.ok || !server || smartCanvasResponseIsStale(server)) throw new Error(tr('smart.conversationSendFailed'));
@@ -10756,22 +10839,32 @@ async function queryConversationRegistration(entry){
 async function sendConversationMessageRequest(live, text, requestId, humanIntent=false, entry){
     const projectId = conversationProjectId();
     if(!projectId || !entry) throw new Error(tr('smart.conversationMissingProject'));
-    // Preparation can await saves/GETs while the user deletes this node.
-    if(!canvasState.nodes.some(node => node.id === entry.nodeId)) return;
+    const context = entry.preparedConversationContext;
+    assertConversationActionContext(entry, context);
+    if(live.id !== context.nodeId || text !== context.payload.text || requestId !== context.payload.requestId
+        || (humanIntent === true) !== (context.payload.humanIntent === true)){
+        const error = new Error(tr('smart.canvasConflict'));
+        error.conversationConflict = true;
+        throw error;
+    }
+    if(entry.registrationConfirmed) return;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
+        assertConversationActionContext(entry, context);
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({text, request_id:requestId, user_edit:humanIntent === true}), signal:controller.signal,
         });
+        assertConversationActionContext(entry, context);
         const data = await response.json();
+        assertConversationActionContext(entry, context);
         if(data.canvas && acceptConversationRegistration(data, entry)) return;
         throw new Error(tr('smart.conversationSendFailed'));
     } catch(error){
         // HTTP errors (including post-registration 429) and lost ACKs both need
         // the original key checked before any retry. Never restore a server mark.
-        if(await queryConversationRegistration(entry)) return;
+        if(await queryConversationRegistration(entry, context)) return;
         throw error;
     } finally {
         clearTimeout(timeoutId);
@@ -11642,7 +11735,8 @@ function bindNodeEvents(){
             const node = canvasState.nodes.find(n => n.id === id);
             if(!node) return;
             const rect = nodeRect(node);
-            resizeState = {id, startX:e.clientX, startY:e.clientY, startW:rect.width, startH:rect.height};
+            resizeState = {id, startX:e.clientX, startY:e.clientY, startW:rect.width, startH:rect.height,
+                moved:false, humanEdit:beginSmartNodeHumanEdit(smartHumanGeometryTargets([id]), ['x','y','w','h','scale','_memberZoom'])};
             // 分组缩放：记录本次手势开始时所有成员的位置/尺寸快照与起始缩放，缩放过程按相对快照的比例实时计算，
             // 整体等比缩放+重排。用快照而非持久基准，移动成员后再缩放也不会回退到旧位置。
             if(isSmartGroupNode(node)){
@@ -11674,7 +11768,8 @@ function bindNodeEvents(){
             let altDuplicated = false;
             if(e.altKey){
                 const copied = duplicateForAltDrag(node, e.shiftKey);
-                if(copied && copied.id !== node.id){ node = copied; altDuplicated = true; }
+                if(!copied) return;
+                if(copied.id !== node.id){ node = copied; altDuplicated = true; }
             }
             let dragIds = canvasState.selectedIds.includes(node.id) ? canvasState.selectedIds.slice() : [node.id];
             if(isSmartGroupNode(node)){
@@ -11685,7 +11780,9 @@ function bindNodeEvents(){
                 const n = canvasState.nodes.find(x => x.id === dragId);
                 return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
             }).filter(Boolean);
-            dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey)};
+            dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey),
+                createdIds:altDuplicated ? [node.id] : [], geometryEdited:false,
+                humanEdit:beginSmartNodeHumanEdit(group.filter(item => !altDuplicated || item.id !== node.id).map(item => canvasState.nodes.find(node => node.id === item.id)), ['x','y'])};
             if(composerDragSettleTimer){
                 clearTimeout(composerDragSettleTimer);
                 composerDragSettleTimer = 0;
@@ -11775,6 +11872,7 @@ function setDropHighlight(targetId){
 function insertLoopNodeIntoConnection(loopNode, hit){
     if(!loopNode || loopNode.type !== NODE_TYPE_LOOP || !hit?.conn) return false;
     const conn = hit.conn;
+    const action = beginSmartNodeInputEdit([loopNode, canvasState.nodes.find(node => node.id === conn.to)]);
     const kind = conn.kind || 'flow';
     canvas.connections = (canvas.connections || []).filter((c, index) => index !== hit.index);
     canvasState.nodes.forEach(n => {
@@ -11782,6 +11880,7 @@ function insertLoopNodeIntoConnection(loopNode, hit){
     });
     addConnection(conn.from, loopNode.id, kind === 'flow' ? 'flow' : 'input');
     connectInputNode(loopNode.id, conn.to);
+    finishSmartNodeHumanEdit(action);
     return true;
 }
 function updateLoopInsertPreview(){
@@ -11830,21 +11929,39 @@ function confirmCanvasImageDeleteScope(){
     });
 }
 async function deleteImage(id, imageIndex){
-    const node = canvasState.nodes.find(n => n.id === id);
-    if(!node || imageIndex < 0) return;
+    let node = canvasState.nodes.find(n => n.id === id);
+    if(!node || imageIndex < 0 || !Array.isArray(node.images) || !node.images[imageIndex]) return;
     // #65: 生成中的节点禁止删单图（写回仍在飞，删图会破坏批次几何/引用）。
     if(smartNodeInFlight(node)){ toast(tr('smart.nodeDeleteBusy')); return; }
     // #88 删除双向：该图同时是某条生成历史的「当前原图」时，先问删除范围；
     // 无历史关联维持原静默删除。选「画布+历史原图」走项目级删除链路
     //（墓碑+回收区 7 天可恢复+undo 令牌），不再级联归档。
     const logCtx = smartHistoryContextForImage(node, imageIndex);
+    const projectId = smartProjectId();
+    // Match the edit journal's durable projection rather than maintaining a
+    // second media-only identity projection alongside the saved representation.
+    const storedImages = candidate => canvasForStorage({source:{...canvas,nodes:[candidate],history:[]}}).nodes[0].images;
+    const originalImage = storedImages(node)[imageIndex];
     let alsoDeleteOriginal = false;
     if(logCtx){
         const choice = await confirmCanvasImageDeleteScope();
         if(choice === 'cancel') return;
         alsoDeleteOriginal = choice === 'both';
+        node = canvasState.nodes.find(item => item.id === id);
+        if(smartProjectId() !== projectId || !node || !Array.isArray(node.images) || smartNodeInFlight(node)){
+            toast('图片已改变，未执行删除。');
+            return;
+        }
+        if(originalImage.output_id) imageIndex = node.images.findIndex(image => image.output_id === originalImage.output_id);
+        else if(!smartCanvasDataEqual(storedImages(node)[imageIndex], originalImage)){
+            toast('图片已改变，未执行删除。');
+            return;
+        }
+        if(imageIndex < 0) return;
     }
-    pushUndo();
+    const localBefore = alsoDeleteOriginal ? canvasForStorage({source:{...canvas,nodes:[node],history:[]}}).nodes[0] : null;
+    if(alsoDeleteOriginal) finalizePendingCanvasUndo(); else pushUndo();
+    const action = beginSmartNodeHumanEdit([node], ['images','title','_batchTotal','_generationAspect']);
     const removedImage = (node.images || [])[imageIndex] || null;
     node.images = (node.images || []).filter((_, index) => index !== imageIndex);
     const batchTotal = Number(node?._batchTotal) || 0;
@@ -11859,12 +11976,17 @@ async function deleteImage(id, imageIndex){
         }
     }
     if(node.images.length <= 1) node.title = tr('smart.nodeTitleImage');
+    finishSmartNodeHumanEdit(action);
     if(canvasState.selectedImage.nodeId === id) canvasState.selectedImage = {nodeId:id, index:Math.min(canvasState.selectedImage.index, node.images.length - 1)};
     if(canvasState.selectedImage.index < 0) canvasState.selectedImage = {nodeId:'', index:-1};
     render();
     scheduleSave();
     if(alsoDeleteOriginal){
-        void deleteSmartProjectOriginal(logCtx.historyId, logCtx.outputIndex, {skipConfirm:true});
+        const localActionDelta = canvasCore.smartCanvasActionDelta({nodes:[localBefore]},
+            {nodes:canvasForStorage({source:{...canvas,nodes:[node],history:[]}}).nodes});
+        const snapshot = await deleteSmartProjectOriginal(logCtx.historyId, logCtx.outputIndex, {skipConfirm:true,localActionDelta});
+        // If the remote delete failed visibly, the completed local removal is still undoable.
+        if(!snapshot && projectId === smartProjectId()) pushUndo({actionDeltaVersion:1,actionDelta:localActionDelta});
     } else if(removedImage){
         // #74 (D1) + #146: 被删的单图若无其他引用 → 移入回收区。
         // #146: 延迟归档，撤销时取消，避免撤销后图片 404。
@@ -13403,10 +13525,17 @@ async function uploadFiles(files){
 function appendImagesToSmartNode(uploaded, targetId='', opts={}){
     const images = [...(uploaded || [])].filter(file => file?.url);
     if(!images.length) return null;
+    if(targetId && !canvasState.nodes.some(node => node.id === targetId)){
+        toast('目标节点已移除，未添加上传内容。');
+        return null;
+    }
     const targetGroup = canvasState.nodes.find(n => n.id === targetId && isSmartGroupNode(n));
     let node = targetGroup ? null : (canvasState.nodes.find(n => n.id === targetId) || selectedNode());
     if(node && !isSmartImageNode(node)) node = null;
     if(opts.forceNew) node = null;
+    if(!opts.skipUndo) pushUndo();
+    const targetIds = [targetGroup, node].filter(Boolean).map(target => target.id);
+    const action = beginSmartNodeInputEdit([...new Map([...smartHumanRelatedTargets(targetIds), ...smartHumanGeometryTargets(targetIds)].map(target => [target.id,target])).values()], ['images','title','scale','items','x','y']);
     if(!node){
         const groupRect = targetGroup ? nodeRect(targetGroup) : null;
         const center = opts.point || (groupRect ? {x:groupRect.x + groupRect.width / 2, y:groupRect.y + groupRect.height / 2} : viewportCenter());
@@ -13426,6 +13555,7 @@ function appendImagesToSmartNode(uploaded, targetId='', opts={}){
     }
     if(node.images.length === 1){ node.title = uploadTitleForItems(node.images, node.title || 'Image'); delete node.w; delete node.h; }
     if(targetGroup) addNodeToSmartGroup(targetGroup, node);
+    finishSmartNodeHumanEdit(action);
     canvasState.selectedId = node.id;
     render();
     scheduleSave();
@@ -13435,10 +13565,13 @@ async function handleFiles(files, targetId='', opts={}){
     try {
         const fileList = [...(files || [])].filter(isSupportedUploadFile).slice(0, SMART_UPLOAD_MAX);
         if(!fileList.length) return;
+        const projectId = smartProjectId();
+        const selected = selectedNode();
+        const destinationId = targetId || (!opts.forceNew && selected ? selected.id : '');
         const uploaded = await uploadFiles(fileList);
+        if(smartProjectId() !== projectId){ toast('项目已切换，未添加上传内容。'); return; }
         if(!uploaded.length) return;
-        if(!opts.skipUndo) pushUndo();
-        appendImagesToSmartNode(uploaded.map((file, index) => ({...file, kind:file.kind || mediaKindForFile(fileList[index])})), targetId, opts);
+        appendImagesToSmartNode(uploaded.map((file, index) => ({...file, kind:file.kind || mediaKindForFile(fileList[index])})), destinationId, opts);
     } catch(e) { toast(e.message || tr('smart.toastUploadFail')); }
 }
 async function importSmartLocalImages(paths){
@@ -13456,10 +13589,13 @@ async function handleSmartImageDropPayload(payload, targetId='', opts={}){
     try {
         if(payload.type === 'files') await handleFiles(payload.files, targetId, opts);
         else if(payload.type === 'localPaths') {
-            if(!opts.skipUndo) pushUndo();
-            appendImagesToSmartNode(await importSmartLocalImages(payload.localPaths), targetId, opts);
+            const projectId = smartProjectId();
+            const selected = selectedNode();
+            const destinationId = targetId || (!opts.forceNew && selected ? selected.id : '');
+            const uploaded = await importSmartLocalImages(payload.localPaths);
+            if(smartProjectId() !== projectId){ toast('项目已切换，未添加上传内容。'); return; }
+            appendImagesToSmartNode(uploaded, destinationId, opts);
         } else if(payload.type === 'url') {
-            if(!opts.skipUndo) pushUndo();
             appendImagesToSmartNode([{url:payload.url, name:smartImageNameFromUrl(payload.url), kind:'image'}], targetId, opts);
         }
     } catch(e) {
@@ -14769,12 +14905,13 @@ function groupSelectedNodes(){
     if(rejected.length > 0){ toast(tr('smart.groupUnsupportedType')); }
     if(groupable.length < 1){ return; }
     pushUndo();
+    const action = beginSmartNodeInputEdit(smartHumanRelatedTargets(groupable.map(node => node.id)), ['x','y','scale','items']);
     const rects = groupable.map(nodeRect);
     const minX = Math.min(...rects.map(r => r.x));
     const minY = Math.min(...rects.map(r => r.y));
     const maxX = Math.max(...rects.map(r => r.x + r.width));
     const maxY = Math.max(...rects.map(r => r.y + r.height));
-    const group = {
+    const group = canvasCore.smartNewNodeOwnership({
         id:uid('group'),
         type:NODE_TYPE_GROUP,
         x:Math.round(minX - 18),
@@ -14785,11 +14922,12 @@ function groupSelectedNodes(){
         items:[],
         images:[],
         created_at:Date.now()
-    };
+    });
     canvasState.nodes.push(group);
     // 图片成员吸收进分组网格，提示词/循环作为成员节点；随后自动整理。
     groupable.forEach(node => addNodeToSmartGroup(group, node));
     arrangeSmartGroupMembers(group, {skipUndo:true});
+    finishSmartNodeHumanEdit(action);
     canvasState.selectedIds = [];
     canvasState.selectedId = group.id;
     canvasState.selectedImage = {nodeId:'', index:-1};
@@ -14802,6 +14940,7 @@ function ungroupNode(groupId){
     // 释放智能分组：把收进卡片的图片重新拆成独立图片节点（平铺在分组原位置），提示词/循环成员原地保留，再删除分组容器。
     if(isSmartGroupNode(group)){
         pushUndo();
+        const action = beginSmartNodeInputEdit(smartHumanRelatedTargets([groupId]), ['items']);
         const memberIds = smartGroupMembers(group).map(m => m.id);
         const groupImages = (group.images || []).filter(img => img?.url);
         let created = [];
@@ -14836,7 +14975,7 @@ function ungroupNode(groupId){
                 const size = sizes[index];
                 const x = Math.round(Number(group.x || 0) + pad + colWidths.slice(0, col).reduce((sum, w) => sum + w + gap, 0));
                 const y = Math.round(Number(group.y || 0) + pad + rowHeights.slice(0, row).reduce((sum, h) => sum + h + gap, 0));
-                const node = {id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()};
+                const node = canvasCore.smartNewNodeOwnership({id:uid('smart'), type:NODE_TYPE_IMAGE, x, y, w:size.w, h:size.h, title:'Image', images:[stripImageGenerationMeta({...img})], scale:MEDIA_NODE_DEFAULT_SCALE, created_at:Date.now()});
                 inheritNodeMetaFromImage(node);
                 clearDetachedRunInputRefs(node);
                 return node;
@@ -14849,6 +14988,7 @@ function ungroupNode(groupId){
             if(Array.isArray(node.inputNodeIds)) node.inputNodeIds = node.inputNodeIds.filter(id => id !== groupId);
             if(isSmartGroupNode(node) && Array.isArray(node.items)) node.items = node.items.filter(id => id !== groupId);
         });
+        finishSmartNodeHumanEdit(action);
         canvasState.selectedIds = [...created.map(n => n.id), ...memberIds].filter(id => canvasState.nodes.some(n => n.id === id));
         canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
         canvasState.selectedImage = {nodeId:'', index:-1};
@@ -14858,6 +14998,7 @@ function ungroupNode(groupId){
     }
     if(!Array.isArray(group.images) || group.images.length < 2) return false;
     pushUndo();
+    const action = beginSmartNodeInputEdit(smartHumanRelatedTargets([groupId]));
     const layout = imageLayout(group.images || [], nodeScale(group), group);
     const pad = 16;
     const gap = 8;
@@ -14868,7 +15009,7 @@ function ungroupNode(groupId){
         const size = thumbDisplaySize(img, cell);
         const x = Math.round(Number(group.x || 0) + pad + col * (cell + gap) + Math.max(0, (cell - size.width) / 2));
         const y = Math.round(Number(group.y || 0) + pad + row * (cell + gap) + Math.max(0, (cell - size.height) / 2));
-        const node = {
+        const node = canvasCore.smartNewNodeOwnership({
             id:uid('smart'),
             type:NODE_TYPE_IMAGE,
             x,
@@ -14879,7 +15020,7 @@ function ungroupNode(groupId){
             images:[stripImageGenerationMeta({...img})],
             scale:MEDIA_NODE_DEFAULT_SCALE,
             created_at:Date.now()
-        };
+        });
         inheritNodeMetaFromImage(node);
         clearDetachedRunInputRefs(node);
         return node;
@@ -14892,6 +15033,7 @@ function ungroupNode(groupId){
             node.inputNodeIds = node.inputNodeIds.filter(inputId => inputId !== groupId);
         }
     });
+    finishSmartNodeHumanEdit(action);
     canvasState.selectedIds = created.map(node => node.id);
     canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
     canvasState.selectedImage = {nodeId:'', index:-1};
@@ -15378,6 +15520,8 @@ window.onmousemove = e => {
         if(!node) return;
         const dx = (e.clientX - resizeState.startX) / viewport.scale;
         const dy = (e.clientY - resizeState.startY) / viewport.scale;
+        if(dx === 0 && dy === 0 && !resizeState.moved) return;
+        resizeState.moved = true;
         const minW = node.type === NODE_TYPE_PROMPT ? 260 : node.type === NODE_TYPE_LOOP ? 252 : node.type === NODE_TYPE_AGENT ? 330 : node.type === NODE_TYPE_TASK ? 280 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_WIDTH : 48;
         // 拖拽预览阶段就用内容最小高度钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
         const minH = node.type === NODE_TYPE_PROMPT ? promptNodeMinHeight(node) : node.type === NODE_TYPE_LOOP ? smartLoopHeight(node) : node.type === NODE_TYPE_AGENT ? 270 : node.type === NODE_TYPE_TASK ? 210 : node.type === NODE_TYPE_LOCAL_EDIT ? 360 : node.type === NODE_TYPE_GROUP ? SMART_GROUP_MIN_HEIGHT : 48;
@@ -15447,6 +15591,8 @@ window.onmousemove = e => {
         const node = canvasState.nodes.find(n => n.id === llmInstructionResizeState.id);
         if(!node) return;
         const dy = (e.clientY - llmInstructionResizeState.startY) / viewport.scale;
+        if(dy === 0 && !llmInstructionResizeState.moved) return;
+        llmInstructionResizeState.moved = true;
         const newInstrH = Math.max(PROMPT_LLM_INSTRUCTION_MIN_H, Math.min(PROMPT_LLM_INSTRUCTION_MAX_H, Math.round(llmInstructionResizeState.startH + dy)));
         node.llmInstructionHeight = newInstrH;
         // 只把“指令框的高度变化量”叠加到节点总高度上，保留用户手动拉大的上方区域，避免上方被重置变小。
@@ -15462,6 +15608,8 @@ window.onmousemove = e => {
         const node = canvasState.nodes.find(n => n.id === promptSplitResizeState.id);
         if(!node) return;
         const dy = (e.clientY - promptSplitResizeState.startY) / viewport.scale;
+        if(dy === 0 && !promptSplitResizeState.moved) return;
+        promptSplitResizeState.moved = true;
         // 让拖拽预览阶段就用 promptNodeMinHeight 钳制，使拖拽中即不低于 min，松手后尺寸与拖拽末态一致（不跳变）
         const minPreviewH = Math.max(PROMPT_SPLIT_PREVIEW_MIN_H, promptNodeMinHeight(node) - promptSplitResizeState.startNodeH + promptSplitResizeState.startH);
         const newPreviewH = Math.max(minPreviewH, Math.min(PROMPT_SPLIT_PREVIEW_MAX_H, Math.round(promptSplitResizeState.startH + dy)));
@@ -15484,6 +15632,7 @@ window.onmousemove = e => {
                 const img = source.images[thumbDragState.imgIndex];
                 if(img){
                     commitPendingUndo();
+                    const action = beginSmartNodeHumanEdit(smartHumanGeometryTargets([source.id]), ['images','title','w','h','x','y']);
                     undoSuppressed = true;
                     applyNodeMetaToImage(img, source);
                     source.images.splice(thumbDragState.imgIndex, 1);
@@ -15494,12 +15643,14 @@ window.onmousemove = e => {
                         delete source.w; delete source.h;
                         inheritNodeMetaFromImage(source);
                     }
+                    finishSmartNodeHumanEdit(action);
                     const point = screenToWorld(e);
                     canvasState.selectedId = '';
                     canvasState.selectedImage = {nodeId:'', index:-1};
                     const newNode = createImageNodeAt(point, [img], {select:false, skipUndo:true});
                     undoSuppressed = false;
-                    dragState = {id:newNode.id, startX:e.clientX, startY:e.clientY, ox:newNode.x, oy:newNode.y, thumbDetached:true};
+                    dragState = {id:newNode.id, startX:e.clientX, startY:e.clientY, ox:newNode.x, oy:newNode.y, thumbDetached:true,
+                        createdIds:[newNode.id], geometryEdited:false, humanEdit:beginSmartNodeHumanEdit([], ['x','y'])};
                     thumbDragState.detached = true;
                     render();
                 }
@@ -15522,6 +15673,8 @@ window.onmousemove = e => {
     if(!node) return;
     const moveDx = (e.clientX - dragState.startX) / viewport.scale;
     const moveDy = (e.clientY - dragState.startY) / viewport.scale;
+    if(moveDx === 0 && moveDy === 0 && !dragState.geometryEdited) return;
+    dragState.geometryEdited = true;
     if(Math.abs(moveDx) > 1 || Math.abs(moveDy) > 1) dragState.moved = true;
     (dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]).forEach(item => {
         const n = canvasState.nodes.find(x => x.id === item.id);
@@ -15612,30 +15765,28 @@ window.onmouseup = e => {
         cropDrag = null;
     }
     if(resizeState){
-        const node = canvasState.nodes.find(n => n.id === resizeState.id);
-        const rect = node ? nodeRect(node) : null;
-        const changed = rect && (Math.abs(rect.width - resizeState.startW) > 1 || Math.abs(rect.height - resizeState.startH) > 1);
+        const changed = resizeState.moved && finishSmartNodeHumanEdit(resizeState.humanEdit);
         if(changed){
             commitPendingUndo();
         } else { discardPendingUndo(); }
         resizeState = null;
-        if(changed) render();
+        if(changed){ render(); scheduleSave(); }
     }
     if(llmInstructionResizeState){
-        const node = canvasState.nodes.find(n => n.id === llmInstructionResizeState.id);
-        const changed = node && promptLlmInstructionHeight(node) !== llmInstructionResizeState.startH;
+        const changed = llmInstructionResizeState.moved && finishSmartNodeHumanEdit(llmInstructionResizeState.humanEdit);
         document.body.classList.remove('smart-node-resize', 'smart-llm-instr-resize');
         if(changed) commitPendingUndo(); else discardPendingUndo();
         llmInstructionResizeState = null;
         render();
+        if(changed) scheduleSave();
     }
     if(promptSplitResizeState){
-        const node = canvasState.nodes.find(n => n.id === promptSplitResizeState.id);
-        const changed = node && promptNodeSplitPreviewHeight(node) !== promptSplitResizeState.startH;
+        const changed = promptSplitResizeState.moved && finishSmartNodeHumanEdit(promptSplitResizeState.humanEdit);
         document.body.classList.remove('smart-node-resize', 'smart-prompt-split-resize');
         if(changed) commitPendingUndo(); else discardPendingUndo();
         promptSplitResizeState = null;
         render();
+        if(changed) scheduleSave();
     }
     if(thumbDragState){
         if(!thumbDragState.detached) discardPendingUndo();
@@ -15650,6 +15801,11 @@ window.onmouseup = e => {
         smartMinimapDrag = false;
     }
     if(dragState){
+        if(!dragState.geometryEdited && !dragState.thumbDetached){
+            discardPendingUndo();
+            dragState = null;
+            return;
+        }
         const draggedNode = canvasState.nodes.find(n => n.id === dragState.id);
         let stateChanged = false;
         let contentChanged = false;
@@ -15682,6 +15838,10 @@ window.onmouseup = e => {
         // 目标分组由主拖动节点的中心命中决定；smartGroupTargetForDraggedNode 已排除正在被拖动的节点/分组。
         const draggedNodes = (dragState.group || []).map(item => canvasState.nodes.find(n => n.id === item.id)).filter(Boolean);
         const smartGroupTarget = draggedNode ? smartGroupTargetForDraggedNode(draggedNode) : null;
+        const dropIds = [...draggedNodes, draggedNode, autoTarget, groupTarget, smartGroupTarget].filter(Boolean).map(node => node.id);
+        const dropTargets = [...new Map([...smartHumanRelatedTargets(dropIds), ...smartHumanGeometryTargets(dropIds)].map(node => [node.id,node])).values()]
+            .filter(node => !dragState.createdIds.includes(node.id));
+        const dropEdit = beginSmartNodeInputEdit(dropTargets, ['x','y','images','title','scale','items']);
         if(
             insertHit &&
             insertLoopNodeIntoConnection(draggedNode, insertHit)
@@ -15755,6 +15915,8 @@ window.onmouseup = e => {
             contentChanged = true;
             render();
         }
+        if(finishSmartNodeHumanEdit(dropEdit)) stateChanged = true;
+        if(finishSmartNodeHumanEdit(dragState.humanEdit)) stateChanged = true;
         if(stateChanged) commitPendingUndo();
         else discardPendingUndo();
         if(stateChanged && !contentChanged){
@@ -16440,14 +16602,33 @@ function quickEditNode(node){
         : el.querySelector('.node-title');
     if(!anchor) return;
     const img = target.kind === 'image' ? (node.images || [])[0] : null;
+    const projectId = smartProjectId();
+    const createdAt = node.created_at;
+    const mediaKeys = ['output_id', 'id', 'asset_id', 'url'];
+    const mediaIdentity = target.kind === 'image' ? mediaKeys.map(key => img[key]) : null;
     FireflyQuickEdit.openQuickEdit({
         anchor,
         getValue: () => target.kind === 'image' ? imageNameLabel(img) : (node.title || ''),
         placeholder: tr('smart.quickEditPlaceholder'),
         onCommit(value){
+            const live = canvasState.nodes.find(item => item.id === node.id);
+            if(projectId !== smartProjectId() || !live || live.created_at !== createdAt){
+                toast(tr('smart.canvasConflict'));
+                return;
+            }
+            let liveImage;
+            if(target.kind === 'image'){
+                const matches = Array.isArray(live.images) ? live.images.filter(image => image
+                    && mediaKeys.every((key, index) => image[key] === mediaIdentity[index])) : [];
+                if(matches.length !== 1){ toast('图片已改变，未保存重命名。'); return; }
+                [liveImage] = matches;
+            }
+            if((target.kind === 'image' ? imageNameLabel(liveImage) : live.title) === value) return;
             pushUndo();
-            if(target.kind === 'image') img.name = value;
-            else node.title = value;
+            const action = beginSmartNodeHumanEdit([live], [target.kind === 'image' ? 'images' : 'title']);
+            if(target.kind === 'image') liveImage.name = value;
+            else live.title = value;
+            finishSmartNodeHumanEdit(action);
             canvasCore.render();
             canvasCore.scheduleSave();
         },
@@ -16461,32 +16642,51 @@ function quickEditFromMenu(){
     quickEditNode(canvasState.nodes.find(n => n.id === nodeId));
 }
 // #253：方向键微调选中节点（1px；Shift=10px；分组合其成员一起移动）。
+function smartHumanRelatedTargets(ids){
+    const targets = new Set(ids);
+    return canvasState.nodes.filter(node => targets.has(node.id)
+        || (Array.isArray(node.inputNodeIds) && node.inputNodeIds.some(id => targets.has(id)))
+        || (isSmartGroupNode(node) && Array.isArray(node.items) && node.items.some(id => targets.has(id)))
+        || canvas.connections.some(conn => targets.has(conn.from) && conn.to === node.id));
+}
+function smartHumanGeometryTargets(ids){
+    const targets = new Map();
+    const visit = node => {
+        if(!node || targets.has(node.id)) return;
+        targets.set(node.id, node);
+        if(isSmartGroupNode(node)) smartGroupMembers(node).forEach(visit);
+    };
+    ids.forEach(id => visit(canvasState.nodes.find(node => node.id === id)));
+    return [...targets.values()];
+}
 function nudgeSelectedNodes(dir, step, repeat){
     const ids = selectedNodeIds();
     if(!ids.length) return;
     const dx = dir === 'arrowleft' ? -step : dir === 'arrowright' ? step : 0;
     const dy = dir === 'arrowup' ? -step : dir === 'arrowdown' ? step : 0;
     if(!repeat) pushUndo();
+    const action = beginSmartNodeHumanEdit(smartHumanGeometryTargets(ids), ['x','y']);
     ids.forEach(id => {
         const moved = canvasState.nodes.find(n => n.id === id);
         if(!moved) return;
         if(isSmartGroupNode(moved)) translateSmartNodeWithMembers(moved, dx, dy);
         else { moved.x = Math.round((Number(moved.x) || 0) + dx); moved.y = Math.round((Number(moved.y) || 0) + dy); }
     });
+    finishSmartNodeHumanEdit(action);
     render();
     scheduleSave();
 }
 // #253：Ctrl+D = 复制选中节点（同 Alt 拖复制 duplicateForAltDrag 机制，固定 32px 对角偏移，选中新节点）。
 function duplicateSelectedNodes(dx=32, dy=32){
     const ids = selectedNodeIds();
-    if(!ids.length) return;
+    if(!ids.length || rejectSmartHumanCopy(ids.map(id => canvasState.nodes.find(node => node.id === id)).filter(Boolean))) return;
     pushUndo();
     const idMap = new Map();
     const copies = [];
     ids.forEach(id => {
         const sourceNode = canvasState.nodes.find(n => n.id === id);
         if(!sourceNode) return;
-        const copy = cloneSmartNode(sourceNode, dx, dy);
+        const copy = canvasCore.smartNewNodeOwnership(cloneSmartNode(sourceNode, dx, dy));
         idMap.set(sourceNode.id, copy.id);
         copies.push(copy);
     });

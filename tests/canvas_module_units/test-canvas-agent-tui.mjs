@@ -100,6 +100,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
+import { editor as humanEditor } from './smart-human-handlers-harness-392.mjs';
 
 // #409：旧的无引用用例仍严格验证原载荷；关联字段另验，不把新增 request_id 当成回归。
 function inputPayloadForLegacyAssertion(raw) {
@@ -1860,19 +1861,23 @@ test('#323 E1 bindAgentHeadControls：点「会话框」按钮 → 真实创建�
 });
 
 test('#323 E2 toggleGroupRefFrame：refFrame true↔false 切换（写字段 + render + 保存 + toast）；非 group id 返回 false', () => {
-    const { ctx, harness, renders } = loadAgentTuiModule({
-        withNodeOps: true,
-        nodes: [{ id: 'g1', type: 'smart-group', items: [] }, { id: 'i1', type: 'smart-image', images: [] }],
-    });
+    // #392: this node-ops action now needs the real durable projector/journal,
+    // not the isolated TUI loader's intentionally absent hub dependencies.
+    const { ctx, harness, renders } = humanEditor([
+        { id: 'g1', type: 'smart-group', items: [] }, { id: 'i1', type: 'smart-image', images: [] },
+    ]);
+    loadModules(ctx, ['canvas-node-ops.js']);
     const toggle = fn(ctx, 'toggleGroupRefFrame');
     const refFrame = () => evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g1').refFrame");
-    const toastText = () => fromContext(harness.element('toast').textContent);
+    const toastText = () => harness.toasts.at(-1);
 
     assert.equal(toggle('g1'), true);
     assert.equal(refFrame(), true, '第一次切换置 true');
     assert.equal(toastText(), '已设为参考框');
-    assert.ok(renders.some(r => r.kind === 'render'), '切换必须 render');
-    assert.ok(renders.some(r => r.kind === 'scheduleSave'), '切换必须保存');
+    assert.ok(renders.length > 0, '切换必须 render');
+    assert.equal(evaluate(ctx, 'smartCanvasPendingState().journal.hasPending()'), true, '真实保存 journal 必须包含变化');
+    assert.equal(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g1').userTouchedAt"), 1234);
+    assert.equal(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'g1').promptEditedByUser"), undefined);
 
     assert.equal(toggle('g1'), true);
     assert.equal(refFrame(), false, '第二次切换回 false（菜单文案随之变「设为参考框」）');

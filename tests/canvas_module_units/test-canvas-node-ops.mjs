@@ -79,6 +79,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
+import { declarations } from './smart-human-handlers-harness-392.mjs';
 
 // 加载真实底层模块 + 被测模块（按 HTML 相对顺序，harness 会排序）：
 // canvas-node-types.js → canvas-core.js → canvas-state.js → canvas-layout-utils.js →
@@ -150,6 +151,11 @@ function loadNodeOpsModule({ nodes = [], connections = [] } = {}) {
         'canvas-node-ops.js',
     ]);
 
+    // #392 human actions require the real production storage projector, not an ownership stub.
+    evaluate(ctx, declarations('smart-canvas.js').split(/(?=^(?:async )?function )/m)
+        .filter(source => /^(?:async )?function (?:canvasForStorage|isProjectCanvasData)\(/.test(source)).join('\n'));
+    ctx.SMART_LOG_PREVIEW_NODE_ID = '__preview__';
+
     // --- 3 个单行契约镜像（loadModules 之后定义：引用 context 内的真实常量/函数） ---
     // 契约镜像（smart-canvas.js:7207-7209 测试触达分支：name 存在 → trim；测试图片都带 name，
     // fileNameFromUrl 回退分支不在测试路径）。
@@ -164,7 +170,7 @@ function loadNodeOpsModule({ nodes = [], connections = [] } = {}) {
     // 运行期状态：canvas 是 canvas-core.js 的词法 let 绑定（不是全局对象属性），必须用
     // evaluate 赋值；canvasState 是 window.canvasState 对象，宿主侧直接改属性即可。
     ctx.canvasState.nodes = nodes;
-    ctx.__canvasPayload = { id: 'cv', nodes, connections };
+    ctx.__canvasPayload = { id: 'cv', format:'firefly-canvas-v1', nodes, connections };
     evaluate(ctx, 'canvas = __canvasPayload');
     return { ctx, harness, calls };
 }

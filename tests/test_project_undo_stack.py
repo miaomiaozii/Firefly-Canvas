@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main
+from app.constants import NODE_TYPE_PROMPT
 from firefly_project_undo import UNDO_STACK_MAX_ENTRIES
 from firefly_projects import ProjectStore
 
@@ -216,6 +217,93 @@ class ProjectUndoStackApiTests(unittest.TestCase):
         self.assertEqual(data["undo"], undo)
         self.assertEqual(data["redo"], redo)
         self.assertIsNotNone(data["updated_at"])
+
+    def test_undo_persistence_preserves_ownership_delta_presence_and_legacy_entries_after_reload(self):
+        """#392: the real API stores opaque snapshots/deltas without normalizing ownership."""
+        project_id = self.make_project()
+        before_nodes = [
+            {
+                "id": "agent-prompt", "type": NODE_TYPE_PROMPT, "text": "原提示词",
+                "createdBy": "agent", "agentNodeId": "opaque:agent/#392/外部身份",
+                "userTouchedAt": None, "promptEditedByUser": False,
+                "created_at": 1700000000000,
+            },
+            {
+                "id": "user-prompt", "type": NODE_TYPE_PROMPT, "text": "未编辑",
+                "createdBy": "user", "agentNodeId": None,
+                "userTouchedAt": None, "promptEditedByUser": False,
+                "created_at": 1700000000001,
+            },
+            {"id": "legacy-prompt", "type": "prompt", "text": "旧节点没有归属字段"},
+        ]
+        after_nodes = [
+            {**before_nodes[0], "text": "编辑后的提示词", "userTouchedAt": 1700000000042, "promptEditedByUser": True},
+            before_nodes[1],
+            {**before_nodes[2], "userTouchedAt": 1700000000043, "promptEditedByUser": True},
+        ]
+        # Same-identity action: provenance is unchanged; T/P include explicit presence bits.
+        action_delta = {"version": 1, "changes": [
+            {
+                "path": ["nodes", {"id": "agent-prompt"}, "text"],
+                "beforePresent": True, "afterPresent": True,
+                "before": "原提示词", "after": "编辑后的提示词",
+            },
+            {
+                "path": ["nodes", {"id": "agent-prompt"}, "userTouchedAt"],
+                "beforePresent": True, "afterPresent": True, "before": None, "after": 1700000000042,
+            },
+            {
+                "path": ["nodes", {"id": "agent-prompt"}, "promptEditedByUser"],
+                "beforePresent": True, "afterPresent": True, "before": False, "after": True,
+            },
+            {
+                "path": ["nodes", {"id": "legacy-prompt"}, "userTouchedAt"],
+                "beforePresent": False, "afterPresent": True, "after": 1700000000043,
+            },
+            {
+                "path": ["nodes", {"id": "legacy-prompt"}, "promptEditedByUser"],
+                "beforePresent": False, "afterPresent": True, "after": True,
+            },
+        ]}
+        legacy_entry = _snapshot([{"id": "old-snapshot-node", "type": "prompt", "text": "旧版撤销快照"}])
+        undo = [legacy_entry, _snapshot(before_nodes, "agent-prompt", extra={"actionDelta": action_delta})]
+        redo = [_snapshot(after_nodes, "agent-prompt", extra={"actionDelta": action_delta})]
+
+        put = self.client.put(f"/api/project-library/{project_id}/undo-stack", json={"undo": undo, "redo": redo})
+
+        self.assertEqual(put.status_code, 200)
+        self.assertEqual(put.json()["undo_count"], 2)
+        self.assertEqual(put.json()["redo_count"], 1)
+        self.store.close()
+        self.store = ProjectStore(self.store.root, snapshot_delay=60.0)
+        main.FIREFLY_PROJECT_STORE = self.store
+        got = self.client.get(f"/api/project-library/{project_id}/undo-stack")
+        self.assertEqual(got.status_code, 200)
+        data = got.json()
+        self.assertEqual(data["project_id"], project_id)
+        self.assertEqual(data["updated_at"], put.json()["updated_at"])
+        self.assertEqual(data["undo"], undo)
+        self.assertEqual(data["redo"], redo)
+        restored_agent = data["undo"][1]["nodes"][0]
+        self.assertEqual(restored_agent["createdBy"], "agent")
+        self.assertEqual(restored_agent["agentNodeId"], "opaque:agent/#392/外部身份")
+        self.assertIsNone(restored_agent["userTouchedAt"])
+        self.assertIs(restored_agent["promptEditedByUser"], False)
+        self.assertIsNone(data["undo"][1]["nodes"][1]["agentNodeId"])
+        self.assertNotIn("actionDelta", data["undo"][0])
+        for legacy_node in (data["undo"][0]["nodes"][0], data["undo"][1]["nodes"][2]):
+            for field in ("createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+                self.assertNotIn(field, legacy_node)
+        changes = data["undo"][1]["actionDelta"]["changes"]
+        self.assertIs(changes[1]["beforePresent"], True)
+        self.assertIsNone(changes[1]["before"])
+        self.assertIs(changes[2]["before"], False)
+        for change in changes[3:]:
+            self.assertIs(change["beforePresent"], False)
+            self.assertNotIn("before", change)
+            self.assertIs(change["afterPresent"], True)
+        self.assertEqual(data["redo"][0]["nodes"][0]["userTouchedAt"], 1700000000042)
+        self.assertIs(data["redo"][0]["nodes"][0]["promptEditedByUser"], True)
 
     def test_get_without_save_is_empty(self):
         project_id = self.make_project()

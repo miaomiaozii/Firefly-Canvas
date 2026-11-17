@@ -290,12 +290,18 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertRegex(self.source, pattern)
-        self.assertIn("const restoreArchive = (conditional=false) =>", self.source)
+        # #392: automatic compensation now merges a scoped inverse delta,
+        # rather than replacing an entire archived node after a failed save.
+        restore = self.source[
+            self.source.index("const restoreArchive ="):
+            self.source.index("if(!restoreArchive()) throw submitError;")
+        ]
+        self.assertIn("canvasCore.applySmartCanvasDelta(", restore)
+        self.assertIn("direction:'backward'", restore)
+        self.assertIn("mergeValue:window.FireflyProjectCanvasMutations.mergeCanvasValue", restore)
+        self.assertIn("archivedHistoryConnections", restore)
+        self.assertNotIn("Object.assign(outputSlot", restore)
         self.assertIn("if(restored === false)", self.source)
-        self.assertIn("restoreArchive(true)", self.source)
-        self.assertIn("exactArchivedHistory", self.source)
-        self.assertIn("exactArchivedConnections", self.source)
-        self.assertIn("archivedHistoryConnections", self.source)
         self.assertIn("await saveCanvas()", self.source)
 
     def test_default_reference_images_never_include_own_history_output(self):

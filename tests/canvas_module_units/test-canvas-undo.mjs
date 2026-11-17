@@ -22,11 +22,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
-// 把 canvas-undo.js 单独加载进假核心，注入它引用的 11 个外部名（手写桩，非自动桩）。
+// Load the real core (including D3 intent/delta helpers), not a missing-helper
+// fallback. Explicit actionDeltaVersion:undefined cases below exercise persisted
+// pre-#392 legacy snapshots; new delta behavior lives in test-canvas-undo-delta-392.
+// 注入它引用的 11 个外部名（手写桩，非自动桩）。
 // 每个桩要么记录调用（calls），要么是可断言的真实行为；按钮用 harness.element 显式注册，
 // 这样 syncUndoRedoButtons 设的 .disabled 是模块**真正写的 DOM 状态**，不是桩造的。
 function loadUndoModule({ nodes = [], selectedId = '' } = {}) {
     const { ctx, harness } = createCanvasContext();
+    loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'project-canvas-mutations.js', 'canvas-media-history.js']);
     const calls = [];
     const connections = [];
     ctx.canvasState = {
@@ -39,13 +43,14 @@ function loadUndoModule({ nodes = [], selectedId = '' } = {}) {
         lastComposerNodeId: '',
         projectMediaLibrary: { items: [] },
     };
-    ctx.canvas = {
+    ctx.initialCanvas = {
         id: 'cv',
         nodes,
         connections,
         project: 'proj',
         project_id: 'proj',
     };
+    evaluate(ctx, 'canvas = initialCanvas');
     ctx.sourceProjectId = 'proj';
     ctx.canvasId = 'cv';
     ctx.toast = (m) => calls.push('toast:' + m);
@@ -146,7 +151,7 @@ test('undoStack evicts the oldest entry FIFO once it exceeds UNDO_LIMIT (40)', (
     const pushUndo = globalFunction(ctx, 'pushUndo');
 
     assert.equal(evaluate(ctx, 'UNDO_LIMIT'), 40, 'contract: the cap is exactly 40');
-    for (let i = 1; i <= 41; i++) pushUndo({ label: 'p' + i });
+    for (let i = 1; i <= 41; i++) pushUndo({ actionDeltaVersion:undefined, label: 'p' + i });
 
     assert.equal(evaluate(ctx, 'undoStack.length'), 40, 'capped at UNDO_LIMIT, not 41');
     assert.equal(evaluate(ctx, 'undoStack[0].label'), 'p2', 'oldest (p1) evicted by FIFO shift');
@@ -237,6 +242,7 @@ test('pushUndo is a no-op while undoSuppressed (a restore must not record a fres
     assert.equal(evaluate(ctx, "undoStack.some(s => s.label === 'should-be-dropped')"), false, 'suppressed entry is not present');
 
     evaluate(ctx, 'undoSuppressed = false');
+    ctx.canvasState.nodes[0].x = 1;
     pushUndo({ label: 'recorded-again' });
     assert.equal(evaluate(ctx, 'undoStack.length'), 2, 'recording resumes once suppression is cleared');
 });
@@ -260,8 +266,8 @@ test('#251: rapid stack mutations coalesce into a single debounced PUT carrying 
     };
     const pushUndo = globalFunction(ctx, 'pushUndo');
 
-    pushUndo({ label: 'p1' });
-    pushUndo({ label: 'p2' });
+    pushUndo({ actionDeltaVersion:undefined, label: 'p1' });
+    pushUndo({ actionDeltaVersion:undefined, label: 'p2' });
     // 两次快速变更在防抖窗口内：只有一个定时器存活（前一个被 clearTimeout）。
     const fired = harness.advanceTimers();
     assert.equal(fired, 1, 'two rapid pushes coalesce into one debounced timer');
@@ -350,9 +356,11 @@ test('#251: restore no-ops silently on 404 (project has no ops.db yet)', async (
 
 test('#251: non-project canvas (no project_id) never touches the network', async () => {
     const { ctx, harness } = createCanvasContext();
+    loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'project-canvas-mutations.js']);
     const connections = [];
     ctx.canvasState = { nodes: [{ id: 'n1' }], connections, selectedId: '', selectedIds: [], selectedImage: {}, activeComposerSubject: null, lastComposerNodeId: '', projectMediaLibrary: { items: [] } };
-    ctx.canvas = { id: 'classic-canvas', nodes: ctx.canvasState.nodes, connections };   // 无 project / project_id
+    ctx.initialCanvas = { id: 'classic-canvas', nodes: ctx.canvasState.nodes, connections };   // 无 project / project_id
+    evaluate(ctx, 'canvas = initialCanvas');
     ctx.sourceProjectId = '';
     ctx.canvasId = 'classic-canvas';
     ctx.toast = () => {};

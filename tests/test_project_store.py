@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import firefly_projects
+from app.constants import NODE_TYPE_PROMPT
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
 
 
@@ -962,6 +963,47 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertTrue(Path(self.store.media_record(source["id"], referenced["asset_id"])["path"]).is_file())
         self.store.restore_project(duplicate["id"])
         self.assertEqual(len(self.store.open_project(duplicate["id"])["canvas"]["nodes"]), 1)
+
+    def test_duplicate_project_preserves_node_ownership_and_legacy_presence_after_reload(self):
+        """#392 D4: a whole-project copy keeps node identities, unlike Ctrl+D."""
+        source = self.store.create_project("来源兼容副本")
+        nodes = [
+            {
+                "id": "agent-prompt", "type": NODE_TYPE_PROMPT, "text": "人工改过的提示词",
+                "createdBy": "agent", "agentNodeId": "opaque:agent/#392/外部身份",
+                "userTouchedAt": 1700000000042, "promptEditedByUser": True,
+                "created_at": 1700000000000,
+            },
+            {
+                "id": "user-prompt", "type": NODE_TYPE_PROMPT, "text": "未编辑",
+                "createdBy": "user", "agentNodeId": None,
+                "userTouchedAt": None, "promptEditedByUser": False,
+                "created_at": 1700000000001,
+            },
+            {"id": "legacy-prompt", "type": "prompt", "text": "旧节点没有归属字段"},
+        ]
+        self.apply_mutations(source["id"], [{"op": "upsert_node", "node": node} for node in nodes])
+        self.store.flush(source["id"])
+
+        duplicate = self.store.duplicate_project(source["id"])
+
+        self.assertNotEqual(duplicate["id"], source["id"])
+        self.assertEqual(self.store.open_project(duplicate["id"])["canvas"]["nodes"], nodes)
+        self.assertEqual(self.store.open_project(source["id"])["canvas"]["nodes"], nodes)
+        self.store.close()
+        self.store = ProjectStore(self.root, snapshot_delay=0)
+        for project_id in (source["id"], duplicate["id"]):
+            with self.subTest(project_id=project_id):
+                reopened = self.store.open_project(project_id)["canvas"]
+                self.assertEqual(reopened["project_id"], project_id)
+                self.assertEqual(reopened["nodes"], nodes)
+                self.assertEqual(reopened["nodes"][0]["agentNodeId"], "opaque:agent/#392/外部身份")
+                self.assertIs(reopened["nodes"][0]["promptEditedByUser"], True)
+                self.assertIsNone(reopened["nodes"][1]["agentNodeId"])
+                self.assertIsNone(reopened["nodes"][1]["userTouchedAt"])
+                self.assertIs(reopened["nodes"][1]["promptEditedByUser"], False)
+                for field in ("createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+                    self.assertNotIn(field, reopened["nodes"][2])
 
     def test_duplicate_project_reserves_the_copy_suffix_at_the_name_limit(self):
         source = self.store.create_project("甲" * 60)
@@ -2070,6 +2112,55 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.assertEqual([node["id"] for node in recovered["nodes"]], ["before"])
         self.assertEqual(json.loads(primary.read_text(encoding="utf-8"))["nodes"][0]["id"], "before")
         self.assertEqual((project_dir / result["quarantined"]).read_text(encoding="utf-8"), "{broken")
+
+    def test_backup_restore_preserves_node_ownership_and_legacy_presence_after_reload(self):
+        """#392 D4: restoring a saved identity must not initialize ownership."""
+        project_id = self.store.create_project("归属备份恢复")["id"]
+        nodes = [
+            {
+                "id": "agent-prompt", "type": NODE_TYPE_PROMPT, "text": "备份中的提示词",
+                "createdBy": "agent", "agentNodeId": "opaque:agent/#392/外部身份",
+                "userTouchedAt": 1700000000042, "promptEditedByUser": True,
+                "created_at": 1700000000000,
+            },
+            {
+                "id": "user-prompt", "type": NODE_TYPE_PROMPT, "text": "未编辑",
+                "createdBy": "user", "agentNodeId": None,
+                "userTouchedAt": None, "promptEditedByUser": False,
+                "created_at": 1700000000001,
+            },
+            {"id": "legacy-prompt", "type": "prompt", "text": "旧节点没有归属字段"},
+        ]
+        self.apply_mutations(project_id, [{"op": "upsert_node", "node": node} for node in nodes])
+        self.store.flush(project_id)
+        changed_nodes = [
+            {**nodes[0], "text": "备份之后的编辑", "userTouchedAt": 1700000000100, "promptEditedByUser": False},
+            {**nodes[1], "userTouchedAt": 1700000000101, "promptEditedByUser": True},
+            {
+                **nodes[2], "createdBy": "user", "agentNodeId": None,
+                "userTouchedAt": 1700000000102, "promptEditedByUser": True,
+            },
+        ]
+        self.apply_mutations(project_id, [{"op": "upsert_node", "node": node} for node in changed_nodes])
+        self.store.flush(project_id)
+        self.assertEqual(self.store.open_project(project_id)["canvas"]["nodes"], changed_nodes)
+
+        result = self.store.restore_from_backup(project_id, "canvas.json", backup="canvas.json.bak")
+
+        self.assertEqual(result["restored_from"], "canvas.json.bak")
+        self.assertEqual(self.store.open_project(project_id)["canvas"]["nodes"], nodes)
+        self.store.close()
+        self.store = ProjectStore(self.root, snapshot_delay=0)
+        reopened = self.store.open_project(project_id)["canvas"]
+        self.assertEqual(reopened["project_id"], project_id)
+        self.assertEqual(reopened["nodes"], nodes)
+        self.assertEqual(reopened["nodes"][0]["agentNodeId"], "opaque:agent/#392/外部身份")
+        self.assertIs(reopened["nodes"][0]["promptEditedByUser"], True)
+        self.assertIsNone(reopened["nodes"][1]["agentNodeId"])
+        self.assertIsNone(reopened["nodes"][1]["userTouchedAt"])
+        self.assertIs(reopened["nodes"][1]["promptEditedByUser"], False)
+        for field in ("createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+            self.assertNotIn(field, reopened["nodes"][2])
 
     def test_restore_from_backup_selects_explicit_slot_and_rejects_invalid(self):
         project = self.store.create_project("显式槽位测试")

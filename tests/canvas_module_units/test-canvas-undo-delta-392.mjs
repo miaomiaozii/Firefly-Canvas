@@ -6,7 +6,7 @@ import { createCanvasContext, loadModules, evaluate, fromContext } from './harne
 
 function loadUndo(nodes) {
     const { ctx, harness } = createCanvasContext();
-    loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-state.js', 'project-canvas-mutations.js']);
+    loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-state.js', 'project-canvas-mutations.js', 'canvas-media-history.js']);
     ctx.initialNodes = structuredClone(nodes);
     evaluate(ctx, `canvas = {id:'cv', project_id:'proj', format:'firefly-canvas-v1', nodes:initialNodes, connections:[]};
         canvasState.nodes = canvas.nodes; canvasState.annotations = [];`);
@@ -22,9 +22,7 @@ function loadUndo(nodes) {
     harness.element('smartUndoButton');
     harness.element('smartRedoButton');
     loadModules(ctx, ['canvas-undo.js']);
-    // Before the implementation exists, reach the actual old undo overwrite rather
-    // than making a missing helper the only red evidence. Never replace that helper.
-    const seal = () => ctx.finalizePendingCanvasUndo?.();
+    const seal = () => ctx.finalizePendingCanvasUndo();
     return { ctx, harness, effects, seal,
         nodes: () => fromContext(evaluate(ctx, 'canvasState.nodes')) };
 }

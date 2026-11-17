@@ -615,35 +615,50 @@ function updateSmartMarkedBadge(){
     badge.textContent = String(count);
 }
 
+function beginMediaHumanEdit(nodes, fields){
+    return canvasCore.beginSmartHumanEdit(nodes, {fields,
+        project:node => canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0]});
+}
 function setMarkedImage(assetId, marked){
     if(!assetId) return;
+    const targets = canvasState.nodes.filter(node => (node.images || []).some(img => img
+        && String(img.asset_id || '') === assetId && Boolean(img.marked) !== Boolean(marked)));
+    const action = beginMediaHumanEdit(targets, ['images', 'curated']);
+    pushUndo();
     const ids = getMarkedAssetIds();
     const at = ids.indexOf(assetId);
     if(marked && at < 0) ids.push(assetId);
     if(!marked && at >= 0) ids.splice(at, 1);
     // #89 第四轮：节点级 flagged 才是持久载体——项目增量快照只抓 canvasState.nodes/edges/title/icon/logs，
     // canvas.markedAssetIds 顶层字段永不被保存；只有 upsert_node 携带的 images[].marked 能落盘。
-    canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
+    targets.forEach(node => node.images.forEach(img => {
         if(img && String(img.asset_id || '') === assetId){
             if(marked) img.marked = true;
             else delete img.marked;
         }
     }));
-    syncCuratedFromMarks(); // #53/#58：星标即“保留”信号，同步节点 curated 供收集/导出 API 读取
+    targets.forEach(syncNodeCuratedFromMarks);
+    const changed = canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+    finalizePendingCanvasUndo();
     canvasCore.render();
-    canvasCore.scheduleSave();
+    if(changed) canvasCore.scheduleSave();
     renderSmartMarkedPanel();
     syncMarkedImageButtons();
 }
 // #89 第四轮：画布加载/远端 rebase 后，从节点 images[].marked 重建星标索引。
 
-function rebuildMarkedAssetIdsFromNodes(){
-    if(!canvas) return;
+// Index-only rebuild also serves same-identity undo: never recompute durable
+// curated fields while restoring an action's exact before/after values.
+function rebuildMarkedAssetIdsFromNodeFlags(){
     const found = new Set();
     canvasState.nodes.forEach(node => (node.images || []).forEach(img => {
         if(img && img.marked && img.asset_id) found.add(String(img.asset_id));
     }));
     canvas.markedAssetIds = [...found];
+}
+function rebuildMarkedAssetIdsFromNodes(){
+    if(!canvas) return;
+    rebuildMarkedAssetIdsFromNodeFlags();
     syncCuratedFromMarks(); // #53/#58：加载/rebase 后保证 curated 与星标一致（历史画布可能缺 curated 字段）
 }
 // #53/#58：星标 → 节点 curated 同步。任一输出图被星标 ⇒ curated=true（/api/excel/collect-nodes
@@ -2615,7 +2630,7 @@ function ensureHistoryGroupForNode(node){
         const estW = Math.max(316, Math.round(r.width || 0));
         const estH = 200;
         const pos = candidatePoolPosition(node, estW, estH);
-        group = {
+        group = canvasCore.smartNewNodeOwnership({
             id:uid('smart'),
             type:NODE_TYPE_IMAGE,
             x:pos.x,
@@ -2624,9 +2639,8 @@ function ensureHistoryGroupForNode(node){
             images:[],
             historyFor:node.id,
             isHistoryGroup:true,
-            scale:MEDIA_GROUP_DEFAULT_SCALE,
-            created_at:Date.now()
-        };
+            scale:MEDIA_GROUP_DEFAULT_SCALE
+        });
         canvasState.nodes.push(group);
     }
     group.type = NODE_TYPE_IMAGE;
@@ -2795,13 +2809,14 @@ function smartRunTaskLabel(run){
 function outputUrlLooksVideo(url){
     return /\.(mp4|webm|mov|m4v|avi|mkv)(\?|$)/.test(smartOriginalMediaUrl(url).toLowerCase());
 }
+function syncNodeCuratedFromMarks(node){
+    const imgs = node.images || [];
+    if(!imgs.some(img => img && img.marked) && !node.curated) return;
+    const curated = imgs.some(img => img && img.marked);
+    if(Boolean(node.curated) !== curated) node.curated = curated;
+}
 function syncCuratedFromMarks(){
-    canvasState.nodes.forEach(node => {
-        const imgs = node.images || [];
-        if(!imgs.some(img => img && img.marked) && !node.curated) return;
-        const curated = imgs.some(img => img && img.marked);
-        if(Boolean(node.curated) !== curated) node.curated = curated;
-    });
+    canvasState.nodes.forEach(syncNodeCuratedFromMarks);
 }
 function smartRunPlatformLabel(run){
     const s = run?.settings || {};

@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main
+from app.constants import NODE_TYPE_PROMPT
 from firefly_projects import ProjectStore
 
 
@@ -258,6 +259,82 @@ class ProjectVersionsApiTests(unittest.TestCase):
 
         canvas = self.client.get(f"/api/project-library/{project_id}").json()["canvas"]
         self.assertEqual([n["id"] for n in canvas["nodes"]], ["a"])
+
+    def test_version_restore_preserves_node_ownership_and_legacy_presence_after_reload(self):
+        """#392 D4: version and pre-restore recovery retain the same node identities."""
+        project_id = self.make_project()
+        nodes = [
+            {
+                "id": "agent-prompt", "type": NODE_TYPE_PROMPT, "text": "版本中的提示词",
+                "createdBy": "agent", "agentNodeId": "opaque:agent/#392/外部身份",
+                "userTouchedAt": 1700000000042, "promptEditedByUser": True,
+                "created_at": 1700000000000,
+            },
+            {
+                "id": "user-prompt", "type": NODE_TYPE_PROMPT, "text": "未编辑",
+                "createdBy": "user", "agentNodeId": None,
+                "userTouchedAt": None, "promptEditedByUser": False,
+                "created_at": 1700000000001,
+            },
+            {"id": "legacy-prompt", "type": "prompt", "text": "旧节点没有归属字段"},
+        ]
+        saved = self.client.patch(
+            f"/api/project-library/{project_id}/canvas",
+            json={
+                "mutations": [{"op": "upsert_node", "node": node} for node in nodes],
+                "base_revision": self.current_revision(project_id),
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(self.client.post(f"/api/project-library/{project_id}/flush").status_code, 200)
+        versions = self.client.get(f"/api/project-library/{project_id}/versions")
+        self.assertEqual(versions.status_code, 200)
+        version_id = versions.json()["versions"][0]["id"]
+        changed_nodes = [
+            {**nodes[0], "text": "较新的提示词", "userTouchedAt": 1700000000100},
+            {**nodes[1], "userTouchedAt": 1700000000101, "promptEditedByUser": True},
+            {**nodes[2], "userTouchedAt": 1700000000102, "promptEditedByUser": True},
+        ]
+        changed = self.client.patch(
+            f"/api/project-library/{project_id}/canvas",
+            json={
+                "mutations": [{"op": "upsert_node", "node": node} for node in changed_nodes],
+                "base_revision": self.current_revision(project_id),
+            },
+        )
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(self.client.post(f"/api/project-library/{project_id}/flush").status_code, 200)
+
+        restored = self.client.post(f"/api/project-library/{project_id}/versions/{version_id}/restore")
+
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.json()["version_id"], version_id)
+        pre_restore_id = restored.json()["pre_restore_version_id"]
+        self.assertIsNotNone(pre_restore_id)
+        self.store.close()
+        self.store = ProjectStore(self.store.root, snapshot_delay=60.0)
+        main.FIREFLY_PROJECT_STORE = self.store
+        reopened = self.client.get(f"/api/project-library/{project_id}")
+        self.assertEqual(reopened.status_code, 200)
+        canvas = reopened.json()["canvas"]
+        self.assertEqual(canvas["project_id"], project_id)
+        self.assertEqual(canvas["nodes"], nodes)
+        self.assertEqual(canvas["nodes"][0]["agentNodeId"], "opaque:agent/#392/外部身份")
+        self.assertIs(canvas["nodes"][0]["promptEditedByUser"], True)
+        self.assertIsNone(canvas["nodes"][1]["agentNodeId"])
+        self.assertIsNone(canvas["nodes"][1]["userTouchedAt"])
+        self.assertIs(canvas["nodes"][1]["promptEditedByUser"], False)
+        for field in ("createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
+            self.assertNotIn(field, canvas["nodes"][2])
+
+        recovered = self.client.post(f"/api/project-library/{project_id}/versions/{pre_restore_id}/restore")
+        self.assertEqual(recovered.status_code, 200)
+        self.store.close()
+        self.store = ProjectStore(self.store.root, snapshot_delay=60.0)
+        main.FIREFLY_PROJECT_STORE = self.store
+        current = self.client.get(f"/api/project-library/{project_id}")
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json()["canvas"]["nodes"], changed_nodes)
 
     def test_unknown_project_is_404(self):
         response = self.client.get("/api/project-library/never-created/versions/1/diff")

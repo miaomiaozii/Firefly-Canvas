@@ -210,7 +210,10 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertIn("contentChanged", drag)
         self.assertNotRegex(drag, r"\n\s*scheduleSave\(\);\n\s*scheduleConnectionLayerRefresh\(\)")
         arrange = script[script.index("function arrangeSelectedSmartNodes"):script.index("function applyViewport")]
-        self.assertNotIn("scheduleSave()", arrange)
+        # #392: arranging changes durable userTouchedAt together with geometry;
+        # it must no longer be classified as a viewport/layout-only save.
+        self.assertIn("finishSmartNodeHumanEdit(action);", arrange)
+        self.assertIn("scheduleSave();", arrange)
         mouseup_resize = script[script.index("if(resizeState){"):script.index("if(thumbDragState)")]
         self.assertNotIn("scheduleSave()", mouseup_resize)
 

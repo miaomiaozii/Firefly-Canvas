@@ -12,6 +12,7 @@ const undoStack = [];
 const redoStack = [];
 let undoSuppressed = false;
 let pendingUndoSnapshot = null;
+let undoHistoryEpoch = 0; // local history/capture transactions, not a canvas-wide touch counter
 const pendingUndoRemoteBaselines = new WeakMap(); // runtime-only receipt deduplication
 let redoPushing = false;
 const smartUndoButton = document.getElementById('smartUndoButton');
@@ -94,6 +95,7 @@ function finalizePendingCanvasUndo({afterRemote=false, materializedMedia=null}={
 }
 
 function capturePendingUndo(){
+    undoHistoryEpoch += 1;
     finalizePendingCanvasUndo();
     pendingUndoSnapshot = snapshotForUndo();
 }
@@ -110,7 +112,10 @@ function commitPendingUndo(){
     }
 }
 
-function discardPendingUndo(){ pendingUndoSnapshot = null; }
+function discardPendingUndo(){
+    if(pendingUndoSnapshot) undoHistoryEpoch += 1;
+    pendingUndoSnapshot = null;
+}
 
 function snapshotForUndo(){
     return {
@@ -144,7 +149,11 @@ function pushUndo(extra=null){
 
 // 新差量与旧快照共用恢复副作用，保留 #62/#146 的顺序及选区/批注语义。
 function applyCanvasUndoSnapshot(snap, restoredNodes){
-    canvasState.nodes = restoredNodes.nodes; if(canvas) canvas.nodes = canvasState.nodes;
+    canvasState.nodes = restoredNodes.nodes;
+    if(canvas){
+        canvas.nodes = canvasState.nodes;
+        canvasCore.rebuildMarkedAssetIdsFromNodeFlags();
+    }
     if(restoredNodes.dropped > 0) toast(tr('smart.toastDanglingMediaDropped'));
     if(canvas) canvas.connections = snap.connections;
     canvasState.selectedId = snap.selectedId;
@@ -154,12 +163,41 @@ function applyCanvasUndoSnapshot(snap, restoredNodes){
     canvasState.activeComposerSubject = null;
     canvasState.lastComposerNodeId = '';
     render();
+    canvasCore.renderSmartMarkedPanel();
+    canvasCore.syncMarkedImageButtons();
     scheduleSave();
+}
+
+// #392 D2/D3: history preserves the exact live execution intents, including
+// their queue order. It cannot resurrect old work or silently cancel live work.
+function canvasUndoConversationIntentsAllowed(proposedNodes){
+    const core = window.canvasCore;
+    const live = new Map(canvasState.nodes.map(node => [node.id, core.smartConversationPendingIntents(node)]));
+    const proposed = new Map(proposedNodes.map(node => [node.id, core.smartConversationPendingIntents(node)]));
+    for(const id of new Set([...live.keys(), ...proposed.keys()])){
+        const before = live.has(id) ? live.get(id) : [];
+        const after = proposed.has(id) ? proposed.get(id) : [];
+        if(!core.smartCanvasDataEqual(before, after)){
+            toast(tr('smart.canvasConflict'));
+            return false;
+        }
+    }
+    return true;
+}
+
+function canvasUndoRestoreContext(){
+    return {projectId:undoStackProjectId(), canvasId:canvas.id, epoch:undoHistoryEpoch, pending:pendingUndoSnapshot};
+}
+function canvasUndoRestoreIsCurrent(context, snap, direction){
+    const stack = direction === 'backward' ? undoStack : redoStack;
+    return canvas && canvas.id === context.canvasId && undoStackProjectId() === context.projectId
+        && undoHistoryEpoch === context.epoch && pendingUndoSnapshot === context.pending && stack[stack.length - 1] === snap;
 }
 
 // 差量恢复成功后才移动栈。歧义/异常留在原栈，允许用户处理后重试；
 // redo 复用同一 actionDelta，而不是把恢复过程再算成一个新动作。
 async function restoreCanvasUndoDelta(snap, direction){
+    const context = canvasUndoRestoreContext();
     const tools = canvasUndoDeltaTools();
     const apply = () => {
         try {
@@ -169,7 +207,7 @@ async function restoreCanvasUndoDelta(snap, direction){
                 direction, remoteCanvas,
                 mergeValue:window.FireflyProjectCanvasMutations?.mergeCanvasValue
             });
-            if(!result.conflicts?.length) return result;
+            if(!result.conflicts.length) return canvasUndoConversationIntentsAllowed(result.canvas.nodes) ? result : null;
             toast(result.conflicts[0]?.message || tr('smart.toastSaveFail'));
         } catch(err){ toast(err?.message || tr('smart.toastSaveFail')); }
         return null;
@@ -181,8 +219,7 @@ async function restoreCanvasUndoDelta(snap, direction){
         await refreshProjectMediaLibraryItems();
         // A local action (or another undo) may have changed the stack during IO.
         // Leave both entries untouched rather than popping an unrelated action.
-        const stack = direction === 'backward' ? undoStack : redoStack;
-        if(stack[stack.length - 1] !== snap) return;
+        if(!canvasUndoRestoreIsCurrent(context, snap, direction)) return;
         // 拉库期间也可能收到远端实体；基于最新 live 状态重新应用同一操作范围。
         result = apply();
         if(!result) return;
@@ -222,25 +259,28 @@ async function performUndo(){
             await restoreCanvasUndoDelta(next, 'backward');
             return;
         }
-        const snap = undoStack.pop();
+        const snap = next;
         if(snap.projectOriginalDelete){
+            const context = canvasUndoRestoreContext();
             try {
                 await restoreSmartProjectOriginalUndo(snap);
+                if(!canvasUndoRestoreIsCurrent(context, snap, 'backward')) return;
+                undoStack.pop();
                 toast(tr('smart.toastUndone'));
                 scheduleUndoStackPersist();
                 return;
             } catch(err){
-                if(err?.permanentUndoFailure) continue;
-                undoStack.push(snap);
+                if(err.permanentUndoFailure && canvasUndoRestoreIsCurrent(context, snap, 'backward')){
+                    undoStack.pop();
+                    scheduleUndoStackPersist();
+                    continue;
+                }
                 toast(err?.message || tr('smart.toastSaveFail'));
                 return;
             }
         }
-        const reverse = snapshotForUndo();
-        delete reverse.actionDeltaVersion; // 旧条目的反向条目也保持旧快照语义，不隐式迁移。
-        redoStack.push(reverse);
-        if(redoStack.length > UNDO_LIMIT) redoStack.shift();
-        undoSuppressed = true;
+        if(!canvasUndoConversationIntentsAllowed(snap.nodes)) return;
+        const context = canvasUndoRestoreContext();
         // #62 B-5(L2): 兜底过滤——快照里引用的媒体若已被硬删（悬空 asset_id），
         // 服务端 upsert 校验会 400「项目媒体不存在」，画布会进入持续保存失败死锁。
         let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
@@ -248,8 +288,15 @@ async function performUndo(){
             // 内存库可能陈旧（本会话新生产的媒体尚未登记）→ 重新拉取后再验，避免误删存活图片
             restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
         }
-        applyCanvasUndoSnapshot(snap, restoredNodes);
-        undoSuppressed = false;
+        if(!canvasUndoRestoreIsCurrent(context, snap, 'backward') || !canvasUndoConversationIntentsAllowed(restoredNodes.nodes)) return;
+        const reverse = snapshotForUndo();
+        delete reverse.actionDeltaVersion; // 旧条目的反向条目也保持旧快照语义，不隐式迁移。
+        undoStack.pop();
+        redoStack.push(reverse);
+        if(redoStack.length > UNDO_LIMIT) redoStack.shift();
+        undoSuppressed = true;
+        try { applyCanvasUndoSnapshot(snap, restoredNodes); }
+        finally { undoSuppressed = false; }
         toast(tr('smart.toastUndone'));
         syncUndoRedoButtons();
         scheduleUndoStackPersist();
@@ -269,18 +316,21 @@ async function performRedo(){
             await restoreCanvasUndoDelta(next, 'forward');
             return;
         }
-        const snap = redoStack.pop();
-        if(snap.projectOriginalDelete) continue;
-        const reverse = snapshotForUndo();
-        delete reverse.actionDeltaVersion;
-        undoStack.push(reverse);
-        if(undoStack.length > UNDO_LIMIT) undoStack.shift();
-        undoSuppressed = true;
+        const snap = next;
+        if(snap.projectOriginalDelete){ redoStack.pop(); continue; }
+        if(!canvasUndoConversationIntentsAllowed(snap.nodes)) return;
+        const context = canvasUndoRestoreContext();
         // #62 B-5(L2): 同 performUndo——过滤已硬删媒体的悬空引用，避免保存死锁。
         let restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
         if(restoredNodes.dropped > 0 && await refreshProjectMediaLibraryItems()){
             restoredNodes = filterDanglingProjectMediaImages(snap.nodes);
         }
+        if(!canvasUndoRestoreIsCurrent(context, snap, 'forward') || !canvasUndoConversationIntentsAllowed(restoredNodes.nodes)) return;
+        const reverse = snapshotForUndo();
+        delete reverse.actionDeltaVersion;
+        redoStack.pop();
+        undoStack.push(reverse);
+        if(undoStack.length > UNDO_LIMIT) undoStack.shift();
         // #146: 计算重做后丢失的图片（当前有、恢复后无），重新调度归档。
         const currentImages = [];
         canvasState.nodes.forEach(n => currentImages.push(...(n.images || [])));
@@ -293,10 +343,12 @@ async function performRedo(){
             const id = img?.asset_id || '';
             return id && !restoredImageIds.has(id);
         });
-        applyCanvasUndoSnapshot(snap, restoredNodes);
-        // #146: 重做删除后，对丢失的图片重新调度归档。
-        if(lostImages.length) scheduleMediaArchive(lostImages);
-        undoSuppressed = false;
+        undoSuppressed = true;
+        try {
+            applyCanvasUndoSnapshot(snap, restoredNodes);
+            // #146: 重做删除后，对丢失的图片重新调度归档。
+            if(lostImages.length) scheduleMediaArchive(lostImages);
+        } finally { undoSuppressed = false; }
         toast(tr('smart.toastRedone'));
         syncUndoRedoButtons();
         scheduleUndoStackPersist();
@@ -329,13 +381,18 @@ function filterDanglingProjectMediaImages(snapshotNodes, {libraryKnownLoaded=fal
 // 内存媒体库刷新（仅项目媒体列表）：页面加载后新生产的媒体未登记进
 // canvasState.projectMediaLibrary，悬空过滤会把存活媒体误判为悬空而剥离（复制→撤回丢光图片事故）。
 async function refreshProjectMediaLibraryItems(){
-    const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+    // Keep the pre-existing sourceProjectId/canvasId lookup for legacy documents;
+    // the await guard must compare the same scope that selected the GET URL.
+    const currentProjectId = () => canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
+    const projectId = currentProjectId();
     if(!projectId) return false;
+    const activeCanvasId = canvas.id;
+    const stillCurrent = () => canvas && canvas.id === activeCanvasId && currentProjectId() === projectId;
     try {
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/media`);
-        if(!res.ok) return false;
+        if(!stillCurrent() || !res.ok) return false;
         const data = await res.json();
-        if(!Array.isArray(data?.items)) return false;
+        if(!stillCurrent() || !Array.isArray(data?.items)) return false;
         canvasState.projectMediaLibrary = {items: data.items};
         return true;
     } catch { return false; }
@@ -399,6 +456,7 @@ function undoStackProjectId(){
 
 // 防抖自动保存：栈变更后等 UNDO_PERSIST_DELAY_MS 静默窗口发一次 PUT（连串操作合并成一条请求）。
 function scheduleUndoStackPersist(){
+    undoHistoryEpoch += 1;
     const projectId = undoStackProjectId();
     if(!projectId || !canvas) return;
     if(undoPersistTimer) clearTimeout(undoPersistTimer);
@@ -433,11 +491,17 @@ async function persistUndoStackNow(projectId){
 async function restorePersistedUndoStack(){
     const projectId = undoStackProjectId();
     if(!projectId || !canvas) return;
-    if(undoStack.length || redoStack.length) return;
+    if(undoStack.length || redoStack.length || pendingUndoSnapshot) return;
+    const epoch = undoHistoryEpoch;
+    const activeCanvasId = canvas.id;
+    const stillCurrent = () => canvas && canvas.id === activeCanvasId && undoStackProjectId() === projectId
+        && undoHistoryEpoch === epoch && !pendingUndoSnapshot && !undoStack.length && !redoStack.length;
     try {
         const res = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/undo-stack`);
+        if(!stillCurrent()) return;
         if(!res.ok){ syncUndoRedoButtons(); return; }   // 404（无 ops.db）= 首次使用；按钮与空栈对齐
         const data = await res.json();
+        if(!stillCurrent()) return;
         const undoEntries = (data && Array.isArray(data.undo)) ? data.undo : [];
         const redoEntries = (data && Array.isArray(data.redo)) ? data.redo : [];
         undoEntries.forEach(snap => { if(snap && typeof snap === 'object') undoStack.push(snap); });

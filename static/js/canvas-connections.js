@@ -236,6 +236,20 @@ function canAutoConnectDraggedNode(sourceNode, targetNode){
     return false;
 }
 
+// Compare only surviving input targets and the durable incoming edges removed by this action.
+// The projected connections belong to canvas, not to a new field written onto the node.
+function beginConnectionRemovalHumanEdit(removed){
+    const targetIds = new Set(removed.map(conn => conn.to));
+    return canvasCore.beginSmartHumanEdit(canvasState.nodes.filter(node => targetIds.has(node.id)), {
+        fields:['inputNodeIds', 'localEditInputRoles', 'original_asset_id', 'reference_asset_ids',
+            'runInputRefs', 'runPromptRefs', 'sourceNodeId', 'historyFor', 'isHistoryGroup', 'title', 'titleTouched', 'connections'],
+        project:node => {
+            const stored = canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}});
+            return {...stored.nodes[0], connections:stored.connections.filter(conn => conn.to === node.id)};
+        }
+    });
+}
+
 function disconnectConnections(spec){
     if(!canvas || !Array.isArray(canvas.connections)) return;
     const indices = (Array.isArray(spec) ? spec : String(spec).split(','))
@@ -246,6 +260,7 @@ function disconnectConnections(spec){
     const removed = canvas.connections.filter((_, i) => set.has(i));
     if(!removed.length) return;
     pushUndo();
+    const action = beginConnectionRemovalHumanEdit(removed);
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
         const toNode = canvasState.nodes.find(n => n.id === conn.to);
@@ -259,6 +274,7 @@ function disconnectConnections(spec){
             demoteHistoryGroupNode(group);
         }
     });
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     canvasCore.render();
     canvasCore.scheduleSave();
 }
@@ -294,6 +310,7 @@ function finishConnectionErase(){
     const removed = canvas.connections.filter((_, i) => set.has(i));
     if(!removed.length) return false;
     pushUndo();
+    const action = beginConnectionRemovalHumanEdit(removed);
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
     removed.forEach(conn => {
         const toNode = canvasState.nodes.find(n => n.id === conn.to);
@@ -307,6 +324,8 @@ function finishConnectionErase(){
             demoteHistoryGroupNode(group);
         }
     });
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+    connectionEraseState.indices.clear();
     canvasCore.render();
     return true;
 }

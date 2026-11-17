@@ -47,6 +47,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
+import { declarations } from './smart-human-handlers-harness-392.mjs';
 
 // 加载真实底层模块 + 被测模块（按 HTML 相对顺序，harness 会排序）：
 // canvas-node-types.js → canvas-core.js → canvas-state.js → canvas-connections.js。
@@ -158,13 +159,19 @@ function loadConnectionsModule({ nodes = [], connections = [], selectedId = '', 
     };
 
     loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-state.js', 'canvas-connections.js']);
+    // #392: actual serializer/media projection; ownership helpers remain the real core functions.
+    evaluate(ctx, declarations('smart-canvas.js').split(/(?=^(?:async )?function )/m)
+        .filter(source => /^(?:async )?function (?:canvasForStorage|isProjectCanvasData)\(/.test(source)).join('\n'));
+    evaluate(ctx, declarations('canvas-media-history.js').split(/(?=^(?:async )?function )/m)
+        .filter(source => /^(?:async )?function (?:mediaItemForStorage|mediaReferencesForStorage)\(/.test(source)).join('\n'));
+    ctx.SMART_LOG_PREVIEW_NODE_ID = '__preview__';
 
     // 运行期状态：canvas 是 canvas-core.js 的词法 let 绑定（不是全局对象属性），必须用
     // evaluate 赋值；canvasState 是 window.canvasState 对象，宿主侧直接改属性即可。
     ctx.canvasState.nodes = nodes;
     ctx.canvasState.selectedId = selectedId;
     ctx.canvasState.selectedIds = selectedIds;
-    ctx.__canvasPayload = { id: 'cv', nodes, connections };
+    ctx.__canvasPayload = { id: 'cv', format:'firefly-canvas-v1', nodes, connections };
     evaluate(ctx, 'canvas = __canvasPayload');
     return { ctx, harness, calls };
 }
@@ -747,9 +754,12 @@ test('eraseConnectionsAtClientPoint + finishConnectionErase: accumulate marks, t
     assert.equal(fromContext(evaluate(ctx, 'canvas.connections.length')), 1, '索引 0 的线被删');
     assert.deepEqual(nodesInputIds(ctx, 'B'), [], '目标节点 inputNodeIds 清理');
     assert.deepEqual(calls, ['pushUndo', 'clearDetachedRunInputRefs:B', 'render'], 'finish 的副作用（无 scheduleSave）');
-    // finish 本身不清空 indices 集合（宿主负责重置状态）：再 finish 会删当前索引 0 的线（A→C）。
-    assert.equal(finish(), true, '索引集合未清空 → 第二次 finish 删新的索引 0');
-    assert.equal(fromContext(evaluate(ctx, 'canvas.connections.length')), 0, 'A→C 也被删');
+    // #392: a committed gesture consumes its marks; repeating finish must not erase the next edge.
+    assert.equal(finish(), false, '同一笔擦除只提交一次');
+    assert.equal(fromContext(evaluate(ctx, 'canvas.connections.length')), 1, 'A→C 不属于已提交的笔画，保留');
+    evaluate(ctx, 'connectionEraseState = { indices: new Set([0]), started: true, count: 1 }');
+    assert.equal(finish(), true, '新笔画可以擦除剩余边');
+    assert.equal(fromContext(evaluate(ctx, 'canvas.connections.length')), 0, '新笔画删除 A→C');
     evaluate(ctx, 'connectionEraseState.indices.clear()');
     assert.equal(finish(), false, '索引集合清空后 → false');
 });

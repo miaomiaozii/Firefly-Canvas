@@ -340,7 +340,8 @@ test('stripOutpaintDisplaySettings: customSize 匹配重置 1k + w/h→1024 + ms
 
 test('applyOutpaintSizeToSmartParams: isSmartImageNode 门 + 白名单/桩双路 + 真实 clone 隔离 + activeSettingsSubject 写回', () => {
     const { ctx, D, calls } = loadImageEditorModule();
-    const f = globalFunction(ctx, 'applyOutpaintSizeToSmartParams');
+    const apply = globalFunction(ctx, 'applyOutpaintSizeToSmartParams');
+    const f = (width, height) => apply(width, height, D.currentEdit.node, evaluate(ctx, 'outpaintAspectPreset'), evaluate(ctx, 'settings'));
     evaluate(ctx, "outpaintAspectPreset = '4:3'");
     D.apiLike = false;
 

@@ -31,7 +31,7 @@ function nextOutputPositionForSource(sourceNode, pendingBox, options={}){
 function createPendingOutputFromSource(sourceNode, expectedCount, meta, options={}){
     const pendingBox = pendingBoxSize(expectedCount, {sourceNode, refs:options.refs || meta?.promptRefs || []});
     const pos = nextOutputPositionForSource(sourceNode, pendingBox);
-    const output = {
+    const output = canvasCore.smartNewNodeOwnership({
         id:uid('smart'),
         type:NODE_TYPE_IMAGE,
         x:pos.x,
@@ -44,9 +44,8 @@ function createPendingOutputFromSource(sourceNode, expectedCount, meta, options=
         runTimerHidden:false,
         w:pendingBox.w,
         h:pendingBox.h,
-        scale:canvasCore.MEDIA_NODE_DEFAULT_SCALE,
-        created_at:Date.now()
-    };
+        scale:canvasCore.MEDIA_NODE_DEFAULT_SCALE
+    });
     output._selectAfterRunId = options.selectOutput ? output.id : sourceNode.id;
     canvasState.nodes.push(output);
     if(options.connectSource === false) addConnection(sourceNode.id, output.id, 'flow');
@@ -92,7 +91,7 @@ function tagLoopOutputSlot(output, rootNode, loopNode, roundIndex, slotIndex){
 
 function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
     const rootRect = canvasCore.nodeRect(rootNode);
-    const output = cloneSmartNode(rootNode, 0, 0);
+    const output = canvasCore.smartNewNodeOwnership(cloneSmartNode(rootNode, 0, 0));
     output.id = uid('smart');
     output.type = NODE_TYPE_IMAGE;
     output.x = (Number(rootNode.x) || 0) + (Number(rootRect.width) || 260) + 80;
@@ -105,7 +104,6 @@ function createLoopOutputSlot(rootNode, roundIndex, roundOffset=0, options={}){
         output.runStartedAt = nowMs();
         output.runTimerHidden = false;
     }
-    output.created_at = Date.now();
     delete output.w;
     delete output.h;
     delete output.historyFor;
@@ -819,10 +817,8 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 const previousHistorySnapshot = previousHistory ? JSON.parse(JSON.stringify(previousHistory)) : null;
                 const history = ensureHistoryGroupForNode(outputSlot);
                 archiveRollback = {
-                    outputNodeId:outputSlot.id,
-                    outputImages:JSON.parse(JSON.stringify(outputSlot.images || [])),
-                    historyNodeId:history.id,
-                    previousHistory:previousHistorySnapshot
+                    projectId:canvasId,
+                    outputImages:JSON.parse(JSON.stringify(outputSlot.images))
                 };
                 history.images = cleanHistoryImages([...existing, ...(history.images || [])]);
                 history.title = tr('smart.historyGroupTitle');
@@ -831,8 +827,11 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 delete history.w;
                 delete history.h;
                 outputSlot.images = [];
-                archiveRollback.archivedOutputImages = JSON.parse(JSON.stringify(outputSlot.images));
                 archiveRollback.archivedHistory = JSON.parse(JSON.stringify(history));
+                archiveRollback.delta = canvasCore.smartCanvasActionDelta({nodes:[
+                    {id:outputSlot.id, images:archiveRollback.outputImages},
+                    ...(previousHistorySnapshot ? [previousHistorySnapshot] : [])
+                ]}, {nodes:[{id:outputSlot.id, images:[]}, history]});
                 archiveRollback.archivedHistoryConnections = JSON.parse(JSON.stringify(
                     (canvas.connections || []).filter(connection =>
                         connection.from === history.id || connection.to === history.id
@@ -844,54 +843,54 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 taskResult = await runApiGeneration(prompt, request.refs || [], runSettings, outputSlot);
                 if(!Array.isArray(taskResult?.taskIds) || !taskResult.taskIds.length) throw new Error(tr('smart.errRunFailed'));
             } catch(submitError) {
-                const restoreArchive = (conditional=false) => {
-                    if(!archiveRollback) return;
-                    const liveOutput = canvasState.nodes.find(item => item.id === archiveRollback.outputNodeId);
-                    if(liveOutput && (
-                        !conditional
-                        || JSON.stringify(liveOutput.images || []) === JSON.stringify(archiveRollback.archivedOutputImages || [])
-                    )) liveOutput.images = JSON.parse(JSON.stringify(archiveRollback.outputImages));
-                    const historyIndex = canvasState.nodes.findIndex(item => item.id === archiveRollback.historyNodeId);
-                    if(archiveRollback.previousHistory){
-                        if(historyIndex >= 0 && conditional){
-                            const currentHistory = canvasState.nodes[historyIndex];
-                            if(JSON.stringify(currentHistory.images || []) === JSON.stringify(archiveRollback.archivedHistory?.images || [])){
-                                currentHistory.images = JSON.parse(JSON.stringify(archiveRollback.previousHistory.images || []));
-                            }
-                        } else {
-                            const restoredHistory = JSON.parse(JSON.stringify(archiveRollback.previousHistory));
-                            if(historyIndex >= 0) canvasState.nodes[historyIndex] = restoredHistory;
-                            else canvasState.nodes.push(restoredHistory);
+                const restoreArchive = () => {
+                    if(!archiveRollback) return true;
+                    if(canvasId !== archiveRollback.projectId){
+                        toast('生成回退目标项目已变化，请回到原项目检查结果。');
+                        return false;
+                    }
+                    // Compensate only the automatic archive delta. Concurrent
+                    // metadata is never replaced with a pre-await node snapshot.
+                    const changes = archiveRollback.delta.changes.flatMap(change => {
+                        const live = canvasState.nodes.find(item => item.id === change.path[1].id);
+                        if(!live) return []; // A concurrent deletion wins over automatic compensation.
+                        if(change.path.length === 2){
+                            const connections = canvas.connections.filter(connection =>
+                                connection.from === live.id || connection.to === live.id);
+                            const snapshot = items => items.map(item => JSON.stringify(item)).sort();
+                            if(canvasCore.smartCanvasDataEqual(live, change.after)
+                                && canvasCore.smartCanvasDataEqual(snapshot(connections), snapshot(archiveRollback.archivedHistoryConnections))) return [change];
+                            // A new pool adopted by another action must survive;
+                            // reverse its archived images through the same collection merger.
+                            return [{path:['nodes', {id:live.id}, 'images'], beforePresent:true, before:[],
+                                afterPresent:true, after:archiveRollback.archivedHistory.images}];
                         }
-                    } else {
-                        const exactArchivedHistory = historyIndex >= 0
-                            && JSON.stringify(canvasState.nodes[historyIndex]) === JSON.stringify(archiveRollback.archivedHistory);
-                        const currentHistoryConnections = (canvas.connections || []).filter(connection =>
-                            connection.from === archiveRollback.historyNodeId || connection.to === archiveRollback.historyNodeId
-                        );
-                        const connectionSnapshot = connections => (connections || [])
-                            .map(connection => JSON.stringify(connection)).sort();
-                        const exactArchivedConnections = JSON.stringify(connectionSnapshot(currentHistoryConnections))
-                            === JSON.stringify(connectionSnapshot(archiveRollback.archivedHistoryConnections));
-                        if(historyIndex >= 0 && (!conditional || (exactArchivedHistory && exactArchivedConnections))){
-                            canvasState.nodes.splice(historyIndex, 1);
-                            canvas.connections = (canvas.connections || []).filter(connection =>
-                                connection.from !== archiveRollback.historyNodeId && connection.to !== archiveRollback.historyNodeId
-                            );
-                        } else if(historyIndex >= 0 && conditional){
-                            const currentHistory = canvasState.nodes[historyIndex];
-                            if(JSON.stringify(currentHistory.images || []) === JSON.stringify(archiveRollback.archivedHistory?.images || [])){
-                                currentHistory.images = [];
-                            }
+                        const key = change.path[2];
+                        return Array.isArray(change.after) || Array.isArray(change.before)
+                            || canvasCore.smartCanvasDataEqual(live[key], change.after) ? [change] : [];
+                    });
+                    const restored = canvasCore.applySmartCanvasDelta({nodes:canvasState.nodes}, {version:1, changes}, {
+                        direction:'backward', mergeValue:window.FireflyProjectCanvasMutations.mergeCanvasValue
+                    });
+                    if(restored.conflicts.length) toast(restored.conflicts[0].message);
+                    for(const id of new Set(changes.map(change => change.path[1].id))){
+                        const index = canvasState.nodes.findIndex(item => item.id === id);
+                        const next = restored.canvas.nodes.find(item => item.id === id);
+                        if(!next){ canvasState.nodes.splice(index, 1); continue; }
+                        const live = canvasState.nodes[index];
+                        for(const key of new Set(changes.filter(change => change.path[1].id === id && change.path.length > 2).map(change => change.path[2]))){
+                            if(Object.prototype.hasOwnProperty.call(next, key)) live[key] = next[key];
+                            else delete live[key];
                         }
                     }
+                    return true;
                 };
-                restoreArchive();
+                if(!restoreArchive()) throw submitError;
                 canvasCore.render();
                 if(canvas?.format === 'firefly-canvas-v1'){
                     const restored = await saveCanvas();
                     if(restored === false){
-                        restoreArchive(true);
+                        if(!restoreArchive()) throw submitError;
                         canvasCore.render();
                         await saveCanvas();
                     }

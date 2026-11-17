@@ -1913,17 +1913,16 @@ async function uploadCroppedBlob(blob, name){
     return data.files?.[0] || null;
 }
 
-function applyOutpaintSizeToSmartParams(width, height){
+function applyOutpaintSizeToSmartParams(width, height, subject, aspectPreset, defaultSettings){
     const w = Math.max(1, Math.round(Number(width) || 0));
     const h = Math.max(1, Math.round(Number(height) || 0));
     if(!w || !h) return;
-    const subject = currentEditImage().node;
     if(!subject || !isSmartImageNode(subject)) return;
-    const outpaintAspectRatio = /^\d+\s*:\s*\d+$/.test(outpaintAspectPreset)
-        ? outpaintAspectPreset.replace(/\s/g, '')
+    const outpaintAspectRatio = /^\d+\s*:\s*\d+$/.test(aspectPreset)
+        ? aspectPreset.replace(/\s/g, '')
         : canvasCore.reducedAspectRatio(w, h);
     subject.outpaintSize = {width:w, height:h, aspectRatio:outpaintAspectRatio};
-    subject.runSettings = withOutpaintDisplaySettings(subject, cloneSmartSettings(subject.runSettings || settings));
+    subject.runSettings = withOutpaintDisplaySettings(subject, cloneSmartSettings(subject.runSettings || defaultSettings));
     if(activeSettingsSubject()?.id === subject.id){
         settings = canvasCore.smartSettingsForNode(subject);
         renderDynamicParams();
@@ -1939,13 +1938,14 @@ async function applyImageCrop(){
     const target = editScaleRectToNatural(cropState, img);
     const sx = Math.max(0, Math.round(target.x)), sy = Math.max(0, Math.round(target.y));
     const sw = Math.max(1, Math.round(target.w)), sh = Math.max(1, Math.round(target.h));
+    const editTarget = captureImageEditTarget();
     const canvasEl = document.createElement('canvas');
     canvasEl.width = sw; canvasEl.height = sh;
     canvasEl.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = (image.name || 'image').replace(/\.[^.]+$/, '');
     const file = blob ? await uploadCroppedBlob(blob, `${base}_crop.png`) : null;
-    if(file && replaceEditedImage(file)){ closeImageEditor(); canvasCore.render(); canvasCore.scheduleSave(); }
+    if(file && replaceEditedImage(editTarget, file)) finishImageEdit(editTarget);
 }
 
 async function applyImageOutpaint(){
@@ -1960,6 +1960,10 @@ async function applyImageOutpaint(){
     const outH = Math.max(img.naturalHeight, Math.round(target.h));
     const dx = Math.round(target.x);
     const dy = Math.round(target.y);
+    const editTarget = captureImageEditTarget();
+    const aspectPreset = outpaintAspectPreset;
+    const defaultSettings = cloneSmartSettings(node.runSettings || settings);
+    const draftBefore = [node.promptDraftHtml, node.promptDraftText, node.promptDraftTouched];
     const canvasEl = document.createElement('canvas');
     canvasEl.width = outW; canvasEl.height = outH;
     const ctx = canvasEl.getContext('2d');
@@ -1977,19 +1981,29 @@ async function applyImageOutpaint(){
     // 把扩图底图（红底+原图合成图）归档为项目媒体，拿到 asset_id。
     // 保存时节点媒体若只有原始 URL 而没有 asset_id，后端会报"项目节点只能引用项目媒体资源ID"。
     // 保留 file.url 用于即时显示，asset_id 用于持久化（存储时 mediaItemForStorage 会去掉 url）。
-    const owned = await importProjectMediaReference(file).catch(() => null);
-    const assetId = owned?.asset_id || '';
+    if(!liveImageEditTarget(editTarget)) return;
+    let owned;
+    try {
+        owned = await importProjectMediaReference(file);
+    } catch(error) {
+        toast(error.message);
+        return;
+    }
+    const assetId = owned.asset_id;
     // 传递合成图的自然尺寸，让预览能正确显示扩图后的比例
     const extra = {natural_w:outW, natural_h:outH};
     if(assetId) extra.asset_id = assetId;
-    if(replaceEditedImage(file, extra)){
-        // 生图时 buildPromptRequest 会把 node.images[0]（合成图）作为参考图发给模型。
-        applyOutpaintSizeToSmartParams(outW, outH);
-        setPromptDraftForNode(node, 'Remove red area and fill the scene');
-        canvasCore.promptInput.dataset.preserveDraftOnce = '1';
-        closeImageEditor();
-        canvasCore.render();
-        canvasCore.scheduleSave();
+    if(replaceEditedImage(editTarget, file, extra)){
+        const live = canvasState.nodes.find(item => item.id === editTarget.nodeId);
+        // The suggestion is automatic, not a human prompt edit. Do not replace
+        // a draft edited while the upload was pending, or set P.
+        applyOutpaintSizeToSmartParams(outW, outH, live, aspectPreset, defaultSettings);
+        if(JSON.stringify([live.promptDraftHtml, live.promptDraftText, live.promptDraftTouched]) === JSON.stringify(draftBefore)){
+            setPromptDraftForNode(live, 'Remove red area and fill the scene');
+            const subject = activeSettingsSubject();
+            if(subject && subject.id === live.id) canvasCore.promptInput.dataset.preserveDraftOnce = '1';
+        }
+        finishImageEdit(editTarget);
     }
 }
 
@@ -1997,14 +2011,23 @@ async function applyImageMask(){
     if(!cropState || !editCanvasHasPixels()) return;
     const {node, image} = currentEditImage();
     if(!node || !image) return;
+    const editTarget = captureImageEditTarget();
     const mask = maskCanvasFromDrawCanvas(editDrawCanvas());
     const blob = await new Promise(resolve => mask.toBlob(resolve, 'image/png'));
     const base = (image.name || 'image').replace(/\.[^.]+$/, '');
     const file = blob ? await uploadCroppedBlob(blob, `${base}_mask.png`) : null;
     if(file){
-        node.images.push({url:file.url, name:file.name, role:'mask'});
-        canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index:node.images.length - 1};
-        closeImageEditor(); canvasCore.render(); canvasCore.scheduleSave();
+        const live = liveImageEditTarget(editTarget);
+        if(!live) return;
+        const action = beginMediaHumanEdit([live.node], ['images']);
+        pushUndo();
+        live.node.images.push({url:file.url, name:file.name, role:'mask'});
+        canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+        if(cropState === editTarget.editor){
+            canvasState.selectedId = live.node.id;
+            canvasState.selectedImage = {nodeId:live.node.id, index:live.node.images.length - 1};
+        }
+        finishImageEdit(editTarget);
     }
 }
 
@@ -2037,12 +2060,13 @@ async function applyImageBrush(){
     if(!node || !image || !img.naturalWidth || !img.naturalHeight) return;
     const canvasEl = document.createElement('canvas');
     canvasEl.width = img.naturalWidth; canvasEl.height = img.naturalHeight;
+    const editTarget = captureImageEditTarget();
     const ctx = canvasEl.getContext('2d');
     ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height); ctx.drawImage(editDrawCanvas(), 0, 0); ctx.drawImage(editTextCanvas(), 0, 0);
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = (image.name || 'image').replace(/\.[^.]+$/, '');
     const file = blob ? await uploadCroppedBlob(blob, `${base}_paint.png`) : null;
-    if(file && replaceEditedImage(file)){ closeImageEditor(); canvasCore.render(); canvasCore.scheduleSave(); }
+    if(file && replaceEditedImage(editTarget, file)) finishImageEdit(editTarget);
 }
 
 async function applyImageGridSplit(){
@@ -2055,37 +2079,48 @@ async function applyImageGridSplit(){
     if(!rects.length) return;
     const base = safeExportFileName((downloadNameForMediaItem(image, 'image') || 'image').replace(/\.[^.]+$/, ''), 'image');
     const digits = String(rects.length).length;
-    const blobs = [];
-    for(let i = 0; i < rects.length; i++){
-        const rect = rects[i];
+    const editTarget = captureImageEditTarget();
+    // Snapshot all source pixels before yielding: the shared editor <img> may
+    // navigate while toBlob/upload is pending.
+    const blobs = await Promise.all(rects.map(async (rect, i) => {
         const canvasEl = document.createElement('canvas');
         canvasEl.width = rect.w; canvasEl.height = rect.h;
         canvasEl.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
         const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
         const order = String(i + 1).padStart(digits, '0');
-        if(blob) blobs.push({blob, name:`${base}_${order}_r${rect.row + 1}_c${rect.col + 1}.png`});
+        return {blob, name:`${base}_${order}_r${rect.row + 1}_c${rect.col + 1}.png`};
+    }));
+    // Canvas.toBlob explicitly returns null when encoding fails. Do not drop
+    // that tile and silently upload a partial grid with shifted cell indexes.
+    if(blobs.some(item => item.blob === null)){
+        toast('图片编码失败，未切分。');
+        return;
     }
     const files = await uploadImageBlobs(blobs);
     if(files.length){
+        const live = liveImageEditTarget(editTarget);
+        if(!live) return;
+        const source = live.node;
         const layout = gridLayoutFromRects(rects);
-        const outputNode = createNode((node.x || 0) + canvasCore.imageLayout(node.images || [], nodeScale(node), node).width + 40, node.y || 0, files.map((file, i) => ({
+        const outputNode = createNode((source.x || 0) + canvasCore.imageLayout(source.images, nodeScale(source), source).width + 40, source.y || 0, files.map((file, i) => ({
             url:file.url,
             name:file.name,
             grid:{...layout, row:rects[i]?.row || 0, col:rects[i]?.col || 0, w:rects[i]?.w || 1, h:rects[i]?.h || 1}
         })));
         outputNode.title = 'Grid';
-        closeImageEditor(); canvasCore.render(); canvasCore.scheduleSave();
+        finishImageEdit(editTarget);
     }
 }
 
 function loadGridJoinImage(entry){
-    const cached = gridJoinImageCache.get(entry.index);
+    const cache = gridJoinImageCache;
+    const cached = cache.get(entry.index);
     if(cached?.complete && cached.naturalWidth) return Promise.resolve(cached);
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
-            gridJoinImageCache.set(entry.index, img);
+            cache.set(entry.index, img);
             resolve(img);
         };
         img.onerror = () => {
@@ -2111,6 +2146,11 @@ async function applyImageGridJoin(){
     if(!node || items.length <= 1){ toast(tr('smart.gridJoinNeedsGroup')); return; }
     const layout = ensureGridJoinLayout();
     if(!layout?.items?.length) return;
+    const editTarget = captureImageEditTarget();
+    const sources = items.map(entry => {
+        const owner = canvasState.nodes.find(item => Array.isArray(item.images) && item.images.includes(entry.source));
+        return imageEditTarget(owner, owner.images.indexOf(entry.source));
+    });
     const size = gridJoinCanvasSize(layout);
     const targetLong = Math.max(256, Number(gridJoinOutputSize) || 2048);
     const outputScale = Math.max(1, targetLong / Math.max(1, Math.max(size.w, size.h)));
@@ -2120,29 +2160,27 @@ async function applyImageGridJoin(){
     const ctx = canvasEl.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-    const byIndex = new Map(items.map(entry => [entry.index, entry]));
+    const loaded = new Map(await Promise.all(items.map(async entry => [entry.index, await loadGridJoinImage(entry)])));
     for(const item of layout.items || []){
-        const entry = byIndex.get(item.index);
-        if(!entry) continue;
-        const img = await loadGridJoinImage(entry);
+        const img = loaded.get(item.index);
         drawImageCover(ctx, img, Math.round(item.x * outputScale), Math.round(item.y * outputScale), Math.round(item.w * outputScale), Math.round(item.h * outputScale));
     }
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = safeExportFileName((downloadNameForMediaItem(image || items[0]?.item, 'image') || 'image').replace(/\.[^.]+$/, ''), 'image');
     const file = blob ? await uploadCroppedBlob(blob, `${base}_join.png`) : null;
     if(file){
-        const rect = canvasCore.nodeRect(node);
+        const live = liveImageEditTarget(editTarget);
+        if(!live || sources.some(source => !liveImageEditTarget(source))) return;
+        const rect = canvasCore.nodeRect(live.node);
         const outputNode = createImageNodeAt({x:rect.x + rect.width + 240, y:rect.y + rect.height / 2}, [{
             url:file.url,
             name:file.name,
             kind:'image',
             natural_w:canvasEl.width,
             natural_h:canvasEl.height
-        }], {select:true, skipUndo:true});
+        }], {select:true});
         outputNode.title = 'Grid Join';
-        closeImageEditor();
-        canvasCore.render();
-        canvasCore.scheduleSave();
+        finishImageEdit(editTarget);
         toast(tr('smart.gridJoinOutputDone'));
     }
 }
@@ -2151,6 +2189,7 @@ async function applyImageResize(){
     if(!cropState) return;
     const {node, image} = currentEditImage();
     if(!node || !image) return;
+    const editTarget = captureImageEditTarget();
     let resized = null;
     try {
         resized = await resizedImageBlobFromEditor();
@@ -2163,12 +2202,10 @@ async function applyImageResize(){
     const suffix = `${Math.round(resized.scale * 100)}pct`;
     const file = await uploadCroppedBlob(resized.blob, `${base}_resize_${suffix}.png`);
     if(!file) return;
-    if(!replaceEditedImage(file, {kind:'image', role:image.role || '', natural_w:resized.targetW, natural_h:resized.targetH})){
+    if(!replaceEditedImage(editTarget, file, {kind:'image', role:image.role || '', natural_w:resized.targetW, natural_h:resized.targetH})){
         return;
     }
-    closeImageEditor();
-    canvasCore.render();
-    canvasCore.scheduleSave();
+    finishImageEdit(editTarget);
 }
 
 function applyImageEdit(){
@@ -2292,9 +2329,37 @@ function updatePreviewNavButtons(){
     document.getElementById('previewPrevBtn')?.classList.toggle('visible', show);
     document.getElementById('previewNextBtn')?.classList.toggle('visible', show);
 }
-function replaceEditedImage(file, extra={}){
+function imageEditTarget(node, index){
+    return {projectId:canvasId, nodeId:node.id, createdAt:node.created_at,
+        image:JSON.parse(JSON.stringify(node.images[index])), editor:cropState};
+}
+function captureImageEditTarget(){
     const {node, index} = currentEditImage();
-    if(!node || !file) return false;
+    return imageEditTarget(node, index);
+}
+function liveImageEditTarget(target){
+    const node = canvasState.nodes.find(item => item.id === target.nodeId);
+    // The upload boundary may outlive navigation, deletion, replacement or a
+    // project switch. Match media identity, not the editor's current selection.
+    const matches = node && Array.isArray(node.images) && canvasId === target.projectId && node.created_at === target.createdAt
+        ? node.images.map((image, index) => ({image, index})).filter(({image}) => image
+            && ['output_id', 'id', 'asset_id', 'url'].every(key => image[key] === target.image[key])) : [];
+    if(matches.length !== 1){
+        toast('图片编辑目标已变化，请重新打开图片后再试。');
+        return null;
+    }
+    return {node, index:matches[0].index};
+}
+function finishImageEdit(target){
+    finalizePendingCanvasUndo();
+    if(cropState === target.editor) closeImageEditor();
+    canvasCore.render();
+    canvasCore.scheduleSave();
+}
+function replaceEditedImage(target, file, extra={}){
+    const live = liveImageEditTarget(target);
+    if(!live) return false;
+    const {node, index} = live;
     // #205：星标（marked）按具体图片资源记录（#89 规格）。裁剪/笔刷/扩图/调整尺寸把当前图
     // 替换成一张全新的上传图（另一个资源）——asset_id 只取调用方显式绑定的新 asset
     // （extra.asset_id / file.asset_id），不得回退旧图的 asset_id，否则旧 asset 的星标
@@ -2305,12 +2370,18 @@ function replaceEditedImage(file, extra={}){
     const next = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || canvasCore.mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
     // 新图是新资源，不得继承旧图的星标（旧 asset 的星标仍在 canvas.markedAssetIds）。
     delete next.marked;
+    const action = beginMediaHumanEdit([node], ['images', 'curated', 'w', 'h']);
+    pushUndo();
     node.images[index] = next;
     if((node.images || []).length === 1){ delete node.w; delete node.h; }
-    canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index};
+    if(cropState === target.editor){
+        canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index};
+    }
     // 旧图若是节点上唯一星标图，节点 curated（收集/导出的「保留」信号）需随真实星标重同步。
-    syncCuratedFromMarks();
-    return true;
+    syncNodeCuratedFromMarks(node);
+    const changed = canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+    if(!changed) finalizePendingCanvasUndo();
+    return changed;
 }
 function drawImageCover(ctx, img, dx, dy, dw, dh){
     const sw = Math.max(1, Number(img?.naturalWidth || img?.videoWidth || img?.width || 1));
