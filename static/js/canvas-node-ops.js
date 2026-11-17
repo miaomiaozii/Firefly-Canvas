@@ -154,6 +154,8 @@ function createSmartGroupNode(x, y, options={}){
     const node = {...ownership, id:uid('group'), type:NODE_TYPE_GROUP, x, y, w:SMART_GROUP_DEFAULT_WIDTH, h:SMART_GROUP_DEFAULT_HEIGHT, title:'智能分组', items:[]};
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
+    // Caller-owned creation initialization, before the first render/save seal.
+    if(typeof options.initialize === 'function') options.initialize(node);
     canvasCore.render();
     canvasCore.scheduleSave();
     return node;

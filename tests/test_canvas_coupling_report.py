@@ -18,6 +18,7 @@ import unittest
 
 from tests.test_canvas_core_layer import REVERSE_REFERENCE_CEILINGS
 from tools.canvas_coupling_report import (
+    CATEGORY_BY_NAME,
     count_interface_references,
     count_references,
     coupling,
@@ -149,6 +150,18 @@ class CanvasCouplingReportTests(unittest.TestCase):
             {},
         )
 
+
+    def test_storage_projection_service_is_classified_without_filtering_references(self):
+        self.assertEqual(CATEGORY_BY_NAME.get("canvasForStorage"), "hub")
+        references = count_references(
+            "typeof canvasCore.canvasForStorage; canvasCore.canvasForStorage()",
+            {"canvasForStorage"},
+            set(),
+        )
+        self.assertEqual(references["canvasForStorage"], 2)
+        report = summarize({"canvas-agent-tui.js": dict(references)})
+        self.assertEqual(report["grand_total"], 2)
+        self.assertEqual(report["per_category"]["hub"], 2)
 
     def test_reverse_rows_expose_ownership_classification_without_filtering_counts(self):
         rev = _cached_reverse()

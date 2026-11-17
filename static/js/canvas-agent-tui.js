@@ -1821,6 +1821,7 @@ function bindAgentNodeControls(el, node){
             if (state0.pendingDock !== undefined) {
                 const request = state0.pendingDock;
                 state0.pendingDock = undefined;
+                prepareAgentDockContinuation(request);
                 agentDockSet(request.nodeId, request.dockSide);
             }
         });
@@ -2227,23 +2228,35 @@ function bindAgentDockDragOut(el, nodeId){
                 el.style.top = (ev.clientY - grabDY) + 'px';
             }
         };
-        const onUp = ev => {
+        const cleanup = () => {
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
-            if(!dragging) return;
+            window.removeEventListener('pointercancel', onCancel);
+            window.removeEventListener('blur', onCancel);
             el.classList.remove('drag-out');
             el.style.left = ''; el.style.top = '';
+        };
+        const onCancel = () => { cleanup(); dragging = false; };
+        const onUp = ev => {
+            cleanup();
+            if(!dragging || Math.hypot(ev.clientX - startX, ev.clientY - startY) <= 6) return;
             const node = canvasState.nodes.find(n => n.id === nodeId);
             const worldEl = document.getElementById('world');
             const inWorld = worldEl && worldEl.getBoundingClientRect()
                 && ev.clientX >= worldEl.getBoundingClientRect().left && ev.clientX <= worldEl.getBoundingClientRect().right
                 && ev.clientY >= worldEl.getBoundingClientRect().top && ev.clientY <= worldEl.getBoundingClientRect().bottom;
-            if(node && inWorld){
+            if(isSmartAgentNode(node) && inWorld){
                 const p = screenToWorld(ev);
-                node.x = Math.round(p.x - 20);
-                node.y = Math.round(p.y - 20);
+                const x = Math.round(p.x - 20), y = Math.round(p.y - 20);
+                if(!agentDockState(node) && node.x === x && node.y === y) return;
+                const action = beginAgentCanvasHumanEdit([node], ['dock', 'x', 'y'], 'user');
+                if(action) canvasCore.pushUndo();
+                agentDockHumanIntentVersion++;
+                node.x = x;
+                node.y = y;
                 node.dock = null;
                 agentDockForget(nodeId);
+                finishAgentCanvasHumanEdit(action);
                 scheduleSave && scheduleSave();
                 render(); // 全量重建：world 里重新出节点，syncAgentDock 卸载停靠元素
             } else {
@@ -2252,29 +2265,55 @@ function bindAgentDockDragOut(el, nodeId){
         };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
+        window.addEventListener('pointercancel', onCancel);
+        window.addEventListener('blur', onCancel);
     });
+}
+
+// IME carries explicit intent, never a field snapshot or an action timestamp.
+// A newer manual request (including a no-op) cancels older queued intentions.
+const agentDockHumanIntents = new WeakMap();
+let agentDockHumanIntentVersion = 0;
+let agentDockContinuation = null;
+function prepareAgentDockContinuation(request){
+    agentDockContinuation = {request, intent:agentDockHumanIntents.get(request)};
+    agentDockHumanIntents.delete(request);
 }
 
 // 设置停靠侧（null=按钮取回原坐标）。最多一个 Agent 停靠；替换不改任何 x/y。
 // #314：目标或被取回者正在 IME 组合时，整次切换延后到阻塞者 compositionend。
-function agentDockSet(nodeId, dockSide){
+function agentDockSet(nodeId, dockSide, {actor=null}={}){
+    // Consume before validation/no-op exits so no actor can reach a later call.
+    const continuation = agentDockContinuation;
+    agentDockContinuation = null;
+    const intent = actor === 'user'
+        ? {version:++agentDockHumanIntentVersion, projectId:agentProjectId()}
+        : continuation?.request.nodeId === nodeId && continuation.request.dockSide === dockSide ? continuation.intent : null;
+    if(intent && (intent.version !== agentDockHumanIntentVersion || intent.projectId !== agentProjectId())) return;
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!isSmartAgentNode(node)) return;
     const side = (dockSide === 'left' || dockSide === 'right') ? dockSide : null;
     const displaced = side ? canvasState.nodes.filter(n => n !== node && isSmartAgentNode(n) && agentDockState(n)) : [];
     const affected = [node, ...displaced];
+    const changed = affected.filter(n => agentDockState(n) !== (n === node ? side : null));
+    if(!changed.length) return; // no absent→null normalization or same-side history
     const blocker = affected.find(n => agentTuiState.get(n.id)?.composing);
     if(blocker){
-        agentTuiState.get(blocker.id).pendingDock = {nodeId, dockSide:side};
+        const request = {nodeId, dockSide:side};
+        agentTuiState.get(blocker.id).pendingDock = request;
+        if(intent) agentDockHumanIntents.set(request, intent);
         return;
     }
+    const action = beginAgentCanvasHumanEdit(changed, ['dock'], intent ? 'user' : null);
+    if(action) canvasCore.pushUndo();
     const focus = affected.map(n => ({nodeId:n.id, info:agentDockCaptureFocus(n.id)})).find(item => item.info);
     displaced.forEach(n => {
         n.dock = null;
         agentDockForget(n.id);
     });
-    node.dock = side;
+    if(changed.includes(node)) node.dock = side;
     if(!side) agentDockForget(nodeId);
+    finishAgentCanvasHumanEdit(action);
     if(typeof scheduleSave === 'function') scheduleSave();
     render(); // world 重建 + 尾部 syncAgentDock；收起态仅在同步入口按视口判断
     if(focus) agentDockRestoreFocus(focus.nodeId, focus.info);
@@ -2427,7 +2466,23 @@ function agentRefFrameAssetCount(group){
 // 非纯图标）——无框时在 agent 右侧（宽 + 40 偏移）创建 smart-group，
 // group.title = (agent.title||'会话') + ' · 会话框'（监理钉B1：框面可见归属标记），且框节点带
 // chatFrame/chatFrameFor 机器可读标记（Refs #323）；已有框时点击 = 视口居中到该 frame 真中心。
-function agentChatFrameAction(agentId){
+// Explicit manual entry only. Standalone presentation callers without the editor's
+// storage adapter retain their existing behavior; never guess a durable projection.
+function beginAgentCanvasHumanEdit(nodes, fields, actor){
+    if(actor !== 'user' || typeof canvasCore.canvasForStorage !== 'function') return null;
+    return canvasCore.beginSmartHumanEdit(nodes, {
+        fields,
+        project:node => canvasCore.canvasForStorage().nodes.find(stored => stored.id === node.id) || {},
+    });
+}
+
+function finishAgentCanvasHumanEdit(action){
+    if(!action) return;
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+    canvasCore.finalizePendingCanvasUndo();
+}
+
+function agentChatFrameAction(agentId, {actor=null}={}){
     const agent = canvasState.nodes.find(n => n.id === agentId);
     if(!agent || !isSmartAgentNode(agent)) return null;
     const existing = agentChatFrameGroup(agent);
@@ -2435,17 +2490,18 @@ function agentChatFrameAction(agentId){
         centerViewportOnWorldPoint({x:Number(existing.x || 0) + (Number(existing.w) || 640) / 2, y:Number(existing.y || 0) + (Number(existing.h) || 480) / 2});
         return {action:'center', groupId:existing.id};
     }
-    // 无框（含 stale id 自愈降级）：createSmartGroupNode 内部已 pushUndo + render + scheduleSave，
-    // 之后写入的 title/chatFrameId 需再 render + scheduleSave 一次（防抖合并一次保存）。
-    const group = createSmartGroupNode(Number(agent.x || 0) + (Number(agent.w || 240)) + 40, Number(agent.y || 0), {});
-    group.title = (agent.title || '会话') + ' · 会话框';
-    // 监理钉B1：框内标记——chatFrame 机器标记 + chatFrameFor 归属（其他 agent 可读）；
-    // 可见层=title 带归属（group 卡 head 渲染 title，画布上直接看出是谁的会话框）。
-    group.chatFrame = true;
-    group.chatFrameFor = agent.id;
-    agent.chatFrameId = group.id;
-    render();
-    scheduleSave();
+    const action = beginAgentCanvasHumanEdit([agent], ['chatFrameId'], actor);
+    // The constructor owns the single creation undo. Initialize the new user
+    // frame and finish the existing Agent's edit before its first publication.
+    const group = createSmartGroupNode(Number(agent.x || 0) + (Number(agent.w || 240)) + 40, Number(agent.y || 0), {
+        initialize(frame){
+            frame.title = (agent.title || '会话') + ' · 会话框';
+            frame.chatFrame = true;
+            frame.chatFrameFor = agent.id;
+            agent.chatFrameId = frame.id;
+            finishAgentCanvasHumanEdit(action);
+        },
+    });
     return {action:'created', groupId:group.id};
 }
 
@@ -2471,7 +2527,7 @@ function agentRefFrameButtonLabel(agent){
 // E2：agent 卡「参考」按钮点击循环：未绑定 → 第一个 refFrame=true group → 下一个 → … → 未绑定。
 // 当前绑定不在参考框集合（如该组刚被取消参考框）时按未绑定处理（从第一个开始）。
 // 无 refFrame group 时只更新按钮 title 提示（禁止 alert），不改绑定。写/清 agent.refFrameId + 保存。
-function agentRefFrameCycle(agentId, buttonEl){
+function agentRefFrameCycle(agentId, buttonEl, {actor=null}={}){
     const agent = canvasState.nodes.find(n => n.id === agentId);
     if(!agent || !isSmartAgentNode(agent)) return null;
     const frames = canvasState.nodes.filter(n => isSmartGroupNode(n) && n.refFrame === true);
@@ -2484,7 +2540,10 @@ function agentRefFrameCycle(agentId, buttonEl){
     if(index === -1) nextId = frames[0].id;
     else if(index === frames.length - 1) nextId = '';
     else nextId = frames[index + 1].id;
+    const action = beginAgentCanvasHumanEdit([agent], ['refFrameId'], actor);
+    if(action) canvasCore.pushUndo();
     if(nextId) agent.refFrameId = nextId; else delete agent.refFrameId;
+    finishAgentCanvasHumanEdit(action);
     render();
     scheduleSave();
     return {action:'cycled', refFrameId:nextId, frames:frames.length};
@@ -2528,7 +2587,7 @@ function bindAgentHeadControls(el, node){
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            agentChatFrameAction(btn.dataset.agentChatFrame || node.id);
+            agentChatFrameAction(btn.dataset.agentChatFrame || node.id, {actor:'user'});
         });
     });
     el.querySelectorAll('[data-agent-ref-frame]').forEach(btn => {
@@ -2536,7 +2595,7 @@ function bindAgentHeadControls(el, node){
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            agentRefFrameCycle(btn.dataset.agentRefFrame || node.id, btn);
+            agentRefFrameCycle(btn.dataset.agentRefFrame || node.id, btn, {actor:'user'});
         });
     });
     // #407 D1：停靠/收起/取回按钮
@@ -2545,7 +2604,7 @@ function bindAgentHeadControls(el, node){
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            agentDockSet(btn.dataset.agentDockSet || node.id, btn.dataset.agentDockSide);
+            agentDockSet(btn.dataset.agentDockSet || node.id, btn.dataset.agentDockSide, {actor:'user'});
         });
     });
     el.querySelectorAll('[data-agent-dock-collapse]').forEach(btn => {
@@ -2561,7 +2620,7 @@ function bindAgentHeadControls(el, node){
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            agentDockSet(btn.dataset.agentDockUndock || node.id, null);
+            agentDockSet(btn.dataset.agentDockUndock || node.id, null, {actor:'user'});
         });
     });
 }

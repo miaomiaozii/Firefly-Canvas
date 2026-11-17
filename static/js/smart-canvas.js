@@ -712,8 +712,8 @@ async function materializeProjectMediaReferences(value, mediaContext=false){
     for(const [key, child] of Object.entries(value)) clean[key] = await materializeProjectMediaReferences(child, mediaKeys.has(String(key).toLowerCase()));
     return clean;
 }
-function canvasForStorage({preserveLegacyDockCollapsed=false}={}){
-    const clean = JSON.parse(JSON.stringify(canvas || {}));
+function canvasForStorage({preserveLegacyDockCollapsed=false, source=canvas}={}){
+    const clean = JSON.parse(JSON.stringify(source || {}));
     if(isProjectCanvasData(clean)){
         // Composer defaults and viewport are application/global UI state. Core
         // project files contain only creative content and reopen metadata.
@@ -740,6 +740,15 @@ function canvasForStorage({preserveLegacyDockCollapsed=false}={}){
     clean.nodes = mediaReferencesForStorage(clean.nodes || []);
     clean.history = mediaReferencesForStorage((clean.history || []).filter(log => log?.status !== 'pending'));
     return clean;
+}
+// Explicit handler transactions use the same durable projection as saving. Never
+// infer a human action from render/save/default normalization or a whole-canvas diff.
+function beginSmartNodeHumanEdit(nodes, fields, prompt=false){
+    return canvasCore.beginSmartHumanEdit(nodes.filter(Boolean), {fields, prompt,
+        project:node => canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0] || {id:node.id}});
+}
+function finishSmartNodeHumanEdit(action){
+    return canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
 }
 function apiErrorMessage(data, fallback=tr('chat.requestFailed')){
     if(!data) return fallback;
@@ -952,6 +961,29 @@ function persistActiveSmartSettings(){
     if(!subject) return;
     subject.runSettings = settingsForStorage(settings);
     rememberRecentSmartSettings(settings, subject);
+}
+function smartHumanSettingsEditable(){
+    const subject = activeComposerNode();
+    return !subject?.running && !subject?.readonly && !subject?.readOnly;
+}
+function beginSmartSettingsHumanEdit(keys, node=activeComposerNode(), nodeFields=[]){
+    const scope = [...new Set(keys)];
+    return canvasCore.beginSmartHumanEdit(node ? [node] : [], {fields:['runSettings', ...nodeFields],
+        project:target => {
+            const stored = canvasForStorage({source:{...canvas, nodes:[target], history:[]}}).nodes[0] || {id:target.id};
+            if(stored.runSettings) stored.runSettings = Object.fromEntries(scope.filter(key => Object.hasOwn(stored.runSettings, key)).map(key => [key, stored.runSettings[key]]));
+            return stored;
+        }});
+}
+function smartHumanSettingKeys(key){
+    const related = {
+        provider_id:['model'], videoProvider:['videoModel'], model:['routingMode','ratio'], videoModel:['videoRoutingMode'],
+        videoMultimodal:['_videoMultimodalUserSet','videoUseFrameRoles'], videoUseFrameRoles:['videoMultimodal'],
+        resolution:['ratio'], ratio:['customRatio','customRatioWidth','customRatioHeight'], msResolution:['msRatio'], msRatio:['msCustomRatio','msCustomRatioWidth','msCustomRatioHeight'],
+        customRatioWidth:['customRatio','ratio'], customRatioHeight:['customRatio','ratio'], msCustomRatioWidth:['msCustomRatio','msRatio'], msCustomRatioHeight:['msCustomRatio','msRatio'],
+        customWidth:['customSize','resolution'], customHeight:['customSize','resolution'], msCustomWidth:['msCustomSize','msResolution'], msCustomHeight:['msCustomSize','msResolution'], rhConfigKey:['rhParams','rhRandomActive']
+    };
+    return [key, ...(related[key] || []), 'outpaintResolutionLocked'];
 }
 async function backToProjectList(){
     savePromptDraftForCurrent();
@@ -3389,12 +3421,14 @@ function smartRhRandomActiveFor(sourceSettings=settings, key){
     sourceSettings.rhRandomActive = sourceSettings.rhRandomActive || {};
     return sourceSettings.rhRandomActive[key] !== false;
 }
-function toggleSmartRhRandom(key){
+function toggleSmartRhRandom(key, {human=false}={}){
     const field = rhActiveFields().find(f => rhParamKey(f.nodeId, f.fieldName) === key);
-    if(!rhRandomEnabled(field)) return;
+    if(!rhRandomEnabled(field) || (human && !smartHumanSettingsEditable())) return;
+    const action = human ? beginSmartSettingsHumanEdit(['rhRandomActive']) : null;
     settings.rhRandomActive = settings.rhRandomActive || {};
     settings.rhRandomActive[key] = !smartRhRandomActive(key);
     persistActiveSmartSettings();
+    if(action) finishSmartNodeHumanEdit(action);
     renderDynamicParams();
     scheduleSave();
 }
@@ -3533,10 +3567,10 @@ function applyManualVideoUrlToSmartRef(ref, manualUrl){
         {source:sourceUrl, url:manualUrl, manual:true}
     ];
 }
-async function setCurrentSmartManualVideoUrl(){
+async function setCurrentSmartManualVideoUrl({human=false, trustedSource}={}){
     const node = activeSettingsSubject();
-    if(!node) return '';
-    savePromptDraftForCurrent();
+    if(!node || (human && !smartHumanSettingsEditable())) return '';
+    const targetId = node.id;
     const refs = currentUploadMediaRefs(node);
     const firstLocal = refs.find(ref => ref?.url && !isRemoteVideoReferenceUrl(ref.url));
     const firstAny = firstLocal || refs[0] || null;
@@ -3551,29 +3585,33 @@ async function setCurrentSmartManualVideoUrl(){
     });
     if(value === null) return '';
     const urls = splitManualMediaUrls(value);
-    if(!urls.length){
-        clearManualSmartVideoUrl();
-        persistActiveSmartSettings();
-        scheduleSave();
-        render();
-        toast(tr('smart.manualUrlCleared'));
-        return '';
-    }
     const invalid = urls.find(url => !isRemoteVideoReferenceUrl(url));
     if(invalid){
         toast(tr('smart.manualUrlInvalid'));
         return '';
     }
-    clearManualSmartVideoUrl();
+    // Only the original live target may receive the confirmed patch. Keep all
+    // unrelated settings that may have arrived while the dialog was open.
+    const live = canvasState.nodes.find(item => item.id === targetId);
+    if(!live || (human && (live.running || live.readonly || live.readOnly))) return '';
+    const action = human ? beginSmartSettingsHumanEdit(['videoTempShLinks', 'videoTrustedSource'], live) : null;
+    const links = (live.runSettings?.videoTempShLinks || []).filter(item => item?.manual !== true);
     const targets = refs.length ? refs : [firstAny].filter(Boolean);
     urls.forEach((url, index) => {
         const target = targets[index] || targets[targets.length - 1] || {url};
-        applyManualVideoUrlToSmartRef(target, url);
+        const source = mediaRefSourceUrl(target) || url;
+        const existing = links.findIndex(item => item?.source === source);
+        if(existing >= 0) links.splice(existing, 1);
+        links.push({source, url, manual:true});
     });
-    persistActiveSmartSettings();
+    const patch = {videoTempShLinks:links, ...(trustedSource === undefined ? {} : {videoTrustedSource:trustedSource})};
+    live.runSettings = {...live.runSettings, ...patch};
+    if(activeComposerNode()?.id === targetId) Object.assign(settings, patch);
+    if(action) finishSmartNodeHumanEdit(action);
+    rememberRecentSmartSettings(live.runSettings, live);
     scheduleSave();
     render();
-    toast(trf('smart.mediaUrlsSet', {n: urls.length}));
+    toast(urls.length ? trf('smart.mediaUrlsSet', {n: urls.length}) : tr('smart.manualUrlCleared'));
     return urls[0] || '';
 }
 async function uploadCurrentSmartVideosToCloud(){
@@ -3696,7 +3734,9 @@ function smartRandomValue(field){
     }
     return Math.floor(value);
 }
-function setDynamicSetting(key, value){
+function setDynamicSetting(key, value, {human=false}={}){
+    if(human && !smartHumanSettingsEditable()) return;
+    const action = human ? beginSmartSettingsHumanEdit(smartHumanSettingKeys(key), activeComposerNode(), ['outpaintSize']) : null;
     const numericKeys = new Set(['count','width','height','videoDuration','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight']);
     const layoutKeys = new Set(['routingMode','anglePreset','provider_id','model','resolution','ratio','msgenModel','msCustomModel','msResolution','msRatio','videoRoutingMode','videoProvider','videoModel','videoAspect','videoResolution','quality','count','rhConfigKey','rhPayment','rhInstanceType']);
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
@@ -3748,8 +3788,16 @@ function setDynamicSetting(key, value){
         settings.rhParams = {};
         settings.rhRandomActive = {};
     }
+    // Compare the settled provider/model pair, not the renderer's temporary empty model.
+    if(human && (key === 'provider_id' || key === 'videoProvider')){
+        const normalized = sanitizeSmartApiSelection({...settings});
+        const modelKey = key === 'provider_id' ? 'model' : 'videoModel';
+        settings[key] = normalized[key];
+        settings[modelKey] = normalized[modelKey];
+    }
     persistActiveSmartSettings();
     rememberRecentSmartSettings(settings, activeSettingsSubject());
+    if(action) finishSmartNodeHumanEdit(action);
     if(layoutKeys.has(key)) renderDynamicParams();
     scheduleSave();
 }
@@ -3781,7 +3829,8 @@ function bindDynamicParams(){
             event.preventDefault();
             event.stopPropagation();
             markControlInteracting(btn);
-            setDynamicSetting(btn.dataset.smartParam, btn.dataset.smartValue);
+            if(btn.disabled) return;
+            setDynamicSetting(btn.dataset.smartParam, btn.dataset.smartValue, {human:true});
             if(btn.dataset.smartParam === 'videoDuration') renderDynamicParams();
         };
     });
@@ -3822,11 +3871,13 @@ function bindDynamicParams(){
             event.preventDefault();
             event.stopPropagation();
             markControlInteracting(btn);
+            if(btn.disabled || !smartHumanSettingsEditable()) return;
             const prefix = btn.dataset.sizePrefix || '';
             const scope = btn.dataset.sizeScope;
             const resKey = prefix ? `${prefix}Resolution` : 'resolution';
             const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
             const allowAuto = !prefix && settings.engine === 'api' && settings.apiKind !== 'video' && isGptImageAutoSizeModel(settings.model);
+            const action = beginSmartSettingsHumanEdit([resKey, ratioKey]);
             if(scope === 'auto'){
                 if(!allowAuto) return;
                 settings[resKey] = 'auto';
@@ -3839,6 +3890,7 @@ function bindDynamicParams(){
             }
             persistActiveSmartSettings();
             rememberRecentSmartSettings(settings, activeSettingsSubject());
+            finishSmartNodeHumanEdit(action);
             renderDynamicParams();
             scheduleSave();
         };
@@ -3847,7 +3899,8 @@ function bindDynamicParams(){
         input.onclick = event => event.stopPropagation();
         input.oninput = input.onchange = event => {
             event?.stopPropagation?.();
-            setDynamicSetting(input.dataset.param, input.value);
+            if(input.disabled || input.readOnly) return;
+            setDynamicSetting(input.dataset.param, input.value, {human:true});
             if(input.dataset.param === 'videoDuration' && event?.type === 'change') renderDynamicParams();
         };
     });
@@ -3855,11 +3908,14 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
+            if(btn.disabled || !smartHumanSettingsEditable()) return;
+            const action = beginSmartSettingsHumanEdit(smartHumanSettingKeys(btn.dataset.toggleParam));
             settings[btn.dataset.toggleParam] = !settings[btn.dataset.toggleParam];
             if(btn.dataset.toggleParam === 'videoMultimodal') settings._videoMultimodalUserSet = true;
             if(btn.dataset.toggleParam === 'videoMultimodal' && settings.videoMultimodal) settings.videoUseFrameRoles = false;
             normalizeSmartVideoModeSettings(settings, btn.dataset.toggleParam === 'videoUseFrameRoles');
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
             renderDynamicParams();
             scheduleSave();
         };
@@ -3869,13 +3925,20 @@ function bindDynamicParams(){
             event.preventDefault();
             event.stopPropagation();
             const src = btn.dataset.trustedSource;
+            if(btn.disabled || !smartHumanSettingsEditable()) return;
+            if(src === 'manual'){
+                try { await setCurrentSmartManualVideoUrl({human:true, trustedSource:'manual'}); }
+                catch(error){ toast((error.message || tr('smart.opFailed')).slice(0, 180)); }
+                return;
+            }
+            const action = beginSmartSettingsHumanEdit(['videoTrustedSource']);
             settings.videoTrustedSource = ['library','cloud','manual'].includes(src) ? src : 'library';
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
             renderDynamicParams();
             scheduleSave();
             try {
                 if(src === 'cloud') await uploadCurrentSmartVideosToCloud();
-                else if(src === 'manual') await setCurrentSmartManualVideoUrl();
             } catch(e) {
                 toast((e.message || tr('smart.opFailed')).slice(0, 180));
             }
@@ -3885,6 +3948,8 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
+            if(btn.disabled || !smartHumanSettingsEditable()) return;
+            const action = beginSmartSettingsHumanEdit(['rhParams']);
             settings.rhParams = settings.rhParams || {};
             const key = btn.dataset.rhBool;
             const field = rhActiveFields().find(f => rhParamKey(f.nodeId, f.fieldName) === key);
@@ -3892,6 +3957,7 @@ function bindDynamicParams(){
             const on = String(rhParamValue(field, null)).toLowerCase() === 'true';
             settings.rhParams[key] = {...cur, value:String(!on)};
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
             renderDynamicParams();
             scheduleSave();
         };
@@ -3900,6 +3966,8 @@ function bindDynamicParams(){
         input.onclick = event => event.stopPropagation();
         input.oninput = input.onchange = event => {
             event?.stopPropagation?.();
+            if(input.disabled || input.readOnly || !smartHumanSettingsEditable()) return;
+            const action = beginSmartSettingsHumanEdit(['rhParams']);
             const key = input.dataset.rhParam;
             settings.rhParams = settings.rhParams || {};
             const cur = settings.rhParams[key] || {};
@@ -3910,6 +3978,7 @@ function bindDynamicParams(){
             if(valueText) valueText.textContent = input.value;
             if(pillValue) pillValue.textContent = input.value;
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
             scheduleSave();
         };
         if(input.dataset.rhType === 'slider'){
@@ -3923,6 +3992,8 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
+            if(btn.disabled || !smartHumanSettingsEditable()) return;
+            const action = beginSmartSettingsHumanEdit(['rhParams']);
             const key = btn.dataset.rhPick;
             const value = btn.dataset.rhValue;
             settings.rhParams = settings.rhParams || {};
@@ -3939,6 +4010,7 @@ function bindDynamicParams(){
             }
             closeAllSmartPopovers();
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
             scheduleSave();
         };
     });
@@ -3946,7 +4018,8 @@ function bindDynamicParams(){
         btn.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            toggleSmartRhRandom(btn.dataset.rhRandom);
+            if(btn.disabled) return;
+            toggleSmartRhRandom(btn.dataset.rhRandom, {human:true});
         };
     });
 }
@@ -4189,13 +4262,15 @@ function resetPromptPresetDeleteState(){
         promptPresetDelete.classList.remove('confirm-danger');
     }
 }
-function createPromptPresetFromNode(node, {openPanel=true, openTemplatePanel=false}={}){
+function createPromptPresetFromNode(node, {openPanel=true, openTemplatePanel=false, human=false}={}){
     const text = String(node?.text || '').trim();
     if(!text){ toast(tr('smart.promptPresetEmpty')); return null; }
     const preset = {id:uid('preset'), name:defaultPromptPresetName(text), text, createdAt:Date.now(), updatedAt:Date.now()};
     promptPresets.unshift(preset);
     savePromptPresets();
+    const action = human ? beginSmartNodeHumanEdit([node], ['promptPresetId']) : null;
     if(node) node.promptPresetId = preset.id;
+    if(action) finishSmartNodeHumanEdit(action);
     render();
     scheduleSave();
     if(openPanel) openPromptPresetPanel(node?.id || '', preset.id, {status:tr('smart.promptPresetSavedNew'), tone:'ok'});
@@ -4446,14 +4521,16 @@ function closePromptTemplatePanel(){
     syncComposerTemplateButton();
     render();
 }
-function applyPromptTemplateToNode(mode='positive'){
+function applyPromptTemplateToNode(mode='positive', {human=false}={}){
     const template = promptTemplateItems().find(item => item.id === promptTemplateSelectedId);
     if(!template) return;
     if(promptTemplatePanel?.dataset.target === 'composer'){
         const text = promptTemplateText(template, mode);
+        const draftTargetId = promptTemplatePanel.dataset.nodeId;
+        if((draftTargetId || '') !== (activeComposerNode()?.id || '')) return;
         setPromptText(text);
         delete promptInput.dataset.preserveDraftOnce;
-        savePromptDraftForCurrent();
+        if(draftTargetId) savePromptDraftForCurrent({human, nodeId:draftTargetId});
         renderInputThumbsRow(selectedNode());
         closePromptTemplatePanel();
         scheduleSave();
@@ -4461,8 +4538,10 @@ function applyPromptTemplateToNode(mode='positive'){
     }
     const node = canvasState.nodes.find(n => n.id === promptTemplatePanel?.dataset.nodeId);
     if(!node) return;
+    const action = human ? beginSmartNodeHumanEdit([node], ['text', 'promptPresetId'], true) : null;
     node.text = promptTemplateText(template, mode);
     node.promptPresetId = template.builtin ? '' : template.sourceId || '';
+    if(action) finishSmartNodeHumanEdit(action);
     closePromptTemplatePanel();
     render();
     scheduleSave();
@@ -4518,7 +4597,7 @@ async function createBlankPromptTemplate(){
         toast(err.message || tr('smart.createFailed'));
     }
 }
-async function savePromptTemplateEdit(){
+async function savePromptTemplateEdit({human=false}={}){
     const item = promptTemplateSelectedItem();
     if(!item) return;
     const name = promptTemplatePanel.querySelector('[data-template-edit-name]')?.value?.trim() || '';
@@ -4556,14 +4635,17 @@ async function savePromptTemplateEdit(){
         const idx = promptPresets.findIndex(p => p.id === preset.id);
         if(idx >= 0) promptPresets[idx] = {...promptPresets[idx], name, text, category, updatedAt:Date.now()};
         savePromptPresets();
-        canvasState.nodes.forEach(node => { if(node.promptPresetId === preset.id) node.text = text; });
+        const targets = canvasState.nodes.filter(node => node.promptPresetId === preset.id);
+        const action = human ? beginSmartNodeHumanEdit(targets, ['text'], true) : null;
+        targets.forEach(node => { node.text = text; });
+        if(action) finishSmartNodeHumanEdit(action);
     }
     promptTemplateEditing = false;
     renderPromptTemplatePanel();
     render();
     scheduleSave();
 }
-async function deletePromptTemplate(){
+async function deletePromptTemplate({human=false}={}){
     const item = promptTemplateSelectedItem();
     if(!item) return;
     if(item.remote){
@@ -4582,7 +4664,10 @@ async function deletePromptTemplate(){
         savePromptTemplateOverrides();
     } else {
         promptPresets = promptPresets.filter(p => p.id !== item.sourceId);
-        canvasState.nodes.forEach(node => { if(node.promptPresetId === item.sourceId) node.promptPresetId = ''; });
+        const targets = canvasState.nodes.filter(node => node.promptPresetId === item.sourceId);
+        const action = human ? beginSmartNodeHumanEdit(targets, ['promptPresetId']) : null;
+        targets.forEach(node => { node.promptPresetId = ''; });
+        if(action) finishSmartNodeHumanEdit(action);
         savePromptPresets();
     }
     promptTemplateSelectedId = '';
@@ -9815,7 +9900,9 @@ function bindPromptNodeControls(el, node){
         });
         textEl.oninput = e => {
             const prevExtra = promptNodeSplitExtraHeight(node);
+            const action = beginSmartNodeHumanEdit([node], ['text'], true);
             node.text = e.target.value;
+            finishSmartNodeHumanEdit(action);
             autosizePromptNodeText(textEl);
             refreshPromptNodeSegmentsUi(el, node);
             if(node.promptSplitEnabled === true){
@@ -9829,7 +9916,9 @@ function bindPromptNodeControls(el, node){
     if(separatorEl) {
         separatorEl.oninput = e => {
             const prevExtra = promptNodeSplitExtraHeight(node);
+            const action = beginSmartNodeHumanEdit([node], ['promptSeparator'], true);
             node.promptSeparator = e.target.value || ';';
+            finishSmartNodeHumanEdit(action);
             refreshPromptNodeSegmentsUi(el, node);
             syncPromptNodeHeightForSplit(node, prevExtra);
             updateNodeElementDuringResize(node);
@@ -9841,10 +9930,12 @@ function bindPromptNodeControls(el, node){
         e.preventDefault();
         e.stopPropagation();
         const prevExtra = promptNodeSplitExtraHeight(node);
+        const action = beginSmartNodeHumanEdit([node], ['promptSplitEnabled', 'promptSeparator'], true);
         node.promptSplitEnabled = node.promptSplitEnabled !== true;
         if(node.promptSplitEnabled){
             node.promptSeparator = promptNodeSeparator(node);
         }
+        finishSmartNodeHumanEdit(action);
         syncPromptNodeHeightForSplit(node, prevExtra);
         render();
         scheduleSave();
@@ -9858,6 +9949,7 @@ function bindPromptNodeControls(el, node){
     const toggle = el.querySelector('.prompt-llm-toggle');
     if(toggle) toggle.onclick = e => {
         e.preventDefault(); e.stopPropagation();
+        const action = beginSmartNodeHumanEdit([node], ['llmEnabled', 'llmProvider', 'llmModel']);
         node.llmEnabled = !node.llmEnabled;
         if(node.llmEnabled){
             node.llmProvider = resolveChatProviderId(node.llmProvider || '');
@@ -9868,34 +9960,39 @@ function bindPromptNodeControls(el, node){
             node.h = promptNodeMinHeight(node);
             node.w = Math.max(Number(node.w) || 0, 316);
         }
+        finishSmartNodeHumanEdit(action);
         render();
         scheduleSave();
     };
     const providerEl = el.querySelector('.prompt-llm-provider');
     if(providerEl) providerEl.onchange = e => {
         e.stopPropagation();
+        const action = beginSmartNodeHumanEdit([node], ['llmProvider', 'llmModel']);
         node.llmProvider = resolveChatProviderId(e.target.value);
         node.llmModel = resolveChatModel('', node.llmProvider);
+        finishSmartNodeHumanEdit(action);
         render();
         scheduleSave();
     };
     const modelEl = el.querySelector('.prompt-llm-model');
-    if(modelEl) modelEl.onchange = e => { e.stopPropagation(); node.llmModel = e.target.value; scheduleSave(); };
+    if(modelEl) modelEl.onchange = e => { e.stopPropagation(); const action = beginSmartNodeHumanEdit([node], ['llmModel']); node.llmModel = e.target.value; finishSmartNodeHumanEdit(action); scheduleSave(); };
     const systemToggleEl = el.querySelector('.prompt-system-toggle');
     if(systemToggleEl) systemToggleEl.onclick = e => {
         e.preventDefault();
         e.stopPropagation();
         const prevHeight = Number(node.h) || 0;
+        const action = beginSmartNodeHumanEdit([node], ['llmSystemEnabled'], true);
         node.llmSystemEnabled = !node.llmSystemEnabled;
+        finishSmartNodeHumanEdit(action);
         if(node.llmSystemEnabled) node.h = Math.max(prevHeight, promptNodeExpandedHeight(node));
         else if(prevHeight <= 364) node.h = promptNodeExpandedHeight(node);
         render();
         scheduleSave();
     };
     const systemEl = el.querySelector('.prompt-llm-system');
-    if(systemEl) { bindScrollableText(systemEl); systemEl.oninput = e => { node.llmSystemPrompt = e.target.value; scheduleSave(); }; }
+    if(systemEl) { bindScrollableText(systemEl); systemEl.oninput = e => { const action = beginSmartNodeHumanEdit([node], ['llmSystemPrompt'], true); node.llmSystemPrompt = e.target.value; finishSmartNodeHumanEdit(action); scheduleSave(); }; }
     const instructionEl = el.querySelector('.prompt-llm-instruction');
-    if(instructionEl) { bindScrollableText(instructionEl); instructionEl.oninput = e => { node.llmInstruction = e.target.value; scheduleSave(); }; }
+    if(instructionEl) { bindScrollableText(instructionEl); instructionEl.oninput = e => { const action = beginSmartNodeHumanEdit([node], ['llmInstruction'], true); node.llmInstruction = e.target.value; finishSmartNodeHumanEdit(action); scheduleSave(); }; }
     const instructionResizeEl = el.querySelector('[data-llm-instruction-resize]');
     if(instructionResizeEl) instructionResizeEl.addEventListener('mousedown', e => {
         if(e.button !== 0) return;
@@ -9943,9 +10040,11 @@ function bindLoopNodeControls(el, node){
     };
     const setLoopNumber = (key, rawValue, rerender=true, source=null) => {
         const value = normalizeLoopNumber(key, rawValue);
+        const action = beginSmartNodeHumanEdit([node], [key]);
         if(key === 'count') node.count = smartLoopCount({count:value});
         if(key === 'loopStart') node.loopStart = value;
         if(key === 'imageBatchSize') node.imageBatchSize = value;
+        finishSmartNodeHumanEdit(action);
         scheduleSave();
         if(rerender) render();
         else syncLoopNumberUi(source, key, value);
@@ -9971,7 +10070,9 @@ function bindLoopNodeControls(el, node){
         btn.onclick = e => {
             e.preventDefault();
             e.stopPropagation();
+            const action = beginSmartNodeHumanEdit([node], ['mode']);
             node.mode = btn.dataset.loopMode === 'parallel' ? 'parallel' : 'serial';
+            finishSmartNodeHumanEdit(action);
             render();
             scheduleSave();
         };
@@ -9980,11 +10081,13 @@ function bindLoopNodeControls(el, node){
         btn.onclick = e => {
             e.preventDefault();
             e.stopPropagation();
+            const action = beginSmartNodeHumanEdit([node], ['imageInput', 'showPrompt', 'variablePrompts', 'variablePrompt'], true);
             if(btn.dataset.loopToggle === 'image') node.imageInput = !node.imageInput;
             if(btn.dataset.loopToggle === 'prompt') {
                 node.showPrompt = !node.showPrompt;
                 if(node.showPrompt && !smartLoopInputPromptItems(node).length && !smartLoopActivePromptFieldValues(node).length) setSmartLoopPromptFieldValues(node, [smartLoopDefaultPromptText()]);
             }
+            finishSmartNodeHumanEdit(action);
             fitSmartLoopNode(node);
             render();
             scheduleSave();
@@ -9994,7 +10097,7 @@ function bindLoopNodeControls(el, node){
         const values = [...el.querySelectorAll('[data-loop-prompt-index]')]
             .sort((a, b) => Number(a.dataset.loopPromptIndex) - Number(b.dataset.loopPromptIndex))
             .map(input => smartLoopEditorText(input));
-        setSmartLoopPromptFieldValues(node, values);
+        setSmartLoopPromptFieldValues(node, values, {human:true});
     };
     let activePromptEditor = null;
     el.querySelectorAll('.loop-smart-text').forEach(text => {
@@ -10013,6 +10116,8 @@ function bindLoopNodeControls(el, node){
             range.collapse(false);
             sel.removeAllRanges();
             sel.addRange(range);
+            syncPromptFieldsFromDom();
+            scheduleSave();
         });
         text.addEventListener('click', e => {
             const remove = e.target.closest?.('.loop-smart-token-chip button');
@@ -10030,7 +10135,7 @@ function bindLoopNodeControls(el, node){
             e.stopPropagation();
             syncPromptFieldsFromDom();
             const values = smartLoopPromptFieldValues(node);
-            setSmartLoopPromptFieldValues(node, [...values, '']);
+            setSmartLoopPromptFieldValues(node, [...values, ''], {human:true});
             fitSmartLoopNode(node);
             render();
             scheduleSave();
@@ -10045,7 +10150,7 @@ function bindLoopNodeControls(el, node){
             const values = smartLoopPromptFieldValues(node);
             if(values.length <= 1) return;
             values.splice(removeIndex, 1);
-            setSmartLoopPromptFieldValues(node, values);
+            setSmartLoopPromptFieldValues(node, values, {human:true});
             fitSmartLoopNode(node);
             render();
             scheduleSave();
@@ -10543,7 +10648,7 @@ async function sendConversationMessageRequest(live, text, requestId){
     if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
     render();
 }
-async function sendConversationMessage(node, input, button){
+async function sendConversationMessage(node, input, button, {human=false}={}){
     const text = String(input?.value || '').trim();
     const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
     const hasPendingMessage = (liveNode?.messages || []).some(message => message?.role === 'user' && message?.status === 'pending');
@@ -10552,6 +10657,9 @@ async function sendConversationMessage(node, input, button){
     node.conversationSending = true;
     if(button) button.disabled = true;
     const requestId = conversationRequestId();
+    // Frontend intent only, bound to this original request. No ownership stamp
+    // or transport flag: durable conversation ownership is gated by 2b-2c.
+    const humanIntent = human === true;
     let timeoutId = null;
     let requestSent = false;
     let queued = false;
@@ -10594,7 +10702,7 @@ async function sendConversationMessage(node, input, button){
                     render();
                     throw replayError;
                 }
-            }, {text, requestId});
+            }, {text, requestId, humanIntent});
             toast(tr('smart.canvasMessagePendingAfterSave'));
             render();
         } else {
@@ -10619,7 +10727,9 @@ function bindConversationNodeControls(el, node){
     collapse?.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
+        const action = beginSmartNodeHumanEdit([node], ['conversation_collapsed']);
         node.conversation_collapsed = node.conversation_collapsed !== true;
+        finishSmartNodeHumanEdit(action);
         render();
         scheduleSave();
         flushImportantProjectMutation();
@@ -10627,12 +10737,12 @@ function bindConversationNodeControls(el, node){
     send?.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        sendConversationMessage(node, input, send);
+        sendConversationMessage(node, input, send, {human:true});
     });
     input?.addEventListener('keydown', event => {
         if(event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !imeComposing(event)){
             event.preventDefault();
-            sendConversationMessage(node, input, send);
+            sendConversationMessage(node, input, send, {human:true});
         }
     });
     el.querySelectorAll('[data-conversation-retry]').forEach(retryEl => {
@@ -10649,7 +10759,7 @@ function bindConversationNodeControls(el, node){
             if(liveInput) liveInput.value = retryText;
             const hasPending = (liveNode?.messages || []).some(item => item.role === 'user' && item.status === 'pending');
             if(hasPending) return;
-            sendConversationMessage(liveNode, liveInput, liveSend);
+            sendConversationMessage(liveNode, liveInput, liveSend, {human:true});
         });
     });
     el.querySelectorAll('.conversation-node-message-text').forEach(messageEl => {
@@ -10734,7 +10844,7 @@ function bindLocalEditNodeControls(el, node){
     syncLocalEditInputRoles(node);
     el.querySelectorAll('[data-local-edit-connect-role]').forEach(btn => {
         btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
-        btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); node.localEditActiveRole = btn.dataset.localEditConnectRole; render(); });
+        btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); const action = beginSmartNodeHumanEdit([node], ['localEditActiveRole']); node.localEditActiveRole = btn.dataset.localEditConnectRole; finishSmartNodeHumanEdit(action); render(); scheduleSave(); });
     });
     el.querySelectorAll('[data-local-edit-mode]').forEach(btn => {
         btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
@@ -10743,6 +10853,7 @@ function bindLocalEditNodeControls(el, node){
             const nextMode = btn.dataset.localEditMode === 'retain' ? 'retain' : 'modify';
             if(nextMode === node.mode) return;
             const size = sourceImageSize();
+            const action = beginSmartNodeHumanEdit([node], ['mode', 'selection']);
             node.mode = nextMode;
             if(nextMode === 'modify'){
                 const isRect = Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0];
@@ -10753,6 +10864,7 @@ function bindLocalEditNodeControls(el, node){
                 // 矩形选区无法直接转点列：清空，等用户按新形状重画。
                 node.selection = [];
             }
+            finishSmartNodeHumanEdit(action);
             render(); scheduleSave();
         });
     });
@@ -10891,6 +11003,7 @@ function bindLocalEditNodeControls(el, node){
     };
     const commitSelection = displayPoints => {
         if(!selectionCanvas) return;
+        const action = beginSmartNodeHumanEdit([node], ['selection', '_leSelectionAsset']);
         if(node.mode === 'modify'){
             const displayRect = displayRectFromDrag(selectionDrag);
             if(!displayRect || displayRect.w < 2 || displayRect.h < 2) return;
@@ -10913,6 +11026,7 @@ function bindLocalEditNodeControls(el, node){
             node.selection = points;
         }
         node._leSelectionAsset = node.original_asset_id || '';
+        finishSmartNodeHumanEdit(action);
         sync();
         drawSelection();
     };
@@ -10974,9 +11088,18 @@ function bindLocalEditNodeControls(el, node){
     selectionCanvas?.addEventListener('pointerdown', beginSelectionPointer);
     selectionCanvas?.addEventListener('pointermove', moveSelectionPointer);
     selectionCanvas?.addEventListener('pointerup', endSelectionPointer);
-    selectionCanvas?.addEventListener('pointercancel', endSelectionPointer);
+    selectionCanvas?.addEventListener('pointercancel', event => {
+        event.preventDefault(); event.stopPropagation();
+        try { selectionCanvas.releasePointerCapture?.(event.pointerId); } catch (error) {
+            // #348: pointercancel may arrive after capture was released; draft cleanup must continue.
+            console.warn('local-edit pointercancel capture already released', error);
+        }
+        selectionDrag = null;
+        drawSelection();
+    });
     selectionCanvas?.addEventListener('dblclick', doubleClickSelection);
     const resetSelection = () => {
+        const action = beginSmartNodeHumanEdit([node], ['selection', '_leSelectionAsset']);
         const size = sourceImageSize();
         if(node.mode === 'modify'){
             const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
@@ -10984,6 +11107,7 @@ function bindLocalEditNodeControls(el, node){
             node.selection = localEditFullImageRect(size.width, size.height, ratio) || [0, 0, size.width, size.height];
         } else node.selection = [];
         node._leSelectionAsset = node.original_asset_id || '';
+        finishSmartNodeHumanEdit(action);
         sync();
         drawSelection();
     };
@@ -11011,7 +11135,8 @@ function bindLocalEditNodeControls(el, node){
         drawSelection();
     });
     requestAnimationFrame(() => drawSelection());
-    const sync = () => {
+    const sync = (fields=[]) => {
+        const action = fields.length ? beginSmartNodeHumanEdit([node], fields, fields.includes('prompt')) : null;
         syncLocalEditInputRoles(node);
         const roleMap = node.localEditInputRoles || {};
         const originalNode = canvasState.nodes.find(item => item.id === roleMap.originalNode);
@@ -11029,6 +11154,7 @@ function bindLocalEditNodeControls(el, node){
         node.generation_size = String(generationSize?.value || node.generation_size || '1024x1024');
         node.generation_resolution = String(generationResolution?.value || node.generation_resolution || '1k');
         node.selectionType = String(shape?.value || node.selectionType || 'polygon');
+        if(action) finishSmartNodeHumanEdit(action);
         updateSubmitState();
         drawSelection();
         scheduleSave();
@@ -11057,8 +11183,12 @@ function bindLocalEditNodeControls(el, node){
         if(status){ status.textContent = texts[state]; status.classList.toggle('is-blocked', ['needOriginal','needSelection','needPrompt'].includes(state)); }
         if(submit){ submit.disabled = state === 'needOriginal' || state === 'needSelection' || state === 'needPrompt' || state === 'busy'; submit.classList.toggle('is-busy', state === 'busy'); }
     };
-    [prompt, feather].forEach(input => input?.addEventListener('input', sync));
-    [ratio, shape, generationSize, generationResolution].forEach(input => input?.addEventListener('change', sync));
+    const syncHumanInput = (input, field) => {
+        if(input.disabled || input.readOnly || node._leBusy) return;
+        sync([field]);
+    };
+    [[prompt, 'prompt'], [feather, 'feather_radius']].forEach(([input, field]) => input?.addEventListener('input', () => syncHumanInput(input, field)));
+    [[ratio, 'aspect_ratio'], [shape, 'selectionType'], [generationSize, 'generation_size'], [generationResolution, 'generation_resolution']].forEach(([input, field]) => input?.addEventListener('change', () => syncHumanInput(input, field)));
     el.querySelector('[data-local-edit-submit]')?.addEventListener('click', async e => {
         e.preventDefault(); e.stopPropagation(); sync();
         const roleMap = node.localEditInputRoles || {};
@@ -12047,17 +12177,19 @@ async function uploadImageBlobs(blobs){
     const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
     return data.files || [];
 }
-function savePromptDraftForCurrent(){
+function savePromptDraftForCurrent({human=false, nodeId}={}){
     if(promptInput?.dataset?.promptLocked === '1') return;
-    const subject = activeComposerNode();
+    const subject = nodeId === undefined ? activeComposerNode() : canvasState.nodes.find(node => node.id === nodeId);
     if(!subject) return;
     if(promptInput?.dataset?.preserveDraftOnce === '1' && subject.promptDraftHtml){
         delete promptInput.dataset.preserveDraftOnce;
         return;
     }
+    const action = human ? beginSmartNodeHumanEdit([subject], ['promptDraftHtml', 'promptDraftText'], true) : null;
     subject.promptDraftHtml = promptInput.innerHTML;
     subject.promptDraftText = promptPlainText();
     subject.runSettings = cloneSmartSettings(settings);
+    if(action) finishSmartNodeHumanEdit(action);
 }
 function loadPromptDraft(subject){
     if(subject?.promptDraftHtml){
@@ -13555,11 +13687,13 @@ function isSmartLoopDefaultPrompt(text){
         || value === '现在生成第《计数》张卖点图片'
         || value === 'Generate selling-point image 《计数》';
 }
-function setSmartLoopPromptFieldValues(node, values){
+function setSmartLoopPromptFieldValues(node, values, {human=false}={}){
     if(!node || node.type !== NODE_TYPE_LOOP) return;
+    const action = human ? beginSmartNodeHumanEdit([node], ['variablePrompts', 'variablePrompt'], true) : null;
     const fields = (values || []).map(text => String(text || '').trim());
     node.variablePrompts = fields.length ? fields : [''];
     node.variablePrompt = fields.filter(Boolean).join('\n');
+    if(action) finishSmartNodeHumanEdit(action);
 }
 function smartLoopSelectedLocalPrompt(node, ctx=smartLoopContext){
     const values = smartLoopActivePromptFieldValues(node);
@@ -13910,7 +14044,7 @@ function renderMentionPicker(source){
             e.preventDefault(); e.stopPropagation();
             const item = mentionPicker._items[Number(btn.dataset.mentionIndex)];
             if(mentionInsertMode === 'manual-ref') addManualReferenceToSelectedNode(item);
-            else insertMentionToken(item);
+            else insertMentionToken(item, {human:true});
         });
     });
     refreshIcons();
@@ -14065,8 +14199,8 @@ function maybeOpenMentionPicker(){
     if(/@$/.test(before)) showMentionPicker();
     else closeMentionPicker();
 }
-function insertMentionToken(img){
-    if(!img?.url) return;
+function insertMentionToken(img, {human=false}={}){
+    if(!img?.url || promptInput?.dataset?.promptLocked === '1') return;
     promptInput.focus();
     const sel = window.getSelection();
     if(mentionRange){
@@ -14113,6 +14247,7 @@ function insertMentionToken(img){
     sel.addRange(range);
     closeMentionPicker();
     promptInput.focus();
+    if(human) promptInput.dispatchEvent(new Event('input', {bubbles:true}));
     renderInputThumbsRow(selectedNode());
 }
 function collectPromptParts(root=promptInput){
@@ -15805,11 +15940,15 @@ window.addEventListener('blur', () => {
     isRKeyDown = false;
 });
 engineSelect.onchange = () => {
+    if(engineSelect.disabled || !smartHumanSettingsEditable()) return;
+    const nextMode = smartSettingsModeKey({...settings, engine:engineSelect.value});
+    const action = beginSmartSettingsHumanEdit([...Object.keys(settings), ...Object.keys(recentSmartSettingsForMode(nextMode))]);
     settings.engine = engineSelect.value;
     applyRecentSmartSettingsForCurrentMode();
     syncApiKindToggleVisibility();
-    renderDynamicParams();
     persistActiveSmartSettings();
+    finishSmartNodeHumanEdit(action);
+    renderDynamicParams();
     scheduleSave();
 };
 function syncApiKindToggleVisibility(){
@@ -15823,12 +15962,15 @@ if(apiKindToggle){
             e.preventDefault();
             e.stopPropagation();
             const kind = btn.dataset.kind;
-            if(kind === settings.apiKind) return;
+            if(btn.disabled || !smartHumanSettingsEditable() || kind === settings.apiKind) return;
+            const nextMode = smartSettingsModeKey({...settings, apiKind:kind});
+            const action = beginSmartSettingsHumanEdit([...Object.keys(settings), ...Object.keys(recentSmartSettingsForMode(nextMode))]);
             settings.apiKind = kind;
             applyRecentSmartSettingsForCurrentMode();
             syncApiKindToggleVisibility();
-            renderDynamicParams();
             persistActiveSmartSettings();
+            finishSmartNodeHumanEdit(action);
+            renderDynamicParams();
             scheduleSave();
         };
     });
@@ -15904,13 +16046,13 @@ promptTemplatePanel?.addEventListener('wheel', e => e.stopPropagation(), {passiv
 promptTemplatePanel?.addEventListener('click', e => {
     e.stopPropagation();
     const apply = e.target.closest('[data-template-apply]');
-    if(apply){ applyPromptTemplateToNode(apply.dataset.templateApply || 'positive'); return; }
+    if(apply){ applyPromptTemplateToNode(apply.dataset.templateApply || 'positive', {human:true}); return; }
     if(e.target.closest('[data-template-save-current]')){ saveCurrentPromptAsTemplate(); return; }
     if(e.target.closest('[data-template-new]')){ createBlankPromptTemplate(); return; }
     if(e.target.closest('[data-template-edit]')) { promptTemplateEditing = true; renderPromptTemplatePanel(); return; }
     if(e.target.closest('[data-template-edit-cancel]')) { promptTemplateEditing = false; renderPromptTemplatePanel(); return; }
-    if(e.target.closest('[data-template-edit-save]')){ savePromptTemplateEdit(); return; }
-    if(e.target.closest('[data-template-delete]')){ deletePromptTemplate(); return; }
+    if(e.target.closest('[data-template-edit-save]')){ savePromptTemplateEdit({human:true}); return; }
+    if(e.target.closest('[data-template-delete]')){ deletePromptTemplate({human:true}); return; }
     const cat = e.target.closest('[data-template-cat]');
     if(cat){
         promptTemplateCategory = cat.dataset.templateCat || 'all';
@@ -15980,8 +16122,10 @@ if(promptPresetApply) promptPresetApply.onclick = () => {
     const preset = currentPromptPreset(promptPresetSelect.value);
     const node = promptPresetPanelNode();
     if(!preset || !node) return;
+    const action = beginSmartNodeHumanEdit([node], ['text', 'promptPresetId'], true);
     node.promptPresetId = preset.id;
     node.text = preset.text || '';
+    finishSmartNodeHumanEdit(action);
     closePromptPresetPanel();
     render();
     scheduleSave();
@@ -15996,7 +16140,9 @@ if(promptPresetSave) promptPresetSave.onclick = () => {
     if(idx >= 0) promptPresets[idx] = {...promptPresets[idx], name, text, updatedAt:Date.now()};
     savePromptPresets();
     const node = promptPresetPanelNode();
+    const action = beginSmartNodeHumanEdit(node?.promptPresetId === preset.id ? [node] : [], ['text'], true);
     if(node?.promptPresetId === preset.id) node.text = text;
+    finishSmartNodeHumanEdit(action);
     renderPromptPresetPanel(preset.id, tr('smart.promptPresetSaved'));
     setPromptPresetStatus(tr('smart.promptPresetSaved'), 'ok');
     render();
@@ -16004,7 +16150,7 @@ if(promptPresetSave) promptPresetSave.onclick = () => {
 };
 if(promptPresetNew) promptPresetNew.onclick = () => {
     const node = promptPresetPanelNode();
-    const preset = createPromptPresetFromNode(node, {openPanel:false});
+    const preset = createPromptPresetFromNode(node, {openPanel:false, human:true});
     if(!preset) return;
     renderPromptPresetPanel(preset.id, tr('smart.promptPresetSavedNew'));
     setPromptPresetStatus(tr('smart.promptPresetSavedNew'), 'ok');
@@ -16022,7 +16168,10 @@ if(promptPresetDelete) promptPresetDelete.onclick = () => {
         return;
     }
     promptPresets = promptPresets.filter(p => p.id !== preset.id);
-    canvasState.nodes.forEach(node => { if(node.promptPresetId === preset.id) node.promptPresetId = ''; });
+    const targets = canvasState.nodes.filter(node => node.promptPresetId === preset.id);
+    const action = beginSmartNodeHumanEdit(targets, ['promptPresetId']);
+    targets.forEach(node => { node.promptPresetId = ''; });
+    finishSmartNodeHumanEdit(action);
     savePromptPresets();
     renderPromptPresetPanel(promptPresets[0]?.id || '', tr('smart.promptPresetDeleted'));
     setPromptPresetStatus(tr('smart.promptPresetDeleted'), 'ok');
@@ -16394,7 +16543,8 @@ promptInput.addEventListener('input', () => {
     // never cover the editor or interfere with IME candidate composition.
     closeAllSmartPopovers();
     delete promptInput.dataset.preserveDraftOnce;
-    savePromptDraftForCurrent();
+    const draftTargetId = activeComposerNode()?.id;
+    if(draftTargetId) savePromptDraftForCurrent({human:true, nodeId:draftTargetId});
     const currentNode = selectedNode();
     renderInputThumbsRow(currentNode);
     if(composerPromptView.mode === 'flow') renderPromptFlowContext(currentNode);

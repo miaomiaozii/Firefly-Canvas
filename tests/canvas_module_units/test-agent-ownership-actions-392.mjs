@@ -146,6 +146,32 @@ test('injected durable projection compares stored prompt structure, not raw/runt
     assert.throws(() => api.beginSmartHumanEdit([node], { project: true }), { name: 'TypeError' });
 });
 
+test('manual prompt structure changes protect the prompt, but ordinary settings and same values do not', () => {
+    const { api } = core();
+    for(const [field, before, after] of [['promptSeparator', ';', '\n'], ['promptSplitEnabled', false, true], ['llmSystemEnabled', true, false]]) {
+        const node = { id: 'structure', ...agent, [field]: before };
+        const action = beginHuman(api, [node], { fields: [field], prompt: true, at: 710 });
+        node[field] = after;
+        assert.equal(api.finishSmartHumanEdit(action, [node]), true);
+        assert.equal(node.userTouchedAt, 710);
+        assert.equal(node.promptEditedByUser, true, `${field} is persisted prompt structure`);
+        assert.equal(node.createdBy, 'agent');
+        assert.equal(node.agentNodeId, ' opaque agent ');
+        const unchanged = { id: 'same', ...agent, [field]: after };
+        const noop = beginHuman(api, [unchanged], { fields: [field], prompt: true, at: 711 });
+        unchanged[field] = after;
+        assert.equal(api.finishSmartHumanEdit(noop, [unchanged]), false);
+        assert.equal(unchanged.userTouchedAt, null);
+        assert.equal(unchanged.promptEditedByUser, false);
+    }
+    const node = { id: 'settings', ...agent, llmEnabled: false, llmProvider: 'old', llmModel: 'old', promptPresetId: 'old', refFrameId: 'old' };
+    const action = beginHuman(api, [node], { fields: ['llmEnabled', 'llmProvider', 'llmModel', 'promptPresetId', 'refFrameId'], prompt: true, at: 712 });
+    Object.assign(node, { llmEnabled: true, llmProvider: 'new', llmModel: 'new', promptPresetId: 'new', refFrameId: 'new' });
+    assert.equal(api.finishSmartHumanEdit(action, [node]), true);
+    assert.equal(node.userTouchedAt, 712);
+    assert.equal(node.promptEditedByUser, false, 'settings and bindings are not prompt structure');
+});
+
 test('only explicit prompt=true promotes persisted prompt edits; live identity and protection are never restored from stale snapshots', () => {
     const { api } = core();
     for(const prompt of [false, undefined, 'true', 1]) {

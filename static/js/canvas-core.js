@@ -235,7 +235,7 @@ function smartHumanEditedNode(before, after, {prompt=false, at}={}){
 function smartHumanEditContent(node, {transient=true, prompt=false}={}){
     const ownershipKeys = ['createdBy', 'agentNodeId', 'userTouchedAt', 'promptEditedByUser'];
     const transientKeys = ['running', 'pending', 'queued', 'pendingTasks', 'runStartedAt', 'runFinishedAt', 'runElapsedMs', 'runTimerHidden', '_runMetaTargetId', 'conversationSending', 'agentPlanning', 'agentExecuting'];
-    const promptKeys = ['text', 'prompt', 'promptDraftHtml', 'promptDraftText', 'llmSystemPrompt', 'llmInstruction', 'variablePrompt', 'variablePrompts'];
+    const promptKeys = ['text', 'prompt', 'promptDraftHtml', 'promptDraftText', 'llmSystemPrompt', 'llmInstruction', 'variablePrompt', 'variablePrompts', 'promptSeparator', 'promptSplitEnabled', 'llmSystemEnabled'];
     const clean = Object.fromEntries(Object.keys(node || {}).filter(key => !ownershipKeys.includes(key)
         && (!transient || !transientKeys.includes(key)) && (!prompt || promptKeys.includes(key))).map(key => [key, node[key]]));
     if(transient){
