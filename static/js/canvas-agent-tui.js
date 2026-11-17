@@ -41,7 +41,356 @@ function getAgentTuiState(nodeId) {
             scrollState: null,       // #314：{scrollTop, atBottom} 阅读位置保留
         });
     }
+    agentNodeRefsInit(agentTuiState.get(nodeId));
     return agentTuiState.get(nodeId);
+}
+
+// #409: references belong to this input draft, never to a saved canvas node.
+const agentNodeRefsRuntime = { activeId: '', sequence: 0 };
+function agentNodeRefsInit(state) {
+    if (!state.nodeRefsDraft) state.nodeRefsDraft = {
+        selected: [], manual: [], dismissed: new Set(), labels: new Map(), selectionKey: null,
+        revision: 0, menu: null, pending: new Map(), error: '',
+    };
+    return state.nodeRefsDraft;
+}
+function agentNodeRefsIds(state) {
+    const refs = agentNodeRefsInit(state);
+    return [...new Set([...refs.selected.filter(id => !refs.dismissed.has(id)), ...refs.manual])];
+}
+function agentNodeRefsLabel(nodeId, refs) {
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    if (node) {
+        const label = { node_id: nodeId, type: node.type || '', title: String(node.title || node.task_id || node.id) };
+        refs.labels.set(nodeId, label);
+        return label;
+    }
+    return refs.labels.get(nodeId) || { node_id: nodeId, type: '', title: nodeId };
+}
+function syncAgentInputNodeRefs(nodeId = '', locate = null) {
+    if (typeof locate === 'function') canvasState.agentNodeRefsLocate = locate;
+    const agents = canvasState.nodes.filter(isSmartAgentNode);
+    const target = agents.find(n => n.id === nodeId)
+        || agents.find(n => n.id === agentNodeRefsRuntime.activeId)
+        || agents.find(n => n.dock === 'left' || n.dock === 'right')
+        || (agents.length === 1 ? agents[0] : null);
+    if (!target) return;
+    if (nodeId) agentNodeRefsRuntime.activeId = target.id;
+    const state = getAgentTuiState(target.id), refs = agentNodeRefsInit(state);
+    const selected = [...new Set(canvasState.selectedIds && canvasState.selectedIds.length
+        ? canvasState.selectedIds : (canvasState.selectedId ? [canvasState.selectedId] : []))]
+        .filter(id => id !== target.id && canvasState.nodes.some(n => n.id === id));
+    const key = JSON.stringify(selected.slice().sort());
+    if (key === refs.selectionKey) return;
+    refs.selectionKey = key;
+    refs.selected = selected;
+    refs.dismissed.clear();
+    refs.revision++;
+    selected.forEach(id => agentNodeRefsLabel(id, refs));
+    agentNodeRefsRefresh(target.id);
+}
+function agentNodeRefsRefresh(nodeId) {
+    // The composer adapter is installed below; never rebuild a focused/IME textarea for selection.
+    if (typeof agentNodeRefsRefreshPanel === 'function') agentNodeRefsRefreshPanel(nodeId);
+}
+function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
+    const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    const snapshot = {
+        id: `input-${Date.now()}-${++agentNodeRefsRuntime.sequence}`, kind, message,
+        draft: state.nodeRefsControlDraft !== undefined ? state.nodeRefsControlDraft : message,
+        images: images.slice(), selected: refs.selected.slice(), manual: refs.manual.slice(),
+        dismissed: new Set(refs.dismissed), previousStatus: state.status, turn: state._turnSeq || 0,
+        labels: agentNodeRefsIds(state).map(id => ({ ...agentNodeRefsLabel(id, refs) })),
+    };
+    delete state.nodeRefsControlDraft;
+    refs.selected = [];
+    refs.manual = [];
+    refs.menu = null;
+    refs.error = '';
+    snapshot.clearedRevision = ++refs.revision;
+    snapshot.row = {
+        role: kind === 'prompt' ? 'user' : 'system',
+        text: kind === 'prompt' ? message : `${kind === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${message}`,
+        attachments: images.map(img => (img && img.name) || '').filter(Boolean),
+        node_refs: snapshot.labels, request_id: snapshot.id, input_type: kind, delivery: 'pending',
+    };
+    agentAppendMessage(state, snapshot.row);
+    if (kind === 'prompt') state.status = 'busy';
+    refs.pending.set(snapshot.id, snapshot);
+    snapshot.timer = setTimeout(() => agentNodeRefsSettle(nodeId, state, snapshot, null, tr('smart.agentRefUnconfirmed'), true), 30000);
+    return snapshot;
+}
+function agentNodeRefsSettle(nodeId, state, snapshot, receipt, error = '', uncertain = false) {
+    if (agentTuiState.get(nodeId) !== state) return;
+    const refs = agentNodeRefsInit(state);
+    if (!refs.pending.has(snapshot.id)) return;
+    // A timeout is not a rejection: retain correlation for late REST/WS receipts.
+    if (!uncertain) refs.pending.delete(snapshot.id);
+    clearTimeout(snapshot.timer);
+    if (receipt) {
+        if (refs.error === snapshot.row.delivery_error) refs.error = '';
+        delete snapshot.row.delivery_error;
+        snapshot.row.node_refs = Array.isArray(receipt.node_refs) ? receipt.node_refs : [];
+        snapshot.row.delivery = 'accepted';
+        if (snapshot.kind === 'prompt') delete refs.rejectedPrompt;
+        if (snapshot.notice) snapshot.notice.text = tr('smart.agentRefConfirmed');
+    } else {
+        snapshot.row.delivery = 'unconfirmed';
+        snapshot.row.delivery_error = error;
+        refs.error = error;
+        // A late failure must not replace text/references/images typed for a newer input.
+        if (!uncertain && !state.draft && !(state.pendingImages || []).length && refs.revision === snapshot.clearedRevision) {
+            state.draft = snapshot.draft;
+            const input = agentNodeRefsInput(nodeId);
+            if (input) input.value = snapshot.draft;
+            refs.selected = snapshot.selected;
+            refs.manual = snapshot.manual;
+            refs.dismissed = snapshot.dismissed;
+            refs.revision++;
+            if (snapshot.kind === 'prompt' && !(state.pendingImages || []).length) state.pendingImages = snapshot.images;
+        }
+        if (!uncertain && snapshot.kind === 'prompt') refs.rejectedPrompt = snapshot;
+        const notice = tr('smart.agentRefFailed').replace('{error}', error);
+        if (snapshot.notice) snapshot.notice.text = notice;
+        else snapshot.notice = agentAppendMessage(state, { role: 'system', text: notice });
+    }
+    // A prompt can reject before its optimistic follow-ups settle. Keep its
+    // rollback until the whole batch ends; never undo a real newer turn.
+    if (!refs.pending.size && refs.rejectedPrompt) {
+        const rejected = refs.rejectedPrompt;
+        if (state.status === 'busy' && (state._turnSeq || 0) === rejected.turn) state.status = rejected.previousStatus;
+        delete refs.rejectedPrompt;
+    }
+    renderAgentNode(nodeId);
+}
+function agentNodeRefsError(body, fallback) {
+    const detail = body && (body.detail || body.message);
+    return typeof detail === 'string' ? detail : (detail && detail.message) || fallback;
+}
+function agentNodeRefsTransport(nodeId, projectId, snapshot) {
+    const state = getAgentTuiState(nodeId);
+    const body = { message: snapshot.message, request_id: snapshot.id };
+    if (snapshot.labels.length) body.refs = snapshot.labels.map(ref => ({ node_id: ref.node_id }));
+    if (snapshot.kind === 'prompt') body.images = snapshot.images.map(img => typeof img === 'string' ? img : (img && img.dataUrl) || '').filter(Boolean);
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+        try { state.socket.send(JSON.stringify({ type: snapshot.kind, ...body })); }
+        catch (error) { agentNodeRefsSettle(nodeId, state, snapshot, null, String(error.message || error)); }
+        renderAgentNode(nodeId);
+        return;
+    }
+    renderAgentNode(nodeId);
+    return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${snapshot.kind}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(async response => {
+        let receipt;
+        try { receipt = await response.json(); }
+        catch (_error) { throw new Error(`HTTP ${response.status}: ${tr('smart.agentRefInvalidReceipt')}`); }
+        if (!response.ok) throw new Error(agentNodeRefsError(receipt, `HTTP ${response.status}`));
+        if (!receipt || receipt.request_id !== snapshot.id || receipt.input_type !== snapshot.kind || !Array.isArray(receipt.node_refs)) throw new Error(tr('smart.agentRefInvalidReceipt'));
+        agentNodeRefsSettle(nodeId, state, snapshot, receipt);
+    }).catch(error => agentNodeRefsSettle(nodeId, state, snapshot, null, String(error.message || error)));
+}
+function agentNodeRefsApplyEvent(nodeId, event) {
+    const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    if (event.type === 'input_accepted' || event.type === 'input_rejected') {
+        const pending = refs.pending.get(event.request_id);
+        if (pending && event.input_type === pending.kind) {
+            if (event.type === 'input_accepted' && Array.isArray(event.node_refs)) agentNodeRefsSettle(nodeId, state, pending, event);
+            else agentNodeRefsSettle(nodeId, state, pending, null, String(event.message || tr('smart.agentRefInvalidReceipt')));
+        }
+        return true;
+    }
+    if (event.type === 'queued_input' || (event.type === 'user_prompt' && (event.request_id || (Array.isArray(event.node_refs) && event.node_refs.length)))) {
+        // Reconnect may replay the already-optimistic row; reconcile by per-input identity.
+        const existing = event.request_id && state.messages.find(msg => msg.request_id === event.request_id);
+        const pending = refs.pending.get(event.request_id);
+        const canonical = Array.isArray(event.node_refs) ? event.node_refs : [];
+        if (pending) agentNodeRefsSettle(nodeId, state, pending, { node_refs: canonical });
+        if (existing) { existing.node_refs = canonical; existing.delivery = 'accepted'; }
+        else agentAppendMessage(state, { role: event.type === 'user_prompt' ? 'user' : 'system',
+            text: event.type === 'user_prompt' ? String(event.text || '') : `${event.input_type === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${String(event.text || '')}`,
+            node_refs: canonical, request_id: event.request_id, delivery: 'accepted' });
+        renderAgentNode(nodeId);
+        return true;
+    }
+    return false;
+}
+function agentNodeRefsForget(nodeId) {
+    const state = agentTuiState.get(nodeId);
+    if (state && state.nodeRefsDraft) {
+        for (const pending of state.nodeRefsDraft.pending.values()) clearTimeout(pending.timer);
+        state.nodeRefsDraft.pending.clear();
+    }
+    if (agentNodeRefsRuntime.activeId === nodeId) agentNodeRefsRuntime.activeId = '';
+}
+
+function agentNodeRefsInput(nodeId) {
+    return [...document.querySelectorAll('[data-agent-tui-input]')].find(el => el.getAttribute('data-agent-tui-input') === nodeId) || null;
+}
+function agentNodeRefsType(type) {
+    return ({
+        'smart-image': ['node-image', 'smart.agentRefImage'],
+        'smart-prompt': ['text-cursor-input', 'smart.agentRefPrompt'],
+        'smart-group': ['group', 'smart.agentRefGroup'],
+        'smart-agent': ['bot', 'smart.agentRefAgent'],
+        'smart-conversation': ['messages-square', 'smart.agentRefConversation'],
+        'agent-task': ['list-checks', 'smart.agentRefTask'],
+    })[type] || ['file', 'smart.agentRefNode'];
+}
+function agentNodeRefsVisual(ref) {
+    const [icon, key] = agentNodeRefsType(ref.type);
+    // Reuse only a thumbnail already shown on this canvas; never request original media for context.
+    const card = [...document.querySelectorAll('[data-id]')].find(el => el.getAttribute('data-id') === ref.node_id);
+    const image = card && card.querySelector('img');
+    const src = image && (image.currentSrc || image.getAttribute('src'));
+    const thumb = ref.type === 'smart-image' && src && /^(https?:|\/|data:image\/)/i.test(src)
+        ? `<img class="agent-node-ref-thumb" src="${escapeAttr(src)}" alt="">` : agentIco(icon);
+    return `<span class="agent-node-ref-visual" title="${escapeAttr(tr(key))}">${thumb}</span>`;
+}
+function agentNodeRefsMessageHtml(message) {
+    const chips = (Array.isArray(message.node_refs) ? message.node_refs : []).map(ref =>
+        `<button type="button" class="agent-node-ref-jump" data-agent-ref-jump="${escapeAttr(ref.node_id)}" title="${escapeAttr(tr('smart.agentRefLocate'))}">${agentNodeRefsVisual(ref)}<span>${escapeHtml(String(ref.title || ref.node_id))}</span></button>`).join('');
+    const status = message.delivery === 'pending' ? tr('smart.agentRefPending')
+        : message.delivery === 'unconfirmed' ? String(message.delivery_error || tr('smart.agentRefUnconfirmed')) : '';
+    return (chips ? `<div class="agent-node-ref-message">${chips}</div>` : '')
+        + (status ? `<div class="agent-node-ref-delivery" role="status">${escapeHtml(status)}</div>` : '');
+}
+function agentNodeRefsContent(nodeId) {
+    const refs = agentNodeRefsInit(getAgentTuiState(nodeId));
+    const chips = agentNodeRefsIds(getAgentTuiState(nodeId)).map(id => {
+        const label = agentNodeRefsLabel(id, refs);
+        const missing = !canvasState.nodes.some(node => node.id === id);
+        return `<span class="agent-node-ref-chip${missing ? ' agent-node-ref-missing' : ''}">${agentNodeRefsVisual(label)}<span class="agent-node-ref-title" title="${escapeAttr(label.title)}">${escapeHtml(label.title)}</span><button type="button" data-agent-ref-remove="${escapeAttr(id)}" aria-label="${escapeAttr(tr('smart.agentRefRemove').replace('{title}', label.title))}">${agentIco('x')}</button></span>`;
+    }).join('');
+    const menu = refs.menu;
+    const options = menu ? menu.items.map((ref, index) => `<button type="button" role="option" tabindex="-1" id="agent-ref-option-${escapeAttr(nodeId)}-${index}" aria-selected="${index === menu.index}" data-agent-ref-choice="${escapeAttr(ref.node_id)}">${agentNodeRefsVisual(ref)}<span>${escapeHtml(ref.title)}</span><span class="agent-node-ref-kind">${escapeHtml(tr(agentNodeRefsType(ref.type)[1]))}</span></button>`).join('') : '';
+    return (chips ? `<div class="agent-node-ref-chips" aria-label="${escapeAttr(tr('smart.agentRefDraft'))}">${chips}</div>` : '')
+        + (menu ? `<div class="agent-node-refs-menu" id="agent-ref-menu-${escapeAttr(nodeId)}" role="listbox" aria-label="${escapeAttr(tr('smart.agentRefSearch'))}">${options || `<div class="agent-node-ref-empty" role="status">${escapeHtml(tr('smart.agentRefNoMatches'))}</div>`}</div>` : '')
+        + (refs.error ? `<div class="agent-node-ref-error" role="alert">${escapeHtml(refs.error)}</div>` : '');
+}
+function agentNodeRefsComposerHtml(nodeId) {
+    return `<div class="agent-node-refs" data-agent-refs="${escapeAttr(nodeId)}">${agentNodeRefsContent(nodeId)}</div>`;
+}
+function agentNodeRefsRefreshPanel(nodeId) {
+    const root = [...document.querySelectorAll('[data-agent-refs]')].find(el => el.getAttribute('data-agent-refs') === nodeId);
+    if (root) { root.innerHTML = agentNodeRefsContent(nodeId); agentNodeRefsBindPanel(root, nodeId); }
+    const input = agentNodeRefsInput(nodeId);
+    if (!input) return;
+    const menu = agentNodeRefsInit(getAgentTuiState(nodeId)).menu;
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', menu ? 'true' : 'false');
+    input.setAttribute('aria-controls', `agent-ref-menu-${nodeId}`);
+    if (menu && menu.items.length) input.setAttribute('aria-activedescendant', `agent-ref-option-${nodeId}-${menu.index}`);
+    else input.removeAttribute('aria-activedescendant');
+}
+function agentNodeRefsMention(input, nodeId) {
+    const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    if (state.composing) return;
+    const caret = input.selectionStart;
+    const match = input.selectionStart === input.selectionEnd && input.value.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/u);
+    if (!match) refs.menu = null;
+    else {
+        const query = match[1].toLocaleLowerCase();
+        const items = canvasState.nodes.filter(node => node.id !== nodeId
+            && `${node.title || ''} ${node.task_id || ''} ${node.id}`.toLocaleLowerCase().includes(query))
+            .slice(0, 8).map(node => agentNodeRefsLabel(node.id, refs));
+        refs.menu = { items, index: 0, start: caret - match[1].length - 1, end: caret };
+    }
+    agentNodeRefsRefreshPanel(nodeId);
+}
+function agentNodeRefsChoose(nodeId, id) {
+    const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    const input = agentNodeRefsInput(nodeId), menu = refs.menu;
+    if (!input || !menu || state.composing || !canvasState.nodes.some(node => node.id === id)) return;
+    refs.manual = [...new Set([...refs.manual, id])];
+    refs.dismissed.delete(id);
+    refs.revision++;
+    refs.menu = null;
+    input.setRangeText('', menu.start, menu.end, 'end');
+    state.draft = input.value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    agentNodeRefsRefreshPanel(nodeId);
+    input.focus();
+}
+function agentNodeRefsBindPanel(root, nodeId) {
+    root.querySelectorAll('button').forEach(button => button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }));
+    root.querySelectorAll('[data-agent-ref-remove]').forEach(button => button.addEventListener('click', event => {
+        event.stopPropagation();
+        const refs = agentNodeRefsInit(getAgentTuiState(nodeId)), id = button.getAttribute('data-agent-ref-remove');
+        refs.manual = refs.manual.filter(value => value !== id);
+        refs.dismissed.add(id);
+        refs.revision++;
+        agentNodeRefsRefreshPanel(nodeId);
+    }));
+    root.querySelectorAll('[data-agent-ref-choice]').forEach(button => button.addEventListener('click', event => {
+        event.stopPropagation();
+        agentNodeRefsChoose(nodeId, button.getAttribute('data-agent-ref-choice'));
+    }));
+}
+function agentNodeRefsBind(el, node) {
+    const nodeId = node.id, state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    const input = el.querySelector('[data-agent-tui-input]');
+    const panel = el.querySelector('[data-agent-refs]');
+    if (panel) agentNodeRefsBindPanel(panel, nodeId);
+    if (input) {
+        input.addEventListener('focus', () => { syncAgentInputNodeRefs(nodeId); agentNodeRefsRefreshPanel(nodeId); });
+        input.addEventListener('input', () => {
+            if (state.draft !== input.value) refs.revision++;
+            agentNodeRefsMention(input, nodeId);
+        });
+        input.addEventListener('click', () => agentNodeRefsMention(input, nodeId));
+        input.addEventListener('compositionstart', () => { refs.menu = null; agentNodeRefsRefreshPanel(nodeId); });
+        input.addEventListener('compositionend', () => queueMicrotask(() => {
+            const current = agentNodeRefsInput(nodeId);
+            if (current) agentNodeRefsMention(current, nodeId);
+        }));
+        input.addEventListener('keyup', event => {
+            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) agentNodeRefsMention(input, nodeId);
+        });
+        input.addEventListener('blur', () => queueMicrotask(() => {
+            const active = document.activeElement;
+            if (!active || active.getAttribute('data-agent-tui-input') !== nodeId) { refs.menu = null; agentNodeRefsRefreshPanel(nodeId); }
+        }));
+        input.addEventListener('keydown', event => {
+            if (event.isComposing || event.keyCode === 229 || state.composing || !refs.menu) return;
+            const menu = refs.menu;
+            if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); refs.menu = null; agentNodeRefsRefreshPanel(nodeId); }
+            else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && menu.items.length) {
+                event.preventDefault(); event.stopImmediatePropagation();
+                menu.index = (menu.index + (event.key === 'ArrowDown' ? 1 : -1) + menu.items.length) % menu.items.length;
+                agentNodeRefsRefreshPanel(nodeId);
+            } else if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault(); event.stopImmediatePropagation();
+                if (menu.items.length) agentNodeRefsChoose(nodeId, menu.items[menu.index].node_id);
+            }
+        }, true);
+    }
+    el.querySelectorAll('[data-agent-steer],[data-agent-followup]').forEach(button => button.addEventListener('click', () => {
+        if (input) state.nodeRefsControlDraft = input.value;
+    }, true));
+    el.querySelectorAll('[data-agent-ref-jump]').forEach(button => {
+        button.addEventListener('mousedown', event => event.stopPropagation());
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            const id = button.getAttribute('data-agent-ref-jump');
+            if (!canvasState.nodes.some(target => target.id === id)) {
+                refs.error = tr('smart.agentRefDeleted');
+                agentNodeRefsRefreshPanel(nodeId);
+                return;
+            }
+            const locate = canvasState.agentNodeRefsLocate;
+            if (typeof locate === 'function') locate(id);
+            const target = [...document.querySelectorAll('[data-id]')].find(card => card.getAttribute('data-id') === id);
+            if (target) {
+                target.classList.remove('agent-node-ref-flash');
+                void target.offsetWidth;
+                target.classList.add('agent-node-ref-flash');
+                target.addEventListener('animationend', () => target.classList.remove('agent-node-ref-flash'), { once: true });
+            }
+        });
+    });
+    agentNodeRefsRefreshPanel(nodeId);
 }
 
 // D2: display metadata is memory-only; the source records retain their existing shape.
@@ -445,6 +794,7 @@ function handleAgentEvent(nodeId, event) {
 
 function applyAgentEventBody(nodeId, event) {
     const state = getAgentTuiState(nodeId);
+    if (agentNodeRefsApplyEvent(nodeId, event)) return;
     const eventType = event.type;
 
     switch (eventType) {
@@ -671,48 +1021,9 @@ function applyAgentEventBody(nodeId, event) {
 }
 
 function sendAgentPrompt(nodeId, projectId, message, images = []) {
-    const state = getAgentTuiState(nodeId);
-    // #268：images 可能是 {dataUrl,name,caption} 对象，发给后端的 payload 统一为 dataURL 字符串列表
-    const imageList = (images || []).map(img => (typeof img === 'string' ? img : (img && img.dataUrl) || ''))
-        .filter(Boolean);
-
-    // Add user message to state（#268：记录附件名，消息可追溯）
-    agentAppendMessage(state, { role: 'user', text: message,
-        attachments: (images || []).map(img => (img && img.name) || '').filter(Boolean) });
-    state.status = 'busy';
-
-    // Send via WebSocket if connected
-    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-        state.socket.send(JSON.stringify({
-            type: 'prompt',
-            message: message,
-            images: imageList,
-        }));
-    } else {
-        // WebSocket not connected, use HTTP API
-        // #280：送达失败不再静默吞掉（例如 500 "Failed to start agent session"）——
-        // 在历史区写一条可见警告，避免用户以为指令已送达。
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/prompt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, images: imageList }),
-        }).then(async (resp) => {
-            if (resp.ok) return;
-            let detail = `HTTP ${resp.status}`;
-            try {
-                const data = await resp.json();
-                if (data && data.detail) detail = String(data.detail);
-            } catch (e) { /* #348: 非 JSON 错误体，detail 回落 HTTP 状态码，错误仍会写入历史区（下一行） */ }
-            agentAppendMessage(state, { role: 'system', text: `⚠️ 指令未送达：${detail}` });
-            renderAgentNode(nodeId);
-        }).catch(e => {
-            console.error('Failed to send agent prompt:', e);
-            agentAppendMessage(state, { role: 'system', text: `⚠️ 指令未送达：${e && e.message || e}` });
-            renderAgentNode(nodeId);
-        });
-    }
-
-    renderAgentNode(nodeId);
+    return sendAgentCommand(nodeId, projectId, 'prompt', {
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'prompt', message, images),
+    });
 }
 
 // ---- #268：聊天附件（图片/视频/音频） ----
@@ -789,6 +1100,7 @@ async function handleAgentAttachments(nodeId, projectId, files) {
 }
 
 function sendAgentCommand(nodeId, projectId, command, options = {}) {
+    if (options.nodeRefsSubmission) return agentNodeRefsTransport(nodeId, projectId, options.nodeRefsSubmission);
     const state = getAgentTuiState(nodeId);
     const { body, wsPayload, optimistic, onSuccess, onFailure } = options;
     const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/${command}`;
@@ -836,20 +1148,14 @@ function sendAgentCommand(nodeId, projectId, command, options = {}) {
 }
 
 function sendAgentSteer(nodeId, projectId, message) {
-    sendAgentCommand(nodeId, projectId, 'steer', {
-        body: { message },
-        wsPayload: { type: 'steer', message },
-        optimistic: (state) => agentAppendMessage(state, { role: 'system', text: `↪ steer: ${message}` }),
-        onFailure: (state) => agentAppendMessage(state, { role: 'system', text: '⚠️ steer 请求未送达，可能没生效' }),
+    return sendAgentCommand(nodeId, projectId, 'steer', {
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'steer', message),
     });
 }
 
 function sendAgentFollowUp(nodeId, projectId, message) {
-    sendAgentCommand(nodeId, projectId, 'follow_up', {
-        body: { message },
-        wsPayload: { type: 'follow_up', message },
-        optimistic: (state) => agentAppendMessage(state, { role: 'system', text: `⏳ follow_up queued: ${message}` }),
-        onFailure: (state) => agentAppendMessage(state, { role: 'system', text: '⚠️ follow_up 请求未送达，可能没生效' }),
+    return sendAgentCommand(nodeId, projectId, 'follow_up', {
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message),
     });
 }
 
@@ -1321,6 +1627,7 @@ function agentNodeBodyHtml(node) {
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         }
+        messagesHtml += agentNodeRefsMessageHtml(msg);
         rowHtml.set(entry.key, messagesHtml);
     }
 
@@ -1468,6 +1775,8 @@ function agentNodeBodyHtml(node) {
         pendingHtml = `<div class="agent-tui-attach-row">${chips}</div>`;
     }
 
+    pendingHtml += agentNodeRefsComposerHtml(nodeId);
+
     // #301：空会话给 body 加类，空状态垂直居中，缓解「中间大空白」的失衡感。
     const hasTuiContent = Boolean(timeline.length || state.confirm);
 
@@ -1565,6 +1874,8 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
     const message = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     if (!message) return;
     const inputState = getAgentTuiState(nodeId);
+    if (inputState.composing) return;
+    inputState.nodeRefsControlDraft = inputEl.value;
     // Clear before the sender rebuilds the DOM, not on the now-detached old textarea afterward.
     inputEl.value = '';
     inputState.draft = '';
@@ -1721,6 +2032,7 @@ function bindAgentScroll(el, state) {
 }
 
 function bindAgentNodeControls(el, node){
+    agentNodeRefsBind(el, node);
     // TUI-style agent node: bind terminal input
     const nodeId = node.id;
     const projectId = canvasId || '';
@@ -2411,6 +2723,7 @@ function agentDockUnmount(nodeId){
 }
 
 function cleanupAgentTuiState(nodeId) {
+    agentNodeRefsForget(nodeId);
     agentDockForget(nodeId);
     agentDockUnmount(nodeId);
     const state = agentTuiState.get(nodeId);

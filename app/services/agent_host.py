@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -800,8 +801,28 @@ class AgentHostManager:
                 await self._kill_process_tree(session, reason=f"rpc '{command_type}' timeout")
         return response
 
-    async def send_prompt(self, session: AgentSession, message: str, images: list = None) -> None:
-        """Send a prompt to the agent."""
+    @staticmethod
+    def _input_event(input_type: str, message: str, *, node_refs=None,
+                     node_ref_context: str = "", request_id=None) -> dict:
+        """Own this input's accepted snapshot; never reuse session/canvas refs."""
+        event = {"type": "user_prompt" if input_type == "prompt" else "queued_input", "text": message}
+        if input_type != "prompt":
+            event["input_type"] = input_type
+        if node_refs:
+            event["node_refs"] = deepcopy(node_refs)
+            event["node_ref_context"] = node_ref_context
+        if request_id is not None:
+            event["request_id"] = request_id
+        return event
+
+    @staticmethod
+    def _input_text(event: dict) -> str:
+        context = event.get("node_ref_context") or ""
+        return event["text"] + ("\n\n" + context if context else "")
+
+    async def send_prompt(self, session: AgentSession, message: str, images: list = None, *,
+                          node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        """Send original text plus the already-resolved per-input snapshot."""
         # Refs #323 票 E（reference frame）：每轮发送前解析 agent.refFrameId 素材，
         # 注入当前 CLI（pi=RPC images，codex=`exec -i` 实测语法）。护栏（监理 token 钉）：
         # ≤REF_MAX_IMAGES 张、单图 >REF_MAX_IMAGE_BYTES 跳过、路径解析失败跳过不炸整轮
@@ -809,22 +830,21 @@ class AgentHostManager:
         # 爆炸），但监理钉①：user_prompt 事件带轻量 refs 元数据 {node_id,name}+跳过清单，
         # 回放 UI 可区分带素材/不带素材轮次，决策可审计。
         ref_images, ref_skipped = self._collect_reference_images(session)
-        user_payload = {"type": "user_prompt", "text": message}
+        user_payload = self._input_event("prompt", message, node_refs=node_refs,
+                                         node_ref_context=node_ref_context, request_id=request_id)
         if ref_images or ref_skipped:
             user_payload["refs"] = [{"node_id": r["node_id"], "name": r["name"]} for r in ref_images]
             if ref_skipped:
                 user_payload["refs_skipped"] = ref_skipped
-        # #318 票 C：user 侧入回放日志（仅落盘不广播——前端实时侧用本地回声，
-        # 避免双气泡；降级重放/刷新回放读此数据）。
-        self._persist_event(session, user_payload)
-        inject_text = message
+        inject_text = self._input_text(user_payload)
         if ref_images or ref_skipped:
             names = [r["name"] for r in ref_images] + [s["name"] for s in ref_skipped]
-            inject_text = f"{message}\n\n【参考框素材清单】{'、'.join(names)}（图片已随本消息注入；视频/超限项见跳过原因）"
+            inject_text += f"\n\n【参考框素材清单】{'、'.join(names)}（图片已随本消息注入；视频/超限项见跳过原因）"
         # #318 票 B：codex 宿主不经 pi RPC——每轮一个 `codex exec --json` 进程。
         if session.agent_cli == "codex":
             await self._codex_turn(session, inject_text,
                                    ref_paths=[r["path"] for r in ref_images])
+            self._persist_event(session, user_payload)
             return
         command = {"type": "prompt", "message": inject_text}
         rpc_images = list(images or [])
@@ -835,6 +855,10 @@ class AgentHostManager:
         if rpc_images:
             command["images"] = rpc_images
         await self.send_command(session, command)
+        # Record acceptance only after a successful host send (no false history on
+        # broken stdin/spawn). No await between pi send and persist, so the reader
+        # cannot overtake this user_prompt round boundary on the event loop.
+        self._persist_event(session, user_payload)
         session.status = "busy"
 
     def _collect_reference_images(self, session: AgentSession) -> tuple[list, list]:
@@ -905,13 +929,25 @@ class AgentHostManager:
             return None
         return {"type": "image", "data": data, "mimeType": ref["mime"]}
 
-    async def send_steer(self, session: AgentSession, message: str) -> None:
-        """Send a steer command (redirect current turn)."""
-        await self.send_command(session, {"type": "steer", "message": message})
+    async def _send_queued_input(self, session: AgentSession, input_type: str, message: str, *,
+                                 node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        event = self._input_event(input_type, message, node_refs=node_refs,
+                                  node_ref_context=node_ref_context, request_id=request_id)
+        # Still pi RPC, not a new Codex queue. Do not persist rejected sends.
+        await self.send_command(session, {"type": input_type, "message": self._input_text(event)})
+        self._persist_event(session, event)
 
-    async def send_follow_up(self, session: AgentSession, message: str) -> None:
-        """Send a follow-up (queue for after current turn)."""
-        await self.send_command(session, {"type": "follow_up", "message": message})
+    async def send_steer(self, session: AgentSession, message: str, *,
+                         node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        """Redirect the current turn without opening a new replay round."""
+        await self._send_queued_input(session, "steer", message, node_refs=node_refs,
+                                      node_ref_context=node_ref_context, request_id=request_id)
+
+    async def send_follow_up(self, session: AgentSession, message: str, *,
+                             node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        """Queue after the current turn; Codex queue support remains unchanged."""
+        await self._send_queued_input(session, "follow_up", message, node_refs=node_refs,
+                                      node_ref_context=node_ref_context, request_id=request_id)
 
     # ------------------------------------------------------------------
     # #318 票 B：codex 宿主——per-turn 进程模型（ADR 0024）。
@@ -1557,26 +1593,42 @@ class AgentHostManager:
                             pass
         except FileNotFoundError:
             return "", 0
-        turns = []  # [{"user": str, "assistant": str}]
+        turns = []  # Only user_prompt opens a round; queued inputs never do.
         cur = None
         for rec in records:
             ev = rec.get("event") or {}
             et = ev.get("type")
             if et == "user_prompt":
-                cur = {"user": str(ev.get("text") or ""), "assistant": ""}
+                cur = {"user": self._input_text({"text": str(ev.get("text") or ""),
+                                               "node_ref_context": ev.get("node_ref_context")}),
+                       "parts": []}
                 turns.append(cur)
+            elif et == "queued_input" and turns:
+                # Inputs accepted after agent_end still belong to the preceding
+                # existing round. Read the saved snapshot, never today's canvas.
+                text = self._input_text({"text": str(ev.get("text") or ""),
+                                         "node_ref_context": ev.get("node_ref_context")})
+                turns[-1]["parts"].append({"role": f"queued_input ({ev.get('input_type', '')})", "text": text})
             elif et == "agent_end":
                 cur = None
             elif et == "message_update":
                 ame = ev.get("assistantMessageEvent") or {}
                 if ame.get("type") == "text_delta" and cur is not None:
-                    cur["assistant"] += str(ame.get("delta") or "")
+                    parts = cur["parts"]
+                    if not parts or parts[-1]["role"] != "assistant":
+                        parts.append({"role": "assistant", "text": ""})
+                    parts[-1]["text"] += str(ame.get("delta") or "")
         recent = turns[-EVENTS_REPLAY_TURNS:]
         # 预算内保留最近轮（从尾向前积）
         keep = []
         budget = EVENTS_REPLAY_MAX_CHARS
         for t in reversed(recent):
-            block = f"user: {t['user']}\nassistant: {t['assistant']}\n"
+            # Keep accepted queued inputs between the answer segments that
+            # actually preceded/followed them; never move them to round start.
+            block = f"user: {t['user']}\n" + "".join(
+                f"{part['role']}: {part['text']}\n" for part in t["parts"])
+            if not any(part["role"] == "assistant" for part in t["parts"]):
+                block += "assistant: \n"
             if budget - len(block) < 0 and keep:
                 break
             keep.append(block)

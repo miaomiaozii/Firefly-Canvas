@@ -101,6 +101,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
+// #409：旧的无引用用例仍严格验证原载荷；关联字段另验，不把新增 request_id 当成回归。
+function inputPayloadForLegacyAssertion(raw) {
+    const payload = JSON.parse(fromContext(raw));
+    if (payload.type === 'abort') return payload;
+    const { request_id, ...rest } = payload;
+    assert.match(request_id, /^input-\d+-\d+$/);
+    return rest;
+}
+function inputMessageForLegacyAssertion(message) {
+    if (!message.request_id) return message;
+    const { request_id, input_type, delivery, node_refs, attachments, ...rest } = message;
+    assert.match(request_id, /^input-\d+-\d+$/);
+    assert.ok(['prompt', 'steer', 'follow_up'].includes(input_type));
+    assert.equal(delivery, 'pending', 'socket.send 不是服务端接受回执');
+    assert.deepEqual(node_refs, [], '旧无引用用例不得继承引用');
+    if (rest.role === 'user') rest.attachments = attachments;
+    else assert.deepEqual(attachments, []);
+    return rest;
+}
+
 // WebSocket 记录器：真实契约只有 readyState / send / close 和几个 handler 槽位。
 // OPEN 必须是 1（模块里比较的是 WebSocket.OPEN，不是数字字面量）。
 function makeWebSocketHarness(ctx, { open = true } = {}) {
@@ -666,11 +686,11 @@ test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭�
     const sendPrompt = fn(open.ctx, 'sendAgentPrompt');
     fn(open.ctx, 'connectAgentWebSocket')('n1', 'p1');
     sendPrompt('n1', 'p1', '  画一只猫  ', ['img/1']);
-    assert.deepEqual(JSON.parse(fromContext(open.ws.sent[0])), {
+    assert.deepEqual(inputPayloadForLegacyAssertion(open.ws.sent[0]), {
         type: 'prompt', message: '  画一只猫  ', images: ['img/1'],
     });
     assert.equal(open.fetchCalls.length, 0, 'WS 可用时不该再走 HTTP');
-    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages')), [
+    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages')).map(inputMessageForLegacyAssertion), [
         { role: 'user', text: '  画一只猫  ', attachments: [] }, // #268：user 消息记录附件名
     ]);
     assert.equal(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").status')), 'busy');
@@ -679,10 +699,10 @@ test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭�
     sendPrompt('n1', 'p1', '看附件', [
         { dataUrl: 'data:image/png;base64,AA', name: 'sheet.png', caption: '视频 → contact sheet' },
     ]);
-    assert.deepEqual(JSON.parse(fromContext(open.ws.sent[1])), {
+    assert.deepEqual(inputPayloadForLegacyAssertion(open.ws.sent[1]), {
         type: 'prompt', message: '看附件', images: ['data:image/png;base64,AA'],
     });
-    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages'))[1],
+    assert.deepEqual(fromContext(evaluate(open.ctx, 'getAgentTuiState("n1").messages')).map(inputMessageForLegacyAssertion)[1],
         { role: 'user', text: '看附件', attachments: ['sheet.png'] },
         '对象附件的名字记在消息上，payload 只带 dataURL');
 
@@ -692,7 +712,7 @@ test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭�
     assert.equal(fromContext(closed.fetchCalls[0].url),
         '/api/projects/proj%2F2/agent-nodes/n1/prompt');
     assert.equal(fromContext(closed.fetchCalls[0].opts.method), 'POST');
-    assert.deepEqual(JSON.parse(fromContext(closed.fetchCalls[0].opts.body)), { message: '文本', images: [] });
+    assert.deepEqual(inputPayloadForLegacyAssertion(closed.fetchCalls[0].opts.body), { message: '文本', images: [] });
 });
 
 test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort 复位 idle', () => {
@@ -702,12 +722,12 @@ test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort
     fn(ctx, 'sendAgentSteer')('n1', 'p1', '转向');
     fn(ctx, 'sendAgentFollowUp')('n1', 'p1', '排队');
     fn(ctx, 'sendAgentAbort')('n1', 'p1');
-    assert.deepEqual(ws.sent.map(raw => JSON.parse(fromContext(raw))), [
+    assert.deepEqual(ws.sent.map(inputPayloadForLegacyAssertion), [
         { type: 'steer', message: '转向' },
         { type: 'follow_up', message: '排队' },
         { type: 'abort' },
     ]);
-    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')), [
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')).map(inputMessageForLegacyAssertion), [
         { role: 'system', text: '↪ steer: 转向' },
         { role: 'system', text: '⏳ follow_up queued: 排队' },
         { role: 'system', text: '⏹ aborted' },
@@ -834,10 +854,10 @@ test('sendAgentSteer / sendAgentFollowUp: WS 未连接回退 HTTP（URL 与 body
     assert.equal(ws.sent.length, 0, 'ws 不可用，什么都不走 socket');
     assert.equal(fetchCalls.length, 2);
     assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/steer');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls[0].opts.body)), { message: '往左' });
+    assert.deepEqual(inputPayloadForLegacyAssertion(fetchCalls[0].opts.body), { message: '往左' });
     assert.equal(fromContext(fetchCalls[1].url), '/api/projects/p1/agent-nodes/n1/follow_up');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls[1].opts.body)), { message: '下一步' });
-    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')),
+    assert.deepEqual(inputPayloadForLegacyAssertion(fetchCalls[1].opts.body), { message: '下一步' });
+    assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')).map(inputMessageForLegacyAssertion),
         [{ role: 'system', text: '↪ steer: 往左' }, { role: 'system', text: '⏳ follow_up queued: 下一步' }],
         '#221：HTTP 路径也要回写系统提示，不然历史区少一条记录');
 });
@@ -1493,13 +1513,13 @@ test('bindAgentNodeControls: Enter 发送 prompt（trim/清空）；busy → fol
     tree.input.value = '  画一只猫  ';
     tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: false }));
     assert.equal(tree.input.value, '', '发送后清空输入框');
-    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'prompt', message: '画一只猫', images: [] }, 'trim 后发送');
+    assert.deepEqual(inputPayloadForLegacyAssertion(ws.sent.at(-1)), { type: 'prompt', message: '画一只猫', images: [] }, 'trim 后发送');
     assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'busy');
 
     // busy 时 Enter 进后续队列。
     tree.input.value = '再来一张';
     tree.input.dispatchEvent(ev('keydown', { key: 'Enter', shiftKey: false }));
-    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'follow_up', message: '再来一张' });
+    assert.deepEqual(inputPayloadForLegacyAssertion(ws.sent.at(-1)), { type: 'follow_up', message: '再来一张' });
     const msgs = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
     assert.equal(msgs.at(-1).text, '⏳ follow_up queued: 再来一张');
 
@@ -1532,7 +1552,7 @@ test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮'
     tree.input.value = '往左';
     tree.steer.dispatchEvent(ev('click'));
     assert.equal(tree.input.value, '');
-    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'steer', message: '往左' });
+    assert.deepEqual(inputPayloadForLegacyAssertion(ws.sent.at(-1)), { type: 'steer', message: '往左' });
     const sentBefore = ws.sent.length;
     tree.steer.dispatchEvent(ev('click'));
     assert.equal(ws.sent.length, sentBefore, '空输入 steer 不发送');
@@ -1540,7 +1560,7 @@ test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮'
     // follow-up。
     tree.input.value = '下一步';
     tree.followup.dispatchEvent(ev('click'));
-    assert.deepEqual(JSON.parse(fromContext(ws.sent.at(-1))), { type: 'follow_up', message: '下一步' });
+    assert.deepEqual(inputPayloadForLegacyAssertion(ws.sent.at(-1)), { type: 'follow_up', message: '下一步' });
 
     // abort：status 复位 idle + 系统消息。
     tree.abort.dispatchEvent(ev('click'));

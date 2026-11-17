@@ -1077,6 +1077,7 @@ function syncSelectionUi(){
     syncSmartSelectedImageResolution(world);
     syncRunButtonState();
     scheduleConnectionLayerRefresh();
+    syncAgentInputNodeRefs('', focusRevealNode);
 }
 function isNodeSelected(id){
     return canvasState.selectedId === id || canvasState.selectedIds.includes(id);
@@ -9638,6 +9639,7 @@ function rememberInlineVideoActivations(){
     });
 }
 function render(){
+    syncAgentInputNodeRefs('', focusRevealNode);
     normalizeAgentDockNodes(canvasState.nodes); // #407：旧多 dock 必须在 world 过滤前取回其它节点
     syncCanvasEmptyState();
     rememberInlineVideoActivations();

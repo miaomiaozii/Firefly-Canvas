@@ -11,7 +11,8 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import agent_host_manager
-from app.services.agent_errors import agent_error
+from app.services.agent_errors import agent_error, translate_detail
+from app.services.agent_message_refs import resolve_node_refs
 from app.routers.api_agent_tools import (
     _find_node, _snapshot_node, _apply_mutations, _apply_mutations_from_snapshot,
     _open_canvas, reset_generation_counts,
@@ -437,59 +438,117 @@ async def set_agent_autonomy(
     }
 
 
+async def _input_body(request: Optional[Request], message: Any, images=None) -> dict:
+    """Keep legacy Python entrypoints while retaining omitted-vs-null wire fields."""
+    body = {"message": message}
+    if images is not None:
+        body["images"] = images
+    if request is not None:
+        try:
+            raw = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Input body must be valid JSON") from exc
+        if isinstance(raw, dict):
+            body["message"] = raw.get("message")
+            for key in ("refs", "request_id", "images"):
+                if key in raw:
+                    body[key] = raw[key]
+    return body
+
+
+def _prepare_input(project_id: str, node_id: str, input_type: str, body: dict) -> dict:
+    """Resolve a fresh, authorized project snapshot before any spawn/send."""
+    message = body.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise agent_error(400, "INVALID_ARGUMENT", "message must be a nonblank string.")
+    if "request_id" in body:
+        request_id = body["request_id"]
+        if (not isinstance(request_id, str) or not request_id.strip()
+                or len(request_id) > 128 or not request_id.isprintable()):
+            raise agent_error(400, "INVALID_ARGUMENT",
+                              "request_id must be a nonblank printable string of at most 128 characters.")
+    if input_type == "prompt":
+        images = body.get("images", [])
+        if not isinstance(images, list) or any(not isinstance(image, str) for image in images):
+            raise agent_error(400, "INVALID_ARGUMENT", "images must be an array of strings.")
+    canvas = _open_canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
+    # 'agent' is a persisted legacy type, still supported by the old clients.
+    if node.get("type") not in (NODE_TYPE_AGENT, "agent"):
+        raise agent_error(400, "INVALID_ARGUMENT", "The input target must be an Agent node.")
+    resolved = resolve_node_refs(canvas, body["refs"]) if "refs" in body else resolve_node_refs(canvas)
+    return resolved
+
+
+async def _send_input(project_id: str, node_id: str, input_type: str, body: dict, session=None) -> dict:
+    resolved = _prepare_input(project_id, node_id, input_type, body)
+    if session is None:
+        session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    # No new kwargs for legacy inputs/managers without any metadata.
+    metadata = {}
+    if resolved["node_refs"]:
+        metadata.update(node_refs=resolved["node_refs"], node_ref_context=resolved["context"])
+    if "request_id" in body:
+        metadata["request_id"] = body["request_id"]
+    try:
+        if input_type == "prompt":
+            _apply_node_host(project_id, node_id, session)
+            if not session.is_running:
+                if not await agent_host_manager.spawn_session(session):
+                    raise agent_error(500, "INTERNAL_ERROR", "Failed to start agent session")
+            await agent_host_manager.send_prompt(session, body["message"], body.get("images", []), **metadata)
+        else:
+            if not session.is_running:
+                raise agent_error(400, "INVALID_ARGUMENT", "Agent is not running")
+            send = (agent_host_manager.send_steer if input_type == "steer"
+                    else agent_host_manager.send_follow_up)
+            await send(session, body["message"], **metadata)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise agent_error(502, "UPSTREAM_MODEL_ERROR", f"Agent input send failed: {exc}") from exc
+    accepted = {"success": True, "node_id": node_id, "input_type": input_type,
+                "node_refs": resolved["node_refs"]}
+    if "request_id" in body:
+        accepted["request_id"] = body["request_id"]
+    return accepted
+
+
 @router.post("/{node_id}/prompt")
 async def send_agent_prompt(
     project_id: str,
     node_id: str,
-    message: str = Body(...),
-    images: List[str] = Body(default=[]),
+    message: Any = Body(default=None),
+    images: Any = Body(default=[]),
     x_agent_project: str = Header(default=""),
+    request: Request = None,
 ):
-    """Send a prompt to the agent."""
-    # #388：节点必须已存在于 canvas——幽灵 node_id 不得 get_or_create+spawn。
-    # （正式创建入口是 POST /agent-nodes，它对不存在节点会 _upsert_agent_canvas_node 落盘。）
-    _find_node(project_id, node_id)  # 404 for missing project/node
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    _apply_node_host(project_id, node_id, session)
-    if not session.is_running:
-        success = await agent_host_manager.spawn_session(session)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to start agent session")
-
-    await agent_host_manager.send_prompt(session, message, images)
-    return {"success": True, "node_id": node_id}
+    """Send a prompt; optional body refs/request_id describe this input only."""
+    return await _send_input(project_id, node_id, "prompt", await _input_body(request, message, images))
 
 
 @router.post("/{node_id}/steer")
 async def send_agent_steer(
     project_id: str,
     node_id: str,
-    message: str = Body(...),
+    message: Any = Body(default=None),
     x_agent_project: str = Header(default=""),
+    request: Request = None,
 ):
-    """Send a steer command to redirect the agent's current turn."""
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if not session.is_running:
-        raise HTTPException(status_code=400, detail="Agent is not running")
-
-    await agent_host_manager.send_steer(session, message)
-    return {"success": True, "node_id": node_id}
+    """Redirect the turn; accepts a body object or the legacy JSON string."""
+    return await _send_input(project_id, node_id, "steer", await _input_body(request, message))
 
 
 @router.post("/{node_id}/follow_up")
 async def send_agent_follow_up(
     project_id: str,
     node_id: str,
-    message: str = Body(...),
+    message: Any = Body(default=None),
     x_agent_project: str = Header(default=""),
+    request: Request = None,
 ):
-    """Queue a follow-up message for after the current turn."""
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if not session.is_running:
-        raise HTTPException(status_code=400, detail="Agent is not running")
-
-    await agent_host_manager.send_follow_up(session, message)
-    return {"success": True, "node_id": node_id}
+    """Queue a follow-up, with optional per-input refs/request_id."""
+    return await _send_input(project_id, node_id, "follow_up", await _input_body(request, message))
 
 
 @router.post("/{node_id}/abort")
@@ -743,34 +802,25 @@ async def agent_event_stream(
             except json.JSONDecodeError:
                 continue
 
+            if not isinstance(command, dict):
+                await websocket.send_json({"type": "error", "code": "INVALID_ARGUMENT",
+                                           "message": "Agent command must be an object."})
+                continue
             cmd_type = command.get("type", "")
 
-            if cmd_type == "prompt":
-                message = command.get("message", "")
-                images = command.get("images", [])
-                if message:
-                    # #388：WS 兜底路径同样不得为不存在节点创建/spawn（与 REST /prompt 同口径）。
-                    try:
-                        _find_node(project_id, node_id)
-                    except Exception:
-                        await websocket.send_json({"type": "error",
-                                                   "message": f"Node not found: {node_id}"})
-                        continue
-                    if not session.is_running: # #317：WS 兜底路径也按需拉起（主路径是 REST /prompt）
-                        if not await agent_host_manager.spawn_session(session):
-                            await websocket.send_json({"type": "error", "message": "Failed to start agent session"})
-                            continue
-                    await agent_host_manager.send_prompt(session, message, images)
-
-            elif cmd_type == "steer":
-                message = command.get("message", "")
-                if message:
-                    await agent_host_manager.send_steer(session, message)
-
-            elif cmd_type == "follow_up":
-                message = command.get("message", "")
-                if message:
-                    await agent_host_manager.send_follow_up(session, message)
+            if cmd_type in ("prompt", "steer", "follow_up"):
+                try:
+                    accepted = await _send_input(project_id, node_id, cmd_type, command, session)
+                except HTTPException as exc:
+                    detail = translate_detail(exc.status_code, exc.detail)
+                    rejected = {"type": "error", "input_type": cmd_type,
+                                "message": detail["message"], "code": detail["code"]}
+                    if "request_id" in command:
+                        rejected.update(type="input_rejected", request_id=command["request_id"])
+                    await websocket.send_json(rejected)
+                    continue
+                # Acceptance means the host send returned, not merely that WS received data.
+                await websocket.send_json({"type": "input_accepted", **accepted})
 
             elif cmd_type == "abort":
                 await agent_host_manager.send_abort(session)
