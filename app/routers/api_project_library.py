@@ -16,6 +16,7 @@ import shutil
 import uuid
 import hashlib
 import mimetypes
+import math
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -23,6 +24,8 @@ from pydantic import BaseModel, Field
 from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, NODE_TYPE_CONVERSATION, NODE_TYPE_IMAGE, NODE_TYPE_LOCAL_EDIT, NODE_TYPE_PROMPT, NODE_TYPE_TASK, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, extract_task_id_from_text, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.services.agent_host import agent_host_manager
+from app.services.agent_errors import agent_error
+from app.core import is_registered_conversation_user_message
 from app.project_activity import (
     ProjectCleanupActive,
     assert_project_owner_admissible,
@@ -3445,8 +3448,37 @@ def project_conversation_connected_references(project_id: str, canvas: Dict[str,
         references.append({'asset_id': asset_id, 'kind': kind, 'name': str(item.get('name') or record.get('name') or record.get('filename') or asset_id)[:160]})
     return references
 
-async def persist_project_conversation_pending(project_id: str, node_id: str, user_message: Dict[str, Any], *, node_adapter: Optional[Dict[str, str]]=None, enforce_admission: bool=False) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _conversation_original_outboxes(outboxes: Any, request_id: str) -> List[Dict[str, Any]]:
+    originals = []
+    for entry in outboxes or []:
+        if not isinstance(entry, dict) or entry.get('kind') != 'conversation':
+            continue
+        payload = entry.get('payload')
+        if not isinstance(payload, dict) or payload.get('requestId') != request_id:
+            continue
+        version = payload.get('conversationProtocol')
+        if not isinstance(version, bool) and version == 1:
+            originals.append(payload)
+    return originals
+
+
+def _flush_conversation_receipt(project_id: str, node_id: str, request_id: str, user_message_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Even an in-memory existing receipt must cross the durable save boundary."""
+    _app_main.project_store_call('flush', project_id)
+    canvas = _app_main.project_store_call('open_project', project_id)['canvas']
+    snapshot = conversation_task_snapshot(canvas, node_id, request_id)
+    if not snapshot or str(snapshot['message'].get('id') or '') != user_message_id:
+        raise agent_error(409, 'CANVAS_CONFLICT', '保存后无法确认原对话回执', '查询原请求回执，不要更换请求标识。')
+    return canvas, snapshot
+
+async def persist_project_conversation_pending(project_id: str, node_id: str, user_message: Dict[str, Any], *, node_adapter: Optional[Dict[str, str]]=None, enforce_admission: bool=False, existing_only: bool=False) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     request_id = str(user_message.get('request_id') or '')
+    def same_request(entry):
+        return isinstance(entry, dict) and entry.get('kind') == 'conversation' and isinstance(entry.get('payload'), dict) and entry['payload'].get('requestId') == request_id
+
+    def same_local_message(item):
+        return isinstance(item, dict) and item.get('role') == 'user' and not is_registered_conversation_user_message(item) and str(item.get('request_id') or '') == request_id
+
     for _attempt in range(8):
         try:
 
@@ -3459,31 +3491,64 @@ async def persist_project_conversation_pending(project_id: str, node_id: str, us
                         if not isinstance(conversation, dict) or conversation.get('type') != NODE_TYPE_CONVERSATION:
                             raise HTTPException(status_code=400, detail='目标节点不是对话节点')
                         existing = conversation_task_snapshot(current_canvas, node_id, request_id)
+                        outboxes = conversation.get('pendingActionResumes') or []
+                        originals = _conversation_original_outboxes(outboxes, request_id)
+                        for original in originals:
+                            if original.get('projectId') != project_id or original.get('nodeId') != node_id or original.get('text') != user_message.get('text') or type(original.get('humanIntent')) is not bool or original['humanIntent'] != user_message.get('user_edit', False):
+                                raise agent_error(400, 'INVALID_ARGUMENT', '对话请求与原始待发意图不一致', '沿用原请求的文本、定位和人工标志。')
                         if existing:
-                            return (current_canvas, existing)
+                            receipt = existing['message']
+                            if 'user_edit' in receipt and (receipt.get('text') != user_message.get('text') or receipt['user_edit'] != user_message.get('user_edit', False)):
+                                raise agent_error(400, 'INVALID_ARGUMENT', '对话请求标识已用于不同的文本或人工标志', '使用原请求的文本和人工标志查询回执。')
+                            if any(same_request(entry) for entry in outboxes) or any(same_local_message(item) for item in conversation.get('messages') or []):
+                                cleaned = copy.deepcopy(conversation)
+                                cleaned['messages'] = [item for item in cleaned.get('messages') or [] if not same_local_message(item)]
+                                if any(same_request(entry) for entry in outboxes):
+                                    cleaned['pendingActionResumes'] = [copy.deepcopy(entry) for entry in outboxes if not same_request(entry)]
+                                _app_main.project_store_call('apply_mutations', project_id, [{'op': 'upsert_node', 'node': cleaned}], base_revision=int(current_canvas.get('revision') or 0))
+                            return _flush_conversation_receipt(project_id, node_id, request_id, str(receipt.get('id') or ''))
+                        if existing_only:
+                            raise agent_error(409, 'CANVAS_CONFLICT', '原对话回执已变更', '刷新并查询原请求，不要从状态查询重新登记消息。')
                         if enforce_admission:
                             runner = _app_main.PROJECT_CONVERSATION_RUNNER
-                            if runner is not None:
-                                pending_keys = _app_main.conversation_pending_task_keys(project_id, canvas=current_canvas, include_all_projects=True)
-                                admission_error = runner.admission_error(project_id, node_id, request_id, canvas=current_canvas, pending_keys=pending_keys)
-                                if admission_error:
-                                    raise HTTPException(status_code=429, detail=admission_error)
+                            if runner is None or not runner.accepting:
+                                raise HTTPException(status_code=503, detail={'code': 'conversation_queue_unavailable', 'message': '对话任务服务尚未就绪'})
+                            pending_keys = _app_main.conversation_pending_task_keys(project_id, canvas=current_canvas, include_all_projects=True)
+                            admission_error = runner.admission_error(project_id, node_id, request_id, canvas=current_canvas, pending_keys=pending_keys)
+                            if admission_error:
+                                raise HTTPException(status_code=429, detail=admission_error)
+                        if user_message.get('user_edit') and not originals:
+                            raise agent_error(409, 'CANVAS_CONFLICT', '人工对话意图尚未保存', '查询原请求回执并确认已保存的待发意图，不要更换请求标识。')
+                        # An accepted but unflushed canvas PATCH is not a saved outbox yet.
+                        # Confirm that original intent before consuming it; CAS below still
+                        # detects any intervening canvas edit and revalidates on retry.
+                        if originals:
+                            save_status = _app_main.project_store_call('save_status', project_id)
+                            if int(save_status.get('saved_revision') or 0) < int(current_canvas.get('revision') or 0):
+                                _app_main.project_store_call('flush', project_id)
+                        # Allocate once, after admission; a revision retry reuses this candidate.
+                        if not user_message.get('id'):
+                            user_message['id'] = uuid.uuid4().hex
+                        if 'created_at' not in user_message:
+                            user_message['created_at'] = _app_main.now_ms()
                         updated_node = copy.deepcopy(conversation)
-                        messages = [item for item in updated_node.get('messages') or [] if isinstance(item, dict)]
+                        messages = [item for item in updated_node.get('messages') or [] if isinstance(item, dict) and not same_local_message(item)]
                         updated_node['messages'] = (messages + [copy.deepcopy(user_message)])[-500:]
+                        if any(same_request(entry) for entry in outboxes):
+                            updated_node['pendingActionResumes'] = [copy.deepcopy(entry) for entry in outboxes if not same_request(entry)]
+                        if user_message.get('user_edit'):
+                            previous_touch = conversation.get('userTouchedAt')
+                            valid_touch = isinstance(previous_touch, (int, float)) and not isinstance(previous_touch, bool) and math.isfinite(previous_touch) and previous_touch >= 0
+                            updated_node['userTouchedAt'] = max(previous_touch, user_message['created_at']) if valid_touch else user_message['created_at']
                         if node_adapter:
-                            updated_node['conversation_adapter'] = copy.deepcopy(node_adapter)
+                            stored_adapter = conversation.get('conversation_adapter') if isinstance(conversation.get('conversation_adapter'), dict) else {}
+                            updated_node['conversation_adapter'] = {**copy.deepcopy(stored_adapter), **copy.deepcopy(node_adapter)}
                         _app_main.project_store_call('apply_mutations', project_id, [{'op': 'upsert_node', 'node': updated_node}], base_revision=int(current_canvas.get('revision') or 0))
-                        _app_main.project_store_call('flush', project_id)
-                        saved = _app_main.project_store_call('open_project', project_id)
-                        snapshot = conversation_task_snapshot(saved['canvas'], node_id, request_id)
-                        if not snapshot:
-                            raise ProjectStoreError('对话任务登记后无法读取')
-                        return (saved['canvas'], snapshot)
+                        return _flush_conversation_receipt(project_id, node_id, request_id, str(user_message.get('id') or ''))
             return await asyncio.to_thread(persist_once)
         except RevisionConflict:
             continue
-    raise HTTPException(status_code=409, detail='项目持续被修改，对话任务尚未登记')
+    raise agent_error(409, 'CANVAS_CONFLICT', '项目持续被修改，对话任务尚未登记', '刷新画布并查询原请求回执，保留原待发意图和请求标识。')
 
 def conversation_task_response(canvas: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True, 'canvas': canvas, 'status': snapshot['status'], 'request_id': snapshot['request_id'], 'message': snapshot['message'], 'assistant': snapshot.get('assistant'), 'saved': True}
@@ -3499,43 +3564,44 @@ async def append_project_conversation_message(project_id: str, node_id: str, pay
     text = str(payload.text or '').strip()
     if not text:
         raise HTTPException(status_code=400, detail='对话消息不能为空')
-    request_id = str(payload.request_id or '').strip() or uuid.uuid4().hex
+    request_id = str(payload.request_id or '').strip()
+    if payload.user_edit and not request_id:
+        raise agent_error(400, 'INVALID_ARGUMENT', '人工对话必须提供原请求标识', '沿用已保存待发意图的非空 request_id。')
+    request_id = request_id or uuid.uuid4().hex
     runner = _app_main.PROJECT_CONVERSATION_RUNNER
-    if runner is None or not runner.accepting:
-        raise HTTPException(status_code=503, detail={'code': 'conversation_queue_unavailable', 'message': '对话任务服务尚未就绪'})
-    user_message = {'id': uuid.uuid4().hex, 'role': 'user', 'status': 'pending', 'request_id': request_id, 'text': text, 'references': [], 'created_at': _app_main.now_ms()}
+    user_message = {'role': 'user', 'status': 'pending', 'request_id': request_id, 'text': text, 'references': [], 'user_edit': payload.user_edit}
     try:
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
         current_canvas = opened['canvas']
         conversation = conversation_node_by_id(current_canvas, node_id)
         if not isinstance(conversation, dict) or conversation.get('type') != NODE_TYPE_CONVERSATION:
             raise HTTPException(status_code=400, detail='目标节点不是对话节点')
-        stored_adapter = conversation.get('conversation_adapter') if isinstance(conversation.get('conversation_adapter'), dict) else {}
-        # #381：存节点适配配置时不再把“没选”写成 'comfly'——写下去就是一个不存在的平台，
-        # 下次跑只能靠后端静默换服务商兼底。留空 = 未指定，跑时按主平台走并记日志。
-        node_adapter = {'provider': str(payload.provider if payload.provider is not None else stored_adapter.get('provider') or ''), 'model': str(payload.model if payload.model is not None else stored_adapter.get('model') or ''), 'ms_model': str(payload.ms_model if payload.ms_model is not None else stored_adapter.get('ms_model') or ''), 'system_prompt': str(payload.system_prompt if payload.system_prompt is not None else stored_adapter.get('system_prompt') or '')}
+        # Merge only explicit settings into the latest CAS node; omitted settings
+        # must not overwrite a newer edit (nor invent a default provider).
+        node_adapter = {key: getattr(payload, key) for key in ('provider', 'model', 'ms_model', 'system_prompt') if getattr(payload, key) is not None}
         existing = conversation_task_snapshot(current_canvas, node_id, request_id)
-        if existing:
-            if existing['status'] == 'pending':
-                schedule_project_conversation_task(project_id, node_id, request_id, recover_fifo=True)
-            else:
-                await finalize_visible_project_conversation_terminal(project_id, node_id, request_id)
-            return conversation_task_response(current_canvas, existing)
-        persisted_pending_keys = await asyncio.to_thread(_app_main.conversation_pending_task_keys, project_id, canvas=current_canvas, include_all_projects=True)
-        admission_error = runner.admission_error(project_id, node_id, request_id, canvas=current_canvas, pending_keys=persisted_pending_keys)
-        if admission_error:
-            raise HTTPException(status_code=429, detail=admission_error)
-        references = await asyncio.to_thread(project_conversation_connected_references, project_id, current_canvas, node_id)
-        user_message['references'] = copy.deepcopy(references)
+        if not existing:
+            if runner is None or not runner.accepting:
+                raise HTTPException(status_code=503, detail={'code': 'conversation_queue_unavailable', 'message': '对话任务服务尚未就绪'})
+            persisted_pending_keys = await asyncio.to_thread(_app_main.conversation_pending_task_keys, project_id, canvas=current_canvas, include_all_projects=True)
+            admission_error = runner.admission_error(project_id, node_id, request_id, canvas=current_canvas, pending_keys=persisted_pending_keys)
+            if admission_error:
+                raise HTTPException(status_code=429, detail=admission_error)
+            references = await asyncio.to_thread(project_conversation_connected_references, project_id, current_canvas, node_id)
+            user_message['references'] = copy.deepcopy(references)
         saved_canvas, snapshot = await persist_project_conversation_pending(project_id, node_id, user_message, node_adapter=node_adapter, enforce_admission=True)
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if str(snapshot.get('message', {}).get('id') or '') == str(user_message.get('id') or ''):
+    if user_message.get('id') and str(snapshot.get('message', {}).get('id') or '') == str(user_message['id']):
         if not schedule_project_conversation_task(project_id, node_id, request_id, canvas=saved_canvas):
             await _app_main.merge_project_conversation_result(project_id, node_id, request_id, user_message_id=str(user_message.get('id') or ''), error=RuntimeError('对话队列已满，任务未调用服务商'))
             raise HTTPException(status_code=429, detail={'code': 'conversation_queue_full', 'message': '对话队列已满，任务未调用服务商'})
+    elif snapshot['status'] == 'pending':
+        schedule_project_conversation_task(project_id, node_id, request_id, recover_fifo=True)
+    else:
+        await finalize_visible_project_conversation_terminal(project_id, node_id, request_id)
     return conversation_task_response(saved_canvas, snapshot)
 
 @router.get('/api/project-library/{project_id}/conversation/{node_id}/messages/{request_id}')
@@ -3549,11 +3615,20 @@ async def get_project_conversation_message_task(request: Request, project_id: st
         snapshot = conversation_task_snapshot(opened['canvas'], node_id, clean_request_id)
         if snapshot is None:
             raise HTTPException(status_code=404, detail='对话任务不存在')
+        # Recovery may encounter a legacy receipt beside a saved local bubble or
+        # outbox. Consume only those same-key leftovers through the existing CAS;
+        # this existing-receipt path never allocates time or retrofits a flag.
+        receipt = copy.deepcopy(snapshot['message'])
+        conversation = conversation_node_by_id(opened['canvas'], node_id)
+        originals = _conversation_original_outboxes(conversation.get('pendingActionResumes'), clean_request_id)
+        if 'user_edit' not in receipt:
+            receipt['user_edit'] = originals[0].get('humanIntent', False) if originals else False
+        saved_canvas, snapshot = await persist_project_conversation_pending(project_id, node_id, receipt, existing_only=True)
         if snapshot['status'] == 'pending':
             schedule_project_conversation_task(project_id, node_id, clean_request_id, recover_fifo=True)
         else:
             await finalize_visible_project_conversation_terminal(project_id, node_id, clean_request_id)
-        return conversation_task_response(opened['canvas'], snapshot)
+        return conversation_task_response(saved_canvas, snapshot)
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:

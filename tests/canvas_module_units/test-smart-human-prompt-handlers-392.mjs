@@ -106,19 +106,17 @@ test('conversation collapse is durable T-only; a fresh manual send captures inte
     const pending=fresh.stored()[0].pendingActionResumes?.[0];
     assert.equal(pending?.kind,'conversation',JSON.stringify({stored:fresh.stored(),toasts:fresh.harness.toasts}));assert.equal(pending?.payload.humanIntent,true);
     assert.equal(pending.payload.requestId,fresh.stored()[0].messages[0].request_id);
-    assert.equal(fresh.stored()[0].userTouchedAt,null,'conversation persistence belongs to 2b-2c');
+    assert.equal(fresh.stored()[0].userTouchedAt,null,'a local save is not server registration');
     const firstId=pending.payload.requestId;freshSend.dispatchEvent(event(freshSend,{type:'click'}));
     for(let i=0;i<5;i++) await Promise.resolve();
     assert.equal(fresh.stored()[0].pendingActionResumes.length,1);assert.equal(fresh.stored()[0].pendingActionResumes[0].payload.requestId,firstId);
-    const source=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8');
-    vm.runInContext(source.slice(source.indexOf("registerSmartPendingActionRebuilder('conversation'"),source.indexOf("registerSmartPendingActionRebuilder('photoshop'")),fresh.ctx);
-    fresh.ctx.AbortController=AbortController;
-    const sent=[];fresh.ctx.fetch=async(url,options)=>{sent.push(JSON.parse(options.body));return {ok:true,json:async()=>({message:{id:'server',role:'user',request_id:firstId,text:'manual message',status:'completed'},status:'completed'})};};
-    const replay=fresh.ctx.smartPendingActionRebuilderFor('conversation')(pending,fresh.node());
-    await replay(fresh.node());await replay(fresh.node());
-    assert.deepEqual(sent,[{text:'manual message',request_id:firstId},{text:'manual message',request_id:firstId}],'replay/duplicate ACK has no new manual transport protocol');
+    assert.deepEqual(pending.payload,{conversationProtocol:1,projectId:'unit-392',nodeId:'conversation',
+        requestId:firstId,text:'manual message',humanIntent:true});
     assert.equal(fresh.stored()[0].messages.length,1);assert.equal(fresh.stored()[0].userTouchedAt,null);
-    assert.deepEqual(fresh.stored()[0].pendingActionResumes[0].payload,pending.payload,'replay never allocates a new manual intent');
+    // This DOM test owns click -> immutable original intent. The protocol suite
+    // exercises the real queue/persister/receiver on replay and formal ACK, rather
+    // than calling the rebuilder with a storage record lacking its runtime nodeId.
+    assert.deepEqual(fresh.stored()[0].pendingActionResumes[0].payload,pending.payload);
 });
 
 test('engine and API kind DOM switches stamp persisted mode snapshots before render without prompt protection',()=>{

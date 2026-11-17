@@ -658,7 +658,7 @@ test('projectImageTaskUrl: v1 project task ids route to project-library endpoint
 
 // ---------- #197：pending-action 队列（video / local-edit / photoshop / conversation 四道保存关卡） ----------
 
-test('queueSmartPendingActionResume: in-memory entry + node mirror + scheduleSave; input guards', () => {
+test('queueSmartPendingActionResume: in-memory entry + node mirror + scheduleSave; missing-node guard', () => {
     const node = { id: 'n1', type: 'smart-video' };
     const nodes = [node];
     const { ctx, calls } = loadGenerationTasksModule({ nodes });
@@ -694,9 +694,8 @@ test('queueSmartPendingActionResume: in-memory entry + node mirror + scheduleSav
     mirror(entry);
     assert.equal(node.pendingActionResumes.length, 2, '同 actionId 的 mirror 是 no-op（去重）');
 
-    // 非法输入：无 nodeId / replay 非函数 → 不排队。
+    // 无节点句柄不入队；内部调用方自己的 replay 闭包不做静默 typeof 兜底。
     assert.equal(queue('video', '', replay, {}), null);
-    assert.equal(queue('video', 'n1', 'not-a-function', {}), null);
     assert.equal(evaluate(ctx, 'smartPendingActionResumes.size'), 2);
 
     // 节点不存在：内存 entry 仍建（权威），mirror 尽力而为（best-effort）。
@@ -836,7 +835,7 @@ test('resumeSmartPendingActionResumes: seeded mark with exhausted budget is drop
     // replay-missing-rebuilder 后**不再回队列**（entry 丢弃；持久化标记由关卡自身的
     // 恢复路径处理——本模块不假装能恢复自己无法重建的请求）。
     {
-        const node = { id: 'n1', type: 'smart-video', pendingActionResumes: [{ actionId: 'action-video-9', kind: 'conversation', payload: {}, enqueuedAt: 1, replayAttempts: 0, nextRetryAt: 0 }] };
+        const node = { id: 'n1', type: 'smart-video', pendingActionResumes: [{ actionId: 'action-video-9', kind: 'photoshop', payload: {}, enqueuedAt: 1, replayAttempts: 0, nextRetryAt: 0 }] };
         const nodes = [node];
         const { ctx, harness } = loadGenerationTasksModule({ nodes });
         await globalFunction(ctx, 'resumeSmartPendingActionResumes')(nodes);

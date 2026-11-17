@@ -15,16 +15,10 @@ const activeSmartSubmissionRecoveries = new Set();
 // them (the server dedupes by key). In-memory only: after a page reload the persisted
 // marker is recovered by the existing load-path resumeSmartPendingTasks() instead.
 const smartPendingPersistenceKeys = new Set();
-// #189 follow-up: in-memory pending action resumes for the four remaining save gates
-// (video / local-edit / photoshop / conversation). Each entry carries exactly one replay
-// closure and is removed from the table BEFORE its fetch fires, so one user action => at
-// most one send attempt. Server-side dedup only exists for the conversation gate: the
-// endpoint replays by request_id (app/routers/api_project_library.py:3277-3282 returns the
-// existing snapshot instead of re-running). video / local-edit / photoshop have NO server
-// dedup (idempotency_key handling in that router is image-only), which is why the
-// single-shot dispatcher is required for them. Node deletion drops the entry
-// automatically (no timeout/cancel by design). Unlike the image entry these queues are
-// in-memory only: a page reload before the save settles drops the queued request.
+// Pending action runtime claims; durable records live on the anchored node.
+// video/local-edit/photoshop retain clear-on-send. Conversation keeps its record
+// and claim until formal registration is confirmed under the original request key;
+// the server atomically consumes its outbox. Reload rebuilds the same intent.
 const smartPendingActionResumes = new Map();
 let smartPendingActionResumeSeq = 0;
 const smartPendingActionResumeLog = [];
@@ -1100,15 +1094,20 @@ function resumeSmartPersistencePendingTasks(canvasNodes){
     (canvasNodes || []).forEach(node => smartGenerationSubmissions(node).forEach(s => liveKeys.add(s.idempotencyKey)));
     for(const key of [...smartPendingPersistenceKeys]) if(!liveKeys.has(key)) smartPendingPersistenceKeys.delete(key);
 }
-// #189 follow-up: queue one gate request (video/local-edit/photoshop/conversation) whose
-// pre-action flush failed. The entry is anchored to nodeId (liveness check on replay) and
-// scheduleSave() is called here: the failed gate flush left the canvas dirty, and the
-// debounced autosave that then succeeds settles the save (markAutosaveSaved), which calls
-// resumeSmartPendingActionResumes().
+// Queue a failed save gate, or EVERY new conversation intent. Conversation can
+// omit the closure: both first send and reload use its registered rebuilder.
+// scheduleSave persists the node record; save-settle dispatches under one claim.
 function queueSmartPendingActionResume(kind, nodeId, replay, payload){
-    if(!nodeId || typeof replay !== 'function') return null;
+    if(!nodeId) return null;
     smartPendingActionResumeSeq += 1;
-    const actionId = `action-${kind}-${smartPendingActionResumeSeq}`;
+    const conversationKey = kind === 'conversation'
+        ? JSON.stringify([payload.projectId, String(nodeId), payload.requestId]) : '';
+    if(conversationKey){
+        for(const pending of smartPendingActionResumes.values()){
+            if(pending.kind === kind && pending.nodeId === String(nodeId) && pending.payload?.requestId === payload.requestId) return pending.actionId;
+        }
+    }
+    const actionId = conversationKey ? `action-conversation-${conversationKey}` : `action-${kind}-${smartPendingActionResumeSeq}`;
     const entry = {actionId, kind:String(kind || ''), nodeId:String(nodeId), replay, payload:payload === undefined ? null : payload, createdAt:Date.now(), releasing:false};
     smartPendingActionResumes.set(actionId, entry);
     mirrorPendingActionToStorage(entry);
@@ -1166,10 +1165,9 @@ function schedulePendingActionRetryTimer(entry){
     const delay = Math.max(0, Number(entry.nextRetryAt || 0) - Date.now());
     entry._retryTimer = setTimeout(() => {
         entry._retryTimer = null;
-        if(smartPendingActionResumes.has(entry.actionId)) void resumeSmartPendingActionResumes(canvasState.nodes).catch(error => {
-            // #348: 后台重试器安全网；单条 entry 的失败由 dispatcher 自行回写标记并退避重排。
-            console.warn('[generation-tasks] pending-action 重试器执行失败', error);
-        });
+        // Expected save/network failures are handled per entry. Unexpected
+        // dispatcher bugs must propagate instead of disappearing into a log.
+        if(smartPendingActionResumes.has(entry.queueKey || entry.actionId)) void resumeSmartPendingActionResumes(canvasState.nodes);
     }, delay);
 }
 // #198: a replayed gate request failed AFTER its mark had already been cleared from
@@ -1182,6 +1180,15 @@ function handlePendingActionReplayFailure(entry, freshNode){
     entry.lastReplayAttemptAt = now;
     entry.releasing = false;
     if(entry._retryTimer){ clearTimeout(entry._retryTimer); entry._retryTimer = null; }
+    if(entry.kind === 'conversation'){
+        // The server may already have consumed this outbox. Never mirror it back,
+        // dispatch pagehide, or discard the only durable intent on retry exhaustion.
+        entry.blocked = entry.conversationConflict === true;
+        entry.nextRetryAt = now + SMART_PENDING_ACTION_RETRY_BACKOFF_MS[Math.min(entry.replayAttempts - 1, SMART_PENDING_ACTION_RETRY_BACKOFF_MS.length - 1)];
+        smartPendingActionResumes.set(entry.queueKey || entry.actionId, entry);
+        if(!entry.blocked) schedulePendingActionRetryTimer(entry);
+        return;
+    }
     if(entry.replayAttempts >= SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS){
         // Budget exhausted: drop permanently. The mark was already cleared from disk
         // by the persister right before this attempt fired (clear-on-send landed, or
@@ -1220,9 +1227,8 @@ function hasSmartPendingActionResume(kind, nodeId){
     }
     return false;
 }
-// #189 follow-up: after a settled canvas save, replay queued gate requests whose node is
-// still alive. Each entry is removed BEFORE its fetch fires, so a user action can never
-// send twice (these endpoints have no server-side dedup). Node deleted => entry dropped.
+// Replay live-node gates after save-settle. Non-conversation entries are removed
+// before fetch; conversation keeps one in-flight claim until confirmed. Node gone => drop.
 async function resumeSmartPendingActionResumes(canvasNodes){
     const nodes = Array.isArray(canvasNodes) ? canvasNodes : [];
     // #197: seed the in-memory queue from marks persisted on nodes. After a reload the
@@ -1235,11 +1241,11 @@ async function resumeSmartPendingActionResumes(canvasNodes){
         const records = Array.isArray(node?.pendingActionResumes) ? node.pendingActionResumes : [];
         for(const rec of records){
             if(!rec || !rec.kind || !node?.id) continue;
-            const alreadyQueued = [...smartPendingActionResumes.values()].some(e => e.kind === rec.kind && e.nodeId === node.id && (rec.actionId ? e.actionId === rec.actionId : true));
+            const alreadyQueued = [...smartPendingActionResumes.values()].some(e => e.kind === rec.kind && e.nodeId === node.id && (rec.kind === 'conversation' && rec.payload?.requestId ? e.payload?.requestId === rec.payload.requestId : (rec.actionId ? e.actionId === rec.actionId : true)));
             if(alreadyQueued) continue;
             const actionId = rec.actionId || `action-${rec.kind}-seeded-${smartPendingActionResumeSeq}`;
             const attempts = Number(rec.replayAttempts || 0);
-            if(attempts >= SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS){
+            if(rec.kind !== 'conversation' && attempts >= SMART_PENDING_ACTION_MAX_REPLAY_ATTEMPTS){
                 // #198: the retry budget was exhausted in an earlier session — the
                 // persisted mark is dead weight now; drop it (the next save persists
                 // the removal) instead of firing one more doomed attempt.
@@ -1247,21 +1253,21 @@ async function resumeSmartPendingActionResumes(canvasNodes){
                 smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-retry-exhausted', kind:String(rec.kind), nodeId:String(node.id), attempts});
                 continue;
             }
-            smartPendingActionResumes.set(actionId, {actionId, kind:String(rec.kind), nodeId:String(node.id), replay:null, payload:rec.payload || null, createdAt:Number(rec.enqueuedAt || Date.now()), releasing:false, seededFromStorage:true, replayAttempts:attempts, nextRetryAt:Number(rec.nextRetryAt || 0)});
+            const queueKey = rec.kind === 'conversation'
+                ? `action-conversation-${JSON.stringify([rec.payload?.projectId || '', String(node.id), rec.payload?.requestId || actionId])}` : actionId;
+            smartPendingActionResumes.set(queueKey, {actionId, queueKey, kind:String(rec.kind), nodeId:String(node.id), replay:null, payload:rec.payload || null, createdAt:Number(rec.enqueuedAt), releasing:false, seededFromStorage:true, replayAttempts:attempts, nextRetryAt:Number(rec.nextRetryAt || 0)});
             smartPendingActionResumeLog.push({t:Date.now(), event:'seeded', kind:String(rec.kind), nodeId:String(node.id), attempts});
         }
     }
     if(!smartPendingActionResumes.size) return;
-    // #197 clear-on-send: the persister commits "entry cleared" to disk BEFORE the
-    // fetch fires. While it is pending or fails, the entry stays in the Map and on the
-    // node, so a reload in that window still replays it; once it lands, a reload finds
-    // no mark and the already-sent request is picked up by the gate's own recovery path.
+    // The registered persister clears non-conversation marks before sending.
+    // For conversation it instead verifies/migrates the durable original outbox.
     const persister = smartPendingActionPersister();
     for(const entry of [...smartPendingActionResumes.values()]){
-        if(entry.releasing) continue; // another pass is already persisting this entry's clear
+        if(entry.releasing || entry.blocked) continue; // one claim across save-settle, first send and reload
         const live = nodes.find(n => n && n.id === entry.nodeId);
         if(!live){
-            smartPendingActionResumes.delete(entry.actionId);
+            smartPendingActionResumes.delete(entry.queueKey || entry.actionId);
             clearPendingActionFromStorage(entry);
             smartPendingActionResumeLog.push({t:Date.now(), event:'dropped-node-gone', kind:entry.kind, nodeId:entry.nodeId});
             continue;
@@ -1274,19 +1280,27 @@ async function resumeSmartPendingActionResumes(canvasNodes){
             schedulePendingActionRetryTimer(entry);
             continue;
         }
+        entry.releasing = true;
         if(persister){
-            entry.releasing = true;
             let cleared = false;
-            try { cleared = (await persister(entry)) === true; } catch(error) { cleared = false; }
+            if(entry.kind === 'conversation'){
+                try { cleared = (await persister(entry)) === true; } catch(error) {
+                    entry.conversationConflict = error.conversationConflict === true;
+                    toast(error.message || tr('smart.conversationSendFailed'));
+                    handlePendingActionReplayFailure(entry, live);
+                    continue;
+                }
+            } else {
+                cleared = (await persister(entry)) === true;
+            }
             if(!cleared){
                 entry.releasing = false;
                 smartPendingActionResumeLog.push({t:Date.now(), event:'clear-persist-pending', kind:entry.kind, nodeId:entry.nodeId});
                 continue; // mark still on disk; retry on the next save settle
             }
         }
-        // Single-shot: remove BEFORE running so a later save settle can never
-        // re-fire it.
-        smartPendingActionResumes.delete(entry.actionId);
+        // Non-deduplicated gates remain single-shot. Conversation holds the claim.
+        if(entry.kind !== 'conversation') smartPendingActionResumes.delete(entry.actionId);
         let replay = entry.replay;
         if(typeof replay !== 'function'){
             // #197: seeded from a persisted mark after a reload — the live closure is
@@ -1316,13 +1330,15 @@ async function resumeSmartPendingActionResumes(canvasNodes){
             const fresh = (typeof canvasState !== 'undefined' && canvasState?.nodes || []).find(n => n && n.id === entry.nodeId) || live;
             const succeeded = !replayError && smartPendingActionReplaySucceeded(entry.kind, beforeOutput, fresh);
             if(succeeded){
+                if(entry.kind === 'conversation') smartPendingActionResumes.delete(entry.queueKey || entry.actionId);
                 smartPendingActionResumeLog.push({t:Date.now(), event:'replayed', kind:entry.kind, nodeId:entry.nodeId});
             } else {
-                // #198: the mark was already cleared from disk before this fetch fired;
-                // without a write-back the user's action is permanently lost.
+                // Non-conversation needs #198 write-back. Conversation's failure
+                // handler retains only runtime state: its mark may be consumed.
                 const detail = replayError ? (replayError?.message || String(replayError)) : 'no-observable-effect';
                 smartPendingActionResumeLog.push({t:Date.now(), event:'replay-failed', kind:entry.kind, nodeId:entry.nodeId, error:detail});
                 if(typeof toast === 'function') toast((replayError ? String(replayError?.message || '').slice(0, 160) : '') || tr('smart.errRunFailed'));
+                entry.conversationConflict = replayError?.conversationConflict === true;
                 handlePendingActionReplayFailure(entry, fresh);
             }
         })();

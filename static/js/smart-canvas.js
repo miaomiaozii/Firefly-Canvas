@@ -6887,22 +6887,18 @@ function markAutosaveSaved(){
     // are replayed; the normal path self-registers, so this is a no-op there. The
     // server-side idempotency key keeps any race with the normal path single-task.
     if(canvas?.format === 'firefly-canvas-v1') resumeSmartPersistencePendingTasks(canvasState.nodes);
-    // #189 follow-up: the four remaining save gates (video / local-edit / photoshop /
-    // conversation) replay here too. #197: their marks are persisted on the node and
-    // removed from disk at the moment the fetch fires (clear-on-send — see
-    // registerSmartPendingActionPersister below), so a mark that survives a reload is
-    // provably never sent and is replayed exactly once; an already-sent request leaves
-    // no mark and is picked up by the gate's own recovery path (docs/issue197_recovery_audit.md).
-    // In-session entries are single-shot (removed before their fetch fires).
+    // Replay saved action gates too. Conversation's original outbox survives POST
+    // until server registration; other kinds retain their clear-on-send protocol.
+    // The dispatcher claims before awaiting, including normal conversation sends.
     if(canvas?.format === 'firefly-canvas-v1') void resumeSmartPendingActionResumes(canvasState.nodes);
     // #217: 孤儿媒体归档的唯一触发点——删除已随保存持久落盘，服务端 canvas 不再
     // 引用被删资产，此刻归档不会 409（旧实现是独立的 2.5s 计时器，早于 3s 保存
     // 防抖触发 → 409 被吞 → 回收区无条目）。
     flushPendingMediaArchives();
 }
-// #197: pending-action persistence wiring. canvas-generation-tasks.js owns the
-// in-memory queue and the clear-on-send protocol; it calls back into these registered
-// hooks (no smart-canvas.js symbol is referenced from the tasks module — layer guard).
+// Pending-action wiring through registered hooks (no new tasks-module dependency
+// on smart-canvas.js). Conversation verifies its original durable outbox; the
+// remaining kinds keep #197 clear-on-send below.
 // Persister: commits "this entry is no longer pending" to disk BEFORE the corresponding
 // fetch fires (node field cleared + settled non-automated save). Returns true only when
 // the cleared state has landed; on failure the in-memory removal is rolled back so a
@@ -6913,6 +6909,7 @@ function markAutosaveSaved(){
 // at the in-flight guard before reaching the server, so we wait for the flag to clear
 // (the triggering save's finally clears it right after the hook returns).
 registerSmartPendingActionPersister(async (entry) => {
+    if(entry.kind === 'conversation') return prepareConversationAction(entry);
     const node = (canvasState.nodes || []).find(n => n && n.id === entry.nodeId);
     if(!node) return false;
     const list = Array.isArray(node.pendingActionResumes) ? node.pendingActionResumes : [];
@@ -6954,13 +6951,14 @@ registerSmartPendingActionPersister(async (entry) => {
 // carries nothing (all state is node fields, read from the live node); video carries
 // prompt/refs/runSettings.
 registerSmartPendingActionRebuilder('conversation', (entry, live) => async (target) => {
+    if(entry.registrationConfirmed) return;
     try {
-        await sendConversationMessageRequest(target, (entry.payload || {}).text, (entry.payload || {}).requestId);
+        await sendConversationMessageRequest(target, entry.payload.text, entry.payload.requestId, entry.payload.humanIntent === true, entry);
     } catch(replayError){
-        const fresh = canvasState.nodes.find(n => n.id === target.id) || target;
-        fresh.conversationSending = false;
+        const fresh = canvasState.nodes.find(n => n.id === target.id);
+        if(fresh) fresh.conversationSending = false;
         const failInput = document.querySelector(`.image-node[data-id="${target.id}"] [data-conversation-input]`);
-        if(failInput && entry.payload) failInput.value = entry.payload.text || '';
+        if(failInput) failInput.value = entry.payload.text;
         render();
         throw replayError;
     }
@@ -8676,7 +8674,7 @@ function conversationReferenceHtml(reference){
 }
 function conversationNodeBodyHtml(node){
     const messages = (Array.isArray(node.messages) ? node.messages : []).filter(item => item && typeof item === 'object');
-    const hasPendingMessage = messages.some(message => message.role === 'user' && message.status === 'pending');
+    const hasPendingMessage = hasPendingConversationRequest(node);
     const collapsed = node.conversation_collapsed === true;
     const panelId = `conversation-panel-${String(node.id || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
     const references = conversationConnectedReferences(node);
@@ -10353,8 +10351,18 @@ function conversationProjectId(){
     return canvas?.project_id || canvas?.project || sourceProjectId || '';
 }
 function conversationRequestId(){
-    const suffix = Math.random().toString(36).slice(2);
-    return `conversation-${Date.now().toString(36)}-${suffix}`;
+    const prefix = `conversation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const used = new Set();
+    for(const node of canvasState.nodes){
+        for(const message of node.messages || []) if(message?.request_id) used.add(String(message.request_id));
+        for(const record of node.pendingActionResumes || []) if(record?.kind === 'conversation' && record.payload?.requestId) used.add(String(record.payload.requestId));
+    }
+    let requestId;
+    do {
+        conversationRequestId.sequence = (conversationRequestId.sequence || 0) + 1;
+        requestId = `${prefix}-${conversationRequestId.sequence}`;
+    } while(used.has(requestId));
+    return requestId;
 }
 function conversationTaskUrl(projectId, nodeId, requestId){
     return `/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(nodeId)}/messages/${encodeURIComponent(requestId)}`;
@@ -10363,8 +10371,19 @@ function conversationSleep(ms){ return new Promise(resolve => setTimeout(resolve
 // #249 审计：自设上限（1s/次×30=30s）——请求 404 时给初始 POST 提交留有限宽限，
 // 超时放弃等待避免占位长期 pending；工程选择，非上游约束。
 const CONVERSATION_MAX_NOT_FOUND_POLLS = 30;
+function isRegisteredConversationMessage(message, requestId=message?.request_id){
+    return message?.role === 'user' && Boolean(requestId) && message.request_id === requestId
+        && !String(message.id || '').startsWith('local-');
+}
+function hasPendingConversationRequest(node){
+    // Keep old orphan bubbles as data and retain lifecycle protection, but they
+    // are not registered work. Original outboxes still gate a new identity.
+    return (node?.messages || []).some(message => message?.status === 'pending' && isRegisteredConversationMessage(message))
+        || (node?.pendingActionResumes || []).some(entry => entry?.kind === 'conversation');
+}
 function conversationMessageForRequest(node, requestId){
-    return (node?.messages || []).find(item => String(item?.request_id || '') === String(requestId) && item.role === 'user') || null;
+    const matches = (node?.messages || []).filter(item => String(item?.request_id || '') === String(requestId) && item.role === 'user');
+    return matches.find(item => isRegisteredConversationMessage(item, requestId)) || matches[0] || null;
 }
 function ensureLocalPendingConversationMessage(node, text, requestId){
     if(!node || conversationMessageForRequest(node, requestId)) return;
@@ -10385,7 +10404,7 @@ function abandonUnregisteredConversationTask(node, requestId){
     liveNode.messages = (liveNode.messages || []).filter(item => !(
         item?.role === 'user'
         && String(item?.request_id || '') === String(requestId)
-        && String(item?.id || '').startsWith('local-')
+        && !isRegisteredConversationMessage(item, requestId)
         && item?.status === 'pending'
     ));
     if(liveNode.messages.length !== before){
@@ -10394,11 +10413,13 @@ function abandonUnregisteredConversationTask(node, requestId){
     }
 }
 function startConversationTaskPolling(node, requestId){
-    if(!node || !requestId || conversationTaskPolls.has(requestId)) return;
+    if(!node || !requestId) return;
+    const projectId = conversationProjectId();
+    const pollKey = JSON.stringify([projectId, node.id, requestId]);
+    if(conversationTaskPolls.has(pollKey)) return;
     const pollState = {cancelled:false};
-    conversationTaskPolls.set(requestId, pollState);
+    conversationTaskPolls.set(pollKey, pollState);
     (async() => {
-        const projectId = conversationProjectId();
         const deadline = Date.now() + 30 * 60 * 1000;
         let notFoundPolls = 0;
         try {
@@ -10438,13 +10459,13 @@ function startConversationTaskPolling(node, requestId){
                 await conversationSleep(1000);
             }
         } finally {
-            if(conversationTaskPolls.get(requestId) === pollState) conversationTaskPolls.delete(requestId);
+            if(conversationTaskPolls.get(pollKey) === pollState) conversationTaskPolls.delete(pollKey);
         }
     })();
 }
 function resumeConversationTasks(){
     canvasState.nodes.filter(isSmartConversationNode).forEach(node => {
-        (node.messages || []).filter(item => item?.role === 'user' && item.status === 'pending' && item.request_id)
+        (node.messages || []).filter(item => isRegisteredConversationMessage(item) && item.status === 'pending')
             .forEach(item => startConversationTaskPolling(node, item.request_id));
     });
 }
@@ -10617,104 +10638,170 @@ function applyConversationCanvasResponse(nextCanvas){
     return true;
 }
 if(params.get('browserTest') === '1') window.__issue13ApplyConversationCanvasResponse = applyConversationCanvasResponse;
-// #197: module-scope conversation request send (was a nested `sendConversationRequest`
-// const inside sendConversationMessage — invisible to the module-scope reload
-// rebuilder registered near markAutosaveSaved). Owns its per-call AbortController and
-// 15s timeout; an AbortError still means the fetch fired and the server keeps
-// processing under the same request_id, so the caller switches to task polling.
-async function sendConversationMessageRequest(live, text, requestId){
+// Conversation outbox protocol: first send/replay/reload share these registered
+// hooks. Only a pure server canvas proves persistence; only a formal receipt
+// acknowledges an intent. HTTP failure alone proves neither.
+async function prepareConversationAction(entry){
+    const payload = entry.payload || {};
+    const v1 = Object.prototype.hasOwnProperty.call(payload, 'conversationProtocol');
+    const invalid = !String(payload.requestId || '').trim() || !String(payload.text || '').trim()
+        || (payload.projectId !== undefined && payload.projectId !== conversationProjectId())
+        || (payload.nodeId !== undefined && payload.nodeId !== entry.nodeId)
+        || (v1 && (payload.conversationProtocol !== 1 || payload.projectId !== conversationProjectId()
+            || payload.nodeId !== entry.nodeId || typeof payload.humanIntent !== 'boolean'));
+    if(invalid){
+        const error = new Error(tr('smart.canvasConflict'));
+        error.conversationConflict = true;
+        throw error;
+    }
+    // Mutation acknowledgements may carry a reconstructed local canvas. Read
+    // the actual server outbox/receipt even on the first normal send.
+    if(await queryConversationRegistration(entry)){
+        entry.registrationConfirmed = true;
+        return true;
+    }
+    if(!v1){
+        const live = canvasState.nodes.find(node => node.id === entry.nodeId);
+        const record = live?.pendingActionResumes?.find(record => conversationEntryRecordMatches(record, entry));
+        if(!record) return false;
+        observeSmartCanvasPending();
+        entry.payload = {conversationProtocol:1, projectId:conversationProjectId(), nodeId:entry.nodeId,
+            requestId:payload.requestId, text:payload.text, humanIntent:payload.humanIntent === true};
+        record.payload = entry.payload;
+        scheduleSave();
+        if(await flushProjectCanvasBeforeGeneration() !== true) return false;
+        if(await queryConversationRegistration(entry)){
+            entry.registrationConfirmed = true;
+            return true;
+        }
+    }
+    // Only this pure server anchor, not the merged view or a successful save call,
+    // is evidence that the exact original intent reached durable storage.
+    const savedNode = smartCanvasPendingState().server.nodes.find(node => node.id === entry.nodeId);
+    return (savedNode?.pendingActionResumes || []).some(record => conversationEntryRecordMatches(record, entry));
+}
+function conversationEntryRecordMatches(record, entry){
+    return record?.kind === 'conversation' && record.actionId === entry.actionId
+        && smartCanvasDataEqual(record.payload, entry.payload);
+}
+function confirmConversationAction(entry){
+    const requestId = entry.payload.requestId;
+    const clean = (value, field) => !Array.isArray(value) ? value : value.filter(item => field === 'messages'
+        ? !(item?.role === 'user' && item.request_id === requestId && !isRegisteredConversationMessage(item, requestId))
+        : !conversationEntryRecordMatches(item, entry));
+    // Remove only this intent's overlay, never acknowledge a whole-node checkpoint.
+    observeSmartCanvasPending();
+    const state = smartCanvasPendingState();
+    state.journal.rewriteDeltas(delta => ({...delta, changes:delta.changes.map(change => {
+        if(change.path[0] !== 'nodes' || change.path[1]?.id !== entry.nodeId) return change;
+        const next = {...change};
+        for(const side of ['before', 'after']){
+            if(change.path.length === 3 && ['messages','pendingActionResumes'].includes(change.path[2])) next[side] = clean(change[side], change.path[2]);
+            else if(change.path.length === 2 && change[side]){
+                next[side] = {...change[side]};
+                for(const field of ['messages','pendingActionResumes']) if(field in next[side]) next[side][field] = clean(next[side][field], field);
+            }
+        }
+        return next;
+    }).filter(change => change.beforePresent !== change.afterPresent || !smartCanvasDataEqual(change.before, change.after))}));
+    const live = canvasState.nodes.find(node => node.id === entry.nodeId);
+    if(live){
+        if(Array.isArray(live.pendingActionResumes)) live.pendingActionResumes = clean(live.pendingActionResumes, 'pendingActionResumes');
+        if(Array.isArray(live.messages)) live.messages = clean(live.messages, 'messages');
+        live.conversationSending = false;
+    }
+    settleSmartCanvasPendingView();
+    // The receipt can be older than another accepted response. Project the latest
+    // pure shadow through the usual receiver, not the stale receipt's canvas.
+    applyConversationCanvasResponse(state.server);
+}
+function acceptConversationRegistration(data, entry){
+    applyConversationCanvasResponse(data.canvas);
+    const payload = entry.payload;
+    const remote = data.canvas.nodes.find(node => node.id === entry.nodeId);
+    const message = conversationMessageForRequest(remote, payload.requestId);
+    if(!isRegisteredConversationMessage(message, payload.requestId)) return false;
+    if(String(message.text ?? message.content ?? '') !== payload.text
+        || (Object.prototype.hasOwnProperty.call(message, 'user_edit') && message.user_edit !== (payload.humanIntent === true))){
+        const error = new Error(tr('smart.canvasConflict'));
+        error.conversationConflict = true;
+        throw error;
+    }
+    confirmConversationAction(entry);
+    const fresh = canvasState.nodes.find(node => node.id === entry.nodeId);
+    const input = document.querySelector(`.image-node[data-id="${entry.nodeId}"] [data-conversation-input]`);
+    if(input) input.value = '';
+    if((data.status || message.status) === 'pending' && fresh) startConversationTaskPolling(fresh, payload.requestId);
+    render();
+    return true;
+}
+async function queryConversationRegistration(entry){
+    const payload = entry.payload;
+    const response = await fetch(conversationTaskUrl(payload.projectId || conversationProjectId(), entry.nodeId, payload.requestId), {cache:'no-store'});
+    const data = await response.json();
+    if(data.canvas && acceptConversationRegistration(data, entry)) return true;
+    const canvasResponse = await fetch(`/api/project-library/${encodeURIComponent(payload.projectId || conversationProjectId())}`, {cache:'no-store'});
+    const body = await canvasResponse.json();
+    const server = body.canvas;
+    if(server && acceptConversationRegistration({canvas:server}, entry)) return true;
+    if(!canvasResponse.ok || !server || smartCanvasResponseIsStale(server)) throw new Error(tr('smart.conversationSendFailed'));
+    const node = server.nodes.find(node => node.id === entry.nodeId);
+    if(!(node?.pendingActionResumes || []).some(record => conversationEntryRecordMatches(record, entry))){
+        const error = new Error(tr('smart.canvasConflict'));
+        error.conversationConflict = true;
+        throw error;
+    }
+    return false;
+}
+async function sendConversationMessageRequest(live, text, requestId, humanIntent=false, entry){
     const projectId = conversationProjectId();
-    if(!projectId) throw new Error(tr('smart.conversationMissingProject'));
+    if(!projectId || !entry) throw new Error(tr('smart.conversationMissingProject'));
+    // Preparation can await saves/GETs while the user deletes this node.
+    if(!canvasState.nodes.some(node => node.id === entry.nodeId)) return;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
-    let response;
     try {
-        response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({text, request_id:requestId}),
-            signal:controller.signal,
+        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text, request_id:requestId, user_edit:humanIntent === true}), signal:controller.signal,
         });
+        const data = await response.json();
+        if(data.canvas && acceptConversationRegistration(data, entry)) return;
+        throw new Error(tr('smart.conversationSendFailed'));
+    } catch(error){
+        // HTTP errors (including post-registration 429) and lost ACKs both need
+        // the original key checked before any retry. Never restore a server mark.
+        if(await queryConversationRegistration(entry)) return;
+        throw error;
     } finally {
         clearTimeout(timeoutId);
     }
-    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.conversationSendFailed')));
-    const data = await response.json();
-    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
-    if(data.canvas) applyConversationCanvasResponse(data.canvas);
-    else if(data.message) fresh.messages = [...(fresh.messages || []).filter(m => String(m?.request_id || '') !== requestId), data.message].slice(-500);
-    const currentInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
-    if(currentInput) currentInput.value = '';
-    fresh.conversationSending = false;
-    if(data.status === 'pending') startConversationTaskPolling(fresh, requestId);
-    render();
 }
 async function sendConversationMessage(node, input, button, {human=false}={}){
     const text = String(input?.value || '').trim();
-    const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
-    const hasPendingMessage = (liveNode?.messages || []).some(message => message?.role === 'user' && message?.status === 'pending');
+    const liveNode = canvasState.nodes.find(item => item.id === node?.id);
+    const hasPendingMessage = hasPendingConversationRequest(liveNode);
     if(!liveNode || !text || liveNode.conversationSending || hasPendingMessage) return;
     node = liveNode;
     node.conversationSending = true;
     if(button) button.disabled = true;
     const requestId = conversationRequestId();
-    // Frontend intent only, bound to this original request. No ownership stamp
-    // or transport flag: durable conversation ownership is gated by 2b-2c.
-    const humanIntent = human === true;
-    let timeoutId = null;
-    let requestSent = false;
-    let queued = false;
-    const sendConversationRequest = async (live) => {
-        requestSent = true;
-        await sendConversationMessageRequest(live, text, requestId);
-    };
+    const payload = {conversationProtocol:1, projectId:conversationProjectId(), nodeId:node.id,
+        requestId, text, humanIntent:human === true};
+    // Every new intent is durable before POST, including the normal happy path.
+    // Only server registration owns T; local bubbles and outbox saves never stamp it.
+    ensureLocalPendingConversationMessage(node, text, requestId);
+    queueSmartPendingActionResume('conversation', node.id, null, payload);
     try {
-        const mutationClient = projectCanvasMutationClient();
-        await mutationClient.requestAfterProjectCanvasFlush({
-            flush:flushProjectCanvasBeforeGeneration,
-            failureMessage:tr('smart.canvasUnsavedMessageNotSent'),
-            request:() => sendConversationRequest(node),
-        });
-    } catch(error) {
-        if(error?.name === 'AbortError'){
-            ensureLocalPendingConversationMessage(node, text, requestId);
-            startConversationTaskPolling(node, requestId);
-            toast(tr('smart.conversationTimeoutStillRunning'));
-            render();
-        } else if(!requestSent){
-            // #189 gate (m03364/m03420): the flush before the request failed, so the message
-            // was never sent — do not drop it. Keep a visible local pending bubble (which
-            // also blocks a double send), queue a single-shot replay with the SAME request_id
-            // (the server dedupes by request_id, so even a pathological double send cannot
-            // duplicate the task), and let the queued save settle so markAutosaveSaved replays
-            // it (canvas-generation-tasks.js: resumeSmartPendingActionResumes).
-            queued = true;
-            ensureLocalPendingConversationMessage(node, text, requestId);
-            // #197: payload carries text+requestId for the reload rebuilder (the same
-            // request_id also keeps the server-side dedup as a backstop).
-            queueSmartPendingActionResume('conversation', node.id, async live => {
-                try {
-                    await sendConversationRequest(live);
-                } catch(replayError){
-                    const fresh = canvasState.nodes.find(n => n.id === live.id) || live;
-                    fresh.conversationSending = false;
-                    const failInput = document.querySelector(`.image-node[data-id="${live.id}"] [data-conversation-input]`);
-                    if(failInput) failInput.value = text;
-                    render();
-                    throw replayError;
-                }
-            }, {text, requestId, humanIntent});
+        if(await flushProjectCanvasBeforeGeneration() !== true){
             toast(tr('smart.canvasMessagePendingAfterSave'));
-            render();
         } else {
-            toast(error?.message || tr('smart.conversationSendFailed'));
+            await canvasCore.resumeSmartPendingActionResumes(canvasState.nodes);
         }
+    } catch(error){
+        toast(error.message || tr('smart.conversationSendFailed'));
     } finally {
-        if(timeoutId !== null) clearTimeout(timeoutId);
-        if(!queued){
-            node.conversationSending = false;
-            if(button) button.disabled = false;
-        }
+        render();
     }
 }
 function bindConversationNodeControls(el, node){
@@ -10758,7 +10845,7 @@ function bindConversationNodeControls(el, node){
             const liveInput = el.querySelector('[data-conversation-input]');
             const liveSend = el.querySelector('[data-conversation-send]');
             if(liveInput) liveInput.value = retryText;
-            const hasPending = (liveNode?.messages || []).some(item => item.role === 'user' && item.status === 'pending');
+            const hasPending = hasPendingConversationRequest(liveNode);
             if(hasPending) return;
             sendConversationMessage(liveNode, liveInput, liveSend, {human:true});
         });

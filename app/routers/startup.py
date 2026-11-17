@@ -15,7 +15,7 @@ import uuid
 from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (Any, Dict, LLM_MESSAGE_MAX_LENGTH, List, NODE_TYPE_AGENT, NODE_TYPE_TASK, Optional, PROJECT_AGENT_RECOVERY_LOCK, PROJECT_CONVERSATION_READY_RESULTS, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, ProjectNotFound, ProjectStoreError, Tuple, _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _os, _sniff_image_ext, _sniff_image_ext_bytes, _sys, asyncio, conversation_error_message, conversation_node_by_id, conversation_task_snapshot, copy, forget_project_conversation_ready_result, forget_project_conversation_task, json, logging, os, project_conversation_ready_result, project_lifecycle_lock, re, remember_project_conversation_ready_result, shutil, urllib, uuid)
-from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _sniff_image_ext, _sniff_image_ext_bytes
+from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _sniff_image_ext, _sniff_image_ext_bytes, is_registered_conversation_user_message
 _from_main_names = ['ASSET_LIBRARY_DIR', 'LOCAL_UPLOAD_DIR', 'PROJECT_CONVERSATION_MAX_PENDING', 'PROJECT_CONVERSATION_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_PER_PROJECT', '_agent_mark_recovered_uncertain', '_agent_submit_task', 'conversation_pending_task_keys', 'forget_project_conversation_durable', 'load_asset_library', 'merge_project_conversation_result', 'now_ms', 'project_conversation_adapter', 'project_conversation_durable_path', 'project_store_call', 'save_asset_library', 'schedule_project_conversation_task', 'unique_asset_category_dir']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -483,7 +483,7 @@ async def run_project_conversation_task(project_id: str, node_id: str, request_i
             await asyncio.to_thread(_app_main.forget_project_conversation_durable, project_id, node_id, request_id)
             return True
         messages = [item for item in conversation.get('messages') or [] if isinstance(item, dict)]
-        user_index = next((index for index, item in enumerate(messages) if item.get('role') == 'user' and str(item.get('request_id') or '') == request_id), None)
+        user_index = next((index for index, item in enumerate(messages) if is_registered_conversation_user_message(item) and str(item.get('request_id') or '') == request_id), None)
         if user_index is None:
             forget_project_conversation_ready_result(project_id, node_id, request_id)
             await asyncio.to_thread(_app_main.forget_project_conversation_durable, project_id, node_id, request_id)
@@ -497,14 +497,14 @@ async def run_project_conversation_task(project_id: str, node_id: str, request_i
         if ready is not None and str(ready.get('user_message_id') or '') != user_message_id:
             ready = copy.deepcopy(ready)
             ready['user_message_id'] = user_message_id
-        earlier_pending = next((item for item in messages[:user_index] if item.get('role') == 'user' and item.get('status') == 'pending' and str(item.get('request_id') or '')), None)
+        earlier_pending = next((item for item in messages[:user_index] if is_registered_conversation_user_message(item) and item.get('status') == 'pending' and str(item.get('request_id') or '')), None)
         if earlier_pending is not None:
             schedule_project_conversation_task(project_id, node_id, str(earlier_pending['request_id']), adapter=adapter, recover_fifo=True)
             return False
         if ready is None:
             adapter_config = conversation.get('conversation_adapter') if isinstance(conversation.get('conversation_adapter'), dict) else user_message.get('adapter') if isinstance(user_message.get('adapter'), dict) else {}
             # #381：对话节点没存服务商就传空（由 canvas_llm 按主平台走），不写 'comfly'。
-            adapter_request = {'project_id': project_id, 'node_id': node_id, 'request_id': request_id, 'message': str(user_message.get('text') or ''), 'messages': copy.deepcopy(messages[:user_index + 1]), 'current_message_id': str(user_message.get('id') or ''), 'references': copy.deepcopy(user_message.get('references') or []), 'provider': str(adapter_config.get('provider') or ''), 'model': str(adapter_config.get('model') or ''), 'ms_model': str(adapter_config.get('ms_model') or ''), 'system_prompt': str(adapter_config.get('system_prompt') or '')}
+            adapter_request = {'project_id': project_id, 'node_id': node_id, 'request_id': request_id, 'message': str(user_message.get('text') or ''), 'messages': copy.deepcopy([item for item in messages[:user_index + 1] if item.get('role') != 'user' or is_registered_conversation_user_message(item)]), 'current_message_id': str(user_message.get('id') or ''), 'references': copy.deepcopy(user_message.get('references') or []), 'provider': str(adapter_config.get('provider') or ''), 'model': str(adapter_config.get('model') or ''), 'ms_model': str(adapter_config.get('ms_model') or ''), 'system_prompt': str(adapter_config.get('system_prompt') or '')}
             conversation_adapter = adapter if adapter is not None else _app_main.project_conversation_adapter
             await asyncio.to_thread(save_project_conversation_durable, project_id, node_id, request_id, {'state': 'dispatching', 'user_message_id': user_message_id})
             adapter_result = await conversation_adapter(adapter_request)

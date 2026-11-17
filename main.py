@@ -1077,8 +1077,7 @@ def schedule_project_conversation_task(
             conversation = conversation_node_by_id(canvas, node_id)
             pending = next((
                 item for item in (conversation or {}).get("messages") or []
-                if isinstance(item, dict)
-                and item.get("role") == "user"
+                if is_registered_conversation_user_message(item)
                 and item.get("status") == "pending"
                 and str(item.get("request_id") or "")
             ), None)
@@ -1115,7 +1114,7 @@ async def merge_project_conversation_result(
             return {}
         current_messages = [item for item in conversation.get("messages") or [] if isinstance(item, dict)]
         def is_target_user(item):
-            if item.get("role") != "user":
+            if not is_registered_conversation_user_message(item):
                 return False
             if user_message_id:
                 return str(item.get("id") or "") == str(user_message_id)

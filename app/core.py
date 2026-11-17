@@ -66,7 +66,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import HTTPConnection
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, model_validator
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
 from firefly_generation import ImageGenerationRequest, ModelRoutingError, VIDEO_EXECUTION_PROTOCOLS, VideoGenerationRequest, apply_angle_preset, normalize_image_model_capabilities, normalize_video_model_capabilities, route_image_generation, route_video_generation
 from local_edit import as_rgba, composite_preserve, composite_rect, encode_png, rasterize_preserve_mask, selection_json
@@ -472,7 +472,7 @@ def _conversation_pending_task_keys_from_canvas(project_id: str, canvas: Optiona
         if not node_id:
             continue
         for message in node.get('messages') or []:
-            if not isinstance(message, dict) or message.get('role') != 'user' or message.get('status') != 'pending':
+            if not is_registered_conversation_user_message(message) or message.get('status') != 'pending':
                 continue
             request_id = str(message.get('request_id') or '')
             if request_id:
@@ -1372,6 +1372,19 @@ class ProjectLocalEditRequest(BaseModel):
     base_revision: int = Field(ge=0)
 
 class ProjectConversationMessageRequest(BaseModel):
+    @model_validator(mode='before')
+    @classmethod
+    def reject_server_owned_fields(cls, value):
+        # Other legacy extras (e.g. references) remain ignored, not forbidden.
+        reserved = {'createdBy', 'agentNodeId', 'userTouchedAt', 'promptEditedByUser',
+                    'created_at', 'updated_at', 'createdAt', 'updatedAt',
+                    'created_by', 'agent_node_id', 'user_touched_at', 'prompt_edited_by_user'}
+        if isinstance(value, dict) and reserved.intersection(value):
+            from app.services.agent_errors import agent_error
+            raise agent_error(400, 'INVALID_ARGUMENT', '归属、人工时间和提示词标志由服务端维护', '移除这些字段，仅使用 user_edit 标记原始人工意图。')
+        return value
+
+    user_edit: StrictBool = False
     text: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
     request_id: str = Field(default='', max_length=200)
     provider: Optional[str] = Field(default=None, max_length=80)
@@ -6205,12 +6218,16 @@ def _photoshop_validate_media_type(value: str) -> str:
 def conversation_node_by_id(canvas: Dict[str, Any], node_id: str) -> Optional[Dict[str, Any]]:
     return next((node for node in canvas.get('nodes') or [] if isinstance(node, dict) and str(node.get('id') or '') == str(node_id)), None)
 
+def is_registered_conversation_user_message(message: Any) -> bool:
+    """Recognize legacy server receipts too, but never a local UI placeholder."""
+    return isinstance(message, dict) and message.get('role') == 'user' and not str(message.get('id') or '').startswith('local-')
+
 def conversation_task_snapshot(canvas: Dict[str, Any], node_id: str, request_id: str) -> Optional[Dict[str, Any]]:
     node = conversation_node_by_id(canvas, node_id)
     if not isinstance(node, dict) or node.get('type') != NODE_TYPE_CONVERSATION:
         return None
     messages = [item for item in node.get('messages') or [] if isinstance(item, dict)]
-    user_message = next((item for item in messages if str(item.get('request_id') or '') == request_id and item.get('role') == 'user'), None)
+    user_message = next((item for item in messages if str(item.get('request_id') or '') == request_id and is_registered_conversation_user_message(item)), None)
     if user_message is None:
         return None
     assistant_message = next((item for item in messages if str(item.get('request_id') or '') == request_id and item.get('role') == 'assistant'), None)
