@@ -371,6 +371,7 @@ async function performUndo(){
                 await restoreSmartProjectOriginalUndo(snap);
                 if(!canvasUndoRestoreIsCurrent(context, snap, 'backward')) return;
                 undoStack.pop();
+                syncUndoRedoButtons();
                 toast(tr('smart.toastUndone'));
                 scheduleUndoStackPersist();
                 return;

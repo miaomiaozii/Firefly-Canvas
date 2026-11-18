@@ -212,7 +212,7 @@ test('stripDeletedMediaFromUndoStacks removes every snapshot still referencing a
 });
 
 test('a projectOriginalDelete token is delegated to restoreSmartProjectOriginalUndo, NOT the render path', async () => {
-    const { ctx, calls } = loadUndoModule({ nodes: [] });
+    const { ctx, harness, calls } = loadUndoModule({ nodes: [] });
     const pushUndo = globalFunction(ctx, 'pushUndo');
     const performUndo = globalFunction(ctx, 'performUndo');
 
@@ -221,6 +221,8 @@ test('a projectOriginalDelete token is delegated to restoreSmartProjectOriginalU
     await performUndo();
 
     assert.equal(evaluate(ctx, 'undoStack.length'), 0, 'the token snapshot is consumed');
+    assert.equal(undoBtn(harness).disabled, true, '#427: the undo button reflects the consumed last token');
+    assert.equal(redoBtn(harness).disabled, true, 'restoring an original does not create redo');
     assert.equal(calls[0], 'cancelPendingMediaArchives', 'pending archives are still cancelled first');
     assert.ok(calls.includes('restoreOriginal:orig-1'), 'delegates to restoreSmartProjectOriginalUndo carrying the assetId');
     assert.ok(calls.includes('toast:smart.toastUndone'), 'still toasts the undone key for a token undo');

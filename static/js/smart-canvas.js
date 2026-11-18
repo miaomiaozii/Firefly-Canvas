@@ -8456,6 +8456,7 @@ async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', 
     const normalizedAssetId = String(assetId || '').trim();
     if(!normalizedAssetId) return;
     const projectId = canvas?.project_id || canvas?.project || canvasId;
+    const activeCanvasId = canvas?.id;
     const token = {
         assetId:normalizedAssetId,
         deletionId:String(deletionId || ''),
@@ -8465,17 +8466,8 @@ async function restoreSmartProjectOriginal(assetId, deletionId='', outputId='', 
     };
     try {
         await restoreSmartProjectOriginalUndo({projectOriginalDelete:token});
-        for(let index = undoStack.length - 1; index >= 0; index--){
-            const token = undoStack[index]?.projectOriginalDelete;
-            if(
-                token?.assetId === normalizedAssetId
-                && (!deletionId || token.deletionId === deletionId)
-                && (token.projectId || projectId) === projectId
-            ){
-                undoStack.splice(index, 1);
-            }
-        }
-        syncUndoRedoButtons();
+        if(projectId !== smartProjectId() || canvas?.id !== activeCanvasId) return;
+        removeProjectOriginalUndoTokens(normalizedAssetId, token.deletionId, projectId);
         toast(tr('canvas.originalRestored'));
     } catch(err){
         toast(err?.message || tr('canvas.originalDeleteFailed'));
