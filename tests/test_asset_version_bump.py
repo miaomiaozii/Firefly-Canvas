@@ -13,9 +13,14 @@
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
+from html import unescape
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import parse_qsl, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PAGES = ("static/smart-canvas.html", "static/project-list.html", "static/global-settings.html")
@@ -94,6 +99,76 @@ class StampGuardSelfCheckTests(unittest.TestCase):
 
     def test_images_are_exempt(self):
         self.assertEqual(page_stamps('src="/static/images/logo.png?v=1"'), {})
+
+
+class AssetRefreshCompatibilityTests(unittest.TestCase):
+    """#371: execute only each launcher's bump function, never stop/start servers."""
+
+    def test_restart_and_refresh_preserve_scoped_revisions_and_other_query_parameters(self):
+        from tests import test_canvas_frontend_sources as frontend
+
+        shell = shutil.which("powershell") or shutil.which("pwsh")
+        if shell is None:
+            self.skipTest("Windows launcher integration requires PowerShell")
+        for script, function in (("refresh-cache.ps1", "Bump-AllAssetVersions"),
+                                 ("restart-firefly.ps1", "Bump-AssetVersions")):
+            with self.subTest(script=script), tempfile.TemporaryDirectory(prefix="firefly-cache-stamp-") as temp:
+                root = Path(temp)
+                static = root / "static"
+                static.mkdir()
+                for page in PAGES:
+                    shutil.copyfile(REPO_ROOT / page, root / page)
+                # Also protect non-Agent query parameters, both HTML-escaped and raw.
+                extra = ('\n<script src="/static/js/probe.js?v=1&amp;mode=preview"></script>'
+                         '\n<script src="/static/js/probe2.js?v=1&mode=preview"></script>\n')
+                with (static / "project-list.html").open("a", encoding="utf-8", newline="") as target:
+                    target.write(extra)
+                before = {page: (root / page).read_bytes() for page in PAGES}
+                environment = dict(os.environ, FIREFLY_CACHE_TEST_ROOT=str(root),
+                                   FIREFLY_CACHE_TEST_SCRIPT=str(REPO_ROOT / "tools" / script),
+                                   FIREFLY_CACHE_TEST_FUNCTION=function)
+                # AST extraction defines only the named function. Dot-sourcing the
+                # whole script would kill port 3000: explicitly never do that here.
+                command = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:FIREFLY_CACHE_TEST_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'cache script parse failed' }
+$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $env:FIREFLY_CACHE_TEST_FUNCTION }, $true)
+if (-not $definition) { throw 'cache bump function missing' }
+$root = $env:FIREFLY_CACHE_TEST_ROOT
+. ([scriptblock]::Create($definition.Extent.Text))
+& $env:FIREFLY_CACHE_TEST_FUNCTION
+"""
+                result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                         "-Command", command], env=environment, capture_output=True,
+                                        encoding="utf-8", errors="replace", timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                # Re-run the exact existing contract on the bumped temporary pages.
+                # Preserve its five r3 revisions and navigation-before-TUI order.
+                with patch.object(frontend, "ROOT", root):
+                    contract = frontend.CanvasFrontendSourceListTests()
+                    contract.test_agent_r3_assets_share_a_scoped_cache_revision_and_navigation_loads_first()
+                    contract.test_local_assets_on_product_pages_all_carry_a_cache_stamp()
+                    contract.test_canvas_assets_share_one_cache_buster()
+                    contract.test_product_pages_share_one_stamp_across_the_repo()
+                versions = set()
+                for page in PAGES:
+                    after = (root / page).read_bytes()
+                    self.assertEqual(after.count(b"\r\n"), before[page].count(b"\r\n"))
+                    old_urls = re.findall(r'(?:href|src)="(/static/[^\"]+\?v=[^\"]+)"', before[page].decode("utf-8"))
+                    new_urls = re.findall(r'(?:href|src)="(/static/[^\"]+\?v=[^\"]+)"', after.decode("utf-8"))
+                    self.assertEqual(len(old_urls), len(new_urls))
+                    for old, new in zip(old_urls, new_urls):
+                        old_url, new_url = urlsplit(unescape(old)), urlsplit(unescape(new))
+                        self.assertEqual(old_url.path, new_url.path)
+                        old_params, new_params = dict(parse_qsl(old_url.query)), dict(parse_qsl(new_url.query))
+                        old_version = old_params.pop("v")
+                        new_version = new_params.pop("v")
+                        self.assertNotEqual(old_version, new_version)
+                        self.assertEqual(old_params, new_params, f"{script}: {new}")
+                        versions.add(new_version)
+                self.assertEqual(len(versions), 1, "all three pages must share the new release stamp")
 
 
 if __name__ == "__main__":

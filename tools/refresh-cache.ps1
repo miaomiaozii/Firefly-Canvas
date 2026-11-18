@@ -87,7 +87,8 @@ function Bump-AllAssetVersions {
         $content = [System.IO.File]::ReadAllText($html.FullName, $utf8NoBom)
         if ($content -notmatch '\?v=') { continue }
         # ${1} (not $1) so .NET does not swallow the version digits into the group ref.
-        $updated = [regex]::Replace($content, '(\?v=)[^"''\s>]+', "`${1}$newVersion")
+        # #371: replace only v, preserving &amp;agent= and any other query parameters.
+        $updated = [regex]::Replace($content, '(\?v=)[^"''&\s>]+', "`${1}$newVersion")
         if ($updated -ne $content) {
             [System.IO.File]::WriteAllText($html.FullName, $updated, $utf8NoBom)
             Write-Host "[REFRESH] $($html.Name): all asset versions bumped to $newVersion"

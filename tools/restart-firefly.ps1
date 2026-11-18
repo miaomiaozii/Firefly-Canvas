@@ -74,7 +74,8 @@ function Bump-AssetVersions {
     foreach ($html in Get-ChildItem -Path $staticDir -Filter '*.html' -File -ErrorAction SilentlyContinue) {
         $content = [System.IO.File]::ReadAllText($html.FullName, $utf8NoBom)
         if ($content -notmatch '\?v=') { continue }
-        $updated = [regex]::Replace($content, '(\?v=)[^"''\s>]+', "`${1}$newVersion")
+        # #371: replace only v, preserving &amp;agent= and any other query parameters.
+        $updated = [regex]::Replace($content, '(\?v=)[^"''&\s>]+', "`${1}$newVersion")
         if ($updated -eq $content) { continue }
         # 原子写：先写 temp 再覆盖——进程被杀时不会留下 0 字节 html（本仓实测两次被杀即归零）。
         # bump 失败不该炸掉整次重启：捕获后降级为 WARN，服务照常起。
