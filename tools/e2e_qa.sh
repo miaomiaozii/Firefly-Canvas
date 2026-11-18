@@ -67,11 +67,11 @@ const AID = 'e2e-a1';
 const card = page.locator('.image-node[data-id="' + AID + '"] .agent-tui-card');
 await card.first().waitFor({ timeout: 30000 });
 await clickNode(AID); // 真鼠标点选 Agent 节点（预置 clickNode，找不到会炸 NODE_MISSING）
-// 等 Agent 会话就绪（空闲/运行中）；启动失败/已崩溃/重连停止 → 明确 FAIL
+// 等 Agent 会话进入就绪/运行中；启动失败/已崩溃/重连停止 → 明确 FAIL
 try {
   await page.waitForFunction((aid) => {
     const s = document.querySelector('.image-node[data-id="' + aid + '"] .agent-tui-status');
-    return s && /空闲|运行中/.test(s.textContent || '');
+    return s && /就绪|运行中/.test(s.textContent || '');
   }, AID, { timeout: 90000 });
 } catch (e) {
   const st = await page.evaluate((aid) => {
@@ -123,7 +123,7 @@ await clickNode(AID);
 try {
   await page.waitForFunction((aid) => {
     const s = document.querySelector('.image-node[data-id="' + aid + '"] .agent-tui-status');
-    return s && /空闲|运行中/.test(s.textContent || '');
+    return s && /就绪|运行中/.test(s.textContent || '');
   }, AID, { timeout: 90000 });
 } catch (e) {
   const st = await page.evaluate((aid) => {

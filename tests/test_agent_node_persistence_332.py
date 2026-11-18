@@ -403,7 +403,10 @@ class TestAgentSettingsCAS(unittest.TestCase):
                     self.assertEqual([args[1] for args, _ in self.model_commands.await_args_list],
                                      [body["model"], self.node["model"]])
                 if endpoint == "fork":
-                    self.assertEqual(self.host.effects.count("fork" if endpoint == "fork" else "switch"), 1)
+                    self.assertEqual(self.host.effects, ["session", "fork", "switch"])
+                    self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list], ["original.jsonl"])
+                    self.assertEqual((self.host.session.session_file, self.host.session.session_id,
+                                      self.host.session.ext_session_id), ("original.jsonl", "original", "original"))
                 if endpoint == "switch-branch":
                     self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list],
                                      ["other.jsonl", "original.jsonl"])
@@ -431,7 +434,10 @@ class TestAgentSettingsCAS(unittest.TestCase):
                     self.assertEqual([args[1] for args, _ in self.model_commands.await_args_list],
                                      [body["model"], self.node["model"]])
                 if endpoint == "fork":
-                    self.assertEqual(self.host.effects.count("fork" if endpoint == "fork" else "switch"), 1)
+                    self.assertEqual(self.host.effects, ["session", "fork", "switch"])
+                    self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list], ["original.jsonl"])
+                    self.assertEqual((self.host.session.session_file, self.host.session.session_id,
+                                      self.host.session.ext_session_id), ("original.jsonl", "original", "original"))
                 if endpoint == "switch-branch":
                     self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list],
                                      ["other.jsonl", "original.jsonl"])

@@ -959,13 +959,14 @@ test('cleanupAgentTuiState: socket.close() 抛错也不能中断删除', () => {
 });
 
 // ── 卡片状态行 ───────────────────────────────────────────────────────
-test('agentCardStatusHtml: 无会话时给空闲；六种状态映射到各自 class/文案', () => {
+test('agentCardStatusHtml: 无会话时显示就绪；各状态映射到各自 class/文案', () => {
     const { ctx } = loadAgentTuiModule();
     const card = fn(ctx, 'agentCardStatusHtml');
     // #317 无障碍：状态 span 带 role="status"（canvas-agent-tui.js:898,924）。
     assert.equal(fromContext(card('missing')),
-        '<span class="agent-card-status agent-tui-status-idle" role="status">空闲</span>');
+        '<span class="agent-card-status agent-tui-status-idle" role="status">就绪</span>');
     for (const [status, cls, text] of [
+        ['idle', 'agent-tui-status-idle', '就绪'],
         ['busy', 'agent-tui-status-busy', '运行中'],
         ['connecting', 'agent-tui-status-connecting', '连接中'],
         // #220：这两个以前在卡片侧没有映射，掉进默认分支→显示「空闲」。

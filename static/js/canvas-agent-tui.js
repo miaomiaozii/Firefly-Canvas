@@ -1872,7 +1872,7 @@ const AGENT_STATUS_PRESENTATION = {
     reconnecting: { statusClass: 'agent-tui-status-disconnected', statusText: '重连中' },
     reconnect_stopped: { statusClass: 'agent-tui-status-error', statusText: '重连停止' },
 };
-const AGENT_STATUS_IDLE = { statusClass: 'agent-tui-status-idle', statusText: '空闲' };
+const AGENT_STATUS_IDLE = { statusClass: 'agent-tui-status-idle', statusText: '就绪' };
 
 function agentStatusPresentation(state) {
     return AGENT_STATUS_PRESENTATION[state && state.status] || AGENT_STATUS_IDLE;
@@ -1942,7 +1942,7 @@ function renderAgentAssistantHtml(text){
 function agentCardStatusHtml(nodeId) {
     const state = agentTuiState.get(nodeId);
     if (!state) {
-        return '<span class="agent-card-status agent-tui-status-idle" role="status">空闲</span>';
+        return `<span class="agent-card-status ${AGENT_STATUS_IDLE.statusClass}" role="status">${AGENT_STATUS_IDLE.statusText}</span>`;
     }
     
     // Determine status class and text
