@@ -30,6 +30,7 @@ except ModuleNotFoundError:  # Direct `python tools/...py` execution.
 
 VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 REQUIRED_BOOLEANS = (
+    "record_cancel_preserved",
     "record_removed_only",
     "original_retained_after_record_delete",
     "task_retained_after_original_delete",
@@ -99,21 +100,29 @@ def _validate_operations(root: Path, attempt: dict, lifecycle: dict, viewport: t
             "before-restart",
             2,
             f'[data-canvas-history-id="{lifecycle["record_history_id"]}"] [data-history-delete="record"]',
-            True,
+            False,
         ),
+        ('before-restart', 3, '.ff-dialog-card[role="alertdialog"] .ff-dialog-actions button:first-child', False),
+        (
+            "before-restart", 4,
+            f'[data-canvas-history-id="{lifecycle["record_history_id"]}"] [data-history-delete="record"]',
+            False,
+        ),
+        ('before-restart', 5, '.ff-dialog-card[role="alertdialog"] .ff-dialog-btn-primary', False),
         (
             "before-restart",
-            3,
+            6,
             f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="{lifecycle["original_output_id"]}"]',
-            True,
+            False,
         ),
         ("after-restart", 1, "#smartHistoryToggle", False),
+        ("after-restart", 2, "#smartTrashOpenBtn", False),
         (
             "after-restart",
-            2,
-            f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] '
-            f'[data-history-restore-original="{asset_id}"]',
-            True,
+            3,
+            f'[data-trash-asset="{asset_id}"]'
+            f'[data-trash-deletion="{lifecycle["deletion_id"]}"] [data-trash-restore]',
+            False,
         ),
     )
     if len(operations) != len(expected):
@@ -152,7 +161,9 @@ def _validate_requests(root: Path, attempt: dict, lifecycle: dict, viewport: tup
         for item in requests
         if item.get("status") == 200
     }
-    if not required.issubset(observed) or any(
+    record_requests = [item for item in requests if item.get('method') == 'Network.requestWillBeSent'
+                       and urlsplit(str(item.get('url') or '')).path == f'{prefix}/history/delete']
+    if len(record_requests) != 1 or not required.issubset(observed) or any(
         "/history/delete-with-media" in urlsplit(str(item.get("url") or "")).path
         for item in requests
     ):

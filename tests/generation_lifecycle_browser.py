@@ -356,6 +356,7 @@ def run_viewport(
     store = ProjectStore(run_root / "projects", snapshot_delay=0)
     fixture = seed_project(store, run_root)
     original_path = Path(store.media_record(fixture["project_id"], fixture["original_asset_id"])["path"])
+    record_path = Path(store.media_record(fixture["project_id"], fixture["record_asset_id"])["path"])
     before = lifecycle_snapshot(store, fixture)
     browser = None
     server = None
@@ -374,10 +375,26 @@ def run_viewport(
         browser.wait_for(f"document.querySelector('[data-canvas-history-id=\"{PENDING_HISTORY_ID}\"]')")
         screenshots.append(screenshot(browser, viewport_root, "01-before.png", artifacts_root))
 
-        record_delete_operation = browser.native_click(
-            f'[data-canvas-history-id="{RECORD_HISTORY_ID}"] [data-history-delete="record"]',
-            accept_dialog=True,
-        )
+        record_selector = f'[data-canvas-history-id="{RECORD_HISTORY_ID}"] [data-history-delete="record"]'
+        cancel_selector = '.ff-dialog-card[role="alertdialog"] .ff-dialog-actions button:first-child'
+        confirm_selector = '.ff-dialog-card[role="alertdialog"] .ff-dialog-btn-primary'
+        browser.native_click(record_selector)
+        browser.wait_for(f'document.querySelector({json.dumps(cancel_selector)})')
+        screenshot(browser, viewport_root, "01a-record-confirmation.png", artifacts_root)
+        browser.native_click(cancel_selector)
+        browser.wait_for(f'!document.querySelector(".ff-dialog-backdrop") && !document.querySelector({json.dumps(record_selector)})?.disabled')
+        cancelled = lifecycle_snapshot(store, fixture)
+        cancelled_dom = browser.evaluate("Array.from(document.querySelectorAll('[data-canvas-history-id]')).map(card => card.dataset.canvasHistoryId)")
+        if cancelled["history_ids"] != before["history_ids"] or cancelled["task"] != before["task"]:
+            raise AssertionError("cancelled record delete changed store history or pending task")
+        if not set(before["history_ids"] + [PENDING_HISTORY_ID]).issubset(cancelled_dom):
+            raise AssertionError(f"cancelled record delete changed history DOM: {cancelled_dom}")
+        if any('/history/delete' in str(item.get('url') or '') for item in browser.request_summaries):
+            raise AssertionError("cancelled record delete sent a delete request")
+        screenshot(browser, viewport_root, "01b-record-cancelled.png", artifacts_root)
+        record_delete_operation = browser.native_click(record_selector)
+        browser.wait_for(f'document.querySelector({json.dumps(confirm_selector)})')
+        browser.native_click(confirm_selector)
         try:
             browser.wait_for(f"!document.querySelector('[data-canvas-history-id=\"{RECORD_HISTORY_ID}\"]')")
         except TimeoutError as error:
@@ -439,9 +456,12 @@ def run_viewport(
         for retained in (ORIGINAL_HISTORY_ID, "history-downstream", UNRELATED_HISTORY_ID):
             if retained not in after_record["history_ids"]:
                 raise AssertionError(f"record-only delete removed unrelated history: {retained}")
+        retained_dom = browser.evaluate("Array.from(document.querySelectorAll('[data-canvas-history-id]')).map(card => card.dataset.canvasHistoryId)")
+        if not {ORIGINAL_HISTORY_ID, 'history-downstream', UNRELATED_HISTORY_ID, PENDING_HISTORY_ID}.issubset(retained_dom):
+            raise AssertionError(f"record-only delete removed unrelated DOM cards: {retained_dom}")
         if after_record["task"] != before["task"]:
             raise AssertionError("record-only delete changed the newer task identity")
-        if not original_path.is_file():
+        if not original_path.is_file() or not record_path.is_file():
             raise AssertionError("record-only delete removed a generated original")
         screenshots.append(screenshot(browser, viewport_root, "02-record-deleted.png", artifacts_root))
 
@@ -481,11 +501,9 @@ def run_viewport(
                     ensure_ascii=False,
                 )
             ) from error
-        browser.native_click(original_delete_selector, accept_dialog=True)
-        restore_selector_before_restart = (
-            f'[data-canvas-history-id="{ORIGINAL_HISTORY_ID}"] '
-            f'[data-history-restore-original="{fixture["original_asset_id"]}"]'
-        )
+        browser.native_click(original_delete_selector)
+        # Fully deleted history cards are hidden; recovery is exposed in project trash.
+        restore_selector_before_restart = '#smartTrashOpenBtn:not([hidden])'
         try:
             browser.wait_for(
                 f"document.querySelector({json.dumps(restore_selector_before_restart)})",
@@ -612,13 +630,15 @@ def run_viewport(
         browser = NativeBrowser.launch(browser_path)
         browser.set_environment(viewport)
         open_history(browser, server.base_url, fixture["project_id"])
+        browser.wait_for('document.querySelector("#smartTrashOpenBtn:not([hidden])")', timeout=12)
+        browser.native_click('#smartTrashOpenBtn')
         restore_selector = (
-            f'[data-canvas-history-id="{ORIGINAL_HISTORY_ID}"] '
-            f'[data-history-restore-original="{fixture["original_asset_id"]}"]'
+            f'[data-trash-asset="{fixture["original_asset_id"]}"]'
+            f'[data-trash-deletion="{trash_item["deletion_id"]}"] [data-trash-restore]'
         )
         browser.wait_for(f"document.querySelector({json.dumps(restore_selector)})", timeout=12)
         screenshots.append(screenshot(browser, viewport_root, "04-after-restart.png", artifacts_root))
-        restore_operation = browser.native_click(restore_selector, accept_dialog=True)
+        restore_operation = browser.native_click(restore_selector)
         try:
             browser.wait_for(
                 f"document.querySelector({json.dumps(original_delete_selector)})",
@@ -712,12 +732,8 @@ def run_viewport(
             for session in sessions
             for error in session["console_errors"]
         ]
-        unexpected_console = [
-            item for item in console_errors
-            if item.get("type") == "exception" or item.get("level") == "error"
-        ]
-        if unexpected_console:
-            raise AssertionError(f"unexpected lifecycle console errors: {unexpected_console}")
+        if console_errors:
+            raise AssertionError(f"unexpected lifecycle console errors: {console_errors}")
         if any("delete-with-media" in str(item.get("url") or "") for item in requests):
             raise AssertionError("lifecycle journey used destructive history deletion")
         operations_path.write_text(
@@ -748,8 +764,9 @@ def run_viewport(
                     "downstream_asset_id": fixture["downstream_asset_id"],
                     "original_sha256": fixture["original_sha256"],
                     "original_bytes": fixture["original_bytes"],
+                    "record_cancel_preserved": True,
                     "record_removed_only": RECORD_HISTORY_ID not in after_record["history_ids"],
-                    "original_retained_after_record_delete": after_record["task"] == before["task"],
+                    "original_retained_after_record_delete": original_path.is_file() and record_path.is_file(),
                     "task_retained_after_original_delete": after_original_delete["task"] == before["task"],
                     "downstream_retained_after_original_delete": completed_output_snapshot(after_original_delete["downstream"])
                     == completed_output_snapshot(before["downstream"]),

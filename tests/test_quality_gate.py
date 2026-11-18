@@ -1169,6 +1169,8 @@ class QualityGateTests(unittest.TestCase):
             "bad-output-identity",
             "short-phase-chain",
             "missing-dialog",
+            "missing-cancel",
+            "duplicate-record-request",
             "destructive-api",
         ):
             with self.subTest(variant=variant):

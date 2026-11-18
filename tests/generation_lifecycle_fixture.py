@@ -56,6 +56,7 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
         "restored_bytes": 86,
         "retention_ms": 604_800_000,
         "phase_sequence": ["queued", "provider_generating", "receiving", "persisting"],
+        "record_cancel_preserved": True,
         "record_removed_only": True,
         "original_retained_after_record_delete": True,
         "task_retained_after_original_delete": True,
@@ -79,21 +80,25 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
                 "before-restart",
                 2,
                 '[data-canvas-history-id="history-record-only"] [data-history-delete="record"]',
-                True,
+                False,
             ),
+            _operation("before-restart", 3, '.ff-dialog-card[role="alertdialog"] .ff-dialog-actions button:first-child', False),
+            _operation("before-restart", 4, '[data-canvas-history-id="history-record-only"] [data-history-delete="record"]', False),
+            _operation("before-restart", 5, '.ff-dialog-card[role="alertdialog"] .ff-dialog-btn-primary', False),
             _operation(
                 "before-restart",
-                3,
+                6,
                 f'[data-canvas-history-id="{lifecycle["original_history_id"]}"] [data-history-delete-original="{lifecycle["original_output_id"]}"]',
-                True,
+                False,
             ),
             _operation("after-restart", 1, "#smartHistoryToggle", False),
+            _operation("after-restart", 2, "#smartTrashOpenBtn", False),
             _operation(
                 "after-restart",
-                2,
-                '[data-canvas-history-id="history-original"] '
-                f'[data-history-restore-original="{ASSET_ID}"]',
-                True,
+                3,
+                f'[data-trash-asset="{ASSET_ID}"]'
+                f'[data-trash-deletion="{DELETION_ID}"] [data-trash-restore]',
+                False,
             ),
         ]
         (folder / "operations.jsonl").write_text(
@@ -101,6 +106,11 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
             encoding="utf-8",
         )
         requests = [
+            {
+                "session": "before-restart",
+                "method": "Network.requestWillBeSent",
+                "url": "http://127.0.0.1/api/project-library/project-fixture/history/delete",
+            },
             {
                 "session": "before-restart",
                 "url": "http://127.0.0.1/api/project-library/project-fixture/history/delete",
@@ -165,8 +175,15 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
     elif variant == "missing-dialog":
         path = root / "viewport-1920x1080" / "operations.jsonl"
         items = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-        items[2]["dialog_accepted"] = False
+        items[4]["selector"] = ".missing-confirm-button"
         path.write_text("".join(json.dumps(item) + "\n" for item in items), encoding="utf-8")
+    elif variant == "missing-cancel":
+        manifest["attempts"][0]["lifecycle"]["record_cancel_preserved"] = False
+    elif variant == "duplicate-record-request":
+        path = root / "viewport-1920x1080" / "requests.json"
+        items = json.loads(path.read_text(encoding="utf-8"))
+        items.append(dict(items[0]))
+        path.write_text(json.dumps(items), encoding="utf-8")
     elif variant == "destructive-api":
         path = root / "viewport-1920x1080" / "requests.json"
         items = json.loads(path.read_text(encoding="utf-8"))
