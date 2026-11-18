@@ -138,6 +138,7 @@ function fixture({count = 3, height = 160, zoom = 1, width = 1280, viewportHeigh
     f.nav = context.createAgentMessageNavigation({body, mount, entries, onJump: entry => { f.jumps.push(entry); f.onJump?.(entry); }, readingRect: () => f.reading});
     f.rail = mount.children[0]; f.preview = doc.body.children.find(child => child.className === 'agent-message-preview');
     f.ticks = () => [...f.rail.children];
+    f.visible = () => f.ticks().filter(tick => tick.dataset.tickVisible === 'true');
     f.current = () => f.ticks().filter(tick => tick.getAttribute('aria-current') === 'true').map(tick => tick.dataset.entryId);
     f.flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); };
     f.emit = (target, type, props = {}) => { const event = {type, bubbles: true, ...props}; target.dispatchEvent(event); return event; };
@@ -166,7 +167,7 @@ test('empty and single user messages have explicit, finite layout; assistant DOM
     one.nav.destroy(); empty.nav.destroy();
 });
 
-test('nominal centers are 16px; long conversations compress uniformly, including current and last', () => {
+test('nominal centers are 16px; long conversations sample ink at proportional centers and keep the endpoints', () => {
     const regular = fixture({count: 4});
     assert.deepEqual(regular.ticks().map(tick => parseFloat(tick.style.top)), [12, 28, 44, 60]);
     assert.deepEqual(regular.ticks().map(tick => tick.style.width), ['12px', '6px', '6px', '6px']);
@@ -175,6 +176,10 @@ test('nominal centers are 16px; long conversations compress uniformly, including
     assert.equal(positions[0], 12); assert.equal(positions.at(-1), 112);
     positions.slice(1).forEach((p, i) => assert.ok(Math.abs(p - positions[i] - 0.2) < 1e-10));
     assert.equal(new Set(long.ticks().map(tick => tick.id)).size, 501);
+    const visible = long.visible();
+    assert.ok(visible.length <= 40);
+    assert.equal(visible[0], long.ticks()[0]); assert.equal(visible.at(-1), long.ticks().at(-1));
+    visible.slice(1).forEach((tick, i) => assert.ok(parseFloat(tick.style.top) - parseFloat(visible[i].style.top) >= 8));
     long.mount.localHeight = 224; long.observers[0].callback(); long.flush();
     assert.equal(long.ticks().at(-1).style.top, '212px');
     regular.nav.destroy(); long.nav.destroy();
@@ -185,7 +190,7 @@ test('a single 24px rail selects nearest y, not overlapping buttons; pointer jum
         const f = fixture({count: 101, height: 124, zoom});
         assert.equal(f.rail.style.width, '24px');
         f.input.value = 'draft'; f.input.selectionStart = 1; f.input.selectionEnd = 4; f.input.focus();
-        for (const index of [0, 1, 50, 99, 100]) {
+        for (const index of [0, 25, 50, 75, 100]) {
             const point = f.point(index);
             f.emit(f.rail, 'pointermove', point);
             assert.equal(f.preview.children[1].textContent, f.entries[index].text);
@@ -197,10 +202,10 @@ test('a single 24px rail selects nearest y, not overlapping buttons; pointer jum
         }
         assert.ok(f.ticks().every(tick => tick.style.pointerEvents === 'none'));
         // Even a click reported on the last button must use pointer y, not that target.
-        f.emit(f.ticks().at(-1), 'click', f.point(1)); assert.equal(f.jumps.at(-1), f.entries[1]);
-        const a = f.point(40).clientY, b = f.point(41).clientY;
+        f.emit(f.ticks().at(-1), 'click', f.point(25)); assert.equal(f.jumps.at(-1), f.entries[25]);
+        const a = f.point(25).clientY, b = f.point(33).clientY;
         f.emit(f.rail, 'click', {detail: 1, clientY: a + (b - a) * 0.75});
-        assert.equal(f.jumps.at(-1), f.entries[41]); f.nav.destroy();
+        assert.equal(f.jumps.at(-1), f.entries[33]); f.nav.destroy();
     }
 });
 
@@ -211,6 +216,7 @@ test('roving keyboard visits every compressed tick, Enter jumps, Escape closes w
     for (let i = 1; i < f.entries.length; i++) {
         const event = f.emit(f.doc.activeElement, 'keydown', {key: 'ArrowDown'});
         assert.equal(event.defaultPrevented, true); assert.equal(f.doc.activeElement, f.ticks()[i]);
+        assert.ok(f.visible().includes(f.ticks()[i]), 'focused unsampled entry draws at its actual position');
         assert.equal(f.ticks().filter(tick => tick.tabIndex === 0).length, 1);
     }
     assert.equal(f.doc.activeElement.dataset.entryId, 'u79');
@@ -222,6 +228,32 @@ test('roving keyboard visits every compressed tick, Enter jumps, Escape closes w
     assert.equal(f.doc.activeElement, f.ticks()[78]);
     f.emit(f.doc.activeElement, 'keydown', {key: 'Home'}); assert.equal(f.doc.activeElement, f.ticks()[0]);
     f.emit(f.doc.activeElement, 'keydown', {key: 'End'}); assert.equal(f.doc.activeElement, f.ticks()[79]);
+    f.nav.destroy();
+});
+
+test('an unsampled reading segment draws a visible current tick at its position without detaching keyboard targets', () => {
+    const f = fixture({count: 150, height: 260});
+    const ticks = f.ticks();
+    const index = ticks.findIndex(tick => tick.dataset.tickVisible === 'false');
+    assert.ok(index > 0);
+    f.body.scrollTop = index * 220; f.emit(f.body, 'scroll'); f.flush();
+    assert.deepEqual(f.current(), [`u${index}`]);
+    assert.ok(f.visible().includes(ticks[index]));
+    assert.equal(ticks[index].style.width, '12px');
+    assert.ok(f.visible().length <= 40);
+    assert.deepEqual(f.ticks(), ticks);
+    f.nav.destroy();
+});
+
+test('both endpoint marks remain pointer reachable next to the current mark', () => {
+    const f = fixture({count: 150, height: 260});
+    for (const [reading, endpoint] of [[1, 0], [148, 149]]) {
+        f.body.scrollTop = reading * 220; f.emit(f.body, 'scroll'); f.flush();
+        assert.deepEqual(f.current(), [`u${reading}`]);
+        assert.ok(f.visible().includes(f.ticks()[endpoint]));
+        f.emit(f.rail, 'click', f.point(endpoint));
+        assert.equal(f.jumps.at(-1), f.entries[endpoint]);
+    }
     f.nav.destroy();
 });
 

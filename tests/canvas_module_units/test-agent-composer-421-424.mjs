@@ -62,7 +62,10 @@ test('r3 composer has no duplicate internal header; real parameters and more men
     for (const attr of ['host', 'model-picker', 'effort-picker', 'autonomy']) assert.match(html, new RegExp(`data-agent-${attr}=`));
     for (const text of ['每张', '每批', '无需', '生效未确认']) assert.ok(html.includes(text));
     const head = fn(m.ctx, 'agentHeadActionButtonsHtml')(m.node);
-    for (const attr of ['chat-frame', 'ref-frame', 'dock-set', 'more-fork', 'more-cli']) assert.ok(head.includes(`data-agent-${attr}`));
+    assert.match(head, /^<details class="agent-tui-more"><summary aria-label="更多会话操作">.*<\/summary><div data-agent-more-content>/);
+    assert.equal((head.match(/<summary /g) || []).length, 1);
+    const menu = head.slice(head.indexOf('<div data-agent-more-content>'));
+    for (const attr of ['chat-frame', 'ref-frame', 'dock-set', 'more-fork', 'more-cli', 'more-delete']) assert.ok(menu.includes(`data-agent-${attr}`));
     assert.equal(fn(m.ctx, 'agentDockNodeWidth')({}), 480);
     assert.equal(fn(m.ctx, 'agentDockNodeWidth')({ w: 382 }), 382);
     assert.equal(m.calls.length, 0, 'render must never request capabilities or legacy chat-models');

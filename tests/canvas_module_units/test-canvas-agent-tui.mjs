@@ -1707,6 +1707,21 @@ test('#284 splitAgentMediaLines + renderAgentAssistantHtml：MEDIA 行拆出并�
     assert.ok(!html.includes('MEDIA:'), '原始 MEDIA: 文本不应再出现');
 });
 
+test('#421 assistant fences preserve multiline content, omit empty fences and do not expand literal MEDIA:', () => {
+    const { ctx } = loadAgentTuiModule();
+    const render = fn(ctx, 'renderAgentAssistantHtml');
+    const fence = '```';
+    const html = render(['before', '', fence + 'text', 'QA row: preserve canvas coordinates', 'MEDIA:/media/literal.png', fence,
+        '', fence, '   ', fence, '', 'MEDIA:/media/actual.png', 'after'].join('\n'));
+    assert.match(html, /<p>before<\/p><pre class="agent-md-code-block" data-lang="text"><code>QA row: preserve canvas coordinates\nMEDIA:\/media\/literal.png<\/code><\/pre>/);
+    assert.equal((html.match(/<pre /g) || []).length, 1);
+    assert.match(html, /<img src="\/assets\/output\/actual\.png"/);
+    assert.doesNotMatch(html, /src="[^"]*literal\.png"/);
+    assert.match(html, /<p>after<\/p>$/);
+    assert.doesNotMatch(render(fence + 'text\n'), /<pre /, 'empty live fence never draws a gray block');
+    assert.match(render(fence + 'text\n&<tag>'), /<code>&amp;&lt;tag&gt;<\/code>/, 'nonempty live fence remains readable and escaped');
+});
+
 // ── #285 会话模型池 ─────────────────────────────────────────────────────────
 test('#285 applyAgentChatModelPool：provider/modelId 池生效并覆盖 getChatModels 回退池', () => {
     const { ctx } = loadAgentTuiModule({
@@ -1852,15 +1867,20 @@ test('#323 E1 bindAgentHeadControls：点「会话框」按钮 → 真实创建�
         nodes: [{ id: 'a1', type: 'smart-agent', x: 0, y: 0 }],
     });
     const chatBtn = harness.makeElement('button');
-    chatBtn.dataset.agentChatFrame = 'a1';
-    const refBtn = harness.makeElement('button');
-    refBtn.dataset.agentRefFrame = 'a1';
+    chatBtn.setAttribute('data-agent-chat-frame', 'a1');
+    const menu = harness.makeElement('details');
+    const summary = harness.makeElement('summary');
+    summary.focus = options => assert.equal(options.preventScroll, true);
+    menu.querySelector = selector => selector === 'summary' ? summary : null;
+    chatBtn.closest = selector => selector === '.agent-tui-more' ? menu : null;
+    menu.open = true;
     const el = harness.makeElement('div');
-    el.querySelectorAll = (sel) => (sel === '[data-agent-chat-frame]' ? [chatBtn] : sel === '[data-agent-ref-frame]' ? [refBtn] : []);
+    el.querySelectorAll = sel => sel.split(',').includes('[data-agent-chat-frame]') ? [chatBtn] : [];
     fn(ctx, 'bindAgentHeadControls')(el, { id: 'a1', type: 'smart-agent' });
     const groups = () => fromContext(evaluate(ctx, 'canvasState.nodes.filter(n => n.type === NODE_TYPE_GROUP)'));
 
     chatBtn.dispatchEvent(ev('click'));
+    assert.equal(menu.open, false);
     assert.equal(groups().length, 1, '首次点击创建 smart-group');
     assert.equal(groups()[0].x, 0 + 240 + 40, '无 w 回退 240');
     assert.equal(fromContext(evaluate(ctx, "canvasState.nodes.find(n => n.id === 'a1').chatFrameId")), groups()[0].id);
@@ -2170,9 +2190,11 @@ test('#407 D1-v2 取回按钮：落回原坐标，草稿/viewport 不动，清�
         if (expanded) fn(ctx, 'agentDockCollapseToggle')('A');
         assert.equal(fn(ctx, 'agentDockIsCollapsed')('A'), !expanded);
         const btn = harness.makeElement('button');
-        btn.dataset.agentDockUndock = 'A';
+        btn.setAttribute('data-agent-dock-undock', 'A');
+        const menu = harness.makeElement('details');
+        btn.closest = selector => selector === '.agent-tui-more' ? menu : null;
         const el = harness.makeElement('div');
-        el.querySelectorAll = sel => sel === '[data-agent-dock-undock]' ? [btn] : [];
+        el.querySelectorAll = sel => sel.split(',').includes('[data-agent-dock-undock]') ? [btn] : [];
         fn(ctx, 'bindAgentHeadControls')(el, node);
         renders.length = 0;
         btn.dispatchEvent(ev('click'));

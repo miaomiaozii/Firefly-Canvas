@@ -3978,6 +3978,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-action-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:0 10px; padding:7px 0; border-top:1px solid var(--line); }
 .agent-tui-composer-hint { display:flex; justify-content:space-between; flex-wrap:wrap; gap:0 8px; padding:7px 3px 0; color:var(--ink-3, var(--faint)); font-size:12px; line-height:1.6; }
 .agent-tui-composer .agent-tui-parameter-hint { padding:6px 3px; }
+.agent-tui-composer .agent-tui-effort-hint { color:var(--ink-3, var(--faint)); font-size:11px; }
 
 /* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
 .agent-tui-attach-row { display:flex; flex-wrap:wrap; flex:none; gap:6px; min-width:0; padding:6px 16px; }
@@ -4198,6 +4199,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-message-track,
 .agent-message-hitarea { position:relative; width:24px; height:100%; }
 .agent-message-tick { width:6px; height:2px; border-radius:2px; background:var(--ink-3, var(--faint)); }
+.agent-message-tick[data-tick-visible="false"] { opacity:0; }
 .agent-message-tick[aria-current="true"] { width:12px; background:var(--ink, var(--text)); }
 .agent-message-tick:focus-visible { outline:2px solid var(--ink, var(--text)); outline-offset:4px; }
 /* body portal：不继承浮动节点的缩放、不被节点 overflow 裁切。 */
@@ -4328,17 +4330,15 @@ button.agent-tui-more:focus-visible { outline:2px solid var(--ink, var(--text));
     align-items:center;
     gap:8px;
     height:auto;
-    min-height:66px;
-    padding:10px 16px;
+    min-height:50px;
+    padding:8px 16px;
     user-select:none;
     cursor:grab;
 }
 .image-node.agent-smart-node > .node-head .node-title { display:block; min-width:0; color:var(--ink, var(--text)); font-size:14px; font-weight:600; letter-spacing:0; text-transform:none; }
 .image-node.agent-smart-node > .node-head .node-head-meta { flex:none; min-width:0; max-width:8rem; overflow:hidden; }
-.image-node.agent-smart-node > .node-head .node-actions { display:flex; flex:none; flex-wrap:wrap; justify-content:flex-end; gap:4px; min-width:0; max-width:100%; }
-/* 兼容尚未搬入更多的外头按钮，不能让窄节点溢出。 */
-.image-node.agent-smart-node > .node-head:has(.node-actions > .agent-tui-btn) { grid-template-columns:minmax(0, 1fr) auto; }
-.image-node.agent-smart-node > .node-head .node-actions:has(> .agent-tui-btn) { grid-column:1 / -1; }
+.image-node.agent-smart-node > .node-head .node-actions { justify-content:flex-end; }
+.image-node.agent-smart-node > .node-head:has(.agent-tui-more[open]) { z-index:7; }
 .agent-tui-more { position:relative; flex:none; }
 button.agent-tui-more,
 .agent-tui-more > :is(summary, button) { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:5px; border:0; border-radius:6px; background:transparent; color:var(--ink-2, var(--muted)); list-style:none; cursor:pointer; }

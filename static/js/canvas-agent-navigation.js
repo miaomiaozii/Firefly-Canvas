@@ -43,6 +43,10 @@ var createAgentMessageNavigation = (function () {
         const records = new Map();
         /** @type {number[]} */
         let centers = [];
+        /** @type {number[]} */
+        let sample = [];
+        /** @type {number[]} */
+        let pointerMarks = [];
         let currentId = '';
         /** @type {{id: string, scrollTop: number} | null} */
         let jumpTarget = null;
@@ -155,6 +159,33 @@ var createAgentMessageNavigation = (function () {
             if (current) { current.setAttribute('aria-current', 'true'); current.style.width = '12px'; }
         }
 
+        function updateMarks() {
+            const focused = entryFromTarget(doc.activeElement);
+            /** @type {number[]} */
+            const emphasized = [];
+            for (let index = 0; index < entries.length; index++) {
+                if (entries[index].id === currentId || entries[index].id === focused?.id) emphasized.push(index);
+            }
+            // Keep both ends reachable by pointer even when the current row is nearby.
+            // Current and keyboard focus draw at their true position, not at their nearest sample.
+            const shown = sample.length === entries.length ? sample : [
+                ...sample.filter(index => !emphasized.includes(index) && (
+                    index === 0 || index === entries.length - 1 ||
+                    emphasized.every(mark => Math.abs(centers[index] - centers[mark]) >= 4)
+                )),
+                ...emphasized,
+            ].sort((a, b) => a - b);
+            pointerMarks = shown;
+            const visible = new Set(shown);
+            entries.forEach((entry, index) => {
+                const button = records.get(entry.id)?.button;
+                if (!button) return;
+                // Only the ink is hidden. Stable buttons retain their focus/keyboard/AT semantics.
+                const value = visible.has(index) ? 'true' : 'false';
+                if (button.dataset.tickVisible !== value) button.dataset.tickVisible = value;
+            });
+        }
+
         function layout() {
             const height = mount.clientHeight;
             if (height === layoutHeight) return;
@@ -167,6 +198,10 @@ var createAgentMessageNavigation = (function () {
                 button.style.top = `${center}px`;
                 return center;
             });
+            const span = step * Math.max(0, entries.length - 1);
+            const count = Math.min(entries.length, 40, Math.max(2, Math.floor(span / 8) + 1));
+            sample = Array.from({length: count}, (_, index) =>
+                count === 1 ? 0 : Math.round(index * (entries.length - 1) / (count - 1)));
         }
 
         /** Refresh geometry/current only: no child replacement or focus changes on scroll. */
@@ -196,6 +231,7 @@ var createAgentMessageNavigation = (function () {
                     setCurrent(selected);
                 }
             }
+            updateMarks();
             if (previewId) positionPreview();
         }
 
@@ -277,8 +313,8 @@ var createAgentMessageNavigation = (function () {
             const box = rail.getBoundingClientRect();
             if (!box.height) return;
             const y = (clientY - box.top) * mount.clientHeight / box.height;
-            let closest = 0;
-            for (let index = 1; index < centers.length; index++) {
+            let closest = pointerMarks[0];
+            for (const index of pointerMarks) {
                 if (Math.abs(centers[index] - y) < Math.abs(centers[closest] - y)) closest = index;
             }
             return entries[closest];
@@ -289,6 +325,7 @@ var createAgentMessageNavigation = (function () {
             hidePreview();
             setRoving(entry.id);
             setCurrent(entry.id);
+            updateMarks();
             onJump(entry);
             jumpTarget = {id: entry.id, scrollTop: body.scrollTop};
         }
@@ -317,11 +354,11 @@ var createAgentMessageNavigation = (function () {
         /** @param {FocusEvent} event */
         function focusIn(event) {
             const entry = entryFromTarget(event.target);
-            if (entry) { setRoving(entry.id); showPreview(entry.id); }
+            if (entry) { setRoving(entry.id); updateMarks(); showPreview(entry.id); }
         }
         /** @param {FocusEvent} event */
         function focusOut(event) {
-            if (!entryFromTarget(event.relatedTarget)) hidePreview();
+            if (!entryFromTarget(event.relatedTarget)) { hidePreview(); scheduleUpdate(); }
         }
         /** @param {KeyboardEvent} event */
         function keyDown(event) {

@@ -1838,16 +1838,25 @@ function normalizeAgentMediaUrl(raw){
 }
 
 function splitAgentMediaLines(text){
-    // 返回 [{text, media:[urls...]}]：MEDIA: 前缀行从文本流中拆出（同一行多个空格分隔 URL 也可）。
+    // Keep Markdown paragraphs and fences intact; MEDIA: inside a fence is literal code.
     const segments = [];
+    let lines = [];
+    let fenced = false;
+    const flush = () => {
+        if (lines.some(line => line.trim())) segments.push({ text: lines.join('\n'), media: [] });
+        lines = [];
+    };
     for (const line of String(text || '').split('\n')) {
-        const match = /^\s*MEDIA:\s*(\S.*)$/.exec(line);
+        const match = !fenced && /^\s*MEDIA:\s*(\S.*)$/.exec(line);
         if (match) {
+            flush();
             segments.push({ text: '', media: match[1].split(/\s+/).map(t => t.replace(/^MEDIA:/i, '')).filter(Boolean) });
         } else {
-            segments.push({ text: line, media: [] });
+            lines.push(line);
+            if (/^```/.test(line)) fenced = !fenced;
         }
     }
+    flush();
     return segments;
 }
 
@@ -1941,7 +1950,7 @@ function agentNodeBodyHtml(node) {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><span class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</span></div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><div class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</div></div>`;
         } else if (msg.role === 'thinking' || entry.kind === 'thinking') {
             const live = entry.kind === 'thinking';
             const open = state.thoughtExpanded && state.thoughtExpanded[entry.key] !== undefined
@@ -2107,7 +2116,7 @@ function agentNodeBodyHtml(node) {
                 <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
             </div>
             ${toolbarHtml}
-            <div class="agent-tui-parameter-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</div>
+            <div class="agent-tui-parameter-hint agent-tui-effort-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</div>
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
                     <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}"${readonly ? ' disabled' : ''}>${agentIco('paperclip')}</button>
@@ -2747,6 +2756,7 @@ function renderAgentNode(nodeId) {
     if (more) {
         more.innerHTML = agentMoreActionsHtml(node);
         bindAgentMoreControls(more, node);
+        bindAgentHeadControls(more, node);
     }
     // Update node card status light + last line preview
     const headMeta = el.querySelector('.node-head-meta');
@@ -2860,9 +2870,8 @@ function agentDockNodeHtml(node){
     const scale = nodeScale(node);
     const layout = imageLayout(node.images || [], scale, node) || { width: 480, height: 360 };
     const title = node.title || 'Agent';
-    const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
     return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
-        <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}${agentChatFrameStatusHtml(node)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}${deleteBtn}</div></div>
+        <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}${agentChatFrameStatusHtml(node)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}</div></div>
         <div class="node-body">${nodeBodyHtml(node, layout)}</div>
         <button type="button" class="dock-collapse-strip" data-agent-dock-expand="${escapeAttr(nodeId)}" title="展开停靠面板" aria-label="展开停靠面板"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="dock-strip-title">${escapeHtml(title)}</span></button>
     </div>`;
@@ -2885,9 +2894,6 @@ function bindAgentDockNodeControls(el, node){
         if(alreadySelected){ syncSelectionUi(); updateComposer(); return; }
         render();
     };
-    el.querySelectorAll('.node-delete').forEach(btn => {
-        btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); deleteNodeFromButton(node.id); });
-    });
     el.querySelectorAll('[data-agent-dock-expand]').forEach(btn => {
         btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); agentDockCollapseToggle(node.id); });
     });
@@ -2900,7 +2906,7 @@ function bindAgentDockDragOut(el, nodeId){
     if(!head) return;
     head.addEventListener('mousedown', e => {
         if(e.button !== 0) return;
-        if(e.target.closest('button,select,input,textarea,a')) return;
+        if(e.target.closest('.agent-tui-more,button,select,input,textarea,a')) return;
         e.preventDefault();
         const startX = e.clientX, startY = e.clientY;
         const rect = el.getBoundingClientRect();
@@ -3257,9 +3263,12 @@ function agentRefFrameCycle(agentId, buttonEl, {actor=null}={}){
     return {action:'cycled', refFrameId:nextId, frames:frames.length};
 }
 
-// E1/E2：agent 卡 node head 区两个小按钮（render() 注入 .node-actions；
-// 风格同卡内 agent-tui-btn 图标按钮，激活态 class + ✓ 角标）。
+// 停靠与浮动共用同一个头部入口，操作全部位于更多菜单。
 function agentHeadActionButtonsHtml(node){
+    return `<details class="agent-tui-more"><summary aria-label="更多会话操作">${agentIco('ellipsis')}</summary><div data-agent-more-content>${agentMoreActionsHtml(node)}</div></details>`;
+}
+
+function agentMoreActionsHtml(node) {
     const id = escapeAttr(node.id);
     const hasChatFrame = Boolean(agentChatFrameGroup(node));
     // 监理钉B2：文字钮直接说明动作——未绑定「创建会话框」、已绑定「打开会话框」（点击跳转）。
@@ -3270,35 +3279,36 @@ function agentHeadActionButtonsHtml(node){
         : '绑定参考框（循环所有参考框）';
     const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatLabel)}" aria-label="${escapeHtml(chatLabel)}">${escapeHtml(chatLabel)}</button>`;
     const refBtn = `<button type="button" class="agent-tui-btn agent-ref-frame-btn${frame ? ' agent-tui-btn-active' : ''}" data-agent-ref-frame="${id}" title="${escapeHtml(refTitle)}" aria-label="${escapeHtml(refTitle)}">${escapeHtml(agentRefFrameButtonLabel(node))}</button>`;
-    // #407 D1：停靠钮——浮动态「停左/停右」，停靠态「收起/展开 + 取回」（逻辑在 agentDockSet）
-    return chatBtn + refBtn + agentDockButtonsHtml(node)
-        + `<details class="agent-tui-more"><summary aria-label="更多会话操作">${agentIco('ellipsis')}</summary><div data-agent-more-content>${agentMoreActionsHtml(node)}</div></details>`;
-}
-
-function agentMoreActionsHtml(node) {
     const state = getAgentTuiState(node.id), locked = agentIsReadonly(state) || agentParametersLocked(state);
     const branches = node.branches || [];
     const other = state.activeHost === 'pi' ? 'codex' : 'pi';
     const binding = node.agentHostSessions && node.agentHostSessions[other];
-    return `<button type="button" class="agent-tui-btn" data-agent-more-fork${locked || state.activeHost !== 'pi' ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
+    return chatBtn + refBtn + agentDockButtonsHtml(node)
+        + `<button type="button" class="agent-tui-btn" data-agent-more-fork${locked || state.activeHost !== 'pi' ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
         ${branches.length && state.activeHost === 'pi' ? `<select class="agent-tui-branch-select" data-agent-more-branch aria-label="切换分支"${locked ? ' disabled' : ''}>${branches.map(branch => `<option value="${escapeAttr(branch.id)}" ${branch.id === node.current_branch ? 'selected' : ''}>${escapeHtml(branch.name)}</option>`).join('')}</select>` : ''}
         <button type="button" class="agent-tui-btn" data-agent-more-cli>由外部 CLI 接管</button>
-        <button type="button" class="agent-tui-btn" data-agent-more-view="${other}"${binding ? '' : ' disabled'}>只读查看 ${other === 'pi' ? 'Pi' : 'Codex'} 会话</button>`;
+        <button type="button" class="agent-tui-btn" data-agent-more-view="${other}"${binding ? '' : ' disabled'}>只读查看 ${other === 'pi' ? 'Pi' : 'Codex'} 会话</button>
+        <button type="button" class="agent-tui-btn" data-agent-more-delete>${agentIco('trash-2')} ${escapeHtml(tr('smart.deleteNode'))}</button>`;
 }
 function bindAgentMoreControls(el, node) {
     const state = getAgentTuiState(node.id), projectId = canvasId || '';
-    el.querySelectorAll('.agent-tui-more > summary').forEach(summary => {
-        summary.addEventListener('mousedown', event => event.stopPropagation());
-        summary.addEventListener('click', event => event.stopPropagation());
+    el.querySelectorAll('.agent-tui-more').forEach(menu => {
+        menu.addEventListener('mousedown', event => event.stopPropagation());
+        menu.addEventListener('click', event => event.stopPropagation());
+        menu.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || !menu.open) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeAgentMoreMenu(menu);
+        });
     });
     el.querySelectorAll('[data-agent-more-fork],[data-agent-more-cli],[data-agent-more-view],[data-agent-more-branch]').forEach(control => {
         control.addEventListener('mousedown', event => event.stopPropagation());
         control.addEventListener(control.hasAttribute('data-agent-more-branch') ? 'change' : 'click', event => {
             event.stopPropagation();
             if (control.disabled) return;
+            closeAgentMoreMenu(control.closest('.agent-tui-more'));
             if (control.hasAttribute('data-agent-more-view')) {
-                // Leave the newly shown read-only banner and its resume button unobscured.
-                control.closest('.agent-tui-more').open = false;
                 agentViewHost(node.id, projectId, control.getAttribute('data-agent-more-view'));
             } else if (control.hasAttribute('data-agent-more-cli')) showAgentCliTakeover(node.id, projectId);
             else if (!agentIsReadonly(state) && !agentParametersLocked(state) && state.activeHost === 'pi') {
@@ -3322,48 +3332,30 @@ function agentDockButtonsHtml(node){
          + `<button type="button" class="agent-tui-btn agent-dock-btn" data-agent-dock-undock="${id}" title="取回画布（拖节点头也可）" aria-label="取回落回浮动">取回</button>`;
 }
 
-// E1/E2 按钮绑定（smart-canvas.js bindNodeEvents 在节点渲染时调用，与 bindAgentNodeControls 同族）。
+function closeAgentMoreMenu(menu) {
+    if (!menu?.open) return;
+    const summary = menu.querySelector('summary');
+    summary.focus({preventScroll: true});
+    menu.open = false;
+}
+
+// Bind both newly mounted menus and content refreshed by renderAgentNode.
 function bindAgentHeadControls(el, node){
     if(!el || !node) return;
-    el.querySelectorAll('[data-agent-chat-frame]').forEach(btn => {
-        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
+    el.querySelectorAll('[data-agent-chat-frame],[data-agent-ref-frame],[data-agent-dock-set],[data-agent-dock-collapse],[data-agent-dock-undock],[data-agent-more-delete]').forEach(btn => {
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            agentChatFrameAction(btn.dataset.agentChatFrame || node.id, {actor:'user'});
-        });
-    });
-    el.querySelectorAll('[data-agent-ref-frame]').forEach(btn => {
-        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
-        btn.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            agentRefFrameCycle(btn.dataset.agentRefFrame || node.id, btn, {actor:'user'});
-        });
-    });
-    // #407 D1：停靠/收起/取回按钮
-    el.querySelectorAll('[data-agent-dock-set]').forEach(btn => {
-        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
-        btn.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            agentDockSet(btn.dataset.agentDockSet || node.id, btn.dataset.agentDockSide, {actor:'user'});
-        });
-    });
-    el.querySelectorAll('[data-agent-dock-collapse]').forEach(btn => {
-        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
-        btn.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            agentDockCollapseToggle(btn.dataset.agentDockCollapse || node.id);
-        });
-    });
-    el.querySelectorAll('[data-agent-dock-undock]').forEach(btn => {
-        btn.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); }, true);
-        btn.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            agentDockSet(btn.dataset.agentDockUndock || node.id, null, {actor:'user'});
+            if (btn.hasAttribute('data-agent-ref-frame')) {
+                if (agentRefFrameCycle(node.id, btn, {actor:'user'})?.action === 'cycled') closeAgentMoreMenu(btn.closest('.agent-tui-more'));
+                return;
+            }
+            closeAgentMoreMenu(btn.closest('.agent-tui-more'));
+            if (btn.hasAttribute('data-agent-chat-frame')) agentChatFrameAction(node.id, {actor:'user'});
+            else if (btn.hasAttribute('data-agent-dock-set')) agentDockSet(node.id, btn.dataset.agentDockSide, {actor:'user'});
+            else if (btn.hasAttribute('data-agent-dock-collapse')) agentDockCollapseToggle(node.id);
+            else if (btn.hasAttribute('data-agent-dock-undock')) agentDockSet(node.id, null, {actor:'user'});
+            else if (btn.hasAttribute('data-agent-more-delete')) deleteNodeFromButton(node.id);
         });
     });
 }
@@ -3378,6 +3370,7 @@ function renderMarkdown(text){
     const mdBlocks = [];
     html = html.replace(/```[^\S\n]*([A-Za-z0-9+#._-]*)\n?([\s\S]*?)(?:```|$)/g, (match, lang, body) => {
         const trimmed = body.replace(/\n+$/, '');
+        if (!trimmed.trim()) return '';
         const langAttr = /^[A-Za-z0-9+#._-]+$/.test(lang || '') ? ` data-lang="${lang}"` : '';
         mdBlocks.push(`<pre class="agent-md-code-block"${langAttr}><code>${trimmed}</code></pre>`);
         return `\u0000MDB${mdBlocks.length - 1}\u0000`;
@@ -3403,11 +3396,10 @@ function renderMarkdown(text){
     html = html.replace(/\n\n/g, '</p><p>');
     html = html.replace(/\n/g, '<br>');
     html = '<p>' + html + '</p>';
-    // Clean up empty paragraphs
+    // Restore protected block snippets outside paragraphs, not as their children.
+    html = html.replace(/(?:<br>)*\u0000MDB(\d+)\u0000(?:<br>)*/g, (match, index) => `</p>${mdBlocks[Number(index)] || ''}<p>`);
     html = html.replace(/<p><\/p>/g, '');
-    // Restore protected snippets last: their content is already escaped.
     html = html.replace(/\u0000MDI(\d+)\u0000/g, (match, index) => mdInlines[Number(index)] || '');
-    html = html.replace(/\u0000MDB(\d+)\u0000/g, (match, index) => mdBlocks[Number(index)] || '');
     return html;
 }
 function getChatModels(){

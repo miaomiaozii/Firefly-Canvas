@@ -67,8 +67,11 @@ function editor(nodes){
             button.dataset[attribute] = id;
             if(side !== undefined) button.dataset.agentDockSide = side;
             const root = harness.makeElement();
-            const selector = attribute.replace(/[A-Z]/g, letter => '-'+letter.toLowerCase());
-            root.querySelectorAll = query => query === `[data-${selector}]` ? [button] : [];
+            const selector = `[data-${attribute.replace(/[A-Z]/g, letter => '-'+letter.toLowerCase())}]`;
+            button.setAttribute(selector.slice(1, -1), id);
+            const menu = harness.makeElement('details');
+            button.closest = query => query === '.agent-tui-more' ? menu : null;
+            root.querySelectorAll = query => query.split(',').includes(selector) ? [button] : [];
             ctx.bindAgentHeadControls(root, e.node(id) || {id});
             button.dispatchEvent(event('click'));
             return button;
