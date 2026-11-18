@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -96,6 +97,23 @@ def _rotate_backups(path: Path, backup_count: int) -> None:
     _atomic_copy(path, _backup_name(path, 1))
 
 
+# Only retry the final replace, not serialization, fsync or backup rotation.
+# Windows access denial can be transient while another process holds the target.
+_REPLACE_RETRY_DELAYS = (0.01, 0.02, 0.04)
+
+
+def _replace_staged(staging: Path, target: Path) -> None:
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        try:
+            os.replace(staging, target)
+            return
+        except PermissionError as exc:
+            if (sys.platform != "win32" or getattr(exc, "winerror", None) != 5
+                    or attempt == len(_REPLACE_RETRY_DELAYS)):
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+
+
 def _atomic_copy(src: Path, dst: Path) -> None:
     staging = dst.with_name(f".{dst.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -104,7 +122,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
                 target_handle.write(chunk)
             target_handle.flush()
             os.fsync(target_handle.fileno())
-        os.replace(staging, dst)
+        _replace_staged(staging, dst)
     finally:
         staging.unlink(missing_ok=True)
 
@@ -133,7 +151,7 @@ def write_json_atomic(
             os.fsync(handle.fileno())
         if keep_backup and target.exists():
             _rotate_backups(target, backup_count)
-        os.replace(temporary, target)
+        _replace_staged(temporary, target)
     finally:
         try:
             temporary.unlink()

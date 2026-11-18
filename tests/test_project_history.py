@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main
+import firefly_json_io
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError
 
 
@@ -709,6 +711,39 @@ class ProjectHistoryContractTests(unittest.TestCase):
         )
         self.assertEqual(self.store.list_deleted_media(project["id"]), [])
         self.assertFalse((project_dir / "trash" / "original-media-transaction.json").exists())
+
+    def test_journal_replace_exhaustion_preserves_prepared_transaction_for_recovery(self):
+        project, _other, original, _reference, _downstream, _other_media = self._seed_projects()
+        self.store.flush(project["id"])
+        journal = self.store._original_transaction_path(project["id"])
+        real_replace = os.replace
+        attempts = []
+
+        def replace(src, dst):
+            if Path(dst) == journal and journal.exists():
+                attempts.append(Path(src))
+                error = PermissionError("injected Windows access denied")
+                error.winerror = 5
+                raise error
+            return real_replace(src, dst)
+
+        with patch.object(sys, "platform", "win32"), patch.object(firefly_json_io.os, "replace", side_effect=replace), patch.object(firefly_json_io.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                self.store.delete_generated_original_project_wide(project["id"], original["asset_id"], base_revision=1)
+        self.assertGreater(len(attempts), 1)
+        self.assertEqual(len(set(attempts)), 1)
+        self.assertEqual(json.loads(journal.read_text(encoding="utf-8"))["phase"], "prepared")
+        self.assertEqual(list(journal.parent.glob(".*.tmp")), [])
+
+        reopened = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        try:
+            canvas = reopened.open_project(project["id"])["canvas"]
+            self.assertEqual(canvas["revision"], 1)
+            self.assertEqual(canvas["history"][0]["status"], "succeeded")
+            self.assertEqual(reopened.media_record(project["id"], original["asset_id"])["asset_id"], original["asset_id"])
+            self.assertFalse(journal.exists())
+        finally:
+            reopened.close()
 
     def test_interrupted_delete_recovers_the_whole_project_to_one_consistent_revision(self):
         class SimulatedProcessCrash(BaseException):

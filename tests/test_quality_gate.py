@@ -182,7 +182,15 @@ class QualityGateTests(unittest.TestCase):
         )
         shard = next(step for step in report["steps"] if step["name"] == shard_name)
         self.assertIn("tests.test_dynamic_contract", shard["command"])
-        self.assertIn("intentional unit shard failure", shard["stderr_tail"])
+        if "failure_diagnostics" in shard:
+            self.assertEqual(shard["stderr_tail"], "")
+            self.assertIn("intentional unit shard failure", result.stdout + result.stderr)
+            self.assertIn(
+                "tests.test_dynamic_contract.DynamicContract.test_failure",
+                [failure["test_id"] for failure in shard["failure_diagnostics"]["failures"]],
+            )
+        else:
+            self.assertIn("intentional unit shard failure", shard["stderr_tail"])
 
     def test_unit_contract_shard_timeout_blocks_trial(self):
         (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
@@ -1707,8 +1715,7 @@ class QualityGateTests(unittest.TestCase):
             for event in self.report()["guard_events"]
             if event["kind"] == "network"
         }
-        self.assertIn("browser-escape.example", network_targets)
-        self.assertIn("browser-method.example", network_targets)
+        self.assertEqual(network_targets, {"<redacted>"})
 
     def test_blocked_browser_control_plane_noise_is_reported_without_failing_product_gate(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(
@@ -2169,7 +2176,7 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
-            {"kind": "network", "target": "antigravity-unleash.goog.evil.com"},
+            {"kind": "network", "target": "<redacted>"},
             self.guard_events(self.report()["guard_events"]),
         )
 
@@ -2198,7 +2205,7 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
-            {"kind": "network", "target": "evil-update.googleapis.com"},
+            {"kind": "network", "target": "<redacted>"},
             self.guard_events(self.report()["guard_events"]),
         )
 
@@ -2227,7 +2234,7 @@ class QualityGateTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(
-            {"kind": "network", "target": "evil-microsoft.com"},
+            {"kind": "network", "target": "<redacted>"},
             self.guard_events(self.report()["guard_events"]),
         )
 
@@ -2405,7 +2412,7 @@ class QualityGateTests(unittest.TestCase):
             event
             for event in report["guard_events"]
             if event.get("kind") == "subprocess-executable"
-            and event.get("target") == Path(sys.executable).name.lower()
+            and event.get("target") == "<redacted>"
         ]
         self.assertTrue(subprocess_events, report["guard_events"])
         # #230：证据要能回答「这条是谁发的」，所以守卫事件现在都带发起进程 pid。
@@ -2418,7 +2425,7 @@ class QualityGateTests(unittest.TestCase):
     def write_parallel_boundary_fixture(self) -> dict:
         """fixture：只有 unit-contract-quality-gate 那一步会越界（SELF_TEST=1 才触发），
         越界后它自己仍然 exit 0，所以只有归因正确的步骤应该被改红。"""
-        violation = {"kind": "subprocess-executable", "target": Path(sys.executable).name.lower()}
+        violation = {"kind": "subprocess-executable", "target": "<redacted>"}
         (self.fixture_root / "tests" / "test_quality_gate.py").write_text(
             "import os\n"
             "import subprocess\n"
@@ -2588,6 +2595,28 @@ class QualityGateTests(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["first_failure"]["name"], "surface-contract")
         self.assertEqual(report["retry_events"], [{"attempt": 2, "reason": "fixture retry"}])
+
+    def test_private_unit_shard_retry_evidence_fails_its_step(self):
+        (self.fixture_root / "tests" / "test_private_retry.py").write_text(
+            "import json, os, unittest\n"
+            "class RetryContract(unittest.TestCase):\n"
+            "    def test_retry(self):\n"
+            "        with open(os.environ['FIREFLY_QUALITY_GATE_RETRY_EVENTS'], 'a') as events:\n"
+            "            events.write(json.dumps({'attempt': 2}) + '\\n')\n",
+            encoding="utf-8",
+        )
+        self.write_native_browser_fixture()
+        shard_name = next(
+            name for name, targets in compute_unit_contract_shards(self.fixture_root).items()
+            if "tests.test_private_retry" in targets
+        )
+        result = self.run_gate(mode="trial")
+        report = self.report()
+        step = next(step for step in report["steps"] if step["name"] == shard_name)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(step["retry_events"], [{"attempt": 2}])
+        self.assertEqual(report["first_failure"]["name"], shard_name)
 
     def test_transient_child_exit_during_grace_period_is_not_reported_as_a_leak(self):
         guard_events = self.evidence_dir / "guard-events.jsonl"

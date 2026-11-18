@@ -800,6 +800,7 @@ GUARD_SOURCE = r'''
 import asyncio
 import http.client
 import ipaddress
+import hashlib
 import json
 import os
 import socket
@@ -809,6 +810,7 @@ import shutil
 
 _event_file = os.environ.get("FIREFLY_QUALITY_GATE_GUARD_EVENTS", "")
 _child_event_file = os.environ.get("FIREFLY_QUALITY_GATE_CHILD_EVENTS", "")
+_private_test_events = os.environ.get("FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS") == "1"
 # 出口代理端口：从门传给子进程的代理 URL 里取，用于识别「走了出口代理」这个动作。
 try:
     from urllib.parse import urlsplit as _guard_urlsplit
@@ -863,6 +865,7 @@ _guard_environment_names = {
     "FIREFLY_QUALITY_GATE_CHILD_EVENTS",
     "FIREFLY_QUALITY_GATE_GUARD_EVENTS",
     "FIREFLY_QUALITY_GATE_RETRY_EVENTS",
+    "FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS",
     "FIREFLY_QUALITY_GATE_SELF_TEST_SCRIPT",
     "FIREFLY_QUALITY_GATE_TOOL_EXECUTABLES",
     "FIREFLY_QUALITY_GATE_NODE_OPTIONS",
@@ -879,7 +882,7 @@ _guard_environment_names = {
 }
 
 
-def _record(kind, target):
+def _record(kind, target=''):
     if not _event_file:
         return
     # #230：证据要能回答「这条连接是谁发的」。pid / ppid / 可执行路径都由
@@ -888,10 +891,13 @@ def _record(kind, target):
     event = json.dumps(
         {
             "kind": kind,
-            "target": str(target),
+            # Preserve empty proxy hops and the fixed attribution probe so the
+            # blocking decision is unchanged; arbitrary child values are private.
+            "target": ('<redacted>' if _private_test_events and target and
+                       str(target) != 'egress-attribution-probe.invalid' else str(target)),
             "pid": os.getpid(),
             "ppid": os.getppid(),
-            "exe": str(getattr(sys, "executable", "") or ""),
+            "exe": '<redacted>' if _private_test_events else str(getattr(sys, "executable", "") or ""),
         },
         ensure_ascii=True,
     ) + "\n"
@@ -905,7 +911,9 @@ def _record(kind, target):
 def _record_child(pid, target):
     if not _child_event_file:
         return
-    event = json.dumps({"pid": pid, "target": str(target)}, ensure_ascii=True) + "\n"
+    identity = os.path.basename(os.path.realpath(target)).lower()
+    safe_target = 'sha256:' + hashlib.sha256(identity.encode('utf-8')).hexdigest()
+    event = json.dumps({"pid": pid, "target": safe_target if _private_test_events else str(target)}, ensure_ascii=True) + "\n"
     descriptor = os.open(_child_event_file, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
         os.write(descriptor, event.encode("utf-8"))
@@ -1073,12 +1081,15 @@ def _guarded_child_environment(environment):
     # so browser journeys' internal Node helpers stay unguarded while repo
     # tests that launch Node directly still get the forced preload.
     child_environment.pop("NODE_OPTIONS", None)
+    private_requested = child_environment.get("FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS") == "1"
     for name in _guard_environment_names:
         value = os.environ.get(name)
         if value is None:
             child_environment.pop(name, None)
         else:
             child_environment[name] = value
+    if private_requested:
+        child_environment["FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS"] = "1"
     return child_environment
 
 
@@ -1140,7 +1151,7 @@ class _GuardedPopen(_real_popen):
                     nested_environment["PATHEXT"] = os.environ.get("PATHEXT", "")
                     popen_kwargs["env"] = nested_environment
                 super().__init__(args, *popen_args, **popen_kwargs)
-                _record_child(self.pid, basename or executable)
+                _record_child(self.pid, os.path.realpath(resolved_executable) if _private_test_events else (basename or executable))
                 return
             _record("subprocess-executable", basename or executable)
             raise PermissionError(
@@ -1273,7 +1284,7 @@ class _GuardedPopen(_real_popen):
                 node_environment["NODE_OPTIONS"] = node_options
                 popen_kwargs["env"] = node_environment
         super().__init__(args, *popen_args, **popen_kwargs)
-        _record_child(self.pid, basename or executable)
+        _record_child(self.pid, os.path.realpath(resolved_executable) if _private_test_events else (basename or executable))
 subprocess.Popen = _GuardedPopen
 
 
@@ -1298,6 +1309,7 @@ NODE_GUARD_SOURCE = r'''
 'use strict';
 const fs = require('node:fs');
 const eventFile = process.env.FIREFLY_QUALITY_GATE_GUARD_EVENTS || '';
+const privateTestEvents = process.env.FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS === '1';
 function record(kind, target) {
   if (!eventFile) return;
   // #232：和 Python 钩子一样带 pid/ppid/可执行路径。少了这三个，node 触发的
@@ -1306,10 +1318,10 @@ function record(kind, target) {
   try {
     fs.appendFileSync(eventFile, JSON.stringify({
       kind,
-      target: String(target),
+      target: privateTestEvents && target && target !== 'egress-attribution-probe.invalid' ? '<redacted>' : String(target),
       pid: process.pid,
       ppid: process.ppid,
-      exe: process.execPath,
+      exe: privateTestEvents ? '<redacted>' : process.execPath,
     }) + '\n', {encoding: 'utf8', mode: 0o600});
   } catch (_) {}
 }
@@ -1504,7 +1516,12 @@ class BrowserDenyProxy:
                     else "network"
                 )
                 with event_lock:
-                    append_event(event_file_path, kind, target or "unknown browser target")
+                    # The shared proxy cannot identify private callers. Only fixed,
+                    # public target names are safe to retain, not suffix matches.
+                    public_targets = (ATTRIBUTION_PROBE_TARGETS | BROWSER_CONTROL_PLANE_TARGETS
+                                      | HOST_TOOL_CONTROL_PLANE_TARGETS)
+                    safe_target = target if target in public_targets else '<redacted>'
+                    append_event(event_file_path, kind, safe_target)
                 self.send_response(403)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -2063,8 +2080,15 @@ def wait_for_process_exit(
 
 def process_matches_recorded_target(pid: int, target: str) -> bool:
     target_name = Path(str(target or "")).name.lower()
+    private_identity = target_name.startswith('sha256:')
     if not target_name or target_name.startswith("pid "):
         return True
+
+    def matches(name: str) -> bool:
+        name = Path(name).name.lower()
+        if private_identity:
+            return target_name == 'sha256:' + hashlib.sha256(name.encode('utf-8')).hexdigest()
+        return name == target_name
     if os.name == "nt":
         system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
         tasklist = system_root / "System32" / "tasklist.exe"
@@ -2077,19 +2101,19 @@ def process_matches_recorded_target(pid: int, target: str) -> bool:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return True
+            return not private_identity
         if result.returncode != 0:
-            return True
+            return not private_identity
         rows = [row for row in csv.reader(result.stdout.splitlines()) if row]
         if not rows or rows[0][0].lower().startswith("info:"):
             return False
-        return Path(rows[0][0]).name.lower() == target_name
+        return matches(rows[0][0])
     proc_executable = Path(f"/proc/{pid}/exe")
     try:
         current_name = proc_executable.resolve(strict=True).name.lower()
     except OSError:
-        return not Path("/proc").is_dir()
-    return current_name == target_name
+        return not private_identity and not Path("/proc").is_dir()
+    return matches(current_name)
 
 
 def stop_process_id(pid: int) -> None:
@@ -2127,12 +2151,16 @@ def stop_leaked_children(events: list[dict], guard_events_file: Path) -> None:
         # grace so a natural shutdown tail is not misreported as a leak.
         # 口径同一个函数：浏览器与 node 测试子进程给长宽限，其余 1s（#226）。
         grace = child_grace_seconds(target)
+        if target.startswith('sha256:'):
+            slow_names = BROWSER_CHILD_TARGETS | {'node', 'node.exe'}
+            if any(target == 'sha256:' + hashlib.sha256(name.encode('utf-8')).hexdigest() for name in slow_names):
+                grace = SLOW_CHILD_SHUTDOWN_GRACE_SECONDS
         if pid <= 0 or wait_for_process_exit(pid, timeout=grace):
             continue
         if not process_matches_recorded_target(pid, target):
             continue
         stop_process_id(pid)
-        append_event(guard_events_file, "subprocess-leak", target)
+        append_event(guard_events_file, "subprocess-leak", '<redacted>' if target.startswith('sha256:') else target)
 
 
 def stop_process_tree(process: subprocess.Popen) -> None:
@@ -2271,6 +2299,117 @@ def _install_exit_hooks() -> None:
 _install_exit_hooks()
 
 
+def project_contract_sources(command: list[str], root: Path) -> tuple[set[str], dict[str, int]]:
+    """Snapshot allowlisted test identities and source paths before running the child."""
+    ids: set[str] = set()
+    files: dict[str, int] = {}
+    for target in command:
+        match = re.match(r"^(tests\.test_[A-Za-z0-9_]+)(?:\.|$)", target)
+        if not match:
+            continue
+        module = match.group(1)
+        relative = module.replace('.', '/') + '.py'
+        path = root / relative
+        try:
+            source = path.read_text(encoding='utf-8')
+            tree = ast.parse(source)
+        except (OSError, ValueError, SyntaxError):
+            continue
+        files[relative] = len(source.splitlines())
+        for cls in tree.body:
+            if isinstance(cls, ast.ClassDef):
+                for method in cls.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name.startswith('test'):
+                        ids.add(f'{module}.{cls.name}.{method.name}')
+    # Only fixed, product-owned paths can be disclosed, never arbitrary runtime names.
+    for relative in ('firefly_json_io.py', 'firefly_projects.py'):
+        try:
+            files[relative] = len((root / relative).read_text(encoding='utf-8').splitlines())
+        except (OSError, UnicodeError):
+            pass
+    return ids, files
+
+
+def project_contract_diagnostics(stdout: str, stderr: str, root: Path,
+                                 ids: set[str], files: dict[str, int], status: str) -> dict:
+    """Extract only allowlisted identities; all other child text is discarded."""
+    exceptions = {'AssertionError', 'OSError', 'PermissionError', 'FileNotFoundError',
+                  'FileExistsError', 'TimeoutError', 'RuntimeError', 'ValueError',
+                  'TypeError', 'KeyError', 'IndexError', 'AttributeError',
+                  'ImportError', 'ModuleNotFoundError', 'NotImplementedError'}
+    output = stdout + '\n' + stderr
+    def safe_path(value: str) -> str:
+        try:
+            relative = Path(value).resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError, RuntimeError):
+            return '<redacted>'
+        return relative if relative in files else '<redacted>'
+
+    failures: list[dict] = []
+    current = None
+    unparsed_header = False
+    for line in output.splitlines():
+        # Subtest parameter values are deliberately discarded, never persisted.
+        header = re.fullmatch(r'(?:ERROR|FAIL): [A-Za-z_][A-Za-z0-9_]* \(([A-Za-z0-9_.]+)\)(?: \(.*\))?', line)
+        if header:
+            identity = header.group(1)
+            current = {'test_id': identity if identity in ids else '<redacted>', 'frames': []}
+            failures.append(current)
+            continue
+        if line.startswith(('ERROR: ', 'FAIL: ')):
+            unparsed_header = True
+            current = None
+            continue
+        if current is None:
+            continue
+        frame = re.fullmatch(r'  File "([^"\r\n]+)", line ([0-9]{1,9}), in .*', line)
+        if frame:
+            relative = safe_path(frame.group(1))
+            item = {'file': relative}
+            line_number = int(frame.group(2))
+            if relative in files and 1 <= line_number <= files[relative]:
+                item['line'] = line_number
+            current['frames'].append(item)
+            continue
+        exception = re.match(r'^([A-Za-z][A-Za-z0-9_.]*)(?::|$)', line)
+        if exception:
+            # Later exceptions supersede earlier ones in chained tracebacks.
+            current.pop('exception_type', None)
+            current.pop('winerror', None)
+            current.pop('paths', None)
+            if exception.group(1) not in exceptions:
+                continue
+            current['exception_type'] = exception.group(1)
+            code = re.match(r'^[A-Za-z][A-Za-z0-9_]*: \[WinError ([0-9]{1,6})\]', line)
+            if code:
+                current['winerror'] = int(code.group(1))
+                # OSError renders filenames as quoted operands after the message.
+                # The operands are never copied without passing the source allowlist.
+                paths = re.findall(r"(?:^|: | -> )'([^'\r\n]+)'(?= -> |$)", line)
+                if paths:
+                    current['paths'] = [safe_path(path) for path in paths]
+    # Summary counts are the coverage contract: unknown identities/exceptions,
+    # unsupported fixtures/import errors, or missing sections cannot be complete.
+    summary = re.search(r'(?m)^(OK(?: \([^\n]*\))?|FAILED \(([^\n]*)\))$', output)
+    expected = 0
+    if summary and summary.group(2):
+        expected = sum(int(n) for n in re.findall(r'(?:failures|errors)=(\d+)', summary.group(2)))
+    complete = (status in ('passed', 'failed') and summary is not None and
+                (summary.group(1).startswith('OK') == (status == 'passed')) and
+                not (summary.group(2) and 'unexpected successes=' in summary.group(2)) and
+                bool(re.search(r'(?m)^Ran [0-9]+ tests? in [0-9.]+s$', output)) and
+                not unparsed_header and len(failures) == expected and
+                all(item['test_id'] != '<redacted>' and 'exception_type' in item for item in failures))
+    return {'completeness': 'complete' if complete else 'incomplete', 'failures': failures}
+
+
+def is_private_test_step(name: str, command: list[str]) -> bool:
+    """Protect project suites and shards that may run nested gates."""
+    # Any unit shard can run a nested gate whose terminal output contains
+    # private test output; the outer gate must not persist that output either.
+    return name == 'project-contract' or name.startswith('unit-contract-')
+
+
 def run_step(
     name: str,
     command: list[str],
@@ -2281,6 +2420,10 @@ def run_step(
 ) -> dict:
     started_at = utc_now()
     started = time.monotonic()
+    project_contract = is_private_test_step(name, command)
+    ids, files = project_contract_sources(command, repo_root) if project_contract else (set(), {})
+    if project_contract:
+        environment = {**environment, 'FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS': '1'}
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
         process = process_job().spawn(
@@ -2296,6 +2439,8 @@ def run_step(
             start_new_session=os.name != "nt",
         )
     except OSError as error:
+        if project_contract:
+            print(str(error), file=sys.stderr)
         return {
             "name": name,
             "command": command,
@@ -2305,7 +2450,8 @@ def run_step(
             "status": "precondition-failed",
             "exit_code": None,
             "stdout_tail": "",
-            "stderr_tail": redact_text(str(error), sensitive_values),
+            "stderr_tail": "" if project_contract else redact_text(str(error), sensitive_values),
+            **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if project_contract else {}),
         }
     try:
         # 登记：门自己被打断（Ctrl+C / SIGTERM）时也要能查到这一棵子树。
@@ -2314,21 +2460,36 @@ def run_step(
         stdout, stderr = process.communicate(timeout=max(timeout, 0.01))
         status = "passed" if process.returncode == 0 else "failed"
         exit_code = process.returncode
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as first_timeout:
         stop_process_tree(process)
         try:
             stdout, stderr = process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             process.kill()
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
-            stdout, stderr = "", "process output did not close after timeout"
+            if project_contract:
+                # TimeoutExpired may carry the only available partial output.
+                stdout = error.stdout or first_timeout.stdout or b''
+                stderr = error.stderr or first_timeout.stderr or b''
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode('utf-8', errors='replace')
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode('utf-8', errors='replace')
+            else:
+                stdout, stderr = "", "process output did not close after timeout"
         status = "timed-out"
         exit_code = 124
     finally:
         with _ACTIVE_STEP_LOCK:
             _ACTIVE_STEP_PROCESSES.discard(process)
+    if project_contract:
+        # Full child output is deliberately terminal-only, not a report tail or file.
+        sys.stdout.write(stdout)
+        sys.stdout.flush()
+        sys.stderr.write(stderr)
+        sys.stderr.flush()
     summary = unittest_summary(command, stdout, stderr)
     reported_skip = output_reports_skip(stdout, stderr)
     if summary and any(summary.values()) and status == "passed":
@@ -2345,10 +2506,13 @@ def run_step(
         "duration_seconds": round(time.monotonic() - started, 3),
         "status": status,
         "exit_code": exit_code,
-        "stdout_tail": redact_text(stdout[-4000:], sensitive_values),
-        "stderr_tail": redact_text(stderr[-4000:], sensitive_values),
+        # Private steps never persist stream content, including on success.
+        "stdout_tail": "" if project_contract else redact_text(stdout[-4000:], sensitive_values),
+        "stderr_tail": "" if project_contract else redact_text(stderr[-4000:], sensitive_values),
         "reported_skip": reported_skip,
     }
+    if project_contract:
+        result['failure_diagnostics'] = project_contract_diagnostics(stdout, stderr, repo_root, ids, files, status)
     if summary is not None:
         result["unittest"] = summary
     return result
@@ -3739,6 +3903,7 @@ def main(argv: list[str] | None = None) -> int:
                                     "exit_code": 124,
                                     "stdout_tail": "",
                                     "stderr_tail": "mode budget exhausted before step started",
+                                    **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if is_private_test_step(name, command) else {}),
                                     "guard_events": [],
                                     "retry_events": [],
                                 }
@@ -3845,6 +4010,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "exit_code": 124,
                                 "stdout_tail": "",
                                 "stderr_tail": "mode budget exhausted before parallel worker started",
+                                **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if is_private_test_step(name, commands[name]) else {}),
                             }
                         step_environment = dict(environment)
                         sinks = step_sinks[name]
@@ -3878,7 +4044,8 @@ def main(argv: list[str] | None = None) -> int:
                                 "status": "precondition-failed",
                                 "exit_code": None,
                                 "stdout_tail": "",
-                                "stderr_tail": redact_text(str(error), sensitive_values),
+                                "stderr_tail": '' if is_private_test_step(name, commands[name]) else redact_text(str(error), sensitive_values),
+                                **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if is_private_test_step(name, commands[name]) else {}),
                             }
 
                     with ThreadPoolExecutor(max_workers=parallel_workers) as pool:
@@ -3910,11 +4077,7 @@ def main(argv: list[str] | None = None) -> int:
                         step_child_events = read_child_events(sinks["child"], sensitive_values)
                         stop_leaked_children(step_child_events, sinks["guard"])
                         step_guard_events = read_guard_events(sinks["guard"], sensitive_values)
-                        step_retry_events = (
-                            read_retry_events(sinks["retry"], sensitive_values)
-                            if name in BROWSER_EVIDENCE_STEP_NAMES
-                            else []
-                        )
+                        step_retry_events = read_retry_events(sinks["retry"], sensitive_values)
                         merge_event_lines(sinks["guard"], guard_events_file)
                         merge_event_lines(sinks["child"], child_events_file)
                         merge_event_lines(sinks["retry"], retry_events_file)
