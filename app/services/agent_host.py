@@ -46,7 +46,15 @@ _EVENTS_PAGE_CHUNK = 65536
 
 
 class InvalidEventsCursor(ValueError):
-    """Malformed, modified, or incompatible paging cursor."""
+    """Malformed event identifier or paging cursor."""
+
+
+def validate_events_identifiers(project_id: str, node_id: str) -> None:
+    """Accept only single path components on both POSIX and Windows."""
+    if any(not isinstance(part, str) or not part or part in ('.', '..')
+           or any(char in part for char in ('/', '\\', ':', '\0'))
+           for part in (project_id, node_id)):
+        raise InvalidEventsCursor('invalid project or node identifier')
 
 
 class StaleEventsCursor(Exception):
@@ -1932,6 +1940,7 @@ class AgentHostManager:
         """
         if host is not None and host not in self._adapters:
             raise ValueError("host must be pi or codex")
+        validate_events_identifiers(project_id, node_id)
         path = os.path.join(
             self._get_project_dir(project_id), "agent-events", f"{node_id}.jsonl")
         out = []
@@ -1971,13 +1980,7 @@ class AgentHostManager:
         """
         if host not in ('pi', 'codex') or not 1 <= turns <= 50:
             raise InvalidEventsCursor('invalid host or turns')
-        # Both identifiers become path components. Reject Windows separators
-        # even when running on a different OS; never let this new read endpoint
-        # escape the selected project's events directory.
-        if any(not isinstance(part, str) or not part or part in ('.', '..')
-               or any(char in part for char in ('/', '\\', ':', '\0'))
-               for part in (project_id, node_id)):
-            raise InvalidEventsCursor('invalid project or node identifier')
+        validate_events_identifiers(project_id, node_id)
         state = None
         if cursor is not None:
             try:

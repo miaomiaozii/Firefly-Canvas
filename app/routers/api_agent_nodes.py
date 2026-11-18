@@ -9,6 +9,7 @@ from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import (
     agent_host_manager, InvalidEventsCursor, StaleEventsCursor, CorruptEventsLog,
+    validate_events_identifiers,
 )
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
@@ -641,6 +642,10 @@ async def get_agent_node_events(
 ):
     """#318 票 C：事件回放日志（seq>since 升序）。刷新/重连重建用；
     前端先挂缓冲→GET→按 seq 去重续 live 流（竞态在客户端消解）。"""
+    try:
+        validate_events_identifiers(project_id, node_id)
+    except InvalidEventsCursor as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     if host is None:
         host = _host_transaction(project_id, node_id).fields(_find_node(project_id, node_id))["agentCli"]
     if host not in AGENT_CLI_WHITELIST:
