@@ -464,6 +464,7 @@ function renderBatchRenamePreview(){
 function closeBatchRenameDialog(){
     const backdrop = document.getElementById('smartBatchRenameBackdrop');
     if(!backdrop || backdrop.hidden) return;
+    backdrop.classList.remove('open');
     backdrop.hidden = true;
     if(batchRenameEscapeRelease){ batchRenameEscapeRelease(); batchRenameEscapeRelease = null; }
 }
@@ -476,6 +477,7 @@ function openBatchRenameDialog(){
     const prefixEl = document.getElementById('smartBatchRenamePrefix');
     if(prefixEl && !String(prefixEl.value || '').trim()) prefixEl.value = 'Image_';
     backdrop.hidden = false;
+    backdrop.classList.add('open');
     renderBatchRenamePreview();
     if(!batchRenameEscapeRelease) batchRenameEscapeRelease = window.FireflyEscapeStack?.push(() => closeBatchRenameDialog(), 'batch-rename') || (() => {});
     prefixEl?.focus({preventScroll:true});

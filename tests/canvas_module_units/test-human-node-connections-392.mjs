@@ -278,6 +278,25 @@ test('image/prompt/conversation/Agent constructors retain explicit new identitie
     assert.equal(node('source').createdBy, 'agent');
 });
 
+test('batch rename opens the backdrop and cancel restores the hidden state', () => {
+    const {ctx, harness, stored} = nodeEditor([
+        imageNode('first', {title:'First'}), imageNode('second', {title:'Second'}),
+    ]);
+    ctx.canvasState.selectedIds = ['first', 'second'];
+    const backdrop = harness.element('smartBatchRenameBackdrop');
+    backdrop.hidden = true;
+    const before = stored();
+
+    ctx.openBatchRenameDialog();
+    assert.equal(backdrop.hidden, false);
+    assert.equal(backdrop.classList.contains('open'), true);
+    ctx.closeBatchRenameDialog();
+    assert.equal(backdrop.hidden, true);
+    assert.equal(backdrop.classList.contains('open'), false);
+    assert.deepEqual(stored(), before);
+    assert.equal(evaluate(ctx, 'undoStack.length'), 0);
+});
+
 test('batch rename touches only changed titles, preserving legacy ownership presence and existing P', async () => {
     const {ctx, harness, node} = nodeEditor([
         imageNode('same', {title:'Image_01', promptEditedByUser:true}),

@@ -6101,7 +6101,7 @@ const smartBatchRenameCancelBtn = document.getElementById('smartBatchRenameCance
 const smartBatchRenameApplyBtn = document.getElementById('smartBatchRenameApply');
 if(smartBatchRenameBtn){
     smartBatchRenameBtn.addEventListener('mousedown', e => e.stopPropagation());
-    smartBatchRenameBtn.onclick = e => { e.preventDefault(); openBatchRenameDialog(); };
+    smartBatchRenameBtn.onclick = e => { e.preventDefault(); e.stopPropagation(); openBatchRenameDialog(); };
 }
 ['smartBatchRenamePrefix', 'smartBatchRenamePad', 'smartBatchRenameStart'].forEach(id => {
     const el = document.getElementById(id);
@@ -6113,7 +6113,14 @@ if(smartBatchRenameBtn){
         if(e.key === 'Enter'){ e.preventDefault(); applyBatchRename(); }
     });
 });
-if(smartBatchRenameBackdrop) smartBatchRenameBackdrop.addEventListener('mousedown', e => { if(e.target === smartBatchRenameBackdrop) closeBatchRenameDialog(); });
+if(smartBatchRenameBackdrop){
+    smartBatchRenameBackdrop.addEventListener('mousedown', e => {
+        e.stopPropagation();
+        if(e.target === smartBatchRenameBackdrop) closeBatchRenameDialog();
+    });
+    smartBatchRenameBackdrop.addEventListener('click', e => e.stopPropagation());
+    smartBatchRenameBackdrop.addEventListener('dblclick', e => e.stopPropagation());
+}
 if(smartBatchRenameCancelBtn) smartBatchRenameCancelBtn.onclick = e => { e.preventDefault(); closeBatchRenameDialog(); };
 if(smartBatchRenameApplyBtn) smartBatchRenameApplyBtn.onclick = e => { e.preventDefault(); applyBatchRename(); };
 
