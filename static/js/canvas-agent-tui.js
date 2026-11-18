@@ -897,10 +897,27 @@ function handleAgentEvent(nodeId, event) {
     applyAgentEventBody(nodeId, event);
 }
 
+// A continuing text delta changes only the streaming row. Keeping the rest of the
+// DOM mounted avoids reparsing long history and preserves native scrolling/focus.
+function updateAgentStreamingText(state, message) {
+    const binding = state.scrollBinding;
+    const entry = state.timelineMessages && state.timelineMessages.get(message);
+    if (!binding || binding.body.isConnected === false || !entry) return false;
+    const row = binding.body.querySelector(`[data-agent-entry-key="${entry.key}"]`);
+    const text = row && row.querySelector('.agent-tui-msg-streaming .agent-tui-msg-text');
+    if (!text) return false;
+    text.innerHTML = renderAgentAssistantHtml(message.text);
+    if (state.scrollState && !state.scrollState.atBottom) state.scrollState.unread = true;
+    updateAgentBackLatest(state);
+    scheduleAgentScrollLayout(state);
+    return true;
+}
+
 function applyAgentEventBody(nodeId, event, recordedAt) {
     const state = getAgentTuiState(nodeId);
     if (agentNodeRefsApplyEvent(nodeId, event, recordedAt)) return;
     const eventType = event.type;
+    let streamingText = null;
 
     switch (eventType) {
         case 'user_prompt':
@@ -1005,6 +1022,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 if (last && last.role === 'assistant' && last.streaming) {
                     last.text += delta;
                     const knownTime = nativeTime ?? last.timestamp ?? recordedAt;
+                    if (knownTime === last.timestamp) streamingText = last;
                     if (knownTime !== undefined) last.timestamp = knownTime;
                 } else {
                     agentAppendMessage(state, { role: 'assistant', text: delta, streaming: true,
@@ -1144,8 +1162,8 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
     }
 
-    // Re-render the agent node
-    renderAgentNode(nodeId);
+    // Fall back for new rows, timestamp changes, replay, or an unmounted view.
+    if (state._applyingReplay || !streamingText || !updateAgentStreamingText(state, streamingText)) renderAgentNode(nodeId);
 }
 
 function sendAgentPrompt(nodeId, projectId, message, images = []) {
@@ -2452,7 +2470,9 @@ function bindAgentScroll(el, state) {
         armIntent();
         updateAgentBackLatest(state);
     }, { passive: true });
-    const layout = () => { binding.userIntent = false; scheduleAgentScrollLayout(state); };
+    // A resize/load can arrive between a wheel event and its native scroll event.
+    // Do not erase that in-progress user intent.
+    const layout = () => { scheduleAgentScrollLayout(state); };
     on(body, 'load', layout, true);
     on(body, 'toggle', layout, true);
     on(window, 'resize', layout);

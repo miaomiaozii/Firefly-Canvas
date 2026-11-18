@@ -2874,6 +2874,48 @@ function d2Observers(ctx) {
     return { sizes, mutations };
 }
 
+test('#422 已挂载的流式文字更新原位渲染，不重建整棵历史', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const tree = d2ScrollDom(harness, { top: 500 });
+    fn(ctx, 'bindAgentScroll')(tree.el, state);
+    const msg = { role: 'assistant', text: 'hello', streaming: true };
+    fn(ctx, 'agentAppendMessage')(state, msg);
+    const row = harness.makeElement('div');
+    const text = harness.makeElement('div');
+    row.querySelector = selector => selector === '.agent-tui-msg-streaming .agent-tui-msg-text' ? text : null;
+    tree.body.querySelector = selector => selector === '[data-agent-entry-key="entry:1"]' ? row : null;
+    let renders = 0;
+    ctx.renderAgentNode = () => { renders++; };
+    tree.body.dispatchEvent(ev('wheel'));
+    tree.body.scrollTop = 400;
+    tree.body.dispatchEvent(ev('scroll'));
+    for (const delta of [' world', ' & <safe>']) {
+        fn(ctx, 'handleAgentEvent')('n1', { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
+    }
+    harness.flushRafs();
+    assert.equal(msg.text, 'hello world & <safe>');
+    assert.match(text.innerHTML, /hello world/);
+    assert.ok(!text.innerHTML.includes('<safe>'), '流式增量仍须安全转义');
+    assert.equal(renders, 0, '增量不能重建整个对话栏');
+    assert.equal(tree.body.scrollTop, 400, '用户上滚后输出不能拉回底部');
+    assert.equal(tree.latest.hidden, false);
+});
+
+test('#422 用户滚轮意图在 ResizeObserver 通知后仍能脱离底部', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const { sizes } = d2Observers(ctx);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const tree = d2ScrollDom(harness, { top: 800 });
+    fn(ctx, 'bindAgentScroll')(tree.el, state);
+    harness.flushRafs();
+    tree.body.dispatchEvent(ev('wheel'));
+    sizes[0].fire();
+    tree.body.scrollTop = 500;
+    tree.body.dispatchEvent(ev('scroll'));
+    assert.equal(state.scrollState.atBottom, false, '布局通知不能吞掉正在发生的用户滚动');
+});
+
 for (const distance of [47, 48, 49]) {
     test(`#408 D2 OLD layout ${distance}px 边界；追加增高不能反推 follow`, () => {
         const { ctx, harness } = loadAgentTuiModule();
