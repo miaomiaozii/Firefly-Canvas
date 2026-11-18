@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from app.constants import NODE_TYPE_AGENT
 from firefly_projects import ProjectStore
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
@@ -40,6 +41,16 @@ class ConfirmEventReplay389Tests(unittest.TestCase):
         project = self.store.create_project("Confirm Replay 389")
         self.pid = project["id"]
         self.node_id = "agent-389"
+        # 未指定 host 的回放按持久画布节点选择活跃宿主；夹具只创建节点，
+        # 不伪造客户端无权写入的原生会话绑定，也不跳过服务端的宿主选择。
+        self.store.apply_mutations(
+            self.pid,
+            [{"op": "upsert_node", "node": {
+                "id": self.node_id, "type": NODE_TYPE_AGENT, "kind": "agent",
+                "title": "Confirm Replay Agent", "x": 0, "y": 0,
+            }}],
+            base_revision=0,
+        )
         # 真实（未 spawn）会话：/agent/confirm 端点走 get_or_create_session 复用。
         session = self._run(agent_host_manager.get_or_create_session(self.pid, self.node_id))
         session.process = FakeAgentProcess(script=[])

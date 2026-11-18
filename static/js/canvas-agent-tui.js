@@ -3286,7 +3286,7 @@ function agentMoreActionsHtml(node) {
     return chatBtn + refBtn + agentDockButtonsHtml(node)
         + `<button type="button" class="agent-tui-btn" data-agent-more-fork${locked || state.activeHost !== 'pi' ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
         ${branches.length && state.activeHost === 'pi' ? `<select class="agent-tui-branch-select" data-agent-more-branch aria-label="切换分支"${locked ? ' disabled' : ''}>${branches.map(branch => `<option value="${escapeAttr(branch.id)}" ${branch.id === node.current_branch ? 'selected' : ''}>${escapeHtml(branch.name)}</option>`).join('')}</select>` : ''}
-        <button type="button" class="agent-tui-btn" data-agent-more-cli>由外部 CLI 接管</button>
+        <button type="button" class="agent-tui-btn" data-agent-more-cli>${agentIco('terminal')} 由外部 CLI 接管</button>
         <button type="button" class="agent-tui-btn" data-agent-more-view="${other}"${binding ? '' : ' disabled'}>只读查看 ${other === 'pi' ? 'Pi' : 'Codex'} 会话</button>
         <button type="button" class="agent-tui-btn" data-agent-more-delete>${agentIco('trash-2')} ${escapeHtml(tr('smart.deleteNode'))}</button>`;
 }
