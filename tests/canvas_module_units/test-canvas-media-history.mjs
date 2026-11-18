@@ -305,3 +305,32 @@ test('markedImageItems: 节点图片自己没有更新时间时，要向同 asse
     assert.ok(item, '素材项丢了');
     assert.ok(Number(item.createdAt) > 0, `没从生成记录借到时间：${JSON.stringify(item)}`);
 });
+
+test('history receiving a deletion and a background output keeps both through restore', () => {
+    const { ctx } = loadMediaHistory();
+    const merge = fn(ctx, 'mergeSmartHistoryRecordLists');
+    const target = {id:'generation-a', task_id:'task-a', status:'succeeded', outputs:[{output_id:'output-a'}]};
+    const peer = {id:'generation-b', task_id:'task-b', status:'succeeded', outputs:[{output_id:'output-b'}]};
+    const pending = {id:'local-task-c', task_id:'task-c', status:'pending'};
+    const background = {id:'generation-c', task_id:'task-c', status:'succeeded', outputs:[{output_id:'output-c'}]};
+    const tombstone = {deletion_id:'deletion-a', deleted_output_id:'output-a'};
+    const deleted = {...target, status:'original_deleted', outputs:[], deletedOutputTombstones:[tombstone]};
+    const record = (history, id) => JSON.parse(JSON.stringify(history.find(log => log.id === id)));
+
+    const afterDelete = merge([target, peer, pending], [deleted, peer]);
+    assert.deepEqual(record(afterDelete, target.id), deleted);
+    assert.deepEqual(record(afterDelete, peer.id), peer);
+    assert.deepEqual(record(afterDelete, pending.id), pending);
+
+    const afterBackground = merge(afterDelete, [deleted, peer, background]);
+    assert.deepEqual(record(afterBackground, target.id), deleted);
+    assert.deepEqual(record(afterBackground, background.id), background);
+    assert.ok(!afterBackground.some(log => log.id === pending.id));
+    const lateTaskCard = {...target, status:'pending', outputs:[]};
+    assert.deepEqual(record(merge(afterBackground, [lateTaskCard]), target.id), deleted);
+
+    const afterRestore = merge(afterBackground, [target, peer, background]);
+    assert.deepEqual(record(afterRestore, target.id), target);
+    assert.deepEqual(record(afterRestore, peer.id), peer);
+    assert.deepEqual(record(afterRestore, background.id), background);
+});

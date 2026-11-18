@@ -430,6 +430,8 @@ function smartHistoryTaskId(log){
 }
 
 function mergeSmartHistoryRecordLists(localLogs, remoteLogs){
+    // Deleting an original changes an already finished record, not the task lifecycle.
+    const terminalStatuses = ['succeeded', 'failed', 'cancelled', 'original_deleted'];
     const merged = new Map();
     [...(localLogs || []), ...(remoteLogs || [])].forEach(log => {
         if(!log || typeof log !== 'object') return;
@@ -442,8 +444,8 @@ function mergeSmartHistoryRecordLists(localLogs, remoteLogs){
             merged.set(key, hydrateProjectMediaReferences(log));
             return;
         }
-        const currentTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(current.status || ''));
-        const nextTerminal = ['succeeded', 'failed', 'cancelled'].includes(String(log.status || ''));
+        const currentTerminal = terminalStatuses.includes(current.status);
+        const nextTerminal = terminalStatuses.includes(log.status);
         if(currentTerminal && !nextTerminal) return;
         if(nextTerminal || !currentTerminal){
             const hydrated = hydrateProjectMediaReferences(log);
