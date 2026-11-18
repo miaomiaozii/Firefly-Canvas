@@ -1825,10 +1825,12 @@ function smartActiveHistoryTaskLogs(logs, excludedHistoryId=''){
 function mergeSmartActiveHistoryTaskLogs(serverLogs, activeTaskLogs){
     const hydratedServerLogs = hydrateProjectMediaReferences(serverLogs || []);
     const serverHistoryIds = new Set(hydratedServerLogs.map(item => String(item?.id || '')));
-    return sortSmartHistoryLogs([
-        ...hydratedServerLogs,
-        ...(activeTaskLogs || []).filter(item => !serverHistoryIds.has(String(item?.id || ''))),
-    ]);
+    // Server task records may use a different history id than the local pending
+    // card. Deduplicate by task id too, with terminal server state taking priority.
+    return mergeSmartHistoryRecordLists(
+        (activeTaskLogs || []).filter(item => !serverHistoryIds.has(String(item?.id || ''))),
+        hydratedServerLogs,
+    );
 }
 let smartHistoryDeletingBusy = false;
 

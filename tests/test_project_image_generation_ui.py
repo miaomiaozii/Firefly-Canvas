@@ -277,7 +277,7 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("node.pendingTasks = mergeSmartPendingTaskLists(smartPendingTasks(node), registeredTasks);", self.source)
         self.assertIn("currentNode.pendingTasks = smartPendingTasks(currentNode).filter", self.source)
         self.assertIn("function mergeSmartHistoryRecordLists(localLogs, remoteLogs)", self.source)
-        self.assertIn("canvas.history = mergeSmartHistoryRecordLists(canvas.history || [], serverCanvas.history || []);", self.source)
+        self.assertIn("isProjectCanvasData(serverCanvas) ? [] : (canvas.history || []), serverCanvas.history || []", self.source)
         self.assertIn("createdRemoteTaskCards = ensureSmartPendingHistoryLogs", self.source)
         self.assertIn("smartHistoryTaskId(log) === taskId", self.source)
         self.assertIn("canvas.history = mergeSmartHistoryRecordLists(canvas.history, []);", self.source)

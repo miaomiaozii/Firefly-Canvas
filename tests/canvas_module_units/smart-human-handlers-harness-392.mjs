@@ -17,11 +17,13 @@ export function declarations(file){
 }
 export const identity={createdBy:'agent',agentNodeId:'original-agent',userTouchedAt:null,promptEditedByUser:false};
 export const event=(target,extra={})=>({target,preventDefault(){},stopPropagation(){},...extra});
-export function editor(nodes){
+export function editor(nodes, setupHarness = () => {}){
     const {ctx,harness}=createCanvasContext();
+    setupHarness(harness);
     loadModules(ctx,['canvas-node-types.js','canvas-core.js','canvas-state.js','project-canvas-mutations.js','canvas-layout-utils.js','canvas-connections.js','canvas-media-history.js','canvas-undo.js','canvas-geometry.js','canvas-image-editor.js','canvas-generation-tasks.js']);
     const constants=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8').split(/\r?\n/).filter(line=>/^const PROMPT_\w+ = (?:[\d]|')/.test(line)).join('\n');
-    vm.runInContext(constants+'\n'+declarations('canvas-generation-cascade.js')+'\n'+declarations('smart-canvas.js'),ctx);
+    const phases=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8').match(/const GENERATION_PROGRESS_PHASES = \[[\s\S]*?\n\];/)[0];
+    vm.runInContext(constants+'\n'+phases+'\n'+declarations('canvas-generation-cascade.js')+'\n'+declarations('smart-canvas.js'),ctx);
     const renders=[];
     Object.assign(ctx,{
         canvasId:'unit-392',sourceProjectId:'unit-392',SMART_LOG_PREVIEW_NODE_ID:'__preview__',
