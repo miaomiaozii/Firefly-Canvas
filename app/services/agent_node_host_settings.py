@@ -260,9 +260,34 @@ class AgentHostTransaction:
         session.effort_submitted, session.effort_effective = prior["submitted"], prior["effective"]
         session._effort_source = prior["source"]
 
+    @classmethod
+    def expected_selection(cls, value):
+        """Wire-only CAS intent: exact keys/types, no coercion or binding authority.
+
+        Unlike a new requested effort, an expectation is only compared, never
+        applied or capability-validated. Any string (including empty) is a valid
+        expectation; an unequal canonical selection will return 409.
+        """
+        try:
+            _entry(value, {"host", "model", "effort"}, "expected")
+            _host(value["host"], "expected.host")
+            _string(value["model"], "expected.model")
+            if value["effort"] is not None:
+                _string(value["effort"], "expected.effort")
+        except ValueError as exc:
+            raise cls.error(400, "invalid_agent_settings", str(exc)) from exc
+        return dict(value)
+
+    def check_expected(self, before, expected):
+        host = before["agentCli"]
+        current = {"host": host, **before["agentHostSettings"][host]}
+        if current != expected:
+            raise self.error(409, "agent_settings_conflict", "Agent settings changed concurrently; read the current node and retry.")
+
     async def settings(self, body, *, user_edit=False, session_only=False):
         from fastapi import HTTPException
         from app.services.agent_host import validate_spawn_arg
+        expected = self.expected_selection(body["expected"]) if "expected" in body else None
         async with self.manager.node_lock(self.project_id, self.node_id):
             try:
                 node = self.current()
@@ -276,6 +301,11 @@ class AgentHostTransaction:
                                                     session.model, session.reasoning_effort)
             else:
                 before = self.fields(node)
+            # Compare only the active manual choice, using the same canonical
+            # legacy mapping as normal settings. No metadata/RPC writes precede
+            # this check; bindings and inactive-host progress are not expected.
+            if expected is not None:
+                self.check_expected(before, expected)
             host = body.get("host", before["agentCli"])
             if host not in _HOSTS:
                 raise self.error(400, "invalid_agent_settings", "host must be pi or codex")

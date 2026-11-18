@@ -193,6 +193,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                         await self.manager.apply_runtime_settings(self.session, model, effort)
                     self.assertEqual((self.session.model, self.session.reasoning_effort), ("native/old", "low"))
 
+    async def test_stale_undo_expectation_never_reaches_live_native_reader_or_metadata(self):
+        from fastapi import HTTPException
+        process = await self.attach_pi()
+        node = {"id": "node", "type": "smart-agent",
+                **build_host_settings_fields({}, "pi", "native/newer", "high")}
+        update = AsyncMock(side_effect=AssertionError("stale undo cannot save"))
+        transaction = AgentHostTransaction(self.manager, "project", "node", find_node=lambda *_: node,
+                                           update_settings=update, now_ms=lambda: 123)
+        with patch.object(transaction, "capabilities", side_effect=AssertionError("stale undo cannot probe")):
+            with self.assertRaises(HTTPException) as failure:
+                await transaction.settings({"host": "pi", "model": "native/old", "effort": "low",
+                    "expected": {"host": "pi", "model": "native/new", "effort": "high"}}, user_edit=True)
+        self.assertEqual(failure.exception.status_code, 409)
+        self.assertEqual(failure.exception.detail["code"], "agent_settings_conflict")
+        self.assertEqual(process.commands, [])
+        update.assert_not_awaited()
+        self.assertEqual((self.session.model, self.session.reasoning_effort), ("native/old", "low"))
+
     async def test_strict_native_pair_ack_and_readback(self):
         process = await self.attach_pi()
         result = await self.manager.apply_runtime_settings(self.session, "native/new", "high")

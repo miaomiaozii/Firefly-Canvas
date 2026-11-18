@@ -224,6 +224,7 @@ function loadAgentTuiModule({
     ctx.console = {
         error: (...args) => { consoleErrors.push(args.map(String).join(' ')); },
         log: () => {},
+        warn: (...args) => consoleErrors.push(args.map(String).join(' ')),
     };
 
     loadModules(ctx, [
@@ -233,8 +234,12 @@ function loadAgentTuiModule({
         // #323 票 E：真实节点操作链（createSmartGroupNode 的 pushUndo/布局常量走真模块，
         // 不是桩——ADR 0020 判据「桩要开始重新实现产品逻辑就停」）。
         ...(withNodeOps ? ['canvas-layout-utils.js', 'canvas-undo.js', 'canvas-node-ops.js'] : []),
+        'canvas-agent-navigation.js',
         'canvas-agent-tui.js',
     ]);
+    // D1/D2 fixtures isolate their scroll/IME behavior at the explicit navigation API.
+    // The real module is loaded above; composer/navigation integration has its own tests.
+    ctx.createAgentMessageNavigation = () => ({ refresh() {}, update() {}, destroy() {} });
     fromContext(evaluate(ctx, `canvas = ${JSON.stringify(canvasData ?? { project_id: 'proj-9' })}`));
     for (const node of nodes) {
         ctx.canvasState.nodes.push(node);
@@ -716,7 +721,7 @@ test('sendAgentPrompt: WS 打开走 socket.send（载荷含 images），关闭�
     assert.deepEqual(inputPayloadForLegacyAssertion(closed.fetchCalls[0].opts.body), { message: '文本', images: [] });
 });
 
-test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort 复位 idle', () => {
+test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort 等待权威结束', () => {
     const { ctx, ws } = loadAgentTuiModule({ open: true });
     fn(ctx, 'connectAgentWebSocket')('n1', 'p1');
     evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
@@ -731,10 +736,10 @@ test('sendAgentSteer / FollowUp / Abort: wsPayload 形状、系统消息、abort
     assert.deepEqual(fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages')).map(inputMessageForLegacyAssertion), [
         { role: 'system', text: '↪ steer: 转向' },
         { role: 'system', text: '⏳ follow_up queued: 排队' },
-        { role: 'system', text: '⏹ aborted' },
+        { role: 'system', text: '⏹ 停止请求已发送，等待宿主结束' },
     ]);
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
-        'abort 必须把 status 复位，否则按钮永远停在运行中');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'stopping',
+        '请求送达不等于宿主已停止，参数必须继续锁定');
 });
 
 test('sendAgentCommand: WS 未连接走 HTTP，但 onSuccess 必须照样执行（#221）', async () => {
@@ -765,7 +770,7 @@ test('sendAgentCommand: WS 未连接走 HTTP，但 onSuccess 必须照样执行�
     assert.equal(fetchCalls[1].opts.body, undefined);
 });
 
-test('sendAgentAbort: WS 已断开时走 HTTP，状态仍必须复位成 idle（#221）', () => {
+test('sendAgentAbort: WS 已断开时走 HTTP，状态等待宿主确认停止（#221/#421）', () => {
     const { ctx, ws, fetchCalls } = loadAgentTuiModule({ open: false });
     evaluate(ctx, 'getAgentTuiState("n1").status = "busy"');
     fn(ctx, 'sendAgentAbort')('n1', 'proj/2');
@@ -773,8 +778,8 @@ test('sendAgentAbort: WS 已断开时走 HTTP，状态仍必须复位成 idle（
     assert.equal(fetchCalls.length, 1);
     assert.equal(fromContext(fetchCalls[0].url), '/api/projects/proj%2F2/agent-nodes/n1/abort');
     // 用户可见症状全在这里：复位 idle 是 onSuccess 里做的，跳过它按钮就永远 disabled。
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle',
-        'HTTP 回退路径也必须复位 status，否则 abort 后永远显示“运行中”');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'stopping',
+        'HTTP 发送后也要等权威结束反馈');
 });
 
 test('sendAgentAbort: HTTP 请求失败时不能写“⏹ aborted”，要记「未送达」警告（#221 备注）', async () => {
@@ -791,7 +796,7 @@ test('sendAgentAbort: HTTP 请求失败时不能写“⏹ aborted”，要记「
     assert.equal(fetchCalls.length, 1);
     const state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
     // 两个要求同时成立：按钮不能卡住（#221 主症状），但也不能谎报已停止。
-    assert.equal(state.status, 'idle');
+    assert.equal(state.status, 'stopping');
     const texts = state.messages.map(item => item.text);
     assert.ok(!texts.some(text => /aborted|已停止/.test(text)), `失败却写成已停止：${JSON.stringify(texts)}`);
     assert.deepEqual(texts, ['⚠️ 停止请求未送达，agent 可能仍在生成']);
@@ -820,9 +825,10 @@ test('process_exited / socket.onclose 也要给末条流式消息定型（#222 �
         const state = getAgentTuiState("n1");
         state.messages.push({ role: "assistant", text: "出错前", streaming: true });
     })()`);
-    socket.onerror();
+    const newSocket = fn(ctx, 'connectAgentWebSocket')('n1', 'p1', { force: true });
+    newSocket.onerror();
     state = fromContext(evaluate(ctx, 'getAgentTuiState("n1")'));
-    assert.equal('streaming' in state.messages[state.messages.length - 1], false, 'onerror 也要收尾');
+    assert.equal('streaming' in state.messages[state.messages.length - 1], false, '当前连接的 onerror 要收尾；已关闭旧连接不可污染新视图');
 
     fn(ctx, 'handleAgentEvent')('n1', { type: 'process_exited' });
     evaluate(ctx, `(() => {
@@ -1003,7 +1009,7 @@ test('agentCardStatusHtml: confirm 挂起时覆盖成「等待确认」', () => 
 });
 
 // ── 节点体渲染 ───────────────────────────────────────────────────────
-test('agentCardStatusHtml 与 agentNodeBodyHtml 对同一状态必须给同一文案（#220）', () => {
+test('agentCardStatusHtml 使用统一状态表，r3 正文不重复渲染头部（#220/#421）', () => {
     // 两处各自一遍 switch 就是这次不一致的根因，所以钉「两处一致」而不只钉文案。
     const { ctx } = loadAgentTuiModule();
     const card = fn(ctx, 'agentCardStatusHtml');
@@ -1018,8 +1024,9 @@ test('agentCardStatusHtml 与 agentNodeBodyHtml 对同一状态必须给同一�
         const nodeId = `n-${status}`;
         evaluate(ctx, `getAgentTuiState("${nodeId}").status = ${JSON.stringify(status)}`);
         const fromCard = statusText(fromContext(card(nodeId)), 'card');
-        const fromBody = statusText(fromContext(body({ id: nodeId, type: 'agent' })), 'tui');
-        assert.equal(fromCard, fromBody, `${status}：卡片“${fromCard}” vs 正文“${fromBody}”`);
+        const presentation = fn(ctx, 'agentStatusPresentation')(fn(ctx, 'getAgentTuiState')(nodeId));
+        assert.equal(fromCard, presentation.statusText, `${status}：外层唯一状态使用同一表`);
+        assert.doesNotMatch(fromContext(body({ id: nodeId, type: 'agent' })), /class="agent-tui-header"/, '正文不重复渲染头部');
     }
 });
 
@@ -1028,7 +1035,7 @@ test('agentNodeBodyHtml: retrying→重试中、crashed→已崩溃（卡片行�
     const body = fn(ctx, 'agentNodeBodyHtml');
     for (const [status, text] of [['retrying', '重试中'], ['crashed', '已崩溃']]) {
         evaluate(ctx, `getAgentTuiState("n-${status}").status = ${JSON.stringify(status)}`);
-        const html = fromContext(body({ id: `n-${status}`, type: 'agent' }));
+        const html = fromContext(fn(ctx, 'agentCardStatusHtml')(`n-${status}`));
         assert.ok(html.includes(`>${text}<`), `${status} → ${text} 未出现: ${html}`);
     }
 });
@@ -1071,11 +1078,12 @@ test('agentNodeBodyHtml: 模型/自治/分支下拉按节点真值选中最优�
         branches: [{ id: 'b1', name: '主线' }, { id: 'b2', name: '支线' }],
         current_branch: 'b2', title: '我的 Agent',
     }));
-    assert.ok(html.includes('<option value="gpt-b" selected>'), html);
-    assert.ok(html.includes('<option value="gpt-a" >'), html);
-    assert.ok(html.includes('<option value="standard" selected>'), html);
-    assert.ok(html.includes('<option value="b2" selected>'), html);
-    assert.ok(html.includes('agent-tui-title">我的 Agent<'), html);
+    assert.match(html, /data-agent-model-picker="n1"[^>]*>模型 · gpt-b<\/button>/);
+    assert.ok(!html.includes('gpt-a'), '未打开选择器不拉取或伪造模型池');
+    assert.ok(html.includes('<option value="standard" selected>每批'), html);
+    const more = fn(ctx, 'agentHeadActionButtonsHtml')({ id: 'n1', branches: [{ id: 'b2', name: '支线' }], current_branch: 'b2' });
+    assert.ok(more.includes('<option value="b2" selected>'), more);
+    assert.ok(!html.includes('agent-tui-title'), '标题归外层 header');
 
     const plain = fromContext(body({ id: 'n2', type: 'agent' }));
     assert.ok(!plain.includes('agent-tui-branch-select'), '无分支不该渲染分支下拉');
@@ -1413,11 +1421,11 @@ test('agentCliSnippetDialogHtml: 弹层含两条命令与 mcp_url（转义），
     assert.ok(html.includes('mcp_url') === false || html.includes('api/mcp'), 'url 展示存在');
 });
 
-test('#325 票 G: agent 卡头部含「由外部 CLI 接管」按钮（data-agent-cli 绑节点 id）', () => {
+test('#325/#421: agent 外层头部更多菜单保留「由外部 CLI 接管」入口', () => {
     const { ctx } = loadAgentTuiModule({ nodes: [{ id: 'n1', type: 'agent' }] });
-    const html = fn(ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'agent', title: 'A' });
-    assert.ok(html.includes('data-agent-cli="n1"'), '接管按钮存在且携带节点 id');
-    assert.ok(html.includes('agent-tui-btn-cli'), '类名供 CSS/测试定位');
+    const html = fn(ctx, 'agentHeadActionButtonsHtml')({ id: 'n1', type: 'agent', title: 'A' });
+    assert.ok(html.includes('data-agent-more-cli'), '接管入口移至外层更多菜单');
+    assert.ok(html.includes('agent-tui-more'), '菜单保留真实 CLI 接线');
 });
 
 // ── renderAgentNode：重渲染与重绑定 ───────────────────────────────
@@ -1563,12 +1571,12 @@ test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮'
     tree.followup.dispatchEvent(ev('click'));
     assert.deepEqual(inputPayloadForLegacyAssertion(ws.sent.at(-1)), { type: 'follow_up', message: '下一步' });
 
-    // abort：status 复位 idle + 系统消息。
+    // Receipt is not termination: keep parameters locked until authoritative feedback.
     tree.abort.dispatchEvent(ev('click'));
-    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'idle', 'abort 复位 idle（否则按钮永远停在运行中）');
+    assert.equal(fromContext(evaluate(ctx, 'getAgentTuiState("n1").status')), 'stopping');
     const msgs = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
     assert.equal(msgs.at(-1).role, 'system');
-    assert.equal(msgs.at(-1).text, '⏹ aborted');
+    assert.equal(msgs.at(-1).text, '⏹ 停止请求已发送，等待宿主结束');
 });
 
 test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch change、fork、工具行展开', async () => {
@@ -1603,6 +1611,8 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     const msgs2 = fromContext(evaluate(ctx, 'getAgentTuiState("n1").messages'));
     assert.equal(msgs2.at(-1).text, '❌ 已取消');
 
+    // Settings are unlocked only after the confirmed operation actually ends.
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end' });
     // model / autonomy：change 声明人工意图，确认前不触碰节点。
     tree.modelSel.value = 'm2';
     tree.modelSel.dispatchEvent(ev('change'));

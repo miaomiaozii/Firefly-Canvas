@@ -213,8 +213,10 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
 
     def test_canvas_stylesheets_are_registered_and_stamped(self):
         html = self.page_html("smart-canvas.html")
-        tagged = {path.split("?")[0].rsplit("/", 1)[-1]: value
-                  for path, value in re.findall(r'href="(/static/css/[^"]+)\?v=([0-9][0-9.]*)"', html)}
+        # Agent r3 仅失效自身资产，保留整页共享发布戳；附加修订参数也是合法缓存键。
+        tagged = {path.rsplit("/", 1)[-1]: value
+                  for path, value in re.findall(
+                      r'href="(/static/css/[^"?]+)\?v=([0-9][0-9.]*)(?:&amp;agent=[A-Za-z0-9._-]+)?"', html)}
         missing_files = [name for name in self.CANVAS_STYLESHEETS if not (ROOT / "static" / "css" / name).is_file()]
         self.assertEqual([], missing_files, f"登记了的样式表不在盘上：{missing_files}")
         missing = [name for name in self.CANVAS_STYLESHEETS if name not in tagged]
@@ -223,6 +225,18 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                   for path in re.findall(r'href="(/static/css/[^"]+)"', html)}
         unregistered = sorted(linked - set(self.CANVAS_STYLESHEETS))
         self.assertEqual(unregistered, [], f"HTML 里链了但未登记的样式表：{unregistered}")
+
+    def test_agent_r3_assets_share_a_scoped_cache_revision_and_navigation_loads_first(self):
+        html = self.page_html("smart-canvas.html")
+        revised = dict(re.findall(
+            r'(?:src|href)="/static/(?:js|css)/([^"/?]+)\?v=[0-9][0-9.]*&amp;agent=([A-Za-z0-9._-]+)"', html))
+        self.assertEqual(set(revised), {
+            "smart-canvas.css", "canvas-node-ops.js", "canvas-agent-navigation.js",
+            "canvas-agent-tui.js", "smart-canvas.js",
+        })
+        self.assertEqual(len(set(revised.values())), 1)
+        self.assertLess(CANVAS_SCRIPTS.index("canvas-agent-navigation.js"),
+                        CANVAS_SCRIPTS.index("canvas-agent-tui.js"))
 
     def test_css_imports_carry_a_cache_stamp(self):
         # 样式表里的 @import 不在 restart/refresh 的 bump 正则范围内（那个只碰 HTML 的 href/src），
@@ -258,6 +272,49 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
             restart,
             "restart-firefly.ps1 必须刷所有 static\\*.html（只刷 smart-canvas.html 会让另两页的 CSS/JS 停在旧戳）",
         )
+
+
+class AgentR3StyleSourceTests(unittest.TestCase):
+    """Agent r3 的纯源码约束；不替代真实浏览器的布局/主题/选择验收。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.styles = (ROOT / "static" / "css" / "smart-canvas.css").read_text(encoding="utf-8")
+
+    def rule(self, selector: str) -> str:
+        match = re.search(r"^" + re.escape(selector) + r"\s*\{([^{}]*)\}", self.styles, re.M)
+        self.assertIsNotNone(match, selector)
+        return match.group(1).replace(" ", "")
+
+    def test_agent_input_has_a_single_base_rule_and_three_line_minimum(self):
+        for selector in (".agent-tui-card", ".agent-tui-input"):
+            self.assertEqual(len(re.findall(r"^" + re.escape(selector) + r"\s*\{", self.styles, re.M)), 1)
+        self.assertIn("min-height:96px", self.rule(".agent-tui-input"))
+        self.assertIn("user-select:text", self.rule(".agent-tui-input"))
+        self.assertNotRegex(self.styles, r"\.agent-tui-header\s*\{")
+
+    def test_agent_reading_area_reserves_rail_space_and_uses_hidden_thin_scrollbars(self):
+        body = self.rule(".agent-tui-body")
+        rail = self.rule(".agent-message-navigation")
+        self.assertIn("user-select:text", body)
+        self.assertIn("scrollbar-color:transparent transparent".replace(" ", ""), body)
+        left_padding = int(re.search(r"padding:\d+px\d+px\d+px(\d+)px", body).group(1))
+        rail_width = int(re.search(r"width:(\d+)px", rail).group(1))
+        self.assertEqual(rail_width, 24)
+        self.assertGreaterEqual(left_padding, rail_width + 8)
+        scrollbar = self.rule(".agent-tui-body::-webkit-scrollbar")
+        self.assertLessEqual(int(re.search(r"width:(\d+)px", scrollbar).group(1)), 6)
+        self.assertIn("background:transparent", self.rule(".agent-tui-body::-webkit-scrollbar-thumb"))
+        self.assertIn(".agent-tui-body:focus-within::-webkit-scrollbar-thumb", self.styles)
+
+    def test_agent_navigation_preview_is_a_noninteractive_fixed_two_line_card(self):
+        preview = self.rule(".agent-message-preview")
+        for declaration in ("position:fixed", "width:200px", "pointer-events:none"):
+            self.assertIn(declaration, preview)
+        self.assertIn("font-weight:650", self.rule(".agent-message-preview-source"))
+        self.assertIn("-webkit-line-clamp:2", self.rule(".agent-message-preview-text"))
+        self.assertIn("width:6px", self.rule(".agent-message-tick"))
+        self.assertIn("width:12px", self.rule('.agent-message-tick[aria-current="true"]'))
 
 
 class SwallowedErrorRatchetTests(unittest.TestCase):

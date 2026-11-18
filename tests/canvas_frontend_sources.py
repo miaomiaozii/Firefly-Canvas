@@ -43,6 +43,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-quick-edit.js",
     "canvas-generation-cascade.js",
     "canvas-generation-tasks.js",
+    # #421：用户消息导航为独立 classic script，须先于 TUI 加载。
+    "canvas-agent-navigation.js",
     "canvas-agent-tui.js",
     # #324：跨项目搜索面板（顶栏搜索 + 结果列表）。
     "canvas-search.js",

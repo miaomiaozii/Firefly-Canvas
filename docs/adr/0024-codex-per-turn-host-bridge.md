@@ -105,4 +105,37 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 
 - 没有可信 clone/恢复标识时，服务器不能区分普通新建、克隆和同 ID 删除后的画布撤销恢复。本门不增加受信恢复事务：**撤销恢复保留 Agent 消息和设置，但不续接原生会话；下次发送新开会话。** 该策略由 review 明确裁定，不是克隆规则的隐式副作用。
 - 规范映射中的空绑定会清空旧内存 ID/文件引用；Pi 使用一个新的显式 `--session-id`，即使旧目录仍有 JSONL 也不走 `--continue` 或最新文件启发式。旧的无映射节点仍保留原来的兼容发现路径。阴性测试覆盖同 ID 删除/恢复、残留旧 Pi 文件、消息/设置保留及新 ID 回填。
-- 本门只接后端合同和旧 UI 冒烟，不声称已实现 r3 工具条、480px 默认宽度或前端设置 undo；这些属于后续阶段门。真 CLI 验证和截图是实施证据，不替代 review 验收。
+- 截至门 2，只接后端合同和旧 UI 冒烟，未实现 r3 工具条、480px 默认宽度或前端设置 undo；门 3 当前实现见下节。真 CLI 验证和截图是实施证据，不替代 review 验收。
+
+## #421 / #424：设置前置条件与人工设置历史（实施门 3）
+
+本节记录门 3 实现；本 ADR 原有“已接受”状态不代表门 3 已通过。扩围依据为 reviewer **01a1de6f** 在 review-batch-ui `MESSAGES.md` 的 2026-11-18 07:55:49 原文（2173–2180 行）：只加人工设置历史专用 `/settings` 分支及可选前置条件，复用既有事务，不改通用 delta/普通保存或服务器绑定保护。产品字段合同见 [CONTEXT.md](../../CONTEXT.md)。
+
+### `/settings` 的可选 `expected` schema
+
+完整路径为 `POST /api/projects/{project_id}/agent-nodes/{node_id}/settings`。顶层允许字段为 `host`、`model`、`effort`、`user_edit`、`expected`。`expected` 可省略，**省略时行为与门 2 一致**；一旦提供就必须是恰含以下三键的对象：
+
+```typescript
+{ host: "pi" | "codex", model: string, effort: string | null }
+```
+
+- 三键均必需，不接收额外键或 `expected:null`；host 精确匹配小写 pi/codex，不裁剪或强制转换。model 允许空字符串；effort 允许 null 或任意字符串（含空字符串）。期望值只比较、不应用、不做能力验证，不能把它的空 effort 规范成 null；目标 model/effort 的既有规范化与能力验证不变。格式错误返回 400 `invalid_agent_settings`。
+- 在已有节点锁内重新读取当前节点，用 `read_host_fields` 的规则得到**当前活跃宿主**的 `{host,model,effort}`，而不是比较旧顶层投影、整个 host map、绑定或客户端快照。两张映射均缺失时沿用旧字段归原宿主的规则；有映射时以映射为准。
+- 比较先于能力探测、原生设置/stop 等写入；不匹配返回 **409 `agent_settings_conflict`**，不写原生、不保存目标值。它不是客户端预检后再无条件 POST，也不是 trusted 写权限或新的 Store 入口。
+- 匹配仍须通过原 busy 检查；原生流、压缩、排队、确认、重试、未完成 stop 仍返回 `agent_busy`。之后沿用既有节点锁、画布 CAS/重试、严格 Pi ACK/state 回读、失败补偿；不能由 expected 绕过生产默认未确认的 `agent_default_unverified`。CAS 重试不重复原生命令，设置竞争/删除仍明确失败。
+
+### 人工宿主/模型/思考的专用撤销与重做
+
+- `receiveAgentSettingsCanvas` 只在权威画布接收成功且相应人工设置仍被当前画布接受后记录历史。新项为 `{agentHostSettingsEdit:{nodeId,before,after}}`，before/after 均仅为 `{host,model,effort}`；不存全节点、原生绑定、非活跃宿主进展、消息或旧 `userTouchedAt`。只改变绑定/时间戳、不改变所选人工设置的回包不是该类历史步。
+- undo 通过同一 `/settings` 提交 before、`expected:after`、`user_edit:true`；redo 提交 after、`expected:before`、`user_edit:true`。持久历史中的选择对也须严格校验，不能因损坏或缺失 expected 退化为无条件设置。host 切换仍选择目标宿主的服务器绑定，不重放历史原生 ID/分支。
+- 只允许一个设置历史请求在途；不乐观改节点、不提前 pop/push。必须 HTTP 成功且 `success:true`、非 `persisted:false`、有权威 canvas，接收器返回 true，并在异步等待及接收/刷新前后确认项目、画布、历史 epoch/栈顶仍有效，才移动原历史项并持久化栈。
+- HTTP/网络/解析/权威接收失败、busy、409 预期冲突、默认无法验证、节点消失或历史上下文失效时，显示失败并保留原栈。迟到回包若已在服务端成功，不用本地旧快照补偿或回滚原生绑定；不以移栈假称当前历史操作成功。
+- 该分支不调用普通 `scheduleSave` 恢复设置，不改通用 `actionDelta` 或其它编辑的普通保存语义；`user_edit:true` 沿用服务器当前人工编辑时间，不倒拨旧时间。门 2 的普通删除撤销不恢复原生会话规则保持不变。
+
+### 权威设置接收后的 TUI 同步
+
+- 普通 host/model/effort 设置及其 undo/redo 先走权威画布接收器，历史恢复以 `recordUndo:false` 避免再记一条；随后共同调用 `applyAgentHostSettingsAuthority`：从当前节点同步活跃宿主/视图，采用响应 `effort_state`，并调用 `renderAgentNode`。停靠 DOM 不由全量 render 重建，也必须就地更新参数、只读提示及运行时证据，不能继续显示旧宿主。
+- 活跃宿主与只读查看宿主分离；另一个宿主的草稿、附件/引用、焦点选区、阅读锚点及事件视图只在页面内按宿主暂存，不进节点。只读查看只拉带 host 的历史，不开 WebSocket/启动宿主，不开放发送或参数编辑；切回继续才经显式确认与设置事务。视图切换使旧 socket/回放回调失效，不能用迟到结果覆盖当前视图。
+- 模型和思考共用选择器，打开、模型变更或显式重试才读取原生 capabilities，不在 render/控制绑定时探测。无能力就显示错误/不可用，不编造档位；ultra 不暴露。新模型不支持已存 effort 时须明确确认组合提交 `effort:null`，后端默认未确认仍拒绝，不静默降档。
+- requested/submitted/effective 三层语义继续适用：只把权威 `effort_state` 当运行时证据；Codex 仍为 effective=null，UI 区分“已设置”“已提交”和“生效未确认”，不能拿配置或目录回显冒充生效。Pi 生效提示依赖严格 ACK/state 回读。停止请求送达不是宿主已停止，终态反馈/状态核验前参数保持锁定。
+- 本门不修改 Store 绑定保护、generation、ownership、outbox、pendingTasks，不授予客户端 trusted 权限。r3、480px 回退、临时呈现状态与用户消息导航详见 [ADR 0028](0028-agent-node-dockable.md)；浏览器、完整 Store 证据及截图矩阵见门 3 交付记录，本文不替代验收。

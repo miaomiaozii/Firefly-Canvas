@@ -370,7 +370,7 @@ async def set_agent_settings(project_id: str, node_id: str, body: dict = Body(..
                              x_agent_project: str = Header(default="")):
     """Atomically validate/save host + model + effort. Busy wire code: agent_busy."""
     user_edit = _settings_user_edit(body)
-    unknown = body.keys() - {"host", "model", "effort", "user_edit"}
+    unknown = body.keys() - {"host", "model", "effort", "user_edit", "expected"}
     if unknown:
         raise agent_error(400, "INVALID_ARGUMENT", "Unknown settings fields: " + ", ".join(sorted(unknown)))
     result = await _host_transaction(project_id, node_id).settings(body, user_edit=user_edit)

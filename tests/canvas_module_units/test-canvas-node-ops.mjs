@@ -339,7 +339,7 @@ test('createConversationNode / createAgentNode: 形状与选中', () => {
     const agent = fromContext(globalFunction(ctx, 'createAgentNode')(30, 40));
     assert.ok(agent.id.startsWith('agent_'));
     assert.equal(agent.type, 'smart-agent');
-    assert.equal(agent.w, 382);
+    assert.equal(agent.w, 480);
     assert.equal(agent.h, 360);
     assert.equal(agent.title, 'Agent');
     assert.equal(agent.agentGoal, '');
@@ -495,10 +495,10 @@ test('deleteNode: agent 节点经真实 cleanupAgentTuiState 清 TUI 状态（�
             { id: 'C' },
         ],
     });
-    evaluate(ctx, 'agentTuiState.set("A", { socket: null })');
+    evaluate(ctx, 'getAgentTuiState("A")');
     ctx.__closeRecord = [];
-    evaluate(ctx, 'agentTuiState.set("B", { socket: { close(){ __closeRecord.push("B"); } } })');
-    evaluate(ctx, 'agentTuiState.set("C", { socket: null })');
+    evaluate(ctx, 'getAgentTuiState("B").socket = { close(){ __closeRecord.push("B"); } }');
+    evaluate(ctx, 'getAgentTuiState("C")');
     const deleteNode = globalFunction(ctx, 'deleteNode');
 
     deleteNode('A');

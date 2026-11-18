@@ -21,11 +21,11 @@ _Avoid_: 普通画布、旧画布
 _Avoid_: 聊天框、提示词对话、LLM 面板
 
 **Agent 节点**：
-在核心画布中根据目标规划并调用获准工具的独立节点；每次工具调用都在画布上产生可观察的任务或结果。每个节点独立保存各宿主的模型/思考设置和原生会话绑定；切换宿主不混用绑定。普通删除撤销只恢复消息和设置，不恢复原生会话续接（ADR 0024）。
+在核心画布中根据目标规划并调用获准工具的独立节点；每次工具调用都在画布上产生可观察的任务或结果。每个节点独立保存各宿主的模型/思考设置和原生会话绑定；切换宿主不混用绑定。人工宿主/模型/思考设置及其撤销/重做走服务器设置事务，不回放原生绑定快照；普通删除撤销则只恢复消息和设置，不恢复原生会话续接（ADR 0024）。
 _Avoid_: 对话模式、隐藏工具调用、全局 Agent
 
 **Agent TUI**：
-Agent 节点内部的流式会话界面，把该节点每次获准的工具调用按时间顺序投影到画布上；它不是节点类型，也不引入独立于 Agent 节点的会话状态。Agent 节点可停靠到画布左/右边缘或浮动（同一实体、三种呈现，停靠态不随画布缩放/平移，见 ADR 0028）。
+Agent 节点内部的流式会话界面，把该节点每次获准的工具调用按时间顺序投影到画布上；它不是节点类型，也不引入独立于 Agent 节点的持久会话状态。Agent 节点可停靠到画布左/右边缘或浮动（同一实体、三种呈现，停靠态不随画布缩放/平移，见 ADR 0028）。输入区承载宿主、模型、思考和自治确认档位；消息导航只索引用户消息，不为助手、工具或思考段生成刻度。草稿、选区、阅读位置、导航预览和停靠收起态均为页面临时状态，不写节点。
 _Avoid_: Agent 会话节点、新节点类型、隐藏工具调用、全局 Agent
 
 **提示词节点**：
@@ -203,3 +203,37 @@ _Avoid_: 独立视频应用、本地视频工作流
 **音频素材**：
 作为多模态参考输入或视频音轨参与创作的音频内容，不单独构成另一套画布。
 _Avoid_: 独立音频项目、音频工作站
+
+## Agent 节点产品合同与字段 schema（#421 / #424）
+
+以下记录 #421/#424 门 1–3 的实现合同；既有 ADR 的 accepted 状态不代表本门验收。事务细节见 [ADR 0024](docs/adr/0024-codex-per-turn-host-bridge.md)，呈现与导航见 [ADR 0028](docs/adr/0028-agent-node-dockable.md)。
+
+### 持久字段与临时视图
+
+- `agentCli`：活跃宿主，`"pi" | "codex"`。`agentHostSettings` / `agentHostSessions` 是按宿主键保存的配对映射，键集合相同；只允许 Pi、Codex，可以尚无未选宿主的条目。
+- `agentHostSettings[host]` 精确为 `{model: string, effort: string | null}`。`model:""`、`effort:null` 表示请求跟随宿主；显式 effort 必须非空白、非 ultra，并由该模型的原生能力校验，不硬编码档位枚举。
+- `agentHostSessions[host]` 精确为 `{extSessionId: string, branches: array, current_branch: string}`。空绑定是 `{"extSessionId":"","branches":[],"current_branch":""}`；绑定由服务器维护，客户端普通画布保存无写权限。顶层 `model`、`extSessionId`、`branches`、`current_branch` 只是活跃宿主投影。
+- 只有两张映射均缺失才按旧节点处理：旧字段只迁到原 `agentCli`（缺省/空白/null 为 Pi），旧 model 缺失/null 按空字符串、旧节点的 effort 按 null 读取；不是把旧绑定迁给新选宿主。一旦有映射就按新 schema 严格校验，不以坏映射回退旧字段。
+- 新建 Agent 的默认宽度、无有效 `node.w` 时的浮动/停靠回退宽度均为 **480px**；不批量改写已有显式宽度（包括旧 382px）。`node.w`、`node.dock` 仍属项目内容；收起/手动展开标记、按宿主暂存的草稿/附件/引用、焦点/选区、阅读锚点及导航状态不随画布保存。
+- 只读查看另一宿主历史不切换 `agentCli`、不启动宿主、不复用另一宿主上下文；“切回此宿主继续”才走显式确认和设置事务。
+
+### 设置请求 schema
+
+`POST /api/projects/{project_id}/agent-nodes/{node_id}/settings` 的请求只接受下表字段；所有字段可省略，未知字段拒绝。人工 UI 提交 host/model/effort 整组及 `user_edit:true`，不乐观改节点。
+
+| 字段 | 类型与缺省语义 |
+|---|---|
+| `host` | `"pi" \| "codex"`；省略沿用活跃宿主。 |
+| `model` | `string \| null`；省略沿用目标宿主保存值，null 规范为 `""`。 |
+| `effort` | `string \| null`；省略沿用目标宿主保存值，`""` 规范为 null，其余显式值按模型能力校验。 |
+| `user_edit` | JSON boolean；省略为 false。人工编辑使用 true，归属与时间戳仍由服务器控制。 |
+| `expected` | 可选前置条件，**若提供，必须恰含** `{host: "pi" \| "codex", model: string, effort: string \| null}`；三键缺一、额外键、null 对象或错误类型均拒绝。 |
+
+`expected` 是比较意图，不是目标设置、revision 或绑定权限：model/effort 字符串不裁剪、不强制转换，effort 的空字符串也只是原样比较，不作 null 或能力档位解释。省略 `expected` 时原设置行为不变；提供时在同一节点锁内读取并规范化当前活跃选择（含旧节点迁移规则），在能力探测及原生写入前比较 host/model/effort，不匹配返回 **409 `agent_settings_conflict`**。不比较/回放非活跃宿主设置、原生 ID 或分支；匹配后仍复用 busy、CAS、Pi ACK/回读与失败补偿，绝不绕过 `agent_busy`。无法验证生产默认时仍返回 `agent_default_unverified`，不静默清空已有覆盖。
+
+### 设置历史与运行时证据
+
+- 人工 host/model/effort 的专用历史项只保存 `{agentHostSettingsEdit:{nodeId,before,after}}`；before/after 各为 `{host,model,effort}`。撤销提交 before 并带 `expected:after`，重做相反，均走 `/settings` 和 `user_edit:true`，不经普通画布 `scheduleSave` 恢复设置。
+- 仅服务器确认成功持久化、权威画布接收成功且项目/画布/历史上下文仍有效才移栈；失败、busy、预期值冲突、默认未确认或上下文失效均保留原栈。不得用历史快照回滚原生绑定、消息、其它节点或旧时间戳；通用 actionDelta / 普通保存路径不变。
+- 设置及设置历史成功回包都须在接收权威画布后同步 TUI 活跃宿主视图与 `effort_state`，并就地刷新（包括全量 render 跳过的停靠元素）；运行时缓存不是设置/绑定真源。
+- requested 是保存意图，submitted 是已实际提交宿主的参数，effective 是可信宿主回读。能力目录、配置回显或命令成功不等于 effective；Codex effective 仍为 null，UI 必须显示“生效未确认”，不可把“已设置/已提交”改称“已生效”。Pi 只有严格 ACK 和 state 回读后才有生效证据。能力只在模型/思考选择器生命周期内读取，普通 render 不触发探测。

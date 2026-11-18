@@ -190,10 +190,10 @@ body.smart-node-drag-settling .composer { pointer-events:none !important; }
 .conversation-node-composer textarea:focus { border-color:var(--strong); }
 .conversation-node-composer button { flex:0 0 auto; height:30px; padding:0 10px; border:0; border-radius:8px; background:var(--strong); color:var(--strong-text); font-size:10px; font-weight:850; cursor:pointer; }
 .conversation-node-composer button:disabled { opacity:.55; cursor:wait; }
-.image-node.agent-smart-node { padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-panel, 12px); box-shadow:0 18px 46px var(--shadow); overflow:visible; }
+.image-node.agent-smart-node { display:flex; flex-direction:column; padding:0; max-width:calc(100vw - 24px); background:var(--surface, var(--card)); border:1px solid var(--line); border-radius:var(--radius-panel, 12px); box-shadow:0 18px 46px var(--shadow); overflow:visible; }
 .image-node.agent-smart-node:hover,
 .image-node.agent-smart-node.selected { border-color:var(--strong); box-shadow:0 0 0 1px var(--strong), 0 18px 46px var(--shadow); }
-.image-node.agent-smart-node .node-body { width:100%; height:100%; min-height:0; padding:0; align-items:stretch; justify-content:stretch; }
+.image-node.agent-smart-node > .node-body { flex:1; width:100%; height:auto; min-width:0; min-height:0; padding:0; align-items:stretch; justify-content:stretch; cursor:default; }
 /* #316：死样式层已删（原 199-244：.agent-node-* 一代旧 Agent 草稿 UI 全家族 + .agent-plan-task-*，JS 零引用；现存 Agent UI 为 .agent-tui-*，任务节点为 .agent-task-* */
 .agent-task-node { min-width:280px; }
 .agent-task-node .node-body { align-items:stretch; justify-content:stretch; padding:0; }
@@ -1229,8 +1229,7 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
    低于历史抽屉 86；水平方向靠 #shell 上的 --agent-dock-left/--agent-dock-right 变量把抽屉/小地图/工具栏让开。 */
 :root { --agent-dock-left:0px; --agent-dock-right:0px; }
 #agentDock { position:absolute; top:0; bottom:0; left:0; right:0; z-index:85; pointer-events:none; }
-#agentDock[hidden] { display:none; }
-.agent-dock-node { position:absolute; top:12px; bottom:12px; width:382px; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:0 22px 58px var(--shadow); overflow:hidden; pointer-events:auto; z-index:2; }
+.agent-dock-node { position:absolute; top:12px; bottom:12px; width:480px; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:0 22px 58px var(--shadow); overflow:hidden; pointer-events:auto; z-index:2; }
 .agent-dock-node.dock-left { left:12px; }
 .agent-dock-node.dock-right { right:12px; }
 .agent-dock-node .node-head { flex:0 0 auto; }
@@ -3680,208 +3679,229 @@ button.prompt-flow-context-image { cursor:pointer; }
 .smart-marked-export-file i, .smart-marked-export-file svg { width:12px; height:12px; flex:0 0 auto; color:#16a34a; }
 .smart-marked-export-file span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-/* Agent TUI (terminal-style) styles */
-/* #301：圆角与内部控件统一（卡片 8px / 控件 6px），与画布节点语言一致 */
-/* #312：补 width:100%——此前仅有 height:100%，flex 主轴下卡片按内容宽收缩，
-   拉大节点后右侧空白（对齐 .prompt-node-card/.conversation-node-card 写法 css:170-171/247） */
+/* #421/#424 r3：仅 Agent 及其 body portal 使用设计的中性主题；其它节点不变。
+   复用语义变量，使 refs、状态、更多和原生 dialog 的浅深色保持一致。 */
+.agent-smart-node,
+.agent-message-preview,
+.agent-fork-dialog,
+.agent-cli-dialog,
+dialog.agent-tui-model-picker {
+    --surface:#fff;
+    --surface-sunken:#ebebea;
+    --ink:#161616;
+    --ink-2:#5c5c5a;
+    --ink-3:#72726f;
+    --line:#e1e1df;
+    --line-strong:#c9c9c6;
+    --shadow:rgba(0,0,0,.12);
+    --panel:var(--surface);
+    --card:var(--surface);
+    --soft:var(--surface-sunken);
+    --text:var(--ink);
+    --muted:var(--ink-2);
+    --faint:var(--ink-3);
+    --strong:var(--ink);
+    --strong-text:var(--surface);
+    --accent:var(--ink);
+    --glow:var(--ink);
+    color-scheme:light;
+}
+.theme-dark :is(.agent-smart-node, .agent-message-preview, .agent-fork-dialog, .agent-cli-dialog, dialog.agent-tui-model-picker) {
+    --surface:#1b1b1b;
+    --surface-sunken:#151515;
+    --ink:#ededeb;
+    --ink-2:#b9b9b6;
+    --ink-3:#a0a09c;
+    --line:#2a2a2a;
+    --line-strong:#3a3a3a;
+    --shadow:rgba(0,0,0,.35);
+    color-scheme:dark;
+}
 .agent-tui-card {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100%;
-    background: #1a1b26;
-    color: #c0caf5;
-    border-radius: 8px;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    overflow: hidden;
+    display:flex;
+    flex-direction:column;
+    width:100%;
+    height:100%;
+    min-width:0;
+    min-height:0;
+    background:var(--surface, var(--card));
+    color:var(--ink, var(--text));
+    border-radius:0 0 var(--radius-panel, 12px) var(--radius-panel, 12px);
+    font-family:var(--font-sans);
+    font-size:14px;
+    line-height:1.6;
+    cursor:default;
 }
 /* #316：卡内图标统一尺寸（emoji→SVG 后与画布其余节点同一视觉语言） */
 .agent-tui-btn svg { width: 15px; height: 15px; }
 .agent-tui-tool-icon svg { width: 13px; height: 13px; vertical-align: -2px; }
 .agent-tui-tool-toggle svg { width: 12px; height: 12px; }
 .agent-tui-thinking-label svg, .agent-tui-msg-attach svg, .agent-tui-confirm-message svg { width: 12px; height: 12px; vertical-align: -2px; }
-/* #316：Agent 节点头状态徽标可见——原被通用规则 .image-node:not(.empty-node) .node-head{display:none} 永久隐藏，
-   全量 render 注入的 agentCardStatusHtml（状态+预览）永远不可见；现仅对 agent-smart-node 放行，body 高度扣除头部 38px */
-.image-node.agent-smart-node .node-head { display: flex; }
-.image-node.agent-smart-node .node-title { display: block; }
-.image-node.agent-smart-node .node-body { height: calc(100% - 38px); }
+/* 唯一外层 node-head 的布局见下方；卡内不再放重复会话头。 */
 /* #317：附件处理进度行 */
-.agent-tui-attach-working { display: flex; align-items: center; gap: 6px; padding: 4px 10px; color: #7aa2f7; font-size: 11px; }
+.agent-tui-attach-working { display:flex; flex:none; align-items:center; gap:6px; min-width:0; padding:6px 16px; color:var(--ink-2, var(--muted)); font-size:12px; overflow-wrap:anywhere; }
 .agent-tui-attach-working svg { width: 12px; height: 12px; animation: agent-attach-pulse 1.2s ease-in-out infinite; }
 @keyframes agent-attach-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
 /* #317：fork 选择器——原生 prompt() 换为画布自有 <dialog> 体系（对齐 project-list.js showModal 模式） */
-.agent-fork-dialog { border: 1px solid #3b4261; background: #1a1b26; color: #c0caf5; border-radius: 10px; padding: 16px 18px; min-width: 340px; max-width: 460px; font-family: inherit; }
-.agent-fork-dialog::backdrop { background: rgba(10, 12, 22, .55); }
-.agent-fork-dialog h3 { margin: 0 0 10px; font-size: 14px; color: #a9b1d6; font-weight: 600; }
-.agent-fork-dialog .agent-fork-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.agent-fork-dialog label { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1.4; }
-.agent-fork-dialog label:hover { background: #24283b; }
-.agent-fork-dialog label .agent-fork-idx { color: #565f89; flex: none; }
-.agent-fork-dialog input.agent-fork-name { width: 100%; box-sizing: border-box; background: #24283b; border: 1px solid #3b4261; color: #c0caf5; border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-bottom: 12px; }
-.agent-fork-dialog .agent-fork-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.agent-fork-dialog button { background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
-.agent-fork-dialog button.primary { background: #3d59a1; border-color: #565f89; color: #c0caf5; }
-.agent-fork-dialog button:hover { filter: brightness(1.15); }
+.agent-fork-dialog,
+.agent-cli-dialog {
+    width:460px;
+    min-width:0;
+    max-width:calc(100vw - 32px);
+    max-height:calc(100dvh - 32px);
+    overflow:auto;
+    padding:20px;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:var(--surface, var(--card));
+    color:var(--ink, var(--text));
+    font-family:var(--font-sans);
+}
+.agent-fork-dialog::backdrop,
+.agent-cli-dialog::backdrop { background:color-mix(in srgb, var(--text) 30%, transparent); }
+.agent-fork-dialog h3,
+.agent-cli-dialog h3 { margin:0 0 10px; font-size:16px; color:inherit; font-weight:600; }
+.agent-fork-dialog .agent-fork-list { max-height:240px; overflow:auto; display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+.agent-fork-dialog label { display:flex; gap:8px; align-items:baseline; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.agent-fork-dialog label:hover { background:var(--surface-sunken, var(--soft)); }
+.agent-fork-dialog label .agent-fork-idx { color:var(--ink-3, var(--faint)); flex:none; }
+.agent-fork-dialog input.agent-fork-name { width:100%; min-width:0; background:var(--surface-sunken, var(--soft)); border:1px solid var(--line); color:inherit; border-radius:6px; padding:8px; font-size:12px; margin-bottom:12px; }
+.agent-fork-dialog .agent-fork-actions,
+.agent-cli-dialog .agent-fork-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.agent-fork-dialog button,
+.agent-cli-dialog button { width:auto; height:auto; background:var(--surface-sunken, var(--soft)); color:inherit; border:1px solid var(--line); border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer; }
+.agent-fork-dialog button.primary,
+.agent-cli-dialog .agent-fork-actions button.primary { background:var(--ink, var(--text)); border-color:var(--ink, var(--text)); color:var(--surface, var(--card)); }
+.agent-fork-dialog button:hover,
+.agent-cli-dialog button:hover { filter:brightness(.95); }
 
 /* #325 票 G：外部 CLI 接管弹层（与 fork 弹窗同体系） */
-.agent-cli-dialog { border: 1px solid #3b4261; background: #1a1b26; color: #c0caf5; border-radius: 10px; padding: 16px 18px; min-width: 420px; max-width: 620px; font-family: inherit; }
-.agent-cli-dialog::backdrop { background: rgba(10, 12, 22, .55); }
-.agent-cli-dialog h3 { margin: 0 0 6px; font-size: 14px; color: #a9b1d6; font-weight: 600; }
-.agent-cli-dialog .agent-cli-note { font-size: 12px; color: #565f89; margin-bottom: 10px; line-height: 1.5; }
-.agent-cli-dialog .agent-cli-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
-.agent-cli-dialog .agent-cli-label { grid-column: 1 / -1; font-size: 12px; color: #9aa5ce; }
-.agent-cli-dialog textarea.agent-cli-cmd { grid-column: 1; width: 100%; box-sizing: border-box; background: #24283b; border: 1px solid #3b4261; color: #c0caf5; border-radius: 6px; padding: 6px 8px; font-size: 11px; font-family: Consolas, Menlo, monospace; resize: vertical; line-height: 1.45; }
-.agent-cli-dialog button { background: #24283b; color: #a9b1d6; border: 1px solid #3b4261; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
-.agent-cli-dialog button:hover { filter: brightness(1.15); }
-.agent-cli-dialog .agent-fork-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.agent-cli-dialog .agent-fork-actions button.primary { background: #3d59a1; border-color: #565f89; color: #c0caf5; }
+.agent-cli-dialog { width:620px; }
+.agent-cli-dialog .agent-cli-note { font-size:12px; color:var(--ink-2, var(--muted)); margin-bottom:10px; line-height:1.6; overflow-wrap:anywhere; }
+.agent-cli-dialog .agent-cli-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:6px 8px; align-items:center; margin-bottom:10px; }
+.agent-cli-dialog .agent-cli-label { grid-column:1 / -1; font-size:12px; color:var(--ink-2, var(--muted)); }
+.agent-cli-dialog textarea.agent-cli-cmd { grid-column:1; width:100%; min-width:0; background:var(--surface-sunken, var(--soft)); border:1px solid var(--line); color:inherit; border-radius:6px; padding:8px; font:12px/1.6 var(--font-mono); resize:vertical; user-select:text; }
 
-.agent-tui-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    row-gap: 6px;
-    padding: 8px 10px;
-    background: #16161e;
-    border-bottom: 1px solid #2f3549;
-    flex-shrink: 0;
+.agent-tui-status,
+.agent-card-status {
+    flex:none;
+    padding:2px 5px;
+    border-radius:4px;
+    font-size:12px;
+    font-weight:500;
+    line-height:1.5;
+    white-space:nowrap;
 }
-
-.agent-tui-title {
-    font-weight: 600;
-    color: #7aa2f7;
-    font-size: 12px;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.agent-tui-status {
-    font-size: 11px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 500;
-    /* #301：状态徽标（空闲/运行中/连接中…）永远单行，不竖排折行 */
-    white-space: nowrap;
-    flex: 0 0 auto;
-}
-
-.agent-tui-status-idle {
-    background: #2f3549;
-    color: #7aa2f7;
-}
-
-.agent-tui-status-busy {
-    background: #44475a;
-    color: #e0af68;
-    animation: agent-tui-pulse 1.5s ease-in-out infinite;
-}
-
-.agent-tui-status-connecting {
-    background: #2f3549;
-    color: #9ece6a;
-}
-
-.agent-tui-status-error {
-    background: #44475a;
-    color: #f7768e;
-}
-
-.agent-tui-status-disconnected {
-    background: #2f3549;
-    color: #565f89;
-}
+.agent-tui-status-idle,
+.agent-tui-status-connecting { background:transparent; color:var(--ink-2, var(--muted)); }
+.agent-tui-status-busy { background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); animation:agent-tui-pulse 1.5s ease-in-out infinite; }
+.agent-tui-status-error { background:color-mix(in srgb, var(--danger) 8%, transparent); color:var(--danger); }
+.agent-tui-status-disconnected { background:transparent; color:var(--ink-3, var(--faint)); }
 
 /* #280：Agent 连接失败/重连横幅（此前 spawn 失败在画布上完全静默） */
 .agent-tui-error-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin: 6px 10px 0;
-    padding: 6px 8px;
-    border: 1px solid rgba(247, 118, 142, 0.35);
-    border-left: 3px solid #f7768e;
-    border-radius: 6px;
-    background: rgba(247, 118, 142, 0.08);
-    color: #f7768e;
-    font-size: 11px;
-    line-height: 1.5;
+    display:flex;
+    flex:none;
+    align-items:flex-start;
+    flex-wrap:wrap;
+    gap:8px;
+    min-width:0;
+    margin:6px 16px;
+    padding:8px;
+    border:1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+    border-left:3px solid var(--danger);
+    border-radius:6px;
+    background:color-mix(in srgb, var(--danger) 8%, var(--surface, var(--card)));
+    color:var(--danger);
+    font-size:12px;
+    line-height:1.6;
+    overflow-wrap:anywhere;
+    user-select:text;
 }
+.agent-tui-error-banner .agent-tui-error-banner-text { flex:1 1 160px; min-width:0; }
+.agent-tui-error-banner .agent-tui-btn-retry { flex:none; width:auto; height:auto; padding:2px 10px; border-color:currentColor; background:transparent; color:inherit; font-size:12px; }
+.agent-tui-error-banner .agent-tui-btn-retry:hover:not(:disabled) { background:var(--danger); border-color:var(--danger); color:var(--surface, var(--card)); }
 
-.agent-tui-error-banner .agent-tui-error-banner-text {
-    flex: 1;
+/* 节点参数仅属于输入工具条；窄节点可以换行而不是撑开面板。 */
+.agent-tui-setting-toolbar {
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:4px;
+    min-width:0;
+    padding:4px 7px 9px;
 }
-
-.agent-tui-error-banner .agent-tui-btn-retry {
-    flex: none;
-    width: auto;
-    height: auto;
-    padding: 2px 10px;
-    font-size: 11px;
-    background: #44475a;
-    color: #f7768e;
-    border: 1px solid rgba(247, 118, 142, 0.5);
+.agent-tui-setting-toolbar > label {
+    display:inline-flex;
+    align-items:center;
+    flex:0 1 auto;
+    gap:4px;
+    min-width:0;
+    max-width:100%;
+    color:var(--ink-2, var(--muted));
+    font-size:12px;
 }
-
-.agent-tui-error-banner .agent-tui-btn-retry:hover:not(:disabled) {
-    background: #f7768e;
-    border-color: #f7768e;
-    color: #1a1b26;
-}
-
-/* #301：设置控件成簇（左侧分隔线 + 统一间距 + 窄宽时整体换行），不再像散落的调试控件 */
-.agent-tui-settings {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-wrap: wrap;
-    row-gap: 4px;
-    flex: 0 1 auto;
-    min-width: 0;
-    padding-left: 8px;
-    border-left: 1px solid #2f3549;
-}
-
-.agent-tui-settings-label {
-    font-size: 10px;
-    color: #565f89;
-    flex: 0 0 auto;
-}
-
-.agent-tui-settings .agent-tui-btn {
-    width: 24px;
-    height: 24px;
-    font-size: 12px;
-}
-
 .agent-tui-model-select,
-.agent-tui-autonomy-select {
-    background: #2f3549;
-    color: #c0caf5;
-    border: 1px solid #3b4261;
-    border-radius: 6px;
-    padding: 2px 8px;
-    font-size: 11px;
-    line-height: 1.5;
-    height: 22px;
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 130px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-    outline: none;
+.agent-tui-host-select,
+.agent-tui-effort-select,
+.agent-tui-autonomy-select,
+.agent-tui-branch-select {
+    min-width:0;
+    max-width:100%;
+    min-height:28px;
+    padding:4px 6px;
+    border:1px solid transparent;
+    border-radius:6px;
+    background:transparent;
+    color:var(--ink, var(--text));
+    font:inherit;
+    font-size:12px;
+    line-height:1.5;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    cursor:pointer;
 }
-
-.agent-tui-model-select:hover,
-.agent-tui-autonomy-select:hover {
-    background: #3b4261;
+.agent-tui-model-select { flex:1 1 100px; width:auto; max-width:180px; text-align:left; }
+.agent-tui-host-select { max-width:120px; }
+.agent-tui-effort-select { max-width:142px; }
+.agent-tui-autonomy-select { max-width:100px; }
+.agent-tui-setting-toolbar :is(button, select):hover { background:var(--surface-sunken, var(--soft)); }
+.agent-tui-setting-toolbar :is(button, select):disabled { opacity:.45; cursor:not-allowed; }
+dialog.agent-tui-model-picker {
+    width:460px;
+    max-width:calc(100vw - 32px);
+    max-height:calc(100dvh - 32px);
+    padding:24px;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:var(--surface);
+    color:var(--ink);
+    overflow:auto;
+    font:14px/1.6 var(--font-sans);
 }
+dialog.agent-tui-model-picker::backdrop { background:color-mix(in srgb, var(--ink) 30%, transparent); }
+dialog.agent-tui-model-picker h3 { margin:0 0 16px; font-size:16px; }
+dialog.agent-tui-model-picker > label { display:grid; grid-template-columns:3em minmax(0, 1fr); align-items:center; gap:8px; margin:12px 0; font-size:12px; }
+dialog.agent-tui-model-picker select { width:100%; min-width:0; padding:7px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface-sunken); color:var(--ink); }
+dialog.agent-tui-model-picker .agent-fork-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin-top:20px; }
+dialog.agent-tui-model-picker button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface-sunken); color:var(--ink); font-size:12px; }
+dialog.agent-tui-model-picker [data-agent-picker-apply] { background:var(--ink); color:var(--surface); }
+dialog.agent-tui-model-picker [role="alert"] { color:var(--danger); }
+dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
+.agent-tui-parameter-hint,
+.agent-tui-readonly-banner {
+    flex:none;
+    min-width:0;
+    padding:6px 16px;
+    color:var(--ink-2, var(--muted));
+    font-size:12px;
+    line-height:1.6;
+    overflow-wrap:anywhere;
+}
+.agent-tui-parameter-hint:empty { display:none; }
+.agent-tui-readonly-banner { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; border-top:1px solid var(--line); background:var(--surface-sunken, var(--soft)); }
+.agent-tui-readonly-banner :is(button, a) { padding:2px 0; background:transparent; color:var(--ink, var(--text)); font:inherit; text-decoration:underline; }
 
 @keyframes agent-tui-pulse {
     0%, 100% { opacity: 1; }
@@ -3889,26 +3909,28 @@ button.prompt-flow-context-image { cursor:pointer; }
 }
 
 .agent-tui-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px;
-    min-height: 0;
+    flex:1;
+    min-width:0;
+    min-height:0;
+    overflow:auto;
+    padding:12px 20px 20px 32px;
+    overscroll-behavior:contain;
+    overflow-anchor:none;
+    user-select:text;
+    cursor:text;
+    scrollbar-width:thin;
+    scrollbar-color:transparent transparent;
 }
+.agent-tui-body:hover,
+.agent-tui-body:focus-within { scrollbar-color:var(--ink-3, var(--faint)) transparent; }
+.agent-tui-body::-webkit-scrollbar { width:4px; height:4px; }
+.agent-tui-body::-webkit-scrollbar-track { background:transparent; }
+.agent-tui-body::-webkit-scrollbar-thumb { border-radius:4px; background:transparent; }
+.agent-tui-body:hover::-webkit-scrollbar-thumb,
+.agent-tui-body:focus-within::-webkit-scrollbar-thumb { background:var(--ink-3, var(--faint)); }
+.agent-tui-messages { display:flex; flex-direction:column; min-width:0; gap:20px; }
 
-.agent-tui-messages {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.agent-tui-empty {
-    color: #565f89;
-    font-style: italic;
-    padding: 8px 0;
-    text-align: center;
-    line-height: 1.7;
-    max-width: 90%;
-}
+.agent-tui-empty { color:var(--ink-2, var(--muted)); padding:32px 0; text-align:center; font-size:14px; line-height:1.9; overflow-wrap:anywhere; }
 
 /* #301：空会话时消息区垂直居中，缓解「中间大空白 vs 拥挤工具栏」的失衡 */
 .agent-tui-body-empty {
@@ -3921,326 +3943,94 @@ button.prompt-flow-context-image { cursor:pointer; }
 }
 
 .agent-tui-msg {
-    padding: 4px 6px;
-    border-radius: 4px;
-    word-wrap: break-word;
-    white-space: pre-wrap;
+    min-width:0;
+    margin:0;
+    color:var(--ink, var(--text));
+    font-size:14px;
+    line-height:1.9;
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    user-select:text;
 }
+.agent-tui-msg-user { width:100%; padding:13px 14px; border:0; border-radius:10px; background:var(--surface-sunken, var(--soft)); }
+.agent-tui-msg-user .agent-tui-msg-role { display:none; }
+.agent-tui-msg-assistant { width:100%; padding:0 3px; border:0; background:transparent; white-space:normal; }
+.agent-tui-msg-assistant .agent-tui-msg-text { display:block; }
+.agent-tui-msg-system { padding:4px 0; border:0; background:transparent; color:var(--ink-2, var(--muted)); font-size:12px; }
+.agent-tui-msg-role { color:var(--ink-2, var(--muted)); font-weight:600; margin-right:4px; }
 
-.agent-tui-msg-user {
-    background: rgba(122, 162, 247, 0.1);
-    border-left: 2px solid #7aa2f7;
-}
+.agent-tui-tool { display:block; min-width:0; font-size:12px; }
+.agent-tui-tool-icon { flex:none; font-size:12px; }
+.agent-tui-tool-args { margin-bottom:4px; color:var(--ink-2, var(--muted)); font-size:12px; }
 
-.agent-tui-msg-assistant {
-    background: rgba(94, 212, 149, 0.05);
-    border-left: 2px solid #56d364;
-}
+.agent-tui-confirm { margin:8px 0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-sunken, var(--soft)); overflow-wrap:anywhere; }
+.agent-tui-confirm-message { margin-bottom:8px; color:var(--ink, var(--text)); font-size:14px; }
+.agent-tui-confirm-buttons { display:flex; flex-wrap:wrap; gap:8px; }
+.agent-tui-confirm-btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface, var(--card)); color:var(--ink, var(--text)); font-size:12px; cursor:pointer; }
+.agent-tui-confirm-approve { background:var(--ink, var(--text)); color:var(--surface, var(--card)); border-color:var(--ink, var(--text)); }
+.agent-tui-confirm-reject { color:var(--danger); }
 
-.agent-tui-msg-assistant.agent-tui-msg-streaming {
-    animation: agent-tui-cursor-blink 0.8s step-end infinite;
-}
-
-.agent-tui-msg-system {
-    background: rgba(247, 118, 142, 0.1);
-    border-left: 2px solid #f7768e;
-    color: #f7768e;
-}
-
-.agent-tui-msg-role {
-    color: #7aa2f7;
-    font-weight: 600;
-    margin-right: 4px;
-}
-
-.agent-tui-tool {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    margin: 2px 0;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 4px;
-    font-size: 11px;
-}
-
-.agent-tui-tool-icon {
-    font-size: 12px;
-}
-
-.agent-tui-tool-name {
-    color: #e0af68;
-    font-weight: 500;
-}
-
-.agent-tui-tool-args {
-    color: #565f89;
-    font-size: 10px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.agent-tui-confirm {
-    margin: 8px 0;
-    padding: 10px;
-    background: #1f1f2e;
-    border: 1px solid #e0af68;
-    border-radius: 6px;
-}
-
-.agent-tui-confirm-message {
-    color: #e0af68;
-    font-size: 12px;
-    margin-bottom: 8px;
-}
-
-.agent-tui-confirm-buttons {
-    display: flex;
-    gap: 8px;
-}
-
-.agent-tui-confirm-btn {
-    padding: 4px 12px;
-    border: 1px solid #565f89;
-    border-radius: 4px;
-    background: #16161e;
-    color: #c0caf5;
-    font-size: 12px;
-    cursor: pointer;
-}
-
-.agent-tui-confirm-approve {
-    border-color: #9ece6a;
-    color: #9ece6a;
-}
-
-.agent-tui-confirm-reject {
-    border-color: #f7768e;
-    color: #f7768e;
-}
-
-/* #301：输入区拆两行——输入行独占整宽（占位符不再被按钮挤断），操作行按钮+发送 */
-.agent-tui-input-row {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px;
-    background: #16161e;
-    border-top: 1px solid #2f3549;
-    flex-shrink: 0;
-}
-.agent-tui-input-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-.agent-tui-action-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    flex-wrap: wrap;
-}
+/* r3：三行输入 + 参数 + 操作行；附件、运行中排队/steer/停止仍可达。 */
+.agent-tui-composer { flex:none; min-width:0; padding:0 16px 13px; background:var(--surface, var(--card)); border-radius:0 0 var(--radius-panel, 12px) var(--radius-panel, 12px); }
+.agent-tui-input-row { display:flex; flex-direction:column; flex:none; min-width:0; border:1px solid var(--line-strong, var(--line)); border-radius:12px; background:var(--surface, var(--card)); }
+.agent-tui-input-row:focus-within { border-color:var(--ink, var(--text)); box-shadow:0 0 0 2px color-mix(in srgb, var(--ink, var(--text)) 8%, transparent); }
+.agent-tui-input-line { display:flex; align-items:flex-start; min-width:0; }
+.agent-tui-action-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:0 10px; padding:7px 0; border-top:1px solid var(--line); }
+.agent-tui-composer-hint { display:flex; justify-content:space-between; flex-wrap:wrap; gap:0 8px; padding:7px 3px 0; color:var(--ink-3, var(--faint)); font-size:12px; line-height:1.6; }
+.agent-tui-composer .agent-tui-parameter-hint { padding:6px 3px; }
 
 /* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
-.agent-tui-attach-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 8px;
-    background: #101018;
-    border-top: 1px solid #2f3549;
-    flex-shrink: 0;
-}
-.agent-tui-attach {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 6px;
-    background: #1b1b26;
-    border: 1px solid #2f3549;
-    border-radius: 6px;
-    max-width: 280px;
-}
-.agent-tui-attach-thumb {
-    width: 40px;
-    height: 30px;
-    object-fit: cover;
-    border-radius: 4px;
-    flex-shrink: 0;
-    background: #000;
-}
+.agent-tui-attach-row { display:flex; flex-wrap:wrap; flex:none; gap:6px; min-width:0; padding:6px 16px; }
+.agent-tui-attach { display:flex; align-items:center; gap:6px; min-width:0; max-width:100%; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--surface-sunken, var(--soft)); }
+.agent-tui-attach-thumb { width:40px; height:30px; object-fit:cover; border-radius:4px; flex:none; background:var(--surface-sunken, var(--soft)); }
 .agent-tui-attach-meta { min-width: 0; }
-.agent-tui-attach-name {
-    font-size: 11px;
-    color: #dfe3ec;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 150px;
-}
-.agent-tui-attach-caption {
-    font-size: 10px;
-    color: #8b93a7;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 150px;
-}
-.agent-tui-attach-remove {
-    border: none;
-    background: transparent;
-    color: #8b93a7;
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 2px 4px;
-    flex-shrink: 0;
-}
-.agent-tui-attach-remove:hover { color: #ff7b7b; }
-.agent-tui-msg-attach {
-    margin-top: 2px;
-    font-size: 11px;
-    color: #8b93a7;
-}
+.agent-tui-attach-name,
+.agent-tui-attach-caption { max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.agent-tui-attach-name { color:var(--ink, var(--text)); }
+.agent-tui-attach-caption { color:var(--ink-2, var(--muted)); }
+.agent-tui-attach-remove { flex:none; padding:2px 4px; border:0; background:transparent; color:var(--ink-2, var(--muted)); font-size:14px; line-height:1; cursor:pointer; }
+.agent-tui-attach-remove:hover { color:var(--danger); }
+.agent-tui-msg-attach { margin-top:4px; font-size:12px; color:var(--ink-2, var(--muted)); }
+.agent-tui-prompt { display:none; }
 
-.agent-tui-prompt {
-    color: #7aa2f7;
-    font-weight: 600;
-    font-size: 13px;
-}
-
-/* #313：同名死规则已删（长期被下方生效块覆盖，误导维护） */
-
-.agent-tui-input::placeholder {
-    color: #565f89;
-}
-
-.agent-tui-action-buttons {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-}
-
+.agent-tui-action-buttons { display:flex; align-items:center; min-width:0; flex:1 1 auto; gap:2px; flex-wrap:wrap; }
 .agent-tui-btn {
-    background: #2f3549;
-    border: 1px solid #3d4560;
-    color: #c0caf5;
-    border-radius: 4px;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.15s, border-color 0.15s;
+    display:inline-flex;
+    flex:none;
+    align-items:center;
+    justify-content:center;
+    width:30px;
+    height:30px;
+    padding:5px;
+    border:1px solid transparent;
+    border-radius:6px;
+    background:transparent;
+    color:var(--ink-2, var(--muted));
+    font-size:13px;
+    cursor:pointer;
+    transition:background .15s, border-color .15s;
 }
+.agent-tui-btn:hover:not(:disabled) { background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); }
+.agent-tui-btn:disabled { opacity:.35; cursor:not-allowed; }
+.agent-tui-btn-thinking.agent-tui-btn-active { background:var(--surface-sunken, var(--soft)); border-color:var(--line); color:var(--ink, var(--text)); }
 
-.agent-tui-btn:hover:not(:disabled) {
-    background: #3d4560;
-    border-color: #7aa2f7;
-}
-
-.agent-tui-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-}
-
-.agent-tui-btn-thinking.agent-tui-btn-active {
-    background: #414868;
-    border-color: #9ece6a;
-    color: #9ece6a;
-}
-
-/* #323 票 E：Agent 卡 head 区两个小按钮（会话框/参考框）——与卡内图标按钮同族（agent-tui-btn）；
-   激活态与思考开关同规范（绿描边）。两者均为文字钮（监理钉B2：文案直接说明动作），放宽固定 28px 宽。 */
+/* 会话框/参考框的真实入口与激活态保留在更多菜单内。 */
 .agent-chat-frame-btn.agent-tui-btn-active,
-.agent-ref-frame-btn.agent-tui-btn-active {
-    background: #414868;
-    border-color: #9ece6a;
-    color: #9ece6a;
-}
-.agent-chat-frame-btn,
-.agent-ref-frame-btn {
-    width: auto;
-    min-width: 28px;
-    padding: 0 7px;
-    font-size: 12px;
-}
-/* #323 监理钉B3：卡面会话框状态段（node-head-meta 区，状态灯同排）。Refs #323。 */
-.agent-chat-frame-status {
-    font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 160px;
-}
-.agent-chat-frame-status.is-bound { color: #9ece6a; }
-.agent-chat-frame-status.is-unbound { color: #565f89; }
+.agent-ref-frame-btn.agent-tui-btn-active { background:var(--surface-sunken, var(--soft)); border-color:var(--line); color:var(--ink, var(--text)); }
+.agent-chat-frame-status { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--ink-2, var(--muted)); }
 
-.agent-tui-thinking {
-    margin: 4px 0;
-    padding: 6px 8px;
-    border-left: 2px solid #565f89;
-    background: #1a1e2e;
-    border-radius: 4px;
-    font-size: 11px;
-    color: #565f89;
-    font-style: italic;
-    max-height: 160px;
-    overflow-y: auto;
-    word-break: break-word;
-}
-
-.agent-tui-thinking-label {
-    display: block;
-    margin-bottom: 4px;
-    font-style: normal;
-    color: #7aa2f7;
-    user-select: none;
-}
+.agent-tui-thinking { margin:4px 0; padding:6px 8px; border-left:2px solid var(--line); border-radius:4px; background:var(--surface-sunken, var(--soft)); color:var(--ink-2, var(--muted)); font-size:12px; max-height:160px; overflow:auto; overflow-wrap:anywhere; user-select:text; }
+.agent-tui-thinking-label { display:block; margin-bottom:4px; color:var(--ink-2, var(--muted)); user-select:none; }
 
 .agent-tui-thinking-text {
     white-space: pre-wrap;
 }
 
-.agent-tui-btn-steer:hover:not(:disabled) {
-    color: #e0af68;
-}
+.agent-tui-btn-abort:hover:not(:disabled) { color:var(--danger); }
 
-.agent-tui-btn-followup:hover:not(:disabled) {
-    color: #7dcfff;
-}
-
-.agent-tui-btn-abort:hover:not(:disabled) {
-    color: #f7768e;
-}
-
-/* #301：主按钮「发送」放在操作行右下角——与 smart-save 同一套画布主按钮语言
-   （--strong/--strong-text），右下角的发送/中止操作可见且含义明确 */
-.agent-tui-btn-send {
-    width: auto;
-    min-width: 58px;
-    padding: 0 12px;
-    background: var(--strong, #7aa2f7);
-    border: 1px solid var(--strong, #7aa2f7);
-    color: var(--strong-text, #fff);
-    font-weight: 600;
-}
-.agent-tui-btn-send:hover:not(:disabled) {
-    background: var(--strong, #7aa2f7);
-    border-color: var(--strong, #7aa2f7);
-    color: var(--strong-text, #fff);
-    filter: brightness(1.08);
-}
-
-@keyframes agent-tui-cursor-blink {
-    0%, 100% { border-right: 2px solid #56d364; }
-    50% { border-right: 2px solid transparent; }
-}
+/* 发送采用 r3 中性反色；与停止/排队操作保持独立。 */
+.agent-tui-btn-send { width:auto; min-width:40px; margin-left:auto; padding:0 10px; border-radius:8px; background:var(--ink, var(--text)); color:var(--surface, var(--card)); font-weight:600; }
+.agent-tui-btn-send:hover:not(:disabled) { background:var(--ink, var(--text)); color:var(--surface, var(--card)); filter:brightness(.92); }
 
 /* Agent node card status light + last line preview */
 .node-head-meta {
@@ -4251,39 +4041,17 @@ button.prompt-flow-context-image { cursor:pointer; }
     min-width: 0;
     justify-content: flex-end;
 }
-.agent-card-status {
-    font-size: 10px;
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-weight: 500;
-    white-space: nowrap;
-}
-.agent-card-preview {
-    font-size: 10px;
-    color: #7aa2f7;
-    opacity: 0.7;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 120px;
-}
+/* 只去掉 Agent 外头的重复预览/说明，不隐藏错误、状态或只读提示。 */
+.agent-smart-node > .node-head :is(.agent-card-preview, .agent-chat-frame-status) { display:none; }
 
 /* Collapsible tool activity rows */
-.agent-tui-tool {
-    cursor: pointer;
-    user-select: none;
-}
+.agent-tui-tool { cursor:default; user-select:text; }
 .agent-tui-tool-header {
     display: flex;
     align-items: center;
     gap: 4px;
 }
-.agent-tui-tool-toggle {
-    font-size: 10px;
-    color: #565f89;
-    width: 12px;
-    text-align: center;
-}
+.agent-tui-tool-toggle { flex:none; font-size:12px; width:12px; text-align:center; }
 .agent-tui-tool-details {
     display: none;
     margin-top: 4px;
@@ -4292,79 +4060,16 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-tool-expanded .agent-tui-tool-details {
     display: block;
 }
-.agent-tui-tool-details pre {
-    margin: 0;
-    padding: 4px 6px;
-    background: #1a1b26;
-    border-radius: 4px;
-    font-size: 10px;
-    color: #9ece6a;
-    overflow-x: auto;
-    max-height: 100px;
-}
-.agent-tui-tool-args {
-    margin-bottom: 4px;
-}
-.agent-tui-tool-result pre {
-    color: #7aa2f7;
-}
+.agent-tui-tool-details pre { margin:0; padding:6px 8px; border-radius:4px; overflow:auto; max-height:100px; user-select:text; cursor:text; }
 
-/* #322 票 D：连续 tool 段折叠「已执行 N 步 · 总 X.Xs ▸」 */
-.agent-tui-tool-group {
-    margin: 4px 0;
-    border: 1px solid #2a2c3d;
-    border-radius: 6px;
-    padding: 2px 6px;
-}
-.agent-tui-tool-group > summary {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    cursor: pointer;
-    list-style: none;
-    color: #9aa5ce;
-    font-size: 11px;
-    padding: 2px 0;
-}
-.agent-tui-tool-group > summary::-webkit-details-marker { display: none; }
-.agent-tui-tool-group[open] > summary {
-    border-bottom: 1px solid #23243a;
-    margin-bottom: 4px;
-}
-.agent-tui-tool-group-running > summary { color: #e0af68; }
-.agent-tui-tool-group-items .agent-tui-tool {
-    padding: 2px 0;
-}
-.agent-tui-tool-duration {
-    margin-left: auto;
-    color: #565f89;
-    font-size: 10px;
-}
-/* #322 票 D：inline 思考折叠 */
-.agent-tui-thought {
-    margin: 4px 0;
-}
-.agent-tui-thought > summary {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    cursor: pointer;
-    list-style: none;
-    color: #9aa5ce;
-    font-size: 11px;
-}
-.agent-tui-thought > summary::-webkit-details-marker { display: none; }
-.agent-tui-thought .agent-tui-thinking-text {
-    margin-top: 4px;
-}
-/* #322 票 D：plan checklist */
-.agent-tui-checklist-item {
-    font-size: 11px;
-    line-height: 1.6;
-    color: #c0caf5;
-}
-.agent-tui-checklist-item.done { color: #565f89; text-decoration: line-through; }
-.agent-tui-checklist-mark { margin-right: 4px; }
+/* 工具/思考折叠的布局与 D2 有序消息样式合并，正文保持可选中。 */
+.agent-tui-tool-group > summary,
+.agent-tui-thought > summary { display:flex; align-items:center; cursor:pointer; list-style:none; user-select:none; }
+.agent-tui-tool-group > summary::-webkit-details-marker,
+.agent-tui-thought > summary::-webkit-details-marker { display:none; }
+.agent-tui-checklist-item { line-height:1.6; }
+.agent-tui-checklist-item.done { text-decoration:line-through; }
+.agent-tui-checklist-mark { margin-right:4px; }
 /* #322 scope-add：长输出 >300px 默认折叠 + 卡内展开全文开关 */
 .agent-tui-tool-result.agent-tui-tool-result-clamped pre {
     max-height: 300px;
@@ -4373,46 +4078,19 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-tool-result:not(.agent-tui-tool-result-clamped) pre {
     max-height: 240px; /* 展开全文：允许滚动而非无限拉长卡 */
 }
-.agent-tui-expand-output {
-    background: none;
-    border: 1px solid #3b4261;
-    border-radius: 4px;
-    color: #7aa2f7;
-    font-size: 10px;
-    padding: 1px 6px;
-    margin-top: 3px;
-    cursor: pointer;
-}
+.agent-tui-expand-output { margin-top:3px; padding:2px 6px; border:1px solid var(--line); border-radius:4px; background:transparent; color:var(--ink-2, var(--muted)); font-size:12px; cursor:pointer; }
 
 /* Markdown rendering in TUI messages */
-.agent-tui-msg-text {
-    line-height: 1.5;
-}
+.agent-tui-msg-text { line-height:inherit; user-select:text; }
 .agent-tui-msg-text p {
     margin: 0 0 8px 0;
 }
 .agent-tui-msg-text p:last-child {
     margin-bottom: 0;
 }
-.agent-md-code-block {
-    margin: 6px 0;
-    padding: 8px;
-    background: #1a1b26;
-    border-radius: 4px;
-    overflow-x: auto;
-    font-size: 11px;
-}
-.agent-md-code-block code {
-    font-family: inherit;
-    color: #9ece6a;
-}
-.agent-md-inline-code {
-    padding: 1px 4px;
-    background: #2f3549;
-    border-radius: 3px;
-    font-size: 11px;
-    color: #9ece6a;
-}
+.agent-md-code-block { min-width:0; max-width:100%; margin:8px 0; padding:10px; border-radius:6px; background:var(--surface-sunken, var(--soft)); overflow:auto; white-space:pre; font:12px/1.6 var(--font-mono); user-select:text; cursor:text; }
+.agent-md-code-block code { font-family:inherit; color:var(--ink, var(--text)); user-select:text; }
+.agent-md-inline-code { padding:1px 4px; border-radius:3px; background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); font:12px/1.6 var(--font-mono); user-select:text; }
 .agent-md-list {
     margin: 4px 0;
     padding-left: 20px;
@@ -4420,39 +4098,33 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-md-list li {
     margin: 2px 0;
 }
-.agent-tui-msg-text a {
-    color: #7aa2f7;
-    text-decoration: underline;
-}
+.agent-tui-msg-text a { color:var(--ink, var(--text)); text-decoration:underline; text-underline-offset:2px; }
 
-/* Textarea input for TUI */
-/* #313：随内容自动增高（JS agentTuiAutoGrow 驱动），上限 140px（原 80px 会卡死增高）后内部滚动 */
+/* JS 自动增高仍有上限；CSS 的 96px 下限不受 rows/内联旧高度影响。 */
 .agent-tui-input {
-    flex: 1;
-    min-width: 0;
-    background: #1a1b26;
-    border: 1px solid #3b4261;
-    border-radius: 6px;
-    color: #c0caf5;
-    font-size: 12px;
-    font-family: inherit;
-    padding: 6px 10px;
-    resize: none;
-    overflow-y: auto;
-    max-height: 140px;
-    line-height: 1.4;
+    display:block;
+    flex:1;
+    width:100%;
+    min-width:0;
+    min-height:96px;
+    max-height:192px;
+    padding:12px 13px;
+    border:0;
+    border-radius:12px 12px 0 0;
+    background:transparent;
+    color:var(--ink, var(--text));
+    font:14px/24px var(--font-sans);
+    resize:none;
+    overflow-y:auto;
+    user-select:text;
+    cursor:text;
 }
-.agent-tui-input:focus {
-    outline: none;
-    border-color: #7aa2f7;
-}
-.agent-tui-input::placeholder {
-    color: #565f89;
-}
+.agent-tui-input:focus { outline:none; }
+.agent-tui-input::placeholder { color:var(--ink-3, var(--faint)); }
 
 /* #284：Agent 会话内 MEDIA: 缩略图（点开大图） */
 .agent-tui-media-thumb { display:inline-block; margin:4px 6px 0 0; vertical-align:top; }
-.agent-tui-media-thumb img { max-height:120px; max-width:100%; border-radius:8px; border:1px solid rgba(255,255,255,0.14); object-fit:contain; background:rgba(15,23,42,0.6); cursor:zoom-in; }
+.agent-tui-media-thumb img { max-height:120px; max-width:100%; border-radius:8px; border:1px solid var(--line); object-fit:contain; background:var(--surface-sunken, var(--soft)); cursor:zoom-in; }
 
 /* #377：项目已被删除——停掉自动保存后的常驻提示（不自动消失，给导出/返回两个出口） */
 .canvas-gone-notice { position:fixed; left:50%; bottom:96px; z-index:190; transform:translateX(-50%); display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:color-mix(in srgb, var(--panel) 92%, transparent); box-shadow:0 22px 58px var(--shadow); backdrop-filter:blur(18px); color:var(--text); font-size:12px; font-weight:700; max-width:min(720px, calc(100vw - 40px)); }
@@ -4466,12 +4138,6 @@ button.prompt-flow-context-image { cursor:pointer; }
 .ico.is-hidden-state { opacity:.4; }
 
 /* #408 D2：消费侧进度与有序消息流。新样式只用语义 token；旧主题 token 作兼容回退。 */
-.agent-tui-card {
-    background:var(--surface, var(--card));
-    color:var(--ink, var(--text));
-    font-family:var(--font-sans);
-    font-size:var(--text-sm, .8125rem);
-}
 .agent-tui-progress {
     flex:none;
     display:grid;
@@ -4522,52 +4188,36 @@ button.prompt-flow-context-image { cursor:pointer; }
     display:flex;
     flex-direction:column;
     flex:1;
+    min-width:0;
     min-height:0;
 }
-.agent-tui-body {
-    padding:.75rem;
-    overscroll-behavior:contain;
-    overflow-anchor:none;
-}
-.agent-tui-messages { gap:.75rem; }
-.agent-tui-entry { min-width:0; flex-shrink:0; }
-.agent-tui-msg {
-    margin:0;
+/* 左侧 24px 独立热区；正文从 32px 开始，不与文字选区重叠。
+   刻度 top/宽度与压缩命中由导航模块负责，浮卡坐标由 viewport DOMRect 计算。 */
+.agent-message-navigation { position:absolute; left:0; top:0; bottom:0; z-index:2; width:24px; cursor:pointer; user-select:none; }
+.agent-message-navigation-rail,
+.agent-message-track,
+.agent-message-hitarea { position:relative; width:24px; height:100%; }
+.agent-message-tick { width:6px; height:2px; border-radius:2px; background:var(--ink-3, var(--faint)); }
+.agent-message-tick[aria-current="true"] { width:12px; background:var(--ink, var(--text)); }
+.agent-message-tick:focus-visible { outline:2px solid var(--ink, var(--text)); outline-offset:4px; }
+/* body portal：不继承浮动节点的缩放、不被节点 overflow 裁切。 */
+.agent-message-preview {
+    position:fixed;
+    z-index:190;
+    width:200px;
+    max-width:calc(100vw - 16px);
+    padding:10px 12px;
+    border:1px solid var(--line);
+    border-radius:12px;
+    background:var(--surface, var(--card));
     color:var(--ink, var(--text));
-    overflow-wrap:anywhere;
+    box-shadow:0 8px 28px var(--shadow);
+    font-family:var(--font-sans);
+    pointer-events:none;
 }
-.agent-tui-msg-user {
-    width:fit-content;
-    max-width:100%;
-    margin-left:auto;
-    padding:.5rem .75rem;
-    border:0;
-    border-radius:var(--r-md, var(--radius-card));
-    background:var(--surface-sunken, var(--soft));
-    font-size:var(--text-sm, .8125rem);
-    line-height:1.5;
-}
-.agent-tui-msg-user .agent-tui-msg-role { display:none; }
-.agent-tui-msg-assistant {
-    width:100%;
-    max-width:38em;
-    padding:0;
-    border:0;
-    border-radius:0;
-    background:transparent;
-    font-size:var(--text-md, .875rem);
-    line-height:1.6;
-    white-space:normal;
-}
-.agent-tui-msg-assistant .agent-tui-msg-text { display:block; }
-.agent-tui-msg-assistant .agent-tui-msg-text > p:first-child { text-indent:2ch; }
-.agent-tui-msg-system {
-    padding:.25rem 0;
-    border:0;
-    background:transparent;
-    color:var(--ink-2, var(--muted));
-    font-size:var(--text-xs, .75rem);
-}
+.agent-message-preview-source { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:650; line-height:1.6; }
+.agent-message-preview-text { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; max-height:3.2em; margin:4px 0 0; overflow:hidden; overflow-wrap:anywhere; color:var(--ink-2, var(--muted)); font-size:12px; line-height:1.6; }
+.agent-tui-entry { min-width:0; flex-shrink:0; }
 .agent-tui-tool-group {
     margin:0;
     padding:0;
@@ -4660,36 +4310,65 @@ button.prompt-flow-context-image { cursor:pointer; }
     line-height:1.5;
     white-space:nowrap;
 }
-.agent-tui-back-latest[hidden] { display:none; }
 .agent-tui-progress-stop:focus-visible,
 .agent-tui-step-jump:focus-visible,
 .agent-tui-back-latest:focus-visible,
 .agent-tui-tool-group > summary:focus-visible,
-.agent-tui-thought > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.agent-tui-thought > summary:focus-visible,
+.agent-tui-btn:focus-visible,
+.agent-tui-setting-toolbar :is(button, select):focus-visible,
+.agent-tui-more > :is(summary, button):focus-visible,
+button.agent-tui-more:focus-visible { outline:2px solid var(--ink, var(--text)); outline-offset:2px; }
 
-/* #407 遗留：头部文字钮按内容定宽，不再被 28px 图标钮宽度和 flex 收缩挤成竖排。
-   最小 330px 节点用两行头部：标题/状态一行，动作一行；按钮内部始终不换行。 */
-.image-node.agent-smart-node { display:flex; flex-direction:column; }
-.image-node.agent-smart-node > .node-body { flex:1; height:auto; min-height:0; }
+/* 唯一会话头：标题、真实状态、更多。宽度与停靠/浮动无关。 */
 .image-node.agent-smart-node > .node-head {
     flex:none;
     display:grid;
-    grid-template-columns:minmax(0, 1fr) auto;
+    grid-template-columns:minmax(0, 1fr) auto auto;
     align-items:center;
-    gap:.375rem .5rem;
+    gap:8px;
     height:auto;
-    min-height:2.125rem;
-    padding:.375rem .5rem;
+    min-height:66px;
+    padding:10px 16px;
+    user-select:none;
+    cursor:grab;
 }
-.image-node.agent-smart-node > .node-head .node-title { min-width:0; }
-.image-node.agent-smart-node > .node-head .node-head-meta { min-width:0; max-width:8rem; overflow:hidden; }
-.image-node.agent-smart-node > .node-head .node-actions {
-    grid-column:1 / -1;
-    grid-row:2;
-    justify-content:flex-end;
-    min-width:0;
-    flex-shrink:0;
+.image-node.agent-smart-node > .node-head .node-title { display:block; min-width:0; color:var(--ink, var(--text)); font-size:14px; font-weight:600; letter-spacing:0; text-transform:none; }
+.image-node.agent-smart-node > .node-head .node-head-meta { flex:none; min-width:0; max-width:8rem; overflow:hidden; }
+.image-node.agent-smart-node > .node-head .node-actions { display:flex; flex:none; flex-wrap:wrap; justify-content:flex-end; gap:4px; min-width:0; max-width:100%; }
+/* 兼容尚未搬入更多的外头按钮，不能让窄节点溢出。 */
+.image-node.agent-smart-node > .node-head:has(.node-actions > .agent-tui-btn) { grid-template-columns:minmax(0, 1fr) auto; }
+.image-node.agent-smart-node > .node-head .node-actions:has(> .agent-tui-btn) { grid-column:1 / -1; }
+.agent-tui-more { position:relative; flex:none; }
+button.agent-tui-more,
+.agent-tui-more > :is(summary, button) { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:5px; border:0; border-radius:6px; background:transparent; color:var(--ink-2, var(--muted)); list-style:none; cursor:pointer; }
+.agent-tui-more > summary::-webkit-details-marker { display:none; }
+button.agent-tui-more:hover,
+.agent-tui-more > :is(summary, button):hover { background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); }
+.agent-tui-more svg { width:18px; height:18px; }
+.agent-tui-more > :is([data-agent-more-content], .agent-tui-more-menu) {
+    position:absolute;
+    top:calc(100% + 8px);
+    right:0;
+    z-index:6;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    width:224px;
+    max-width:calc(100vw - 48px);
+    max-height:min(380px, 60dvh);
+    padding:8px;
+    overflow:auto;
+    border:1px solid var(--line);
+    border-radius:9px;
+    background:var(--surface, var(--card));
+    color:var(--ink, var(--text));
+    box-shadow:0 8px 28px var(--shadow);
 }
+.agent-tui-more [data-agent-more-content] :is(button, select),
+.agent-tui-more-menu :is(button, select) { flex:none; width:100%; max-width:100%; height:auto; min-height:30px; padding:6px 8px; text-align:left; justify-content:flex-start; font-size:12px; line-height:1.5; }
+.agent-tui-more :is(button, select):hover { background:var(--surface-sunken, var(--soft)); }
+.image-node.agent-smart-node.dock-collapsed > .node-head :is(.node-title, .node-head-meta, .node-actions) { display:none; }
 .agent-dock-btn,
 .agent-chat-frame-btn,
 .agent-ref-frame-btn {
@@ -4704,8 +4383,19 @@ button.prompt-flow-context-image { cursor:pointer; }
     word-break:normal;
 }
 .agent-dock-node.dock-collapsed .node-head { display:flex; min-height:0; padding:0; }
+@media (max-width:480px) {
+    .image-node.agent-smart-node > .node-head { padding:10px; gap:6px; }
+    .agent-tui-composer { padding:0 10px 10px; }
+    .agent-tui-body { padding-right:12px; }
+    .agent-tui-setting-toolbar { gap:2px; }
+    .agent-tui-model-select { max-width:150px; }
+    .agent-tui-attach-row { padding:6px 0; }
+}
 @media (prefers-reduced-motion:reduce) {
-    .agent-tui-progress-fill { transition:none; }
+    .agent-tui-progress-fill,
+    .agent-tui-btn { transition:none; }
+    .agent-tui-status-busy,
+    .agent-tui-attach-working svg { animation:none; }
 }
 
 /* #409 D3: per-input references and @ search; no canvas-node persistence. */

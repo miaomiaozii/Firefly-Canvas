@@ -96,7 +96,7 @@ function createAgentNode(x, y, options={}){
         type:NODE_TYPE_AGENT,
         x,
         y,
-        w:382,
+        w:480,
         h:360,
         title:'Agent',
         agentGoal:''
@@ -511,7 +511,7 @@ const LOCAL_EDIT_NODE_H = 520;
 const CREATE_MENU_NODE_SIZE = {
     prompt: { w: 316, h: 240 },            // 与 createPromptNode 一致
     conversation: { w: 390, h: 430 },      // 与 createConversationNode 一致
-    agent: { w: 382, h: 360 },             // 与 createAgentNode 一致
+    agent: { w: 480, h: 360 },             // 与 createAgentNode 一致
     'local-edit': { w: LOCAL_EDIT_NODE_W, h: LOCAL_EDIT_NODE_H },
     loop: { w: 340, h: 168 },              // 与 createLoopNode 一致
 };

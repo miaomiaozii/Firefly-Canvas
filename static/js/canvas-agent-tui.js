@@ -17,32 +17,105 @@ function isSmartAgentTaskNode(node){
 // Agent TUI state management
 const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model, autonomy }
 
+// All host views are transient. Persisted settings/bindings belong to the canvas receiver.
+function createAgentHostView() {
+    return {
+        messages: [], toolActivities: new Map(), status: 'idle', model: '', autonomy: 'cautious',
+        thinkingVisible: false, pendingImages: [], attachWorking: '', draft: '', composing: false,
+        pendingRerender: false, scrollState: null, inputFocus: null, nodeRefsDraft: null,
+        thinking: [], timeline: null, timelineMessages: null, timelineTools: null, timelineSeq: 0,
+        timelineSourceMessages: null, timelineSourceTools: null, toolGroupExpanded: {}, thoughtExpanded: {},
+        _timelineContent: null, _turnTextMessage: null, _turnSeq: 0, _turnFailed: false, _aborted: false,
+        lastSeq: 0, _replayBuffer: [], _replayInFlight: false, _applyingReplay: false,
+        confirm: null, confirmModalShown: null, stopPending: false, queuedInputs: new Set(),
+        effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
+    };
+}
+function agentNodeHost(node) { return node.agentCli || 'pi'; } // legacy nodes belong only to Pi
+function agentHostSetting(node, host) {
+    if (node.agentHostSettings && node.agentHostSettings[host]) return node.agentHostSettings[host];
+    return { model: host === agentNodeHost(node) ? (node.model || '') : '', effort: null };
+}
 function getAgentTuiState(nodeId) {
     if (!agentTuiState.has(nodeId)) {
+        const node = canvasState.nodes.find(n => n.id === nodeId);
+        const host = node ? agentNodeHost(node) : 'pi';
         agentTuiState.set(nodeId, {
-            socket: null,
-            messages: [],
-            status: 'idle',
-            model: '',
-            autonomy: 'cautious',
-            toolActivities: new Map(),
-            thinkingVisible: false,
-            pendingImages: [], // #268：待随下一条 prompt 发出的附件（图片/视频 contact sheet/音频波形卡 dataURL）
-            attachWorking: '', // #317：当前正在处理中的附件名（卡片进度提示）
-            // #280：重连退避状态（指数退避 + 连续失败上限，见 connectAgentWebSocket）
-            retryCount: 0,           // 连续连接失败次数
-            reconnectTimer: null,    // 待执行的退避定时器（setTimeout 返回值）
-            reconnectStopped: false, // 触顶后停止自动重连，等待手动「重试连接」
-            lastError: '',           // 后端失败原因（error 事件 message），供横幅展示
-            closing: false,          // cleanupAgentTuiState 关闭前置位，onclose 据此不安排重连
-            draft: '',               // #314：输入草稿（任何重建后恢复；发送/steer/followup 清空）
-            composing: false,        // #314：IME 组合态标记——组合期间推迟节点重建，避免中文输入被杀
-            pendingRerender: false,  // #314：组合期间被推迟的重建标记
-            scrollState: null,       // #314：{scrollTop, atBottom} 阅读位置保留
+            ...createAgentHostView(), socket: null, activeHost: host, viewHost: host, hostViews: new Map(),
+            viewEpoch: 0, retryCount: 0, reconnectTimer: null, reconnectStopped: false, closing: false,
         });
     }
     agentNodeRefsInit(agentTuiState.get(nodeId));
     return agentTuiState.get(nodeId);
+}
+function agentIsReadonly(state) { return state.viewHost !== state.activeHost; }
+function agentCaptureComposer(state, nodeId) {
+    const input = agentNodeRefsInput(nodeId);
+    if (input && !input.disabled && !state.viewNeedsMount) {
+        state.draft = input.value;
+        state.inputFocus = { focused: document.activeElement === input, start: input.selectionStart,
+            end: input.selectionEnd, direction: input.selectionDirection, scrollTop: input.scrollTop };
+    }
+    if (state.scrollBinding) captureAgentScroll(state, state.scrollBinding.body);
+}
+function agentChangeHostView(nodeId, state, host) {
+    agentCaptureComposer(state, nodeId);
+    disposeAgentScroll(state);
+    state.hostViews.set(state.viewHost, Object.fromEntries(Object.keys(createAgentHostView()).map(key => [key, state[key]])));
+    state.hostViews.get(state.viewHost)._replayInFlight = false;
+    const view = state.hostViews.get(host) || createAgentHostView();
+    Object.assign(state, view);
+    agentNodeRefsInit(state);
+    state.viewHost = host;
+    state.viewNeedsMount = true;
+    state.viewEpoch++;
+    state._replayInFlight = false;
+    state._replayBuffer = [];
+    closeAgentModelPicker(state);
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    state.retryCount = 0;
+    state.reconnectStopped = false;
+    // Invalidate callbacks BEFORE close; late old-host frames must never reach the new view.
+    const socket = state.socket;
+    state.socket = null;
+    if (socket) socket.close();
+    queueMicrotask(() => {
+        if (agentTuiState.get(nodeId) !== state || state.viewHost !== host || state.closing) return;
+        for (const snapshot of state.nodeRefsDraft.pending.values()) {
+            if (!snapshot.deferredSettlement) continue;
+            const { receipt, error, uncertain } = snapshot.deferredSettlement;
+            delete snapshot.deferredSettlement;
+            agentNodeRefsSettle(nodeId, state, snapshot, receipt, error, uncertain);
+        }
+    });
+}
+function agentSyncHostView(node, state) {
+    const host = agentNodeHost(node);
+    if (host === state.activeHost) return;
+    const wasReadonly = agentIsReadonly(state);
+    state.activeHost = host;
+    if (!wasReadonly || state.viewHost === host) agentChangeHostView(node.id, state, host);
+    else { // An external authoritative switch must also invalidate the old active socket.
+        state.viewEpoch++;
+        const socket = state.socket;
+        state.socket = null;
+        if (socket) socket.close();
+    }
+}
+function agentParametersLocked(state) {
+    const active = agentIsReadonly(state) ? state.hostViews.get(state.activeHost) : state;
+    return Boolean(state.settingsPending || state.hostConfirmPending || state.composing || state.attachWorking || (active && (
+        ['busy', 'starting', 'connecting', 'retrying', 'waiting_confirm', 'stopping', 'reconnecting'].includes(active.status)
+        || active.confirm || active.stopPending || active._replayInFlight || active.queuedInputs.size || active.nodeRefsDraft?.pending.size)));
+}
+async function agentViewHost(nodeId, projectId, host) {
+    const state = getAgentTuiState(nodeId);
+    if (state.composing || state.settingsPending || state.attachWorking || host === state.viewHost) return;
+    agentChangeHostView(nodeId, state, host);
+    renderAgentNode(nodeId);
+    state.projectId = projectId;
+    replayAgentEvents(nodeId, state);
 }
 
 // #409: references belong to this input draft, never to a saved canvas node.
@@ -76,6 +149,7 @@ function syncAgentInputNodeRefs(nodeId) {
     if (!target) return;
     if (nodeId) agentNodeRefsRuntime.activeId = target.id;
     const state = getAgentTuiState(target.id), refs = agentNodeRefsInit(state);
+    if (agentIsReadonly(state)) return;
     const selected = [...new Set(canvasState.selectedIds && canvasState.selectedIds.length
         ? canvasState.selectedIds : (canvasState.selectedId ? [canvasState.selectedId] : []))]
         .filter(id => id !== target.id && canvasState.nodes.some(n => n.id === id));
@@ -95,7 +169,7 @@ function agentNodeRefsRefresh(nodeId) {
 function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
     const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
     const snapshot = {
-        id: `input-${Date.now()}-${++agentNodeRefsRuntime.sequence}`, kind, message,
+        id: `input-${Date.now()}-${++agentNodeRefsRuntime.sequence}`, kind, message, host: state.viewHost,
         draft: state.nodeRefsControlDraft !== undefined ? state.nodeRefsControlDraft : message,
         images: images.slice(), selected: refs.selected.slice(), manual: refs.manual.slice(),
         dismissed: new Set(refs.dismissed), previousStatus: state.status, turn: state._turnSeq || 0,
@@ -115,16 +189,23 @@ function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
     };
     agentAppendMessage(state, snapshot.row);
     if (kind === 'prompt') state.status = 'busy';
+    else state.queuedInputs.add(snapshot.id);
     refs.pending.set(snapshot.id, snapshot);
     snapshot.timer = setTimeout(() => agentNodeRefsSettle(nodeId, state, snapshot, null, tr('smart.agentRefUnconfirmed'), true), 30000);
     return snapshot;
 }
 function agentNodeRefsSettle(nodeId, state, snapshot, receipt, error = '', uncertain = false) {
     if (agentTuiState.get(nodeId) !== state) return;
+    if (snapshot.host !== state.viewHost) {
+        snapshot.deferredSettlement = { receipt, error, uncertain };
+        clearTimeout(snapshot.timer);
+        return;
+    }
     const refs = agentNodeRefsInit(state);
     if (!refs.pending.has(snapshot.id)) return;
     // A timeout is not a rejection: retain correlation for late REST/WS receipts.
     if (!uncertain) refs.pending.delete(snapshot.id);
+    if (!receipt && !uncertain) state.queuedInputs.delete(snapshot.id);
     clearTimeout(snapshot.timer);
     if (receipt) {
         if (refs.error === snapshot.row.delivery_error) refs.error = '';
@@ -201,6 +282,7 @@ function agentNodeRefsApplyEvent(nodeId, event) {
     }
     if (event.type === 'queued_input' || (event.type === 'user_prompt' && (event.request_id || (Array.isArray(event.node_refs) && event.node_refs.length)))) {
         // Reconnect may replay the already-optimistic row; reconcile by per-input identity.
+        if (event.type === 'queued_input') state.queuedInputs.add(event.request_id || `queued:${event.seq}`);
         const existing = event.request_id && state.messages.find(msg => msg.request_id === event.request_id);
         const pending = refs.pending.get(event.request_id);
         const canonical = Array.isArray(event.node_refs) ? event.node_refs : [];
@@ -329,6 +411,7 @@ function agentNodeRefsBindPanel(root, nodeId) {
 }
 function agentNodeRefsBind(el, node) {
     const nodeId = node.id, state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    if (agentIsReadonly(state)) return;
     const input = el.querySelector('[data-agent-tui-input]');
     const panel = el.querySelector('[data-agent-refs]');
     if (panel) agentNodeRefsBindPanel(panel, nodeId);
@@ -612,16 +695,7 @@ function connectAgentWebSocket(nodeId, projectId, options = {}) {
     const state = getAgentTuiState(nodeId);
     // #318 票 C：存 projectId——session 事件触发的 events 回放需要拼 GET URL。
     state.projectId = projectId;
-    // #285：首次连接时异步拉取会话模型池，到位后重渲染以替换回退池。
-    if (!state.chatModelsFetched) {
-        state.chatModelsFetched = true;
-        Promise.resolve().then(() => fetchAgentChatModels(projectId)).then(() => {
-            try { renderAgentNode(nodeId); } catch (e) {
-                // #348: 后台异步重渲染（模型池拉取完成后）；失败不影响节点本身，下次渲染会重试。
-                console.warn('[agent-tui] 模型池更新后重渲染失败', e);
-            }
-        }).catch(() => { state.chatModelsFetched = false; });
-    }
+    if (agentIsReadonly(state)) return null; // History browsing never starts a host.
     // CONNECTING(0)/OPEN(1) 都算「连接在途」：不再新建（重复建连正是重连风暴的根源之一）。
     if (state.socket && Number(state.socket.readyState) <= 1) {
         return state.socket;
@@ -672,17 +746,15 @@ function openAgentWebSocket(nodeId, projectId) {
 
     // #280：本实例已被新连接（如手动「重试连接」）顶替时，忽略它迟到的事件——
     // 否则旧实例的 close/error 会误触发一次退避排程、或把新连接的状态改回 error。
-    const isStale = () => Boolean(state.socket) && state.socket !== socket;
+    const epoch = state.viewEpoch, socketHost = state.activeHost;
+    const isStale = () => state.socket !== socket || state.viewEpoch !== epoch || state.activeHost !== socketHost;
 
     socket.onmessage = (event) => {
         if (isStale()) return;
-        try {
-            const data = JSON.parse(event.data);
-            handleAgentEvent(nodeId, data);
-        } catch (e) {
-            // #348: 服务端发来的畸形事件，只跳过该条；连接与后续事件不受影响。
-            console.error('Failed to parse agent event:', e);
-        }
+        let data;
+        try { data = JSON.parse(event.data); }
+        catch (e) { console.error('Failed to parse agent event:', e); return; }
+        handleAgentEvent(nodeId, data);
     };
 
     socket.onclose = () => {
@@ -731,10 +803,25 @@ function replayAgentEvents(nodeId, state) {
     state._replayBuffer = state._replayBuffer || [];
     const since = state.lastSeq || 0;
     let generation = state._timelineGeneration || 0;
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events?since=${since}`)
-        .then(r => (r && r.ok) ? r.json() : { events: [] })
+    const epoch = state.viewEpoch, host = state.viewHost;
+    const current = () => agentTuiState.get(nodeId) === state && state.viewEpoch === epoch
+        && generation === (state._timelineGeneration || 0) && !state.closing;
+    fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events?since=${since}&host=${encodeURIComponent(host)}`)
+        .then(async r => {
+            const data = await r.json();
+            if (!r.ok) throw new Error(agentNodeRefsError(data, `HTTP ${r.status}`));
+            if (!Array.isArray(data.events)) throw new Error('Invalid Agent events response');
+            return data;
+        })
+        .catch(e => {
+            if (!current()) return null;
+            state.eventsError = `读取宿主历史失败：${e.message || e}`;
+            console.warn('[agent-tui] 事件回放请求失败', e);
+            return null;
+        })
         .then(d => {
-            if (generation !== (state._timelineGeneration || 0) || state.closing) return;
+            if (!d || !current()) return;
+            state.eventsError = '';
             if (!since && Array.isArray(d.events)) {
                 state.messages = [];
                 state.toolActivities.clear();
@@ -745,7 +832,7 @@ function replayAgentEvents(nodeId, state) {
             try {
                 for (const rec of (d.events || [])) {
                     const ev = rec && rec.event;
-                    if (!ev) continue;
+                    if (!ev || (ev.host || rec.host || 'pi') !== host) continue;
                     const s = Number(rec.seq || ev.seq || 0);
                     if (s && s > (state.lastSeq || 0)) {
                         state.lastSeq = s;
@@ -754,12 +841,8 @@ function replayAgentEvents(nodeId, state) {
                 }
             } finally { state._applyingReplay = false; }
         })
-        .catch(e => {
-            // #348: 事件回放请求失败（后台补偿通道）；finally 里本地缓冲事件仍会应用。
-            console.warn('[agent-tui] 事件回放请求失败', e);
-        })
         .finally(() => {
-            if (generation !== (state._timelineGeneration || 0) || state.closing) return;
+            if (!current()) return;
             state._replayInFlight = false;
             const buf = state._replayBuffer || [];
             state._replayBuffer = [];
@@ -770,12 +853,13 @@ function replayAgentEvents(nodeId, state) {
                 if (s) state.lastSeq = s;
                 applyAgentEventBody(nodeId, ev);
             }
+            renderAgentNode(nodeId);
         });
 }
 
 function handleAgentEvent(nodeId, event) {
     const state = getAgentTuiState(nodeId);
-    const eventType = event.type;
+    if (agentIsReadonly(state) || (event.host || 'pi') !== state.viewHost) return;
 
     // #318 票 C：seq 去重（live/回放共用一条链）；回放在途先缓冲防丢缺口。
     const seq = Number(event.seq);
@@ -802,7 +886,13 @@ function applyAgentEventBody(nodeId, event) {
             agentAppendMessage(state, { role: 'user', text: String(event.text || '') });
             break;
         case 'session':
-            state.status = 'idle';
+            state.status = event.status === 'running' || event.status === 'stopped' || event.status === 'aborted' ? 'idle' : (event.status || 'idle');
+            if (event.effort_state) state.effortState = event.effort_state;
+            if (['idle', 'running', 'stopped', 'crashed', 'aborted'].includes(event.status)) {
+                state.stopPending = false;
+                state.stopStatusError = '';
+                state.queuedInputs.clear();
+            }
             // #280：后端确认会话就绪 = 连接成功，清退避状态（失败计数/触顶标志/失败原因）。
             state.retryCount = 0;
             state.reconnectStopped = false;
@@ -825,9 +915,14 @@ function applyAgentEventBody(nodeId, event) {
             state._turnSeq = (state._turnSeq || 0) + 1; // #322 票 D：工具段分组边界
             break;
         case 'agent_end':
+            if (event.willRetry !== true) {
+                state.stopStatusError = '';
+                state.stopPending = false;
+                state.queuedInputs.clear();
+            }
             finalizeAgentStreamingTurn(state);
-            if (!state._applyingReplay && !state._turnFailed && !state._aborted && !['crashed', 'failed', 'error'].includes(state.status)) agentMarkBackgroundCompletion();
-            state.status = 'idle';
+            if (event.willRetry !== true && !state._applyingReplay && !state._turnFailed && !state._aborted && !['crashed', 'failed', 'error'].includes(state.status)) agentMarkBackgroundCompletion();
+            state.status = event.willRetry === true ? 'retrying' : 'idle';
             break;
         case 'turn_start':
             finalizeAgentStreamingTurn(state);
@@ -837,7 +932,7 @@ function applyAgentEventBody(nodeId, event) {
             state.status = 'busy';
             break;
         case 'turn_end': {
-            state.status = 'idle';
+            if (!state.stopPending && !['busy', 'retrying'].includes(state.status)) state.status = 'idle';
             const msg = event.message || {};
             if (msg.stopReason === 'aborted') state._aborted = true;
             const content = msg.content || [];
@@ -952,6 +1047,8 @@ function applyAgentEventBody(nodeId, event) {
             }
             break;
         case 'process_exited':
+            state.stopPending = false;
+            state.queuedInputs.clear();
             state._turnFailed = true;
             state.status = 'crashed';
             finalizeAgentStreamingTurn(state);
@@ -963,7 +1060,7 @@ function applyAgentEventBody(nodeId, event) {
             // #357：确认门移到服务端后，画布收到确认事件即弹 ffDialog（与 #347 删除
             // 确认同一机制、danger 样式）；卡片内联批准/取消按钮保留作模态关闭后的
             // 兑底——两路都走 sendAgentConfirm，state.confirm 清空后互斥不会双发。
-            if (window.ffDialog && state.confirmModalShown !== event.confirm_id) {
+            if (!agentIsReadonly(state) && !state._applyingReplay && window.ffDialog && state.confirmModalShown !== event.confirm_id) {
                 state.confirmModalShown = event.confirm_id;
                 window.ffDialog.ask({
                     title: '确认 Agent 操作',
@@ -985,7 +1082,7 @@ function applyAgentEventBody(nodeId, event) {
             // 上面 ask().then 的 state.confirm 守卫保证不会误发决议）。
             if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
                 state.confirm = null;
-                if (state.status === 'waiting_confirm') state.status = 'idle';
+                if (state.status === 'waiting_confirm') state.status = 'busy';
                 if (window.ffDialog && window.ffDialog.close) window.ffDialog.close();
                 const outcome = event.approved ? '已批准'
                     : (event.reason === 'timeout' ? '已超时' : '已拒绝');
@@ -1020,6 +1117,7 @@ function applyAgentEventBody(nodeId, event) {
 }
 
 function sendAgentPrompt(nodeId, projectId, message, images = []) {
+    if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'prompt', {
         nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'prompt', message, images),
     });
@@ -1056,6 +1154,7 @@ async function convertAgentMediaAttachment(file) {
 
 async function handleAgentAttachments(nodeId, projectId, files) {
     const state = getAgentTuiState(nodeId);
+    if (agentIsReadonly(state)) return;
     if (!Array.isArray(state.pendingImages)) state.pendingImages = [];
     const ATTACH_MAX_BYTES = 8 * 1024 * 1024; // #317：图片 dataURL 直发无上限→大文件卡死/撞请求体上限；统一 8MB 拒收线（dataURL 膨胀后≈11MB）
     for (const file of files) {
@@ -1099,6 +1198,7 @@ async function handleAgentAttachments(nodeId, projectId, files) {
 }
 
 function sendAgentCommand(nodeId, projectId, command, options = {}) {
+    if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     if (options.nodeRefsSubmission) return agentNodeRefsTransport(nodeId, projectId, options.nodeRefsSubmission);
     const state = getAgentTuiState(nodeId);
     const { body, wsPayload, optimistic, onSuccess, onFailure } = options;
@@ -1147,23 +1247,50 @@ function sendAgentCommand(nodeId, projectId, command, options = {}) {
 }
 
 function sendAgentSteer(nodeId, projectId, message) {
+    if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'steer', {
         nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'steer', message),
     });
 }
 
 function sendAgentFollowUp(nodeId, projectId, message) {
+    if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'follow_up', {
         nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message),
     });
 }
 
+async function pollAgentStopStatus(nodeId, projectId, state, epoch) {
+    if (agentTuiState.get(nodeId) !== state || state.viewEpoch !== epoch || !state.stopPending || state.closing) return;
+    try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/status`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+        if (typeof data.status !== 'string' || data.host !== state.activeHost) throw new Error('宿主停止状态响应无效');
+        if (agentTuiState.get(nodeId) !== state || state.viewEpoch !== epoch || state.closing) return;
+        if (data.effort_state) state.effortState = data.effort_state;
+        state.stopStatusError = '';
+        const idle = ['idle', 'running'].includes(data.status) && !state.queuedInputs.size && !state.confirm && state.status !== 'retrying';
+        if (idle || ['stopped', 'crashed', 'aborted'].includes(data.status)) {
+            state.stopPending = false;
+            state.queuedInputs.clear();
+            state.status = ['running', 'stopped', 'aborted'].includes(data.status) ? 'idle' : data.status;
+        } else state.stopStatusTimer = setTimeout(() => pollAgentStopStatus(nodeId, projectId, state, epoch), 750);
+    } catch (error) {
+        if (agentTuiState.get(nodeId) !== state || state.viewEpoch !== epoch || state.closing) return;
+        state.stopStatusError = `停止尚未确认：${error.message || error}`;
+    }
+    renderAgentNode(nodeId);
+}
 function sendAgentAbort(nodeId, projectId) {
     sendAgentCommand(nodeId, projectId, 'abort', {
         wsPayload: { type: 'abort' },
-        // 复位 idle 同步做（否则按钮卡在「运行中」），但「已停止」这句必须等请求真送达。
-        optimistic: (state) => { state.status = 'idle'; state._aborted = true; },
-        onSuccess: (state) => agentAppendMessage(state, { role: 'system', text: '⏹ aborted' }),
+        // Receipt confirms delivery only. Parameter changes wait for terminal host feedback.
+        optimistic: (state) => { state.stopPending = true; state.status = 'stopping'; state._aborted = true; },
+        onSuccess: (state) => {
+            agentAppendMessage(state, { role: 'system', text: '⏹ 停止请求已发送，等待宿主结束' });
+            pollAgentStopStatus(nodeId, projectId, state, state.viewEpoch);
+        },
         onFailure: (state) => agentAppendMessage(state, { role: 'system', text: '⚠️ 停止请求未送达，agent 可能仍在生成' }),
     });
 }
@@ -1178,6 +1305,7 @@ function agentSettingsHistoryFingerprint(state) {
 
 function beginAgentSettingsRequest(nodeId, resetHistory = false) {
     const state = getAgentTuiState(nodeId);
+    if (state.settingsPending) state.settingsPending = false;
     state.settingsRequestSeq = (state.settingsRequestSeq || 0) + 1;
     return {
         state, seq: state.settingsRequestSeq,
@@ -1315,6 +1443,202 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
     }
 }
 
+// The HTTP canvas receiver does not rebuild an existing docked element. Both
+// ordinary settings and settings undo must adopt runtime evidence and refresh it.
+function applyAgentHostSettingsAuthority(nodeId, data) {
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    if (!node) throw new Error('权威设置对应的 Agent 节点已不存在');
+    const state = getAgentTuiState(nodeId);
+    agentSyncHostView(node, state);
+    const activeView = agentIsReadonly(state) ? state.hostViews.get(state.activeHost) : state;
+    if (data.effort_state) activeView.effortState = data.effort_state;
+    renderAgentNode(nodeId);
+}
+
+// #421/#424: one atomic settings request, one authoritative canvas adoption.
+async function setAgentHostSettings(nodeId, projectId, setting) {
+    const state = getAgentTuiState(nodeId);
+    if (agentParametersLocked(state)) return false;
+    const request = beginAgentSettingsRequest(nodeId);
+    state.settingsPending = true;
+    state.settingsError = '';
+    renderAgentNode(nodeId);
+    try {
+        const result = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/settings`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: setting.host, model: setting.model, effort: setting.effort, user_edit: true }),
+        }).then(async response => {
+            const data = await response.json();
+            if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+            if (!data || typeof data !== 'object') throw new Error('宿主设置响应无效');
+            return { data };
+        }).catch(error => {
+            if (isCurrentAgentSettingsRequest(nodeId, request)) {
+                state.settingsError = `Agent 参数设置失败：${error.message || error}`;
+                window.ffToast.error(state.settingsError);
+            }
+            return { error };
+        });
+        if (result.error || !isCurrentAgentSettingsRequest(nodeId, request)) return false;
+        const data = result.data;
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['agentCli', 'agentHostSettings', 'model'])) {
+            state.settingsError = '权威画布未接受设置，请刷新后重试';
+            window.ffToast.error(state.settingsError);
+            return false;
+        }
+        applyAgentHostSettingsAuthority(nodeId, data);
+        return true;
+    } finally {
+        if (isCurrentAgentSettingsRequest(nodeId, request)) {
+            state.settingsPending = false;
+            renderAgentNode(nodeId);
+        }
+    }
+}
+async function agentSelectHost(nodeId, projectId, host) {
+    const state = getAgentTuiState(nodeId);
+    if (host === state.activeHost || agentParametersLocked(state)) return;
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const sourceHost = state.activeHost;
+    const sourceSeq = state.settingsRequestSeq;
+    const binding = node.agentHostSessions && node.agentHostSessions[host];
+    const known = Boolean(binding && (binding.extSessionId || binding.branches?.length));
+    state.hostConfirmPending = true;
+    renderAgentNode(nodeId);
+    const ok = await window.ffDialog.ask({
+        title: known ? `切回 ${host === 'pi' ? 'Pi' : 'Codex'} 会话？` : `为 ${host === 'pi' ? 'Pi' : 'Codex'} 新开独立会话？`,
+        message: known ? '恢复此宿主保存的原生会话与节点参数，可继续对话。另一宿主的会话保留。'
+            : '每个宿主各保留一条独立会话；历史、原生 ID 和上下文不会跨宿主复用。旧宿主会话保留，可只读查看或切回继续。',
+        confirmText: known ? '恢复会话' : '确认新开', cancelText: '取消',
+    });
+    if (agentTuiState.get(nodeId) !== state || state.closing) return;
+    state.hostConfirmPending = false;
+    renderAgentNode(nodeId);
+    if (!ok || agentParametersLocked(state)) return;
+    const live = canvasState.nodes.find(n => n.id === nodeId);
+    if (!live || agentNodeHost(live) !== sourceHost || state.settingsRequestSeq !== sourceSeq) return;
+    return setAgentHostSettings(nodeId, projectId, { host, ...agentHostSetting(live, host) });
+}
+function agentEffortHint(state, setting) {
+    const evidence = state.effortState;
+    if (evidence && evidence.effective !== null && evidence.effective !== undefined && state.viewHost !== 'codex') {
+        return `思考已生效：${evidence.effective} · 来源：${evidence.source}`;
+    }
+    const label = evidence && evidence.submitted !== null && evidence.submitted !== undefined ? '已提交' : '已设置';
+    return `${setting.effort === null ? '跟随宿主' : `思考 ${setting.effort} ${label}`} · 生效未确认${evidence?.source ? ` · 来源：${evidence.source}` : '（尚无宿主回读）'}`;
+}
+function closeAgentModelPicker(state) {
+    const picker = state.modelPicker;
+    if (!picker) return;
+    state.modelPicker = null;
+    picker.dialog.close();
+    picker.dialog.remove();
+}
+function agentCapabilitiesValid(data, host) {
+    return data && data.host === host && ['available', 'unavailable'].includes(data.status)
+        && Array.isArray(data.models) && data.models.every(m => m && typeof m.id === 'string' && typeof m.name === 'string')
+        && data.defaults && (data.defaults.model === null || typeof data.defaults.model === 'string')
+        && (data.defaults.effort === null || typeof data.defaults.effort === 'string')
+        && data.selection && typeof data.selection.model === 'string' && Array.isArray(data.selection.efforts)
+        && data.selection.efforts.every(e => typeof e === 'string')
+        && (typeof data.selection.source === 'string' || (data.selection.source && typeof data.selection.source === 'object'
+            && Object.values(data.selection.source).every(value => typeof value === 'string')));
+}
+async function loadAgentPickerCapabilities(nodeId, projectId, picker) {
+    const state = getAgentTuiState(nodeId), seq = ++picker.seq;
+    picker.loading = true;
+    picker.error = '';
+    renderAgentModelPicker(nodeId, projectId, picker);
+    try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/capabilities?host=${encodeURIComponent(picker.host)}&model=${encodeURIComponent(picker.model)}`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+        if (!agentCapabilitiesValid(data, picker.host) || (data.status === 'available' && picker.model && data.selection.model !== picker.model)) throw new Error('宿主能力响应无效');
+        if (state.modelPicker !== picker || seq !== picker.seq || state.closing) return;
+        picker.capabilities = data;
+        if (data.status !== 'available') picker.error = data.error?.message || '宿主能力不可用，不能确认模型或思考档位';
+    } catch (error) {
+        if (state.modelPicker !== picker || seq !== picker.seq || state.closing) return;
+        picker.capabilities = null;
+        picker.error = `读取宿主能力失败：${error.message || error}`;
+    } finally {
+        if (state.modelPicker === picker && seq === picker.seq && !state.closing) {
+            picker.loading = false;
+            renderAgentModelPicker(nodeId, projectId, picker);
+        }
+    }
+}
+function renderAgentModelPicker(nodeId, projectId, picker) {
+    const cap = picker.capabilities, available = cap && cap.status === 'available';
+    const options = [{ id: '', name: '跟随宿主' }, ...(cap ? cap.models : [])];
+    if (picker.model && !options.some(m => m.id === picker.model)) options.push({ id: picker.model, name: `${picker.model}（已保存，未验证）` });
+    const efforts = available ? cap.selection.efforts.filter(e => e.toLowerCase() !== 'ultra') : [];
+    if (picker.confirming) {
+        // The picker is in the native top layer. A body-level ffDialog would be inert behind it.
+        picker.dialog.innerHTML = `<h3>新模型不支持当前思考档位</h3>
+            <p>当前 ${escapeHtml(picker.effort)} 不能用于所选模型。确认后将模型和“思考跟随宿主”组合提交；宿主默认无法验证时会明确失败，不会静默降档。</p>
+            <div class="agent-fork-actions"><button type="button" data-agent-picker-mismatch-cancel>取消</button><button type="button" data-agent-picker-apply>跟随宿主并切换</button></div>`;
+        const cancel = picker.dialog.querySelector('[data-agent-picker-mismatch-cancel]');
+        cancel.addEventListener('click', () => {
+            picker.confirming = false;
+            renderAgentModelPicker(nodeId, projectId, picker);
+            picker.dialog.querySelector('[data-agent-picker-apply]').focus();
+        });
+        picker.dialog.querySelector('[data-agent-picker-apply]').addEventListener('click', () => applyAgentModelPicker(nodeId, projectId, picker, true));
+        cancel.focus();
+        return;
+    }
+    picker.dialog.innerHTML = `<h3>节点模型与思考 · ${picker.host === 'pi' ? 'Pi' : 'Codex'}</h3>
+        <label>模型 <select data-agent-picker-model${picker.loading ? ' disabled' : ''}>${options.map(m => `<option value="${escapeAttr(m.id)}"${m.id === picker.model ? ' selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}</select></label>
+        <label>思考 <select data-agent-picker-effort${picker.loading ? ' disabled' : ''}><option value="">跟随宿主</option>${efforts.map(e => `<option value="${escapeAttr(e)}"${e === picker.effort ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select></label>
+        ${picker.effort !== null && !efforts.includes(picker.effort) ? `<p role="status">已保存思考 ${escapeHtml(picker.effort)} 尚不在当前模型能力内；提交前必须确认。</p>` : ''}
+        <p class="agent-tui-parameter-hint">${picker.loading ? '正在读取真实宿主能力…' : escapeHtml(cap ? `能力来源：${typeof cap.selection.source === 'string' ? cap.selection.source : Object.values(cap.selection.source).join('；')}；能力不代表当前运行已生效。` : '')}</p>
+        ${picker.error ? `<p role="alert">${escapeHtml(picker.error)}</p>` : ''}
+        <div class="agent-fork-actions"><button type="button" data-agent-picker-cancel>取消</button><button type="button" data-agent-picker-retry>重试读取</button><button type="button" data-agent-picker-apply${picker.loading || !available ? ' disabled' : ''}>确认设置</button></div>`;
+    picker.dialog.querySelector('[data-agent-picker-model]').addEventListener('change', event => {
+        picker.model = event.target.value;
+        picker.capabilities = null;
+        loadAgentPickerCapabilities(nodeId, projectId, picker);
+    });
+    picker.dialog.querySelector('[data-agent-picker-effort]').addEventListener('change', event => { picker.effort = event.target.value || null; });
+    picker.dialog.querySelector('[data-agent-picker-cancel]').addEventListener('click', () => closeAgentModelPicker(getAgentTuiState(nodeId)));
+    picker.dialog.querySelector('[data-agent-picker-retry]').addEventListener('click', () => loadAgentPickerCapabilities(nodeId, projectId, picker));
+    picker.dialog.querySelector('[data-agent-picker-apply]').addEventListener('click', () => applyAgentModelPicker(nodeId, projectId, picker));
+}
+async function applyAgentModelPicker(nodeId, projectId, picker, confirmMismatch = false) {
+    const state = getAgentTuiState(nodeId), cap = picker.capabilities;
+    if (state.modelPicker !== picker || picker.loading || cap?.status !== 'available' || agentIsReadonly(state) || agentParametersLocked(state)) return;
+    if (confirmMismatch !== picker.confirming) return;
+    let effort = picker.effort;
+    if (effort !== null && (!cap.selection.efforts.includes(effort) || effort.toLowerCase() === 'ultra')) {
+        if (!confirmMismatch) {
+            picker.confirming = true;
+            renderAgentModelPicker(nodeId, projectId, picker);
+            return;
+        }
+        effort = null;
+    }
+    const setting = { host: picker.host, model: picker.model, effort };
+    closeAgentModelPicker(state);
+    return setAgentHostSettings(nodeId, projectId, setting);
+}
+function openAgentModelPicker(nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
+    if (agentIsReadonly(state) || agentParametersLocked(state)) return;
+    if (state.modelPicker) { state.modelPicker.dialog.focus(); return; }
+    const node = canvasState.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const setting = agentHostSetting(node, state.viewHost), dialog = document.createElement('dialog');
+    dialog.className = 'agent-tui-model-picker';
+    const picker = { host: state.viewHost, model: setting.model, effort: setting.effort, dialog, seq: 0, capabilities: null, confirming: false };
+    state.modelPicker = picker;
+    dialog.addEventListener('close', () => { if (state.modelPicker === picker) state.modelPicker = null; dialog.remove(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    return loadAgentPickerCapabilities(nodeId, projectId, picker);
+}
+
 // #317：fork 选择器从两次 prompt() 换为画布自有 <dialog>（与 project-list.js showModal 同一体系）
 function agentForkPickerDialog(messages) {
     return new Promise(resolve => {
@@ -1434,7 +1758,7 @@ async function showAgentCliTakeover(nodeId, projectId) {
 
 function sendAgentConfirm(nodeId, projectId, approved) {
     const state = getAgentTuiState(nodeId);
-    if (!state.confirm) return;
+    if (agentIsReadonly(state) || !state.confirm) return;
     const confirmId = state.confirm.confirm_id;
     state.confirm = null;
     state.status = 'busy';
@@ -1473,6 +1797,8 @@ function sendAgentConfirm(nodeId, projectId, approved) {
 // 跟原来一致，不进这张表。
 const AGENT_STATUS_PRESENTATION = {
     busy: { statusClass: 'agent-tui-status-busy', statusText: '运行中' },
+    starting: { statusClass: 'agent-tui-status-connecting', statusText: '启动中' },
+    stopping: { statusClass: 'agent-tui-status-busy', statusText: '等待停止' },
     connecting: { statusClass: 'agent-tui-status-connecting', statusText: '连接中' },
     retrying: { statusClass: 'agent-tui-status-busy', statusText: '重试中' },
     error: { statusClass: 'agent-tui-status-error', statusText: '错误' },
@@ -1597,11 +1923,9 @@ function agentReconnectBannerHtml(state) {
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
-    const projectId = canvasId || '';
-
-    // Determine status indicator
-    let { statusClass, statusText } = agentStatusPresentation(state);
-
+    agentSyncHostView(node, state);
+    const readonly = agentIsReadonly(state);
+    const parameterDisabled = readonly || agentParametersLocked(state);
     const timeline = agentTimelineSync(state);
     if (state.scrollBinding && state.scrollBinding.body.isConnected !== false) captureAgentScroll(state, state.scrollBinding.body);
     const rowHtml = new Map();
@@ -1716,44 +2040,24 @@ function agentNodeBodyHtml(node) {
         </div>`;
     }
 
-    // 持久值来自 live node；只有明确 persisted:false 的成功响应可以提供纯会话覆盖。
-    const currentModel = state.sessionModel !== undefined ? state.sessionModel : (node.model || '');
-    let modelOptionsHtml = `<option value="" ${!currentModel ? 'selected' : ''}>默认</option>`;
-    const chatModels = getChatModels();
-    for (const model of chatModels) {
-        const modelValue = model.id || model;
-        const modelLabel = model.name || model.id || model;
-        const selected = currentModel === modelValue ? 'selected' : '';
-        modelOptionsHtml += `<option value="${escapeAttr(modelValue)}" ${selected}>${escapeHtml(modelLabel)}</option>`;
-    }
-    // #301：模型下拉整合进头部设置簇（「模型」前缀标签 + aria-label），不再像散落的调试控件。
-    const modelSelectHtml = `<select class="agent-tui-model-select" data-agent-model="${escapeAttr(nodeId)}" title="模型" aria-label="选择模型">${modelOptionsHtml}</select>`;
-
-    // Autonomy select options — node is the source of truth
+    const setting = agentHostSetting(node, state.viewHost);
+    const currentModel = state.sessionModel !== undefined ? state.sessionModel : setting.model;
+    const disabled = parameterDisabled ? ' disabled' : '';
     const currentAutonomy = node.autonomy || 'cautious';
-    const autonomySelectHtml = `<select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治级别" aria-label="选择自治级别">
-        <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>谨慎</option>
-        <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>标准</option>
-        <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>自主</option>
-    </select>`;
-
-    // Branch select (if node has branches)
-    const branches = node.branches || [];
-    const currentBranchId = node.current_branch || '';
-    let branchSelectHtml = '';
-    if (branches.length > 0) {
-        let branchOptionsHtml = '';
-        for (const branch of branches) {
-            const selected = branch.id === currentBranchId ? 'selected' : '';
-            branchOptionsHtml += `<option value="${escapeAttr(branch.id)}" ${selected}>${escapeHtml(branch.name)}</option>`;
-        }
-        branchSelectHtml = `<select class="agent-tui-branch-select" data-agent-branch="${escapeAttr(nodeId)}" title="切换分支" aria-label="切换分支">${branchOptionsHtml}</select>`;
-    }
-
-    // Fork button
-    const forkButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-fork" data-agent-fork="${escapeAttr(nodeId)}" title="从历史轮次分叉" aria-label="从历史轮次分叉">${agentIco('git-branch')}</button>`;
-    // #325 票 G：外部 CLI 接管入口（弹层命令由服务端 snippet 端点生成）。
-    const cliButtonHtml = `<button type="button" class="agent-tui-btn agent-tui-btn-cli" data-agent-cli="${escapeAttr(nodeId)}" title="由外部 CLI 接管（codex/claude）" aria-label="由外部 CLI 接管">${agentIco('terminal')}</button>`;
+    const toolbarHtml = `<div class="agent-tui-setting-toolbar" aria-label="节点参数">
+        <select class="agent-tui-host-select" data-agent-host="${escapeAttr(nodeId)}" aria-label="选择宿主"${disabled}>
+            <option value="pi"${state.viewHost === 'pi' ? ' selected' : ''}>Pi</option><option value="codex"${state.viewHost === 'codex' ? ' selected' : ''}>Codex</option>
+        </select>
+        <button type="button" class="agent-tui-model-select" data-agent-model-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}>模型 · ${escapeHtml(currentModel || '跟随宿主')}</button>
+        <button type="button" class="agent-tui-effort-select" data-agent-effort-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}>思考 · ${escapeHtml(setting.effort === null ? '跟随宿主' : setting.effort)}</button>
+        <select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治确认档位" aria-label="自治确认档位"${disabled}>
+            <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>每张</option>
+            <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>每批</option>
+            <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>无需</option>
+        </select>
+    </div>`;
+    const readonlyBanner = readonly ? `<div class="agent-tui-readonly-banner" role="status">只读查看 ${escapeHtml(state.viewHost)} · 当前活跃宿主 ${escapeHtml(state.activeHost)}
+        <button type="button" data-agent-view-current>返回当前会话</button><button type="button" data-agent-resume-host${agentParametersLocked(state) ? ' disabled' : ''}>切回此宿主继续</button></div>` : '';
 
     // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
@@ -1780,21 +2084,13 @@ function agentNodeBodyHtml(node) {
     const hasTuiContent = Boolean(timeline.length || state.confirm);
 
     return `<div class="agent-tui-card">
-        <div class="agent-tui-header">
-            <span class="agent-tui-title">${escapeHtml(node.title || 'Agent')}</span>
-            <span class="agent-tui-status ${statusClass}">${statusText}</span>
-            <span class="agent-tui-settings">
-                <span class="agent-tui-settings-label">模型</span>
-                ${modelSelectHtml}
-                ${autonomySelectHtml}
-                ${branchSelectHtml}
-                ${forkButtonHtml}
-                ${cliButtonHtml}
-            </span>
-        </div>
+        ${readonlyBanner}
+        ${state.settingsError || state.eventsError || state.stopStatusError ? `<div class="agent-tui-error-banner" role="alert">${escapeHtml(state.settingsError || state.eventsError || state.stopStatusError)}</div>` : ''}
         ${agentReconnectBannerHtml(state)}
+        ${state.stopPending && !readonly ? `<div class="agent-tui-parameter-hint" role="status">等待宿主确认停止，参数仍锁定。<button type="button" data-agent-stop-status>重新核验停止状态</button></div>` : ''}
         ${agentProgressHtml(node)}
         <div class="agent-tui-body-wrap">
+        <nav class="agent-message-navigation" aria-label="用户消息导航"></nav>
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false"> <!-- #317：流式输出对读屏可见 -->
                 ${timelineHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
@@ -1803,23 +2099,27 @@ function agentNodeBodyHtml(node) {
         </div>
         <button type="button" class="agent-tui-back-latest" data-agent-back-latest="${escapeAttr(nodeId)}"${state.scrollState && state.scrollState.unread && !state.scrollState.atBottom ? '' : ' hidden'}>${agentIco('chevron-down')} 回到最新</button>
         </div>
+        <div class="agent-tui-composer">
         ${pendingHtml}
         <div class="agent-tui-input-row">
             <div class="agent-tui-input-line">
                 <span class="agent-tui-prompt" aria-hidden="true">&gt;</span>
-                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="1">${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
+                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
             </div>
+            ${toolbarHtml}
+            <div class="agent-tui-parameter-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</div>
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
-                    <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}">${agentIco('paperclip')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}"${readonly ? ' disabled' : ''}>${agentIco('paperclip')}</button>
                     <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" aria-pressed="${state.thinkingVisible ? 'true' : 'false'}">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中）；#317：aria-pressed -->
-                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('loader-2')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${state.status !== 'busy' ? 'disabled' : ''}>${agentIco('square')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${readonly || state.stopPending || !['busy', 'retrying'].includes(state.status) ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${readonly || state.stopPending || !['busy', 'retrying'].includes(state.status) ? 'disabled' : ''}>${agentIco('loader-2')}</button>
+                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${readonly || state.stopPending || !['busy', 'retrying', 'waiting_confirm'].includes(state.status) ? 'disabled' : ''}>${agentIco('square')}</button>
                 </div>
-                <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令">发送</button>
+                <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令"${readonly || state.stopPending || state.settingsPending ? ' disabled' : ''}>发送</button>
             </div>
             <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
+        </div>
         </div>
     </div>`;
 }
@@ -1862,7 +2162,7 @@ const AGENT_TUI_INPUT_MAX_H = 140;
 function agentTuiAutoGrow(inputEl){
     if (!inputEl) return;
     inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, AGENT_TUI_INPUT_MAX_H) + 'px';
+    inputEl.style.height = Math.max(96, Math.min(inputEl.scrollHeight, AGENT_TUI_INPUT_MAX_H)) + 'px';
 }
 function agentTuiResetGrow(inputEl){
     if (!inputEl) return;
@@ -1873,13 +2173,13 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
     const message = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     if (!message) return;
     const inputState = getAgentTuiState(nodeId);
-    if (inputState.composing) return;
+    if (inputState.composing || agentIsReadonly(inputState) || inputState.stopPending || inputState.settingsPending) return;
     inputState.nodeRefsControlDraft = inputEl.value;
     // Clear before the sender rebuilds the DOM, not on the now-detached old textarea afterward.
     inputEl.value = '';
     inputState.draft = '';
     agentTuiResetGrow(inputEl);
-    if (inputState && inputState.status === 'busy') {
+    if (['busy', 'retrying'].includes(inputState.status) || inputState.queuedInputs.size) {
         sendAgentFollowUp(nodeId, projectId, message);
     } else {
         const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];
@@ -1931,12 +2231,14 @@ function restoreAgentScroll(state, body) {
     body.scrollTop = Math.max(0, Math.min(top, Math.max(0, body.scrollHeight - body.clientHeight)));
     const binding = state.scrollBinding;
     if (binding) binding.programTop = body.scrollTop;
+    if (state.messageNavigation) state.messageNavigation.update();
     if (!ss) state.scrollState = { scrollTop: body.scrollTop, atBottom: true, anchor: null, unread: false };
     else ss.scrollTop = body.scrollTop;
     updateAgentBackLatest(state);
 }
 
 function disposeAgentScroll(state) {
+    if (state.messageNavigation) { state.messageNavigation.destroy(); state.messageNavigation = null; }
     const binding = state.scrollBinding;
     if (!binding) return;
     if (binding.observer) binding.observer.disconnect();
@@ -1992,6 +2294,7 @@ function bindAgentScroll(el, state) {
     };
     ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'mousedown', 'keydown'].forEach(type => on(body, type, intent, { passive: true }));
     on(body, 'scroll', () => {
+        state.messageNavigation.update();
         // Native anchoring, focus(), and our restoration also fire scroll; only explicit user intent
         // may change follow mode. In particular a resize must not turn a follower into a reader.
         if (!binding.userIntent || body.scrollTop === binding.programTop) return;
@@ -2024,6 +2327,29 @@ function bindAgentScroll(el, state) {
         });
         binding.detachObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
+    const rows = [...body.querySelectorAll('[data-agent-entry-key]')];
+    const rowByKey = new Map(rows.map(row => [row.getAttribute('data-agent-entry-key'), row]));
+    const users = agentTimelineSync(state).filter(entry => entry.kind === 'message' && entry.message.role === 'user');
+    const entries = users.map(entry => ({ id: entry.key, label: '你', text: entry.message.text,
+        element: rowByKey.get(entry.key) })).filter(entry => entry.element);
+    state.messageNavigation = createAgentMessageNavigation({
+        body, mount: el.querySelector('.agent-message-navigation'), entries,
+        readingRect: currentId => {
+            const rect = body.getBoundingClientRect();
+            const current = rowByKey.get(currentId)?.getBoundingClientRect();
+            if (current && current.bottom > rect.top && current.top < rect.bottom) return current;
+            const reading = rows.find(row => { const r = row.getBoundingClientRect(); return r.bottom > rect.top && r.top < rect.bottom; });
+            return reading ? reading.getBoundingClientRect() : rect;
+        },
+        onJump: entry => {
+            const rect = body.getBoundingClientRect(), target = entry.element.getBoundingClientRect();
+            const scale = rect.height > 0 ? body.clientHeight / rect.height : 1;
+            body.scrollTop += (target.top - rect.top) * scale;
+            captureAgentScroll(state, body, true);
+            binding.programTop = body.scrollTop;
+            updateAgentBackLatest(state);
+        },
+    });
     if (!state.scrollState) state.scrollState = { scrollTop: 0, atBottom: true, anchor: null, unread: false };
     restoreAgentScroll(state, body);
     if (!state.scrollState.atBottom && !state.scrollState.anchor) captureAgentScroll(state, body);
@@ -2031,6 +2357,7 @@ function bindAgentScroll(el, state) {
 }
 
 function bindAgentNodeControls(el, node){
+    agentSyncHostView(node, getAgentTuiState(node.id));
     agentNodeRefsBind(el, node);
     // TUI-style agent node: bind terminal input
     const nodeId = node.id;
@@ -2039,6 +2366,14 @@ function bindAgentNodeControls(el, node){
     // Connect WebSocket when node is rendered
     // #280：普通路径不再无条件建连——退避在途/已触顶停止时直接跳过（见 connectAgentWebSocket）。
     connectAgentWebSocket(nodeId, projectId);
+
+    const stopStatus = el.querySelector('[data-agent-stop-status]');
+    if (stopStatus) stopStatus.addEventListener('click', event => {
+        event.stopPropagation();
+        const state = getAgentTuiState(nodeId);
+        if (state.stopStatusTimer) clearTimeout(state.stopStatusTimer);
+        pollAgentStopStatus(nodeId, projectId, state, state.viewEpoch);
+    });
 
     // #280：手动重试——点「重试连接」清退避上限并强制立即重连（仅失败横幅里存在）。
     const retryBtn = el.querySelector('[data-agent-retry]');
@@ -2178,7 +2513,8 @@ function bindAgentNodeControls(el, node){
             event.stopPropagation();
             const inputEl = el.querySelector('[data-agent-tui-input]');
             const message = inputEl ? inputEl.value.trim() : '';
-            if (message) {
+            const state = getAgentTuiState(nodeId);
+            if (message && !agentIsReadonly(state) && !state.composing && !state.stopPending) {
                 inputEl.value = '';
                 getAgentTuiState(nodeId).draft = '';
                 agentTuiResetGrow(inputEl);
@@ -2195,7 +2531,8 @@ function bindAgentNodeControls(el, node){
             event.stopPropagation();
             const inputEl = el.querySelector('[data-agent-tui-input]');
             const message = inputEl ? inputEl.value.trim() : '';
-            if (message) {
+            const state = getAgentTuiState(nodeId);
+            if (message && !agentIsReadonly(state) && !state.composing && !state.stopPending) {
                 inputEl.value = '';
                 getAgentTuiState(nodeId).draft = '';
                 agentTuiResetGrow(inputEl);
@@ -2233,7 +2570,26 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind model select
+    el.querySelectorAll('[data-agent-model-picker],[data-agent-effort-picker]').forEach(button => {
+        button.addEventListener('mousedown', event => event.stopPropagation());
+        button.addEventListener('click', event => { event.stopPropagation(); openAgentModelPicker(nodeId, projectId); });
+    });
+    const hostSelect = el.querySelector('[data-agent-host]');
+    if (hostSelect) {
+        hostSelect.addEventListener('mousedown', event => event.stopPropagation());
+        hostSelect.addEventListener('change', event => {
+            event.stopPropagation();
+            const host = hostSelect.value;
+            hostSelect.value = getAgentTuiState(nodeId).activeHost;
+            agentSelectHost(nodeId, projectId, host);
+        });
+    }
+    const viewCurrent = el.querySelector('[data-agent-view-current]');
+    if (viewCurrent) viewCurrent.addEventListener('click', event => { event.stopPropagation(); agentViewHost(nodeId, projectId, getAgentTuiState(nodeId).activeHost); });
+    const resumeHost = el.querySelector('[data-agent-resume-host]');
+    if (resumeHost) resumeHost.addEventListener('click', event => { event.stopPropagation(); agentSelectHost(nodeId, projectId, getAgentTuiState(nodeId).viewHost); });
+
+    // Legacy /model seam remains supported; product controls use the atomic picker.
     const modelSelect = el.querySelector('[data-agent-model]');
     if (modelSelect) {
         modelSelect.addEventListener('mousedown', event => event.stopPropagation());
@@ -2250,10 +2606,14 @@ function bindAgentNodeControls(el, node){
         autonomySelect.addEventListener('mousedown', event => event.stopPropagation());
         autonomySelect.addEventListener('change', event => {
             event.stopPropagation();
+            const s = getAgentTuiState(nodeId);
+            if (agentIsReadonly(s) || agentParametersLocked(s)) return;
             const autonomy = autonomySelect.value;
             setAgentAutonomy(nodeId, projectId, autonomy);
         });
     }
+
+    bindAgentMoreControls(el, node);
 
     // Bind fork button
     const forkBtn = el.querySelector('[data-agent-fork]');
@@ -2261,7 +2621,8 @@ function bindAgentNodeControls(el, node){
         forkBtn.addEventListener('mousedown', event => event.stopPropagation());
         forkBtn.addEventListener('click', event => {
             event.stopPropagation();
-            showForkPicker(nodeId, projectId);
+            const state = getAgentTuiState(nodeId);
+            if (!agentIsReadonly(state) && !agentParametersLocked(state) && state.activeHost === 'pi') showForkPicker(nodeId, projectId);
         });
     }
 
@@ -2282,7 +2643,8 @@ function bindAgentNodeControls(el, node){
         branchSelect.addEventListener('change', event => {
             event.stopPropagation();
             const branchId = branchSelect.value;
-            if (branchId) switchAgentBranch(nodeId, projectId, branchId);
+            const state = getAgentTuiState(nodeId);
+            if (branchId && !agentIsReadonly(state) && !agentParametersLocked(state)) switchAgentBranch(nodeId, projectId, branchId);
         });
     }
 
@@ -2336,15 +2698,22 @@ function renderAgentNode(nodeId) {
     // #314：重建前捕获阅读位置与输入焦点/光标，重建后恢复
     const prevBody = el.querySelector('[data-agent-tui-body]');
     const prevInput = el.querySelector('[data-agent-tui-input]');
-    const hadFocus = prevInput && document.activeElement === prevInput;
+    const mountingHost = st314 && st314.viewNeedsMount;
+    const hadFocus = !mountingHost && prevInput && document.activeElement === prevInput;
     const selStart = prevInput ? prevInput.selectionStart : 0;
     const selEnd = prevInput ? prevInput.selectionEnd : 0;
-    if (prevBody && st314) captureAgentScroll(st314, prevBody);
-    if (prevInput && st314) st314.draft = prevInput.value;
+    if (st314) agentCaptureComposer(st314, nodeId);
+    if (prevBody && st314 && !mountingHost) captureAgentScroll(st314, prevBody);
+    if (prevInput && st314 && !mountingHost) st314.draft = prevInput.value;
 
     // Find the node data
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if (!node) return;
+
+    const previousHost = st314 && st314.viewHost;
+    if (st314) agentSyncHostView(node, st314);
+    const changedHost = st314 && (mountingHost || previousHost !== st314.viewHost);
+    const restoreFocus = changedHost ? st314.inputFocus : null;
 
     // Get the layout
     const imgs = node.images || [];
@@ -2360,17 +2729,25 @@ function renderAgentNode(nodeId) {
         bodyContainer.innerHTML = body;
         // Re-bind controls
         bindAgentNodeControls(bodyContainer, node);
+        if (st314) st314.viewNeedsMount = false;
         // bindAgentScroll restores the pre-rebuild follow/reading anchor.
         // #314：焦点在输入框时重建——恢复焦点与光标（草稿已由模板注入）
-        if (hadFocus) {
+        const focus = restoreFocus || (!changedHost && st314 ? st314.inputFocus : null);
+        if ((focus && focus.focused) || (!changedHost && hadFocus)) {
             const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
-            if (newInput) {
-                newInput.focus();
-                try { newInput.setSelectionRange(selStart, selEnd); } catch (e) { /* #348: 防御性——光标恢复失败不影响输入，焦点已恢复 */ }
+            if (newInput && !newInput.disabled) {
+                newInput.focus({ preventScroll: true });
+                newInput.setSelectionRange(focus ? focus.start : selStart, focus ? focus.end : selEnd, focus?.direction);
+                if (focus) newInput.scrollTop = focus.scrollTop;
             }
         }
     }
 
+    const more = el.querySelector('[data-agent-more-content]');
+    if (more) {
+        more.innerHTML = agentMoreActionsHtml(node);
+        bindAgentMoreControls(more, node);
+    }
     // Update node card status light + last line preview
     const headMeta = el.querySelector('.node-head-meta');
     if (headMeta) {
@@ -2441,10 +2818,10 @@ function normalizeAgentDockNodes(nodes){
     });
 }
 
-// 停靠宽度与画布内布局同公式（imageLayout 的 Agent 特判：node.w 有效则用，否则 382；下限 330）
+// 停靠宽度与画布内布局同公式（imageLayout 的 Agent 特判：node.w 有效则用，否则 480；下限 330）
 function agentDockNodeWidth(node){
     const w = Number(node && node.w);
-    const base = (Number.isFinite(w) && w > 24) ? w : 382;
+    const base = (Number.isFinite(w) && w > 24) ? w : 480;
     return Math.max(330, Math.round(base));
 }
 
@@ -2481,7 +2858,7 @@ function agentDockRestoreFocus(nodeId, info){
 function agentDockNodeHtml(node){
     const nodeId = String(node.id);
     const scale = nodeScale(node);
-    const layout = imageLayout(node.images || [], scale, node) || { width: 382, height: 360 };
+    const layout = imageLayout(node.images || [], scale, node) || { width: 480, height: 360 };
     const title = node.title || 'Agent';
     const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
     return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
@@ -2658,7 +3035,11 @@ function syncAgentDock(){
     const dockedNodes = (canvasState.nodes || []).filter(n => agentDockState(n));
     // 不再停靠的节点 → 卸载停靠元素（world 里由 render() 重新出现）
     dock.querySelectorAll('.agent-dock-node').forEach(el => {
-        if(!dockedNodes.some(n => n.id === el.dataset.id)) el.remove();
+        if(!dockedNodes.some(n => n.id === el.dataset.id)) {
+            const state = agentTuiState.get(el.dataset.id);
+            if (state && state.scrollBinding?.body === el.querySelector('[data-agent-tui-body]')) disposeAgentScroll(state);
+            el.remove();
+        }
     });
     // 新停靠的节点 → 挂载（元素是新建的，草稿/消息由模板从 agentTuiState 注入）
     dockedNodes.forEach(node => {
@@ -2724,16 +3105,24 @@ window.addEventListener('resize', () => {
 function agentDockUnmount(nodeId){
     if(!document.getElementById('agentDock')) return;
     const el = agentDockElement(nodeId);
-    if(el) el.remove();
+    if(el) {
+        const state = agentTuiState.get(nodeId);
+        if (state && state.scrollBinding?.body === el.querySelector('[data-agent-tui-body]')) disposeAgentScroll(state);
+        el.remove();
+    }
 }
 
 function cleanupAgentTuiState(nodeId) {
     agentNodeRefsForget(nodeId);
     agentDockForget(nodeId);
-    agentDockUnmount(nodeId);
     const state = agentTuiState.get(nodeId);
     if (state) {
         disposeAgentScroll(state);
+        closeAgentModelPicker(state);
+        if (state.stopStatusTimer) clearTimeout(state.stopStatusTimer);
+        for (const view of state.hostViews.values()) {
+            if (view.nodeRefsDraft) for (const pending of view.nodeRefsDraft.pending.values()) clearTimeout(pending.timer);
+        }
         // #280：先标记再关——onclose 见 closing 不会安排重连；并取消在途退避定时器。
         state.closing = true;
         if (state.reconnectTimer) {
@@ -2746,6 +3135,7 @@ function cleanupAgentTuiState(nodeId) {
         agentTuiState.delete(nodeId);
         if (!agentTuiState.size) agentClearCompletionTitle();
     }
+    agentDockUnmount(nodeId);
 }
 
 // ── #323 票 E：会话框（agent.chatFrameId）+ 参考框（group.refFrame / agent.refFrameId）───────────────────
@@ -2881,7 +3271,42 @@ function agentHeadActionButtonsHtml(node){
     const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatLabel)}" aria-label="${escapeHtml(chatLabel)}">${escapeHtml(chatLabel)}</button>`;
     const refBtn = `<button type="button" class="agent-tui-btn agent-ref-frame-btn${frame ? ' agent-tui-btn-active' : ''}" data-agent-ref-frame="${id}" title="${escapeHtml(refTitle)}" aria-label="${escapeHtml(refTitle)}">${escapeHtml(agentRefFrameButtonLabel(node))}</button>`;
     // #407 D1：停靠钮——浮动态「停左/停右」，停靠态「收起/展开 + 取回」（逻辑在 agentDockSet）
-    return chatBtn + refBtn + agentDockButtonsHtml(node);
+    return chatBtn + refBtn + agentDockButtonsHtml(node)
+        + `<details class="agent-tui-more"><summary aria-label="更多会话操作">${agentIco('ellipsis')}</summary><div data-agent-more-content>${agentMoreActionsHtml(node)}</div></details>`;
+}
+
+function agentMoreActionsHtml(node) {
+    const state = getAgentTuiState(node.id), locked = agentIsReadonly(state) || agentParametersLocked(state);
+    const branches = node.branches || [];
+    const other = state.activeHost === 'pi' ? 'codex' : 'pi';
+    const binding = node.agentHostSessions && node.agentHostSessions[other];
+    return `<button type="button" class="agent-tui-btn" data-agent-more-fork${locked || state.activeHost !== 'pi' ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
+        ${branches.length && state.activeHost === 'pi' ? `<select class="agent-tui-branch-select" data-agent-more-branch aria-label="切换分支"${locked ? ' disabled' : ''}>${branches.map(branch => `<option value="${escapeAttr(branch.id)}" ${branch.id === node.current_branch ? 'selected' : ''}>${escapeHtml(branch.name)}</option>`).join('')}</select>` : ''}
+        <button type="button" class="agent-tui-btn" data-agent-more-cli>由外部 CLI 接管</button>
+        <button type="button" class="agent-tui-btn" data-agent-more-view="${other}"${binding ? '' : ' disabled'}>只读查看 ${other === 'pi' ? 'Pi' : 'Codex'} 会话</button>`;
+}
+function bindAgentMoreControls(el, node) {
+    const state = getAgentTuiState(node.id), projectId = canvasId || '';
+    el.querySelectorAll('.agent-tui-more > summary').forEach(summary => {
+        summary.addEventListener('mousedown', event => event.stopPropagation());
+        summary.addEventListener('click', event => event.stopPropagation());
+    });
+    el.querySelectorAll('[data-agent-more-fork],[data-agent-more-cli],[data-agent-more-view],[data-agent-more-branch]').forEach(control => {
+        control.addEventListener('mousedown', event => event.stopPropagation());
+        control.addEventListener(control.hasAttribute('data-agent-more-branch') ? 'change' : 'click', event => {
+            event.stopPropagation();
+            if (control.disabled) return;
+            if (control.hasAttribute('data-agent-more-view')) {
+                // Leave the newly shown read-only banner and its resume button unobscured.
+                control.closest('.agent-tui-more').open = false;
+                agentViewHost(node.id, projectId, control.getAttribute('data-agent-more-view'));
+            } else if (control.hasAttribute('data-agent-more-cli')) showAgentCliTakeover(node.id, projectId);
+            else if (!agentIsReadonly(state) && !agentParametersLocked(state) && state.activeHost === 'pi') {
+                if (control.hasAttribute('data-agent-more-fork')) showForkPicker(node.id, projectId);
+                else switchAgentBranch(node.id, projectId, control.value);
+            }
+        });
+    });
 }
 
 // #407 D1：停靠按钮 HTML（浮动态两个、停靠态两个），与「创建会话框/参考框」同族文字钮。

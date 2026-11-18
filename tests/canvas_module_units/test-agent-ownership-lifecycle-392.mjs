@@ -107,7 +107,6 @@ test('R3: stale dedicated adoption never replaces a newer canvas or its pending 
 
 test('confirmed human settings undo and redo only their own fields and metadata',async()=>{
     for(const [endpoint,handler,args,fields] of [
-        ['model','setAgentModel',['new-model'],{model:'new-model'}],
         ['autonomy','setAgentAutonomy',['standard'],{autonomy:'standard'}],
         ['fork','forkAgentSession',['entry-1','named'],{branches:[{id:'original'},{id:'branch-2'}],current_branch:'branch-2'}],
         ['switch-branch','switchAgentBranch',['branch-2'],{current_branch:'branch-2'}],
@@ -137,6 +136,72 @@ test('confirmed human settings undo and redo only their own fields and metadata'
         assert.equal(evaluate(e.ctx,'undoStack.length'),0,'failed and same-value settings have no undo step');
         assert.equal(e.node().userTouchedAt,null);
     }
+});
+
+test('host model undo and redo use conditional settings authority without reverting advanced bindings', async()=>{
+    const initial=seed();
+    Object.assign(initial.nodes[0],{type:'smart-agent',agentCli:'pi',model:'old-model',
+        agentHostSettings:{pi:{model:'old-model',effort:'low'}},
+        agentHostSessions:{pi:{extSessionId:'native-original',branches:[],current_branch:''}},
+        extSessionId:'native-original',branches:[],current_branch:''});
+    const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+    e.ctx.applyAgentHostSettingsAuthority=()=>{};
+    const requests=[];
+    e.ctx.fetch=async(url,options)=>{
+        const body=JSON.parse(options.body);requests.push({url,body});
+        const next=copy(e.state());next.revision++;next.updated_at+=100;
+        const node=next.nodes[0];
+        node.model=body.model;node.agentHostSettings.pi.model=body.model;node.userTouchedAt=next.updated_at;
+        if(url.endsWith('/settings')){
+            assert.deepEqual(body.expected,{host:'pi',model:e.node().model,effort:'low'});
+            assert.equal(body.user_edit,true);
+        } else assert.ok(url.endsWith('/model'));
+        return {ok:true,status:200,json:async()=>({success:true,persisted:true,canvas:next,model:body.model})};
+    };
+    await e.call('setAgentModel','prompt',initial.project_id,'new-model');
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);
+    assert.ok(evaluate(e.ctx,'undoStack[0].agentHostSettingsEdit'));
+    const progress=copy(e.state());progress.revision++;progress.updated_at+=100;
+    progress.nodes[0].extSessionId='native-advanced';progress.nodes[0].agentHostSessions.pi.extSessionId='native-advanced';
+    progress.nodes.push({id:'remote-sibling',type:'smart-prompt',text:'keep remote'});
+    e.call('applyMergedServerCanvas',progress);
+    await e.call('performUndo');
+    assert.equal(e.node().model,'old-model');
+    assert.equal(e.node().extSessionId,'native-advanced');
+    assert.equal(e.node().agentHostSessions.pi.extSessionId,'native-advanced');
+    assert.ok(e.node().userTouchedAt>initial.updated_at,'undo is a fresh human transaction, not timestamp restoration');
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0,JSON.stringify(e.harness.toasts));
+    assert.equal(evaluate(e.ctx,'redoStack.length'),1);
+    await e.call('performRedo');
+    assert.equal(e.node().model,'new-model');
+    assert.equal(e.node().agentHostSessions.pi.extSessionId,'native-advanced');
+    assert.ok(e.live().nodes.some(node=>node.id==='remote-sibling'));
+    assert.deepEqual(requests.map(request=>request.body.model),['new-model','old-model','new-model']);
+});
+
+for(const hostSwitch of [false,true]) test(`settings undo refreshes docked ${hostSwitch?'host identity':'effective effort'} from authority`,async()=>{
+    const initial=seed();
+    const before={...copy(initial.nodes[0]),type:'smart-agent',dock:'right',agentCli:'pi',model:'pi-old',
+        agentHostSettings:{pi:{model:'pi-old',effort:'low'},codex:{model:'cx-new',effort:'high'}},
+        agentHostSessions:{pi:{extSessionId:'pi-kept'},codex:{extSessionId:'cx-kept'}}};
+    const after=copy(before);after.agentCli=hostSwitch?'codex':'pi';after.model=hostSwitch?'cx-new':'pi-new';
+    after.agentHostSettings[after.agentCli]={model:after.model,effort:'high'};
+    initial.nodes=[after];
+    const e=editor(initial);loadModules(e.ctx,['canvas-agent-tui.js']);
+    const state=e.ctx.getAgentTuiState('prompt');
+    state.effortState={requested:'high',submitted:'high',effective:'high',source:'pi:get_state'};
+    const rendered=[];e.ctx.renderAgentNode=id=>rendered.push({id,host:state.viewHost,effective:state.effortState.effective});
+    e.ctx.pushAgentHostSettingsUndo(before,after);
+    const remote=copy(initial);remote.revision++;remote.updated_at+=100;remote.nodes=[before];
+    const evidence={requested:'low',submitted:'low',effective:'low',source:'pi:get_state'};
+    e.ctx.fetch=async()=>({ok:true,status:200,json:async()=>({success:true,persisted:true,canvas:remote,effort_state:evidence})});
+    await e.ctx.performUndo();
+    assert.equal(e.node().agentCli,'pi');
+    assert.equal(state.activeHost,'pi');assert.equal(state.viewHost,'pi');
+    assert.deepEqual(fromContext(state.effortState),evidence);
+    assert.deepEqual(rendered,[{id:'prompt',host:'pi',effective:'low'}]);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),0);assert.equal(evaluate(e.ctx,'redoStack.length'),1);
+    assert.match(e.ctx.agentEffortHint(state,e.node().agentHostSettings.pi),/思考已生效：low/);
 });
 
 test('already accepted branch transitions clear old history even when HTTP authority is now stale',async()=>{

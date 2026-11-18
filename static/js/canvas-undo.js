@@ -15,6 +15,7 @@ let pendingUndoSnapshot = null;
 let undoHistoryEpoch = 0; // local history/capture transactions, not a canvas-wide touch counter
 const pendingUndoRemoteBaselines = new WeakMap(); // runtime-only receipt deduplication
 let redoPushing = false;
+let pendingAgentHostSettingsUndo = null; // one settings history transaction, never a canvas save
 const smartUndoButton = document.getElementById('smartUndoButton');
 const smartRedoButton = document.getElementById('smartRedoButton');
 
@@ -134,7 +135,9 @@ function pushUndo(extra=null){
     if(undoSuppressed) return;
     if(!canvas) return;
     finalizePendingCanvasUndo();
-    const snapshot = snapshotForUndo();
+    // Settings history records only manual intent, never a node/native binding
+    // snapshot. All other callers retain the original snapshot/delta path.
+    const snapshot = extra?.agentHostSettingsEdit ? {} : snapshotForUndo();
     if(extra && typeof extra === 'object') Object.assign(snapshot, extra);
     undoStack.push(snapshot);
     // An unsealed new-format candidate is not a history step yet. Let it use a
@@ -248,12 +251,114 @@ async function restoreCanvasUndoDelta(snap, direction){
     scheduleUndoStackPersist();
 }
 
+function agentHostSettingsUndoChoice(node){
+    const mapped = Object.prototype.hasOwnProperty.call(node, 'agentHostSettings');
+    let host = node.agentCli;
+    if(!mapped){
+        if(host == null) host = 'pi';
+        else if(typeof host === 'string') host = host.trim() || 'pi';
+    } else if(host === undefined) host = 'pi';
+    const settings = node.agentHostSettings;
+    if(mapped && (!settings || typeof settings !== 'object' || Array.isArray(settings))){
+        throw new Error('无效的 Agent 人工设置');
+    }
+    const setting = mapped ? (Object.prototype.hasOwnProperty.call(settings, host) ? settings[host] : {model:'', effort:null})
+        : {model:node.model ?? '', effort:null};
+    if(!setting || !['pi','codex'].includes(host) || typeof setting.model !== 'string'
+        || (setting.effort !== null && typeof setting.effort !== 'string')){
+        throw new Error('无效的 Agent 人工设置');
+    }
+    return {host, model:setting.model, effort:setting.effort};
+}
+
+// Classic global, called only after the authoritative receiver confirms an edit.
+function pushAgentHostSettingsUndo(beforeNode, afterNode){
+    if(undoSuppressed || !canvas) return false;
+    if(!beforeNode?.id || beforeNode.id !== afterNode?.id) throw new Error('Agent 设置历史缺少相同的节点身份');
+    const before = agentHostSettingsUndoChoice(beforeNode);
+    const after = agentHostSettingsUndoChoice(afterNode);
+    if(JSON.stringify(before) === JSON.stringify(after)) return false;
+    pushUndo({agentHostSettingsEdit:{nodeId:beforeNode.id, before, after}});
+    return true;
+}
+
+async function restoreAgentHostSettingsUndo(snap, direction){
+    const label = direction === 'backward' ? '撤销' : '重做';
+    if(pendingAgentHostSettingsUndo){ toast(`Agent 设置${label}失败：已有设置历史请求正在处理`); return; }
+    const token = {};
+    pendingAgentHostSettingsUndo = token;
+    try {
+        if(!canvas || !undoStackProjectId()) throw new Error('当前画布没有项目上下文');
+        const context = canvasUndoRestoreContext();
+        const assertCurrent = () => {
+            if(!canvasUndoRestoreIsCurrent(context, snap, direction)){
+                throw new Error('历史上下文已变化，未移动撤销/重做记录');
+            }
+        };
+        const edit = snap.agentHostSettingsEdit;
+        const target = direction === 'backward' ? edit.before : edit.after;
+        const expected = direction === 'backward' ? edit.after : edit.before;
+        // Persisted history is input too: never let an absent/malformed pair
+        // silently omit expected and fall back to an unconditional settings POST.
+        if(typeof edit.nodeId !== 'string' || !edit.nodeId || ![target, expected].every(value => value
+            && Object.keys(value).sort().join(',') === 'effort,host,model'
+            && ['pi','codex'].includes(value.host) && typeof value.model === 'string'
+            && (value.effort === null || typeof value.effort === 'string'))){
+            throw new Error('Agent 设置历史格式无效');
+        }
+        const currentNode = () => {
+            const node = canvasState.nodes.find(node => node.id === edit.nodeId);
+            if(!node) throw new Error('Agent 节点已不存在');
+            return node;
+        };
+        assertCurrent();
+        currentNode();
+        const response = await fetch(`/api/projects/${encodeURIComponent(context.projectId)}/agent-nodes/${encodeURIComponent(edit.nodeId)}/settings`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({...target, expected, user_edit:true}),
+        });
+        assertCurrent();
+        const data = await response.json();
+        assertCurrent();
+        if(!response.ok){
+            const detail = data?.detail;
+            throw new Error(`${detail?.code || `HTTP ${response.status}`}：${detail?.message || (typeof detail === 'string' ? detail : '设置事务被拒绝')}`);
+        }
+        if(data?.success !== true || data.persisted === false || !data.canvas) throw new Error('服务端未确认设置已保存');
+        // Render is allowed inside the receiver, history mutation is not. Check
+        // both sides of that synchronous boundary and never replay bindings or
+        // the previous userTouchedAt. Ordinary scheduleSave is not used here.
+        const before = JSON.parse(JSON.stringify(currentNode()));
+        assertCurrent();
+        const accepted = canvasCore.receiveAgentSettingsCanvas(data.canvas, {
+            before, fields:['agentCli','agentHostSettings','model'], recordUndo:false,
+        });
+        assertCurrent();
+        if(accepted !== true) throw new Error('权威设置回包未被当前画布接受');
+        applyAgentHostSettingsAuthority(edit.nodeId, data);
+        assertCurrent();
+        const source = direction === 'backward' ? undoStack : redoStack;
+        const destination = direction === 'backward' ? redoStack : undoStack;
+        source.pop();
+        destination.push(snap);
+        if(destination.length > UNDO_LIMIT) destination.shift();
+        syncUndoRedoButtons();
+        scheduleUndoStackPersist();
+        toast(tr(direction === 'backward' ? 'smart.toastUndone' : 'smart.toastRedone'));
+    } catch(err){
+        toast(`Agent 设置${label}失败：${err?.message || err}`);
+    } finally {
+        if(pendingAgentHostSettingsUndo === token) pendingAgentHostSettingsUndo = null;
+    }
+}
+
 async function performUndo(){
     finalizePendingCanvasUndo();
     // #146: 撤销时取消所有待归档，避免撤销恢复的节点引用已归档资产 → 404。
     cancelPendingMediaArchives();
     while(undoStack.length){
         const next = undoStack[undoStack.length - 1];
+        if(next.agentHostSettingsEdit){ await restoreAgentHostSettingsUndo(next, 'backward'); return; }
         if(!next.projectOriginalDelete && next.actionDeltaVersion === 1 && next.actionDelta && canvasUndoDeltaTools()){
             if(!next.actionDelta.changes.length){ undoStack.pop(); scheduleUndoStackPersist(); continue; }
             await restoreCanvasUndoDelta(next, 'backward');
@@ -312,6 +417,7 @@ async function performRedo(){
     cancelPendingMediaArchives();
     while(redoStack.length){
         const next = redoStack[redoStack.length - 1];
+        if(next.agentHostSettingsEdit){ await restoreAgentHostSettingsUndo(next, 'forward'); return; }
         if(!next.projectOriginalDelete && next.actionDeltaVersion === 1 && next.actionDelta && canvasUndoDeltaTools()){
             await restoreCanvasUndoDelta(next, 'forward');
             return;

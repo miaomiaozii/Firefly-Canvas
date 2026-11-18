@@ -1003,6 +1003,146 @@ def test_branch_commits_binding_and_branches_in_one_cas_and_rolls_back_deletion(
     assert not any(n["id"] == "agent" for n in env.store.canvas(env.project_id)["nodes"])
 
 
+def test_expected_undo_redo_persists_through_full_store_without_rewinding_bindings(env, monkeypatch):
+    """Real HTTP route -> transaction -> CAS -> ProjectStore -> disk reload.
+
+    Only the native ACK/state transport and metadata are fake (env fixture).
+    This is not a protect_agent_bindings-only/component persistence assertion.
+    """
+    a = {"host": "pi", "model": "provider/old", "effort": "low"}
+    b = {"host": "pi", "model": "provider/new", "effort": "high"}
+    node = saved(env)
+    node = {**node, **build_host_settings_fields(node, "codex", "provider/old", "low")}
+    node = {**node, **build_host_settings_fields(node, "pi", a["model"], a["effort"]),
+            "messages": [{"role": "user", "content": "keep conversation"}], "mcp_session": "keep-mcp"}
+    node["agentHostSessions"]["pi"]["extSessionId"] = node["extSessionId"] = "pi-original"
+    seed(env, node)
+    session = run(env.manager.live(env.project_id))
+    env.manager.native["thinkingLevel"] = "low"
+    monkeypatch.setattr(main, "now_ms", lambda: 101)
+    # Missing expected retains the original API behavior (manual a -> b).
+    response = env.client.post(env.url + "/settings", json={**b, "user_edit": True})
+    assert response.status_code == 200, response.text
+    assert saved(env)["agentHostSettings"]["pi"] == {"model": b["model"], "effort": b["effort"]}
+
+    # Real native binding persistence advances both hosts after the edit.
+    session.ext_session_id = "pi-advanced"
+    env.manager._persist_ext_session_id(session)
+    codex = ah.AgentSession(project_id=env.project_id, node_id="agent", agent_cli="codex", ext_session_id="codex-advanced")
+    env.manager._persist_ext_session_id(codex)
+    progressed = saved(env)
+    progressed["agentHostSettings"]["codex"] = {"model": "provider/narrow", "effort": "low"}
+    progressed["agentHostSessions"]["codex"]["branches"] = [{"id": "other-host-progress"}]
+    progressed["x"] = 314
+    seed(env, progressed)
+    bindings = deepcopy(saved(env)["agentHostSessions"])
+
+    monkeypatch.setattr(main, "now_ms", lambda: 202)
+    response = env.client.post(env.url + "/settings", json={**a, "expected": b, "user_edit": True})
+    assert response.status_code == 200, response.text
+    undone = saved(env)
+    assert response.json()["canvas"] == env.store.canvas(env.project_id)
+    assert undone["agentHostSettings"]["pi"] == {"model": a["model"], "effort": a["effort"]}
+    assert undone["agentHostSettings"]["codex"] == progressed["agentHostSettings"]["codex"]
+    assert undone["agentHostSessions"] == bindings
+    assert undone["extSessionId"] == "pi-advanced" and undone["mcp_session"] == "keep-mcp"
+    assert undone["userTouchedAt"] == 202 and undone["updated_at"] == 202
+    for key in ("createdBy", "agentNodeId", "promptEditedByUser", "messages", "x"):
+        assert undone[key] == progressed[key]
+    env.store.flush(env.project_id)
+    reloaded = ProjectStore(env.store.root, snapshot_delay=0)
+    try:
+        assert next(n for n in reloaded.canvas(env.project_id)["nodes"] if n["id"] == "agent") == undone
+    finally:
+        reloaded.close()
+    monkeypatch.setattr(main, "now_ms", lambda: 303)
+    response = env.client.post(env.url + "/settings", json={**b, "expected": a, "user_edit": True})
+    assert response.status_code == 200, response.text
+    assert saved(env)["agentHostSessions"] == bindings
+    assert saved(env)["userTouchedAt"] == 303
+    assert saved(env)["agentHostSettings"]["pi"] == {"model": b["model"], "effort": b["effort"]}
+    assert env.manager.stops == env.manager.spawns == 0
+
+
+@pytest.mark.parametrize("expected", [
+    {"host": "codex", "model": "", "effort": None},
+    {"host": "pi", "model": "different", "effort": None},
+    {"host": "pi", "model": "", "effort": "high"},
+    {"host": "pi", "model": "", "effort": ""},
+])
+def test_expected_mismatch_is_409_before_metadata_or_native_write(env, monkeypatch, expected):
+    run(env.manager.live(env.project_id))
+    def forbidden(*args):
+        raise AssertionError("conflicting expectation must precede metadata")
+    monkeypatch.setattr(caps, "get_capabilities", forbidden)
+    before = env.store.canvas(env.project_id)
+    response = env.client.post(env.url + "/settings", json={"model": "provider/new", "expected": expected})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent_settings_conflict"
+    assert env.store.canvas(env.project_id) == before
+    assert not env.manager.commands and env.manager.stops == 0
+
+
+@pytest.mark.parametrize("expected", [None, False, 0, "", [],
+    {}, {"host": "pi"}, {"host": "pi", "model": ""},
+    {"host": "pi", "model": "", "effort": None, "extra": 1},
+    *[{"host": host, "model": "", "effort": None} for host in (None, "", "Pi", " pi ", False, [], {})],
+    *[{"host": "pi", "model": model, "effort": None} for model in (None, False, 1, [], {})],
+    *[{"host": "pi", "model": "", "effort": effort} for effort in (False, 1, [], {})],
+])
+def test_expected_wire_schema_is_strict_400_without_writes(env, expected):
+    before = env.store.canvas(env.project_id)
+    response = env.client.post(env.url + "/settings", json={"host": "codex", "expected": expected})
+    assert response.status_code == 400, response.text
+    assert env.store.canvas(env.project_id) == before
+    assert not env.manager.commands and env.manager.stops == env.manager.spawns == 0
+
+
+def test_matching_expected_still_rejects_busy_without_partial_save(env):
+    session = run(env.manager.live(env.project_id))
+    session._stopping = True
+    before = env.store.canvas(env.project_id)
+    response = env.client.post(env.url + "/settings", json={"host": "codex", "user_edit": True,
+        "expected": {"host": "pi", "model": "", "effort": None}})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent_busy"
+    assert env.store.canvas(env.project_id) == before and not env.manager.commands
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_expected_uses_canonical_active_selection_not_legacy_projection(env, canonical):
+    node = saved(env)
+    if canonical:
+        node = {**node, **build_host_settings_fields(node, "pi", "provider/old", "low")}
+        node["model"] = "stale-projection"
+        expected = {"host": "pi", "model": "provider/old", "effort": "low"}
+    else:
+        node = {"id": "agent", "type": "smart-agent", "agentCli": " pi ", "model": None}
+        expected = {"host": "pi", "model": "", "effort": None}
+    seed(env, node)
+    response = env.client.post(env.url + "/settings", json={"model": "provider/new", "effort": "high", "expected": expected})
+    assert response.status_code == 200, response.text
+    assert saved(env)["model"] == "provider/new"
+
+
+def test_expected_is_read_under_node_lock_not_before_waiting(env):
+    async def scenario():
+        lock = env.manager.node_lock(env.project_id, "agent")
+        async with lock:
+            settings = asyncio.create_task(api.set_agent_settings(env.project_id, "agent", {
+                "model": "provider/new", "expected": {"host": "pi", "model": "", "effort": None}}))
+            await asyncio.sleep(0)
+            assert not settings.done()
+            node = saved(env)
+            seed(env, {**node, **build_host_settings_fields(node, "pi", "provider/old", "low")})
+        with pytest.raises(HTTPException) as failure:
+            await settings
+        assert failure.value.status_code == 409
+        assert failure.value.detail["code"] == "agent_settings_conflict"
+        assert not env.manager.commands
+    run(scenario())
+
+
 def test_ws_listener_survives_switch_and_filters_active_and_readonly_host(env):
     with env.client.websocket_connect("ws://127.0.0.1:3194" + env.url + "/stream") as ws:
         initial = ws.receive_json()

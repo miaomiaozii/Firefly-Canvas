@@ -1674,7 +1674,7 @@ function imageLayout(images, scale=1, node=null){
         return {
             cols:1,
             rows:1,
-            width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : 382),
+            width:Math.round(Number.isFinite(explicitW) && explicitW > 24 ? explicitW : 480),
             height:Math.round(Number.isFinite(explicitH) && explicitH > 24 ? explicitH : 360),
             thumb:96,
             single:true,
@@ -7514,6 +7514,18 @@ function cloneSmartNode(node, dx=0, dy=0){
     copy.x = (Number(node.x) || 0) + dx;
     copy.y = (Number(node.y) || 0) + dy;
     clearSmartNodeTransientRunState(copy, {clearRunHistory:true});
+    if(copy.type === NODE_TYPE_AGENT){
+        // A copied Agent keeps choices and messages, never the source's native session.
+        delete copy.agentHostSessions;
+        delete copy.mcp_session;
+        copy.extSessionId = '';
+        copy.branches = [];
+        copy.current_branch = '';
+        if(Object.prototype.hasOwnProperty.call(copy, 'agentHostSettings')){
+            copy.agentHostSessions = Object.fromEntries(Object.keys(copy.agentHostSettings)
+                .map(host => [host, {extSessionId:'', branches:[], current_branch:''}]));
+        }
+    }
     if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
@@ -10672,7 +10684,7 @@ function extractConversationSelection(){
 function receiveAgentSettingsCanvas(nextCanvas, edit=null){
     if(!nextCanvas || !canvas || nextCanvas.id !== canvas.id
         || nextCanvas.project_id !== canvas.project_id) return false;
-    const fields = (edit?.fields || []).filter(key => ['model','autonomy','branches','current_branch'].includes(key));
+    const fields = (edit?.fields || []).filter(key => ['agentCli','agentHostSettings','model','autonomy','branches','current_branch'].includes(key));
     const remote = edit?.before && (nextCanvas.nodes || []).find(node => node.id === edit.before.id);
     const sameField = (left, right, key) => key === 'branches' && edit.addedBranchId
         ? [left, right].every(node => node.branches?.some(branch => branch.id === edit.addedBranchId))
@@ -10689,6 +10701,11 @@ function receiveAgentSettingsCanvas(nextCanvas, edit=null){
     const live = canvasState.nodes.find(node => node.id === edit.before.id);
     // A later local action owns its own overlapping fields and protection.
     if(!remote || !live || fields.some(key => !sameField(live, remote, key))) return false;
+    if(edit.recordUndo === false) return true;
+    if(fields.some(key => ['agentCli','agentHostSettings','model'].includes(key))){
+        pushAgentHostSettingsUndo(edit.before, remote);
+        return true;
+    }
     const before = {id:live.id}, after = {id:live.id};
     for(const key of fields){
         if(Object.prototype.hasOwnProperty.call(edit.before, key)) before[key] = smartCanvasDataClone(edit.before[key]);

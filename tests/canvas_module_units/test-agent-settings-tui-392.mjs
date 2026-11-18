@@ -242,7 +242,7 @@ test('session-only model success updates runtime display without inventing persi
     assert.deepEqual(persisted(m.ctx), []);
     assert.deepEqual(m.received, []);
     const body = fn(m.ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'smart-agent' });
-    assert.match(body, /value="runtime-model" selected/);
+    assert.match(body, /data-agent-model-picker="n1"[^>]*>模型 · runtime-model<\/button>/);
 
     const withCanvas = setup();
     const runtimeOnly = fn(withCanvas.ctx, 'setAgentModel')('n1', 'project', 'runtime-model');
@@ -269,7 +269,7 @@ test('session-only model success updates runtime display without inventing persi
     m.calls[3].resolve(response({ success: true, model: 'old-model', persisted: true, canvas }));
     await persistent;
     assert.deepEqual(m.received, [canvas]);
-    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]), /value="old-model" selected/);
+    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]), /data-agent-model-picker="n1"[^>]*>模型 · old-model<\/button>/);
 });
 
 test('fork/switch success cannot erase messages or tool updates that arrived while the request was pending', async () => {
