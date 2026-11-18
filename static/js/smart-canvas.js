@@ -9905,7 +9905,7 @@ function ensurePortDragPathElement(){
     if(!path){
         path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('class', 'port-drag-temp conn-pending');
-        path.setAttribute('stroke', 'rgba(100,116,139,0.92)');
+        path.setAttribute('stroke', 'var(--connection-pending)');
         path.setAttribute('stroke-width', '1.9');
         path.setAttribute('fill', 'none');
         path.setAttribute('stroke-linecap', 'round');
@@ -11214,8 +11214,9 @@ function bindLocalEditNodeControls(el, node){
         if(!ctx) return;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = 'rgba(14, 165, 233, .20)';
-        ctx.strokeStyle = '#0284c7';
+        const selectionStyles = getComputedStyle(selectionCanvas);
+        ctx.fillStyle = selectionStyles.getPropertyValue('--accent-soft').trim();
+        ctx.strokeStyle = selectionStyles.getPropertyValue('--accent').trim();
         ctx.lineWidth = 2;
         if(node.mode === 'modify'){
             const dragRect = displayRectFromDrag(draft);
@@ -11253,7 +11254,7 @@ function bindLocalEditNodeControls(el, node){
             if(draft){ ctx.stroke(); }
             else { ctx.closePath(); ctx.fill(); ctx.stroke(); }
             ctx.beginPath(); ctx.arc(displayPts[0].x, displayPts[0].y, 5, 0, Math.PI * 2);
-            ctx.fillStyle = '#0284c7'; ctx.fill();
+            ctx.fillStyle = ctx.strokeStyle; ctx.fill();
             return;
         }
         ctx.lineWidth = strokeW;
@@ -11305,7 +11306,6 @@ function bindLocalEditNodeControls(el, node){
             drawSelection(selectionDrag);
             return;
         }
-        // retain
         if(!selectionDrag || node.selectionType === 'freehand'){
             selectionDrag = {points:[point]};
             drawSelection(selectionDrag);

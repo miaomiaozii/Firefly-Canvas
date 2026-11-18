@@ -8,17 +8,35 @@
 }
 
 :root {
-  --page: #f4f6f9;
+  --page: #f5f5f5;
   --panel: #ffffff;
   --card: #ffffff;
-  --soft: #eef1f6;
-  --text: #182233;
-  --muted: #5e697b;
-  --faint: #707b8c;
-  --line: #d7dde5;
-  --accent: #5879dc;
-  --accent-text: #0c1423;
+  --soft: #fafafa;
+  --text: #202020;
+  --muted: #565656;
+  --faint: #626262;
+  --line: #d9d9d9;
+  --accent: #865500;
+  --accent-text: #ffffff;
   --danger: #b4233a;
+  --grid: rgba(85, 85, 85, .1);
+  --shadow: rgba(0, 0, 0, .16);
+  --modal-backdrop: rgba(0, 0, 0, .7);
+  --shadow-color: #000000;
+  --transparent: transparent;
+  --minimap-node: #777777;
+  --connection-cascade: #16a34a;
+  --connection: color-mix(in srgb, var(--line) 62%, var(--transparent));
+  --connection-input: color-mix(in srgb, var(--muted) 62%, var(--transparent));
+  --connection-history: color-mix(in srgb, var(--muted) 46%, var(--transparent));
+  --connection-pending: color-mix(in srgb, var(--muted) 92%, var(--transparent));
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  --bg: var(--page);
+  --bg-base: var(--page);
+  --card-solid: var(--card);
+  --soft-2: var(--soft);
+  --line-2: var(--line);
+  --text-main: var(--text);
 
   --radius-panel: 12px;
   --radius-card: 8px;
@@ -62,15 +80,17 @@
 }
 
 html.studio-theme-dark {
-  --page: #0c1119;
-  --panel: #121924;
-  --card: #151e2a;
-  --soft: #101822;
-  --text: #e8edf5;
-  --muted: #a8b3c2;
-  --faint: #7f8da0;
-  --line: #344050;
-  --accent: #5879dc;
-  --accent-text: #0c1423;
-  --danger: #ff8fa0;
+  --page: #121212;
+  --panel: #1b1b1b;
+  --card: #1b1b1b;
+  --soft: #151515;
+  --text: #ededeb;
+  --muted: #b9b9b6;
+  --faint: #8a8a86;
+  --line: #2a2a2a;
+  --accent: #edbd62;
+  --accent-text: #121212;
+  --danger: #ff7a6e;
+  --grid: rgba(185, 185, 185, .12);
+  --shadow: rgba(0, 0, 0, .44);
 }

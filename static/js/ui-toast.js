@@ -48,17 +48,17 @@
     "{position:fixed;right:20px;bottom:20px;z-index:10000;display:flex;flex-direction:column;gap:8px;",
     "pointer-events:none;max-width:min(380px,calc(100vw - 40px));}",
     ".ff-toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;padding:10px 14px;",
-    "background:var(--panel,#fff);color:var(--text,#182233);border:1px solid var(--line,#d7dde5);",
-    "border-radius:12px;box-shadow:0 16px 44px rgba(15,23,42,.16);font:400 13px/1.55 var(--font-sans,system-ui,sans-serif);",
+    "background:var(--panel);color:var(--text);border:1px solid var(--line);",
+    "border-radius:12px;box-shadow:0 16px 44px color-mix(in srgb,var(--shadow-color) 16%,var(--transparent));font:400 13px/1.55 var(--font-sans,system-ui,sans-serif);",
     "cursor:pointer;animation:ff-toast-in .18s cubic-bezier(.2,0,0,1);word-break:break-word;}",
     "@keyframes ff-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}",
-    ".ff-toast-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--accent,#5879dc);}",
-    ".ff-toast-error{border-color:color-mix(in srgb,var(--danger,#b4233a) 40%,var(--line,#d7dde5));}",
-    ".ff-toast-error .ff-toast-dot{background:var(--danger,#b4233a);}",
+    ".ff-toast-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--muted);}",
+    ".ff-toast-error{border-color:color-mix(in srgb,var(--danger) 40%,var(--line));}",
+    ".ff-toast-error .ff-toast-dot{background:var(--danger);}",
     ".ff-toast-success .ff-toast-dot{background:#1f8a4c}",
     "html.studio-theme-dark .ff-toast-success .ff-toast-dot{background:#4ade80}",
     // #347：撤销按钮（action toast）——点按钮只触发 action，不随手点掉
-    ".ff-toast-action{flex:0 0 auto;border:0;background:transparent;color:var(--accent,#5879dc);cursor:pointer;",
+    ".ff-toast-action{flex:0 0 auto;border:0;background:transparent;color:var(--accent);cursor:pointer;",
     "font:600 13px/1.55 var(--font-sans,system-ui,sans-serif);padding:0 0 0 6px;margin-left:auto;white-space:nowrap;}",
     ".ff-toast-action:hover{text-decoration:underline}"
   ].join("");

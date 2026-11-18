@@ -406,7 +406,7 @@ test('renderConnections: flow geometry anchors, 45% control handles, colors, hit
     assert.ok(Math.abs(c2x - (tx - dx)) < 1e-9, '控制柄 2 对称');
     assert.ok(Math.abs(c2y - ty) < 1e-9, '控制柄 2 与终点同高');
     // 视觉属性：flow 的默认色/线宽，命中层 14px 透明加宽，端点圆在 (tx,ty)，剪断手柄在中点。
-    assert.ok(svg.includes('stroke="rgba(148,163,184,0.62)" stroke-width="1.6"'), 'flow 默认色与线宽');
+    assert.ok(svg.includes('stroke="var(--connection)" stroke-width="1.6"'), 'flow 默认色与线宽');
     assert.ok(svg.includes('<path class="conn-hit" data-conn-index="0" d="') && svg.includes('stroke="transparent" stroke-width="14"'), '命中层');
     assert.ok(svg.includes('<circle class="conn-end" data-conn-index="0" cx="1000" cy="55" r="3.5"'), '端点圆');
     assert.ok(svg.includes('<g class="conn-cut" data-conn-index="0" transform="translate(590 55)">'), '剪断手柄在中点');
@@ -422,7 +422,7 @@ test('renderConnections: input kind color/width, pending opacity, selection clas
     const svg = globalFunction(ctx, 'renderConnections')();
 
     assert.ok(svg.includes('class="conn-pending conn-selected conn-line"'), 'pending+selected 两个状态 class 同时生效');
-    assert.ok(svg.includes('stroke="rgba(100,116,139,0.62)" stroke-width="1.9"'), 'input kind 的颜色与更粗线宽');
+    assert.ok(svg.includes('stroke="var(--connection-input)" stroke-width="1.9"'), 'input kind 的颜色与更粗线宽');
     assert.ok(svg.includes('opacity=".82"'), 'pending 线半透明');
     // 无选中时不出现 conn-selected。
     const { ctx: ctx2 } = loadConnectionsModule({
@@ -444,11 +444,11 @@ test('renderConnections: cascade state classes (active/done) and green color fro
 
     const activeSvg = load('active');
     assert.ok(activeSvg.includes('class="conn-cascade conn-cascade-wait conn-cascade-active conn-line"'), 'active 三件套 class');
-    assert.ok(activeSvg.includes('stroke="#16a34a"'), '级联线绿色');
+    assert.ok(activeSvg.includes('stroke="var(--connection-cascade)"'), '级联线绿色');
 
     const doneSvg = load('done');
     assert.ok(doneSvg.includes('class="conn-cascade conn-cascade-done conn-line"'), 'done 只有 cascade-done');
-    assert.ok(doneSvg.includes('stroke="#16a34a"'), 'done 仍是级联绿色');
+    assert.ok(doneSvg.includes('stroke="var(--connection-cascade)"'), 'done 仍是级联绿色');
 });
 
 test('renderConnections: merges A->member lines into one A->group line; hides same-scope lines; skips history', () => {

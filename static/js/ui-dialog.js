@@ -24,27 +24,27 @@
   var current = null; // 同时只允许一个对话框
 
   var CSS = [
-    ".ff-dialog-backdrop{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.42);",
+    ".ff-dialog-backdrop{position:fixed;inset:0;z-index:9999;background:var(--modal-backdrop);",
     "display:flex;align-items:center;justify-content:center;animation:ff-dialog-fade .14s ease-out;}" /* 与 .asset-delete-warning-backdrop 同级；嵌套时（B7）后追加的 DOM 胜出，仍在 toast 根（10000）之下 */,
     "@keyframes ff-dialog-fade{from{opacity:0}to{opacity:1}}",
-    ".ff-dialog-card{width:min(420px,calc(100vw - 40px));background:var(--panel,#fff);color:var(--text,#182233);",
-    "border:1px solid var(--line,#d7dde5);border-radius:14px;padding:18px;",
-    "box-shadow:0 24px 64px rgba(15,23,42,.24);animation:ff-dialog-in .16s cubic-bezier(.2,0,0,1);}",
+    ".ff-dialog-card{width:min(420px,calc(100vw - 40px));background:var(--panel);color:var(--text);",
+    "border:1px solid var(--line);border-radius:14px;padding:18px;",
+    "box-shadow:0 24px 64px color-mix(in srgb,var(--shadow-color) 24%,var(--transparent));animation:ff-dialog-in .16s cubic-bezier(.2,0,0,1);}",
     "@keyframes ff-dialog-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}",
     ".ff-dialog-title{margin:0 0 8px;font:600 15px/1.4 var(--font-sans,system-ui,sans-serif);}",
     ".ff-dialog-message{margin:0 0 16px;font:400 13px/1.6 var(--font-sans,system-ui,sans-serif);opacity:.85;",
     "white-space:pre-line;word-break:break-word;}",
     ".ff-dialog-actions{display:flex;justify-content:flex-end;gap:8px;}",
-    ".ff-dialog-btn{border:1px solid var(--line,#d7dde5);background:transparent;color:var(--text,#182233);",
+    ".ff-dialog-btn{border:1px solid var(--line);background:transparent;color:var(--text);",
     "border-radius:9px;padding:7px 16px;cursor:pointer;font:600 13px/1.4 var(--font-sans,system-ui,sans-serif);}",
     ".ff-dialog-btn:hover{opacity:.85}",
-    ".ff-dialog-btn-primary{background:var(--accent,#5879dc);border-color:var(--accent,#5879dc);color:#fff;}",
-    ".ff-dialog-btn-danger{background:var(--danger,#b4233a);border-color:var(--danger,#b4233a);color:#fff;}",
+    ".ff-dialog-btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text);}",
+    ".ff-dialog-btn-danger{background:var(--danger);border-color:var(--danger);color:var(--panel);}",
     ".ff-dialog-field-label{display:block;margin:0 0 6px;font:600 12px/1.4 var(--font-sans,system-ui,sans-serif);opacity:.8;}",
     ".ff-dialog-input{display:block;width:100%;box-sizing:border-box;padding:8px 10px;margin:0 0 16px;",
-    "border:1px solid var(--line,#d7dde5);border-radius:8px;background:transparent;color:var(--text,#182233);",
+    "border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--text);",
     "font:400 13px/1.5 var(--font-sans,system-ui,sans-serif);resize:vertical;}",
-    ".ff-dialog-input:focus{outline:2px solid var(--accent,#5879dc);outline-offset:-1px;}"
+    ".ff-dialog-input:focus{outline:2px solid var(--accent);outline-offset:-1px;}"
   ].join("");
 
   function ensureStyles() {

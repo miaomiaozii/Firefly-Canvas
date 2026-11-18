@@ -259,10 +259,12 @@ function renderEditTextCanvas(){
         if(selected){
             ctx.setLineDash([7, 5]);
             ctx.lineWidth = 1.5;
-            ctx.strokeStyle = 'rgba(15,23,42,.72)';
+            ctx.strokeStyle = getComputedStyle(canvasEl).getPropertyValue('--shadow-color').trim();
+            ctx.globalAlpha = .72;
             ctx.strokeRect(box.x, box.y, box.w, box.h);
             ctx.setLineDash([]);
-            ctx.fillStyle = 'rgba(15,23,42,.92)';
+            ctx.fillStyle = getComputedStyle(canvasEl).getPropertyValue('--shadow-color').trim();
+            ctx.globalAlpha = .92;
             ctx.beginPath();
             ctx.arc(item.x + box.w / 2 - box.pad, item.y - box.h / 2 + box.pad, 3.5, 0, Math.PI * 2);
             ctx.fill();
@@ -1419,8 +1421,8 @@ function refreshGridSplitPreview(){
     const countEl = document.getElementById('gridSplitCount');
     const lineWidth = Math.max(2, Math.round(Math.min(canvasEl.width, canvasEl.height) / 320));
     const drawLine = (x1, y1, x2, y2) => {
-        ctx.save(); ctx.lineWidth = lineWidth + 2; ctx.strokeStyle = 'rgba(2,6,23,0.72)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.lineWidth = lineWidth; ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore();
+        ctx.save(); ctx.lineWidth = lineWidth + 2; ctx.strokeStyle = getComputedStyle(canvasEl).getPropertyValue('--shadow-color').trim(); ctx.globalAlpha = .72; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.lineWidth = lineWidth; ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.globalAlpha = 1; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore();
     };
     if(gridCustomMode){
         const gap = Math.max(0, Math.min(240, Number(document.getElementById('gridGapSize')?.value || 0)));

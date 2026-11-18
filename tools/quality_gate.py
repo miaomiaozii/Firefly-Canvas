@@ -403,6 +403,10 @@ STEP_DEFINITIONS = {
         "-b",
         "tests.test_canvas_frontend_sources",
     ],
+    # #378/#417：共享 token 以外不得新增颜色字面量。
+    "studio-color-guard": lambda python: [
+        python, "-m", "unittest", "-b", "tests.test_studio_color_guard",
+    ],
     # #369：无构建类型检查——tsc --noEmit，不产文件、不打包，紧跟语法步。
     # 门全离线（deny 代理、workspace 无 node_modules），步骤模块不碰 npm：
     # 对 package-lock.json 的 sha512 integrity 校验后把 packages/npm/*.tgz
@@ -547,7 +551,7 @@ def step_exit_code(step: dict) -> int:
 
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
+    "fast": ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate", "studio-color-guard"),
     "domain": (
         "javascript-syntax",
         "javascript-types",

@@ -113,7 +113,7 @@
     const layer = ensureLayer(container);
     if (!layer) return;
     layer.innerHTML = "";
-    const color = "var(--accent, #4a9eff)";
+    const color = "var(--accent)";
     for (const g of guides || []) {
       if (!g || (g.axis !== "x" && g.axis !== "y")) continue;
       const line = document.createElement("div");

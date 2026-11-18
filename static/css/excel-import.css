@@ -2,7 +2,7 @@
 
 /* 拖入目标高亮 */
 .excel-drop-target {
-    outline: 3px dashed #4a90e2;
+    outline: 3px dashed var(--accent);
     outline-offset: -3px;
 }
 
@@ -22,7 +22,8 @@
 
 /* 导入卡片 */
 .excel-import-card {
-    background: #fff;
+    background: var(--panel);
+    color: var(--text);
     border-radius: 12px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
     padding: 24px;
@@ -36,8 +37,8 @@
 .excel-import-spinner {
     width: 40px;
     height: 40px;
-    border: 4px solid #e0e0e0;
-    border-top-color: #4a90e2;
+    border: 4px solid var(--line);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: excel-spin 1s linear infinite;
     margin: 0 auto 16px;
@@ -49,7 +50,7 @@
 
 .excel-import-message {
     text-align: center;
-    color: #666;
+    color: var(--muted);
     font-size: 14px;
 }
 
@@ -64,28 +65,28 @@
     align-items: center;
     margin-bottom: 16px;
     padding-bottom: 12px;
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid var(--line);
 }
 
 .excel-preview-header h3 {
     margin: 0;
     font-size: 18px;
     font-weight: 600;
-    color: #333;
+    color: var(--text);
 }
 
 .excel-preview-close {
     background: none;
     border: none;
     font-size: 24px;
-    color: #999;
+    color: var(--faint);
     cursor: pointer;
     padding: 0 8px;
     line-height: 1;
 }
 
 .excel-preview-close:hover {
-    color: #333;
+    color: var(--text);
 }
 
 .excel-preview-content {
@@ -98,7 +99,7 @@
     gap: 24px;
     margin-bottom: 16px;
     padding: 12px;
-    background: #f5f7fa;
+    background: var(--soft);
     border-radius: 8px;
 }
 
@@ -111,12 +112,12 @@
     display: block;
     font-size: 24px;
     font-weight: 600;
-    color: #4a90e2;
+    color: var(--text);
 }
 
 .stat-label {
     font-size: 12px;
-    color: #666;
+    color: var(--muted);
     margin-top: 4px;
 }
 
@@ -134,9 +135,9 @@
     margin: 0 0 8px 0;
     font-size: 14px;
     font-weight: 600;
-    color: #333;
+    color: var(--text);
     padding-left: 8px;
-    border-left: 3px solid #4a90e2;
+    border-left: 3px solid var(--line);
 }
 
 .excel-task-section ul {
@@ -154,12 +155,12 @@
 }
 
 .excel-task-item:hover {
-    background: #f5f7fa;
+    background: var(--soft);
 }
 
 .task-display-no {
     font-size: 12px;
-    color: #4a90e2;
+    color: var(--muted);
     font-weight: 600;
     margin-right: 8px;
     min-width: 60px;
@@ -167,7 +168,7 @@
 
 .task-name {
     font-size: 13px;
-    color: #333;
+    color: var(--text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -180,7 +181,7 @@
     gap: 12px;
     justify-content: flex-end;
     padding-top: 16px;
-    border-top: 1px solid #e0e0e0;
+    border-top: 1px solid var(--line);
 }
 
 .excel-btn {
@@ -194,21 +195,21 @@
 }
 
 .excel-btn-secondary {
-    background: #f5f5f5;
-    color: #666;
+    background: var(--soft);
+    color: var(--text);
 }
 
 .excel-btn-secondary:hover {
-    background: #e0e0e0;
+    background: var(--line);
 }
 
 .excel-btn-primary {
-    background: #4a90e2;
-    color: #fff;
+    background: var(--accent);
+    color: var(--accent-text);
 }
 
 .excel-btn-primary:hover {
-    background: #357abd;
+    background: color-mix(in srgb, var(--accent) 90%, var(--text));
 }
 
 /* Toast 消息 */

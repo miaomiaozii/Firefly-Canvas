@@ -59,7 +59,7 @@ input:focus-visible {
 
 .eyebrow {
   margin: 0 0 var(--space-8);
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  color: var(--muted);
   font-size: var(--font-caption);
   font-weight: var(--weight-strong);
   line-height: var(--line-compact);
@@ -174,8 +174,8 @@ h1 {
   display: inline-flex;
   border-radius: var(--radius-pill);
   padding: var(--space-4) var(--space-8);
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
-  background: color-mix(in srgb, var(--accent) 10%, var(--soft));
+  color: var(--muted);
+  background: var(--soft);
   font-size: var(--font-control);
   font-weight: var(--weight-medium);
   line-height: var(--line-compact);
@@ -285,7 +285,7 @@ h1 {
 }
 
 .firefly-mark {
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  color: var(--text);
   font-size: 32px;
   line-height: 1;
 }
@@ -306,7 +306,7 @@ h1 {
 }
 
 .create-dialog::backdrop {
-  background: rgba(7, 12, 20, .72);
+  background: var(--modal-backdrop);
 }
 
 .create-dialog form {

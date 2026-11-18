@@ -67,7 +67,7 @@ textarea:focus-visible {
 .eyebrow,
 .section-index {
   margin: 0 0 var(--space-8);
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  color: var(--muted);
   font-weight: var(--weight-strong);
   line-height: var(--line-compact);
   letter-spacing: .14em;
@@ -147,7 +147,7 @@ h1 {
 
 .page-status[data-kind="success"],
 .provider-fetch-status[data-kind="success"] {
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  color: var(--text);
 }
 
 .page-status[data-kind="error"],
@@ -370,11 +370,11 @@ input[type="radio"] {
 
 .model-option:hover,
 .model-option:focus-within {
-  background: color-mix(in srgb, var(--accent) 10%, var(--soft));
+  background: var(--soft);
 }
 
 .model-option[data-recommended="true"] {
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  color: var(--text);
 }
 
 .model-option input {
@@ -477,8 +477,8 @@ input[type="radio"] {
 }
 
 .status-pill.ok {
-  color: color-mix(in srgb, var(--accent) 78%, var(--text));
-  background: color-mix(in srgb, var(--accent) 10%, var(--soft));
+  color: var(--text);
+  background: var(--soft);
 }
 
 .status-detail {

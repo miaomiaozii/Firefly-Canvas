@@ -96,6 +96,16 @@ class CanvasCouplingGateWiringTests(unittest.TestCase):
         )
 
 
+class StudioColorGateWiringTests(unittest.TestCase):
+    def test_fast_mode_runs_studio_color_guard(self):
+        step = "studio-color-guard"
+        self.assertIn(step, MODE_STEPS["fast"])
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "-m", "unittest", "-b", "tests.test_studio_color_guard"],
+        )
+
+
 class QualityGateTests(unittest.TestCase):
 
     @staticmethod
@@ -670,8 +680,8 @@ class QualityGateTests(unittest.TestCase):
             "            self.assertEqual(result.returncode, 0, script.name + ': ' + result.stderr.strip())\n",
             encoding="utf-8",
         )
-        # #418: the minimal fixture exercises gate wiring, not the real canvas analysis.
-        for module_name in ("test_canvas_core_layer.py", "test_canvas_coupling_report.py"):
+        # The minimal fixture exercises gate wiring, not the real analyses.
+        for module_name in ("test_canvas_core_layer.py", "test_canvas_coupling_report.py", "test_studio_color_guard.py"):
             (self.fixture_root / "tests" / module_name).write_text(
                 "import unittest\nclass CanvasFixture(unittest.TestCase):\n"
                 "    def test_wiring(self): self.assertTrue(True)\n",
@@ -1064,7 +1074,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate", "studio-color-guard"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -2940,7 +2950,7 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
+            "fast": (30, ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate", "studio-color-guard")),
             "domain": (180, ("javascript-syntax", "javascript-types", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
             "trial": (300, ("javascript-syntax", "javascript-types", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "ws-stats-reconnect-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (

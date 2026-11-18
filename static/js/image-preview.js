@@ -1,7 +1,6 @@
 (function(){
     'use strict';
 
-    /* 一次性注入预览框样式 —— 所有页面共用同一套外观 */
     function injectStyles(){
         if(document.getElementById('studio-image-preview-css')) return;
         const style = document.createElement('style');
@@ -14,9 +13,9 @@
                 max-width: 100%;
                 border-radius: 24px;
                 overflow: hidden;
-                background: rgba(241,245,249,.72);
-                border: 1px solid rgba(15,23,42,.08);
-                box-shadow: 0 30px 90px rgba(15,23,42,.18);
+                background: var(--soft);
+                border: 1px solid var(--line);
+                box-shadow: 0 30px 90px color-mix(in srgb,var(--shadow-color) 18%,var(--transparent));
                 cursor: grab;
                 user-select: none;
                 touch-action: none;
@@ -38,8 +37,8 @@
             html.theme-dark .studio-preview-frame,
             body.theme-dark .studio-preview-frame,
             .theme-dark .studio-preview-frame {
-                background: #020617;
-                border-color: rgba(148,163,184,.24);
+                background: var(--soft);
+                border-color: var(--line);
                 box-shadow: 0 30px 90px rgba(0,0,0,.45);
             }
         `;

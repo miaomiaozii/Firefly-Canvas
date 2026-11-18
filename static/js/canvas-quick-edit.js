@@ -63,9 +63,9 @@
     input.value = typeof opts.getValue === "function" ? String(opts.getValue() || "") : String(opts.value || "");
     if (opts.placeholder) input.placeholder = opts.placeholder;
     input.style.cssText =
-      "position:fixed;z-index:1200;background:var(--bg-secondary,#1e1e2e);" +
-      "border:1px solid var(--accent,#4a9eff);border-radius:4px;padding:2px 6px;" +
-      "color:var(--text,#e5e5e5);font-size:12px;outline:none;" +
+      "position:fixed;z-index:1200;background:var(--panel);" +
+      "border:1px solid var(--accent);border-radius:4px;padding:2px 6px;" +
+      "color:var(--text);font-size:12px;outline:none;" +
       "left:" + rect.left + "px;top:" + rect.top + "px;width:" + Math.max(140, rect.width + 40) + "px;";
 
     function cleanup() {
