@@ -2850,10 +2850,14 @@ function d2ScrollDom(harness, { top = 700, height = 1000, client = 200, rows = [
     const rowElements = rows.map(([key, y, h]) => {
         const row = harness.makeElement('div'); row.y = y; row.h = h;
         row.setAttribute('data-agent-entry-key', key);
-        row.getBoundingClientRect = () => ({ top: row.y - body.scrollTop, bottom: row.y + row.h - body.scrollTop, height: row.h });
+        row.getBoundingClientRect = () => {
+            const shift = parseFloat((messages.style.translate || '').split(' ')[1]) || 0;
+            return { top: row.y - body.scrollTop + shift, bottom: row.y + row.h - body.scrollTop + shift, height: row.h };
+        };
         return row;
     });
     body.querySelectorAll = selector => selector === '[data-agent-entry-key]' ? rowElements : [];
+    body.querySelector = selector => selector === '[data-agent-tui-messages]' ? messages : null;
     body.addEventListener = (type, listener) => { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); };
     body.removeEventListener = (type, listener) => listeners.get(type)?.delete(listener);
     body.dispatchEvent = event => [...(listeners.get(event.type) || [])].forEach(listener => listener(event));
@@ -2914,6 +2918,20 @@ test('#422 用户滚轮意图在 ResizeObserver 通知后仍能脱离底部', ()
     tree.body.scrollTop = 500;
     tree.body.dispatchEvent(ev('scroll'));
     assert.equal(state.scrollState.atBottom, false, '布局通知不能吞掉正在发生的用户滚动');
+});
+
+test('#426 分页插入小数高度后整数 scrollTop 仍须严格保持原锚点', () => {
+    const { ctx, harness } = loadAgentTuiModule();
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    const old = d2ScrollDom(harness, { top: 0, height: 1200, rows: [['entry:1', 81.984375, 100]] });
+    fn(ctx, 'captureAgentScroll')(state, old.body, true);
+    const before = old.rows[0].getBoundingClientRect().top - old.body.getBoundingClientRect().top;
+    const next = d2ScrollDom(harness, { top: 0, height: 3200, rows: [['entry:1', 1678.703125, 100]] });
+    let top = 0;
+    Object.defineProperty(next.body, 'scrollTop', { get: () => top, set: value => { top = Math.round(value); } });
+    fn(ctx, 'restoreAgentScroll')(state, next.body);
+    const after = next.rows[0].getBoundingClientRect().top - next.body.getBoundingClientRect().top;
+    assert.equal(after, before, '分页后同一行几何偏移必须严格不变');
 });
 
 for (const zoom of [1, 0.75]) {

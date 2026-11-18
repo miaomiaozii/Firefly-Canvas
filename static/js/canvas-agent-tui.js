@@ -2404,16 +2404,31 @@ function restoreAgentScroll(state, body) {
     // D1's collapsed strip hides the entire body. Zero geometry is not a new reading position.
     if (!(body.clientHeight > 0)) return;
     const ss = state.scrollState;
+    const messages = body.querySelector('[data-agent-tui-messages]');
+    let row = null;
     let top = ss && !ss.atBottom ? ss.scrollTop : Math.max(0, body.scrollHeight - body.clientHeight);
     if (ss && !ss.atBottom && ss.anchor) {
-        const row = Array.from(body.querySelectorAll('[data-agent-entry-key]')).find(row => row.getAttribute('data-agent-entry-key') === ss.anchor.key);
+        row = Array.from(body.querySelectorAll('[data-agent-entry-key]')).find(row => row.getAttribute('data-agent-entry-key') === ss.anchor.key);
         if (row) {
             const rect = body.getBoundingClientRect();
             const scale = agentScrollGeometryScale(body, rect);
             top = body.scrollTop + (row.getBoundingClientRect().top - rect.top) * scale - ss.anchor.offset;
         }
     }
-    body.scrollTop = Math.max(0, Math.min(top, Math.max(0, body.scrollHeight - body.clientHeight)));
+    const maxTop = Math.max(0, body.scrollHeight - body.clientHeight);
+    body.scrollTop = Math.max(0, Math.min(top, maxTop));
+    if (messages) {
+        if (row && top > 0 && top < maxTop) {
+            // Chromium quantizes scrollTop even though row layout is fractional.
+            // Compensate only its subpixel remainder, without changing layout or
+            // moving content beyond a real scroll boundary.
+            const rect = body.getBoundingClientRect();
+            const scale = agentScrollGeometryScale(body, rect);
+            const delta = ss.anchor.offset - (row.getBoundingClientRect().top - rect.top) * scale;
+            const existing = parseFloat((messages.style.translate || '').split(' ')[1]) || 0;
+            if (Math.abs(delta) < 1) messages.style.translate = `0px ${existing + delta}px`;
+        } else messages.style.translate = '';
+    }
     const binding = state.scrollBinding;
     if (binding) binding.programTop = body.scrollTop;
     if (state.messageNavigation) state.messageNavigation.update();
